@@ -14,6 +14,8 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::RwLock;
 
+use network::WebSocketManager;
+
 /// Run the Tauri application.
 pub fn run() {
     tauri::Builder::default()
@@ -48,6 +50,14 @@ pub fn run() {
             commands::voice::set_deafen,
             commands::settings::get_settings,
             commands::settings::update_settings,
+            commands::websocket::ws_connect,
+            commands::websocket::ws_disconnect,
+            commands::websocket::ws_status,
+            commands::websocket::ws_subscribe,
+            commands::websocket::ws_unsubscribe,
+            commands::websocket::ws_typing,
+            commands::websocket::ws_stop_typing,
+            commands::websocket::ws_ping,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -91,6 +101,8 @@ pub struct AppState {
     pub http: HttpClient,
     /// Authentication state.
     pub auth: Arc<RwLock<AuthState>>,
+    /// WebSocket connection manager.
+    pub websocket: Arc<RwLock<Option<WebSocketManager>>>,
 }
 
 impl AppState {
@@ -103,6 +115,7 @@ impl AppState {
         Self {
             http,
             auth: Arc::new(RwLock::new(AuthState::default())),
+            websocket: Arc::new(RwLock::new(None)),
         }
     }
 

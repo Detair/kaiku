@@ -95,3 +95,43 @@ export async function getSettings(): Promise<AppSettings> {
 export async function updateSettings(settings: AppSettings): Promise<void> {
   return invoke("update_settings", { settings });
 }
+
+// WebSocket Commands
+
+export type ConnectionStatus =
+  | { type: "disconnected" }
+  | { type: "connecting" }
+  | { type: "connected" }
+  | { type: "reconnecting"; attempt: number };
+
+export async function wsConnect(): Promise<void> {
+  return invoke("ws_connect");
+}
+
+export async function wsDisconnect(): Promise<void> {
+  return invoke("ws_disconnect");
+}
+
+export async function wsStatus(): Promise<ConnectionStatus> {
+  return invoke("ws_status");
+}
+
+export async function wsSubscribe(channelId: string): Promise<void> {
+  return invoke("ws_subscribe", { channelId });
+}
+
+export async function wsUnsubscribe(channelId: string): Promise<void> {
+  return invoke("ws_unsubscribe", { channelId });
+}
+
+export async function wsTyping(channelId: string): Promise<void> {
+  return invoke("ws_typing", { channelId });
+}
+
+export async function wsStopTyping(channelId: string): Promise<void> {
+  return invoke("ws_stop_typing", { channelId });
+}
+
+export async function wsPing(): Promise<void> {
+  return invoke("ws_ping");
+}
