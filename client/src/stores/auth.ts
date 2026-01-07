@@ -5,9 +5,10 @@
  */
 
 import { createStore } from "solid-js/store";
-import { createSignal, createEffect } from "solid-js";
 import type { User } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
+import { initWebSocket, connect as wsConnect, disconnect as wsDisconnect, cleanupWebSocket } from "./websocket";
+import { initPresence, cleanupPresence } from "./presence";
 
 // Auth state interface
 interface AuthState {
@@ -77,6 +78,17 @@ export async function login(
       isLoading: false,
       error: null,
     });
+
+    // Initialize WebSocket and presence after login
+    await initWebSocket();
+    await initPresence();
+    try {
+      await wsConnect();
+    } catch (wsErr) {
+      console.error("WebSocket connection failed:", wsErr);
+      // Continue even if WebSocket fails - user is still logged in
+    }
+
     return user;
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -111,6 +123,16 @@ export async function register(
       isLoading: false,
       error: null,
     });
+
+    // Initialize WebSocket and presence after registration
+    await initWebSocket();
+    await initPresence();
+    try {
+      await wsConnect();
+    } catch (wsErr) {
+      console.error("WebSocket connection failed:", wsErr);
+    }
+
     return user;
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -124,6 +146,15 @@ export async function register(
  */
 export async function logout(): Promise<void> {
   setAuthState({ isLoading: true, error: null });
+
+  // Disconnect WebSocket and cleanup
+  try {
+    await wsDisconnect();
+    await cleanupWebSocket();
+    cleanupPresence();
+  } catch (err) {
+    console.error("Error during cleanup:", err);
+  }
 
   try {
     await tauri.logout();

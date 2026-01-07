@@ -38,6 +38,10 @@ serde_json.workspace = true
 # HTTP
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 
+# WebSocket
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
+url = "2"
+
 # Secure Storage
 keyring = "2"
 
