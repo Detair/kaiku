@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # Web Framework
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
 
@@ -86,6 +86,9 @@ pulldown-cmark = "0.10"
 
 # Validation
 validator = { version = "0.16", features = ["derive"] }
+
+# MIME type detection
+mime_guess = "2"
 
 # Internal Crates
 vc-common = { path = "shared/vc-common" }

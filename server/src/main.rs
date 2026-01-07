@@ -40,8 +40,29 @@ async fn main() -> Result<()> {
     // Initialize Redis
     let redis = db::create_redis_client(&config.redis_url).await?;
 
+    // Initialize S3 client (optional - file uploads will be disabled if not configured)
+    let s3 = match chat::S3Client::new(&config).await {
+        Ok(client) => {
+            // Verify bucket access
+            match client.health_check().await {
+                Ok(()) => {
+                    info!(bucket = %config.s3_bucket, "S3 storage connected");
+                    Some(client)
+                }
+                Err(e) => {
+                    tracing::warn!("S3 health check failed: {}. File uploads disabled.", e);
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("S3 client initialization failed: {}. File uploads disabled.", e);
+            None
+        }
+    };
+
     // Build application state
-    let state = api::AppState::new(db_pool, redis, config.clone());
+    let state = api::AppState::new(db_pool, redis, config.clone(), s3);
 
     // Build router
     let app = api::create_router(state);

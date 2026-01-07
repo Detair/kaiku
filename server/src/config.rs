@@ -32,6 +32,12 @@ pub struct Config {
     /// S3 bucket name
     pub s3_bucket: String,
 
+    /// S3 presigned URL expiry in seconds (default: 3600 = 1 hour)
+    pub s3_presign_expiry: i64,
+
+    /// Allowed MIME types for file uploads (comma-separated)
+    pub allowed_mime_types: Option<Vec<String>>,
+
     /// OIDC issuer URL (optional)
     pub oidc_issuer_url: Option<String>,
 
@@ -75,6 +81,16 @@ impl Config {
                 .unwrap_or(604800),
             s3_endpoint: env::var("S3_ENDPOINT").ok(),
             s3_bucket: env::var("S3_BUCKET").unwrap_or_else(|_| "voicechat".into()),
+            s3_presign_expiry: env::var("S3_PRESIGN_EXPIRY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600), // 1 hour
+            allowed_mime_types: env::var("ALLOWED_MIME_TYPES").ok().map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            }),
             oidc_issuer_url: env::var("OIDC_ISSUER_URL").ok(),
             oidc_client_id: env::var("OIDC_CLIENT_ID").ok(),
             oidc_client_secret: env::var("OIDC_CLIENT_SECRET").ok(),
