@@ -55,7 +55,7 @@ pub struct Channel {
 }
 
 /// Channel type.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "channel_type", rename_all = "lowercase")]
 pub enum ChannelType {
     Text,
@@ -107,5 +107,24 @@ pub struct FileAttachment {
     pub mime_type: String,
     pub size_bytes: i64,
     pub s3_key: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Session model for refresh token tracking.
+#[derive(Debug, Clone, FromRow)]
+pub struct Session {
+    /// Session ID.
+    pub id: Uuid,
+    /// User this session belongs to.
+    pub user_id: Uuid,
+    /// SHA256 hash of the refresh token.
+    pub token_hash: String,
+    /// When the session/token expires.
+    pub expires_at: DateTime<Utc>,
+    /// IP address of the client (stored as string for simplicity).
+    pub ip_address: Option<String>,
+    /// User agent of the client.
+    pub user_agent: Option<String>,
+    /// When the session was created.
     pub created_at: DateTime<Utc>,
 }

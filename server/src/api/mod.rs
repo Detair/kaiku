@@ -2,10 +2,7 @@
 //!
 //! Central routing configuration and shared state.
 
-use axum::{
-    routing::{get, post},
-    Router,
-};
+use axum::{routing::get, Router};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tower_http::{
@@ -48,8 +45,8 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(health_check))
-        // Auth routes
-        .nest("/auth", auth::router())
+        // Auth routes (pass state for middleware)
+        .nest("/auth", auth::router(state.clone()))
         // Chat routes
         .nest("/api/channels", chat::channels_router())
         .nest("/api/messages", chat::messages_router())

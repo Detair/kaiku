@@ -40,28 +40,63 @@ Download the latest release from [Releases](https://github.com/yourorg/voicechat
 
 ### Prerequisites
 
-- Rust 1.75+
-- Node.js 20+
+- Rust 1.82+ (`rustup update stable`)
+- Node.js 18+ (pnpm recommended)
 - Docker & Docker Compose
-- PostgreSQL 16 (or use Docker)
-- Redis 7 (or use Docker)
 
-### Setup
+### Quick Setup
 
 ```bash
-# Start development services
-cd infra/compose
-docker compose -f docker-compose.dev.yml up -d
+# Run the setup script (installs deps, starts Docker, runs migrations)
+./scripts/dev-setup.sh
+
+# Start the server in watch mode
+make dev
+
+# In another terminal, start the client
+make client
+```
+
+### Manual Setup
+
+```bash
+# Start development services (PostgreSQL, Redis, MinIO, MailHog)
+make docker-up
+
+# Run database migrations
+make db-migrate
+
+# Install client dependencies
+cd client && npm install
 
 # Run server
-cd ../../server
-cargo run
+cargo run -p vc-server
 
 # Run client (in another terminal)
-cd ../client
-npm install
-npm run tauri dev
+cd client && npm run tauri dev
 ```
+
+### Useful Commands
+
+```bash
+make help         # Show all available commands
+make dev          # Start server in watch mode (auto-reload)
+make client       # Start client in dev mode
+make test         # Run all tests
+make check        # Run cargo check + clippy
+make db-reset     # Reset database
+make docker-logs  # View Docker service logs
+```
+
+### Test Users
+
+After setup, create test users:
+
+```bash
+./scripts/create-test-users.sh
+```
+
+Default credentials: `admin/admin123`, `alice/password123`, `bob/password123`
 
 ## Project Structure
 

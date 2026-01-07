@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourorg/voicechat"
-rust-version = "1.75"
+rust-version = "1.82"
 authors = ["VoiceChat Contributors"]
 description = "Self-hosted voice and text chat platform"
 keywords = ["voip", "chat", "webrtc", "e2ee"]
@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # Web Framework
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
 
@@ -65,14 +65,17 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
 bytes = "1"
+hex = "0.4"
+lazy_static = "1.4"
+regex = "1"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # S3
-aws-sdk-s3 = "1"
-aws-config = "1"
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 
 # API Docs
 utoipa = { version = "4", features = ["axum_extras"] }
@@ -109,3 +112,4 @@ debug = true
 
 [profile.dev.package."*"]
 opt-level = 3
+

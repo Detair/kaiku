@@ -41,6 +41,7 @@ openidconnect.workspace = true
 
 # Crypto
 rustls.workspace = true
+sha2.workspace = true
 
 # Utils
 uuid.workspace = true
@@ -48,6 +49,9 @@ chrono.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
+hex.workspace = true
+lazy_static.workspace = true
+regex.workspace = true
 
 # Logging
 tracing.workspace = true
