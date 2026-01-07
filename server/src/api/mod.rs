@@ -11,7 +11,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{auth, chat, config::Config, voice, ws};
+use crate::{auth, chat, chat::S3Client, config::Config, voice, ws};
 
 /// Shared application state.
 #[derive(Clone)]
@@ -22,16 +22,29 @@ pub struct AppState {
     pub redis: fred::clients::RedisClient,
     /// Server configuration
     pub config: Arc<Config>,
+    /// S3 client for file storage (optional)
+    pub s3: Option<S3Client>,
 }
 
 impl AppState {
     /// Create new application state.
-    pub fn new(db: PgPool, redis: fred::clients::RedisClient, config: Config) -> Self {
+    pub fn new(
+        db: PgPool,
+        redis: fred::clients::RedisClient,
+        config: Config,
+        s3: Option<S3Client>,
+    ) -> Self {
         Self {
             db,
             redis,
             config: Arc::new(config),
+            s3,
         }
+    }
+
+    /// Check if S3 storage is configured and available.
+    pub fn has_s3(&self) -> bool {
+        self.s3.is_some()
     }
 }
 

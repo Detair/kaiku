@@ -71,6 +71,9 @@ pulldown-cmark.workspace = true
 # Validation
 validator.workspace = true
 
+# MIME detection
+mime_guess.workspace = true
+
 # Config
 dotenvy = "0.15"
 

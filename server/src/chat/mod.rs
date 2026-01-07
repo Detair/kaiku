@@ -4,6 +4,7 @@
 
 mod channels;
 mod messages;
+pub mod s3;
 mod uploads;
 
 use axum::{
@@ -12,6 +13,8 @@ use axum::{
 };
 
 use crate::api::AppState;
+
+pub use s3::S3Client;
 
 /// Create channels router.
 pub fn channels_router() -> Router<AppState> {
@@ -34,4 +37,6 @@ pub fn messages_router() -> Router<AppState> {
         .route("/{id}", patch(messages::update))
         .route("/{id}", delete(messages::delete))
         .route("/upload", post(uploads::upload_file))
+        .route("/attachments/{id}", get(uploads::get_attachment))
+        .route("/attachments/{id}/download", get(uploads::download))
 }

@@ -540,3 +540,82 @@ pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool>
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+// ============================================================================
+// File Attachment Queries
+// ============================================================================
+
+/// Create a new file attachment record.
+pub async fn create_file_attachment(
+    pool: &PgPool,
+    message_id: Uuid,
+    filename: &str,
+    mime_type: &str,
+    size_bytes: i64,
+    s3_key: &str,
+) -> sqlx::Result<FileAttachment> {
+    sqlx::query_as::<_, FileAttachment>(
+        r#"
+        INSERT INTO file_attachments (message_id, filename, mime_type, size_bytes, s3_key)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+        "#,
+    )
+    .bind(message_id)
+    .bind(filename)
+    .bind(mime_type)
+    .bind(size_bytes)
+    .bind(s3_key)
+    .fetch_one(pool)
+    .await
+}
+
+/// Find file attachment by ID.
+pub async fn find_file_attachment_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> sqlx::Result<Option<FileAttachment>> {
+    sqlx::query_as::<_, FileAttachment>("SELECT * FROM file_attachments WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// List file attachments for a message.
+pub async fn list_file_attachments_by_message(
+    pool: &PgPool,
+    message_id: Uuid,
+) -> sqlx::Result<Vec<FileAttachment>> {
+    sqlx::query_as::<_, FileAttachment>(
+        "SELECT * FROM file_attachments WHERE message_id = $1 ORDER BY created_at ASC",
+    )
+    .bind(message_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Delete file attachment by ID, returning the deleted record.
+pub async fn delete_file_attachment(
+    pool: &PgPool,
+    id: Uuid,
+) -> sqlx::Result<Option<FileAttachment>> {
+    sqlx::query_as::<_, FileAttachment>(
+        "DELETE FROM file_attachments WHERE id = $1 RETURNING *",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Delete all file attachments for a message, returning the deleted records.
+pub async fn delete_file_attachments_by_message(
+    pool: &PgPool,
+    message_id: Uuid,
+) -> sqlx::Result<Vec<FileAttachment>> {
+    sqlx::query_as::<_, FileAttachment>(
+        "DELETE FROM file_attachments WHERE message_id = $1 RETURNING *",
+    )
+    .bind(message_id)
+    .fetch_all(pool)
+    .await
+}
