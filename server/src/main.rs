@@ -61,8 +61,12 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Initialize SFU server for voice
+    let sfu = voice::SfuServer::new(std::sync::Arc::new(config.clone()))?;
+    info!("Voice SFU server initialized");
+
     // Build application state
-    let state = api::AppState::new(db_pool, redis, config.clone(), s3);
+    let state = api::AppState::new(db_pool, redis, config.clone(), s3, sfu);
 
     // Build router
     let app = api::create_router(state);

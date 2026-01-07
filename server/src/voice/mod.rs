@@ -1,24 +1,33 @@
 //! Voice Service (SFU)
 //!
 //! WebRTC Selective Forwarding Unit for voice channels.
+//!
+//! Voice signaling is handled through WebSocket (see ws/mod.rs).
+//! This module provides:
+//! - SFU server for managing voice rooms and peer connections
+//! - Track routing for RTP packet forwarding
+//! - HTTP endpoints for ICE server configuration
 
+pub mod error;
 mod handlers;
-mod sfu;
+mod peer;
+pub mod sfu;
 mod signaling;
+mod track;
+pub mod ws_handler;
 
-use axum::{
-    routing::{get, post},
-    Router,
-};
+use axum::{routing::get, Router};
 
 use crate::api::AppState;
 
-pub use sfu::SfuServer;
+// Re-exports
+pub use error::VoiceError;
+pub use sfu::{ParticipantInfo, Room, SfuServer};
 
 /// Create voice router.
+///
+/// Note: Voice join/leave are handled via WebSocket events.
+/// This router only provides ICE server configuration.
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/ice-servers", get(handlers::get_ice_servers))
-        .route("/join/:channel_id", post(handlers::join_channel))
-        .route("/leave/:channel_id", post(handlers::leave_channel))
+    Router::new().route("/ice-servers", get(handlers::get_ice_servers))
 }

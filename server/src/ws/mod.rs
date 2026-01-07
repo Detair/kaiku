@@ -40,6 +40,29 @@ pub enum ClientEvent {
     Typing { channel_id: Uuid },
     /// Stop typing indicator
     StopTyping { channel_id: Uuid },
+
+    // Voice events
+    /// Join a voice channel
+    VoiceJoin { channel_id: Uuid },
+    /// Leave a voice channel
+    VoiceLeave { channel_id: Uuid },
+    /// Send SDP answer to server
+    VoiceAnswer { channel_id: Uuid, sdp: String },
+    /// Send ICE candidate to server
+    VoiceIceCandidate { channel_id: Uuid, candidate: String },
+    /// Mute self in voice channel
+    VoiceMute { channel_id: Uuid },
+    /// Unmute self in voice channel
+    VoiceUnmute { channel_id: Uuid },
+}
+
+/// Participant info for voice room state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceParticipant {
+    /// User ID.
+    pub user_id: Uuid,
+    /// Whether the user is muted.
+    pub muted: bool,
 }
 
 /// Server-to-client events.
@@ -79,6 +102,30 @@ pub enum ServerEvent {
     PresenceUpdate { user_id: Uuid, status: String },
     /// Error
     Error { code: String, message: String },
+
+    // Voice events
+    /// SDP offer from server (after VoiceJoin)
+    VoiceOffer { channel_id: Uuid, sdp: String },
+    /// ICE candidate from server
+    VoiceIceCandidate { channel_id: Uuid, candidate: String },
+    /// User joined voice channel
+    VoiceUserJoined {
+        channel_id: Uuid,
+        user_id: Uuid,
+    },
+    /// User left voice channel
+    VoiceUserLeft { channel_id: Uuid, user_id: Uuid },
+    /// User muted in voice channel
+    VoiceUserMuted { channel_id: Uuid, user_id: Uuid },
+    /// User unmuted in voice channel
+    VoiceUserUnmuted { channel_id: Uuid, user_id: Uuid },
+    /// Current voice room state (sent on join)
+    VoiceRoomState {
+        channel_id: Uuid,
+        participants: Vec<VoiceParticipant>,
+    },
+    /// Voice error
+    VoiceError { code: String, message: String },
 }
 
 /// Redis pub/sub channels.
@@ -299,6 +346,30 @@ async fn handle_client_message(
                 &ServerEvent::TypingStop { channel_id, user_id },
             )
             .await?;
+        }
+
+        // Voice events - delegate to voice handler
+        ClientEvent::VoiceJoin { .. }
+        | ClientEvent::VoiceLeave { .. }
+        | ClientEvent::VoiceAnswer { .. }
+        | ClientEvent::VoiceIceCandidate { .. }
+        | ClientEvent::VoiceMute { .. }
+        | ClientEvent::VoiceUnmute { .. } => {
+            if let Err(e) = crate::voice::ws_handler::handle_voice_event(
+                &state.sfu,
+                user_id,
+                event,
+                tx,
+            )
+            .await
+            {
+                warn!("Voice event error: {}", e);
+                tx.send(ServerEvent::VoiceError {
+                    code: "voice_error".to_string(),
+                    message: e.to_string(),
+                })
+                .await?;
+            }
         }
     }
 

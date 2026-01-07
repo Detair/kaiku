@@ -11,7 +11,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{auth, chat, chat::S3Client, config::Config, voice, ws};
+use crate::{auth, chat, chat::S3Client, config::Config, voice, voice::SfuServer, ws};
 
 /// Shared application state.
 #[derive(Clone)]
@@ -24,6 +24,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// S3 client for file storage (optional)
     pub s3: Option<S3Client>,
+    /// SFU server for voice channels
+    pub sfu: Arc<SfuServer>,
 }
 
 impl AppState {
@@ -33,12 +35,14 @@ impl AppState {
         redis: fred::clients::RedisClient,
         config: Config,
         s3: Option<S3Client>,
+        sfu: SfuServer,
     ) -> Self {
         Self {
             db,
             redis,
             config: Arc::new(config),
             s3,
+            sfu: Arc::new(sfu),
         }
     }
 

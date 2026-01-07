@@ -1,28 +1,39 @@
 //! Voice HTTP Handlers
+//!
+//! HTTP endpoints for voice-related operations.
+//! Voice signaling (join/leave/offer/answer/ice) is handled via WebSocket.
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    Json,
-};
+use axum::{extract::State, Json};
 use serde::Serialize;
-use uuid::Uuid;
 
 use crate::api::AppState;
 
+/// ICE server configuration.
 #[derive(Debug, Serialize)]
 pub struct IceServer {
+    /// Server URLs (e.g., "stun:stun.l.google.com:19302")
     pub urls: Vec<String>,
+    /// Username for TURN servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// Credential for TURN servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
 }
 
+/// Response containing ICE server configuration.
 #[derive(Debug, Serialize)]
 pub struct IceServersResponse {
+    /// List of ICE servers to use for WebRTC.
     pub ice_servers: Vec<IceServer>,
 }
 
 /// Get ICE server configuration.
+///
+/// GET /api/voice/ice-servers
+///
+/// Returns STUN and TURN server configuration for WebRTC connections.
+/// Clients should use these servers for NAT traversal.
 pub async fn get_ice_servers(State(state): State<AppState>) -> Json<IceServersResponse> {
     let mut servers = vec![IceServer {
         urls: vec![state.config.stun_server.clone()],
@@ -30,6 +41,7 @@ pub async fn get_ice_servers(State(state): State<AppState>) -> Json<IceServersRe
         credential: None,
     }];
 
+    // Add TURN server if configured
     if let Some(turn) = &state.config.turn_server {
         servers.push(IceServer {
             urls: vec![turn.clone()],
@@ -39,22 +51,4 @@ pub async fn get_ice_servers(State(state): State<AppState>) -> Json<IceServersRe
     }
 
     Json(IceServersResponse { ice_servers: servers })
-}
-
-/// Join a voice channel.
-pub async fn join_channel(
-    State(_state): State<AppState>,
-    Path(_channel_id): Path<Uuid>,
-) -> StatusCode {
-    // TODO: Implement - returns SDP offer
-    StatusCode::NOT_IMPLEMENTED
-}
-
-/// Leave a voice channel.
-pub async fn leave_channel(
-    State(_state): State<AppState>,
-    Path(_channel_id): Path<Uuid>,
-) -> StatusCode {
-    // TODO: Implement
-    StatusCode::NOT_IMPLEMENTED
 }
