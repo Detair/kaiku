@@ -8,7 +8,11 @@ mod crypto;
 mod network;
 mod webrtc;
 
+use reqwest::Client as HttpClient;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::Manager;
+use tokio::sync::RwLock;
 
 /// Run the Tauri application.
 pub fn run() {
@@ -34,6 +38,7 @@ pub fn run() {
             commands::auth::login,
             commands::auth::logout,
             commands::auth::get_current_user,
+            commands::auth::register,
             commands::chat::get_channels,
             commands::chat::get_messages,
             commands::chat::send_message,
@@ -48,13 +53,71 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Application state.
+/// User status.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    Online,
+    Away,
+    Busy,
+    #[default]
+    Offline,
+}
+
+/// User profile (public info).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub status: UserStatus,
+    pub email: Option<String>,
+    pub mfa_enabled: bool,
+}
+
+/// Authentication state.
+#[derive(Debug, Default)]
+pub struct AuthState {
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub user: Option<User>,
+    pub server_url: Option<String>,
+}
+
+/// Application state shared across commands.
 pub struct AppState {
-    // TODO: Add state fields
+    /// HTTP client for API requests.
+    pub http: HttpClient,
+    /// Authentication state.
+    pub auth: Arc<RwLock<AuthState>>,
 }
 
 impl AppState {
     fn new() -> Self {
-        Self {}
+        let http = HttpClient::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self {
+            http,
+            auth: Arc::new(RwLock::new(AuthState::default())),
+        }
+    }
+
+    /// Get the server URL if authenticated.
+    pub async fn server_url(&self) -> Option<String> {
+        self.auth.read().await.server_url.clone()
+    }
+
+    /// Get the access token if authenticated.
+    pub async fn access_token(&self) -> Option<String> {
+        self.auth.read().await.access_token.clone()
+    }
+
+    /// Check if authenticated.
+    pub async fn is_authenticated(&self) -> bool {
+        self.auth.read().await.access_token.is_some()
     }
 }
