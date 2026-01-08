@@ -122,6 +122,8 @@ impl Room {
         for (user_id, peer) in peers.iter() {
             info.push(ParticipantInfo {
                 user_id: *user_id,
+                username: Some(peer.username.clone()),
+                display_name: Some(peer.display_name.clone()),
                 muted: peer.is_muted().await,
             });
         }
@@ -280,11 +282,13 @@ impl SfuServer {
     pub async fn create_peer(
         &self,
         user_id: Uuid,
+        username: String,
+        display_name: String,
         channel_id: Uuid,
         signal_tx: mpsc::Sender<ServerEvent>,
     ) -> Result<Arc<Peer>, VoiceError> {
         let config = self.rtc_config();
-        let peer = Peer::new(user_id, channel_id, &self.api, config, signal_tx).await?;
+        let peer = Peer::new(user_id, username, display_name, channel_id, &self.api, config, signal_tx).await?;
         let peer = Arc::new(peer);
 
         // Set up connection state handler

@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -15,13 +16,14 @@ use crate::ws::{ClientEvent, ServerEvent, VoiceParticipant};
 /// Handle a voice-related client event.
 pub async fn handle_voice_event(
     sfu: &Arc<SfuServer>,
+    pool: &PgPool,
     user_id: Uuid,
     event: ClientEvent,
     tx: &mpsc::Sender<ServerEvent>,
 ) -> Result<(), VoiceError> {
     match event {
         ClientEvent::VoiceJoin { channel_id } => {
-            handle_join(sfu, user_id, channel_id, tx).await
+            handle_join(sfu, pool, user_id, channel_id, tx).await
         }
         ClientEvent::VoiceLeave { channel_id } => {
             handle_leave(sfu, user_id, channel_id).await
@@ -45,17 +47,30 @@ pub async fn handle_voice_event(
 /// Handle a user joining a voice channel.
 async fn handle_join(
     sfu: &Arc<SfuServer>,
+    pool: &PgPool,
     user_id: Uuid,
     channel_id: Uuid,
     tx: &mpsc::Sender<ServerEvent>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
 
+    // Fetch user info from database
+    let user = sqlx::query!(
+        "SELECT username, display_name FROM users WHERE id = $1",
+        user_id
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| VoiceError::Signaling(format!("Failed to fetch user info: {}", e)))?;
+
+    let username = user.username;
+    let display_name = user.display_name;
+
     // Get or create the room
     let room = sfu.get_or_create_room(channel_id).await;
 
     // Create peer connection for this user
-    let peer = sfu.create_peer(user_id, channel_id, tx.clone()).await?;
+    let peer = sfu.create_peer(user_id, username, display_name, channel_id, tx.clone()).await?;
 
     // Add recvonly transceiver for receiving audio from client
     peer.add_recv_transceiver().await?;
@@ -85,6 +100,8 @@ async fn handle_join(
         .into_iter()
         .map(|p| VoiceParticipant {
             user_id: p.user_id,
+            username: p.username,
+            display_name: p.display_name,
             muted: p.muted,
         })
         .collect();
@@ -102,6 +119,8 @@ async fn handle_join(
         ServerEvent::VoiceUserJoined {
             channel_id,
             user_id,
+            username: peer.username.clone(),
+            display_name: peer.display_name.clone(),
         },
     )
     .await;
@@ -256,9 +275,3 @@ async fn handle_mute(
     Ok(())
 }
 
-/// Clean up voice connections when a user disconnects from WebSocket.
-pub async fn cleanup_on_disconnect(sfu: &Arc<SfuServer>, user_id: Uuid) {
-    // This would require tracking which rooms a user is in
-    // For now, rooms will clean up when they detect disconnected peers
-    debug!(user_id = %user_id, "Cleaning up voice connections on disconnect");
-}

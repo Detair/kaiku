@@ -1,7 +1,6 @@
 import { Component, createSignal, Show } from "solid-js";
-import { Mic, MicOff, Headphones, VolumeX, Settings, PhoneOff } from "lucide-solid";
-import { voiceState, toggleMute, toggleDeafen, leaveVoice } from "@/stores/voice";
-import { channelsState } from "@/stores/channels";
+import { Mic, MicOff, Headphones, VolumeX, Settings } from "lucide-solid";
+import { voiceState, toggleMute, toggleDeafen } from "@/stores/voice";
 import MicrophoneTest from "./MicrophoneTest";
 
 /**
@@ -10,37 +9,8 @@ import MicrophoneTest from "./MicrophoneTest";
 const VoiceControls: Component = () => {
   const [showMicTest, setShowMicTest] = createSignal(false);
 
-  const currentChannel = () => {
-    if (!voiceState.channelId) return null;
-    return channelsState.channels.find(ch => ch.id === voiceState.channelId);
-  };
-
   return (
     <>
-      {/* Connected Channel Indicator */}
-      <Show when={voiceState.state === "connected" && currentChannel()}>
-        <div class="px-3 py-2 bg-success/10 border-t border-success/30">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2 min-w-0">
-              <div class="w-2 h-2 rounded-full bg-success animate-pulse" />
-              <div class="min-w-0">
-                <div class="text-xs text-text-muted">Voice Connected</div>
-                <div class="text-sm font-medium text-success truncate">
-                  {currentChannel()?.name}
-                </div>
-              </div>
-            </div>
-            <button
-              onClick={() => leaveVoice()}
-              class="p-1.5 rounded hover:bg-danger/20 text-danger transition-colors shrink-0"
-              title="Disconnect"
-            >
-              <PhoneOff class="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </Show>
-
       <div class="px-3 py-2 flex items-center justify-center gap-2 border-t border-background-secondary">
         {/* Mute button */}
         <button

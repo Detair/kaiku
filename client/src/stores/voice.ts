@@ -75,9 +75,9 @@ export async function initVoice(): Promise<void> {
   // Clean up existing listeners
   await cleanupVoice();
 
-  // Voice requires Tauri - in browser mode, voice is not supported
+  // Tauri-specific event listeners
   if (!isTauri) {
-    console.warn("Voice chat requires the native Tauri app");
+    // Browser mode - WebSocket events are handled in websocket store
     return;
   }
 
@@ -342,5 +342,5 @@ export function isInChannel(channelId: string): boolean {
   return voiceState.state === "connected" && voiceState.channelId === channelId;
 }
 
-// Export the store for reading
-export { voiceState };
+// Export the store for reading and writing
+export { voiceState, setVoiceState };

@@ -21,13 +21,13 @@ const VoiceParticipants: Component<Props> = (props) => {
     return authState.user?.id === userId;
   };
 
-  const getUserDisplay = (userId: string) => {
+  const getUserDisplay = (participant: any) => {
     // If it's the current user, we have full info
-    if (isCurrentUser(userId)) {
+    if (isCurrentUser(participant.user_id)) {
       return authState.user?.display_name || authState.user?.username || "You";
     }
-    // For now, show user ID (can be enhanced later with user profiles)
-    return userId.slice(0, 8);
+    // Use display_name or username from participant info
+    return participant.display_name || participant.username || participant.user_id.slice(0, 8);
   };
 
   return (
@@ -37,14 +37,14 @@ const VoiceParticipants: Component<Props> = (props) => {
           {(participant) => (
             <div class="flex items-center gap-2 px-2 py-1 text-xs">
               <User class="w-3 h-3 text-text-muted" />
-              <span class={isCurrentUser(participant.user_id) ? "text-success" : "text-text-secondary"}>
-                {getUserDisplay(participant.user_id)}
+              <span class={isCurrentUser(participant.user_id) ? "text-success font-medium" : "text-text-secondary"}>
+                {getUserDisplay(participant)}
               </span>
               <Show when={participant.muted}>
-                <span class="text-danger" title="Muted">🔇</span>
+                <span class="text-danger text-[10px]" title="Muted">🔇</span>
               </Show>
               <Show when={participant.speaking}>
-                <span class="text-success animate-pulse" title="Speaking">🔊</span>
+                <span class="text-success animate-pulse text-[10px]" title="Speaking">🔊</span>
               </Show>
             </div>
           )}

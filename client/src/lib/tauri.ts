@@ -331,18 +331,31 @@ export async function wsConnect(): Promise<void> {
   return new Promise((resolve, reject) => {
     browserWs = new WebSocket(wsUrl);
 
-    browserWs.onopen = () => {
+    browserWs.onopen = async () => {
       browserWsStatus = { type: "connected" };
+      console.log("[WebSocket] Connected to server");
+
+      // Re-initialize WebSocket event listeners
+      try {
+        const { reinitWebSocketListeners } = await import("@/stores/websocket");
+        await reinitWebSocketListeners();
+        console.log("[WebSocket] Event listeners reinitialized");
+      } catch (err) {
+        console.error("[WebSocket] Failed to reinitialize listeners:", err);
+      }
+
       resolve();
     };
 
     browserWs.onerror = (err) => {
       browserWsStatus = { type: "disconnected" };
+      console.error("[WebSocket] Connection error:", err);
       reject(err);
     };
 
     browserWs.onclose = () => {
       browserWsStatus = { type: "disconnected" };
+      console.log("[WebSocket] Connection closed");
     };
   });
 }
@@ -419,4 +432,19 @@ export function getBrowserWebSocket(): WebSocket | null {
 
 export function getServerUrl(): string {
   return browserState.serverUrl;
+}
+
+/**
+ * Send a WebSocket message (works in both browser and Tauri modes)
+ */
+export async function wsSend(message: any): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("ws_send", { message: JSON.stringify(message) });
+  } else {
+    if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
+      throw new Error("WebSocket not connected. Current state: " + (browserWs ? browserWs.readyState : "null"));
+    }
+    browserWs.send(JSON.stringify(message));
+  }
 }

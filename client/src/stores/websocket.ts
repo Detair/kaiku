@@ -141,19 +141,38 @@ export async function initWebSocket(): Promise<void> {
     );
   } else {
     // Browser mode - use browser WebSocket events
-    const ws = tauri.getBrowserWebSocket();
-    if (ws) {
-      const messageHandler = (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(event.data) as ServerEvent;
-          handleServerEvent(data);
-        } catch (err) {
-          console.error("Failed to parse WebSocket message:", err);
-        }
-      };
-      ws.addEventListener("message", messageHandler);
-      unlisteners.push(() => ws.removeEventListener("message", messageHandler));
-    }
+    const attachMessageHandler = () => {
+      const ws = tauri.getBrowserWebSocket();
+      if (ws) {
+        console.log("[WebSocket] Attaching message handler to WebSocket");
+        const messageHandler = (event: MessageEvent) => {
+          try {
+            const data = JSON.parse(event.data) as ServerEvent;
+            handleServerEvent(data);
+          } catch (err) {
+            console.error("Failed to parse WebSocket message:", err);
+          }
+        };
+        ws.addEventListener("message", messageHandler);
+        unlisteners.push(() => ws.removeEventListener("message", messageHandler));
+      } else {
+        console.warn("[WebSocket] No WebSocket instance found");
+      }
+    };
+
+    // Attach initially
+    attachMessageHandler();
+
+    // Re-attach on reconnection
+    const reconnectHandler = () => {
+      console.log("[WebSocket] Received ws-reconnected event, re-attaching message handler");
+      // Use setTimeout to ensure WebSocket is fully ready
+      setTimeout(() => {
+        attachMessageHandler();
+      }, 100);
+    };
+    window.addEventListener("ws-reconnected", reconnectHandler);
+    unlisteners.push(() => window.removeEventListener("ws-reconnected", reconnectHandler));
   }
 }
 
@@ -161,6 +180,8 @@ export async function initWebSocket(): Promise<void> {
  * Handle server events in browser mode.
  */
 function handleServerEvent(event: ServerEvent): void {
+  console.log("[WebSocket] Received event:", event.type);
+
   switch (event.type) {
     case "message_new":
       addMessage(event.message);
@@ -186,6 +207,39 @@ function handleServerEvent(event: ServerEvent): void {
       console.log("Presence update:", event.user_id, event.status);
       break;
 
+    case "voice_offer":
+      console.log("[WebSocket] Handling voice_offer for channel:", event.channel_id);
+      handleVoiceOffer(event.channel_id, event.sdp);
+      break;
+
+    case "voice_ice_candidate":
+      handleVoiceIceCandidate(event.channel_id, event.candidate);
+      break;
+
+    case "voice_user_joined":
+      handleVoiceUserJoined(event.channel_id, event.user_id, event.username, event.display_name);
+      break;
+
+    case "voice_user_left":
+      handleVoiceUserLeft(event.channel_id, event.user_id);
+      break;
+
+    case "voice_user_muted":
+      handleVoiceUserMuted(event.channel_id, event.user_id);
+      break;
+
+    case "voice_user_unmuted":
+      handleVoiceUserUnmuted(event.channel_id, event.user_id);
+      break;
+
+    case "voice_room_state":
+      handleVoiceRoomState(event.channel_id, event.participants);
+      break;
+
+    case "voice_error":
+      console.error("Voice error:", event.code, event.message);
+      break;
+
     default:
       console.log("Unhandled server event:", event.type);
   }
@@ -204,6 +258,40 @@ export async function cleanupWebSocket(): Promise<void> {
   for (const timer of Object.values(typingTimers)) {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Re-initialize WebSocket listeners after reconnection (browser mode only).
+ */
+export async function reinitWebSocketListeners(): Promise<void> {
+  if (isTauri) return;
+
+  console.log("[WebSocket] Reinitializing WebSocket listeners");
+
+  const ws = tauri.getBrowserWebSocket();
+  if (!ws) {
+    console.warn("[WebSocket] No WebSocket instance available for reinitialization");
+    return;
+  }
+
+  // Remove old listener if it exists (prevent duplicates)
+  const oldListeners = unlisteners.filter(ul => ul.toString().includes("message"));
+  oldListeners.forEach(ul => ul());
+
+  // Attach new message handler
+  const messageHandler = (event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as ServerEvent;
+      handleServerEvent(data);
+    } catch (err) {
+      console.error("Failed to parse WebSocket message:", err);
+    }
+  };
+
+  ws.addEventListener("message", messageHandler);
+  unlisteners.push(() => ws.removeEventListener("message", messageHandler));
+
+  console.log("[WebSocket] Message handler attached to WebSocket instance");
 }
 
 /**
@@ -345,6 +433,121 @@ export function getTypingUsers(channelId: string): string[] {
  */
 export function isConnected(): boolean {
   return wsState.status === "connected";
+}
+
+// Voice event handlers
+
+async function handleVoiceOffer(channelId: string, sdp: string): Promise<void> {
+  try {
+    const { createVoiceAdapter } = await import("@/lib/webrtc");
+    const adapter = await createVoiceAdapter();
+    const result = await adapter.handleOffer(channelId, sdp);
+
+    if (result.ok) {
+      // Send answer back to server
+      await tauri.wsSend({
+        type: "voice_answer",
+        channel_id: channelId,
+        sdp: result.value,
+      });
+    } else {
+      console.error("Failed to handle voice offer:", result.error);
+    }
+  } catch (err) {
+    console.error("Error handling voice offer:", err);
+  }
+}
+
+async function handleVoiceIceCandidate(channelId: string, candidate: string): Promise<void> {
+  try {
+    const { createVoiceAdapter } = await import("@/lib/webrtc");
+    const adapter = await createVoiceAdapter();
+    const result = await adapter.handleIceCandidate(channelId, candidate);
+
+    if (!result.ok) {
+      console.error("Failed to handle ICE candidate:", result.error);
+    }
+  } catch (err) {
+    console.error("Error handling ICE candidate:", err);
+  }
+}
+
+async function handleVoiceUserJoined(channelId: string, userId: string, username: string, displayName: string): Promise<void> {
+  const { voiceState, setVoiceState } = await import("@/stores/voice");
+  const { produce } = await import("solid-js/store");
+
+  if (voiceState.channelId === channelId) {
+    setVoiceState(
+      produce((state) => {
+        state.participants[userId] = {
+          user_id: userId,
+          username: username,
+          display_name: displayName,
+          muted: false,
+          speaking: false,
+        };
+      })
+    );
+  }
+}
+
+async function handleVoiceUserLeft(channelId: string, userId: string): Promise<void> {
+  const { voiceState, setVoiceState } = await import("@/stores/voice");
+  const { produce } = await import("solid-js/store");
+
+  if (voiceState.channelId === channelId) {
+    setVoiceState(
+      produce((state) => {
+        delete state.participants[userId];
+      })
+    );
+  }
+}
+
+async function handleVoiceUserMuted(channelId: string, userId: string): Promise<void> {
+  const { voiceState, setVoiceState } = await import("@/stores/voice");
+  const { produce } = await import("solid-js/store");
+
+  if (voiceState.channelId === channelId) {
+    setVoiceState(
+      produce((state) => {
+        if (state.participants[userId]) {
+          state.participants[userId].muted = true;
+        }
+      })
+    );
+  }
+}
+
+async function handleVoiceUserUnmuted(channelId: string, userId: string): Promise<void> {
+  const { voiceState, setVoiceState } = await import("@/stores/voice");
+  const { produce } = await import("solid-js/store");
+
+  if (voiceState.channelId === channelId) {
+    setVoiceState(
+      produce((state) => {
+        if (state.participants[userId]) {
+          state.participants[userId].muted = false;
+        }
+      })
+    );
+  }
+}
+
+async function handleVoiceRoomState(channelId: string, participants: any[]): Promise<void> {
+  const { voiceState, setVoiceState } = await import("@/stores/voice");
+  const { produce } = await import("solid-js/store");
+
+  if (voiceState.channelId === channelId) {
+    setVoiceState(
+      produce((state) => {
+        state.participants = {};
+        for (const p of participants) {
+          state.participants[p.user_id] = p;
+        }
+      })
+    );
+  }
 }
 
 // Export stores for reading

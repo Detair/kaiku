@@ -16,6 +16,12 @@ mod ws;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize rustls crypto provider (required for WebRTC)
+    // This must happen before any TLS/WebRTC operations
+    let _ = rustls::crypto::CryptoProvider::install_default(
+        rustls::crypto::ring::default_provider()
+    );
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(

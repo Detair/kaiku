@@ -70,6 +70,8 @@ export interface Message {
 
 export interface VoiceParticipant {
   user_id: string;
+  username?: string;
+  display_name?: string;
   muted: boolean;
   speaking: boolean;
 }
@@ -131,7 +133,7 @@ export type ServerEvent =
   | { type: "presence_update"; user_id: string; status: UserStatus }
   | { type: "voice_offer"; channel_id: string; sdp: string }
   | { type: "voice_ice_candidate"; channel_id: string; candidate: string }
-  | { type: "voice_user_joined"; channel_id: string; user_id: string }
+  | { type: "voice_user_joined"; channel_id: string; user_id: string; username: string; display_name: string }
   | { type: "voice_user_left"; channel_id: string; user_id: string }
   | { type: "voice_user_muted"; channel_id: string; user_id: string }
   | { type: "voice_user_unmuted"; channel_id: string; user_id: string }

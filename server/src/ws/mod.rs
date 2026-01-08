@@ -61,6 +61,12 @@ pub enum ClientEvent {
 pub struct VoiceParticipant {
     /// User ID.
     pub user_id: Uuid,
+    /// Username.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// Whether the user is muted.
     pub muted: bool,
 }
@@ -112,6 +118,8 @@ pub enum ServerEvent {
     VoiceUserJoined {
         channel_id: Uuid,
         user_id: Uuid,
+        username: String,
+        display_name: String,
     },
     /// User left voice channel
     VoiceUserLeft { channel_id: Uuid, user_id: Uuid },
@@ -136,10 +144,14 @@ pub mod channels {
         format!("channel:{}", channel_id)
     }
 
+    /// Redis channel for user presence updates (future feature).
+    #[allow(dead_code)]
     pub fn user_presence(user_id: Uuid) -> String {
         format!("presence:{}", user_id)
     }
 
+    /// Redis channel for global events (future feature).
+    #[allow(dead_code)]
     pub const GLOBAL_EVENTS: &str = "global";
 }
 
@@ -357,6 +369,7 @@ async fn handle_client_message(
         | ClientEvent::VoiceUnmute { .. } => {
             if let Err(e) = crate::voice::ws_handler::handle_voice_event(
                 &state.sfu,
+                &state.db,
                 user_id,
                 event,
                 tx,

@@ -85,17 +85,75 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.peerConnection!.addTrack(track, this.localStream!);
       });
 
-      console.log("[BrowserVoiceAdapter] Peer connection created, waiting for offer");
+      console.log("[BrowserVoiceAdapter] Peer connection created, sending voice_join");
+
+      // Ensure WebSocket is connected before sending
+      const { wsSend, wsStatus, wsConnect } = await import("@/lib/tauri");
+
+      // Check WebSocket status
+      let status = await wsStatus();
+      console.log("[BrowserVoiceAdapter] WebSocket status:", status);
+
+      // If disconnected, try to connect
+      if (status.type === "disconnected") {
+        console.log("[BrowserVoiceAdapter] WebSocket disconnected, attempting to connect...");
+        try {
+          await wsConnect();
+          status = await wsStatus();
+          console.log("[BrowserVoiceAdapter] WebSocket reconnected:", status);
+        } catch (err) {
+          console.error("[BrowserVoiceAdapter] Failed to connect WebSocket:", err);
+          throw new Error("Failed to connect to server. Please refresh the page.");
+        }
+      }
+
+      // Wait for WebSocket to be connected (with timeout)
+      let attempts = 0;
+      const maxAttempts = 30; // 3 seconds max
+      while (attempts < maxAttempts && status.type !== "connected") {
+        if (status.type === "disconnected") {
+          throw new Error("WebSocket disconnected unexpectedly.");
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+        status = await wsStatus();
+        attempts++;
+      }
+
+      if (status.type !== "connected") {
+        throw new Error("WebSocket connection timeout. Status: " + status.type);
+      }
+
+      console.log("[BrowserVoiceAdapter] WebSocket ready, sending voice_join");
+
+      // Send voice_join message to server
+      await wsSend({
+        type: "voice_join",
+        channel_id: channelId,
+      });
+
+      console.log("[BrowserVoiceAdapter] Waiting for offer from server");
 
       return { ok: true, value: undefined };
     } catch (err) {
+      console.error("[BrowserVoiceAdapter] Error during join:", err);
+      this.cleanup();
       this.setState("disconnected");
+      this.channelId = null;
       return { ok: false, error: this.mapMediaError(err) };
     }
   }
 
   async leave(): Promise<VoiceResult<void>> {
     console.log("[BrowserVoiceAdapter] Leaving voice");
+
+    // Send voice_leave message to server
+    if (this.channelId) {
+      const { wsSend } = await import("@/lib/tauri");
+      await wsSend({
+        type: "voice_leave",
+        channel_id: this.channelId,
+      });
+    }
 
     this.cleanup();
     this.setState("disconnected");
@@ -114,6 +172,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     if (this.localStream) {
       this.localStream.getAudioTracks().forEach((track) => {
         track.enabled = !muted;
+      });
+    }
+
+    // Notify server
+    if (this.channelId) {
+      const { wsSend } = await import("@/lib/tauri");
+      await wsSend({
+        type: muted ? "voice_mute" : "voice_unmute",
+        channel_id: this.channelId,
       });
     }
 

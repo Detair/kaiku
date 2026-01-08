@@ -51,7 +51,7 @@ totp-rs = "5"
 openidconnect = "3"
 
 # Crypto
-rustls = "0.22"
+rustls = { version = "0.23", features = ["ring"] }
 x25519-dalek = "2"
 ed25519-dalek = "2"
 aes-gcm = "0.10"

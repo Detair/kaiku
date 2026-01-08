@@ -26,6 +26,10 @@ use crate::ws::ServerEvent;
 pub struct Peer {
     /// User ID.
     pub user_id: Uuid,
+    /// Username.
+    pub username: String,
+    /// Display name.
+    pub display_name: String,
     /// Channel ID the peer is connected to.
     pub channel_id: Uuid,
     /// The WebRTC peer connection.
@@ -45,6 +49,8 @@ impl Peer {
     /// Create a new peer with a WebRTC connection.
     pub async fn new(
         user_id: Uuid,
+        username: String,
+        display_name: String,
         channel_id: Uuid,
         api: &API,
         config: RTCConfiguration,
@@ -54,6 +60,8 @@ impl Peer {
 
         Ok(Self {
             user_id,
+            username,
+            display_name,
             channel_id,
             peer_connection: Arc::new(peer_connection),
             incoming_track: RwLock::new(None),
