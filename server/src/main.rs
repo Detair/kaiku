@@ -3,6 +3,7 @@
 //! Self-hosted voice and text chat platform backend.
 
 use anyhow::Result;
+use std::net::SocketAddr;
 use tracing::info;
 
 mod api;
@@ -75,7 +76,11 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind_address).await?;
     info!(address = %config.bind_address, "Server listening");
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

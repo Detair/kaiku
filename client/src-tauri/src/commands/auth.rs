@@ -145,7 +145,10 @@ pub async fn login(state: State<'_, AppState>, request: LoginRequest) -> Result<
 
 /// Register a new user.
 #[command]
-pub async fn register(state: State<'_, AppState>, request: RegisterRequest) -> Result<User, String> {
+pub async fn register(
+    state: State<'_, AppState>,
+    request: RegisterRequest,
+) -> Result<User, String> {
     info!("Attempting registration for user: {}", request.username);
 
     let server_url = request.server_url.trim_end_matches('/');

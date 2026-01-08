@@ -57,47 +57,28 @@ impl From<sqlx::Error> for MessageError {
 // Request/Response Types
 // ============================================================================
 
+/// Author profile for message responses.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthorProfile {
+    pub id: Uuid,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub status: String,
+}
+
+/// Full message response with author info (matches client Message type).
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
     pub id: Uuid,
     pub channel_id: Uuid,
-    pub user_id: Uuid,
+    pub author: AuthorProfile,
     pub content: String,
     pub encrypted: bool,
-    pub nonce: Option<String>,
+    pub attachments: Vec<()>, // TODO: implement attachments
     pub reply_to: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
-}
-
-impl From<db::Message> for MessageResponse {
-    fn from(msg: db::Message) -> Self {
-        Self {
-            id: msg.id,
-            channel_id: msg.channel_id,
-            user_id: msg.user_id,
-            content: msg.content,
-            encrypted: msg.encrypted,
-            nonce: msg.nonce,
-            reply_to: msg.reply_to,
-            created_at: msg.created_at,
-            edited_at: msg.edited_at,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct MessageWithAuthor {
-    #[serde(flatten)]
-    pub message: MessageResponse,
-    pub author: AuthorInfo,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AuthorInfo {
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,7 +129,39 @@ pub async fn list(
 
     let messages = db::list_messages(&state.db, channel_id, query.before, limit).await?;
 
-    let response: Vec<MessageResponse> = messages.into_iter().map(Into::into).collect();
+    // Build response with author info
+    let mut response = Vec::with_capacity(messages.len());
+    for msg in messages {
+        let author = db::find_user_by_id(&state.db, msg.user_id)
+            .await?
+            .map(|u| AuthorProfile {
+                id: u.id,
+                username: u.username,
+                display_name: u.display_name,
+                avatar_url: u.avatar_url,
+                status: format!("{:?}", u.status).to_lowercase(),
+            })
+            .unwrap_or_else(|| AuthorProfile {
+                id: msg.user_id,
+                username: "deleted".to_string(),
+                display_name: "Deleted User".to_string(),
+                avatar_url: None,
+                status: "offline".to_string(),
+            });
+
+        response.push(MessageResponse {
+            id: msg.id,
+            channel_id: msg.channel_id,
+            author,
+            content: msg.content,
+            encrypted: msg.encrypted,
+            attachments: vec![],
+            reply_to: msg.reply_to,
+            edited_at: msg.edited_at,
+            created_at: msg.created_at,
+        });
+    }
+
     Ok(Json(response))
 }
 
@@ -195,9 +208,38 @@ pub async fn create(
     )
     .await?;
 
+    // Get author profile for response
+    let author = db::find_user_by_id(&state.db, auth_user.id)
+        .await?
+        .map(|u| AuthorProfile {
+            id: u.id,
+            username: u.username,
+            display_name: u.display_name,
+            avatar_url: u.avatar_url,
+            status: format!("{:?}", u.status).to_lowercase(),
+        })
+        .unwrap_or_else(|| AuthorProfile {
+            id: auth_user.id,
+            username: "unknown".to_string(),
+            display_name: "Unknown User".to_string(),
+            avatar_url: None,
+            status: "offline".to_string(),
+        });
+
+    let response = MessageResponse {
+        id: message.id,
+        channel_id: message.channel_id,
+        author: author.clone(),
+        content: message.content,
+        encrypted: message.encrypted,
+        attachments: vec![],
+        reply_to: message.reply_to,
+        edited_at: message.edited_at,
+        created_at: message.created_at,
+    };
+
     // Broadcast new message via Redis pub-sub
-    let message_json = serde_json::to_value(&MessageResponse::from(message.clone()))
-        .unwrap_or_default();
+    let message_json = serde_json::to_value(&response).unwrap_or_default();
     let _ = broadcast_to_channel(
         &state.redis,
         channel_id,
@@ -208,7 +250,7 @@ pub async fn create(
     )
     .await;
 
-    Ok((StatusCode::CREATED, Json(message.into())))
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// Update (edit) a message.
@@ -228,6 +270,36 @@ pub async fn update(
         .await?
         .ok_or(MessageError::NotFound)?;
 
+    // Get author profile for response
+    let author = db::find_user_by_id(&state.db, auth_user.id)
+        .await?
+        .map(|u| AuthorProfile {
+            id: u.id,
+            username: u.username,
+            display_name: u.display_name,
+            avatar_url: u.avatar_url,
+            status: format!("{:?}", u.status).to_lowercase(),
+        })
+        .unwrap_or_else(|| AuthorProfile {
+            id: auth_user.id,
+            username: "unknown".to_string(),
+            display_name: "Unknown User".to_string(),
+            avatar_url: None,
+            status: "offline".to_string(),
+        });
+
+    let response = MessageResponse {
+        id: message.id,
+        channel_id: message.channel_id,
+        author,
+        content: message.content.clone(),
+        encrypted: message.encrypted,
+        attachments: vec![],
+        reply_to: message.reply_to,
+        edited_at: message.edited_at,
+        created_at: message.created_at,
+    };
+
     // Broadcast edit via Redis pub-sub
     let _ = broadcast_to_channel(
         &state.redis,
@@ -235,13 +307,13 @@ pub async fn update(
         &ServerEvent::MessageEdit {
             channel_id: message.channel_id,
             message_id: message.id,
-            content: message.content.clone(),
+            content: message.content,
             edited_at: message.edited_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
         },
     )
     .await;
 
-    Ok(Json(message.into()))
+    Ok(Json(response))
 }
 
 /// Delete a message (soft delete).

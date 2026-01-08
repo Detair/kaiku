@@ -5,8 +5,13 @@
  */
 
 import { createStore, produce } from "solid-js/store";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { UserStatus } from "@/lib/types";
+
+// Detect if running in Tauri
+const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+
+// Type for unlisten function
+type UnlistenFn = () => void;
 
 // Presence info for a user
 interface UserPresence {
@@ -36,14 +41,18 @@ export async function initPresence(): Promise<void> {
     unlistener();
   }
 
-  // Listen for presence updates
-  unlistener = await listen<{ user_id: string; status: UserStatus }>(
-    "ws:presence_update",
-    (event) => {
-      const { user_id, status } = event.payload;
-      updateUserPresence(user_id, status);
-    }
-  );
+  // Only set up Tauri listeners in Tauri mode
+  // In browser mode, presence updates are handled by the websocket store
+  if (isTauri) {
+    const { listen } = await import("@tauri-apps/api/event");
+    unlistener = await listen<{ user_id: string; status: UserStatus }>(
+      "ws:presence_update",
+      (event) => {
+        const { user_id, status } = event.payload;
+        updateUserPresence(user_id, status);
+      }
+    );
+  }
 }
 
 /**

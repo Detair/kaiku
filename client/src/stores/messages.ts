@@ -4,7 +4,7 @@
  * Manages message state for channels including loading, sending, and real-time updates.
  */
 
-import { createStore, produce } from "solid-js/store";
+import { createStore } from "solid-js/store";
 import type { Message } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 
@@ -12,8 +12,8 @@ import * as tauri from "@/lib/tauri";
 interface MessagesState {
   // Messages indexed by channel ID
   byChannel: Record<string, Message[]>;
-  // Loading state per channel
-  loadingChannels: Set<string>;
+  // Loading state per channel (using Record for SolidJS reactivity - Sets don't work)
+  loadingChannels: Record<string, boolean>;
   // Whether there are more messages to load per channel
   hasMore: Record<string, boolean>;
   // Current error
@@ -23,7 +23,7 @@ interface MessagesState {
 // Create the store
 const [messagesState, setMessagesState] = createStore<MessagesState>({
   byChannel: {},
-  loadingChannels: new Set(),
+  loadingChannels: {},
   hasMore: {},
   error: null,
 });
@@ -39,16 +39,12 @@ const MESSAGE_LIMIT = 50;
  */
 export async function loadMessages(channelId: string): Promise<void> {
   // Prevent duplicate loads
-  if (messagesState.loadingChannels.has(channelId)) {
+  if (messagesState.loadingChannels[channelId]) {
     return;
   }
 
-  setMessagesState(
-    produce((state) => {
-      state.loadingChannels.add(channelId);
-      state.error = null;
-    })
-  );
+  setMessagesState("loadingChannels", channelId, true);
+  setMessagesState("error", null);
 
   try {
     // Get existing messages to find the oldest one for pagination
@@ -56,47 +52,50 @@ export async function loadMessages(channelId: string): Promise<void> {
     const before = existing.length > 0 ? existing[0].id : undefined;
 
     const messages = await tauri.getMessages(channelId, before, MESSAGE_LIMIT);
+    const messageList = Array.isArray(messages) ? messages : [];
 
-    setMessagesState(
-      produce((state) => {
-        // Initialize channel if needed
-        if (!state.byChannel[channelId]) {
-          state.byChannel[channelId] = [];
-        }
+    // Initialize channel if needed
+    if (!messagesState.byChannel[channelId]) {
+      setMessagesState("byChannel", channelId, []);
+    }
 
-        // Prepend older messages (they come from server newest-first, but we want oldest-first)
-        const reversed = [...messages].reverse();
-        state.byChannel[channelId] = [...reversed, ...state.byChannel[channelId]];
+    // Prepend older messages (they come from server newest-first, but we want oldest-first)
+    const reversed = [...messageList].reverse();
+    const currentMessages = messagesState.byChannel[channelId] || [];
+    setMessagesState("byChannel", channelId, [...reversed, ...currentMessages]);
 
-        // Check if there are more messages to load
-        state.hasMore[channelId] = messages.length === MESSAGE_LIMIT;
-
-        state.loadingChannels.delete(channelId);
-      })
-    );
+    // Check if there are more messages to load
+    setMessagesState("hasMore", channelId, messageList.length === MESSAGE_LIMIT);
+    setMessagesState("loadingChannels", channelId, false);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load messages:", error);
-    setMessagesState(
-      produce((state) => {
-        state.loadingChannels.delete(channelId);
-        state.error = error;
-      })
-    );
+    setMessagesState("loadingChannels", channelId, false);
+    setMessagesState("error", error);
   }
 }
+
+// Track ongoing initial loads to prevent duplicates
+const initialLoadInProgress: Record<string, boolean> = {};
 
 /**
  * Load initial messages for a channel (clears existing).
  */
 export async function loadInitialMessages(channelId: string): Promise<void> {
-  setMessagesState(
-    produce((state) => {
-      state.byChannel[channelId] = [];
-      state.hasMore[channelId] = true;
-    })
-  );
-  await loadMessages(channelId);
+  // Prevent duplicate initial loads
+  if (initialLoadInProgress[channelId]) {
+    return;
+  }
+
+  initialLoadInProgress[channelId] = true;
+
+  try {
+    setMessagesState("byChannel", channelId, []);
+    setMessagesState("hasMore", channelId, true);
+    await loadMessages(channelId);
+  } finally {
+    initialLoadInProgress[channelId] = false;
+  }
 }
 
 /**
@@ -115,15 +114,9 @@ export async function sendMessage(
   try {
     const message = await tauri.sendMessage(channelId, content.trim());
 
-    // Add the sent message to the store
-    setMessagesState(
-      produce((state) => {
-        if (!state.byChannel[channelId]) {
-          state.byChannel[channelId] = [];
-        }
-        state.byChannel[channelId].push(message);
-      })
-    );
+    // Add the sent message to the store (use path-based setter for proper reactivity)
+    const prev = messagesState.byChannel[channelId] || [];
+    setMessagesState("byChannel", channelId, [...prev, message]);
 
     return message;
   } catch (err) {
@@ -138,57 +131,39 @@ export async function sendMessage(
  * Add a message received from WebSocket.
  */
 export function addMessage(message: Message): void {
-  setMessagesState(
-    produce((state) => {
-      const channelId = message.channel_id;
+  const channelId = message.channel_id;
+  const existing = messagesState.byChannel[channelId] || [];
 
-      if (!state.byChannel[channelId]) {
-        state.byChannel[channelId] = [];
-      }
-
-      // Avoid duplicates
-      const exists = state.byChannel[channelId].some((m) => m.id === message.id);
-      if (!exists) {
-        state.byChannel[channelId].push(message);
-      }
-    })
-  );
+  // Avoid duplicates
+  if (!existing.some((m) => m.id === message.id)) {
+    setMessagesState("byChannel", channelId, [...existing, message]);
+  }
 }
 
 /**
  * Update an existing message (for edits).
  */
 export function updateMessage(message: Message): void {
-  setMessagesState(
-    produce((state) => {
-      const channelId = message.channel_id;
-      const messages = state.byChannel[channelId];
+  const channelId = message.channel_id;
+  const messages = messagesState.byChannel[channelId];
 
-      if (messages) {
-        const index = messages.findIndex((m) => m.id === message.id);
-        if (index !== -1) {
-          messages[index] = message;
-        }
-      }
-    })
-  );
+  if (messages) {
+    const index = messages.findIndex((m) => m.id === message.id);
+    if (index !== -1) {
+      // Use path-based setter for proper reactivity
+      setMessagesState("byChannel", channelId, index, message);
+    }
+  }
 }
 
 /**
  * Remove a message (for deletes).
  */
 export function removeMessage(channelId: string, messageId: string): void {
-  setMessagesState(
-    produce((state) => {
-      const messages = state.byChannel[channelId];
-      if (messages) {
-        const index = messages.findIndex((m) => m.id === messageId);
-        if (index !== -1) {
-          messages.splice(index, 1);
-        }
-      }
-    })
-  );
+  const existing = messagesState.byChannel[channelId];
+  if (existing) {
+    setMessagesState("byChannel", channelId, existing.filter((m) => m.id !== messageId));
+  }
 }
 
 /**
@@ -202,7 +177,7 @@ export function getChannelMessages(channelId: string): Message[] {
  * Check if a channel is loading messages.
  */
 export function isLoadingMessages(channelId: string): boolean {
-  return messagesState.loadingChannels.has(channelId);
+  return !!messagesState.loadingChannels[channelId];
 }
 
 /**
@@ -216,12 +191,8 @@ export function hasMoreMessages(channelId: string): boolean {
  * Clear messages for a channel.
  */
 export function clearChannelMessages(channelId: string): void {
-  setMessagesState(
-    produce((state) => {
-      delete state.byChannel[channelId];
-      delete state.hasMore[channelId];
-    })
-  );
+  setMessagesState("byChannel", channelId, undefined!);
+  setMessagesState("hasMore", channelId, undefined!);
 }
 
 // Export the store for reading

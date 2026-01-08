@@ -63,7 +63,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         </div>
 
         {/* Attachments */}
-        <Show when={props.message.attachments.length > 0}>
+        <Show when={props.message.attachments?.length > 0}>
           <div class="mt-2 flex flex-wrap gap-2">
             {props.message.attachments.map((attachment) => (
               <a

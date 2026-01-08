@@ -5,7 +5,7 @@
 
 use aws_config::Region;
 use aws_sdk_s3::{
-    config::{Credentials, SharedCredentialsProvider},
+    config::{Credentials, IdentityCache, SharedCredentialsProvider, StalledStreamProtectionConfig},
     presigning::PresigningConfig,
     primitives::ByteStream,
     Client,
@@ -58,7 +58,10 @@ impl S3Client {
             std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
         );
 
-        let mut s3_config_builder = aws_sdk_s3::Config::builder().region(region);
+        let mut s3_config_builder = aws_sdk_s3::Config::builder()
+            .region(region)
+            .stalled_stream_protection(StalledStreamProtectionConfig::disabled())
+            .identity_cache(IdentityCache::no_cache());
 
         // Configure credentials from environment
         if let (Ok(access_key), Ok(secret_key)) = (

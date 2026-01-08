@@ -31,6 +31,12 @@ services:
       - TURN_SERVER=${TURN_SERVER:-}
       - TURN_USERNAME=${TURN_USERNAME:-}
       - TURN_CREDENTIAL=${TURN_CREDENTIAL:-}
+      - PUBLIC_IP=${PUBLIC_IP:-}
+      - RTP_PORT_MIN=${RTP_PORT_MIN:-10000}
+      - RTP_PORT_MAX=${RTP_PORT_MAX:-10100}
+    ports:
+      # WebRTC UDP ports for voice
+      - "${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}:${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}/udp"
     networks:
       - voicechat
     labels:

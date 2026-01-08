@@ -49,9 +49,10 @@ const Avatar: Component<AvatarProps> = (props) => {
       "bg-fuchsia-500",
       "bg-pink-500",
     ];
+    const name = props.alt || "?";
     let hash = 0;
-    for (let i = 0; i < props.alt.length; i++) {
-      hash = props.alt.charCodeAt(i) + ((hash << 5) - hash);
+    for (let i = 0; i < name.length; i++) {
+      hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
     return colors[Math.abs(hash) % colors.length];
   };

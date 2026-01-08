@@ -5,10 +5,15 @@
  */
 
 import { createStore } from "solid-js/store";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import * as tauri from "@/lib/tauri";
 import type { Message, ServerEvent, UserStatus } from "@/lib/types";
 import { addMessage, updateMessage, removeMessage } from "./messages";
+
+// Detect if running in Tauri
+const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+
+// Type for unlisten function
+type UnlistenFn = () => void;
 
 // Connection state
 type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting";
@@ -53,86 +58,147 @@ export async function initWebSocket(): Promise<void> {
   // Clean up existing listeners
   await cleanupWebSocket();
 
-  // Connection status events
-  unlisteners.push(
-    await listen("ws:connecting", () => {
-      setWsState({ status: "connecting", error: null });
-    })
-  );
+  if (isTauri) {
+    // Tauri mode - use Tauri event system
+    const { listen } = await import("@tauri-apps/api/event");
 
-  unlisteners.push(
-    await listen("ws:connected", () => {
-      setWsState({ status: "connected", reconnectAttempt: 0, error: null });
-    })
-  );
+    // Connection status events
+    unlisteners.push(
+      await listen("ws:connecting", () => {
+        setWsState({ status: "connecting", error: null });
+      })
+    );
 
-  unlisteners.push(
-    await listen("ws:disconnected", () => {
-      setWsState({ status: "disconnected" });
-    })
-  );
+    unlisteners.push(
+      await listen("ws:connected", () => {
+        setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+      })
+    );
 
-  unlisteners.push(
-    await listen<number>("ws:reconnecting", (event) => {
-      setWsState({ status: "reconnecting", reconnectAttempt: event.payload });
-    })
-  );
+    unlisteners.push(
+      await listen("ws:disconnected", () => {
+        setWsState({ status: "disconnected" });
+      })
+    );
 
-  // Message events
-  unlisteners.push(
-    await listen<{ channel_id: string; message: Message }>("ws:message_new", (event) => {
-      addMessage(event.payload.message);
-    })
-  );
+    unlisteners.push(
+      await listen<number>("ws:reconnecting", (event) => {
+        setWsState({ status: "reconnecting", reconnectAttempt: event.payload });
+      })
+    );
 
-  unlisteners.push(
-    await listen<{ channel_id: string; message_id: string; content: string; edited_at: string }>(
-      "ws:message_edit",
-      (event) => {
-        const { channel_id, message_id, content, edited_at } = event.payload;
-        // We'd need the full message, but for now just update what we can
-        // This is a simplified version - in production, you might refetch the message
-        console.log("Message edited:", message_id, content);
+    // Message events
+    unlisteners.push(
+      await listen<{ channel_id: string; message: Message }>("ws:message_new", (event) => {
+        addMessage(event.payload.message);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; message_id: string; content: string; edited_at: string }>(
+        "ws:message_edit",
+        (event) => {
+          const { channel_id, message_id, content, edited_at } = event.payload;
+          console.log("Message edited:", message_id, content);
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; message_id: string }>("ws:message_delete", (event) => {
+        removeMessage(event.payload.channel_id, event.payload.message_id);
+      })
+    );
+
+    // Typing events
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>("ws:typing_start", (event) => {
+        const { channel_id, user_id } = event.payload;
+        addTypingUser(channel_id, user_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>("ws:typing_stop", (event) => {
+        const { channel_id, user_id } = event.payload;
+        removeTypingUser(channel_id, user_id);
+      })
+    );
+
+    // Presence events
+    unlisteners.push(
+      await listen<{ user_id: string; status: UserStatus }>("ws:presence_update", (event) => {
+        console.log("Presence update:", event.payload.user_id, event.payload.status);
+      })
+    );
+
+    // Error events
+    unlisteners.push(
+      await listen<{ code: string; message: string }>("ws:error", (event) => {
+        console.error("WebSocket error:", event.payload);
+        setWsState({ error: event.payload.message });
+      })
+    );
+  } else {
+    // Browser mode - use browser WebSocket events
+    const ws = tauri.getBrowserWebSocket();
+    if (ws) {
+      const messageHandler = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data) as ServerEvent;
+          handleServerEvent(data);
+        } catch (err) {
+          console.error("Failed to parse WebSocket message:", err);
+        }
+      };
+      ws.addEventListener("message", messageHandler);
+      unlisteners.push(() => ws.removeEventListener("message", messageHandler));
+    }
+  }
+}
+
+/**
+ * Handle server events in browser mode.
+ */
+function handleServerEvent(event: ServerEvent): void {
+  switch (event.type) {
+    case "MessageCreate":
+      if ("message" in event) {
+        addMessage(event.message as Message);
       }
-    )
-  );
-
-  unlisteners.push(
-    await listen<{ channel_id: string; message_id: string }>("ws:message_delete", (event) => {
-      removeMessage(event.payload.channel_id, event.payload.message_id);
-    })
-  );
-
-  // Typing events
-  unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>("ws:typing_start", (event) => {
-      const { channel_id, user_id } = event.payload;
-      addTypingUser(channel_id, user_id);
-    })
-  );
-
-  unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>("ws:typing_stop", (event) => {
-      const { channel_id, user_id } = event.payload;
-      removeTypingUser(channel_id, user_id);
-    })
-  );
-
-  // Presence events (will be handled by presence store)
-  unlisteners.push(
-    await listen<{ user_id: string; status: UserStatus }>("ws:presence_update", (event) => {
-      // This will be handled by the presence store
-      console.log("Presence update:", event.payload.user_id, event.payload.status);
-    })
-  );
-
-  // Error events
-  unlisteners.push(
-    await listen<{ code: string; message: string }>("ws:error", (event) => {
-      console.error("WebSocket error:", event.payload);
-      setWsState({ error: event.payload.message });
-    })
-  );
+      break;
+    case "MessageUpdate":
+      if ("message_id" in event && "content" in event) {
+        console.log("Message edited:", event.message_id, event.content);
+      }
+      break;
+    case "MessageDelete":
+      if ("channel_id" in event && "message_id" in event) {
+        removeMessage(event.channel_id as string, event.message_id as string);
+      }
+      break;
+    case "TypingStart":
+      if ("channel_id" in event && "user" in event) {
+        addTypingUser(event.channel_id as string, (event.user as { id: string }).id);
+      }
+      break;
+    case "TypingStop":
+      if ("channel_id" in event && "user_id" in event) {
+        removeTypingUser(event.channel_id as string, event.user_id as string);
+      }
+      break;
+    case "PresenceUpdate":
+      if ("user_id" in event && "status" in event) {
+        console.log("Presence update:", event.user_id, event.status);
+      }
+      break;
+    case "Error":
+      if ("message" in event) {
+        console.error("WebSocket error:", event);
+        setWsState({ error: event.message as string });
+      }
+      break;
+  }
 }
 
 /**

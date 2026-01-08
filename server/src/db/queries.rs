@@ -127,8 +127,8 @@ pub async fn create_session(
     sqlx::query_as::<_, Session>(
         r#"
         INSERT INTO sessions (user_id, token_hash, expires_at, ip_address, user_agent)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, user_id, token_hash, expires_at, ip_address, user_agent, created_at
+        VALUES ($1, $2, $3, $4::inet, $5)
+        RETURNING id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, created_at
         "#,
     )
     .bind(user_id)
@@ -147,7 +147,7 @@ pub async fn find_session_by_token_hash(
 ) -> sqlx::Result<Option<Session>> {
     sqlx::query_as::<_, Session>(
         r#"
-        SELECT id, user_id, token_hash, expires_at, ip_address, user_agent, created_at
+        SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, created_at
         FROM sessions
         WHERE token_hash = $1 AND expires_at > NOW()
         "#,

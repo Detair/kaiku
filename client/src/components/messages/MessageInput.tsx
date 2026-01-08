@@ -12,6 +12,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const [content, setContent] = createSignal("");
   const [isSending, setIsSending] = createSignal(false);
   let typingTimeout: NodeJS.Timeout | undefined;
+  let inputRef: HTMLInputElement | undefined;
 
   // Cleanup typing timeout on unmount
   onCleanup(() => {
@@ -57,6 +58,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       setContent("");
     } finally {
       setIsSending(false);
+      // Refocus the input after sending
+      inputRef?.focus();
     }
   };
 
@@ -83,6 +86,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
         {/* Text input */}
         <input
+          ref={inputRef}
           type="text"
           value={content()}
           onInput={(e) => handleInput(e.currentTarget.value)}

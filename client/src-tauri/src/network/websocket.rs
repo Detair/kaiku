@@ -16,41 +16,116 @@ use tracing::{debug, error, info, warn};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
     Ping,
-    Subscribe { channel_id: String },
-    Unsubscribe { channel_id: String },
-    Typing { channel_id: String },
-    StopTyping { channel_id: String },
-    VoiceJoin { channel_id: String },
-    VoiceLeave { channel_id: String },
-    VoiceAnswer { channel_id: String, sdp: String },
-    VoiceIceCandidate { channel_id: String, candidate: String },
-    VoiceMute { channel_id: String },
-    VoiceUnmute { channel_id: String },
+    Subscribe {
+        channel_id: String,
+    },
+    Unsubscribe {
+        channel_id: String,
+    },
+    Typing {
+        channel_id: String,
+    },
+    StopTyping {
+        channel_id: String,
+    },
+    VoiceJoin {
+        channel_id: String,
+    },
+    VoiceLeave {
+        channel_id: String,
+    },
+    VoiceAnswer {
+        channel_id: String,
+        sdp: String,
+    },
+    VoiceIceCandidate {
+        channel_id: String,
+        candidate: String,
+    },
+    VoiceMute {
+        channel_id: String,
+    },
+    VoiceUnmute {
+        channel_id: String,
+    },
 }
 
 /// Server events received from the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
-    Ready { user_id: String },
+    Ready {
+        user_id: String,
+    },
     Pong,
-    Subscribed { channel_id: String },
-    Unsubscribed { channel_id: String },
-    MessageNew { channel_id: String, message: serde_json::Value },
-    MessageEdit { channel_id: String, message_id: String, content: String, edited_at: String },
-    MessageDelete { channel_id: String, message_id: String },
-    TypingStart { channel_id: String, user_id: String },
-    TypingStop { channel_id: String, user_id: String },
-    PresenceUpdate { user_id: String, status: String },
-    VoiceOffer { channel_id: String, sdp: String },
-    VoiceIceCandidate { channel_id: String, candidate: String },
-    VoiceUserJoined { channel_id: String, user_id: String },
-    VoiceUserLeft { channel_id: String, user_id: String },
-    VoiceUserMuted { channel_id: String, user_id: String },
-    VoiceUserUnmuted { channel_id: String, user_id: String },
-    VoiceRoomState { channel_id: String, participants: Vec<serde_json::Value> },
-    VoiceError { code: String, message: String },
-    Error { code: String, message: String },
+    Subscribed {
+        channel_id: String,
+    },
+    Unsubscribed {
+        channel_id: String,
+    },
+    MessageNew {
+        channel_id: String,
+        message: serde_json::Value,
+    },
+    MessageEdit {
+        channel_id: String,
+        message_id: String,
+        content: String,
+        edited_at: String,
+    },
+    MessageDelete {
+        channel_id: String,
+        message_id: String,
+    },
+    TypingStart {
+        channel_id: String,
+        user_id: String,
+    },
+    TypingStop {
+        channel_id: String,
+        user_id: String,
+    },
+    PresenceUpdate {
+        user_id: String,
+        status: String,
+    },
+    VoiceOffer {
+        channel_id: String,
+        sdp: String,
+    },
+    VoiceIceCandidate {
+        channel_id: String,
+        candidate: String,
+    },
+    VoiceUserJoined {
+        channel_id: String,
+        user_id: String,
+    },
+    VoiceUserLeft {
+        channel_id: String,
+        user_id: String,
+    },
+    VoiceUserMuted {
+        channel_id: String,
+        user_id: String,
+    },
+    VoiceUserUnmuted {
+        channel_id: String,
+        user_id: String,
+    },
+    VoiceRoomState {
+        channel_id: String,
+        participants: Vec<serde_json::Value>,
+    },
+    VoiceError {
+        code: String,
+        message: String,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 /// Connection status.
@@ -141,7 +216,10 @@ async fn connection_loop(
 
         // Build WebSocket URL
         let ws_url = build_ws_url(&server_url, &token);
-        info!("Connecting to WebSocket: {}", ws_url.split('?').next().unwrap_or(&ws_url));
+        info!(
+            "Connecting to WebSocket: {}",
+            ws_url.split('?').next().unwrap_or(&ws_url)
+        );
 
         if attempt > 0 {
             *status.write().await = ConnectionStatus::Reconnecting { attempt };
@@ -232,10 +310,7 @@ async fn connection_loop(
         let _ = app.emit("ws:disconnected", ());
 
         attempt += 1;
-        let backoff = std::cmp::min(
-            Duration::from_secs(2u64.pow(attempt.min(5))),
-            max_backoff,
-        );
+        let backoff = std::cmp::min(Duration::from_secs(2u64.pow(attempt.min(5))), max_backoff);
         info!("Reconnecting in {:?} (attempt {})", backoff, attempt);
 
         tokio::select! {

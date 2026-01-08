@@ -16,7 +16,7 @@ vc-common.workspace = true
 vc-crypto.workspace = true
 
 # Tauri
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 
 # Async

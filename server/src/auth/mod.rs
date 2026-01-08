@@ -44,7 +44,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/login", post(handlers::login))
         .route("/refresh", post(handlers::refresh_token))
         .route("/oidc/providers", get(handlers::oidc_providers))
-        .route("/oidc/authorize/{provider}", get(handlers::oidc_authorize))
+        .route("/oidc/authorize/:provider", get(handlers::oidc_authorize))
         .route("/oidc/callback", get(handlers::oidc_callback));
 
     // Protected routes (auth required)

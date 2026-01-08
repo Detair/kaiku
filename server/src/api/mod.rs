@@ -59,16 +59,23 @@ pub fn create_router(state: AppState) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Protected routes that require authentication
+    let protected_routes = Router::new()
+        .nest("/api/channels", chat::channels_router())
+        .nest("/api/messages", chat::messages_router())
+        .nest("/api/voice", voice::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
+
     Router::new()
         // Health check
         .route("/health", get(health_check))
         // Auth routes (pass state for middleware)
         .nest("/auth", auth::router(state.clone()))
-        // Chat routes
-        .nest("/api/channels", chat::channels_router())
-        .nest("/api/messages", chat::messages_router())
-        // Voice routes
-        .nest("/api/voice", voice::router())
+        // Protected chat and voice routes
+        .merge(protected_routes)
         // WebSocket
         .route("/ws", get(ws::handler))
         // API documentation

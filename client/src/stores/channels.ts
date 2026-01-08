@@ -90,5 +90,18 @@ export function getChannel(channelId: string): Channel | undefined {
   return channelsState.channels.find((c) => c.id === channelId);
 }
 
+/**
+ * Create a new channel.
+ */
+export async function createChannel(
+  name: string,
+  channelType: "text" | "voice",
+  topic?: string
+): Promise<Channel> {
+  const channel = await tauri.createChannel(name, channelType, topic);
+  setChannelsState("channels", (prev) => [...prev, channel]);
+  return channel;
+}
+
 // Export the store for reading
 export { channelsState };

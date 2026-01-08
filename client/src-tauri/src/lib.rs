@@ -8,11 +8,13 @@ mod crypto;
 mod network;
 mod webrtc;
 
+use audio::AudioPipeline;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::Manager;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
+use webrtc::WebRtcClient;
 
 use network::WebSocketManager;
 
@@ -37,19 +39,34 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Auth commands
             commands::auth::login,
             commands::auth::logout,
             commands::auth::get_current_user,
             commands::auth::register,
+            // Chat commands
             commands::chat::get_channels,
             commands::chat::get_messages,
             commands::chat::send_message,
+            // Voice commands
             commands::voice::join_voice,
             commands::voice::leave_voice,
             commands::voice::set_mute,
             commands::voice::set_deafen,
+            commands::voice::handle_voice_offer,
+            commands::voice::handle_voice_ice_candidate,
+            commands::voice::start_mic_test,
+            commands::voice::stop_mic_test,
+            commands::voice::get_mic_level,
+            commands::voice::get_audio_devices,
+            commands::voice::set_input_device,
+            commands::voice::set_output_device,
+            commands::voice::is_in_voice,
+            commands::voice::get_voice_channel,
+            // Settings commands
             commands::settings::get_settings,
             commands::settings::update_settings,
+            // WebSocket commands
             commands::websocket::ws_connect,
             commands::websocket::ws_disconnect,
             commands::websocket::ws_status,
@@ -95,6 +112,31 @@ pub struct AuthState {
     pub server_url: Option<String>,
 }
 
+/// Voice connection state.
+pub struct VoiceState {
+    /// WebRTC client for peer connection.
+    pub webrtc: WebRtcClient,
+    /// Audio pipeline for capture/playback.
+    pub audio: AudioPipeline,
+    /// Current channel ID if connected.
+    pub channel_id: Option<String>,
+    /// Sender for encoded audio to WebRTC.
+    pub audio_tx: Option<mpsc::Sender<Vec<u8>>>,
+}
+
+impl VoiceState {
+    fn new() -> Result<Self, String> {
+        let webrtc = WebRtcClient::new().map_err(|e| e.to_string())?;
+        let audio = AudioPipeline::new().map_err(|e| e.to_string())?;
+        Ok(Self {
+            webrtc,
+            audio,
+            channel_id: None,
+            audio_tx: None,
+        })
+    }
+}
+
 /// Application state shared across commands.
 pub struct AppState {
     /// HTTP client for API requests.
@@ -103,6 +145,8 @@ pub struct AppState {
     pub auth: Arc<RwLock<AuthState>>,
     /// WebSocket connection manager.
     pub websocket: Arc<RwLock<Option<WebSocketManager>>>,
+    /// Voice state.
+    pub voice: Arc<RwLock<Option<VoiceState>>>,
 }
 
 impl AppState {
@@ -116,7 +160,22 @@ impl AppState {
             http,
             auth: Arc::new(RwLock::new(AuthState::default())),
             websocket: Arc::new(RwLock::new(None)),
+            voice: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Initialize voice state if not already initialized.
+    pub async fn init_voice(&self) -> Result<(), String> {
+        let mut voice = self.voice.write().await;
+        if voice.is_none() {
+            *voice = Some(VoiceState::new()?);
+        }
+        Ok(())
+    }
+
+    /// Get voice state, initializing if needed.
+    pub async fn ensure_voice(&self) -> Result<(), String> {
+        self.init_voice().await
     }
 
     /// Get the server URL if authenticated.

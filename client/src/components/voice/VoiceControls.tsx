@@ -1,5 +1,5 @@
 import { Component } from "solid-js";
-import { Mic, MicOff, Headphones, HeadphoneOff, Settings } from "lucide-solid";
+import { Mic, MicOff, Headphones, VolumeX, Settings } from "lucide-solid";
 import { voiceState, toggleMute, toggleDeafen } from "@/stores/voice";
 
 /**
@@ -36,7 +36,7 @@ const VoiceControls: Component = () => {
         title={voiceState.deafened ? "Undeafen" : "Deafen"}
       >
         {voiceState.deafened ? (
-          <HeadphoneOff class="w-5 h-5" />
+          <VolumeX class="w-5 h-5" />
         ) : (
           <Headphones class="w-5 h-5" />
         )}

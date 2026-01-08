@@ -666,6 +666,124 @@
 
 ---
 
+## Technical Debt & Known Issues
+
+*Last reviewed: 2026-01-08*
+
+### Critical: N+1 Query in Message List Handler
+
+**Location:** `server/src/chat/messages.rs:133-163`
+
+The `list()` handler fetches author info individually for each message:
+
+```rust
+for msg in messages {
+    let author = db::find_user_by_id(&state.db, msg.user_id).await?;
+}
+```
+
+**Impact:** 100 messages = 101 database queries. This will cause performance issues at scale.
+
+**Recommendation:** Add batch user lookup:
+```rust
+pub async fn find_users_by_ids(pool: &PgPool, ids: &[Uuid]) -> HashMap<Uuid, User>
+```
+
+**Priority:** Critical - fix before production
+
+---
+
+### Medium: Duplicated AuthorProfile Construction
+
+**Location:** `server/src/chat/messages.rs` (lines 135-150, 212-227, 274-289)
+
+Profile construction logic is repeated in `list`, `create`, and `update` handlers.
+
+**Recommendation:** Add `From<User> for AuthorProfile` and `AuthorProfile::deleted(id)` factory.
+
+**Priority:** High - reduces maintenance burden
+
+---
+
+### Medium: Status Serialization Fragility
+
+**Location:** `server/src/chat/messages.rs:142`
+
+```rust
+status: format!("{:?}", u.status).to_lowercase()
+```
+
+Using Debug formatting for API output couples wire format to Rust internals.
+
+**Recommendation:** Add explicit `UserStatus::as_str()` method.
+
+**Priority:** Medium - breaking change if enum changes
+
+---
+
+### Low: Missing Channel Access Control
+
+**Location:** `server/src/chat/messages.rs:117-126`
+
+The `list` endpoint checks channel existence but not user membership.
+
+**Status:** May be intentional for public community servers. Needs explicit documentation.
+
+**Priority:** Low - document or implement based on requirements
+
+---
+
+### Low: No Rate Limiting
+
+No rate limiting on API endpoints or WebSocket messages.
+
+**Recommendation:** Add tower-governor for HTTP, per-user limits for WebSocket.
+
+**Priority:** Medium for production - prevents abuse
+
+---
+
+## Persona Review Summary (2026-01-08)
+
+### Elrond (Architecture)
+
+**Verdict:** Fundamental approach is sound. Embedding author profiles in message responses is the right UX decision.
+
+**Key Concerns:**
+1. N+1 query pattern must be fixed before production
+2. Consider introducing `UserProfileService` abstraction for presence features
+3. API response shape should plan for future features (roles, badges)
+
+### Faramir (Security)
+
+**Verdict:** Auth middleware is correctly applied. JWT validation is sound.
+
+**Key Concerns:**
+1. Rate limiting is missing on all endpoints
+2. Channel access control is not enforced
+3. Add audit logging for sensitive operations
+4. Consider token revocation mechanism
+
+### Éowyn (Code Quality)
+
+**Verdict:** Code is readable and follows project patterns.
+
+**Key Concerns:**
+1. DRY violation in AuthorProfile construction
+2. Status serialization should use explicit method
+3. Error types are well-structured with thiserror
+
+### Legolas (Testing)
+
+**Verdict:** No tests exist for message handlers.
+
+**Key Concerns:**
+1. Add integration tests for message CRUD
+2. Test WebSocket broadcast on message events
+3. Add performance tests for message list pagination
+
+---
+
 ## Referenzen
 
 - [PROJECT_SPEC.md](./PROJECT_SPEC.md) - Projektanforderungen

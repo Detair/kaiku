@@ -51,7 +51,10 @@ const UserPanel: Component = () => {
           <button
             class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-background-tertiary rounded transition-colors"
             title="Settings"
-            onClick={handleLogout}
+            onClick={() => {
+              // TODO: Open settings modal
+              console.log("Settings clicked");
+            }}
           >
             <Settings class="w-4 h-4" />
           </button>
