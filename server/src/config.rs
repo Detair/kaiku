@@ -61,6 +61,9 @@ pub struct Config {
 
     /// WebRTC TURN credential (optional)
     pub turn_credential: Option<String>,
+
+    /// MFA secret encryption key (32-byte hex string)
+    pub mfa_encryption_key: Option<String>,
 }
 
 impl Config {
@@ -103,6 +106,7 @@ impl Config {
             turn_server: env::var("TURN_SERVER").ok(),
             turn_username: env::var("TURN_USERNAME").ok(),
             turn_credential: env::var("TURN_CREDENTIAL").ok(),
+            mfa_encryption_key: env::var("MFA_ENCRYPTION_KEY").ok(),
         })
     }
 
@@ -140,6 +144,7 @@ impl Config {
             turn_server: None,
             turn_username: None,
             turn_credential: None,
+            mfa_encryption_key: None,
         }
     }
 }

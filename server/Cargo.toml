@@ -42,6 +42,7 @@ openidconnect.workspace = true
 # Crypto
 rustls.workspace = true
 sha2.workspace = true
+aes-gcm.workspace = true
 
 # Utils
 uuid.workspace = true

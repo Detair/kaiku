@@ -9,17 +9,20 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
+use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::api::AppState;
 use crate::db::{
     create_session, create_user, delete_session_by_token_hash, email_exists,
-    find_session_by_token_hash, find_user_by_id, find_user_by_username, username_exists,
+    find_session_by_token_hash, find_user_by_id, find_user_by_username, set_mfa_secret,
+    username_exists,
 };
 
 use super::error::{AuthError, AuthResult};
 use super::jwt::{generate_token_pair, validate_refresh_token};
+use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::password::{hash_password, verify_password};
 
@@ -99,6 +102,22 @@ pub struct UserProfile {
     pub status: String,
     /// Whether MFA is enabled.
     pub mfa_enabled: bool,
+}
+
+/// MFA setup response.
+#[derive(Debug, Serialize)]
+pub struct MfaSetupResponse {
+    /// TOTP secret (base32-encoded).
+    pub secret: String,
+    /// QR code URL for authenticator apps.
+    pub qr_code_url: String,
+}
+
+/// MFA verification request.
+#[derive(Debug, Deserialize)]
+pub struct MfaVerifyRequest {
+    /// 6-digit TOTP code.
+    pub code: String,
 }
 
 // ============================================================================
@@ -399,22 +418,155 @@ pub async fn update_profile(State(_state): State<AppState>) -> AuthResult<()> {
 /// Setup MFA (TOTP).
 ///
 /// POST /auth/mfa/setup
-pub async fn mfa_setup(State(_state): State<AppState>) -> AuthResult<()> {
-    Err(AuthError::Internal("Not implemented".to_string()))
+pub async fn mfa_setup(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> AuthResult<Json<MfaSetupResponse>> {
+    // Check if encryption key is configured
+    let encryption_key = state
+        .config
+        .mfa_encryption_key
+        .as_ref()
+        .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
+
+    // Decode encryption key from hex
+    let key_bytes = hex::decode(encryption_key)
+        .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
+
+    if key_bytes.len() != 32 {
+        return Err(AuthError::Internal(
+            "MFA encryption key must be 32 bytes".to_string(),
+        ));
+    }
+
+    // Generate a new TOTP secret (20 bytes = 160 bits, standard for TOTP)
+    let secret = Secret::default();
+    let secret_str = secret.to_encoded().to_string();
+
+    // Encrypt the secret before storing
+    let encrypted_secret = encrypt_mfa_secret(&secret_str, &key_bytes)
+        .map_err(|e| AuthError::Internal(format!("Failed to encrypt MFA secret: {}", e)))?;
+
+    // Store encrypted secret in database
+    set_mfa_secret(&state.db, auth_user.id, Some(&encrypted_secret))
+        .await
+        .map_err(|e| AuthError::Internal(format!("Failed to store MFA secret: {}", e)))?;
+
+    // Create TOTP instance for QR code
+    let totp = TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        secret.to_bytes().unwrap(),
+        Some("VoiceChat".to_string()),
+        auth_user.username.clone(),
+    )
+    .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {}", e)))?;
+
+    // Generate QR code URI (otpauth://)
+    let qr_code_url = totp.get_url();
+
+    Ok(Json(MfaSetupResponse {
+        secret: secret_str,
+        qr_code_url,
+    }))
 }
 
 /// Verify MFA code.
 ///
 /// POST /auth/mfa/verify
-pub async fn mfa_verify(State(_state): State<AppState>) -> AuthResult<()> {
-    Err(AuthError::Internal("Not implemented".to_string()))
+pub async fn mfa_verify(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(request): Json<MfaVerifyRequest>,
+) -> AuthResult<Json<serde_json::Value>> {
+    // Check if encryption key is configured
+    let encryption_key = state
+        .config
+        .mfa_encryption_key
+        .as_ref()
+        .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
+
+    // Decode encryption key from hex
+    let key_bytes = hex::decode(encryption_key)
+        .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
+
+    // Get user to retrieve encrypted MFA secret
+    let user = find_user_by_id(&state.db, auth_user.id)
+        .await
+        .map_err(|_| AuthError::Internal("Database error".to_string()))?
+        .ok_or_else(|| AuthError::UserNotFound)?;
+
+    // Check if MFA is enabled
+    let encrypted_secret = user
+        .mfa_secret
+        .ok_or_else(|| AuthError::Internal("MFA not enabled".to_string()))?;
+
+    // Decrypt the secret
+    let secret_str = decrypt_mfa_secret(&encrypted_secret, &key_bytes)
+        .map_err(|e| AuthError::Internal(format!("Failed to decrypt MFA secret: {}", e)))?;
+
+    // Parse the secret
+    let secret = Secret::Encoded(secret_str);
+
+    // Create TOTP instance
+    let totp = TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        secret.to_bytes().unwrap(),
+        Some("VoiceChat".to_string()),
+        user.username.clone(),
+    )
+    .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {}", e)))?;
+
+    // Verify the code
+    let is_valid = totp.check_current(&request.code).map_err(|e| {
+        AuthError::Internal(format!("Failed to verify TOTP code: {}", e))
+    })?;
+
+    if !is_valid {
+        return Err(AuthError::InvalidMfaCode);
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "MFA verification successful"
+    })))
 }
 
 /// Disable MFA.
 ///
 /// POST /auth/mfa/disable
-pub async fn mfa_disable(State(_state): State<AppState>) -> AuthResult<()> {
-    Err(AuthError::Internal("Not implemented".to_string()))
+pub async fn mfa_disable(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(request): Json<MfaVerifyRequest>,
+) -> AuthResult<Json<serde_json::Value>> {
+    // Require MFA verification before disabling (security measure)
+    // First verify the provided code is valid
+    let verification_result = mfa_verify(
+        State(state.clone()),
+        auth_user.clone(),
+        Json(request),
+    )
+    .await;
+
+    if verification_result.is_err() {
+        return Err(AuthError::InvalidMfaCode);
+    }
+
+    // Clear MFA secret from database
+    set_mfa_secret(&state.db, auth_user.id, None)
+        .await
+        .map_err(|e| AuthError::Internal(format!("Failed to disable MFA: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "MFA disabled successfully"
+    })))
 }
 
 /// Get available OIDC providers.
