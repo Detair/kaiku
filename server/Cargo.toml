@@ -83,6 +83,10 @@ tokio-util = { version = "0.7.18", features = ["io", "compat"] }
 tokio-test = "0.4"
 reqwest = { version = "0.11", features = ["json"] }
 
+[features]
+# Enable test utilities for integration tests
+test-utils = []
+
 [lints]
 workspace = true
 

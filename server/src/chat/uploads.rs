@@ -378,6 +378,15 @@ pub async fn upload_message_with_file(
         .await?
         .ok_or(UploadError::Validation("Channel not found".to_string()))?;
 
+    // Check user is a member of the channel
+    let is_member = db::is_channel_member(&state.db, channel_id, auth_user.id)
+        .await
+        .map_err(|e| UploadError::Database(e))?;
+
+    if !is_member {
+        return Err(UploadError::Forbidden);
+    }
+
     let mut file_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -451,7 +460,9 @@ pub async fn upload_message_with_file(
         });
     }
 
-    // Create the message first (empty content allowed when attaching file)
+    // Create the message first
+    // Note: Empty content is allowed when attaching files (file-only messages)
+    // This differs from regular text messages which require 1-4000 chars validation
     let message = db::create_message(
         &state.db,
         channel_id,
@@ -463,7 +474,7 @@ pub async fn upload_message_with_file(
     )
     .await?;
 
-    // Generate S3 key
+    // Generate S3 key using actual message ID
     let file_id = Uuid::now_v7();
     let extension = std::path::Path::new(&safe_filename)
         .extension()
@@ -474,11 +485,16 @@ pub async fn upload_message_with_file(
         channel_id, message.id, file_id, extension
     );
 
-    // Upload to S3
+    // Upload to S3 - if this fails, message is already created (acceptable trade-off)
     let file_size = file_data.len() as i64;
-    s3.upload(&s3_key, file_data, &file_content_type)
-        .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?;
+    if let Err(e) = s3.upload(&s3_key, file_data, &file_content_type).await {
+        tracing::error!(
+            "S3 upload failed for message {}: {}. Message exists without attachment.",
+            message.id,
+            e
+        );
+        return Err(UploadError::Storage(e.to_string()));
+    }
 
     // Save attachment metadata to database
     let attachment = db::create_file_attachment(
@@ -489,7 +505,24 @@ pub async fn upload_message_with_file(
         file_size,
         &s3_key,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        // If attachment record creation fails after S3 upload, we have an orphaned S3 object
+        // Clean it up in the background
+        let s3_cleanup = s3.clone();
+        let key_cleanup = s3_key.clone();
+        tokio::spawn(async move {
+            if let Err(cleanup_err) = s3_cleanup.delete(&key_cleanup).await {
+                tracing::error!("Failed to cleanup orphaned S3 object {}: {}", key_cleanup, cleanup_err);
+            }
+        });
+        tracing::error!(
+            "Failed to create attachment record for message {}: {}",
+            message.id,
+            e
+        );
+        e
+    })?;
 
     // Get author profile for response
     let author = db::find_user_by_id(&state.db, auth_user.id)
@@ -517,7 +550,7 @@ pub async fn upload_message_with_file(
 
     // Broadcast new message via Redis pub-sub
     let message_json = serde_json::to_value(&response).unwrap_or_default();
-    let _ = broadcast_to_channel(
+    if let Err(e) = broadcast_to_channel(
         &state.redis,
         channel_id,
         &ServerEvent::MessageNew {
@@ -525,7 +558,15 @@ pub async fn upload_message_with_file(
             message: message_json,
         },
     )
-    .await;
+    .await
+    {
+        tracing::error!(
+            "Failed to broadcast message {} to channel {}: {}. Message saved but clients may not receive real-time update.",
+            message.id,
+            channel_id,
+            e
+        );
+    }
 
     tracing::info!(
         message_id = %message.id,

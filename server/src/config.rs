@@ -123,7 +123,7 @@ impl Config {
     }
 
     /// Create a default configuration for testing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn default_for_test() -> Self {
         Self {
             bind_address: "127.0.0.1:8080".into(),

@@ -1,6 +1,5 @@
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use vc_server::ws::{ServerEvent, ClientEvent};
+use vc_server::ws::ServerEvent;
 use vc_server::config::Config;
 use vc_server::api::AppState;
 use vc_server::db;
@@ -82,7 +81,7 @@ async fn test_websocket_broadcast_flow() {
     
     // Verify payload
     let payload_str = received.value.as_str().expect("Payload not string");
-    let received_event: ServerEvent = serde_json::from_str(payload_str).expect("Failed to parse event");
+    let received_event: ServerEvent = serde_json::from_str(payload_str.as_ref()).expect("Failed to parse event");
 
     if let ServerEvent::MessageNew { channel_id: cid, message: msg } = received_event {
         assert_eq!(cid, channel.id);
