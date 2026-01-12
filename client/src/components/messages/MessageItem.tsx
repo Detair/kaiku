@@ -1,4 +1,5 @@
 import { Component, Show } from "solid-js";
+import { SolidMarkdown } from "solid-markdown";
 import { File, Download } from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
@@ -63,9 +64,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           </div>
         </Show>
 
-        <div class="text-text-primary break-words leading-relaxed whitespace-pre-wrap">
-          {/* TODO: Re-enable Markdown when ESM compatibility is fixed */}
-          {props.message.content}
+        <div class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none">
+          <SolidMarkdown children={props.message.content} />
           <Show when={isEdited()}>
             <span class="text-xs text-text-secondary/70 ml-1.5 align-super" title={`Edited ${formatTimestamp(props.message.edited_at!)}`}>
               (edited)

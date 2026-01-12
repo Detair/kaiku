@@ -52,6 +52,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
   const [isTestingSpeaker, setIsTestingSpeaker] = createSignal(false);
   const [isLoading, setIsLoading] = createSignal(true);
   const [error, setError] = createSignal<string>("");
+  const [noiseSuppression, setNoiseSuppression] = createSignal(true);
 
   // Cached voice adapter instance
   const [adapter, setAdapter] = createSignal<VoiceAdapter | null>(null);
@@ -85,6 +86,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }
 
       setDevices(result.value);
+      setNoiseSuppression(voiceAdapter.isNoiseSuppressionEnabled());
 
       // Set default selections (first device or default device)
       if (result.value.inputs.length > 0) {
@@ -104,6 +106,16 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       setIsLoading(false);
     }
   });
+
+  // Toggle Noise Suppression
+  const toggleNoiseSuppression = async () => {
+    const newVal = !noiseSuppression();
+    setNoiseSuppression(newVal);
+    const voiceAdapter = adapter();
+    if (voiceAdapter) {
+      await voiceAdapter.setNoiseSuppression(newVal);
+    }
+  };
 
   // ESC key handler
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -525,6 +537,26 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                       : "Good level - keep speaking like this"}
                   </p>
                 </Show>
+              </div>
+
+              {/* Noise Suppression Toggle */}
+              <div class="mt-4 flex items-center justify-between">
+                <div>
+                  <div class="text-sm font-medium text-text-primary">Noise Suppression</div>
+                  <div class="text-xs text-text-secondary">Reduces background noise</div>
+                </div>
+                <button
+                  onClick={toggleNoiseSuppression}
+                  class={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2 focus:ring-offset-surface-base ${
+                    noiseSuppression() ? "bg-accent-primary" : "bg-surface-highlight"
+                  }`}
+                >
+                  <span
+                    class={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      noiseSuppression() ? "translate-x-6" : "translate-x-1"
+                    }`}
+                  />
+                </button>
               </div>
             </div>
 

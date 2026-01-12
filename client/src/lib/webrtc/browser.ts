@@ -19,6 +19,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private channelId: string | null = null;
   private muted = false;
   private deafened = false;
+  private noiseSuppression = true;
 
   // WebRTC
   private peerConnection: RTCPeerConnection | null = null;
@@ -63,9 +64,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Get microphone access
       const constraints: MediaStreamConstraints = {
-        audio: this.inputDeviceId
-          ? { deviceId: { exact: this.inputDeviceId } }
-          : true,
+        audio: {
+          deviceId: this.inputDeviceId ? { exact: this.inputDeviceId } : undefined,
+          noiseSuppression: this.noiseSuppression,
+          echoCancellation: true,
+          autoGainControl: true,
+        },
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -210,6 +214,32 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return { ok: true, value: undefined };
   }
 
+  async setNoiseSuppression(enabled: boolean): Promise<VoiceResult<void>> {
+    console.log(`[BrowserVoiceAdapter] Set noise suppression: ${enabled}`);
+    this.noiseSuppression = enabled;
+
+    // Apply to current track if active
+    if (this.localStream) {
+      const track = this.localStream.getAudioTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({
+            noiseSuppression: enabled,
+            echoCancellation: true, // Keep echo cancellation on
+            autoGainControl: true,
+          });
+          console.log("[BrowserVoiceAdapter] Applied constraints to active track");
+        } catch (err) {
+          console.warn("[BrowserVoiceAdapter] Failed to apply constraints, restarting stream needed:", err);
+          // If applyConstraints fails (some browsers), we might need to restart the stream
+          // For now, we accept best-effort or require rejoin/device switch
+        }
+      }
+    }
+
+    return { ok: true, value: undefined };
+  }
+
   // Signaling
 
   async handleOffer(
@@ -331,6 +361,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return this.deafened;
   }
 
+  isNoiseSuppressionEnabled(): boolean {
+    return this.noiseSuppression;
+  }
+
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void {
     this.eventHandlers = { ...this.eventHandlers, ...handlers };
   }
@@ -440,7 +474,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
         // Get new stream
         const constraints: MediaStreamConstraints = {
-          audio: { deviceId: { exact: deviceId } },
+          audio: {
+            deviceId: { exact: deviceId },
+            noiseSuppression: this.noiseSuppression,
+            echoCancellation: true,
+            autoGainControl: true,
+          },
         };
         this.localStream = await navigator.mediaDevices.getUserMedia(
           constraints

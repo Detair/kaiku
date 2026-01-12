@@ -87,6 +87,7 @@ export interface VoiceAdapter {
   // Audio control
   setMute(muted: boolean): Promise<VoiceResult<void>>;
   setDeafen(deafened: boolean): Promise<VoiceResult<void>>;
+  setNoiseSuppression(enabled: boolean): Promise<VoiceResult<void>>;
 
   // Signaling (called by WebSocket store)
   handleOffer(channelId: string, sdp: string): Promise<VoiceResult<string>>; // Returns answer SDP
@@ -97,6 +98,7 @@ export interface VoiceAdapter {
   getChannelId(): string | null;
   isMuted(): boolean;
   isDeafened(): boolean;
+  isNoiseSuppressionEnabled(): boolean;
 
   // Event registration
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void;

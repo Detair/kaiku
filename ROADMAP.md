@@ -125,9 +125,8 @@ This roadmap outlines the development path from the current prototype to a produ
   - [ ] **Backend:** Implement `Proxy Method` for authenticated file downloads (Stream S3 -> Client).
   - [ ] **Client:** Implement drag-and-drop file upload in `MessageInput`.
   - [ ] **UI:** Render images/files nicely in the message list.
-- [ ] **[Text] Markdown & Emojis**
-  - **Note:** `solid-markdown` has ESM compatibility issues (temporarily disabled in MessageItem.tsx)
-  - Find alternative markdown renderer or fix solid-markdown's dependencies
+- [x] **[Text] Markdown & Emojis**
+  - **Note:** `solid-markdown` enabled and verified.
   - Add an Emoji Picker component.
 
 ---
