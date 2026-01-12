@@ -15,37 +15,76 @@ pub enum ClientEvent {
     Ping,
 
     /// Subscribe to channel events
-    Subscribe { channel_id: Uuid },
+    Subscribe {
+        /// Channel to subscribe to.
+        channel_id: Uuid
+    },
 
     /// Unsubscribe from channel events
-    Unsubscribe { channel_id: Uuid },
+    Unsubscribe {
+        /// Channel to unsubscribe from.
+        channel_id: Uuid
+    },
 
     /// Send typing indicator
-    Typing { channel_id: Uuid },
+    Typing {
+        /// Channel user is typing in.
+        channel_id: Uuid
+    },
 
     /// Stop typing indicator
-    StopTyping { channel_id: Uuid },
+    StopTyping {
+        /// Channel user stopped typing in.
+        channel_id: Uuid
+    },
 
     /// Voice: Join channel
-    VoiceJoin { channel_id: Uuid },
+    VoiceJoin {
+        /// Voice channel to join.
+        channel_id: Uuid
+    },
 
     /// Voice: Leave channel
-    VoiceLeave { channel_id: Uuid },
+    VoiceLeave {
+        /// Voice channel to leave.
+        channel_id: Uuid
+    },
 
     /// Voice: SDP Offer
-    VoiceOffer { channel_id: Uuid, sdp: String },
+    VoiceOffer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP offer.
+        sdp: String
+    },
 
     /// Voice: SDP Answer
-    VoiceAnswer { channel_id: Uuid, sdp: String },
+    VoiceAnswer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP answer.
+        sdp: String
+    },
 
     /// Voice: ICE Candidate
-    VoiceIce { channel_id: Uuid, candidate: String },
+    VoiceIce {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// ICE candidate.
+        candidate: String
+    },
 
     /// Voice: Mute self
-    VoiceMute { channel_id: Uuid },
+    VoiceMute {
+        /// Voice channel.
+        channel_id: Uuid
+    },
 
     /// Voice: Unmute self
-    VoiceUnmute { channel_id: Uuid },
+    VoiceUnmute {
+        /// Voice channel.
+        channel_id: Uuid
+    },
 }
 
 /// Server-to-client WebSocket events.
@@ -56,72 +95,122 @@ pub enum ServerEvent {
     Pong,
 
     /// Connection ready with user info
-    Ready { user: UserProfile },
+    Ready {
+        /// Authenticated user profile.
+        user: UserProfile
+    },
 
     /// New message
-    MessageCreate { message: Message },
+    MessageCreate {
+        /// New message.
+        message: Message
+    },
 
     /// Message updated
     MessageUpdate {
+        /// Channel containing message.
         channel_id: Uuid,
+        /// Updated message ID.
         message_id: Uuid,
+        /// New content.
         content: String,
     },
 
     /// Message deleted
     MessageDelete {
+        /// Channel containing message.
         channel_id: Uuid,
+        /// Deleted message ID.
         message_id: Uuid,
     },
 
     /// User typing
-    TypingStart { channel_id: Uuid, user: UserProfile },
+    TypingStart {
+        /// Channel user is typing in.
+        channel_id: Uuid,
+        /// User who is typing.
+        user: UserProfile
+    },
 
     /// User stopped typing
-    TypingStop { channel_id: Uuid, user_id: Uuid },
+    TypingStop {
+        /// Channel user stopped typing in.
+        channel_id: Uuid,
+        /// User who stopped typing.
+        user_id: Uuid
+    },
 
     /// User presence changed
-    PresenceUpdate { user_id: Uuid, status: UserStatus },
+    PresenceUpdate {
+        /// User whose presence changed.
+        user_id: Uuid,
+        /// New status.
+        status: UserStatus
+    },
 
     /// Voice: User joined channel
     VoiceUserJoined {
+        /// Voice channel.
         channel_id: Uuid,
+        /// User who joined.
         user: UserProfile,
     },
 
     /// Voice: User left channel
-    VoiceUserLeft { channel_id: Uuid, user_id: Uuid },
+    VoiceUserLeft {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// User who left.
+        user_id: Uuid
+    },
 
     /// Voice: SDP Offer from another user
     VoiceOffer {
+        /// Voice channel.
         channel_id: Uuid,
+        /// User sending offer.
         user_id: Uuid,
+        /// SDP offer.
         sdp: String,
     },
 
     /// Voice: SDP Answer from another user
     VoiceAnswer {
+        /// Voice channel.
         channel_id: Uuid,
+        /// User sending answer.
         user_id: Uuid,
+        /// SDP answer.
         sdp: String,
     },
 
     /// Voice: ICE Candidate from another user
     VoiceIce {
+        /// Voice channel.
         channel_id: Uuid,
+        /// User sending candidate.
         user_id: Uuid,
+        /// ICE candidate.
         candidate: String,
     },
 
     /// Voice: User speaking indicator
     VoiceSpeaking {
+        /// Voice channel.
         channel_id: Uuid,
+        /// User speaking.
         user_id: Uuid,
+        /// Whether user is speaking.
         speaking: bool,
     },
 
     /// Error
-    Error { code: String, message: String },
+    Error {
+        /// Error code.
+        code: String,
+        /// Error message.
+        message: String
+    },
 }
 
 /// WebSocket message wrapper with optional request ID.

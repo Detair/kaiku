@@ -23,6 +23,7 @@ use crate::{
 // ============================================================================
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum MessageError {
     NotFound,
     ChannelNotFound,
@@ -79,6 +80,29 @@ impl From<db::User> for AuthorProfile {
     }
 }
 
+/// Attachment info for message responses (matches client Attachment type).
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentInfo {
+    pub id: Uuid,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: i64,
+    pub url: String,
+}
+
+impl AttachmentInfo {
+    /// Create from a FileAttachment database model.
+    pub fn from_db(attachment: &db::FileAttachment) -> Self {
+        Self {
+            id: attachment.id,
+            filename: attachment.filename.clone(),
+            mime_type: attachment.mime_type.clone(),
+            size: attachment.size_bytes,
+            url: format!("/api/messages/attachments/{}/download", attachment.id),
+        }
+    }
+}
+
 /// Full message response with author info (matches client Message type).
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
@@ -87,7 +111,7 @@ pub struct MessageResponse {
     pub author: AuthorProfile,
     pub content: String,
     pub encrypted: bool,
-    pub attachments: Vec<()>, // TODO: implement attachments
+    pub attachments: Vec<AttachmentInfo>,
     pub reply_to: Option<Uuid>,
     pub edited_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -149,7 +173,21 @@ pub async fn list(
     let user_map: std::collections::HashMap<Uuid, db::User> =
         users.into_iter().map(|u| (u.id, u)).collect();
 
-    // Build response with author info
+    // Bulk fetch all attachments to avoid N+1 query
+    let message_ids: Vec<Uuid> = messages.iter().map(|m| m.id).collect();
+    let all_attachments = db::list_file_attachments_by_messages(&state.db, &message_ids).await?;
+
+    // Create lookup map for attachments by message_id
+    let mut attachment_map: std::collections::HashMap<Uuid, Vec<AttachmentInfo>> =
+        std::collections::HashMap::new();
+    for attachment in all_attachments {
+        attachment_map
+            .entry(attachment.message_id)
+            .or_default()
+            .push(AttachmentInfo::from_db(&attachment));
+    }
+
+    // Build response with author info and attachments
     let response: Vec<MessageResponse> = messages
         .into_iter()
         .map(|msg| {
@@ -164,13 +202,15 @@ pub async fn list(
                     status: "offline".to_string(),
                 });
 
+            let attachments = attachment_map.remove(&msg.id).unwrap_or_default();
+
             MessageResponse {
                 id: msg.id,
                 channel_id: msg.channel_id,
                 author,
                 content: msg.content,
                 encrypted: msg.encrypted,
-                attachments: vec![],
+                attachments,
                 reply_to: msg.reply_to,
                 edited_at: msg.edited_at,
                 created_at: msg.created_at,
@@ -292,13 +332,20 @@ pub async fn update(
             status: "offline".to_string(),
         });
 
+    // Fetch existing attachments
+    let attachments = db::list_file_attachments_by_message(&state.db, message.id)
+        .await?
+        .iter()
+        .map(AttachmentInfo::from_db)
+        .collect();
+
     let response = MessageResponse {
         id: message.id,
         channel_id: message.channel_id,
         author,
         content: message.content.clone(),
         encrypted: message.encrypted,
-        attachments: vec![],
+        attachments,
         reply_to: message.reply_to,
         edited_at: message.edited_at,
         created_at: message.created_at,

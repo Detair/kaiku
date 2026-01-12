@@ -2,7 +2,7 @@
 //!
 //! Double Ratchet protocol for 1:1 encrypted communication.
 
-use crate::{CryptoError, Result};
+use crate::Result;
 
 /// User's Olm account containing identity keys.
 pub struct OlmAccount {

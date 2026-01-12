@@ -1,5 +1,5 @@
 //! File Upload Handling
-//! 
+//!
 //! Handles file uploads to S3-compatible storage and metadata management.
 
 use axum::{
@@ -13,7 +13,8 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{api::AppState, auth::AuthUser, db};
+use crate::{api::AppState, auth::AuthUser, db, ws::{broadcast_to_channel, ServerEvent}};
+use super::messages::{AuthorProfile, AttachmentInfo, MessageResponse};
 
 // ============================================================================ 
 // Error Types
@@ -353,6 +354,188 @@ pub async fn upload_file(
             url,
         }),
     ))
+}
+
+/// Upload a file and create a message in one request.
+///
+/// POST /api/messages/channel/:channel_id/upload
+///
+/// Expects multipart form with:
+/// - `file`: The file data (required)
+/// - `content`: Optional message text content
+#[tracing::instrument(skip(state, auth_user, multipart))]
+pub async fn upload_message_with_file(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(channel_id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<MessageResponse>), UploadError> {
+    // Check S3 is configured
+    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+
+    // Check channel exists
+    let _ = db::find_channel_by_id(&state.db, channel_id)
+        .await?
+        .ok_or(UploadError::Validation("Channel not found".to_string()))?;
+
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut filename: Option<String> = None;
+    let mut content_type: Option<String> = None;
+    let mut content: String = String::new();
+
+    // Parse multipart form
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let field_name = field.name().unwrap_or_default().to_string();
+
+        match field_name.as_str() {
+            "file" => {
+                filename = field.file_name().map(String::from);
+                content_type = field.content_type().map(String::from);
+
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| UploadError::Validation(e.to_string()))?;
+
+                // Check file size
+                if data.len() > state.config.max_upload_size {
+                    return Err(UploadError::TooLarge {
+                        max_size: state.config.max_upload_size,
+                    });
+                }
+
+                file_data = Some(data.to_vec());
+            }
+            "content" => {
+                content = field
+                    .text()
+                    .await
+                    .map_err(|e| UploadError::Validation(e.to_string()))?;
+            }
+            _ => {
+                // Ignore unknown fields
+            }
+        }
+    }
+
+    // Validate required fields
+    let file_data = file_data.ok_or(UploadError::NoFile)?;
+    let filename = filename.ok_or(UploadError::InvalidFilename)?;
+
+    // Sanitize filename
+    let safe_filename = sanitize_filename(&filename);
+    if safe_filename.is_empty() {
+        return Err(UploadError::InvalidFilename);
+    }
+
+    // Determine content type
+    let file_content_type = content_type
+        .or_else(|| {
+            mime_guess::from_path(&filename)
+                .first()
+                .map(|m| m.to_string())
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    // Validate MIME type
+    let allowed_types: Vec<&str> = state
+        .config
+        .allowed_mime_types
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_else(|| DEFAULT_ALLOWED_TYPES.to_vec());
+
+    if !allowed_types.contains(&file_content_type.as_str()) {
+        return Err(UploadError::InvalidMimeType {
+            mime_type: file_content_type,
+        });
+    }
+
+    // Create the message first (empty content allowed when attaching file)
+    let message = db::create_message(
+        &state.db,
+        channel_id,
+        auth_user.id,
+        &content,
+        false, // encrypted
+        None,  // nonce
+        None,  // reply_to
+    )
+    .await?;
+
+    // Generate S3 key
+    let file_id = Uuid::now_v7();
+    let extension = std::path::Path::new(&safe_filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+    let s3_key = format!(
+        "attachments/{}/{}/{}.{}",
+        channel_id, message.id, file_id, extension
+    );
+
+    // Upload to S3
+    let file_size = file_data.len() as i64;
+    s3.upload(&s3_key, file_data, &file_content_type)
+        .await
+        .map_err(|e| UploadError::Storage(e.to_string()))?;
+
+    // Save attachment metadata to database
+    let attachment = db::create_file_attachment(
+        &state.db,
+        message.id,
+        &safe_filename,
+        &file_content_type,
+        file_size,
+        &s3_key,
+    )
+    .await?;
+
+    // Get author profile for response
+    let author = db::find_user_by_id(&state.db, auth_user.id)
+        .await?
+        .map(AuthorProfile::from)
+        .unwrap_or_else(|| AuthorProfile {
+            id: auth_user.id,
+            username: "unknown".to_string(),
+            display_name: "Unknown User".to_string(),
+            avatar_url: None,
+            status: "offline".to_string(),
+        });
+
+    let response = MessageResponse {
+        id: message.id,
+        channel_id: message.channel_id,
+        author: author.clone(),
+        content: message.content,
+        encrypted: message.encrypted,
+        attachments: vec![AttachmentInfo::from_db(&attachment)],
+        reply_to: message.reply_to,
+        edited_at: message.edited_at,
+        created_at: message.created_at,
+    };
+
+    // Broadcast new message via Redis pub-sub
+    let message_json = serde_json::to_value(&response).unwrap_or_default();
+    let _ = broadcast_to_channel(
+        &state.redis,
+        channel_id,
+        &ServerEvent::MessageNew {
+            channel_id,
+            message: message_json,
+        },
+    )
+    .await;
+
+    tracing::info!(
+        message_id = %message.id,
+        attachment_id = %attachment.id,
+        filename = %safe_filename,
+        size = file_size,
+        "Message with file uploaded successfully"
+    );
+
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// Get attachment metadata.

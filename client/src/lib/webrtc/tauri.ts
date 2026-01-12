@@ -20,6 +20,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   private channelId: string | null = null;
   private muted = false;
   private deafened = false;
+  private noiseSuppression = false;
 
   // Event handlers
   private eventHandlers: Partial<VoiceAdapterEvents> = {};
@@ -91,6 +92,22 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
   }
 
+  async setNoiseSuppression(enabled: boolean): Promise<VoiceResult<void>> {
+    console.log(`[TauriVoiceAdapter] Set noise suppression: ${enabled}`);
+
+    try {
+      await invoke("set_noise_suppression", { enabled });
+      this.noiseSuppression = enabled;
+      return { ok: true, value: undefined };
+    } catch (err) {
+      // Noise suppression might not be implemented in Tauri backend yet
+      // Fall back to just storing the state locally
+      console.warn("[TauriVoiceAdapter] Noise suppression not implemented in backend");
+      this.noiseSuppression = enabled;
+      return { ok: true, value: undefined };
+    }
+  }
+
   // Signaling
 
   async handleOffer(
@@ -145,6 +162,10 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   isDeafened(): boolean {
     return this.deafened;
+  }
+
+  isNoiseSuppressionEnabled(): boolean {
+    return this.noiseSuppression;
   }
 
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void {

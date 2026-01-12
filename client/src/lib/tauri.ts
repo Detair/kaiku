@@ -265,6 +265,44 @@ export async function uploadFile(
   return response.json();
 }
 
+/**
+ * Upload a file and create a message in one request.
+ * Uses the combined endpoint that creates the message and attaches the file.
+ */
+export async function uploadMessageWithFile(
+  channelId: string,
+  file: File,
+  content?: string
+): Promise<Message> {
+  const token = browserState.accessToken || localStorage.getItem("accessToken");
+  const headers: Record<string, string> = {};
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+  if (content) {
+    formData.append("content", content);
+  }
+
+  const baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
+
+  const response = await fetch(`${baseUrl}/api/messages/channel/${channelId}/upload`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(error.message || error.error || "Upload failed");
+  }
+
+  return response.json();
+}
+
 // Voice Commands (browser mode stubs - voice requires Tauri)
 
 export async function joinVoice(channelId: string): Promise<void> {

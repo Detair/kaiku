@@ -21,6 +21,7 @@ use crate::{
 // ============================================================================
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum ChannelError {
     NotFound,
     Forbidden,

@@ -33,27 +33,61 @@ pub enum ClientEvent {
     /// Ping for keepalive
     Ping,
     /// Subscribe to channel events
-    Subscribe { channel_id: Uuid },
+    Subscribe {
+        /// Channel to subscribe to.
+        channel_id: Uuid
+    },
     /// Unsubscribe from channel events
-    Unsubscribe { channel_id: Uuid },
+    Unsubscribe {
+        /// Channel to unsubscribe from.
+        channel_id: Uuid
+    },
     /// Send typing indicator
-    Typing { channel_id: Uuid },
+    Typing {
+        /// Channel user is typing in.
+        channel_id: Uuid
+    },
     /// Stop typing indicator
-    StopTyping { channel_id: Uuid },
+    StopTyping {
+        /// Channel user stopped typing in.
+        channel_id: Uuid
+    },
 
     // Voice events
     /// Join a voice channel
-    VoiceJoin { channel_id: Uuid },
+    VoiceJoin {
+        /// Voice channel to join.
+        channel_id: Uuid
+    },
     /// Leave a voice channel
-    VoiceLeave { channel_id: Uuid },
+    VoiceLeave {
+        /// Voice channel to leave.
+        channel_id: Uuid
+    },
     /// Send SDP answer to server
-    VoiceAnswer { channel_id: Uuid, sdp: String },
+    VoiceAnswer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP answer.
+        sdp: String
+    },
     /// Send ICE candidate to server
-    VoiceIceCandidate { channel_id: Uuid, candidate: String },
+    VoiceIceCandidate {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// ICE candidate string.
+        candidate: String
+    },
     /// Mute self in voice channel
-    VoiceMute { channel_id: Uuid },
+    VoiceMute {
+        /// Voice channel.
+        channel_id: Uuid
+    },
     /// Unmute self in voice channel
-    VoiceUnmute { channel_id: Uuid },
+    VoiceUnmute {
+        /// Voice channel.
+        channel_id: Uuid
+    },
 }
 
 /// Participant info for voice room state.
@@ -76,70 +110,144 @@ pub struct VoiceParticipant {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     /// Connection authenticated successfully
-    Ready { user_id: Uuid },
+    Ready {
+        /// Authenticated user ID.
+        user_id: Uuid
+    },
     /// Pong response
     Pong,
     /// Subscribed to channel
-    Subscribed { channel_id: Uuid },
+    Subscribed {
+        /// Channel subscribed to.
+        channel_id: Uuid
+    },
     /// Unsubscribed from channel
-    Unsubscribed { channel_id: Uuid },
+    Unsubscribed {
+        /// Channel unsubscribed from.
+        channel_id: Uuid
+    },
     /// New message in channel
     MessageNew {
+        /// Channel containing the message.
         channel_id: Uuid,
+        /// Full message object.
         message: serde_json::Value,
     },
     /// Message edited
     MessageEdit {
+        /// Channel containing the message.
         channel_id: Uuid,
+        /// Message ID.
         message_id: Uuid,
+        /// New content.
         content: String,
+        /// Edit timestamp (RFC3339).
         edited_at: String,
     },
     /// Message deleted
     MessageDelete {
+        /// Channel containing the message.
         channel_id: Uuid,
+        /// Deleted message ID.
         message_id: Uuid,
     },
     /// User typing
-    TypingStart { channel_id: Uuid, user_id: Uuid },
+    TypingStart {
+        /// Channel user is typing in.
+        channel_id: Uuid,
+        /// User who is typing.
+        user_id: Uuid
+    },
     /// User stopped typing
-    TypingStop { channel_id: Uuid, user_id: Uuid },
+    TypingStop {
+        /// Channel user stopped typing in.
+        channel_id: Uuid,
+        /// User who stopped typing.
+        user_id: Uuid
+    },
     /// Presence update
-    PresenceUpdate { user_id: Uuid, status: String },
+    PresenceUpdate {
+        /// User whose presence changed.
+        user_id: Uuid,
+        /// New status (online, away, busy, offline).
+        status: String
+    },
     /// Error
-    Error { code: String, message: String },
+    Error {
+        /// Error code.
+        code: String,
+        /// Error message.
+        message: String
+    },
 
     // Voice events
     /// SDP offer from server (after VoiceJoin)
-    VoiceOffer { channel_id: Uuid, sdp: String },
+    VoiceOffer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP offer.
+        sdp: String
+    },
     /// ICE candidate from server
-    VoiceIceCandidate { channel_id: Uuid, candidate: String },
+    VoiceIceCandidate {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// ICE candidate string.
+        candidate: String
+    },
     /// User joined voice channel
     VoiceUserJoined {
+        /// Voice channel.
         channel_id: Uuid,
+        /// User who joined.
         user_id: Uuid,
+        /// User's username.
         username: String,
+        /// User's display name.
         display_name: String,
     },
     /// User left voice channel
-    VoiceUserLeft { channel_id: Uuid, user_id: Uuid },
+    VoiceUserLeft {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// User who left.
+        user_id: Uuid
+    },
     /// User muted in voice channel
-    VoiceUserMuted { channel_id: Uuid, user_id: Uuid },
+    VoiceUserMuted {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// User who muted.
+        user_id: Uuid
+    },
     /// User unmuted in voice channel
-    VoiceUserUnmuted { channel_id: Uuid, user_id: Uuid },
+    VoiceUserUnmuted {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// User who unmuted.
+        user_id: Uuid
+    },
     /// Current voice room state (sent on join)
     VoiceRoomState {
+        /// Voice channel.
         channel_id: Uuid,
+        /// Current participants.
         participants: Vec<VoiceParticipant>,
     },
     /// Voice error
-    VoiceError { code: String, message: String },
+    VoiceError {
+        /// Error code.
+        code: String,
+        /// Error message.
+        message: String
+    },
 }
 
 /// Redis pub/sub channels.
 pub mod channels {
     use uuid::Uuid;
 
+    /// Redis channel for channel events.
     pub fn channel_events(channel_id: Uuid) -> String {
         format!("channel:{}", channel_id)
     }
@@ -273,7 +381,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                         .await;
                 }
             }
-            Ok(Message::Ping(data)) => {
+            Ok(Message::Ping(_data)) => {
                 // Axum handles pong automatically, but we can respond too
                 debug!("Received ping from user={}", user_id);
             }

@@ -3,7 +3,7 @@
 //! Runtime queries (no compile-time DATABASE_URL required).
 
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use super::models::*;
@@ -602,6 +602,22 @@ pub async fn list_file_attachments_by_message(
         "SELECT * FROM file_attachments WHERE message_id = $1 ORDER BY created_at ASC",
     )
     .bind(message_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// List file attachments for multiple messages (bulk fetch to avoid N+1).
+pub async fn list_file_attachments_by_messages(
+    pool: &PgPool,
+    message_ids: &[Uuid],
+) -> sqlx::Result<Vec<FileAttachment>> {
+    if message_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    sqlx::query_as::<_, FileAttachment>(
+        "SELECT * FROM file_attachments WHERE message_id = ANY($1) ORDER BY created_at ASC",
+    )
+    .bind(message_ids)
     .fetch_all(pool)
     .await
 }

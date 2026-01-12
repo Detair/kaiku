@@ -1,8 +1,8 @@
 import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { PlusCircle, Send, UploadCloud } from "lucide-solid";
-import { sendMessage, messagesState } from "@/stores/messages";
+import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
-import { uploadFile } from "@/lib/tauri";
+import { uploadMessageWithFile } from "@/lib/tauri";
 
 interface MessageInputProps {
   channelId: string;
@@ -98,20 +98,26 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     if (isSending()) return;
     setIsSending(true);
 
+    // Stop typing indicator
+    if (typingTimeout) {
+      clearTimeout(typingTimeout);
+    }
+    stopTyping(props.channelId);
+
     try {
-      // 1. Create a message first
-      // We use the filename as the message content for now
-      const message = await sendMessage(props.channelId, `Uploaded: ${file.name}`);
-      
-      if (message) {
-        // 2. Upload file attached to the message
-        await uploadFile(message.id, file);
-      }
+      // Upload file with optional text content in a single request
+      const textContent = content().trim() || undefined;
+      const message = await uploadMessageWithFile(props.channelId, file, textContent);
+
+      // Add message to local store
+      addMessage(message);
+      setContent("");
     } catch (err) {
       console.error("Upload failed:", err);
       // Ideally show a toast or error in the UI
     } finally {
       setIsSending(false);
+      inputRef?.focus();
     }
   };
 

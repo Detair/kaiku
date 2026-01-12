@@ -1,15 +1,14 @@
 //! OpenID Connect Integration
 
-use openidconnect::{
-    core::{CoreClient, CoreProviderMetadata},
-    ClientId, ClientSecret, IssuerUrl, RedirectUrl,
-};
+use openidconnect::core::CoreClient;
 
 /// OIDC client configuration.
+#[allow(dead_code)]
 pub struct OidcClient {
     client: CoreClient,
 }
 
+#[allow(dead_code)]
 impl OidcClient {
     /// Create a new OIDC client.
     pub async fn new(

@@ -8,17 +8,29 @@ use uuid::Uuid;
 /// User model.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct User {
+    /// Unique user ID.
     pub id: Uuid,
+    /// Unique username for login.
     pub username: String,
+    /// Display name shown to other users.
     pub display_name: String,
+    /// Email address (optional).
     pub email: Option<String>,
+    /// Argon2id password hash (for local auth).
     pub password_hash: Option<String>,
+    /// Authentication method (local or OIDC).
     pub auth_method: AuthMethod,
+    /// External ID from OIDC provider.
     pub external_id: Option<String>,
+    /// Avatar image URL.
     pub avatar_url: Option<String>,
+    /// Current online status.
     pub status: UserStatus,
+    /// Encrypted MFA secret for TOTP.
     pub mfa_secret: Option<String>,
+    /// When the user was created.
     pub created_at: DateTime<Utc>,
+    /// When the user was last updated.
     pub updated_at: DateTime<Utc>,
 }
 
@@ -26,7 +38,9 @@ pub struct User {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "auth_method", rename_all = "lowercase")]
 pub enum AuthMethod {
+    /// Local password authentication.
     Local,
+    /// OpenID Connect authentication.
     Oidc,
 }
 
@@ -34,23 +48,36 @@ pub enum AuthMethod {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "user_status", rename_all = "lowercase")]
 pub enum UserStatus {
+    /// User is actively using the app.
     Online,
+    /// User is idle.
     Away,
+    /// User is busy (do not disturb).
     Busy,
+    /// User is offline.
     Offline,
 }
 
 /// Channel model.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Channel {
+    /// Unique channel ID.
     pub id: Uuid,
+    /// Channel name.
     pub name: String,
+    /// Channel type (text, voice, or DM).
     pub channel_type: ChannelType,
+    /// Parent category ID (for organization).
     pub category_id: Option<Uuid>,
+    /// Channel description/topic.
     pub topic: Option<String>,
+    /// Max users allowed in voice channel.
     pub user_limit: Option<i32>,
+    /// Display position in channel list.
     pub position: i32,
+    /// When the channel was created.
     pub created_at: DateTime<Utc>,
+    /// When the channel was last updated.
     pub updated_at: DateTime<Utc>,
 }
 
@@ -58,55 +85,85 @@ pub struct Channel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "channel_type", rename_all = "lowercase")]
 pub enum ChannelType {
+    /// Text chat channel.
     Text,
+    /// Voice channel.
     Voice,
+    /// Direct message channel.
     Dm,
 }
 
 /// Message model.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Message {
+    /// Unique message ID.
     pub id: Uuid,
+    /// Channel this message belongs to.
     pub channel_id: Uuid,
+    /// User who sent the message.
     pub user_id: Uuid,
+    /// Message content (plaintext or encrypted).
     pub content: String,
+    /// Whether the message is E2EE encrypted.
     pub encrypted: bool,
+    /// Encryption nonce (for E2EE).
     pub nonce: Option<String>,
+    /// Message ID this is replying to.
     pub reply_to: Option<Uuid>,
+    /// When the message was edited.
     pub edited_at: Option<DateTime<Utc>>,
+    /// When the message was deleted (soft delete).
     pub deleted_at: Option<DateTime<Utc>>,
+    /// When the message was created.
     pub created_at: DateTime<Utc>,
 }
 
 /// Role model.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Role {
+    /// Unique role ID.
     pub id: Uuid,
+    /// Role name.
     pub name: String,
+    /// Display color (hex code).
     pub color: Option<String>,
+    /// Permission flags (JSON object).
     pub permissions: serde_json::Value,
+    /// Display position in role hierarchy.
     pub position: i32,
+    /// When the role was created.
     pub created_at: DateTime<Utc>,
 }
 
 /// Channel member model.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct ChannelMember {
+    /// Channel ID.
     pub channel_id: Uuid,
+    /// User ID.
     pub user_id: Uuid,
+    /// User's role in this channel.
     pub role_id: Option<Uuid>,
+    /// When the user joined the channel.
     pub joined_at: DateTime<Utc>,
 }
 
 /// File attachment model.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct FileAttachment {
+    /// Unique attachment ID.
     pub id: Uuid,
+    /// Message this attachment belongs to.
     pub message_id: Uuid,
+    /// Original filename.
     pub filename: String,
+    /// MIME type (e.g., image/png).
     pub mime_type: String,
+    /// File size in bytes.
     pub size_bytes: i64,
+    /// S3 object key for retrieval.
     pub s3_key: String,
+    /// When the attachment was uploaded.
     pub created_at: DateTime<Utc>,
 }
 

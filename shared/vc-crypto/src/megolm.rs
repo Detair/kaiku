@@ -2,7 +2,7 @@
 //!
 //! Efficient group encryption for channel messages.
 
-use crate::{CryptoError, Result};
+use crate::Result;
 
 /// Outbound Megolm session for encrypting messages to a group.
 pub struct MegolmOutboundSession {

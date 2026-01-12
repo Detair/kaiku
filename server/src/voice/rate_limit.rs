@@ -48,6 +48,7 @@ impl VoiceRateLimiter {
     }
 
     /// Cleanup old entries (call periodically to prevent memory leak).
+    #[allow(dead_code)]
     pub async fn cleanup(&self) {
         let cleanup_threshold = self.min_interval * 10; // Keep 10x the interval
         let mut map = self.last_join.write().await;

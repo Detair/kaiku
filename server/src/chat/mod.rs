@@ -36,6 +36,10 @@ pub fn messages_router() -> Router<AppState> {
             "/channel/:channel_id",
             get(messages::list).post(messages::create),
         )
+        .route(
+            "/channel/:channel_id/upload",
+            post(uploads::upload_message_with_file),
+        )
         .route("/:id", patch(messages::update).delete(messages::delete))
         .route("/upload", post(uploads::upload_file))
         .route("/attachments/:id", get(uploads::get_attachment))

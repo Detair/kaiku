@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 /// Participant info for room state messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ParticipantInfo {
     /// User ID.
     pub user_id: Uuid,
@@ -22,6 +23,7 @@ pub struct ParticipantInfo {
 /// session establishment and voice channel coordination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum SignalingMessage {
     // Client -> Server messages
     /// Join voice channel
