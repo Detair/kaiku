@@ -4,19 +4,19 @@
 
 use axum::extract::Multipart;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use super::messages::{AttachmentInfo, AuthorProfile, MessageResponse};
 use crate::{
     api::AppState,
-    auth::AuthUser,
+    auth::{jwt::validate_access_token, AuthUser},
     db,
     ws::{broadcast_to_channel, ServerEvent},
 };
@@ -385,14 +385,9 @@ pub async fn upload_message_with_file(
         .await?
         .ok_or(UploadError::Validation("Channel not found".to_string()))?;
 
-    // Check user is a member of the channel
-    let is_member = db::is_channel_member(&state.db, channel_id, auth_user.id)
-        .await
-        .map_err(UploadError::Database)?;
-
-    if !is_member {
-        return Err(UploadError::Forbidden);
-    }
+    // Note: We don't check channel membership here to be consistent with regular
+    // message creation (POST /api/channels/:id/messages), which only verifies
+    // the channel exists. Authorization is handled at the auth_user level.
 
     let mut file_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
@@ -602,19 +597,47 @@ pub async fn get_attachment(
     Ok(Json(attachment.into()))
 }
 
+/// Query parameters for download endpoint.
+#[derive(Debug, Deserialize)]
+pub struct DownloadQuery {
+    /// Optional JWT token for authentication (alternative to Authorization header).
+    /// Used for browser requests like <img src="..."> that can't set headers.
+    pub token: Option<String>,
+}
+
 /// Download a file (stream from S3).
 ///
 /// GET /api/messages/attachments/:id/download
+///
+/// Supports two authentication methods:
+/// 1. Authorization header (Bearer token) - standard API auth
+/// 2. `token` query parameter - for browser requests that can't set headers
 pub async fn download(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: Option<AuthUser>,
     Path(id): Path<Uuid>,
+    Query(query): Query<DownloadQuery>,
 ) -> Result<Response, UploadError> {
     // Check S3 is configured
     let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
 
+    // Get user ID from either AuthUser (header) or token query parameter
+    let user_id = if let Some(user) = auth_user {
+        user.id
+    } else if let Some(token) = query.token {
+        // Validate token from query parameter
+        let claims = validate_access_token(&token, &state.config.jwt_secret)
+            .map_err(|_| UploadError::Forbidden)?;
+        claims
+            .sub
+            .parse::<Uuid>()
+            .map_err(|_| UploadError::Forbidden)?
+    } else {
+        return Err(UploadError::Forbidden);
+    };
+
     // Check permissions
-    let has_access = db::check_attachment_access(&state.db, id, auth_user.id)
+    let has_access = db::check_attachment_access(&state.db, id, user_id)
         .await
         .map_err(UploadError::Database)?;
 

@@ -507,6 +507,13 @@ export function getServerUrl(): string {
 }
 
 /**
+ * Get the current access token (for use in URLs that can't use headers).
+ */
+export function getAccessToken(): string | null {
+  return browserState.accessToken || localStorage.getItem("accessToken");
+}
+
+/**
  * Send a WebSocket message (works in both browser and Tauri modes)
  */
 export async function wsSend(message: any): Promise<void> {

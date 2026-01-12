@@ -124,10 +124,11 @@ This roadmap outlines the development path from the current prototype to a produ
 - [x] **[Voice] Basic Noise Reduction (Tier 1)**
   - Implemented in `browser.ts` via constraints.
   - UI Toggle in Audio Settings.
-- [ ] **[Media] File Attachments**
-  - [ ] **Backend:** Implement `Proxy Method` for authenticated file downloads (Stream S3 -> Client).
-  - [ ] **Client:** Implement drag-and-drop file upload in `MessageInput`.
-  - [ ] **UI:** Render images/files nicely in the message list.
+- [ ] **[Media] File Attachments & Previews**
+  - [x] **Backend:** Implement `Proxy Method` for authenticated file downloads.
+  - [x] **Client:** Implement drag-and-drop file upload.
+  - [ ] **UX:** Add an "Upload Preview Tray" in `MessageInput` to see images before sending.
+  - [x] **UI:** Render image previews in the message list.
 - [x] **[Text] Markdown & Emojis**
   - **Note:** `solid-markdown` enabled and verified.
   - Add an Emoji Picker component using `picmo` + `@floating-ui/dom`.
@@ -236,6 +237,24 @@ These prompts are designed to be used by implementation agents to execute specif
 - **Specs:** Framework-agnostic `Picmo` library.
 - **Positioning:** Use `@floating-ui/dom` to anchor above the message input.
 - **Lazy Loading:** Use `lazy()` to load the picker on first interaction.
+
+**Task C: Upload Preview Tray (UX Enhancement)**
+- **Goal:** Show images locally before they are uploaded to the server.
+- **Specs:** 
+    - Use `URL.createObjectURL(file)` to generate instant previews for `image/*` files.
+    - Render a horizontal, scrollable list of "Preview Cards" above the text area in `MessageInput.tsx`.
+    - Each card must have a "Remove" button to cancel that specific file.
+    - **Logic:** Shift `handleFileUpload` to trigger *only* when the Send button/Enter key is pressed, rather than on every drop.
+
+**Task D: Rich Text Toolbar (UX Enhancement)**
+- **Goal:** Provide Slack-like formatting controls without clutter.
+- **UI:** 
+    - Add a formatting toggle button ("Aa") to the input bar.
+    - When active, show a toolbar above the text area containing: Bold, Italic, Strike, Quote, Code Block, Inline Code.
+- **Logic:** 
+    - Clicking a button wraps the currently selected text in Markdown syntax (e.g., `**selected**`).
+    - If no text is selected, insert the syntax with cursor in between.
+    - Support keyboard shortcuts (`Ctrl+B`, `Ctrl+I`).
 
 ## [Phase 3] Friends, Status & Social Graph
 **Task A: Social Backend**

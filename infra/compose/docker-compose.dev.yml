@@ -9,11 +9,12 @@ services:
     image: postgres:16-alpine
     container_name: voicechat-dev-postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       - POSTGRES_USER=voicechat
       - POSTGRES_PASSWORD=devpassword
       - POSTGRES_DB=voicechat
+      - POSTGRES_HOST_AUTH_METHOD=md5
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
     healthcheck:

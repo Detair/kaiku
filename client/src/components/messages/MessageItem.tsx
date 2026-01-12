@@ -5,7 +5,7 @@ import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
 import CodeBlock from "@/components/ui/CodeBlock";
-import { getServerUrl } from "@/lib/tauri";
+import { getServerUrl, getAccessToken } from "@/lib/tauri";
 
 interface MessageItemProps {
   message: Message;
@@ -37,9 +37,12 @@ const MessageItem: Component<MessageItemProps> = (props) => {
   const isEdited = () => !!props.message.edited_at;
 
   const getDownloadUrl = (attachment: Attachment) => {
-    // Construct absolute URL for the attachment
+    // Construct absolute URL for the attachment with token for browser requests
     const baseUrl = getServerUrl().replace(/\/+$/, "");
-    return `${baseUrl}/api/messages/attachments/${attachment.id}/download`;
+    const token = getAccessToken();
+    const url = `${baseUrl}/api/messages/attachments/${attachment.id}/download`;
+    // Include token as query param since <img> and <a> can't set Authorization headers
+    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
   };
 
   const isImage = (mimeType: string) => mimeType.startsWith("image/");

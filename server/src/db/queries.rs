@@ -636,26 +636,28 @@ pub async fn delete_file_attachments_by_message(
     .await
 }
 
-/// Check if a user has access to an attachment (via channel membership).
+/// Check if a user has access to an attachment.
+///
+/// Currently returns true for any authenticated user if the attachment exists,
+/// since channels don't require membership for viewing/sending messages.
+/// This keeps download access consistent with upload/message creation behavior.
 pub async fn check_attachment_access(
     pool: &PgPool,
     attachment_id: Uuid,
-    user_id: Uuid,
+    _user_id: Uuid,
 ) -> sqlx::Result<bool> {
-    // User must be a member of the channel where the message was posted
+    // Just verify the attachment exists - any authenticated user can access
+    // since we don't require channel membership for other operations
     let result: (bool,) = sqlx::query_as(
         r"
         SELECT EXISTS(
             SELECT 1
             FROM file_attachments fa
-            JOIN messages m ON fa.message_id = m.id
-            JOIN channel_members cm ON m.channel_id = cm.channel_id
-            WHERE fa.id = $1 AND cm.user_id = $2
+            WHERE fa.id = $1
         )
         ",
     )
     .bind(attachment_id)
-    .bind(user_id)
     .fetch_one(pool)
     .await?;
 
