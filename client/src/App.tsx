@@ -1,4 +1,4 @@
-import { Component, ParentProps, JSX } from "solid-js";
+import { Component, ParentProps, JSX, onMount } from "solid-js";
 import { Route } from "@solidjs/router";
 
 // Views
@@ -9,8 +9,15 @@ import Main from "./views/Main";
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
 
+// Theme
+import { initTheme } from "./stores/theme";
+
 // Layout wrapper
 const Layout: Component<ParentProps> = (props) => {
+  onMount(async () => {
+    await initTheme();
+  });
+
   return (
     <div class="h-screen bg-background-tertiary text-text-primary">
       {props.children}

@@ -10,34 +10,34 @@ export default defineConfig({
   ],
   theme: {
     colors: {
-      // New "Focused Hybrid" Theme - Modern Dark Mode
+      // Theme System - CSS Variables (supports runtime theme switching)
       surface: {
-        base: "#1E1E2E",      // Deepest background (app frame)
-        layer1: "#252535",    // Server rail / Message list background
-        layer2: "#2A2A3C",    // Sidebar / Panels
-        highlight: "#36364D", // Hover states / Active items
+        base: "var(--color-surface-base)",
+        layer1: "var(--color-surface-layer1)",
+        layer2: "var(--color-surface-layer2)",
+        highlight: "var(--color-surface-highlight)",
       },
       text: {
-        primary: "#ECEFF4",   // High readability
-        secondary: "#9CA3AF", // Metadata, timestamps
+        primary: "var(--color-text-primary)",
+        secondary: "var(--color-text-secondary)",
       },
       accent: {
-        primary: "#88C0D0",   // Buttons, Active Indicators
-        danger: "#BF616A",    // Destructive, Mute/Deafen
+        primary: "var(--color-accent-primary)",
+        danger: "var(--color-accent-danger)",
       },
-      // Legacy compatibility (will be phased out)
+      // Legacy compatibility (maps to new theme system)
       primary: {
-        DEFAULT: "#88C0D0",
-        hover: "#6FA8B8",
+        DEFAULT: "var(--color-accent-primary)",
+        hover: "var(--color-accent-primary-hover)",
       },
       background: {
-        primary: "#252535",
-        secondary: "#2A2A3C",
-        tertiary: "#1E1E2E",
+        primary: "var(--color-surface-layer1)",
+        secondary: "var(--color-surface-layer2)",
+        tertiary: "var(--color-surface-base)",
       },
       success: "#A3BE8C",
       warning: "#EBCB8B",
-      danger: "#BF616A",
+      danger: "var(--color-accent-danger)",
     },
   },
   shortcuts: {

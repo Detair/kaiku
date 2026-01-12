@@ -4,6 +4,7 @@ import { File, Download } from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
+import CodeBlock from "@/components/ui/CodeBlock";
 import { getServerUrl } from "@/lib/tauri";
 
 interface MessageItemProps {
@@ -65,7 +66,26 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         </Show>
 
         <div class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none">
-          <SolidMarkdown children={props.message.content} />
+          <SolidMarkdown
+            children={props.message.content}
+            components={{
+              code: (codeProps: any) => {
+                // Inline code (no language class)
+                if (!codeProps.class) {
+                  return (
+                    <code class="px-1.5 py-0.5 bg-surface-layer2 rounded text-sm">
+                      {codeProps.children}
+                    </code>
+                  );
+                }
+                // Block code with language
+                const language = codeProps.class?.replace("language-", "");
+                return (
+                  <CodeBlock language={language}>{codeProps.children}</CodeBlock>
+                );
+              },
+            }}
+          />
           <Show when={isEdited()}>
             <span class="text-xs text-text-secondary/70 ml-1.5 align-super" title={`Edited ${formatTimestamp(props.message.edited_at!)}`}>
               (edited)
