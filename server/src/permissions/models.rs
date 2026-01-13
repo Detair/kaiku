@@ -39,6 +39,7 @@ pub struct GuildRole {
     pub position: i32,
     pub is_default: bool,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Guild member role assignment.
@@ -88,6 +89,7 @@ pub struct SystemAnnouncement {
     pub starts_at: DateTime<Utc>,
     pub ends_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Pending approval for dual-approval actions.
@@ -104,6 +106,7 @@ pub struct PendingApproval {
     pub expires_at: DateTime<Utc>,
     pub executed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Break-glass emergency request.
@@ -122,6 +125,7 @@ pub struct BreakGlassRequest {
     pub block_reason: Option<String>,
     pub executed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Global user ban.
