@@ -9,7 +9,7 @@
 -- System-level admin users
 CREATE TABLE system_admins (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    granted_by UUID REFERENCES users(id),
+    granted_by UUID REFERENCES users(id) ON DELETE SET NULL,
     granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -46,6 +46,7 @@ CREATE TABLE guild_roles (
     position INTEGER NOT NULL DEFAULT 0,
     is_default BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(guild_id, name),
     CONSTRAINT guild_role_color_format CHECK (
         color IS NULL OR color ~ '^#[0-9A-Fa-f]{6}$'
@@ -61,13 +62,14 @@ CREATE TABLE guild_member_roles (
     guild_id UUID NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role_id UUID NOT NULL REFERENCES guild_roles(id) ON DELETE CASCADE,
-    assigned_by UUID REFERENCES users(id),
+    assigned_by UUID REFERENCES users(id) ON DELETE SET NULL,
     assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (guild_id, user_id, role_id)
 );
 
 CREATE INDEX idx_guild_member_roles_user ON guild_member_roles(user_id);
 CREATE INDEX idx_guild_member_roles_role ON guild_member_roles(role_id);
+CREATE INDEX idx_guild_member_roles_lookup ON guild_member_roles(guild_id, user_id);
 
 -- Channel permission overrides
 CREATE TABLE channel_overrides (
@@ -90,24 +92,24 @@ CREATE INDEX idx_channel_overrides_role ON channel_overrides(role_id);
 CREATE TABLE system_settings (
     key VARCHAR(64) PRIMARY KEY,
     value JSONB NOT NULL,
-    updated_by UUID REFERENCES users(id),
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Insert default security settings
 INSERT INTO system_settings (key, value) VALUES
-    ('security.require_reauth_destructive', 'false'),
-    ('security.inactivity_timeout_minutes', 'null'),
-    ('security.dual_admin_approval', 'false'),
-    ('security.require_webauthn', 'false'),
-    ('security.cooling_off_hours', '4'),
-    ('break_glass.delay_minutes', '15'),
-    ('break_glass.cooldown_hours', '1'),
-    ('break_glass.max_per_admin_24h', '1'),
-    ('break_glass.max_system_24h', '3'),
-    ('break_glass.require_webauthn', 'false'),
-    ('break_glass.external_webhook', 'null'),
-    ('break_glass.review_due_hours', '48');
+    ('security.require_reauth_destructive', 'false'::jsonb),
+    ('security.inactivity_timeout_minutes', 'null'::jsonb),
+    ('security.dual_admin_approval', 'false'::jsonb),
+    ('security.require_webauthn', 'false'::jsonb),
+    ('security.cooling_off_hours', '4'::jsonb),
+    ('break_glass.delay_minutes', '15'::jsonb),
+    ('break_glass.cooldown_hours', '1'::jsonb),
+    ('break_glass.max_per_admin_24h', '1'::jsonb),
+    ('break_glass.max_system_24h', '3'::jsonb),
+    ('break_glass.require_webauthn', 'false'::jsonb),
+    ('break_glass.external_webhook', 'null'::jsonb),
+    ('break_glass.review_due_hours', '48'::jsonb);
 
 -- System audit log
 CREATE TABLE system_audit_log (
@@ -137,6 +139,7 @@ CREATE TABLE system_announcements (
     starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ends_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT valid_severity CHECK (
         severity IN ('info', 'warning', 'critical', 'maintenance')
     )
@@ -156,12 +159,13 @@ CREATE TABLE pending_approvals (
     target_type VARCHAR(32) NOT NULL,
     target_id UUID NOT NULL,
     requested_by UUID NOT NULL REFERENCES users(id),
-    approved_by UUID REFERENCES users(id),
+    approved_by UUID REFERENCES users(id) ON DELETE SET NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'pending',
     execute_after TIMESTAMPTZ,
     expires_at TIMESTAMPTZ NOT NULL,
     executed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT valid_approval_status CHECK (
         status IN ('pending', 'approved', 'rejected', 'expired', 'executed')
     )
@@ -182,10 +186,11 @@ CREATE TABLE break_glass_requests (
     incident_ticket VARCHAR(64),
     status VARCHAR(16) NOT NULL DEFAULT 'waiting',
     execute_at TIMESTAMPTZ NOT NULL,
-    blocked_by UUID REFERENCES users(id),
+    blocked_by UUID REFERENCES users(id) ON DELETE SET NULL,
     block_reason TEXT,
     executed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT valid_break_glass_status CHECK (
         status IN ('waiting', 'blocked', 'executed', 'cancelled', 'expired')
     )
@@ -206,12 +211,13 @@ CREATE TABLE break_glass_cooldowns (
 CREATE TABLE break_glass_reviews (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     break_glass_id UUID NOT NULL REFERENCES break_glass_requests(id) ON DELETE CASCADE,
-    reviewer_id UUID REFERENCES users(id),
+    reviewer_id UUID REFERENCES users(id) ON DELETE SET NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'pending',
     notes TEXT,
     due_at TIMESTAMPTZ NOT NULL,
     reviewed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT valid_review_status CHECK (
         status IN ('pending', 'reviewed', 'overdue', 'waived')
     )
@@ -243,7 +249,7 @@ ALTER TABLE guilds ADD COLUMN IF NOT EXISTS suspension_reason TEXT;
 
 CREATE TABLE global_bans (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    banned_by UUID NOT NULL REFERENCES users(id),
+    banned_by UUID REFERENCES users(id) ON DELETE SET NULL,
     reason TEXT NOT NULL,
     expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
