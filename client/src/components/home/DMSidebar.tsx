@@ -8,14 +8,10 @@ import { Component, For, Show, createSignal, onMount } from "solid-js";
 import { Users, Plus } from "lucide-solid";
 import { dmsState, loadDMs, selectFriendsTab } from "@/stores/dms";
 import DMItem from "./DMItem";
-// TODO: Import NewMessageModal when created (Task 7)
-// import NewMessageModal from "./NewMessageModal";
+import NewMessageModal from "./NewMessageModal";
 
 const DMSidebar: Component = () => {
-  // TODO: Enable modal functionality when NewMessageModal is created (Task 7)
   const [showNewMessage, setShowNewMessage] = createSignal(false);
-  // Temporary: suppress unused variable warning until modal is implemented
-  void showNewMessage;
 
   onMount(() => {
     loadDMs();
@@ -84,10 +80,10 @@ const DMSidebar: Component = () => {
         </Show>
       </div>
 
-      {/* New Message Modal - TODO: Enable when NewMessageModal is created (Task 7) */}
-      {/* <Show when={showNewMessage()}>
+      {/* New Message Modal */}
+      <Show when={showNewMessage()}>
         <NewMessageModal onClose={() => setShowNewMessage(false)} />
-      </Show> */}
+      </Show>
     </aside>
   );
 };
