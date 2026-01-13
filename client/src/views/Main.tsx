@@ -16,8 +16,9 @@ import CommandPalette from "@/components/layout/CommandPalette";
 import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
+import { FriendsList } from "@/components/social";
 import { selectedChannel } from "@/stores/channels";
-import { loadGuilds } from "@/stores/guilds";
+import { loadGuilds, guildsState } from "@/stores/guilds";
 
 const Main: Component = () => {
   const channel = selectedChannel;
@@ -36,17 +37,20 @@ const Main: Component = () => {
       <AppShell showServerRail={true}>
         {/* Main Content Area */}
         <Show
-          when={channel()}
+          when={guildsState.activeGuildId === null}
           fallback={
-            <div class="flex-1 flex items-center justify-center bg-surface-layer1">
-              <div class="text-center text-text-secondary">
-                <Hash class="w-12 h-12 mx-auto mb-4 opacity-30" />
-                <p class="text-lg font-medium">Select a channel to start chatting</p>
-                <p class="text-sm mt-2 opacity-60">Or press Ctrl+K to search</p>
-              </div>
-            </div>
-          }
-        >
+            <Show
+              when={channel()}
+              fallback={
+                <div class="flex-1 flex items-center justify-center bg-surface-layer1">
+                  <div class="text-center text-text-secondary">
+                    <Hash class="w-12 h-12 mx-auto mb-4 opacity-30" />
+                    <p class="text-lg font-medium">Select a channel to start chatting</p>
+                    <p class="text-sm mt-2 opacity-60">Or press Ctrl+K to search</p>
+                  </div>
+                </div>
+              }
+            >
           {/* Channel Header */}
           <header class="h-12 px-4 flex items-center border-b border-white/5 bg-surface-layer1 shadow-sm">
             <Show
@@ -71,6 +75,11 @@ const Main: Component = () => {
 
           {/* Message Input */}
           <MessageInput channelId={channel()!.id} channelName={channel()!.name} />
+            </Show>
+          }
+        >
+          {/* Home View - Friends List */}
+          <FriendsList />
         </Show>
       </AppShell>
     </>

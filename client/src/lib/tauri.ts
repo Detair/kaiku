@@ -4,10 +4,20 @@
  * Falls back to HTTP API when running in browser
  */
 
-import type { User, Channel, Message, AppSettings, Guild, GuildMember } from "./types";
+import type {
+  User,
+  Channel,
+  Message,
+  AppSettings,
+  Guild,
+  GuildMember,
+  Friend,
+  Friendship,
+  DMChannel,
+} from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, Message, AppSettings, Guild, GuildMember };
+export type { User, Channel, Message, AppSettings, Guild, GuildMember, Friend, Friendship, DMChannel };
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -565,6 +575,124 @@ export async function getGuildChannels(guildId: string): Promise<Channel[]> {
   }
 
   return httpRequest<Channel[]>("GET", `/api/guilds/${guildId}/channels`);
+}
+
+// Friends Commands
+
+export async function getFriends(): Promise<Friend[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_friends");
+  }
+
+  return httpRequest<Friend[]>("GET", "/api/friends");
+}
+
+export async function getPendingFriends(): Promise<Friend[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_pending_friends");
+  }
+
+  return httpRequest<Friend[]>("GET", "/api/friends/pending");
+}
+
+export async function getBlockedFriends(): Promise<Friend[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_blocked_friends");
+  }
+
+  return httpRequest<Friend[]>("GET", "/api/friends/blocked");
+}
+
+export async function sendFriendRequest(username: string): Promise<Friendship> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("send_friend_request", { username });
+  }
+
+  return httpRequest<Friendship>("POST", "/api/friends/request", { username });
+}
+
+export async function acceptFriendRequest(friendshipId: string): Promise<Friendship> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("accept_friend_request", { friendshipId });
+  }
+
+  return httpRequest<Friendship>("POST", `/api/friends/${friendshipId}/accept`);
+}
+
+export async function rejectFriendRequest(friendshipId: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("reject_friend_request", { friendshipId });
+  }
+
+  await httpRequest<void>("POST", `/api/friends/${friendshipId}/reject`);
+}
+
+export async function removeFriend(friendshipId: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("remove_friend", { friendshipId });
+  }
+
+  await httpRequest<void>("DELETE", `/api/friends/${friendshipId}`);
+}
+
+export async function blockUser(userId: string): Promise<Friendship> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("block_user", { userId });
+  }
+
+  return httpRequest<Friendship>("POST", `/api/friends/${userId}/block`);
+}
+
+// DM Commands
+
+export async function getDMs(): Promise<DMChannel[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_dms");
+  }
+
+  return httpRequest<DMChannel[]>("GET", "/api/dm");
+}
+
+export async function getDM(channelId: string): Promise<DMChannel> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_dm", { channelId });
+  }
+
+  return httpRequest<DMChannel>("GET", `/api/dm/${channelId}`);
+}
+
+export async function createDM(
+  participantIds: string[],
+  name?: string
+): Promise<DMChannel> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("create_dm", { participantIds, name });
+  }
+
+  return httpRequest<DMChannel>("POST", "/api/dm", {
+    participant_ids: participantIds,
+    name,
+  });
+}
+
+export async function leaveDM(channelId: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("leave_dm", { channelId });
+  }
+
+  await httpRequest<void>("POST", `/api/dm/${channelId}/leave`);
 }
 
 // Voice Commands (browser mode stubs - voice requires Tauri)
