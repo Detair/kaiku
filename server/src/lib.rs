@@ -9,6 +9,7 @@ pub mod chat;
 pub mod config;
 pub mod db;
 pub mod guild;
+pub mod permissions;
 pub mod social;
 pub mod voice;
 pub mod ws;

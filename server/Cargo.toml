@@ -75,6 +75,9 @@ validator.workspace = true
 # MIME detection
 mime_guess.workspace = true
 
+# Bitflags
+bitflags.workspace = true
+
 # Config
 dotenvy = "0.15"
 tokio-util = { version = "0.7.18", features = ["io", "compat"] }
