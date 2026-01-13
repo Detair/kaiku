@@ -448,9 +448,9 @@ pub async fn get_member_highest_role(
     guild_id: Uuid,
     user_id: Uuid,
 ) -> sqlx::Result<Option<i32>> {
-    let result: Option<(i32,)> = sqlx::query_as(
+    let result: Option<i32> = sqlx::query_scalar(
         r"
-        SELECT MIN(r.position) as position
+        SELECT MIN(r.position)
         FROM guild_roles r
         INNER JOIN guild_member_roles gmr ON gmr.role_id = r.id
         WHERE gmr.guild_id = $1
@@ -459,10 +459,10 @@ pub async fn get_member_highest_role(
     )
     .bind(guild_id)
     .bind(user_id)
-    .fetch_optional(pool)
+    .fetch_one(pool)
     .await?;
 
-    Ok(result.map(|(pos,)| pos))
+    Ok(result)
 }
 
 // ============================================================================
