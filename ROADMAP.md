@@ -12,7 +12,7 @@ This roadmap outlines the development path from the current prototype to a produ
 |-------|--------|------------|------------------|
 | **Phase 0** | ✅ Complete | 100% | N+1 fix, WebRTC optimization, MFA encryption |
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
-| **Phase 2** | ✅ Near Complete | 97% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Token Refresh |
+| **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Phase 3** | 📋 Planned | 5% | Guild store skeleton prepared |
 | **Phase 4** | 📋 Planned | 0% | - |
 | **Phase 5** | 📋 Planned | 0% | - |
@@ -137,18 +137,21 @@ This roadmap outlines the development path from the current prototype to a produ
   - [x] **Backend:** Token query parameter support for browser requests (img src, a href).
   - [x] **Backend:** Configurable upload size limit (default 50MB).
   - [x] **Client:** Implement drag-and-drop file upload.
-  - [ ] **UX:** Add an "Upload Preview Tray" in `MessageInput` to see images before sending.
+  - [x] **UX:** Upload Preview Tray with image thumbnails and remove buttons.
   - [x] **UI:** Render image previews in the message list.
 - [x] **[Text] Markdown & Emojis**
   - **Note:** `solid-markdown` enabled and verified.
   - Add an Emoji Picker component using `picmo` + `@floating-ui/dom`.
-- [ ] **[Text] Code Blocks & Syntax Highlighting** `New`
-  - Style code blocks with monospace font (Unispace/Fira Code).
-  - Implement syntax highlighting using `highlight.js` (auto-detection enabled).
-  - Support Solarized Dark/Light themes dynamically.
-- [ ] **[UX] Theme System Expansion** `New`
-  - Implement CSS variable swapping for themes.
-  - Add "Solarized Light" and "Solarized Dark" presets.
+- [x] **[Text] Code Blocks & Syntax Highlighting** ✅
+  - Custom CodeBlock component with highlight.js integration.
+  - Languages: JavaScript, TypeScript, Python, Rust, JSON, Bash.
+  - Theme-aware syntax colors via CSS variables.
+  - **Location**: `client/src/components/ui/CodeBlock.tsx`, `client/src/styles/highlight-theme.css`
+- [x] **[UX] Theme System Expansion** ✅
+  - CSS variable swapping with `data-theme` attribute.
+  - Three themes: Focused Hybrid, Solarized Dark, Solarized Light.
+  - Settings modal with theme picker and live preview.
+  - **Location**: `client/src/stores/theme.ts`, `client/src/components/settings/`
 
 ---
 
