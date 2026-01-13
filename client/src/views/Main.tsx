@@ -2,14 +2,14 @@
  * Main View - Primary Application Interface
  *
  * Uses the AppShell layout with:
- * - ServerRail (hidden until guilds are implemented in Phase 3)
+ * - ServerRail (for guild/server switching)
  * - Sidebar (channel list and user panel)
  * - Main stage (chat messages)
  * - VoiceIsland (floating voice controls)
  * - CommandPalette (Ctrl+K quick actions)
  */
 
-import { Component, Show } from "solid-js";
+import { Component, Show, onMount } from "solid-js";
 import { Hash, Volume2 } from "lucide-solid";
 import AppShell from "@/components/layout/AppShell";
 import CommandPalette from "@/components/layout/CommandPalette";
@@ -17,9 +17,15 @@ import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { selectedChannel } from "@/stores/channels";
+import { loadGuilds } from "@/stores/guilds";
 
 const Main: Component = () => {
   const channel = selectedChannel;
+
+  // Load guilds on mount
+  onMount(() => {
+    loadGuilds();
+  });
 
   return (
     <>
@@ -27,7 +33,7 @@ const Main: Component = () => {
       <CommandPalette />
 
       {/* Main Application Shell */}
-      <AppShell showServerRail={false}>
+      <AppShell showServerRail={true}>
         {/* Main Content Area */}
         <Show
           when={channel()}

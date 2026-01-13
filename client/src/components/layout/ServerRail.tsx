@@ -14,13 +14,15 @@
  * - Bottom: "Add Server" (+) button
  */
 
-import { Component, createSignal, For } from "solid-js";
+import { Component, createSignal, For, Show } from "solid-js";
 import { Home, Plus } from "lucide-solid";
 import { guildsState, selectHome, selectGuild } from "@/stores/guilds";
+import CreateGuildModal from "@/components/guilds/CreateGuildModal";
 
 const ServerRail: Component = () => {
   // Hover state (still local to component)
   const [hoveredServerId, setHoveredServerId] = createSignal<string | null>(null);
+  const [showCreateModal, setShowCreateModal] = createSignal(false);
 
   // Active server comes from guild store
   const isActive = (id: string) => {
@@ -133,11 +135,17 @@ const ServerRail: Component = () => {
           }}
           onMouseEnter={() => setHoveredServerId("add")}
           onMouseLeave={() => setHoveredServerId(null)}
+          onClick={() => setShowCreateModal(true)}
           title="Add Server"
         >
           <Plus class="w-6 h-6 text-accent-primary transition-transform duration-200 group-hover:rotate-90" />
         </button>
       </div>
+
+      {/* Create Guild Modal */}
+      <Show when={showCreateModal()}>
+        <CreateGuildModal onClose={() => setShowCreateModal(false)} />
+      </Show>
     </aside>
   );
 };

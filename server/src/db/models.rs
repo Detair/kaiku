@@ -69,6 +69,8 @@ pub struct Channel {
     pub channel_type: ChannelType,
     /// Parent category ID (for organization).
     pub category_id: Option<Uuid>,
+    /// Guild this channel belongs to (None for DMs).
+    pub guild_id: Option<Uuid>,
     /// Channel description/topic.
     pub topic: Option<String>,
     /// Max users allowed in voice channel.

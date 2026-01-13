@@ -42,7 +42,8 @@ export const voiceChannels = () =>
 // Actions
 
 /**
- * Load channels from server.
+ * Load channels from server (all channels - legacy).
+ * Use loadChannelsForGuild for guild-scoped loading.
  */
 export async function loadChannels(): Promise<void> {
   setChannelsState({ isLoading: true, error: null });
@@ -65,6 +66,78 @@ export async function loadChannels(): Promise<void> {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load channels:", error);
+    setChannelsState({ isLoading: false, error });
+  }
+}
+
+/**
+ * Load channels for a specific guild.
+ * This replaces the current channel list with the guild's channels.
+ */
+export async function loadChannelsForGuild(guildId: string): Promise<void> {
+  setChannelsState({ isLoading: true, error: null });
+
+  try {
+    const channels = await tauri.getGuildChannels(guildId);
+    setChannelsState({
+      channels,
+      isLoading: false,
+      error: null,
+    });
+
+    // Auto-select first text channel in this guild
+    if (channels.length > 0) {
+      const firstText = channels.find((c) => c.channel_type === "text");
+      if (firstText) {
+        setChannelsState({ selectedChannelId: firstText.id });
+      } else {
+        // No text channels, clear selection
+        setChannelsState({ selectedChannelId: null });
+      }
+    } else {
+      // No channels in this guild, clear selection
+      setChannelsState({ selectedChannelId: null });
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error("Failed to load guild channels:", error);
+    setChannelsState({ isLoading: false, error });
+  }
+}
+
+/**
+ * Load DM channels (for Home view).
+ * This will load channels where guild_id is null.
+ */
+export async function loadDMChannels(): Promise<void> {
+  setChannelsState({ isLoading: true, error: null });
+
+  try {
+    // For now, use the generic getChannels and filter for DMs
+    // In Phase 3 Task 5, this will use a dedicated /api/dm endpoint
+    const allChannels = await tauri.getChannels();
+    const dmChannels = allChannels.filter((c) => c.guild_id === null);
+
+    setChannelsState({
+      channels: dmChannels,
+      isLoading: false,
+      error: null,
+    });
+
+    // Auto-select first DM channel
+    if (dmChannels.length > 0) {
+      const firstDM = dmChannels.find((c) => c.channel_type === "dm");
+      if (firstDM) {
+        setChannelsState({ selectedChannelId: firstDM.id });
+      } else {
+        setChannelsState({ selectedChannelId: null });
+      }
+    } else {
+      setChannelsState({ selectedChannelId: null });
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error("Failed to load DM channels:", error);
     setChannelsState({ isLoading: false, error });
   }
 }

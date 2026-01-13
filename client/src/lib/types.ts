@@ -22,6 +22,26 @@ export interface User extends UserProfile {
   created_at: string;
 }
 
+// Guild Types
+
+export interface Guild {
+  id: string;
+  name: string;
+  owner_id: string;
+  icon_url: string | null;
+  description: string | null;
+  created_at: string;
+}
+
+export interface GuildMember {
+  user_id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+  nickname: string | null;
+  joined_at: string;
+}
+
 // Channel Types
 
 export type ChannelType = "text" | "voice" | "dm";
@@ -31,6 +51,7 @@ export interface Channel {
   name: string;
   channel_type: ChannelType;
   category_id: string | null;
+  guild_id: string | null;
   topic: string | null;
   user_limit: number | null;
   position: number;

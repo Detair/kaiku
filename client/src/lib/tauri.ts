@@ -4,10 +4,10 @@
  * Falls back to HTTP API when running in browser
  */
 
-import type { User, Channel, Message, AppSettings } from "./types";
+import type { User, Channel, Message, AppSettings, Guild, GuildMember } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, Message, AppSettings };
+export type { User, Channel, Message, AppSettings, Guild, GuildMember };
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -468,6 +468,103 @@ export async function uploadMessageWithFile(
   }
 
   return response.json();
+}
+
+// Guild Commands
+
+export async function getGuilds(): Promise<Guild[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_guilds");
+  }
+
+  return httpRequest<Guild[]>("GET", "/api/guilds");
+}
+
+export async function getGuild(guildId: string): Promise<Guild> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_guild", { guildId });
+  }
+
+  return httpRequest<Guild>("GET", `/api/guilds/${guildId}`);
+}
+
+export async function createGuild(
+  name: string,
+  description?: string
+): Promise<Guild> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("create_guild", { name, description });
+  }
+
+  return httpRequest<Guild>("POST", "/api/guilds", { name, description });
+}
+
+export async function updateGuild(
+  guildId: string,
+  name?: string,
+  description?: string,
+  icon_url?: string
+): Promise<Guild> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("update_guild", { guildId, name, description, iconUrl: icon_url });
+  }
+
+  return httpRequest<Guild>("PATCH", `/api/guilds/${guildId}`, {
+    name,
+    description,
+    icon_url,
+  });
+}
+
+export async function deleteGuild(guildId: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("delete_guild", { guildId });
+  }
+
+  await httpRequest<void>("DELETE", `/api/guilds/${guildId}`);
+}
+
+export async function joinGuild(guildId: string, inviteCode: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("join_guild", { guildId, inviteCode });
+  }
+
+  await httpRequest<void>("POST", `/api/guilds/${guildId}/join`, {
+    invite_code: inviteCode,
+  });
+}
+
+export async function leaveGuild(guildId: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("leave_guild", { guildId });
+  }
+
+  await httpRequest<void>("POST", `/api/guilds/${guildId}/leave`);
+}
+
+export async function getGuildMembers(guildId: string): Promise<GuildMember[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_guild_members", { guildId });
+  }
+
+  return httpRequest<GuildMember[]>("GET", `/api/guilds/${guildId}/members`);
+}
+
+export async function getGuildChannels(guildId: string): Promise<Channel[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_guild_channels", { guildId });
+  }
+
+  return httpRequest<Channel[]>("GET", `/api/guilds/${guildId}/channels`);
 }
 
 // Voice Commands (browser mode stubs - voice requires Tauri)

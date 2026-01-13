@@ -1,0 +1,367 @@
+use axum::{
+    extract::{Path, State},
+    Json,
+};
+use uuid::Uuid;
+use validator::Validate;
+
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use super::types::{
+    Friend, Friendship, FriendshipStatus, SendFriendRequestBody, SocialError,
+};
+
+/// POST /api/friends/request
+/// Send a friend request to another user
+pub async fn send_friend_request(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<SendFriendRequestBody>,
+) -> Result<Json<Friendship>, SocialError> {
+    body.validate()
+        .map_err(|e| SocialError::Validation(e.to_string()))?;
+
+    // Find the target user by username
+    let target_user = sqlx::query!(
+        "SELECT id FROM users WHERE username = $1",
+        body.username
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(SocialError::UserNotFound)?;
+
+    let target_id = target_user.id;
+
+    // Cannot friend yourself
+    if target_id == auth.id {
+        return Err(SocialError::SelfFriendRequest);
+    }
+
+    // Check if friendship already exists (in either direction)
+    let existing = sqlx::query!(
+        r#"SELECT id, requester_id, addressee_id, status as "status: FriendshipStatus"
+           FROM friendships
+           WHERE (requester_id = $1 AND addressee_id = $2)
+              OR (requester_id = $2 AND addressee_id = $1)"#,
+        auth.id,
+        target_id
+    )
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(friendship) = existing {
+        // Check if blocked
+        if friendship.status == FriendshipStatus::Blocked {
+            return Err(SocialError::Blocked);
+        }
+        // Already friends or pending
+        return Err(SocialError::AlreadyExists);
+    }
+
+    // Create new friendship request
+    let friendship_id = Uuid::now_v7();
+    let friendship = sqlx::query_as::<_, Friendship>(
+        r#"INSERT INTO friendships (id, requester_id, addressee_id, status)
+           VALUES ($1, $2, $3, 'pending')
+           RETURNING id, requester_id, addressee_id, status, created_at, updated_at"#,
+    )
+    .bind(friendship_id)
+    .bind(auth.id)
+    .bind(target_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    // TODO: Send WebSocket notification to addressee
+
+    Ok(Json(friendship))
+}
+
+/// GET /api/friends
+/// List all friends (accepted friendships)
+pub async fn list_friends(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<Friend>>, SocialError> {
+    let friends = sqlx::query_as::<_, Friend>(
+        r#"SELECT
+            CASE
+                WHEN f.requester_id = $1 THEN f.addressee_id
+                ELSE f.requester_id
+            END as user_id,
+            u.username,
+            u.display_name,
+            u.avatar_url,
+            u.status_message,
+            false as is_online,
+            f.id as friendship_id,
+            f.status as "friendship_status",
+            f.created_at
+           FROM friendships f
+           JOIN users u ON u.id = CASE
+               WHEN f.requester_id = $1 THEN f.addressee_id
+               ELSE f.requester_id
+           END
+           WHERE (f.requester_id = $1 OR f.addressee_id = $1)
+             AND f.status = 'accepted'
+           ORDER BY u.username ASC"#,
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(friends))
+}
+
+/// GET /api/friends/pending
+/// List pending friend requests (both sent and received)
+pub async fn list_pending_requests(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<Friend>>, SocialError> {
+    let pending = sqlx::query_as::<_, Friend>(
+        r#"SELECT
+            CASE
+                WHEN f.requester_id = $1 THEN f.addressee_id
+                ELSE f.requester_id
+            END as user_id,
+            u.username,
+            u.display_name,
+            u.avatar_url,
+            u.status_message,
+            false as is_online,
+            f.id as friendship_id,
+            f.status as "friendship_status",
+            f.created_at
+           FROM friendships f
+           JOIN users u ON u.id = CASE
+               WHEN f.requester_id = $1 THEN f.addressee_id
+               ELSE f.requester_id
+           END
+           WHERE (f.requester_id = $1 OR f.addressee_id = $1)
+             AND f.status = 'pending'
+           ORDER BY f.created_at DESC"#,
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(pending))
+}
+
+/// GET /api/friends/blocked
+/// List blocked users
+pub async fn list_blocked(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<Friend>>, SocialError> {
+    let blocked = sqlx::query_as::<_, Friend>(
+        r#"SELECT
+            f.addressee_id as user_id,
+            u.username,
+            u.display_name,
+            u.avatar_url,
+            u.status_message,
+            false as is_online,
+            f.id as friendship_id,
+            f.status as "friendship_status",
+            f.created_at
+           FROM friendships f
+           JOIN users u ON u.id = f.addressee_id
+           WHERE f.requester_id = $1
+             AND f.status = 'blocked'
+           ORDER BY u.username ASC"#,
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(blocked))
+}
+
+/// POST /api/friends/:id/accept
+/// Accept a friend request
+pub async fn accept_friend_request(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(friendship_id): Path<Uuid>,
+) -> Result<Json<Friendship>, SocialError> {
+    // Verify that auth.id is the addressee of this friendship
+    let friendship = sqlx::query_as::<_, Friendship>(
+        r#"SELECT id, requester_id, addressee_id, status as status, created_at, updated_at
+           FROM friendships
+           WHERE id = $1"#,
+    )
+    .bind(friendship_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(SocialError::FriendshipNotFound)?;
+
+    // Only addressee can accept
+    if friendship.addressee_id != auth.id {
+        return Err(SocialError::Unauthorized);
+    }
+
+    // Only pending requests can be accepted
+    if friendship.status != FriendshipStatus::Pending {
+        return Err(SocialError::Unauthorized);
+    }
+
+    // Update status to accepted
+    let updated = sqlx::query_as::<_, Friendship>(
+        r#"UPDATE friendships
+           SET status = 'accepted', updated_at = NOW()
+           WHERE id = $1
+           RETURNING id, requester_id, addressee_id, status, created_at, updated_at"#,
+    )
+    .bind(friendship_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    // TODO: Send WebSocket notification to requester
+
+    Ok(Json(updated))
+}
+
+/// POST /api/friends/:id/reject
+/// Reject a friend request (deletes the friendship)
+pub async fn reject_friend_request(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(friendship_id): Path<Uuid>,
+) -> Result<Json<()>, SocialError> {
+    // Verify that auth.id is the addressee of this friendship
+    let friendship = sqlx::query!(
+        r#"SELECT requester_id, addressee_id, status as "status: FriendshipStatus"
+           FROM friendships
+           WHERE id = $1"#,
+        friendship_id
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(SocialError::FriendshipNotFound)?;
+
+    // Only addressee can reject
+    if friendship.addressee_id != auth.id {
+        return Err(SocialError::Unauthorized);
+    }
+
+    // Only pending requests can be rejected
+    if friendship.status != FriendshipStatus::Pending {
+        return Err(SocialError::Unauthorized);
+    }
+
+    // Delete the friendship
+    sqlx::query!("DELETE FROM friendships WHERE id = $1", friendship_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(()))
+}
+
+/// POST /api/friends/:id/block
+/// Block a user
+pub async fn block_user(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<Friendship>, SocialError> {
+    // Cannot block yourself
+    if user_id == auth.id {
+        return Err(SocialError::SelfFriendRequest);
+    }
+
+    // Check if user exists
+    let target_exists = sqlx::query!("SELECT id FROM users WHERE id = $1", user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .is_some();
+
+    if !target_exists {
+        return Err(SocialError::UserNotFound);
+    }
+
+    // Check if friendship already exists
+    let existing = sqlx::query!(
+        r#"SELECT id, requester_id, addressee_id, status as "status: FriendshipStatus"
+           FROM friendships
+           WHERE (requester_id = $1 AND addressee_id = $2)
+              OR (requester_id = $2 AND addressee_id = $1)"#,
+        auth.id,
+        user_id
+    )
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(friendship) = existing {
+        // If we're the requester, update status to blocked
+        if friendship.requester_id == auth.id {
+            let updated = sqlx::query_as::<_, Friendship>(
+                r#"UPDATE friendships
+                   SET status = 'blocked', updated_at = NOW()
+                   WHERE id = $1
+                   RETURNING id, requester_id, addressee_id, status, created_at, updated_at"#,
+            )
+            .bind(friendship.id)
+            .fetch_one(&state.db)
+            .await?;
+
+            return Ok(Json(updated));
+        } else {
+            // If they're the requester, delete and create new blocked entry
+            sqlx::query!("DELETE FROM friendships WHERE id = $1", friendship.id)
+                .execute(&state.db)
+                .await?;
+        }
+    }
+
+    // Create new blocked friendship
+    let friendship_id = Uuid::now_v7();
+    let blocked = sqlx::query_as::<_, Friendship>(
+        r#"INSERT INTO friendships (id, requester_id, addressee_id, status)
+           VALUES ($1, $2, $3, 'blocked')
+           RETURNING id, requester_id, addressee_id, status, created_at, updated_at"#,
+    )
+    .bind(friendship_id)
+    .bind(auth.id)
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(blocked))
+}
+
+/// DELETE /api/friends/:id
+/// Remove a friend (delete friendship)
+pub async fn remove_friend(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(friendship_id): Path<Uuid>,
+) -> Result<Json<()>, SocialError> {
+    // Verify that auth.id is part of this friendship
+    let friendship = sqlx::query!(
+        r#"SELECT requester_id, addressee_id, status as "status: FriendshipStatus"
+           FROM friendships
+           WHERE id = $1"#,
+        friendship_id
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(SocialError::FriendshipNotFound)?;
+
+    // Only participants can remove
+    if friendship.requester_id != auth.id && friendship.addressee_id != auth.id {
+        return Err(SocialError::Unauthorized);
+    }
+
+    // Only accepted friendships can be removed this way
+    if friendship.status != FriendshipStatus::Accepted {
+        return Err(SocialError::Unauthorized);
+    }
+
+    // Delete the friendship
+    sqlx::query!("DELETE FROM friendships WHERE id = $1", friendship_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(()))
+}
