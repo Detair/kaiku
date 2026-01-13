@@ -206,7 +206,7 @@ pub async fn cleanup_expired_sessions(pool: &PgPool) -> sqlx::Result<u64> {
 pub async fn list_channels(pool: &PgPool) -> sqlx::Result<Vec<Channel>> {
     sqlx::query_as::<_, Channel>(
         r"
-        SELECT id, name, channel_type, category_id, topic, user_limit, position, created_at, updated_at
+        SELECT id, name, channel_type, category_id, guild_id, topic, user_limit, position, created_at, updated_at
         FROM channels
         ORDER BY position ASC
         "
@@ -222,7 +222,7 @@ pub async fn list_channels_by_category(
 ) -> sqlx::Result<Vec<Channel>> {
     sqlx::query_as::<_, Channel>(
         r"
-        SELECT id, name, channel_type, category_id, topic, user_limit, position, created_at, updated_at
+        SELECT id, name, channel_type, category_id, guild_id, topic, user_limit, position, created_at, updated_at
         FROM channels
         WHERE category_id IS NOT DISTINCT FROM $1
         ORDER BY position ASC
@@ -237,7 +237,7 @@ pub async fn list_channels_by_category(
 pub async fn find_channel_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<Channel>> {
     sqlx::query_as::<_, Channel>(
         r"
-        SELECT id, name, channel_type, category_id, topic, user_limit, position, created_at, updated_at
+        SELECT id, name, channel_type, category_id, guild_id, topic, user_limit, position, created_at, updated_at
         FROM channels
         WHERE id = $1
         ",
@@ -253,6 +253,7 @@ pub async fn create_channel(
     name: &str,
     channel_type: &ChannelType,
     category_id: Option<Uuid>,
+    guild_id: Option<Uuid>,
     topic: Option<&str>,
     user_limit: Option<i32>,
 ) -> sqlx::Result<Channel> {
@@ -268,14 +269,15 @@ pub async fn create_channel(
 
     sqlx::query_as::<_, Channel>(
         r"
-        INSERT INTO channels (name, channel_type, category_id, topic, user_limit, position)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, name, channel_type, category_id, topic, user_limit, position, created_at, updated_at
+        INSERT INTO channels (name, channel_type, category_id, guild_id, topic, user_limit, position)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, name, channel_type, category_id, guild_id, topic, user_limit, position, created_at, updated_at
         ",
     )
     .bind(name)
     .bind(channel_type)
     .bind(category_id)
+    .bind(guild_id)
     .bind(topic)
     .bind(user_limit)
     .bind(position)
@@ -301,7 +303,7 @@ pub async fn update_channel(
             position = COALESCE($5, position),
             updated_at = NOW()
         WHERE id = $1
-        RETURNING id, name, channel_type, category_id, topic, user_limit, position, created_at, updated_at
+        RETURNING id, name, channel_type, category_id, guild_id, topic, user_limit, position, created_at, updated_at
         ",
     )
     .bind(id)
@@ -662,4 +664,40 @@ pub async fn check_attachment_access(
     .await?;
 
     Ok(result.0)
+}
+
+// ============================================================================
+// Guild Queries
+// ============================================================================
+
+/// Check if a user is a member of a guild.
+pub async fn is_guild_member(
+    pool: &PgPool,
+    guild_id: Uuid,
+    user_id: Uuid,
+) -> sqlx::Result<bool> {
+    let result: (bool,) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2)",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(result.0)
+}
+
+/// Get channels for a guild.
+pub async fn get_guild_channels(pool: &PgPool, guild_id: Uuid) -> sqlx::Result<Vec<Channel>> {
+    sqlx::query_as::<_, Channel>(
+        r"
+        SELECT id, name, channel_type, category_id, guild_id, topic, user_limit, position, created_at, updated_at
+        FROM channels
+        WHERE guild_id = $1
+        ORDER BY position ASC
+        ",
+    )
+    .bind(guild_id)
+    .fetch_all(pool)
+    .await
 }

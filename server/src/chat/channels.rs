@@ -63,6 +63,7 @@ pub struct ChannelResponse {
     pub name: String,
     pub channel_type: String,
     pub category_id: Option<Uuid>,
+    pub guild_id: Option<Uuid>,
     pub topic: Option<String>,
     pub user_limit: Option<i32>,
     pub position: i32,
@@ -79,6 +80,7 @@ impl From<db::Channel> for ChannelResponse {
                 ChannelType::Dm => "dm".to_string(),
             },
             category_id: ch.category_id,
+            guild_id: ch.guild_id,
             topic: ch.topic,
             user_limit: ch.user_limit,
             position: ch.position,
@@ -92,6 +94,7 @@ pub struct CreateChannelRequest {
     pub name: String,
     pub channel_type: String,
     pub category_id: Option<Uuid>,
+    pub guild_id: Option<Uuid>,
     pub topic: Option<String>,
     pub user_limit: Option<i32>,
 }
@@ -168,6 +171,7 @@ pub async fn create(
         &body.name,
         &channel_type,
         body.category_id,
+        body.guild_id,
         body.topic.as_deref(),
         body.user_limit,
     )

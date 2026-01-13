@@ -11,7 +11,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{auth, chat, chat::S3Client, config::Config, voice, voice::SfuServer, ws};
+use crate::{auth, chat, chat::S3Client, config::Config, guild, voice, voice::SfuServer, ws};
 
 /// Shared application state.
 #[derive(Clone)]
@@ -68,6 +68,7 @@ pub fn create_router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .nest("/api/channels", chat::channels_router())
         .nest("/api/messages", chat::messages_router())
+        .nest("/api/guilds", guild::router())
         .nest("/api/voice", voice::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
