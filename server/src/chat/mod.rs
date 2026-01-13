@@ -29,7 +29,7 @@ pub fn channels_router() -> Router<AppState> {
         .route("/:id/members/:user_id", delete(channels::remove_member))
 }
 
-/// Create messages router.
+/// Create messages router (protected routes).
 pub fn messages_router() -> Router<AppState> {
     Router::new()
         .route(
@@ -43,5 +43,10 @@ pub fn messages_router() -> Router<AppState> {
         .route("/:id", patch(messages::update).delete(messages::delete))
         .route("/upload", post(uploads::upload_file))
         .route("/attachments/:id", get(uploads::get_attachment))
-        .route("/attachments/:id/download", get(uploads::download))
+}
+
+/// Create public messages router (routes that handle their own auth).
+/// The download route accepts auth via query parameter for browser requests.
+pub fn messages_public_router() -> Router<AppState> {
+    Router::new().route("/attachments/:id/download", get(uploads::download))
 }

@@ -12,6 +12,7 @@ import { Component, Show, createSignal, createMemo } from "solid-js";
 import { Hash, Volume2 } from "lucide-solid";
 import type { Channel } from "@/lib/types";
 import { isInChannel, getParticipants, voiceState } from "@/stores/voice";
+import { authState } from "@/stores/auth";
 
 interface ChannelItemProps {
   channel: Channel;
@@ -27,13 +28,13 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
   const isActive = () => isConnected() || isConnecting();
   const [showTooltip, setShowTooltip] = createSignal(false);
 
-  // Get participants for voice channels (remote participants)
+  // Get participants for voice channels (remote participants only, exclude current user)
   const participants = () => {
     if (!isVoice()) return [];
-    return getParticipants().filter(() => {
-      // In a real implementation, we'd check participant.channelId === props.channel.id
-      // For now, return all participants if this is the connected channel
-      return isConnected();
+    const currentUserId = authState.user?.id;
+    return getParticipants().filter((p) => {
+      // Only show participants from connected channel, excluding current user
+      return isConnected() && p.user_id !== currentUserId;
     });
   };
 

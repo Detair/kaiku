@@ -12,16 +12,121 @@ export type { User, Channel, Message, AppSettings };
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
+// Auth response type from server
+interface AuthResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  token_type: string;
+}
+
 // Browser state (when not in Tauri)
 const browserState = {
   serverUrl: "http://localhost:8080",
   accessToken: null as string | null,
+  refreshToken: null as string | null,
+  tokenExpiresAt: null as number | null,
+  refreshTimer: null as ReturnType<typeof setTimeout> | null,
 };
 
 // Initialize from localStorage if available
 if (typeof localStorage !== "undefined") {
   browserState.serverUrl = localStorage.getItem("serverUrl") || browserState.serverUrl;
   browserState.accessToken = localStorage.getItem("accessToken");
+  browserState.refreshToken = localStorage.getItem("refreshToken");
+  const expiresAt = localStorage.getItem("tokenExpiresAt");
+  browserState.tokenExpiresAt = expiresAt ? parseInt(expiresAt, 10) : null;
+}
+
+/**
+ * Schedule automatic token refresh before expiration.
+ * Refreshes 1 minute before the token expires.
+ */
+function scheduleTokenRefresh() {
+  // Clear any existing timer
+  if (browserState.refreshTimer) {
+    clearTimeout(browserState.refreshTimer);
+    browserState.refreshTimer = null;
+  }
+
+  if (!browserState.tokenExpiresAt || !browserState.refreshToken) {
+    return;
+  }
+
+  const now = Date.now();
+  const expiresAt = browserState.tokenExpiresAt;
+  // Refresh 60 seconds before expiration, but at least 10 seconds from now
+  const refreshIn = Math.max(expiresAt - now - 60000, 10000);
+
+  console.log(`[Auth] Scheduling token refresh in ${Math.round(refreshIn / 1000)}s`);
+
+  browserState.refreshTimer = setTimeout(async () => {
+    try {
+      await refreshAccessToken();
+    } catch (error) {
+      console.error("[Auth] Auto-refresh failed:", error);
+      // Token refresh failed - user will need to log in again
+    }
+  }, refreshIn);
+}
+
+/**
+ * Refresh the access token using the refresh token.
+ */
+export async function refreshAccessToken(): Promise<boolean> {
+  if (!browserState.refreshToken) {
+    console.log("[Auth] No refresh token available");
+    return false;
+  }
+
+  try {
+    console.log("[Auth] Refreshing access token...");
+
+    const baseUrl = browserState.serverUrl.replace(/\/+$/, "");
+    const response = await fetch(`${baseUrl}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: browserState.refreshToken }),
+    });
+
+    if (!response.ok) {
+      console.error("[Auth] Token refresh failed:", response.status);
+      // Clear tokens if refresh fails
+      browserState.accessToken = null;
+      browserState.refreshToken = null;
+      browserState.tokenExpiresAt = null;
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      localStorage.removeItem("tokenExpiresAt");
+      return false;
+    }
+
+    const data: AuthResponse = await response.json();
+
+    // Store new tokens
+    browserState.accessToken = data.access_token;
+    browserState.refreshToken = data.refresh_token;
+    browserState.tokenExpiresAt = Date.now() + data.expires_in * 1000;
+
+    localStorage.setItem("accessToken", data.access_token);
+    localStorage.setItem("refreshToken", data.refresh_token);
+    localStorage.setItem("tokenExpiresAt", browserState.tokenExpiresAt.toString());
+
+    console.log("[Auth] Token refreshed successfully");
+
+    // Schedule the next refresh
+    scheduleTokenRefresh();
+
+    return true;
+  } catch (error) {
+    console.error("[Auth] Token refresh error:", error);
+    return false;
+  }
+}
+
+// Start token refresh schedule on load if we have tokens
+if (browserState.accessToken && browserState.refreshToken) {
+  scheduleTokenRefresh();
 }
 
 // HTTP helper for browser mode
@@ -86,14 +191,25 @@ export async function login(
   browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
 
-  const response = await httpRequest<{ access_token: string }>(
+  const response = await httpRequest<AuthResponse>(
     "POST",
     "/auth/login",
     { username, password }
   );
 
+  // Store all token data
   browserState.accessToken = response.access_token;
+  browserState.refreshToken = response.refresh_token;
+  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
+
   localStorage.setItem("accessToken", response.access_token);
+  localStorage.setItem("refreshToken", response.refresh_token);
+  localStorage.setItem("tokenExpiresAt", browserState.tokenExpiresAt.toString());
+
+  // Schedule automatic token refresh
+  scheduleTokenRefresh();
+
+  console.log(`[Auth] Login successful, token expires in ${response.expires_in}s`);
 
   // Fetch user profile after login
   return await httpRequest<User>("GET", "/auth/me");
@@ -123,14 +239,25 @@ export async function register(
   browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
 
-  const response = await httpRequest<{ access_token: string }>(
+  const response = await httpRequest<AuthResponse>(
     "POST",
     "/auth/register",
     { username, password, email, display_name: displayName }
   );
 
+  // Store all token data
   browserState.accessToken = response.access_token;
+  browserState.refreshToken = response.refresh_token;
+  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
+
   localStorage.setItem("accessToken", response.access_token);
+  localStorage.setItem("refreshToken", response.refresh_token);
+  localStorage.setItem("tokenExpiresAt", browserState.tokenExpiresAt.toString());
+
+  // Schedule automatic token refresh
+  scheduleTokenRefresh();
+
+  console.log(`[Auth] Registration successful, token expires in ${response.expires_in}s`);
 
   // Fetch user profile after registration
   return await httpRequest<User>("GET", "/auth/me");
@@ -142,9 +269,21 @@ export async function logout(): Promise<void> {
     return invoke("logout");
   }
 
-  // Browser mode
+  // Browser mode - clear all token state
+  if (browserState.refreshTimer) {
+    clearTimeout(browserState.refreshTimer);
+    browserState.refreshTimer = null;
+  }
+
   browserState.accessToken = null;
+  browserState.refreshToken = null;
+  browserState.tokenExpiresAt = null;
+
   localStorage.removeItem("accessToken");
+  localStorage.removeItem("refreshToken");
+  localStorage.removeItem("tokenExpiresAt");
+
+  console.log("[Auth] Logged out, tokens cleared");
 }
 
 export async function getCurrentUser(): Promise<User | null> {
@@ -155,15 +294,43 @@ export async function getCurrentUser(): Promise<User | null> {
 
   // Browser mode - check if we have a token
   if (!browserState.accessToken) {
-    return null;
+    // Try to refresh if we have a refresh token
+    if (browserState.refreshToken) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed) {
+        return null;
+      }
+    } else {
+      return null;
+    }
   }
 
   try {
     return await httpRequest<User>("GET", "/auth/me");
   } catch {
-    // Token invalid, clear it
+    // Token invalid - try to refresh
+    if (browserState.refreshToken) {
+      const refreshed = await refreshAccessToken();
+      if (refreshed) {
+        try {
+          return await httpRequest<User>("GET", "/auth/me");
+        } catch {
+          // Refresh didn't help, clear everything
+        }
+      }
+    }
+
+    // Clear all token state
+    if (browserState.refreshTimer) {
+      clearTimeout(browserState.refreshTimer);
+      browserState.refreshTimer = null;
+    }
     browserState.accessToken = null;
+    browserState.refreshToken = null;
+    browserState.tokenExpiresAt = null;
     localStorage.removeItem("accessToken");
+    localStorage.removeItem("refreshToken");
+    localStorage.removeItem("tokenExpiresAt");
     return null;
   }
 }
@@ -504,6 +671,13 @@ export function getBrowserWebSocket(): WebSocket | null {
 
 export function getServerUrl(): string {
   return browserState.serverUrl;
+}
+
+/**
+ * Get the current access token (for use in URLs that can't use headers).
+ */
+export function getAccessToken(): string | null {
+  return browserState.accessToken || localStorage.getItem("accessToken");
 }
 
 /**

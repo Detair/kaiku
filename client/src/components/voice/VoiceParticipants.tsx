@@ -16,10 +16,10 @@ const VoiceParticipants: Component<Props> = (props) => {
     voiceState.channelId === props.channelId &&
     (voiceState.state === "connected" || voiceState.state === "connecting");
 
-  // Remote participants from server
+  // Remote participants from server (exclude current user, they're shown separately)
   const remoteParticipants = () => {
     return Object.values(voiceState.participants).filter(
-      (_p) => voiceState.channelId === props.channelId
+      (p) => voiceState.channelId === props.channelId && !isCurrentUser(p.user_id)
     );
   };
 

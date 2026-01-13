@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 2 (Rich Interactions & Modern UX) - Near Complete
 
-**Last Updated:** 2026-01-11
+**Last Updated:** 2026-01-13
 
 ## Quick Status Overview
 
@@ -12,7 +12,7 @@ This roadmap outlines the development path from the current prototype to a produ
 |-------|--------|------------|------------------|
 | **Phase 0** | ✅ Complete | 100% | N+1 fix, WebRTC optimization, MFA encryption |
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
-| **Phase 2** | ✅ Near Complete | 95% | Voice Island, VAD, Speaking Indicators, Command Palette |
+| **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Phase 3** | 📋 Planned | 5% | Guild store skeleton prepared |
 | **Phase 4** | 📋 Planned | 0% | - |
 | **Phase 5** | 📋 Planned | 0% | - |
@@ -26,6 +26,8 @@ This roadmap outlines the development path from the current prototype to a produ
 - ✅ Auto-retry voice join on connection conflicts
 - ✅ Participant list with instant local user display
 - ✅ Guild architecture preparation (Phase 3 ready)
+- ✅ Automatic JWT token refresh (prevents session expiration)
+- ✅ File attachments with drag-and-drop upload and image previews
 
 ---
 
@@ -114,6 +116,7 @@ This roadmap outlines the development path from the current prototype to a produ
   - Local user shown immediately when joining voice channel.
   - Participant count updates during "connecting" state, not just "connected".
   - Speaking/muted indicators for local user in channel list.
+  - Fixed duplicate user display by filtering current user from server participants.
   - **Location**: `client/src/components/voice/VoiceParticipants.tsx`, `client/src/components/channels/ChannelItem.tsx`
 - [x] **[UX] Draggable Voice Island** `New` ✅
   - Voice Island can be dragged anywhere on screen.
@@ -124,19 +127,31 @@ This roadmap outlines the development path from the current prototype to a produ
 - [x] **[Voice] Basic Noise Reduction (Tier 1)**
   - Implemented in `browser.ts` via constraints.
   - UI Toggle in Audio Settings.
-- [ ] **[Media] File Attachments**
-  - [ ] **Backend:** Implement `Proxy Method` for authenticated file downloads (Stream S3 -> Client).
-  - [ ] **Client:** Implement drag-and-drop file upload in `MessageInput`.
-  - [ ] **UI:** Render images/files nicely in the message list.
+- [x] **[Auth] Automatic Token Refresh** `New` ✅
+  - JWT access tokens auto-refresh 60 seconds before expiration.
+  - Refresh tokens stored and managed in browser state.
+  - Seamless session continuity without manual re-login.
+  - **Location**: `client/src/lib/tauri.ts`
+- [x] **[Media] File Attachments & Previews** ✅
+  - [x] **Backend:** Implement `Proxy Method` for authenticated file downloads.
+  - [x] **Backend:** Token query parameter support for browser requests (img src, a href).
+  - [x] **Backend:** Configurable upload size limit (default 50MB).
+  - [x] **Client:** Implement drag-and-drop file upload.
+  - [x] **UX:** Upload Preview Tray with image thumbnails and remove buttons.
+  - [x] **UI:** Render image previews in the message list.
 - [x] **[Text] Markdown & Emojis**
   - **Note:** `solid-markdown` enabled and verified.
-  - Add an Emoji Picker component.
-- [ ] **[Text] Code Blocks & Syntax Highlighting** `New`
-  - Style code blocks with monospace font (Unispace/Fira Code).
-  - Implement syntax highlighting (lazy-loaded).
-- [ ] **[UX] Theme System Expansion** `New`
-  - Implement CSS variable swapping for themes.
-  - Add "Solarized Light" and "Solarized Dark" presets.
+  - Add an Emoji Picker component using `picmo` + `@floating-ui/dom`.
+- [x] **[Text] Code Blocks & Syntax Highlighting** ✅
+  - Custom CodeBlock component with highlight.js integration.
+  - Languages: JavaScript, TypeScript, Python, Rust, JSON, Bash.
+  - Theme-aware syntax colors via CSS variables.
+  - **Location**: `client/src/components/ui/CodeBlock.tsx`, `client/src/styles/highlight-theme.css`
+- [x] **[UX] Theme System Expansion** ✅
+  - CSS variable swapping with `data-theme` attribute.
+  - Three themes: Focused Hybrid, Solarized Dark, Solarized Light.
+  - Settings modal with theme picker and live preview.
+  - **Location**: `client/src/stores/theme.ts`, `client/src/components/settings/`
 
 ---
 
@@ -147,8 +162,14 @@ This roadmap outlines the development path from the current prototype to a produ
   - Create `guilds` table (`id`, `name`, `owner_id`, `icon`).
   - **Migration:** Move `channels` and `roles` to belong to `guild_id`.
   - **Migration:** Refactor `channel_members` into `guild_members`.
-- [ ] **[Chat] Direct Messages (DMs)** `New`
-  - Create `dm_channels` or reuse `channels` with `type='dm'`.
+- [ ] **[Social] Friends & Status System** `New`
+  - **DB:** Create `friendships` table (pending/accepted/blocked).
+  - **API:** Implement Friend Request system (add/accept/block).
+  - **Status:** Custom status messages ("Vacation 🌴") and "Invisible" mode.
+  - **Real-time:** Fan-out presence updates to friends only.
+- [ ] **[Chat] Direct Messages & Group DMs** `New`
+  - Create `dm_channels` or reuse `channels` with `type='dm'` / `type='group'`.
+  - **Group DMs:** Ad-hoc groups (max 10) created from Friends List.
   - Implement "Home" view for DM list.
   - **Security:** Enforce E2E encryption (Signal/Olm) for DMs.
 - [ ] **[UI] Server Rail & Navigation**
@@ -167,6 +188,10 @@ This roadmap outlines the development path from the current prototype to a produ
 ## Phase 4: Advanced Features
 *Goal: Add competitive differentiators and mobile support.*
 
+- [ ] **[Social] Rich Presence (Game Activity)** `New`
+  - Detect running games via Process Scan (Tauri) or RPC.
+  - Display "Playing X" status in Friends List and User Popups.
+  - Enable "Ask to Join" logic.
 - [ ] **[UX] Cross-Server Favorites** `New`
   - Allow pinning channels from different guilds into a single "Favorites" list.
 - [ ] **[Auth] SSO / OIDC Integration**
@@ -200,3 +225,76 @@ This roadmap outlines the development path from the current prototype to a produ
 - [ ] **[SaaS] Limits & Monetization Logic**
   - Enforce limits (storage, members) per Guild.
   - Prepare "Boost" logic for lifting limits.
+
+---
+
+# Developer Appendix: Implementation Prompts
+
+These prompts are designed to be used by implementation agents to execute specific roadmap items.
+
+## [UI/UX] Global Shell & Modern Design
+**Goal:** Implement the "Focused Hybrid" layout.
+- **Stack:** Solid.js + UnoCSS.
+- **Layout:** 3-Pane structure (`ServerRail` -> `ContextSidebar` -> `MainChat`).
+- **Voice Island:** Floating overlay at `bottom-center` with connection stats and large controls.
+- **Semantic Colors:** Use `bg-surface-base` (#1E1E2E), `bg-surface-layer1` (#252535), `bg-surface-layer2` (#2A2A3C).
+- **Interactions:** Use `<Show>` and `<For>` for Solid logic. Render modals via `<Portal>`.
+
+## [Phase 2] Code Blocks & Emoji Picker
+**Task A: Code Blocks (Highlight.js)**
+- **Specs:** Auto-language detection, monospace font stack (Unispace/Fira Code).
+- **Themes:** Dynamic swap between `solarized-dark.css` and `solarized-light.css`.
+- **Integration:** Custom renderer passed to `SolidMarkdown` components prop.
+
+**Task B: Emoji Picker (Picmo)**
+- **Specs:** Framework-agnostic `Picmo` library.
+- **Positioning:** Use `@floating-ui/dom` to anchor above the message input.
+- **Lazy Loading:** Use `lazy()` to load the picker on first interaction.
+
+**Task C: Upload Preview Tray (UX Enhancement)**
+- **Goal:** Show images locally before they are uploaded to the server.
+- **Specs:** 
+    - Use `URL.createObjectURL(file)` to generate instant previews for `image/*` files.
+    - Render a horizontal, scrollable list of "Preview Cards" above the text area in `MessageInput.tsx`.
+    - Each card must have a "Remove" button to cancel that specific file.
+    - **Logic:** Shift `handleFileUpload` to trigger *only* when the Send button/Enter key is pressed, rather than on every drop.
+
+**Task D: Rich Text Toolbar (UX Enhancement)**
+- **Goal:** Provide Slack-like formatting controls without clutter.
+- **UI:** 
+    - Add a formatting toggle button ("Aa") to the input bar.
+    - When active, show a toolbar above the text area containing: Bold, Italic, Strike, Spoiler (`||`), Quote, Code Block, Inline Code.
+- **Logic:** 
+    - Clicking a button wraps the currently selected text in Markdown syntax (e.g., `**selected**`).
+    - If no text is selected, insert the syntax with cursor in between.
+    - Support keyboard shortcuts (`Ctrl+B`, `Ctrl+I`).
+
+**Task E: Shortcuts Cheat Sheet**
+- **Goal:** Help users discover power features.
+- **UI:** A modal overlay triggered by `?` or a help icon.
+- **Content:** List all global shortcuts (e.g., `Ctrl+K` Palette, `Ctrl+Shift+M` Mute, Markdown syntax).
+- **Design:** Clean, two-column grid using the "Focused Hybrid" theme.
+
+**Task F: Slash Command System**
+- **Trigger:** Typing `/` at the start of the message input.
+- **UI:** A popover menu listing available commands (reusing logic from Emoji Picker/Command Palette).
+- **Core Commands:**
+    - `/help` or `/?`: Opens the Shortcuts Cheat Sheet.
+    - `/shrug`: Appends `¯\_(ツ)_/¯`.
+    - `/spoiler [text]`: Wraps text in spoiler tags.
+    - `/me [action]`: Formats message as an action (italicized).
+    - `/roll [NdX]`: Rolls dice (e.g., `/roll d6`, `/roll 2d20`).
+    - `/flip`: Flips a coin (Heads/Tails).
+    - `/slap @user`: "User slaps @user around a bit with a large trout."
+    - `/tableflip`: `(╯°□°）╯︵ ┻━┻`
+    - `/unflip`: `┬─┬ノ( º _ ºノ)`
+
+## [Phase 3] Friends, Status & Social Graph
+**Task A: Social Backend**
+- **DB:** `friendships` table (user_id_1, user_id_2, status: pending/accepted/blocked).
+- **Presence:** `status_message` and `last_seen_at` columns on `users` table.
+- **Fan-out:** Redis broadcast of `presence_update` only to a user's friends' channels.
+
+**Task B: Social Frontend**
+- **View:** `Friends.tsx` dashboard with "Online", "All", "Pending" tabs.
+- **Actions:** Friend Request by username, blocking, and private status editing.

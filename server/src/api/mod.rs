@@ -2,7 +2,7 @@
 //!
 //! Central routing configuration and shared state.
 
-use axum::{routing::get, Router};
+use axum::{extract::DefaultBodyLimit, routing::get, Router};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tower_http::{
@@ -61,6 +61,9 @@ pub fn create_router(state: AppState) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Get max upload size from config (default 50MB)
+    let max_upload_size = state.config.max_upload_size;
+
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .nest("/api/channels", chat::channels_router())
@@ -78,6 +81,8 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/auth", auth::router(state.clone()))
         // Protected chat and voice routes
         .merge(protected_routes)
+        // Public message routes (download handles its own auth via query param)
+        .nest("/api/messages", chat::messages_public_router())
         // WebSocket
         .route("/ws", get(ws::handler))
         // API documentation
@@ -86,6 +91,8 @@ pub fn create_router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(cors)
+        // Increase body limit for file uploads (default is 2MB)
+        .layer(DefaultBodyLimit::max(max_upload_size))
         // State
         .with_state(state)
 }
