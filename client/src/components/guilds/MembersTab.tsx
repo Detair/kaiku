@@ -159,7 +159,9 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                         {member.nickname || member.display_name}
                       </span>
                       <Show when={isGuildOwner}>
-                        <Crown class="w-4 h-4 text-yellow-500" title="Server Owner" />
+                        <span title="Server Owner">
+                          <Crown class="w-4 h-4 text-yellow-500" />
+                        </span>
                       </Show>
                     </div>
                     <div class="text-sm text-text-secondary">
