@@ -40,7 +40,31 @@ export interface GuildMember {
   avatar_url: string | null;
   nickname: string | null;
   joined_at: string;
+  status: "online" | "idle" | "offline";
+  last_seen_at: string | null;
 }
+
+export interface GuildInvite {
+  id: string;
+  guild_id: string;
+  code: string;
+  created_by: string;
+  expires_at: string | null;
+  use_count: number;
+  created_at: string;
+}
+
+export interface InviteResponse {
+  id: string;
+  code: string;
+  guild_id: string;
+  guild_name: string;
+  expires_at: string | null;
+  use_count: number;
+  created_at: string;
+}
+
+export type InviteExpiry = "30m" | "1h" | "1d" | "7d" | "never";
 
 // Channel Types
 
