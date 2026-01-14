@@ -652,6 +652,23 @@ export async function blockUser(userId: string): Promise<Friendship> {
   return httpRequest<Friendship>("POST", `/api/friends/${userId}/block`);
 }
 
+// Call State Types (matching backend)
+
+export type CallEndReason = "cancelled" | "all_declined" | "no_answer" | "last_left";
+
+export interface CallStateResponse {
+  channel_id: string;
+  // CallState is one of: Ringing, Active, Ended
+  started_by?: string;
+  started_at?: string;
+  declined_by?: string[];
+  target_users?: string[];
+  participants?: string[];
+  reason?: CallEndReason;
+  duration_secs?: number;
+  ended_at?: string;
+}
+
 // DM Commands
 
 export async function getDMs(): Promise<DMChannel[]> {
@@ -717,6 +734,68 @@ export async function markDMAsRead(
   await httpRequest<void>("POST", `/api/dm/${channelId}/read`, {
     last_read_message_id: lastReadMessageId,
   });
+}
+
+// DM Call Commands
+
+/**
+ * Get the current call state for a DM channel.
+ */
+export async function getCallState(channelId: string): Promise<CallStateResponse | null> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_call_state", { channelId });
+  }
+
+  return httpRequest<CallStateResponse | null>("GET", `/api/dm/${channelId}/call`);
+}
+
+/**
+ * Start a new call in a DM channel.
+ */
+export async function startDMCall(channelId: string): Promise<CallStateResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("start_dm_call", { channelId });
+  }
+
+  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/start`);
+}
+
+/**
+ * Join an active call in a DM channel.
+ */
+export async function joinDMCall(channelId: string): Promise<CallStateResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("join_dm_call", { channelId });
+  }
+
+  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/join`);
+}
+
+/**
+ * Decline an incoming call in a DM channel.
+ */
+export async function declineDMCall(channelId: string): Promise<CallStateResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("decline_dm_call", { channelId });
+  }
+
+  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/decline`);
+}
+
+/**
+ * Leave an active call in a DM channel.
+ */
+export async function leaveDMCall(channelId: string): Promise<CallStateResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("leave_dm_call", { channelId });
+  }
+
+  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/leave`);
 }
 
 // Voice Commands (browser mode stubs - voice requires Tauri)

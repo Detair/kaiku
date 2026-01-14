@@ -164,7 +164,14 @@ export type ServerEvent =
       participants: VoiceParticipant[];
     }
   | { type: "voice_error"; code: string; message: string }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string }
+  // Call events
+  | { type: "incoming_call"; channel_id: string; initiator: string; initiator_name: string }
+  | { type: "call_started"; channel_id: string }
+  | { type: "call_ended"; channel_id: string; reason: string; duration_secs: number | null }
+  | { type: "call_participant_joined"; channel_id: string; user_id: string; username: string }
+  | { type: "call_participant_left"; channel_id: string; user_id: string }
+  | { type: "call_declined"; channel_id: string; user_id: string };
 
 // Settings Types
 

@@ -4,14 +4,44 @@
  * Displays a DM conversation in the Home view.
  */
 
-import { Component, Show, onCleanup, createEffect } from "solid-js";
+import { Component, Show, onCleanup, createEffect, createSignal } from "solid-js";
+import { Phone } from "lucide-solid";
 import { getSelectedDM, markDMAsRead } from "@/stores/dms";
 import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
+import { CallBanner } from "@/components/call";
+import { callState, startCall, isInCallForChannel } from "@/stores/call";
+import { startDMCall } from "@/lib/tauri";
 
 const DMConversation: Component = () => {
   const dm = () => getSelectedDM();
+  const [isStartingCall, setIsStartingCall] = createSignal(false);
+
+  const handleStartCall = async () => {
+    const currentDM = dm();
+    if (!currentDM) return;
+
+    setIsStartingCall(true);
+    try {
+      startCall(currentDM.id);
+      await startDMCall(currentDM.id);
+    } catch (err) {
+      console.error("Failed to start call:", err);
+    } finally {
+      setIsStartingCall(false);
+    }
+  };
+
+  const canStartCall = () => {
+    const currentDM = dm();
+    if (!currentDM) return false;
+    // Can't start a call if already in one for this channel
+    if (isInCallForChannel(currentDM.id)) return false;
+    // Can't start a call if in any call state except idle
+    if (callState.currentCall.status !== "idle") return false;
+    return true;
+  };
 
   // Mark as read when viewing
   createEffect(() => {
@@ -73,7 +103,23 @@ const DMConversation: Component = () => {
               {dm()?.participants.length} members
             </span>
           </Show>
+
+          {/* Spacer */}
+          <div class="flex-1" />
+
+          {/* Call Button */}
+          <button
+            onClick={handleStartCall}
+            disabled={!canStartCall() || isStartingCall()}
+            title={canStartCall() ? "Start voice call" : "Call in progress"}
+            class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-layer2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Phone class="w-5 h-5" />
+          </button>
         </header>
+
+        {/* Call Banner */}
+        <CallBanner channelId={dm()!.id} />
 
         {/* Messages */}
         <MessageList channelId={dm()!.id} />

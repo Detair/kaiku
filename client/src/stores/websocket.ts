@@ -8,6 +8,14 @@ import { createStore } from "solid-js/store";
 import * as tauri from "@/lib/tauri";
 import type { Message, ServerEvent, UserStatus } from "@/lib/types";
 import { addMessage, removeMessage } from "./messages";
+import {
+  receiveIncomingCall,
+  callConnected,
+  callEndedExternally,
+  participantJoined,
+  participantLeft,
+  type EndReason,
+} from "./call";
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -139,6 +147,52 @@ export async function initWebSocket(): Promise<void> {
         setWsState({ error: event.payload.message });
       })
     );
+
+    // Call events
+    unlisteners.push(
+      await listen<{ channel_id: string; initiator: string; initiator_name: string }>(
+        "ws:incoming_call",
+        (event) => {
+          receiveIncomingCall(
+            event.payload.channel_id,
+            event.payload.initiator,
+            event.payload.initiator_name
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; reason: string; duration_secs: number | null }>(
+        "ws:call_ended",
+        (event) => {
+          callEndedExternally(
+            event.payload.channel_id,
+            event.payload.reason as EndReason,
+            event.payload.duration_secs ?? undefined
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string; username: string }>(
+        "ws:call_participant_joined",
+        (event) => {
+          participantJoined(event.payload.channel_id, event.payload.user_id);
+          callConnected(event.payload.channel_id, [event.payload.user_id]);
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>(
+        "ws:call_participant_left",
+        (event) => {
+          participantLeft(event.payload.channel_id, event.payload.user_id);
+        }
+      )
+    );
   } else {
     // Browser mode - use browser WebSocket events
     const attachMessageHandler = () => {
@@ -265,6 +319,45 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
           });
         }
       }
+      break;
+
+    // Call events
+    case "incoming_call":
+      console.log("[WebSocket] Incoming call from:", event.initiator_name);
+      receiveIncomingCall(event.channel_id, event.initiator, event.initiator_name);
+      break;
+
+    case "call_started":
+      console.log("[WebSocket] Call started in channel:", event.channel_id);
+      // Call started means the initiator is now connected
+      // Other participants will receive incoming_call
+      break;
+
+    case "call_ended":
+      console.log("[WebSocket] Call ended:", event.reason);
+      callEndedExternally(
+        event.channel_id,
+        event.reason as EndReason,
+        event.duration_secs ?? undefined
+      );
+      break;
+
+    case "call_participant_joined":
+      console.log("[WebSocket] Participant joined call:", event.username);
+      participantJoined(event.channel_id, event.user_id);
+      // When someone joins, transition to connected state if we're connecting
+      callConnected(event.channel_id, [event.user_id]);
+      break;
+
+    case "call_participant_left":
+      console.log("[WebSocket] Participant left call:", event.user_id);
+      participantLeft(event.channel_id, event.user_id);
+      break;
+
+    case "call_declined":
+      console.log("[WebSocket] Call declined by:", event.user_id);
+      // The call store will handle this through the API response
+      // This event is informational for other participants
       break;
 
     default:
