@@ -10,6 +10,7 @@
 //! - DM voice call signaling
 
 pub mod call;
+pub mod call_handlers;
 pub mod call_service;
 pub mod error;
 mod handlers;
