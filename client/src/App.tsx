@@ -6,6 +6,7 @@ import Login from "./views/Login";
 import Register from "./views/Register";
 import Main from "./views/Main";
 import ThemeDemo from "./pages/ThemeDemo";
+import InviteJoin from "./views/InviteJoin";
 
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
@@ -33,11 +34,19 @@ const ProtectedMain: Component = () => (
   </AuthGuard>
 );
 
+// Protected invite wrapper (needs auth check but shows loading state)
+const ProtectedInvite: Component = () => (
+  <AuthGuard>
+    <InviteJoin />
+  </AuthGuard>
+);
+
 // Wrapped components for routes
 const LoginPage = () => <Layout><Login /></Layout>;
 const RegisterPage = () => <Layout><Register /></Layout>;
 const MainPage = () => <Layout><ProtectedMain /></Layout>;
 const ThemeDemoPage = () => <Layout><ThemeDemo /></Layout>;
+const InvitePage = () => <Layout><ProtectedInvite /></Layout>;
 
 // Export routes as JSX Route elements
 export const AppRoutes = (): JSX.Element => (
@@ -45,6 +54,7 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/demo" component={ThemeDemoPage} />
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
+    <Route path="/invite/:code" component={InvitePage} />
     <Route path="/*" component={MainPage} />
   </>
 );

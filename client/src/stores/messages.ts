@@ -114,9 +114,11 @@ export async function sendMessage(
   try {
     const message = await tauri.sendMessage(channelId, content.trim());
 
-    // Add the sent message to the store (use path-based setter for proper reactivity)
+    // Add the sent message to the store (check for duplicates since WebSocket may have already added it)
     const prev = messagesState.byChannel[channelId] || [];
-    setMessagesState("byChannel", channelId, [...prev, message]);
+    if (!prev.some((m) => m.id === message.id)) {
+      setMessagesState("byChannel", channelId, [...prev, message]);
+    }
 
     return message;
   } catch (err) {
