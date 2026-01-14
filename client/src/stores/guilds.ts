@@ -5,7 +5,7 @@
  */
 
 import { createStore } from "solid-js/store";
-import type { Guild, GuildMember, Channel } from "@/lib/types";
+import type { Guild, GuildMember, GuildInvite, Channel } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 
 /**
@@ -18,11 +18,14 @@ interface GuildStoreState {
   activeGuildId: string | null;
   // Members of the active guild
   members: Record<string, GuildMember[]>;
+  // Invites for guilds (owner only)
+  invites: Record<string, GuildInvite[]>;
   // Channels of the active guild
   guildChannels: Record<string, Channel[]>;
   // Loading states
   isLoading: boolean;
   isMembersLoading: boolean;
+  isInvitesLoading: boolean;
   // Error state
   error: string | null;
 }
@@ -32,9 +35,11 @@ const [guildsState, setGuildsState] = createStore<GuildStoreState>({
   guilds: [],
   activeGuildId: null,
   members: {},
+  invites: {},
   guildChannels: {},
   isLoading: false,
   isMembersLoading: false,
+  isInvitesLoading: false,
   error: null,
 });
 
@@ -238,6 +243,82 @@ export async function leaveGuild(guildId: string): Promise<void> {
   if (guildsState.activeGuildId === guildId) {
     selectHome();
   }
+}
+
+// ============================================================================
+// Invite Functions
+// ============================================================================
+
+/**
+ * Load invites for a guild (owner only)
+ */
+export async function loadGuildInvites(guildId: string): Promise<void> {
+  setGuildsState({ isInvitesLoading: true });
+
+  try {
+    const invites = await tauri.getGuildInvites(guildId);
+    setGuildsState("invites", guildId, invites);
+    setGuildsState({ isInvitesLoading: false });
+  } catch (err) {
+    console.error("Failed to load guild invites:", err);
+    setGuildsState({ isInvitesLoading: false });
+  }
+}
+
+/**
+ * Create a new invite
+ */
+export async function createInvite(
+  guildId: string,
+  expiresIn: tauri.InviteExpiry = "7d"
+): Promise<tauri.GuildInvite> {
+  const invite = await tauri.createGuildInvite(guildId, expiresIn);
+  setGuildsState("invites", guildId, (prev) => [invite, ...(prev || [])]);
+  return invite;
+}
+
+/**
+ * Delete an invite
+ */
+export async function deleteInvite(guildId: string, code: string): Promise<void> {
+  await tauri.deleteGuildInvite(guildId, code);
+  setGuildsState("invites", guildId, (prev) =>
+    (prev || []).filter((i) => i.code !== code)
+  );
+}
+
+/**
+ * Join a guild via invite code
+ */
+export async function joinViaInviteCode(code: string): Promise<void> {
+  const response = await tauri.joinViaInvite(code);
+  await loadGuilds(); // Reload guilds to include the new one
+  await selectGuild(response.guild_id);
+}
+
+/**
+ * Kick a member from a guild
+ */
+export async function kickMember(guildId: string, userId: string): Promise<void> {
+  await tauri.kickGuildMember(guildId, userId);
+  setGuildsState("members", guildId, (prev) =>
+    (prev || []).filter((m) => m.user_id !== userId)
+  );
+}
+
+/**
+ * Get invites for a guild
+ */
+export function getGuildInvites(guildId: string): tauri.GuildInvite[] {
+  return guildsState.invites[guildId] || [];
+}
+
+/**
+ * Check if current user is guild owner
+ */
+export function isGuildOwner(guildId: string, userId: string): boolean {
+  const guild = guildsState.guilds.find((g) => g.id === guildId);
+  return guild?.owner_id === userId;
 }
 
 /**
