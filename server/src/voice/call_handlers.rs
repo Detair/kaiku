@@ -16,6 +16,7 @@ use crate::{
     db::{self, ChannelType},
     voice::call::CallState,
     voice::call_service::{CallError, CallService},
+    ws::{broadcast_to_channel, ServerEvent},
 };
 
 /// Response for call state
@@ -154,6 +155,14 @@ pub async fn get_call(
     })))
 }
 
+/// Get username for a user ID
+async fn get_username(state: &AppState, user_id: Uuid) -> Result<String, CallHandlerError> {
+    let user = db::find_user_by_id(&state.db, user_id)
+        .await?
+        .ok_or(CallHandlerError::NotFound)?;
+    Ok(user.username)
+}
+
 /// POST /api/dm/:id/call/start - Start a new call
 pub async fn start_call(
     State(state): State<AppState>,
@@ -176,7 +185,18 @@ pub async fn start_call(
         .start_call(channel_id, auth.id, target_users)
         .await?;
 
-    // TODO: Broadcast CallStarted WebSocket event to participants
+    // Broadcast IncomingCall to all participants (they're subscribed to the DM channel)
+    let initiator_name = get_username(&state, auth.id).await?;
+    let _ = broadcast_to_channel(
+        &state.redis,
+        channel_id,
+        &ServerEvent::IncomingCall {
+            channel_id,
+            initiator: auth.id,
+            initiator_name,
+        },
+    )
+    .await;
 
     Ok((
         StatusCode::CREATED,
@@ -199,7 +219,18 @@ pub async fn join_call(
     let call_service = CallService::new(state.redis.clone());
     let call_state = call_service.join_call(channel_id, auth.id).await?;
 
-    // TODO: Broadcast ParticipantJoined WebSocket event
+    // Broadcast ParticipantJoined to all participants
+    let username = get_username(&state, auth.id).await?;
+    let _ = broadcast_to_channel(
+        &state.redis,
+        channel_id,
+        &ServerEvent::CallParticipantJoined {
+            channel_id,
+            user_id: auth.id,
+            username,
+        },
+    )
+    .await;
 
     Ok(Json(CallStateResponse {
         channel_id,
@@ -219,7 +250,31 @@ pub async fn decline_call(
     let call_service = CallService::new(state.redis.clone());
     let call_state = call_service.decline_call(channel_id, auth.id).await?;
 
-    // TODO: Broadcast CallDeclined WebSocket event
+    // Broadcast CallDeclined to all participants
+    let _ = broadcast_to_channel(
+        &state.redis,
+        channel_id,
+        &ServerEvent::CallDeclined {
+            channel_id,
+            user_id: auth.id,
+        },
+    )
+    .await;
+
+    // If call ended due to all declining, broadcast CallEnded
+    if let CallState::Ended { reason, .. } = &call_state {
+        let reason_str = format!("{:?}", reason).to_lowercase();
+        let _ = broadcast_to_channel(
+            &state.redis,
+            channel_id,
+            &ServerEvent::CallEnded {
+                channel_id,
+                reason: reason_str,
+                duration_secs: None,
+            },
+        )
+        .await;
+    }
 
     Ok(Json(CallStateResponse {
         channel_id,
@@ -239,7 +294,36 @@ pub async fn leave_call(
     let call_service = CallService::new(state.redis.clone());
     let call_state = call_service.leave_call(channel_id, auth.id).await?;
 
-    // TODO: Broadcast ParticipantLeft or CallEnded WebSocket event
+    // Broadcast ParticipantLeft
+    let _ = broadcast_to_channel(
+        &state.redis,
+        channel_id,
+        &ServerEvent::CallParticipantLeft {
+            channel_id,
+            user_id: auth.id,
+        },
+    )
+    .await;
+
+    // If call ended due to last person leaving, broadcast CallEnded
+    if let CallState::Ended {
+        reason,
+        duration_secs,
+        ..
+    } = &call_state
+    {
+        let reason_str = format!("{:?}", reason).to_lowercase();
+        let _ = broadcast_to_channel(
+            &state.redis,
+            channel_id,
+            &ServerEvent::CallEnded {
+                channel_id,
+                reason: reason_str,
+                duration_secs: *duration_secs,
+            },
+        )
+        .await;
+    }
 
     Ok(Json(CallStateResponse {
         channel_id,

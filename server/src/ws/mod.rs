@@ -241,6 +241,54 @@ pub enum ServerEvent {
         /// Error message.
         message: String,
     },
+
+    // Call events (DM voice calls)
+    /// Incoming call notification
+    IncomingCall {
+        /// DM channel ID.
+        channel_id: Uuid,
+        /// User who initiated the call.
+        initiator: Uuid,
+        /// Initiator's username.
+        initiator_name: String,
+    },
+    /// Call started (for the initiator)
+    CallStarted {
+        /// DM channel ID.
+        channel_id: Uuid,
+    },
+    /// Call ended
+    CallEnded {
+        /// DM channel ID.
+        channel_id: Uuid,
+        /// End reason.
+        reason: String,
+        /// Call duration in seconds (if call was connected).
+        duration_secs: Option<u32>,
+    },
+    /// Participant joined the call
+    CallParticipantJoined {
+        /// DM channel ID.
+        channel_id: Uuid,
+        /// User who joined.
+        user_id: Uuid,
+        /// User's username.
+        username: String,
+    },
+    /// Participant left the call
+    CallParticipantLeft {
+        /// DM channel ID.
+        channel_id: Uuid,
+        /// User who left.
+        user_id: Uuid,
+    },
+    /// Someone declined the call
+    CallDeclined {
+        /// DM channel ID.
+        channel_id: Uuid,
+        /// User who declined.
+        user_id: Uuid,
+    },
 }
 
 /// Redis pub/sub channels.
