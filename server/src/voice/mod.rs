@@ -7,7 +7,9 @@
 //! - SFU server for managing voice rooms and peer connections
 //! - Track routing for RTP packet forwarding
 //! - HTTP endpoints for ICE server configuration
+//! - DM voice call signaling
 
+pub mod call;
 pub mod error;
 mod handlers;
 mod peer;
