@@ -1,38 +1,24 @@
 /**
- * Theme Store - Manages application theme state
+ * Theme Store
  *
- * Supports runtime theme switching with CSS variables via data-theme attribute.
- * Persists theme preference to AppSettings via Tauri API with localStorage fallback.
+ * Manages theme state with persistence via settings or localStorage fallback.
  */
 
 import { createStore } from "solid-js/store";
-import { getSettings, updateSettings } from "@/lib/tauri";
+import * as tauri from "@/lib/tauri";
 
 export type ThemeName = "focused-hybrid" | "solarized-dark" | "solarized-light";
 
-/**
- * Theme definition with metadata
- */
 export interface ThemeDefinition {
-  /** Unique theme identifier */
   id: ThemeName;
-  /** Display name */
   name: string;
-  /** Theme description */
   description: string;
-  /** Whether theme is dark or light */
   isDark: boolean;
 }
 
-/**
- * Theme store state
- */
 interface ThemeState {
-  /** Currently active theme */
   currentTheme: ThemeName;
-  /** Available themes */
   availableThemes: ThemeDefinition[];
-  /** Whether theme has been initialized */
   isInitialized: boolean;
 }
 
@@ -54,7 +40,7 @@ const [themeState, setThemeState] = createStore<ThemeState>({
     {
       id: "solarized-light",
       name: "Solarized Light",
-      description: "Warm light theme based on solar wavelengths",
+      description: "Warm light theme for daytime use",
       isDark: false,
     },
   ],
@@ -62,47 +48,80 @@ const [themeState, setThemeState] = createStore<ThemeState>({
 });
 
 /**
- * Initialize theme from persisted settings or system preference
+ * Apply theme to document.
  */
-export async function initTheme(): Promise<void> {
-  try {
-    const settings = await getSettings();
-    // Map AppSettings.theme ("dark" | "light") to specific theme
-    const theme = settings.theme === "dark" ? "focused-hybrid" : "solarized-light";
-    await setTheme(theme);
-  } catch {
-    // Fallback to localStorage (browser mode)
-    const saved = localStorage.getItem("theme") as ThemeName | null;
-    await setTheme(saved || "focused-hybrid");
-  }
-
-  setThemeState({ isInitialized: true });
+function applyTheme(theme: ThemeName): void {
+  document.documentElement.setAttribute("data-theme", theme);
 }
 
 /**
- * Change theme and persist to settings
+ * Initialize theme from settings or localStorage.
+ */
+export async function initTheme(): Promise<void> {
+  if (themeState.isInitialized) return;
+
+  try {
+    // Try to get theme from app settings
+    const settings = await tauri.getSettings();
+    // Map dark/light to specific theme, or use stored preference
+    const storedTheme = localStorage.getItem("theme") as ThemeName | null;
+    
+    let theme: ThemeName;
+    if (storedTheme && themeState.availableThemes.some(t => t.id === storedTheme)) {
+      // Use specific stored theme preference
+      theme = storedTheme;
+    } else {
+      // Fall back to dark/light preference from settings
+      theme = settings.theme === "light" ? "solarized-light" : "focused-hybrid";
+    }
+    
+    setThemeState({ currentTheme: theme, isInitialized: true });
+    applyTheme(theme);
+  } catch {
+    // Fallback to localStorage only
+    const saved = localStorage.getItem("theme") as ThemeName | null;
+    const theme = saved && themeState.availableThemes.some(t => t.id === saved)
+      ? saved
+      : "focused-hybrid";
+    
+    setThemeState({ currentTheme: theme, isInitialized: true });
+    applyTheme(theme);
+  }
+}
+
+/**
+ * Set and persist the current theme.
  */
 export async function setTheme(theme: ThemeName): Promise<void> {
-  // Update store
   setThemeState({ currentTheme: theme });
-
-  // Apply to DOM immediately
-  document.documentElement.setAttribute("data-theme", theme);
-
-  // Persist to settings
+  applyTheme(theme);
+  
+  // Persist to localStorage for specific theme preference
+  localStorage.setItem("theme", theme);
+  
+  // Also update settings dark/light preference
   try {
-    const settings = await getSettings();
-    const themeDefinition = themeState.availableThemes.find((t) => t.id === theme);
-    const isDark = themeDefinition?.isDark ?? true;
-
-    await updateSettings({
-      ...settings,
-      theme: isDark ? "dark" : "light",
-    });
+    const settings = await tauri.getSettings();
+    const isDark = themeState.availableThemes.find(t => t.id === theme)?.isDark ?? true;
+    await tauri.updateSettings({ ...settings, theme: isDark ? "dark" : "light" });
   } catch {
-    // Browser mode fallback
-    localStorage.setItem("theme", theme);
+    // Settings update failed, localStorage is the fallback
+    console.warn("[Theme] Failed to persist theme to settings");
   }
+}
+
+/**
+ * Get the current theme definition.
+ */
+export function getCurrentTheme(): ThemeDefinition | undefined {
+  return themeState.availableThemes.find(t => t.id === themeState.currentTheme);
+}
+
+/**
+ * Check if current theme is dark.
+ */
+export function isDarkTheme(): boolean {
+  return getCurrentTheme()?.isDark ?? true;
 }
 
 export { themeState };

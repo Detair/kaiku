@@ -18,6 +18,39 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1e1f22;
+  background: var(--color-surface-highlight);
   border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-secondary);
+}
+
+/* Text selection */
+::selection {
+  background-color: var(--color-selection-bg);
+  color: var(--color-selection-text);
+}
+
+::-moz-selection {
+  background-color: var(--color-selection-bg);
+  color: var(--color-selection-text);
+}
+
+/* Input and textarea styling */
+input,
+textarea {
+  color: var(--color-text-input);
+  background-color: var(--color-surface-layer2);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-text-secondary);
+}
+
+/* Transparent background overrides for inputs inside styled containers */
+input.bg-transparent,
+textarea.bg-transparent {
+  background-color: transparent;
 }

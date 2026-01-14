@@ -70,7 +70,8 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
         onClick={props.onClose}
       >
         <div
-          class="bg-surface-base border border-white/10 rounded-2xl w-full max-w-md flex flex-col max-h-[80vh]"
+          class="border border-white/10 rounded-2xl w-full max-w-md flex flex-col max-h-[80vh]"
+          style="background-color: var(--color-surface-base)"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
@@ -93,7 +94,8 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
                 value={search()}
                 onInput={(e) => setSearch(e.currentTarget.value)}
                 placeholder="Search friends..."
-                class="w-full pl-9 pr-4 py-2 bg-surface-layer1 border border-white/10 rounded-lg text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary"
+                class="w-full pl-9 pr-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-secondary focus:outline-none focus:border-accent-primary"
+                style="background-color: var(--color-surface-layer1)"
               />
             </div>
             <Show when={selectedIds().length > 0}>
@@ -128,7 +130,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
 
           {/* Error */}
           <Show when={error()}>
-            <div class="mx-4 mb-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+            <div class="mx-4 mb-2 p-3 rounded-lg text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
               {error()}
             </div>
           </Show>

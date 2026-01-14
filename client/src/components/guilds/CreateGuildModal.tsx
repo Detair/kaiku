@@ -49,7 +49,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
   return (
     <Portal>
       <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-        <div class="bg-surface-base border border-white/10 rounded-2xl w-[480px] max-h-[600px] flex flex-col shadow-2xl">
+        <div class="border border-white/10 rounded-2xl w-[480px] max-h-[600px] flex flex-col shadow-2xl" style="background-color: var(--color-surface-base)">
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
             <h2 class="text-xl font-bold text-text-primary">Create a Server</h2>
@@ -75,7 +75,8 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                   value={name()}
                   onInput={(e) => setName(e.currentTarget.value)}
                   placeholder="My Awesome Server"
-                  class="w-full px-4 py-3 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
+                  class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
+                  style="background-color: var(--color-surface-layer2)"
                   maxLength={100}
                   disabled={isCreating()}
                   autofocus
@@ -94,7 +95,8 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                   value={description()}
                   onInput={(e) => setDescription(e.currentTarget.value)}
                   placeholder="Tell us about your server..."
-                  class="w-full px-4 py-3 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent resize-none"
+                  class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent resize-none"
+                  style="background-color: var(--color-surface-layer2)"
                   rows={3}
                   maxLength={1000}
                   disabled={isCreating()}
@@ -106,8 +108,8 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
 
               {/* Error Message */}
               <Show when={error()}>
-                <div class="p-3 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
-                  <p class="text-sm text-accent-danger">{error()}</p>
+                <div class="p-3 rounded-lg" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)">
+                  <p class="text-sm" style="color: var(--color-error-text)">{error()}</p>
                 </div>
               </Show>
             </div>

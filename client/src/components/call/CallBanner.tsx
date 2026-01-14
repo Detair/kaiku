@@ -62,6 +62,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
       declineCall(props.channelId);
     } catch (err) {
       console.error("Failed to decline call:", err);
+      // If call not found (404) or already ended, just clean up local state
+      declineCall(props.channelId);
     } finally {
       setIsLoading(false);
     }
@@ -74,6 +76,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
       endCall(props.channelId, "last_left");
     } catch (err) {
       console.error("Failed to leave call:", err);
+      // If call not found (404) or conflict (409), just clean up local state
+      endCall(props.channelId, "last_left");
     } finally {
       setIsLoading(false);
     }
@@ -86,6 +90,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
       endCall(props.channelId, "cancelled");
     } catch (err) {
       console.error("Failed to cancel call:", err);
+      // If call not found (404) or already ended, just clean up local state
+      endCall(props.channelId, "cancelled");
     } finally {
       setIsLoading(false);
     }

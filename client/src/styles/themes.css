@@ -1,64 +1,98 @@
-/* Theme System - Semantic Color Tokens */
+/**
+ * Theme Definitions
+ *
+ * CSS variables for theme switching via data-theme attribute.
+ * Each theme defines semantic color tokens used throughout the app.
+ */
 
 /* Focused Hybrid - Modern dark theme with high contrast */
 :root[data-theme="focused-hybrid"] {
-  /* Surface layers */
-  --color-surface-base: #1e1e2e;
+  --color-surface-base: #1E1E2E;
   --color-surface-layer1: #252535;
-  --color-surface-layer2: #2a2a3c;
-  --color-surface-highlight: #36364d;
-
-  /* Text colors */
-  --color-text-primary: #eceff4;
-  --color-text-secondary: #9ca3af;
-
-  /* Accent colors */
-  --color-accent-primary: #88c0d0;
-  --color-accent-danger: #bf616a;
-
-  /* Derived colors */
-  --color-accent-primary-hover: #6fa8b8;
+  --color-surface-layer2: #2A2A3C;
+  --color-surface-highlight: #36364D;
+  --color-text-primary: #ECEFF4;
+  --color-text-secondary: #9CA3AF;
+  --color-text-input: #FFFFFF;
+  --color-accent-primary: #88C0D0;
+  --color-accent-primary-hover: #7AB0C0;
+  --color-accent-danger: #BF616A;
+  --color-accent-success: #A3BE8C;
+  --color-accent-warning: #EBCB8B;
   --color-border-subtle: rgba(255, 255, 255, 0.05);
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-selection-bg: #88C0D0;
+  --color-selection-text: #1E1E2E;
+  --color-error-bg: rgba(191, 97, 106, 0.15);
+  --color-error-border: rgba(191, 97, 106, 0.4);
+  --color-error-text: #F0A0A8;
 }
 
 /* Solarized Dark - Precision colors for machines and people */
 :root[data-theme="solarized-dark"] {
-  /* Surface layers */
   --color-surface-base: #002b36;
   --color-surface-layer1: #073642;
   --color-surface-layer2: #0e4c5a;
   --color-surface-highlight: #145766;
-
-  /* Text colors */
-  --color-text-primary: #839496;
-  --color-text-secondary: #586e75;
-
-  /* Accent colors */
+  --color-text-primary: #93a1a1;
+  --color-text-secondary: #657b83;
+  --color-text-input: #fdf6e3;
   --color-accent-primary: #268bd2;
+  --color-accent-primary-hover: #1a7dc4;
   --color-accent-danger: #dc322f;
-
-  /* Derived colors */
-  --color-accent-primary-hover: #1e6fa8;
+  --color-accent-success: #859900;
+  --color-accent-warning: #b58900;
   --color-border-subtle: rgba(147, 161, 161, 0.1);
+  --color-border-default: rgba(147, 161, 161, 0.15);
+  --color-selection-bg: #268bd2;
+  --color-selection-text: #fdf6e3;
+  --color-error-bg: rgba(220, 50, 47, 0.15);
+  --color-error-border: rgba(220, 50, 47, 0.4);
+  --color-error-text: #fdf6e3;
 }
 
 /* Solarized Light - Warm light theme */
 :root[data-theme="solarized-light"] {
-  /* Surface layers */
   --color-surface-base: #fdf6e3;
   --color-surface-layer1: #eee8d5;
   --color-surface-layer2: #e8e2cf;
   --color-surface-highlight: #ddd6c1;
-
-  /* Text colors */
-  --color-text-primary: #657b83;
+  --color-text-primary: #586e75;
   --color-text-secondary: #93a1a1;
-
-  /* Accent colors */
+  --color-text-input: #073642;
   --color-accent-primary: #268bd2;
+  --color-accent-primary-hover: #1a7dc4;
   --color-accent-danger: #dc322f;
-
-  /* Derived colors */
-  --color-accent-primary-hover: #1e6fa8;
+  --color-accent-success: #859900;
+  --color-accent-warning: #b58900;
   --color-border-subtle: rgba(0, 43, 54, 0.1);
+  --color-border-default: rgba(0, 43, 54, 0.15);
+  --color-selection-bg: #268bd2;
+  --color-selection-text: #fdf6e3;
+  --color-error-bg: rgba(220, 50, 47, 0.12);
+  --color-error-border: rgba(220, 50, 47, 0.35);
+  --color-error-text: #a01a18;
+}
+
+/* Default theme fallback (same as focused-hybrid) */
+:root {
+  --color-surface-base: #1E1E2E;
+  --color-surface-layer1: #252535;
+  --color-surface-layer2: #2A2A3C;
+  --color-surface-highlight: #36364D;
+  --color-text-primary: #ECEFF4;
+  --color-text-secondary: #9CA3AF;
+  --color-text-input: #FFFFFF;
+  --color-accent-primary: #88C0D0;
+  --color-accent-primary-hover: #7AB0C0;
+  --color-accent-danger: #BF616A;
+  --color-accent-success: #A3BE8C;
+  --color-accent-warning: #EBCB8B;
+  --color-border-subtle: rgba(255, 255, 255, 0.05);
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-selection-bg: #88C0D0;
+  --color-selection-text: #1E1E2E;
+  --color-error-bg: rgba(191, 97, 106, 0.15);
+  --color-error-border: rgba(191, 97, 106, 0.4);
+  --color-error-text: #F0A0A8;
 }

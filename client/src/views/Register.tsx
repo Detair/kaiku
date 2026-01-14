@@ -167,7 +167,7 @@ const Register: Component = () => {
           </div>
 
           <Show when={error()}>
-            <div class="p-3 bg-danger/10 border border-danger/20 rounded-md text-danger text-sm">
+            <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
               {error()}
             </div>
           </Show>

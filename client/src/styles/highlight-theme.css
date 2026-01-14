@@ -1,106 +1,85 @@
 /**
- * Syntax Highlighting Theme - Adapts to App Theme
+ * Syntax Highlighting Theme
  *
- * Uses Solarized-inspired colors that work across all themes.
- * Background and text colors inherit from theme CSS variables.
+ * Uses CSS variables to adapt to current app theme.
+ * Compatible with highlight.js.
  */
 
 /* Base styles for all themes */
 .hljs {
   background: var(--color-surface-layer2);
   color: var(--color-text-primary);
+  padding: 1rem;
+  border-radius: 0.75rem;
+  overflow-x: auto;
 }
 
-/* Keywords - control flow, types */
+/* Keywords - blue */
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-literal,
 .hljs-section,
 .hljs-link {
-  color: #268bd2; /* Solarized blue - universal across themes */
-  font-weight: 600;
+  color: #268bd2;
 }
 
-/* Strings */
-.hljs-string {
-  color: #2aa198; /* Solarized cyan */
+/* Strings - cyan */
+.hljs-string,
+.hljs-template-variable,
+.hljs-addition {
+  color: #2aa198;
 }
 
-/* Comments */
+/* Comments - muted, italic */
 .hljs-comment,
-.hljs-quote {
+.hljs-quote,
+.hljs-deletion {
   color: var(--color-text-secondary);
   font-style: italic;
 }
 
-/* Functions and class names */
+/* Functions and classes - yellow */
+.hljs-title,
 .hljs-title.function_,
-.hljs-title.class_,
-.hljs-title.class_.inherited__ {
-  color: #b58900; /* Solarized yellow */
+.hljs-title.class_ {
+  color: #b58900;
 }
 
-/* Numbers */
-.hljs-number {
-  color: #d33682; /* Solarized magenta */
+/* Numbers - magenta */
+.hljs-number,
+.hljs-regexp,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: #d33682;
 }
 
 /* Variables and attributes */
 .hljs-variable,
 .hljs-attr,
-.hljs-attribute {
+.hljs-tag,
+.hljs-name {
   color: var(--color-text-primary);
 }
 
-/* Built-in types and functions */
+/* Built-ins and types - red */
 .hljs-built_in,
 .hljs-type,
-.hljs-builtin-name {
-  color: #dc322f; /* Solarized red */
-  font-weight: 500;
+.hljs-params {
+  color: #dc322f;
 }
 
-/* Meta and pragmas */
+/* Meta and preprocessor */
 .hljs-meta,
-.hljs-meta-string {
-  color: #cb4b16; /* Solarized orange */
-}
-
-/* Symbols and operators */
 .hljs-symbol,
-.hljs-bullet,
-.hljs-code,
-.hljs-formula {
-  color: #859900; /* Solarized green */
+.hljs-bullet {
+  color: #cb4b16;
 }
 
-/* Template variables */
-.hljs-template-variable,
-.hljs-template-tag {
-  color: #dc322f; /* Solarized red */
-}
-
-/* Selection highlighting */
+/* Emphasis */
 .hljs-emphasis {
   font-style: italic;
 }
 
 .hljs-strong {
   font-weight: bold;
-}
-
-/* Deletions and additions (diff) */
-.hljs-deletion {
-  background: rgba(220, 50, 47, 0.2);
-  color: #dc322f;
-}
-
-.hljs-addition {
-  background: rgba(133, 153, 0, 0.2);
-  color: #859900;
-}
-
-/* Link */
-.hljs-link {
-  text-decoration: underline;
 }

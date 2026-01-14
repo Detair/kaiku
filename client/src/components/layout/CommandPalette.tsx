@@ -166,14 +166,14 @@ const CommandPalette: Component = () => {
         onClick={handleBackdropClick}
       >
         {/* Command Palette Dialog */}
-        <div class="w-[600px] bg-surface-layer2 border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up">
+        <div class="w-[600px] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up" style="background-color: var(--color-surface-layer2)">
           {/* Input */}
           <div class="border-b border-white/5">
             <input
               ref={inputRef}
               type="text"
               placeholder="Search channels, users, or type > for commands..."
-              class="w-full px-6 py-4 bg-transparent text-xl text-text-primary outline-none placeholder:text-text-secondary/40"
+              class="w-full px-6 py-4 bg-transparent text-xl text-text-input outline-none placeholder:text-text-secondary/40"
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
             />

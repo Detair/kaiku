@@ -1,19 +1,19 @@
 /**
- * AppearanceSettings - Theme selection UI
+ * Appearance Settings
  *
- * Displays theme options as radio cards with descriptions.
- * Updates theme in real-time via theme store.
+ * Theme selector with visual radio cards.
  */
 
-import { Component, For, Show } from "solid-js";
-import { themeState, setTheme } from "@/stores/theme";
+import { Component, For } from "solid-js";
+import { Check } from "lucide-solid";
+import { themeState, setTheme, type ThemeName } from "@/stores/theme";
 
 const AppearanceSettings: Component = () => {
   return (
     <div>
-      <h3 class="text-lg font-semibold text-text-primary mb-2">Theme</h3>
-      <p class="text-sm text-text-secondary mb-4">
-        Choose your preferred color scheme. Changes apply instantly.
+      <h3 class="text-lg font-semibold mb-4 text-text-primary">Theme</h3>
+      <p class="text-sm text-text-secondary mb-6">
+        Choose your preferred color scheme
       </p>
 
       <div class="space-y-3">
@@ -25,59 +25,51 @@ const AppearanceSettings: Component = () => {
               classList={{
                 "border-accent-primary bg-accent-primary/10":
                   themeState.currentTheme === theme.id,
-                "border-white/10 hover:border-accent-primary/50":
+                "border-white/10 hover:border-accent-primary/50 hover:bg-white/5":
                   themeState.currentTheme !== theme.id,
               }}
             >
               <div class="flex items-start gap-3">
                 {/* Radio indicator */}
                 <div
-                  class="w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all"
+                  class="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors"
                   classList={{
                     "border-accent-primary bg-accent-primary":
                       themeState.currentTheme === theme.id,
                     "border-white/30": themeState.currentTheme !== theme.id,
                   }}
                 >
-                  <Show when={themeState.currentTheme === theme.id}>
-                    <div class="w-2 h-2 bg-surface-base rounded-full" />
-                  </Show>
+                  {themeState.currentTheme === theme.id && (
+                    <Check class="w-3 h-3 text-surface-base" />
+                  )}
                 </div>
 
                 {/* Theme info */}
                 <div class="flex-1">
-                  <div class="font-semibold text-text-primary mb-1">
-                    {theme.name}
+                  <div class="flex items-center gap-2">
+                    <span class="font-semibold text-text-primary">
+                      {theme.name}
+                    </span>
+                    <span
+                      class="text-xs px-1.5 py-0.5 rounded"
+                      classList={{
+                        "bg-surface-highlight text-text-secondary": theme.isDark,
+                        "bg-amber-100 text-amber-800": !theme.isDark,
+                      }}
+                    >
+                      {theme.isDark ? "Dark" : "Light"}
+                    </span>
                   </div>
-                  <div class="text-sm text-text-secondary">
+                  <div class="text-sm text-text-secondary mt-0.5">
                     {theme.description}
                   </div>
                 </div>
 
-                {/* Color preview swatches */}
-                <div class="flex gap-1.5 items-center">
-                  <div
-                    class="w-5 h-5 rounded border border-white/10"
-                    style={{
-                      "background-color":
-                        theme.id === "focused-hybrid"
-                          ? "#1E1E2E"
-                          : theme.id === "solarized-dark"
-                            ? "#002b36"
-                            : "#fdf6e3",
-                    }}
-                    title="Background"
-                  />
-                  <div
-                    class="w-5 h-5 rounded border border-white/10"
-                    style={{
-                      "background-color":
-                        theme.id === "focused-hybrid"
-                          ? "#88C0D0"
-                          : "#268bd2",
-                    }}
-                    title="Accent"
-                  />
+                {/* Color preview dots */}
+                <div class="flex gap-1">
+                  <PreviewDot theme={theme.id} type="surface" />
+                  <PreviewDot theme={theme.id} type="accent" />
+                  <PreviewDot theme={theme.id} type="text" />
                 </div>
               </div>
             </button>
@@ -85,6 +77,37 @@ const AppearanceSettings: Component = () => {
         </For>
       </div>
     </div>
+  );
+};
+
+// Color preview dot component
+const PreviewDot: Component<{
+  theme: ThemeName;
+  type: "surface" | "accent" | "text";
+}> = (props) => {
+  const colors: Record<ThemeName, Record<string, string>> = {
+    "focused-hybrid": {
+      surface: "#1E1E2E",
+      accent: "#88C0D0",
+      text: "#ECEFF4",
+    },
+    "solarized-dark": {
+      surface: "#002b36",
+      accent: "#268bd2",
+      text: "#839496",
+    },
+    "solarized-light": {
+      surface: "#fdf6e3",
+      accent: "#268bd2",
+      text: "#657b83",
+    },
+  };
+
+  return (
+    <div
+      class="w-4 h-4 rounded-full border border-white/20"
+      style={{ "background-color": colors[props.theme][props.type] }}
+    />
   );
 };
 

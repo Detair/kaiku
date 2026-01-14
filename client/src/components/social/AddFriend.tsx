@@ -100,7 +100,8 @@ const AddFriend: Component<AddFriendProps> = (props) => {
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
                 placeholder="Enter username..."
-                class="w-full px-4 py-2 bg-surface-layer1 border border-white/10 rounded-lg text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary transition-colors"
+                class="w-full px-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-secondary focus:outline-none focus:border-accent-primary transition-colors"
+                style="background-color: var(--color-surface-layer1)"
                 disabled={isSubmitting()}
                 autocomplete="off"
               />
@@ -108,7 +109,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
 
             {/* Error Message */}
             {error() && (
-              <div class="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+              <div class="p-3 rounded-lg text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
                 {error()}
               </div>
             )}

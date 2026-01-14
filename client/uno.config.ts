@@ -20,6 +20,7 @@ export default defineConfig({
       text: {
         primary: "var(--color-text-primary)",
         secondary: "var(--color-text-secondary)",
+        input: "var(--color-text-input)",
       },
       accent: {
         primary: "var(--color-accent-primary)",
@@ -47,7 +48,7 @@ export default defineConfig({
     "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-white",
 
     // Input fields
-    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-xl text-text-primary outline-none focus:ring-2 focus:ring-accent-primary/50 border border-white/5",
+    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-xl text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/50 border border-white/5",
 
     // Panels and Cards
     "panel": "bg-surface-layer2 rounded-xl border border-white/5",
@@ -67,6 +68,7 @@ export default defineConfig({
     "bg-surface-highlight",
     "text-text-primary",
     "text-text-secondary",
+    "text-text-input",
     "text-accent-primary",
     "text-accent-danger",
     "border-white/5",

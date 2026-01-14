@@ -49,6 +49,18 @@ export async function initAuth(): Promise<void> {
       isLoading: false,
       isInitialized: true,
     });
+
+    // If user is restored, also reconnect WebSocket
+    if (user) {
+      await initWebSocket();
+      await initPresence();
+      try {
+        await wsConnect();
+        console.log("[Auth] WebSocket reconnected after session restore");
+      } catch (wsErr) {
+        console.error("[Auth] WebSocket reconnection failed:", wsErr);
+      }
+    }
   } catch (err) {
     console.error("Failed to restore session:", err);
     setAuthState({

@@ -110,10 +110,10 @@ impl CallService {
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
 
-        // Set TTL for auto-cleanup (90s ring timeout)
+        // Set TTL for auto-cleanup (120s ring timeout)
         let _: bool = self
             .redis
-            .expire(&key, 90)
+            .expire(&key, 120)
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
 
@@ -197,6 +197,10 @@ impl CallService {
     }
 
     /// Record a user leaving the call
+    ///
+    /// This handles both:
+    /// - Active calls: sends Left event
+    /// - Ringing calls (initiator): sends Ended { Cancelled } event
     pub async fn leave_call(
         &self,
         channel_id: Uuid,
@@ -207,8 +211,29 @@ impl CallService {
             .await?
             .ok_or(CallError::CallNotFound)?;
 
+        // Determine the appropriate event based on current state
+        let event = match &state {
+            // If ringing and user is initiator, cancel the call
+            CallState::Ringing { started_by, .. } if *started_by == user_id => {
+                CallEventType::Ended {
+                    reason: EndReason::Cancelled,
+                }
+            }
+            // If ringing but user is not initiator, they should use decline instead
+            CallState::Ringing { .. } => {
+                return Err(CallError::StateTransition(
+                    "Use decline endpoint for recipients".into(),
+                ));
+            }
+            // Active call: normal leave
+            CallState::Active { .. } => CallEventType::Left { user_id },
+            // Already ended
+            CallState::Ended { .. } => {
+                return Err(CallError::StateTransition("Call already ended".into()));
+            }
+        };
+
         let key = Self::stream_key(channel_id);
-        let event = CallEventType::Left { user_id };
         let event_json =
             serde_json::to_string(&event).map_err(|e| CallError::Serialization(e.to_string()))?;
 

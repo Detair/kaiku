@@ -223,7 +223,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         </div>
       </Show>
 
-      <div class="relative flex items-center bg-surface-layer2 rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors">
+      <div class="relative flex items-center rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors" style="background-color: var(--color-surface-layer2)">
         {/* Attachment button */}
         <button
           type="button"
@@ -241,7 +241,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           value={content()}
           onInput={(e) => handleInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
-          class="flex-1 bg-transparent py-3 text-text-primary placeholder-text-secondary focus:outline-none"
+          class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none"
           placeholder={`Message #${props.channelName}`}
           disabled={isSending()}
         />
@@ -261,7 +261,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
       {/* Error display */}
       <Show when={messagesState.error}>
-        <div class="mt-2 text-sm text-danger">
+        <div class="mt-2 text-sm" style="color: var(--color-error-text)">
           Failed to send: {messagesState.error}
         </div>
       </Show>

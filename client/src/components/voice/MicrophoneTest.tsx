@@ -223,7 +223,7 @@ function MicrophoneTest(props: Props) {
 
           {/* Status Messages */}
           <Show when={error()}>
-            <div class="p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
+            <div class="p-3 rounded-lg text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
               {getErrorMessage(error()!)}
             </div>
           </Show>
