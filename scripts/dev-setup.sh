@@ -51,7 +51,7 @@ for arg in "$@"; do
             echo "Options:"
             echo "  --clean      Remove existing .env and Docker volumes before setup"
             echo "  --no-docker  Skip Docker services setup"
-            echo "  --no-client  Skip client npm install"
+            echo "  --no-client  Skip client bun install"
             echo "  --help, -h   Show this help message"
             exit 0
             ;;
@@ -140,27 +140,23 @@ else
     MISSING_TOOLS+=("cargo (https://rustup.rs)")
 fi
 
-# Check Node.js
+# Check Bun
+if check_command bun; then
+    log_success "Bun $(bun --version)"
+else
+    MISSING_TOOLS+=("bun (curl -fsSL https://bun.sh/install | bash)")
+fi
+
+# Check Node.js (still needed for Playwright)
 if check_command node; then
     NODE_VERSION=$(node --version | grep -oP '\d+' | head -1)
     if [[ "$NODE_VERSION" -ge 18 ]]; then
-        log_success "Node.js $(node --version)"
+        log_success "Node.js $(node --version) (for Playwright)"
     else
-        log_warn "Node.js $(node --version) found, but v18+ recommended"
+        log_warn "Node.js $(node --version) found, but v18+ recommended for Playwright"
     fi
 else
-    MISSING_TOOLS+=("node (https://nodejs.org)")
-fi
-
-# Check npm/pnpm
-if check_command pnpm; then
-    PKG_MANAGER="pnpm"
-    log_success "pnpm $(pnpm --version)"
-elif check_command npm; then
-    PKG_MANAGER="npm"
-    log_success "npm $(npm --version)"
-else
-    MISSING_TOOLS+=("npm or pnpm")
+    log_warn "Node.js not found (optional, needed for Playwright tests)"
 fi
 
 # Check Docker
@@ -416,13 +412,7 @@ if ! $NO_CLIENT; then
     log_info "Installing client dependencies..."
 
     cd "${PROJECT_ROOT}/client"
-
-    if [[ "$PKG_MANAGER" == "pnpm" ]]; then
-        pnpm install
-    else
-        npm install
-    fi
-
+    bun install
     log_success "Client dependencies installed"
     echo ""
 fi
@@ -452,7 +442,7 @@ echo "  # Terminal 1: Start the server"
 echo "  cargo run -p vc-server"
 echo ""
 echo "  # Terminal 2: Start the client (dev mode)"
-echo "  cd client && ${PKG_MANAGER} run tauri dev"
+echo "  cd client && bun run tauri dev"
 echo ""
 echo "Useful commands:"
 echo ""
