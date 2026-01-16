@@ -325,7 +325,11 @@ GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, SSPL, Proprietary
 - E2EE Text: vodozemac
 - Crypto: rustls, x25519-dalek, ed25519-dalek
 
-## Wichtige npm Packages
+## Package Manager
+- Bun (for package management and script running)
+- Node.js (still required for Playwright tests)
+
+## Wichtige Frontend Packages
 - Framework: solid-js
 - Build: vite, typescript
 - Styling: unocss

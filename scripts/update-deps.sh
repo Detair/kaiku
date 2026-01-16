@@ -68,20 +68,20 @@ phase_system() {
     print_success "System update complete!"
 }
 
-phase_npm_safe() {
-    print_header "Phase 1: Safe npm Updates (Non-Breaking)"
+phase_bun_safe() {
+    print_header "Phase 1: Safe Frontend Updates (Non-Breaking)"
 
     cd "$PROJECT_ROOT/client"
 
     print_warning "Updating safe packages..."
-    npm install @tauri-apps/plugin-shell@^2.3.4
-    npm install lucide-solid@^0.562.0
-    npm install eslint-plugin-solid@^0.14.5
+    bun install @tauri-apps/plugin-shell@^2.3.4
+    bun install lucide-solid@^0.562.0
+    bun install eslint-plugin-solid@^0.14.5
 
     print_warning "Testing build..."
-    npm run build
+    bun run build
 
-    print_success "Safe npm updates complete!"
+    print_success "Safe frontend updates complete!"
 }
 
 phase_rust_backend() {
@@ -135,12 +135,12 @@ run_tests() {
         return 1
     fi
 
-    print_warning "Running npm tests..."
+    print_warning "Running frontend build..."
     cd client
-    if npm run build; then
-        print_success "npm build succeeded"
+    if bun run build; then
+        print_success "Frontend build succeeded"
     else
-        print_error "npm build failed"
+        print_error "Frontend build failed"
         return 1
     fi
 }
@@ -155,9 +155,9 @@ show_status() {
     cargo --version
     echo ""
 
-    echo "npm outdated:"
+    echo "Bun outdated packages:"
     cd client
-    npm outdated || true
+    bun outdated || true
     echo ""
 
     print_success "Status check complete"
@@ -170,17 +170,17 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  system     - Update Rust toolchain (REQUIRED FIRST)"
-    echo "  npm-safe   - Update safe npm packages (no breaking changes)"
+    echo "  bun-safe   - Update safe frontend packages (no breaking changes)"
     echo "  rust       - Update Rust backend deps (breaking - manual)"
     echo "  frontend   - Update frontend deps (breaking - manual)"
     echo "  test       - Run full test suite"
     echo "  status     - Show current dependency status"
-    echo "  all        - Run all safe updates (system + npm-safe + test)"
+    echo "  all        - Run all safe updates (system + bun-safe + test)"
     echo "  help       - Show this help"
     echo ""
     echo "Recommended order:"
     echo "  1. ./scripts/update-deps.sh system"
-    echo "  2. ./scripts/update-deps.sh npm-safe"
+    echo "  2. ./scripts/update-deps.sh bun-safe"
     echo "  3. ./scripts/update-deps.sh test"
     echo "  4. Then schedule manual updates later"
 }
@@ -190,8 +190,8 @@ case "${1:-help}" in
     system)
         phase_system
         ;;
-    npm-safe)
-        phase_npm_safe
+    bun-safe)
+        phase_bun_safe
         ;;
     rust)
         phase_rust_backend
@@ -207,7 +207,7 @@ case "${1:-help}" in
         ;;
     all)
         phase_system
-        phase_npm_safe
+        phase_bun_safe
         run_tests
         print_success "All safe updates complete!"
         ;;

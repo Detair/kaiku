@@ -66,14 +66,20 @@ fi
 cd "$PROJECT_ROOT"
 echo ""
 
-# Check npm Status
-echo -e "${BLUE}📦 npm Status${NC}"
+# Check Bun Status
+echo -e "${BLUE}📦 Bun Status${NC}"
 cd "$PROJECT_ROOT/client"
-if [ -d "node_modules" ]; then
-    echo -e "${GREEN}✓ node_modules exists${NC}"
+if command -v bun &> /dev/null; then
+    echo -e "${GREEN}✓ Bun installed ($(bun --version))${NC}"
+    if [ -d "node_modules" ]; then
+        echo -e "${GREEN}✓ node_modules exists${NC}"
+    else
+        echo -e "${YELLOW}⚠ node_modules missing${NC}"
+        echo -e "${YELLOW}  Run: bun install${NC}"
+    fi
 else
-    echo -e "${YELLOW}⚠ node_modules missing${NC}"
-    echo -e "${YELLOW}  Run: npm install${NC}"
+    echo -e "${YELLOW}⚠ Bun not installed${NC}"
+    echo -e "${YELLOW}  Run: curl -fsSL https://bun.sh/install | bash${NC}"
 fi
 cd "$PROJECT_ROOT"
 echo ""
@@ -124,7 +130,7 @@ if [ "$NEEDS_RUST_UPDATE" = false ] && [ "$NEEDS_SYSTEM_DEPS" = false ]; then
     echo ""
     echo "Ready for development:"
     echo "  - Start server: cd server && cargo run --release"
-    echo "  - Start frontend: cd client && npm run dev"
+    echo "  - Start frontend: cd client && bun run dev"
     echo "  - Run tests: cargo test --workspace"
 fi
 

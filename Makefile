@@ -11,9 +11,6 @@
 # Default target
 .DEFAULT_GOAL := help
 
-# Detect package manager
-PKG_MANAGER := $(shell command -v pnpm 2>/dev/null && echo pnpm || echo npm)
-
 # Colors
 CYAN := \033[36m
 GREEN := \033[32m
@@ -61,7 +58,7 @@ install: ## Install all dependencies (Rust + Node)
 	@echo "$(CYAN)Installing Rust dependencies...$(RESET)"
 	@cargo fetch
 	@echo "$(CYAN)Installing Node dependencies...$(RESET)"
-	@cd client && $(PKG_MANAGER) install
+	@cd client && bun install
 
 install-tools: ## Install development tools (sqlx-cli, cargo-watch, etc.)
 	@echo "$(CYAN)Installing development tools...$(RESET)"
@@ -82,10 +79,10 @@ server: ## Start server (no auto-reload)
 	cargo run -p vc-server
 
 client: ## Start client in dev mode
-	cd client && $(PKG_MANAGER) run tauri dev
+	cd client && bun run tauri dev
 
 client-web: ## Start client web UI only (no Tauri)
-	cd client && $(PKG_MANAGER) run dev
+	cd client && bun run dev
 
 watch: docker-up ## Start both server (watch) and client
 	@echo "$(YELLOW)Starting server and client...$(RESET)"
@@ -114,15 +111,15 @@ check: ## Run cargo check and clippy
 	cargo clippy --all-targets -- -D warnings
 
 lint: check ## Alias for check
-	@cd client && $(PKG_MANAGER) run lint
+	@cd client && bun run lint
 
 fmt: ## Format all code
 	cargo fmt --all
-	cd client && $(PKG_MANAGER) run format
+	cd client && bun run format
 
 fmt-check: ## Check code formatting
 	cargo fmt --all -- --check
-	cd client && $(PKG_MANAGER) run format -- --check
+	cd client && bun run format -- --check
 
 licenses: ## Check dependency licenses
 	cargo deny check licenses
@@ -194,7 +191,7 @@ build-server: ## Build server only
 	cargo build -p vc-server
 
 build-client: ## Build client app
-	cd client && $(PKG_MANAGER) run tauri build
+	cd client && bun run tauri build
 
 release: ## Build release binaries
 	cargo build --release --all

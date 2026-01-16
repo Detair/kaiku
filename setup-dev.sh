@@ -3,7 +3,7 @@
 # VoiceChat (Canis) Development Environment Setup Script
 #
 # This script automates the installation of dependencies for a new development machine.
-# It covers System tools, Rust/Cargo, Node.js/NPM, and Docker.
+# It covers System tools, Rust/Cargo, Bun, and Docker.
 #
 # Usage: ./setup-dev.sh
 #
@@ -47,19 +47,31 @@ log_info "Checking system dependencies..."
 
 if command -v apt-get &> /dev/null; then
     log_info "Detected Debian/Ubuntu system. Updating and installing build essentials..."
-    # Update only if we have sudo rights or are root
     if [ "$EUID" -eq 0 ] || command -v sudo &> /dev/null; then
         CMD_PREFIX=""
         if [ "$EUID" -ne 0 ]; then CMD_PREFIX="sudo"; fi
-        
+
         $CMD_PREFIX apt-get update
-        $CMD_PREFIX apt-get install -y build-essential pkg-config libssl-dev curl git libglib2.0-dev libgdk-pixbuf2.0-dev libsoup-3.0-dev libwebkit2gtk-4.1-dev
+        $CMD_PREFIX apt-get install -y build-essential pkg-config libssl-dev curl git \
+            libglib2.0-dev libgdk-pixbuf2.0-dev libsoup-3.0-dev libwebkit2gtk-4.1-dev
         log_success "System dependencies installed."
     else
-        log_warn "Skipping system package installation (no sudo). Ensure build-essential, pkg-config, and libssl-dev are installed."
+        log_warn "Skipping system package installation (no sudo)."
+    fi
+elif command -v dnf &> /dev/null; then
+    log_info "Detected Fedora/RHEL system. Installing build essentials..."
+    if [ "$EUID" -eq 0 ] || command -v sudo &> /dev/null; then
+        CMD_PREFIX=""
+        if [ "$EUID" -ne 0 ]; then CMD_PREFIX="sudo"; fi
+
+        $CMD_PREFIX dnf install -y gcc gcc-c++ make pkg-config openssl-devel curl git \
+            glib2-devel gdk-pixbuf2-devel libsoup3-devel webkit2gtk4.1-devel gtk3-devel
+        log_success "System dependencies installed."
+    else
+        log_warn "Skipping system package installation (no sudo)."
     fi
 else
-    log_warn "Non-Debian system detected. Please manually ensure you have: build-essential (gcc), pkg-config, openssl-dev/libssl-dev."
+    log_warn "Unsupported system. Please manually install: gcc, pkg-config, openssl-dev."
 fi
 
 # ==============================================================================
@@ -104,21 +116,28 @@ else
 fi
 
 # ==============================================================================
-# 4. Node.js & NPM
+# 4. Bun (replaces Node.js for package management)
 # ==============================================================================
-log_info "Checking Node.js..."
+log_info "Checking Bun..."
+
+if command -v bun &> /dev/null; then
+    log_success "Bun is installed ($(bun --version))."
+else
+    log_info "Installing Bun..."
+    curl -fsSL https://bun.sh/install | bash
+    export BUN_INSTALL="$HOME/.bun"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    log_success "Bun installed ($(bun --version))."
+fi
+
+# Node.js is still needed for Playwright
+log_info "Checking Node.js (required for Playwright)..."
 
 if command -v node &> /dev/null; then
     log_success "Node.js is installed ($(node --version))."
 else
-    log_warn "Node.js not found. It is recommended to use NVM."
-    log_info "Attempting to install Node.js via NVM installation script..."
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    nvm install --lts
-    nvm use --lts
-    log_success "Node.js installed via NVM."
+    log_warn "Node.js not found. It is required for Playwright tests."
+    log_info "Install via: https://nodejs.org or use nvm"
 fi
 
 # ==============================================================================
@@ -128,11 +147,11 @@ log_info "Installing Frontend dependencies..."
 
 if [ -d "client" ]; then
     cd client
-    npm install
-    
+    bun install
+
     log_info "Installing Playwright browsers..."
-    npx playwright install --with-deps
-    
+    bunx playwright install --with-deps
+
     cd ..
     log_success "Frontend dependencies installed."
 else
@@ -183,9 +202,9 @@ echo "To start the backend:"
 echo "  cd server && cargo run"
 echo ""
 echo "To start the frontend:"
-echo "  cd client && npm run dev"
+echo "  cd client && bun run dev"
 echo ""
 echo "To run E2E tests:"
-echo "  cd client && npx playwright test"
+echo "  cd client && bunx playwright test"
 echo ""
 echo "Happy Coding!"

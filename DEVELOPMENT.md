@@ -6,7 +6,8 @@ This guide covers setting up the VoiceChat development environment.
 
 - Docker and Docker Compose
 - Rust (latest stable)
-- Node.js 18+ and npm
+- Bun (install: `curl -fsSL https://bun.sh/install | bash`)
+- Node.js 18+ (required for Playwright tests)
 - sqlx-cli: `cargo install sqlx-cli --no-default-features --features postgres`
 
 ## Quick Start
@@ -59,8 +60,8 @@ In a new terminal:
 
 ```bash
 cd client
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 The client will start on http://localhost:5173
