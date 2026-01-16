@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 3 (Guild Architecture & Security) - In Progress
 
-**Last Updated:** 2026-01-14
+**Last Updated:** 2026-01-16
 
 ## Quick Status Overview
 
@@ -192,6 +192,13 @@ This roadmap outlines the development path from the current prototype to a produ
   - Call signaling via Redis Streams, reuses existing SFU.
   - Join/Decline flow with configurable notifications.
   - **Design:** `docs/plans/2026-01-14-dm-voice-calls-design.md`
+- [ ] **[Content] Information Pages** `New` `Designed`
+  - Platform-wide pages (ToS, Privacy Policy) in Home view.
+  - Guild-level pages (Rules, FAQ) in sidebar above channels.
+  - Markdown editor with Mermaid diagram support.
+  - Role-based visibility and optional acceptance requirements.
+  - Platform admin role system for managing platform pages.
+  - **Design:** `docs/plans/2026-01-16-information-pages-design.md`
 - [ ] **[Security] Rate Limiting**
   - Integrate `tower-governor` to protect API endpoints from spam/DoS.
 
@@ -213,6 +220,11 @@ This roadmap outlines the development path from the current prototype to a produ
   - Update Client UI to render "Filmstrip" or "Grid" layouts.
 - [ ] **[Client] Mobile Support**
   - Adapt Tauri frontend for mobile or begin Flutter/Native implementation.
+- [ ] **[Content] Information Pages v2** `Future`
+  - Full version history with diff view.
+  - Public pages (accessible without login).
+  - Page templates and search.
+  - PDF export functionality.
 
 ---
 
