@@ -85,7 +85,7 @@ But you'll likely need the full set above for a complete Tauri build.
 You're running WSL2. The Tauri **GUI won't display** in WSL2 by default (no X11 server). However, you can still:
 - Build the Tauri app (cross-compile for Windows)
 - Run the server component
-- Develop the frontend with `npm run dev`
+- Develop the frontend with `bun run dev`
 
 ### To Run Tauri GUI in WSL2
 Install an X11 server on Windows:
@@ -139,7 +139,7 @@ This won't require any GTK dependencies.
 3. ✅ Run `cargo clean`
 4. ✅ Run `cargo build --release`
 5. ✅ Test server: `cargo run --release` (in server directory)
-6. ✅ Test frontend: `npm run dev` (in client directory)
+6. ✅ Test frontend: `bun run dev` (in client directory)
 
 ---
 
@@ -164,8 +164,8 @@ cargo build --release
 
 # If successful, build client
 cd ../client
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ---

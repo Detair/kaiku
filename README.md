@@ -41,7 +41,8 @@ Download the latest release from [Releases](https://github.com/yourorg/voicechat
 ### Prerequisites
 
 - Rust 1.82+ (`rustup update stable`)
-- Node.js 18+ (pnpm recommended)
+- Bun 1.1+ (for package management and scripts)
+- Node.js 18+ (required for Playwright tests)
 - Docker & Docker Compose
 
 ### Quick Setup
@@ -67,13 +68,13 @@ make docker-up
 make db-migrate
 
 # Install client dependencies
-cd client && npm install
+cd client && bun install
 
 # Run server
 cargo run -p vc-server
 
 # Run client (in another terminal)
-cd client && npm run tauri dev
+cd client && bun run tauri dev
 ```
 
 ### Useful Commands

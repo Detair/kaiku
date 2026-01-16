@@ -90,7 +90,7 @@ cargo run --release
 
 # In another terminal, run web frontend
 cd /home/detair/GIT/canis/client
-npm run dev
+bun run dev
 # Open http://localhost:5173
 ```
 

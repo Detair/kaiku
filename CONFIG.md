@@ -55,7 +55,7 @@ See `.env.example` in the root directory for all available server configuration 
 1. Start the development server:
    ```bash
    cd client
-   npm run dev
+   bun run dev
    ```
 
 2. Open http://localhost:5173/login in your browser
