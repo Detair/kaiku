@@ -199,8 +199,12 @@ This roadmap outlines the development path from the current prototype to a produ
   - Role-based visibility and optional acceptance requirements.
   - Platform admin role system for managing platform pages.
   - **Design:** `docs/plans/2026-01-16-information-pages-design.md`
-- [ ] **[Security] Rate Limiting**
-  - Integrate `tower-governor` to protect API endpoints from spam/DoS.
+- [ ] **[Security] Rate Limiting** `Designed`
+  - Redis-based fixed window rate limiting.
+  - Hybrid IP/user identification.
+  - Failed auth tracking with IP blocking.
+  - Admin endpoints and Prometheus metrics.
+  - **Design:** `docs/plans/2026-01-17-rate-limiting-design.md`
 
 ---
 
