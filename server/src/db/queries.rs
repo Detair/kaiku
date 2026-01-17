@@ -431,7 +431,7 @@ pub async fn list_messages(
             WHERE channel_id = $1
               AND deleted_at IS NULL
               AND id < $2
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $3
             ",
         )
@@ -446,7 +446,7 @@ pub async fn list_messages(
             SELECT * FROM messages
             WHERE channel_id = $1
               AND deleted_at IS NULL
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $2
             ",
         )
