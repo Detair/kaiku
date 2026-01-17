@@ -167,7 +167,7 @@ read -p "Do you want to start the database via Docker now? (y/n) " -n 1 -r
 echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     log_info "Starting infrastructure..."
-    docker compose -f infra/compose/docker-compose.yml up -d
+    docker compose -f docker-compose.dev.yml up -d
     
     log_info "Waiting for database to be ready..."
     sleep 5

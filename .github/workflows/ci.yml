@@ -136,10 +136,10 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.1"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile || (sleep 5 && bun install --frozen-lockfile)
 
       - name: Type check
         run: bun run lint
@@ -201,11 +201,11 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.1"
 
       - name: Install frontend dependencies
         working-directory: client
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile || (sleep 5 && bun install --frozen-lockfile)
 
       - name: Build Tauri app
         working-directory: client
