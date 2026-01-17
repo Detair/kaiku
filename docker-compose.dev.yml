@@ -1,44 +1,92 @@
 # VoiceChat Development Docker Compose
-# Usage: docker compose -f docker-compose.dev.yml up -d
 #
-# This starts PostgreSQL and Redis for local development and testing.
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d              # Start all services
+#   docker compose -f docker-compose.dev.yml --profile storage up -d  # Include MinIO
+#   docker compose -f docker-compose.dev.yml --profile mail up -d     # Include MailHog
+#   docker compose -f docker-compose.dev.yml --profile all up -d      # Everything
+#
+# After starting, run migrations:
+#   DATABASE_URL="postgresql://voicechat:voicechat_dev@localhost:5433/voicechat" sqlx migrate run --source server/migrations
+#
+# Environment variables for the server:
+#   export DATABASE_URL="postgresql://voicechat:voicechat_dev@localhost:5433/voicechat"
+#   export REDIS_URL="redis://localhost:6379"
+#   export JWT_SECRET="dev-secret-change-in-production"
+#   export S3_ENDPOINT="http://localhost:9000"  # If using MinIO
 
 services:
-  # PostgreSQL Database for development
+  # ==========================================================================
+  # PostgreSQL Database (Bitnami hardened image)
+  # ==========================================================================
   postgres:
-    image: postgres:16-alpine
-    container_name: voicechat-postgres-dev
+    image: bitnami/postgresql:16
+    container_name: canis-dev-postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=voicechat
-      - POSTGRES_PASSWORD=voicechat_dev_pass
-      - POSTGRES_DB=voicechat
+      - POSTGRESQL_USERNAME=voicechat
+      - POSTGRESQL_PASSWORD=voicechat_dev
+      - POSTGRESQL_DATABASE=voicechat
     ports:
       - "5433:5432"
     volumes:
-      - postgres_dev_data:/var/lib/postgresql/data
+      - postgres_dev_data:/bitnami/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U voicechat"]
+      test: ["CMD-SHELL", "pg_isready -U voicechat -d voicechat"]
       interval: 5s
       timeout: 3s
       retries: 5
 
-  # Redis for development
+  # ==========================================================================
+  # Redis (Bitnami hardened image)
+  # ==========================================================================
   redis:
-    image: redis:7-alpine
-    container_name: voicechat-redis-dev
+    image: bitnami/redis:7.4
+    container_name: canis-dev-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
     ports:
       - "6379:6379"
     volumes:
-      - redis_dev_data:/data
+      - redis_dev_data:/bitnami/redis/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
 
+  # ==========================================================================
+  # MinIO (S3-compatible storage) - Optional
+  # ==========================================================================
+  minio:
+    image: bitnami/minio:latest
+    container_name: canis-dev-minio
+    profiles: ["storage", "all"]
+    restart: unless-stopped
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_DEFAULT_BUCKETS=voicechat
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    volumes:
+      - minio_dev_data:/bitnami/minio/data
+
+  # ==========================================================================
+  # MailHog (Email testing) - Optional
+  # ==========================================================================
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: canis-dev-mailhog
+    profiles: ["mail", "all"]
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+
 volumes:
   postgres_dev_data:
   redis_dev_data:
+  minio_dev_data:

@@ -1,5 +1,14 @@
 # VoiceChat Production Docker Compose
-# Usage: docker compose up -d
+#
+# Usage:
+#   1. Copy .env.example to .env and configure
+#   2. docker compose up -d
+#
+# Required environment variables (see .env.example):
+#   - DOMAIN: Your domain (e.g., chat.example.com)
+#   - POSTGRES_PASSWORD: Strong database password
+#   - JWT_SECRET: Strong secret for JWT signing
+#   - ACME_EMAIL: Email for Let's Encrypt certificates
 
 services:
   # ==========================================================================
@@ -8,11 +17,9 @@ services:
   server:
     build:
       context: ../..
-      dockerfile: infra/docker/server.Dockerfile
-      args:
-        - VITE_SERVER_URL=${SERVER_URL}
+      dockerfile: infra/docker/Dockerfile
     image: voicechat/server:latest
-    container_name: voicechat-server
+    container_name: canis-server
     restart: unless-stopped
     depends_on:
       postgres:
@@ -33,9 +40,11 @@ services:
       - TURN_SERVER=${TURN_SERVER:-}
       - TURN_USERNAME=${TURN_USERNAME:-}
       - TURN_CREDENTIAL=${TURN_CREDENTIAL:-}
-      - PUBLIC_IP=${PUBLIC_IP:-}
-      - RTP_PORT_MIN=${RTP_PORT_MIN:-10000}
-      - RTP_PORT_MAX=${RTP_PORT_MAX:-10100}
+      - MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY:-}
+      # Rate limiting
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_TRUST_PROXY=${RATE_LIMIT_TRUST_PROXY:-true}
+      - RATE_LIMIT_ALLOWLIST=${RATE_LIMIT_ALLOWLIST:-}
     ports:
       # WebRTC UDP ports for voice
       - "${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}:${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}/udp"
@@ -47,38 +56,42 @@ services:
       - "traefik.http.routers.voicechat.entrypoints=websecure"
       - "traefik.http.routers.voicechat.tls.certresolver=letsencrypt"
       - "traefik.http.services.voicechat.loadbalancer.server.port=8080"
+      # WebSocket support
+      - "traefik.http.middlewares.voicechat-ws.headers.customrequestheaders.Connection=Upgrade"
 
   # ==========================================================================
-  # PostgreSQL Database
+  # PostgreSQL Database (Bitnami hardened image)
   # ==========================================================================
   postgres:
-    image: postgres:16-alpine
-    container_name: voicechat-postgres
+    image: bitnami/postgresql:16
+    container_name: canis-postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=voicechat
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=voicechat
+      - POSTGRESQL_USERNAME=voicechat
+      - POSTGRESQL_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRESQL_DATABASE=voicechat
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/bitnami/postgresql
     networks:
       - voicechat
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U voicechat"]
+      test: ["CMD-SHELL", "pg_isready -U voicechat -d voicechat"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   # ==========================================================================
-  # Redis
+  # Redis (Bitnami hardened image)
   # ==========================================================================
   redis:
-    image: redis:7-alpine
-    container_name: voicechat-redis
+    image: bitnami/redis:7.4
+    container_name: canis-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - ALLOW_EMPTY_PASSWORD=${ALLOW_EMPTY_PASSWORD:-no}
     volumes:
-      - redis_data:/data
+      - redis_data:/bitnami/redis/data
     networks:
       - voicechat
     healthcheck:
@@ -92,7 +105,7 @@ services:
   # ==========================================================================
   traefik:
     image: traefik:v3.0
-    container_name: voicechat-traefik
+    container_name: canis-traefik
     restart: unless-stopped
     command:
       - "--api.dashboard=false"
