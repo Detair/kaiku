@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use uuid::Uuid;
 
 use crate::permissions::PermissionError;
@@ -29,16 +30,39 @@ pub struct ElevatedAdmin {
 }
 
 /// Admin API error type.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum AdminError {
+    /// User is not a system admin.
+    #[error("System admin privileges required")]
     NotAdmin,
+
+    /// Action requires elevated admin session.
+    #[error("This action requires an elevated session")]
     ElevationRequired,
+
+    /// MFA must be enabled to elevate session.
+    #[error("MFA must be enabled to elevate session")]
     MfaRequired,
+
+    /// Invalid MFA code provided.
+    #[error("Invalid MFA code")]
     InvalidMfaCode,
+
+    /// Resource not found.
+    #[error("{0} not found")]
     NotFound(String),
+
+    /// Validation error.
+    #[error("Validation failed: {0}")]
     Validation(String),
-    Database(sqlx::Error),
-    Permission(PermissionError),
+
+    /// Database error.
+    #[error("Database error")]
+    Database(#[from] sqlx::Error),
+
+    /// Permission error.
+    #[error("Permission denied: {0}")]
+    Permission(#[from] PermissionError),
 }
 
 impl IntoResponse for AdminError {
@@ -57,17 +81,6 @@ impl IntoResponse for AdminError {
     }
 }
 
-impl From<sqlx::Error> for AdminError {
-    fn from(err: sqlx::Error) -> Self {
-        Self::Database(err)
-    }
-}
-
-impl From<PermissionError> for AdminError {
-    fn from(err: PermissionError) -> Self {
-        Self::Permission(err)
-    }
-}
 
 // Request types
 #[derive(Debug, Deserialize)]

@@ -13,6 +13,7 @@ use crate::permissions::queries::get_system_admin;
 use super::types::{AdminError, ElevatedAdmin, SystemAdminUser};
 
 /// Middleware that requires the user to be a system admin.
+#[tracing::instrument(skip(state, request, next))]
 pub async fn require_system_admin(
     State(state): State<AppState>,
     mut request: Request,
@@ -39,6 +40,7 @@ pub async fn require_system_admin(
 }
 
 /// Middleware that requires an elevated admin session.
+#[tracing::instrument(skip(state, request, next))]
 pub async fn require_elevated(
     State(state): State<AppState>,
     mut request: Request,
