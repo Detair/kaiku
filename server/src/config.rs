@@ -135,8 +135,10 @@ impl Config {
     pub fn default_for_test() -> Self {
         Self {
             bind_address: "127.0.0.1:8080".into(),
-            database_url: "postgresql://test:test@localhost:5434/test".into(),
-            redis_url: "redis://localhost:6380".into(),
+            // Uses dev database - sqlx::test creates isolated DBs automatically
+            database_url: "postgresql://voicechat:voicechat_dev@localhost:5433/voicechat".into(),
+            // Uses dev Redis
+            redis_url: "redis://localhost:6379".into(),
             jwt_secret: "test-secret".into(),
             jwt_access_expiry: 900,
             jwt_refresh_expiry: 604800,

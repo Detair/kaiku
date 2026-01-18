@@ -62,6 +62,9 @@ mod redis_tests {
         let client = create_test_redis().await;
         let key = "test:expiry:key";
 
+        // Clean up from any previous runs
+        cleanup_key(&client, key).await;
+
         // Set with 2 second expiry
         client
             .set::<(), _, _>(key, "expires_soon", Some(Expiration::EX(2)), None, false)
