@@ -7,9 +7,11 @@ import Register from "./views/Register";
 import Main from "./views/Main";
 import ThemeDemo from "./pages/ThemeDemo";
 import InviteJoin from "./views/InviteJoin";
+import PageViewRoute from "./views/PageViewRoute";
 
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
+import { AcceptanceManager } from "./components/pages";
 
 // Theme
 import { initTheme } from "./stores/theme";
@@ -30,6 +32,7 @@ const Layout: Component<ParentProps> = (props) => {
 // Protected route wrapper
 const ProtectedMain: Component = () => (
   <AuthGuard>
+    <AcceptanceManager />
     <Main />
   </AuthGuard>
 );
@@ -41,12 +44,20 @@ const ProtectedInvite: Component = () => (
   </AuthGuard>
 );
 
+// Protected page view wrapper
+const ProtectedPageView: Component = () => (
+  <AuthGuard>
+    <PageViewRoute />
+  </AuthGuard>
+);
+
 // Wrapped components for routes
 const LoginPage = () => <Layout><Login /></Layout>;
 const RegisterPage = () => <Layout><Register /></Layout>;
 const MainPage = () => <Layout><ProtectedMain /></Layout>;
 const ThemeDemoPage = () => <Layout><ThemeDemo /></Layout>;
 const InvitePage = () => <Layout><ProtectedInvite /></Layout>;
+const PagePage = () => <Layout><ProtectedPageView /></Layout>;
 
 // Export routes as JSX Route elements
 export const AppRoutes = (): JSX.Element => (
@@ -55,6 +66,8 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
     <Route path="/invite/:code" component={InvitePage} />
+    <Route path="/pages/:slug" component={PagePage} />
+    <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />
     <Route path="/*" component={MainPage} />
   </>
 );

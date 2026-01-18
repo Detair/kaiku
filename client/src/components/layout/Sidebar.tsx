@@ -4,27 +4,67 @@
  * Middle-left panel containing:
  * - Server/Guild header with settings gear
  * - Search bar
+ * - Guild pages section
  * - Channel list
  * - User panel at bottom
  */
 
-import { Component, createSignal, onMount, Show } from "solid-js";
+import { Component, createSignal, createEffect, onMount, Show } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import { ChevronDown, Settings } from "lucide-solid";
 import { loadChannels } from "@/stores/channels";
 import { getActiveGuild } from "@/stores/guilds";
+import {
+  pagesState,
+  loadGuildPages,
+  loadPendingAcceptance,
+} from "@/stores/pages";
 import ChannelList from "@/components/channels/ChannelList";
+import { PageSection } from "@/components/pages";
 import UserPanel from "./UserPanel";
 import GuildSettingsModal from "@/components/guilds/GuildSettingsModal";
+import type { PageListItem } from "@/lib/types";
 
 const Sidebar: Component = () => {
+  const navigate = useNavigate();
   const [showGuildSettings, setShowGuildSettings] = createSignal(false);
+  const [selectedPageId, setSelectedPageId] = createSignal<string | null>(null);
+  const [pagesExpanded, setPagesExpanded] = createSignal(true);
 
   // Load channels when sidebar mounts
   onMount(() => {
     loadChannels();
+    loadPendingAcceptance();
   });
 
   const activeGuild = () => getActiveGuild();
+
+  // Load guild pages when active guild changes
+  createEffect(() => {
+    const guild = activeGuild();
+    if (guild) {
+      loadGuildPages(guild.id);
+    }
+  });
+
+  // Get guild pages for the active guild
+  const guildPages = () => {
+    const guild = activeGuild();
+    if (!guild) return [];
+    return pagesState.guildPages[guild.id] || [];
+  };
+
+  // Get pending page IDs as a Set
+  const pendingPageIds = () => new Set(pagesState.pendingAcceptance.map((p) => p.id));
+
+  // Handle page selection - navigate to page route
+  const handleSelectPage = (page: PageListItem) => {
+    setSelectedPageId(page.id);
+    const guild = activeGuild();
+    if (guild) {
+      navigate(`/guilds/${guild.id}/pages/${page.slug}`);
+    }
+  };
 
   return (
     <aside class="w-[240px] flex flex-col bg-surface-layer2 z-10 transition-all duration-300">
@@ -58,6 +98,19 @@ const Sidebar: Component = () => {
           style="background-color: var(--color-surface-base)"
         />
       </div>
+
+      {/* Guild Pages Section */}
+      <Show when={activeGuild() && guildPages().length > 0}>
+        <PageSection
+          title="Information"
+          pages={guildPages()}
+          pendingPageIds={pendingPageIds()}
+          selectedPageId={selectedPageId()}
+          isExpanded={pagesExpanded()}
+          onToggle={() => setPagesExpanded(!pagesExpanded())}
+          onSelectPage={handleSelectPage}
+        />
+      </Show>
 
       {/* Channel List */}
       <ChannelList />
