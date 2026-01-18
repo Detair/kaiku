@@ -255,21 +255,45 @@ pub async fn update_role(
 
     let current_role = current_role.ok_or(RoleError::NotFound)?;
 
-    // Cannot edit @everyone role name
-    if current_role.2 && body.name.is_some() {
-        return Err(RoleError::Validation(
-            "Cannot rename @everyone role".to_string(),
-        ));
-    }
-
     // Check hierarchy - cannot edit roles at or above our position
     let new_perms = body.permissions.map(GuildPermissions::from_bits_truncate);
+
+    // Cannot edit @everyone role name
+    if current_role.2 {
+        if body.name.is_some() {
+            return Err(RoleError::Validation(
+                "Cannot rename @everyone role".to_string(),
+            ));
+        }
+
+        // Cannot give @everyone dangerous permissions
+        if let Some(perms) = new_perms {
+            if !perms.validate_for_everyone() {
+                return Err(RoleError::Validation(
+                    "Cannot grant dangerous permissions to @everyone role".to_string(),
+                ));
+            }
+        }
+    }
+
     can_manage_role(
         ctx.computed_permissions,
         ctx.highest_role_position.unwrap_or(i32::MAX),
         current_role.0,
         new_perms,
     )?;
+
+    // Security: Prevent moving a role to a position above the actor's highest role
+    // (lower number = higher rank, so new_position must be > actor's position)
+    if let Some(new_position) = body.position {
+        let actor_position = ctx.highest_role_position.unwrap_or(i32::MAX);
+        if new_position <= actor_position {
+            return Err(RoleError::Permission(PermissionError::RoleHierarchy {
+                actor_position,
+                target_position: new_position,
+            }));
+        }
+    }
 
     let role = sqlx::query_as::<_, (Uuid, Uuid, String, Option<String>, i64, i32, bool, chrono::DateTime<chrono::Utc>)>(
         r"

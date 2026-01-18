@@ -73,8 +73,8 @@ pub struct OverrideResponse {
     pub id: Uuid,
     pub channel_id: Uuid,
     pub role_id: Uuid,
-    pub allow: u64,
-    pub deny: u64,
+    pub allow_permissions: u64,
+    pub deny_permissions: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,8 +131,8 @@ pub async fn list_overrides(
             id,
             channel_id,
             role_id,
-            allow: allow as u64,
-            deny: deny as u64,
+            allow_permissions: allow as u64,
+            deny_permissions: deny as u64,
         })
         .collect();
 
@@ -160,7 +160,7 @@ pub async fn set_override(
     let guild_id = channel.0.ok_or(OverrideError::ChannelNotFound)?;
 
     // Check permission
-    let _ctx =
+    let ctx =
         require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_CHANNELS)
             .await
             .map_err(|e| match e {
@@ -178,6 +178,16 @@ pub async fn set_override(
 
     if role_exists.is_none() {
         return Err(OverrideError::RoleNotFound);
+    }
+
+    // Security: Prevent permission escalation via channel overrides
+    // Users cannot grant permissions they don't have themselves
+    let allow_perms = GuildPermissions::from_bits_truncate(body.allow.unwrap_or(0));
+    let escalation = allow_perms & !ctx.computed_permissions;
+    if !escalation.is_empty() {
+        return Err(OverrideError::Permission(PermissionError::CannotEscalate(
+            escalation,
+        )));
     }
 
     let allow = body.allow.unwrap_or(0) as i64;
@@ -204,8 +214,8 @@ pub async fn set_override(
         id: override_entry.0,
         channel_id: override_entry.1,
         role_id: override_entry.2,
-        allow: override_entry.3 as u64,
-        deny: override_entry.4 as u64,
+        allow_permissions: override_entry.3 as u64,
+        deny_permissions: override_entry.4 as u64,
     }))
 }
 
