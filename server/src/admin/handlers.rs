@@ -12,6 +12,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -260,8 +261,13 @@ pub async fn get_audit_log(
     // Get audit log entries
     let entries = query_audit_log(&state.db, limit, offset, params.action.as_deref()).await?;
 
-    // Collect unique actor IDs for username lookup
-    let actor_ids: Vec<Uuid> = entries.iter().map(|e| e.actor_id).collect();
+    // Collect unique actor IDs for username lookup (deduplicated)
+    let actor_ids: Vec<Uuid> = entries
+        .iter()
+        .map(|e| e.actor_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
 
     // Fetch usernames for actors
     let usernames: std::collections::HashMap<Uuid, String> = if !actor_ids.is_empty() {
@@ -308,6 +314,11 @@ pub async fn elevate_session(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(body): Json<ElevateRequest>,
 ) -> Result<Json<ElevateResponse>, AdminError> {
+    // Validate MFA code format (6 digits)
+    if body.mfa_code.len() != 6 || !body.mfa_code.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AdminError::InvalidMfaCode);
+    }
+
     // Load user to check MFA status
     let user = find_user_by_id(&state.db, admin.user_id)
         .await?
