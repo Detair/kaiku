@@ -1,23 +1,28 @@
 /**
  * GuildSettingsModal - Guild management modal with tabs
  *
- * Provides invite management (owner only) and member list.
+ * Provides invite management (owner only), member list, and role management.
  */
 
 import { Component, createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Link, Users } from "lucide-solid";
+import { X, Link, Users, Shield } from "lucide-solid";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import InvitesTab from "./InvitesTab";
 import MembersTab from "./MembersTab";
+import RolesTab from "./RolesTab";
+import RoleEditor from "./RoleEditor";
+import { memberHasPermission } from "@/stores/permissions";
+import { PermissionBits } from "@/lib/permissionConstants";
+import type { GuildRole } from "@/lib/types";
 
 interface GuildSettingsModalProps {
   guildId: string;
   onClose: () => void;
 }
 
-type TabId = "invites" | "members";
+type TabId = "invites" | "members" | "roles";
 
 const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   const guild = () => guildsState.guilds.find((g) => g.id === props.guildId);
@@ -25,6 +30,17 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
 
   // Default to members tab for non-owners
   const [activeTab, setActiveTab] = createSignal<TabId>(isOwner() ? "invites" : "members");
+  const [editingRole, setEditingRole] = createSignal<GuildRole | null>(null);
+  const [isCreatingRole, setIsCreatingRole] = createSignal(false);
+
+  const canManageRoles = () =>
+    isOwner() ||
+    memberHasPermission(
+      props.guildId,
+      authState.user?.id || "",
+      isOwner(),
+      PermissionBits.MANAGE_ROLES
+    );
 
   const handleBackdropClick = (e: MouseEvent) => {
     if (e.target === e.currentTarget) {
@@ -97,6 +113,19 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               <Users class="w-4 h-4" />
               Members
             </button>
+            <Show when={canManageRoles()}>
+              <button
+                onClick={() => setActiveTab("roles")}
+                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
+                classList={{
+                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "roles",
+                  "text-text-secondary hover:text-text-primary": activeTab() !== "roles",
+                }}
+              >
+                <Shield class="w-4 h-4" />
+                Roles
+              </button>
+            </Show>
           </div>
 
           {/* Content */}
@@ -106,6 +135,31 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </Show>
             <Show when={activeTab() === "members"}>
               <MembersTab guildId={props.guildId} isOwner={isOwner()} />
+            </Show>
+            <Show when={activeTab() === "roles" && canManageRoles()}>
+              <Show
+                when={editingRole() || isCreatingRole()}
+                fallback={
+                  <RolesTab
+                    guildId={props.guildId}
+                    onEditRole={(role) => setEditingRole(role)}
+                    onCreateRole={() => setIsCreatingRole(true)}
+                  />
+                }
+              >
+                <RoleEditor
+                  guildId={props.guildId}
+                  role={editingRole()}
+                  onBack={() => {
+                    setEditingRole(null);
+                    setIsCreatingRole(false);
+                  }}
+                  onSave={() => {
+                    setEditingRole(null);
+                    setIsCreatingRole(false);
+                  }}
+                />
+              </Show>
             </Show>
           </div>
         </div>
