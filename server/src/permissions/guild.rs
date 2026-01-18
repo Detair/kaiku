@@ -6,6 +6,7 @@
 //! - Moderation (bits 10-13): Member management permissions
 //! - Guild Management (bits 14-18): Administrative permissions
 //! - Invites (bits 19-20): Invite-related permissions
+//! - Pages (bit 21): Information page management
 
 use bitflags::bitflags;
 
@@ -67,6 +68,10 @@ bitflags! {
         const CREATE_INVITE      = 1 << 19;
         /// Permission to manage (revoke) invite links
         const MANAGE_INVITES     = 1 << 20;
+
+        // === Pages (bit 21) ===
+        /// Permission to create, edit, delete, and reorder guild information pages
+        const MANAGE_PAGES       = 1 << 21;
     }
 }
 
@@ -100,10 +105,11 @@ impl GuildPermissions {
 
     /// Default permissions for officers (senior moderators).
     ///
-    /// Includes moderator permissions plus ban and channel management.
+    /// Includes moderator permissions plus ban, channel, and page management.
     pub const OFFICER_DEFAULT: Self = Self::MODERATOR_DEFAULT
         .union(Self::BAN_MEMBERS)
-        .union(Self::MANAGE_CHANNELS);
+        .union(Self::MANAGE_CHANNELS)
+        .union(Self::MANAGE_PAGES);
 
     /// Permissions that @everyone can NEVER have.
     ///
@@ -121,7 +127,8 @@ impl GuildPermissions {
         .union(Self::VIEW_AUDIT_LOG)
         .union(Self::MANAGE_GUILD)
         .union(Self::TRANSFER_OWNERSHIP)
-        .union(Self::MANAGE_INVITES);
+        .union(Self::MANAGE_INVITES)
+        .union(Self::MANAGE_PAGES);
 
     // === Database Conversion ===
 
@@ -237,6 +244,11 @@ mod tests {
         assert_eq!(GuildPermissions::MANAGE_INVITES.bits(), 1 << 20);
     }
 
+    #[test]
+    fn test_pages_permission_bits() {
+        assert_eq!(GuildPermissions::MANAGE_PAGES.bits(), 1 << 21);
+    }
+
     // === Preset Tests ===
 
     #[test]
@@ -294,6 +306,7 @@ mod tests {
         // Plus additional permissions
         assert!(officer.has(GuildPermissions::BAN_MEMBERS));
         assert!(officer.has(GuildPermissions::MANAGE_CHANNELS));
+        assert!(officer.has(GuildPermissions::MANAGE_PAGES));
 
         // But not ownership transfer
         assert!(!officer.has(GuildPermissions::TRANSFER_OWNERSHIP));
@@ -424,6 +437,7 @@ mod tests {
             GuildPermissions::MANAGE_GUILD,
             GuildPermissions::TRANSFER_OWNERSHIP,
             GuildPermissions::MANAGE_INVITES,
+            GuildPermissions::MANAGE_PAGES,
         ];
 
         for forbidden in forbidden_perms {
@@ -550,6 +564,7 @@ mod tests {
             GuildPermissions::TRANSFER_OWNERSHIP,
             GuildPermissions::CREATE_INVITE,
             GuildPermissions::MANAGE_INVITES,
+            GuildPermissions::MANAGE_PAGES,
         ];
 
         // Check that combining all equals the sum of individual bits

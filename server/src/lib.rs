@@ -10,6 +10,7 @@ pub mod chat;
 pub mod config;
 pub mod db;
 pub mod guild;
+pub mod pages;
 pub mod permissions;
 pub mod ratelimit;
 pub mod social;

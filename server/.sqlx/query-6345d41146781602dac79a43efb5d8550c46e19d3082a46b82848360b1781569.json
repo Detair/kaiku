@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n                    SELECT 1 FROM pages\n                    WHERE guild_id = $1 AND slug = $2\n                    AND deleted_at IS NOT NULL AND deleted_at > $3\n                ) as \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6345d41146781602dac79a43efb5d8550c46e19d3082a46b82848360b1781569"
+}

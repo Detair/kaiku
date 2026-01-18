@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO page_acceptances (user_id, page_id, content_hash)\n        VALUES ($1, $2, $3)\n        ON CONFLICT (user_id, page_id) DO UPDATE SET content_hash = $3, accepted_at = NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "05dd7245bda8280d4d165757066da4897a68dbff947faa6250a24f4599a3e072"
+}
