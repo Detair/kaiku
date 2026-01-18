@@ -7,6 +7,7 @@
 import { Show, createSignal, onMount } from "solid-js";
 import { X, Check, ChevronDown } from "lucide-solid";
 import type { Page } from "@/lib/types";
+import { SCROLL_TOLERANCE } from "@/lib/pageConstants";
 import MarkdownPreview from "./MarkdownPreview";
 
 interface PageAcceptanceModalProps {
@@ -29,8 +30,8 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
     if (!contentRef) return;
 
     const { scrollTop, scrollHeight, clientHeight } = contentRef;
-    // Consider "bottom" reached if within 20px of the end
-    const isAtBottom = scrollTop + clientHeight >= scrollHeight - 20;
+    // Consider "bottom" reached if within SCROLL_TOLERANCE of the end
+    const isAtBottom = scrollTop + clientHeight >= scrollHeight - SCROLL_TOLERANCE;
 
     if (isAtBottom) {
       setHasScrolledToBottom(true);

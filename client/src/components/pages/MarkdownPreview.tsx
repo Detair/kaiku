@@ -151,7 +151,8 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
       if (!pre || !code.trim()) return;
 
       try {
-        const id = `mermaid-${Date.now()}-${index}`;
+        // Use version + index for unique IDs (version is unique per render cycle)
+        const id = `mermaid-v${version}-${index}`;
         const { svg } = await mermaid.render(id, code.trim());
 
         // Check if render is still current (race condition guard)

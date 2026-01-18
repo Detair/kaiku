@@ -8,6 +8,28 @@ import { createStore } from "solid-js/store";
 import type { Page, PageListItem } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/** Sort pages by position ascending. */
+function sortByPosition<T extends { position: number }>(pages: T[]): T[] {
+  return [...pages].sort((a, b) => a.position - b.position);
+}
+
+/** Convert Page to PageListItem. */
+function toListItem(page: Page): PageListItem {
+  return {
+    id: page.id,
+    guild_id: page.guild_id,
+    title: page.title,
+    slug: page.slug,
+    position: page.position,
+    requires_acceptance: page.requires_acceptance,
+    updated_at: page.updated_at,
+  };
+}
+
 // Pages state interface
 interface PagesState {
   platformPages: PageListItem[];
@@ -43,7 +65,7 @@ export async function loadPlatformPages(): Promise<void> {
   try {
     const pages = await tauri.listPlatformPages();
     setPagesState({
-      platformPages: pages.sort((a, b) => a.position - b.position),
+      platformPages: sortByPosition(pages),
       isPlatformLoading: false,
       error: null,
     });
@@ -90,15 +112,7 @@ export async function createPlatformPage(
   try {
     const page = await tauri.createPlatformPage(title, content, slug, requiresAcceptance);
     setPagesState("platformPages", (prev) =>
-      [...prev, {
-        id: page.id,
-        guild_id: page.guild_id,
-        title: page.title,
-        slug: page.slug,
-        position: page.position,
-        requires_acceptance: page.requires_acceptance,
-        updated_at: page.updated_at,
-      }].sort((a, b) => a.position - b.position)
+      sortByPosition([...prev, toListItem(page)])
     );
     setPagesState({ isLoading: false, error: null });
     return page;
@@ -210,7 +224,7 @@ export async function loadGuildPages(guildId: string): Promise<void> {
 
   try {
     const pages = await tauri.listGuildPages(guildId);
-    setPagesState("guildPages", guildId, pages.sort((a, b) => a.position - b.position));
+    setPagesState("guildPages", guildId, sortByPosition(pages));
     setPagesState({ isLoading: false, error: null });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -255,18 +269,8 @@ export async function createGuildPage(
 
   try {
     const page = await tauri.createGuildPage(guildId, title, content, slug, requiresAcceptance);
-    const pageListItem: PageListItem = {
-      id: page.id,
-      guild_id: page.guild_id,
-      title: page.title,
-      slug: page.slug,
-      position: page.position,
-      requires_acceptance: page.requires_acceptance,
-      updated_at: page.updated_at,
-    };
-
     setPagesState("guildPages", guildId, (prev) =>
-      [...(prev || []), pageListItem].sort((a, b) => a.position - b.position)
+      sortByPosition([...(prev || []), toListItem(page)])
     );
     setPagesState({ isLoading: false, error: null });
     return page;

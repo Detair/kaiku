@@ -7,11 +7,9 @@
 import { createSignal, createEffect, Show, onCleanup } from "solid-js";
 import { Bold, Italic, Strikethrough, Image, Code, List, ListOrdered, Link, Eye, EyeOff, Save, X } from "lucide-solid";
 import type { Page } from "@/lib/types";
+import { MAX_CONTENT_SIZE } from "@/lib/pageConstants";
 import MarkdownPreview from "./MarkdownPreview";
 import MarkdownCheatSheet from "./MarkdownCheatSheet";
-
-// Maximum content size in bytes (100KB)
-const MAX_CONTENT_SIZE = 102400;
 
 interface PageEditorProps {
   page?: Page | null;
@@ -129,7 +127,7 @@ export default function PageEditor(props: PageEditorProps) {
 
     // Validate slug format
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug())) {
-      setError("Slug must contain only lowercase letters, numbers, and hyphens");
+      setError("Invalid slug format. Use lowercase letters, numbers, and single dashes (e.g., 'terms-of-service')");
       return;
     }
 

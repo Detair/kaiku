@@ -624,7 +624,7 @@ fn validate_slug(slug: &str) -> PageResult<()> {
     if !valid {
         return Err((
             StatusCode::BAD_REQUEST,
-            "Slug must be lowercase alphanumeric with dashes, no leading/trailing/consecutive dashes".to_string(),
+            "Invalid slug format. Use lowercase letters, numbers, and single dashes (e.g., 'terms-of-service', 'faq-page')".to_string(),
         ));
     }
     Ok(())

@@ -38,24 +38,6 @@ pub struct PageListItem {
     pub updated_at: String,
 }
 
-/// Create page request.
-#[derive(Debug, Deserialize)]
-pub struct CreatePageRequest {
-    pub title: String,
-    pub slug: Option<String>,
-    pub content: String,
-    pub requires_acceptance: Option<bool>,
-}
-
-/// Update page request.
-#[derive(Debug, Deserialize)]
-pub struct UpdatePageRequest {
-    pub title: Option<String>,
-    pub slug: Option<String>,
-    pub content: Option<String>,
-    pub requires_acceptance: Option<bool>,
-}
-
 // ============================================================================
 // Platform Pages
 // ============================================================================
