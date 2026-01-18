@@ -60,19 +60,24 @@ services:
   # MinIO (S3-compatible storage) - Optional
   # ==========================================================================
   minio:
-    image: bitnami/minio:latest
+    image: minio/minio:latest
     container_name: canis-dev-minio
     profiles: ["storage", "all"]
     restart: unless-stopped
+    command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
-      - MINIO_DEFAULT_BUCKETS=voicechat
     ports:
       - "9000:9000"   # API
       - "9001:9001"   # Console
     volumes:
-      - minio_dev_data:/bitnami/minio/data
+      - minio_dev_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # ==========================================================================
   # MailHog (Email testing) - Optional
