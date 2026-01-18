@@ -13,7 +13,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Phase 0** | ✅ Complete | 100% | N+1 fix, WebRTC optimization, MFA encryption |
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
 | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
-| **Phase 3** | 🔄 In Progress | 85% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission system design |
+| **Phase 3** | 🔄 In Progress | 90% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission system, Information Pages |
 | **Phase 4** | 📋 Planned | 0% | - |
 | **Phase 5** | 📋 Planned | 0% | - |
 
@@ -183,22 +183,25 @@ This roadmap outlines the development path from the current prototype to a produ
 - [x] **[Auth] Permission System Design** ✅
   - Comprehensive design document for role-based permissions.
   - **Location:** `docs/plans/permission-system-design-2026-01-13.md`
-- [ ] **[Auth] Permission System Implementation**
-  - Implement permissions scoped to Guild.
-  - Define default roles (`@everyone`).
+- [ ] **[Auth] Permission System Implementation** `Backend Complete`
+  - [x] Backend API handlers for admin, roles, and overrides (PR #17).
+  - [x] Permission checking middleware and guild permission queries.
+  - [ ] Admin UI for role management and permission assignment.
+  - [ ] Role picker in guild settings.
   - **Design:** `docs/plans/permission-system-implementation-2026-01-13.md`
+  - **Backend:** `server/src/permissions/`
 - [ ] **[Voice] DM Voice Calls** `New` `Designed`
   - Voice calling in DM and group DM conversations.
   - Call signaling via Redis Streams, reuses existing SFU.
   - Join/Decline flow with configurable notifications.
   - **Design:** `docs/plans/2026-01-14-dm-voice-calls-design.md`
-- [ ] **[Content] Information Pages** `New` `In Progress`
+- [x] **[Content] Information Pages** ✅
   - Platform-wide pages (ToS, Privacy Policy) in Home view.
   - Guild-level pages (Rules, FAQ) in sidebar above channels.
-  - Markdown editor with Mermaid diagram support.
-  - Role-based visibility and optional acceptance requirements.
-  - Platform admin role system for managing platform pages.
-  - **Design:** `docs/plans/2026-01-16-information-pages-design.md`
+  - Markdown editor with live preview and Mermaid diagram support.
+  - Page acceptance tracking with scroll-to-bottom requirement.
+  - Audit logging for all page operations.
+  - **Location:** `server/src/pages/`, `client/src/components/pages/`
 - [x] **[Security] Rate Limiting** ✅
   - Redis-based fixed window rate limiting with Lua scripts.
   - Hybrid IP/user identification with configurable trust proxy.
