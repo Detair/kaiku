@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, requester_id, addressee_id, status as \"status: FriendshipStatus\"\n           FROM friendships\n           WHERE (requester_id = $1 AND addressee_id = $2)\n              OR (requester_id = $2 AND addressee_id = $1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "requester_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "addressee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "status: FriendshipStatus",
+        "type_info": {
+          "Custom": {
+            "name": "friendship_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "accepted",
+                "blocked"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "37a7cb2ae5cc473e4a9b3801cb146204f016321e615ea14b7238e0d945967522"
+}
