@@ -3,6 +3,7 @@
 //! Self-hosted voice and text chat platform for gaming communities.
 //! Optimized for low latency (<50ms), high quality, and maximum security.
 
+pub mod admin;
 pub mod api;
 pub mod auth;
 pub mod chat;

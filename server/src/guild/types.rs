@@ -92,3 +92,38 @@ pub struct InviteResponse {
     pub use_count: i32,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
+
+// ============================================================================
+// Role Types
+// ============================================================================
+
+/// Request to create a guild role.
+#[derive(Debug, Deserialize, Validate)]
+pub struct CreateRoleRequest {
+    #[validate(length(min = 1, max = 64, message = "Role name must be 1-64 characters"))]
+    pub name: String,
+    pub color: Option<String>,
+    pub permissions: Option<u64>,
+}
+
+/// Request to update a guild role.
+#[derive(Debug, Deserialize)]
+pub struct UpdateRoleRequest {
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub permissions: Option<u64>,
+    pub position: Option<i32>,
+}
+
+/// Guild role response.
+#[derive(Debug, Serialize)]
+pub struct RoleResponse {
+    pub id: Uuid,
+    pub guild_id: Uuid,
+    pub name: String,
+    pub color: Option<String>,
+    pub permissions: u64,
+    pub position: i32,
+    pub is_default: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}

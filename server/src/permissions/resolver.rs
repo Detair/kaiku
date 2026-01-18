@@ -131,6 +131,18 @@ pub enum PermissionError {
 
     /// Attempted to moderate guild owner.
     CannotModerateOwner,
+
+    /// User is not a member of the guild.
+    NotGuildMember,
+
+    /// Action requires elevated session.
+    ElevationRequired,
+
+    /// User is not a system admin.
+    NotSystemAdmin,
+
+    /// Database error occurred.
+    DatabaseError(String),
 }
 
 impl std::fmt::Display for PermissionError {
@@ -148,6 +160,12 @@ impl std::fmt::Display for PermissionError {
                 write!(f, "Cannot grant permissions you don't have: {p:?}")
             }
             Self::CannotModerateOwner => write!(f, "Cannot moderate guild owner"),
+            Self::NotGuildMember => write!(f, "User is not a member of this guild"),
+            Self::ElevationRequired => {
+                write!(f, "This action requires an elevated session")
+            }
+            Self::NotSystemAdmin => write!(f, "User is not a system admin"),
+            Self::DatabaseError(msg) => write!(f, "Database error: {msg}"),
         }
     }
 }
@@ -357,6 +375,19 @@ mod tests {
 
         let owner = PermissionError::CannotModerateOwner;
         assert!(owner.to_string().contains("guild owner"));
+
+        let not_member = PermissionError::NotGuildMember;
+        assert!(not_member.to_string().contains("not a member"));
+
+        let elevation = PermissionError::ElevationRequired;
+        assert!(elevation.to_string().contains("elevated session"));
+
+        let not_admin = PermissionError::NotSystemAdmin;
+        assert!(not_admin.to_string().contains("not a system admin"));
+
+        let db_error = PermissionError::DatabaseError("connection refused".to_string());
+        assert!(db_error.to_string().contains("Database error"));
+        assert!(db_error.to_string().contains("connection refused"));
     }
 
     #[test]

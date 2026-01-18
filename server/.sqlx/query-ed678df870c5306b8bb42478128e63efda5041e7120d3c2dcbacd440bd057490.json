@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2), ($1, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ed678df870c5306b8bb42478128e63efda5041e7120d3c2dcbacd440bd057490"
+}

@@ -5,7 +5,7 @@
 mod error;
 mod handlers;
 pub mod jwt;
-mod mfa_crypto;
+pub mod mfa_crypto;
 mod middleware;
 mod oidc;
 mod password;

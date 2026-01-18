@@ -16,7 +16,7 @@ use tower_http::{
 };
 
 use crate::{
-    auth, chat,
+    admin, auth, chat,
     chat::S3Client,
     config::Config,
     guild,
@@ -98,10 +98,15 @@ pub fn create_router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Write)));
 
+    // Admin routes (requires auth + system admin)
+    // Auth middleware first, then admin router applies require_system_admin internally
+    let admin_routes = admin::router(state.clone());
+
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .merge(api_routes)
         .nest("/api", social_routes)
+        .nest("/api/admin", admin_routes)
         .layer(from_fn_with_state(state.clone(), auth::require_auth));
 
     Router::new()

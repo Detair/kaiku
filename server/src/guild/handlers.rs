@@ -9,7 +9,7 @@ use axum::{
 use uuid::Uuid;
 use validator::Validate;
 
-use super::types::{CreateGuildRequest, Guild, UpdateGuildRequest, JoinGuildRequest, GuildMember};
+use super::types::{CreateGuildRequest, Guild, GuildMember, JoinGuildRequest, UpdateGuildRequest};
 use crate::{api::AppState, auth::AuthUser, db};
 
 // ============================================================================

@@ -5,12 +5,16 @@
 //! - Guild permissions: Per-guild role-based access control
 
 pub mod guild;
+pub mod helpers;
 pub mod models;
 pub mod queries;
 pub mod resolver;
 pub mod system;
 
 pub use guild::GuildPermissions;
+pub use helpers::{
+    get_member_permission_context, require_guild_permission, MemberPermissionContext,
+};
 pub use models::*;
 pub use queries::*;
 pub use resolver::{

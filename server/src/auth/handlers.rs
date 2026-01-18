@@ -257,13 +257,17 @@ pub async fn login(
     }
 
     // Find user by username
-    let user = if let Some(u) = find_user_by_username(&state.db, &body.username).await? { u } else {
+    let user = if let Some(u) = find_user_by_username(&state.db, &body.username).await? {
+        u
+    } else {
         record_failed_auth!();
         return Err(AuthError::InvalidCredentials);
     };
 
     // Verify password (only for local auth)
-    let password_hash = if let Some(h) = user.password_hash.as_ref() { h } else {
+    let password_hash = if let Some(h) = user.password_hash.as_ref() {
+        h
+    } else {
         record_failed_auth!();
         return Err(AuthError::InvalidCredentials);
     };

@@ -5,11 +5,12 @@
 mod channels;
 mod dm;
 mod messages;
+pub mod overrides;
 pub mod s3;
 mod uploads;
 
 use axum::{
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 
@@ -28,6 +29,12 @@ pub fn channels_router() -> Router<AppState> {
         .route("/:id/members", get(channels::list_members))
         .route("/:id/members", post(channels::add_member))
         .route("/:id/members/:user_id", delete(channels::remove_member))
+        // Permission overrides
+        .route("/:id/overrides", get(overrides::list_overrides))
+        .route(
+            "/:id/overrides/:role_id",
+            put(overrides::set_override).delete(overrides::delete_override),
+        )
 }
 
 /// Create messages router (protected routes).

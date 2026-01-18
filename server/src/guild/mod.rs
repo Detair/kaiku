@@ -1,13 +1,14 @@
 //! Guild (Server) Management Module
 //!
-//! Handles guild creation, membership, invites, and management.
+//! Handles guild creation, membership, invites, roles, and management.
 
 pub mod handlers;
 pub mod invites;
+pub mod roles;
 pub mod types;
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 
@@ -28,6 +29,19 @@ pub fn router() -> Router<AppState> {
         .route("/:id/members", get(handlers::list_members))
         .route("/:id/members/:user_id", delete(handlers::kick_member))
         .route("/:id/channels", get(handlers::list_channels))
+        // Role routes
+        .route(
+            "/:id/roles",
+            get(roles::list_roles).post(roles::create_role),
+        )
+        .route(
+            "/:id/roles/:role_id",
+            patch(roles::update_role).delete(roles::delete_role),
+        )
+        .route(
+            "/:id/members/:user_id/roles/:role_id",
+            post(roles::assign_role).delete(roles::remove_role),
+        )
         // Invite routes
         .route(
             "/:id/invites",
