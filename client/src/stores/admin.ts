@@ -8,7 +8,6 @@
 import { createStore } from "solid-js/store";
 import type {
   AdminStats,
-  AdminStatus,
   UserSummary,
   GuildSummary,
   AuditLogEntry,
