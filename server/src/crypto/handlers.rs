@@ -43,6 +43,8 @@ pub struct UploadKeysResponse {
     pub device_id: Uuid,
     /// Number of prekeys that were actually uploaded (excludes duplicates).
     pub prekeys_uploaded: usize,
+    /// Number of prekeys that were skipped due to validation errors.
+    pub prekeys_skipped: usize,
 }
 
 /// Response containing a user's device keys.
@@ -64,6 +66,14 @@ pub struct DeviceKeys {
     /// Curve25519 key exchange key (base64-encoded).
     pub identity_key_curve25519: String,
 }
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Maximum number of prekeys that can be uploaded in a single request.
+/// Prevents DoS attacks by limiting the amount of work per request.
+const MAX_PREKEYS_PER_UPLOAD: usize = 100;
 
 // ============================================================================
 // Handlers
@@ -102,6 +112,12 @@ pub async fn upload_keys(
             "identity_key_curve25519 must be 64 characters or less".to_string(),
         ));
     }
+    if req.one_time_prekeys.len() > MAX_PREKEYS_PER_UPLOAD {
+        return Err(AuthError::Validation(format!(
+            "Cannot upload more than {} prekeys at once",
+            MAX_PREKEYS_PER_UPLOAD
+        )));
+    }
 
     // Insert or update device
     let device_id: Uuid = sqlx::query_scalar(
@@ -121,15 +137,14 @@ pub async fn upload_keys(
     .await
     .map_err(AuthError::Database)?;
 
-    // Insert prekeys (skip duplicates)
+    // Insert prekeys (skip duplicates and invalid keys)
     let mut prekeys_uploaded = 0;
+    let mut prekeys_skipped = 0;
     for prekey in &req.one_time_prekeys {
         // Validate prekey lengths
-        if prekey.key_id.len() > 64 {
-            continue; // Skip invalid prekeys
-        }
-        if prekey.public_key.len() > 64 {
-            continue; // Skip invalid prekeys
+        if prekey.key_id.len() > 64 || prekey.public_key.len() > 64 {
+            prekeys_skipped += 1;
+            continue;
         }
 
         let result = sqlx::query(
@@ -155,12 +170,14 @@ pub async fn upload_keys(
         user_id = %user_id,
         device_id = %device_id,
         prekeys_uploaded = prekeys_uploaded,
+        prekeys_skipped = prekeys_skipped,
         "Keys uploaded"
     );
 
     Ok(Json(UploadKeysResponse {
         device_id,
         prekeys_uploaded,
+        prekeys_skipped,
     }))
 }
 
