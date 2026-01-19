@@ -24,8 +24,8 @@ const DMConversation: Component = () => {
 
     setIsStartingCall(true);
     try {
-      startCall(currentDM.id);
       await startDMCall(currentDM.id);
+      startCall(currentDM.id);
     } catch (err) {
       console.error("Failed to start call:", err);
     } finally {
@@ -112,6 +112,7 @@ const DMConversation: Component = () => {
             onClick={handleStartCall}
             disabled={!canStartCall() || isStartingCall()}
             title={canStartCall() ? "Start voice call" : "Call in progress"}
+            aria-label={canStartCall() ? "Start voice call" : "Call in progress"}
             class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-layer2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Phone class="w-5 h-5" />
