@@ -332,3 +332,72 @@ pub enum CallError {
     #[error("Serialization error: {0}")]
     Serialization(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stream_key_format() {
+        let channel_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let key = CallService::stream_key(channel_id);
+        assert_eq!(key, "call_events:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn test_stream_key_different_uuids() {
+        let uuid1 = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let uuid2 = Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+
+        let key1 = CallService::stream_key(uuid1);
+        let key2 = CallService::stream_key(uuid2);
+
+        assert_ne!(key1, key2);
+        assert!(key1.starts_with("call_events:"));
+        assert!(key2.starts_with("call_events:"));
+    }
+
+    #[test]
+    fn test_error_display_call_not_found() {
+        let err = CallError::CallNotFound;
+        assert_eq!(err.to_string(), "Call not found");
+    }
+
+    #[test]
+    fn test_error_display_call_already_exists() {
+        let err = CallError::CallAlreadyExists;
+        assert_eq!(err.to_string(), "Call already exists");
+    }
+
+    #[test]
+    fn test_error_display_redis() {
+        let err = CallError::Redis("connection failed".to_string());
+        assert_eq!(err.to_string(), "Redis error: connection failed");
+    }
+
+    #[test]
+    fn test_error_display_invalid_event() {
+        let err = CallError::InvalidEvent("missing field".to_string());
+        assert_eq!(err.to_string(), "Invalid event: missing field");
+    }
+
+    #[test]
+    fn test_error_display_state_transition() {
+        let err = CallError::StateTransition("invalid transition".to_string());
+        assert_eq!(err.to_string(), "State transition error: invalid transition");
+    }
+
+    #[test]
+    fn test_error_display_serialization() {
+        let err = CallError::Serialization("JSON error".to_string());
+        assert_eq!(err.to_string(), "Serialization error: JSON error");
+    }
+
+    #[test]
+    fn test_error_debug_trait() {
+        let err = CallError::CallNotFound;
+        // Debug trait should be implemented
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("CallNotFound"));
+    }
+}
