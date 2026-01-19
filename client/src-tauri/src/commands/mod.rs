@@ -2,6 +2,7 @@
 //!
 //! Bridge between frontend and backend.
 
+pub mod admin;
 pub mod auth;
 pub mod chat;
 pub mod pages;

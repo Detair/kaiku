@@ -7,15 +7,22 @@
  * Voice controls are in VoiceIsland (appears when connected to voice).
  */
 
-import { Component, Show, createSignal } from "solid-js";
-import { Settings } from "lucide-solid";
+import { Component, Show, createSignal, onMount } from "solid-js";
+import { Settings, Shield } from "lucide-solid";
 import { authState } from "@/stores/auth";
+import { adminState, checkAdminStatus } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
 import { SettingsModal } from "@/components/settings";
+import { AdminQuickModal } from "@/components/admin";
 
 const UserPanel: Component = () => {
   const user = () => authState.user;
   const [showSettings, setShowSettings] = createSignal(false);
+  const [showAdmin, setShowAdmin] = createSignal(false);
+
+  onMount(() => {
+    checkAdminStatus();
+  });
 
   return (
     <>
@@ -43,6 +50,19 @@ const UserPanel: Component = () => {
           </Show>
 
           {/* Action buttons */}
+          <Show when={adminState.isAdmin}>
+            <button
+              class="p-1.5 hover:bg-white/10 rounded-lg transition-all duration-200"
+              classList={{
+                "text-accent-success": adminState.isElevated,
+                "text-text-secondary hover:text-accent-primary": !adminState.isElevated,
+              }}
+              title={adminState.isElevated ? "Admin Panel (Elevated)" : "Admin Panel"}
+              onClick={() => setShowAdmin(true)}
+            >
+              <Shield class="w-4 h-4" />
+            </button>
+          </Show>
           <button
             class="p-1.5 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-all duration-200"
             title="User Settings"
@@ -56,6 +76,11 @@ const UserPanel: Component = () => {
       {/* Settings Modal */}
       <Show when={showSettings()}>
         <SettingsModal onClose={() => setShowSettings(false)} />
+      </Show>
+
+      {/* Admin Quick Modal */}
+      <Show when={showAdmin()}>
+        <AdminQuickModal onClose={() => setShowAdmin(false)} />
       </Show>
     </>
   );

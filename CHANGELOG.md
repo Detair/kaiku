@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging for all page operations (create, update, delete, reorder)
 - CHANGELOG.md following keepachangelog.com format
 - Changelog maintenance guidelines in CLAUDE.md
+- Admin Dashboard with user management, guild oversight, and audit log viewing
+- AdminQuickModal for quick admin access with elevation status and stats
+- Session elevation system with MFA verification and 15-minute expiry
+- Ban/unban users and suspend/unsuspend guilds (requires elevation)
 
 ### Changed
 

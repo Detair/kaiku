@@ -28,10 +28,17 @@ import type {
   AssignRoleResponse,
   RemoveRoleResponse,
   DeleteRoleResponse,
+  AdminStats,
+  AdminStatus,
+  UserSummary,
+  GuildSummary,
+  AuditLogEntry,
+  PaginatedResponse,
+  ElevateResponse,
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse };
+export type { User, Channel, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse };
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -1526,5 +1533,224 @@ export async function deleteChannelOverride(
   await httpRequest<void>(
     "DELETE",
     `/api/channels/${channelId}/overrides/${roleId}`
+  );
+}
+
+// ============================================================================
+// Admin API
+// ============================================================================
+
+/**
+ * Check if current user is a system admin.
+ */
+export async function checkAdminStatus(): Promise<AdminStatus> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AdminStatus>("check_admin_status");
+  }
+
+  return httpRequest<AdminStatus>("GET", "/api/admin/status");
+}
+
+/**
+ * Get admin statistics.
+ */
+export async function getAdminStats(): Promise<AdminStats> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AdminStats>("get_admin_stats");
+  }
+
+  return httpRequest<AdminStats>("GET", "/api/admin/stats");
+}
+
+/**
+ * List users (admin only).
+ */
+export async function adminListUsers(
+  limit?: number,
+  offset?: number
+): Promise<PaginatedResponse<UserSummary>> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<PaginatedResponse<UserSummary>>("admin_list_users", {
+      limit,
+      offset,
+    });
+  }
+
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set("limit", limit.toString());
+  if (offset !== undefined) params.set("offset", offset.toString());
+  const query = params.toString();
+
+  return httpRequest<PaginatedResponse<UserSummary>>(
+    "GET",
+    `/api/admin/users${query ? `?${query}` : ""}`
+  );
+}
+
+/**
+ * List guilds (admin only).
+ */
+export async function adminListGuilds(
+  limit?: number,
+  offset?: number
+): Promise<PaginatedResponse<GuildSummary>> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<PaginatedResponse<GuildSummary>>("admin_list_guilds", {
+      limit,
+      offset,
+    });
+  }
+
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set("limit", limit.toString());
+  if (offset !== undefined) params.set("offset", offset.toString());
+  const query = params.toString();
+
+  return httpRequest<PaginatedResponse<GuildSummary>>(
+    "GET",
+    `/api/admin/guilds${query ? `?${query}` : ""}`
+  );
+}
+
+/**
+ * Get audit log (admin only).
+ */
+export async function adminGetAuditLog(
+  limit?: number,
+  offset?: number,
+  actionFilter?: string
+): Promise<PaginatedResponse<AuditLogEntry>> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<PaginatedResponse<AuditLogEntry>>("admin_get_audit_log", {
+      limit,
+      offset,
+      action_filter: actionFilter,
+    });
+  }
+
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set("limit", limit.toString());
+  if (offset !== undefined) params.set("offset", offset.toString());
+  if (actionFilter) params.set("action", actionFilter);
+  const query = params.toString();
+
+  return httpRequest<PaginatedResponse<AuditLogEntry>>(
+    "GET",
+    `/api/admin/audit-log${query ? `?${query}` : ""}`
+  );
+}
+
+/**
+ * Elevate admin session with MFA code.
+ */
+export async function adminElevate(
+  mfaCode: string,
+  reason?: string
+): Promise<ElevateResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<ElevateResponse>("admin_elevate", {
+      mfa_code: mfaCode,
+      reason,
+    });
+  }
+
+  return httpRequest<ElevateResponse>("POST", "/api/admin/elevate", {
+    mfa_code: mfaCode,
+    reason,
+  });
+}
+
+/**
+ * De-elevate admin session.
+ */
+export async function adminDeElevate(): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<void>("admin_de_elevate");
+  }
+
+  await httpRequest<void>("POST", "/api/admin/de-elevate");
+}
+
+/**
+ * Ban a user (requires elevation).
+ */
+export async function adminBanUser(
+  userId: string,
+  reason: string,
+  expiresAt?: string
+): Promise<{ banned: boolean; user_id: string }> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_ban_user", {
+      user_id: userId,
+      reason,
+      expires_at: expiresAt,
+    });
+  }
+
+  return httpRequest<{ banned: boolean; user_id: string }>(
+    "POST",
+    `/api/admin/users/${userId}/ban`,
+    { reason, expires_at: expiresAt }
+  );
+}
+
+/**
+ * Unban a user (requires elevation).
+ */
+export async function adminUnbanUser(
+  userId: string
+): Promise<{ banned: boolean; user_id: string }> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_unban_user", { user_id: userId });
+  }
+
+  return httpRequest<{ banned: boolean; user_id: string }>(
+    "POST",
+    `/api/admin/users/${userId}/unban`
+  );
+}
+
+/**
+ * Suspend a guild (requires elevation).
+ */
+export async function adminSuspendGuild(
+  guildId: string,
+  reason: string
+): Promise<{ suspended: boolean; guild_id: string }> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_suspend_guild", { guild_id: guildId, reason });
+  }
+
+  return httpRequest<{ suspended: boolean; guild_id: string }>(
+    "POST",
+    `/api/admin/guilds/${guildId}/suspend`,
+    { reason }
+  );
+}
+
+/**
+ * Unsuspend a guild (requires elevation).
+ */
+export async function adminUnsuspendGuild(
+  guildId: string
+): Promise<{ suspended: boolean; guild_id: string }> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_unsuspend_guild", { guild_id: guildId });
+  }
+
+  return httpRequest<{ suspended: boolean; guild_id: string }>(
+    "POST",
+    `/api/admin/guilds/${guildId}/unsuspend`
   );
 }

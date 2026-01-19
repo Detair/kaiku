@@ -8,6 +8,7 @@ import Main from "./views/Main";
 import ThemeDemo from "./pages/ThemeDemo";
 import InviteJoin from "./views/InviteJoin";
 import PageViewRoute from "./views/PageViewRoute";
+import AdminDashboard from "./views/AdminDashboard";
 
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
@@ -51,6 +52,13 @@ const ProtectedPageView: Component = () => (
   </AuthGuard>
 );
 
+// Protected admin wrapper
+const ProtectedAdmin: Component = () => (
+  <AuthGuard>
+    <AdminDashboard />
+  </AuthGuard>
+);
+
 // Wrapped components for routes
 const LoginPage = () => <Layout><Login /></Layout>;
 const RegisterPage = () => <Layout><Register /></Layout>;
@@ -58,6 +66,7 @@ const MainPage = () => <Layout><ProtectedMain /></Layout>;
 const ThemeDemoPage = () => <Layout><ThemeDemo /></Layout>;
 const InvitePage = () => <Layout><ProtectedInvite /></Layout>;
 const PagePage = () => <Layout><ProtectedPageView /></Layout>;
+const AdminPage = () => <Layout><ProtectedAdmin /></Layout>;
 
 // Export routes as JSX Route elements
 export const AppRoutes = (): JSX.Element => (
@@ -68,6 +77,7 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/invite/:code" component={InvitePage} />
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />
+    <Route path="/admin" component={AdminPage} />
     <Route path="/*" component={MainPage} />
   </>
 );

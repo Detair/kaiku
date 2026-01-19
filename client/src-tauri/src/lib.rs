@@ -101,6 +101,18 @@ pub fn run() {
             commands::roles::get_channel_overrides,
             commands::roles::set_channel_override,
             commands::roles::delete_channel_override,
+            // Admin commands
+            commands::admin::check_admin_status,
+            commands::admin::get_admin_stats,
+            commands::admin::admin_list_users,
+            commands::admin::admin_list_guilds,
+            commands::admin::admin_get_audit_log,
+            commands::admin::admin_elevate,
+            commands::admin::admin_de_elevate,
+            commands::admin::admin_ban_user,
+            commands::admin::admin_unban_user,
+            commands::admin::admin_suspend_guild,
+            commands::admin::admin_unsuspend_guild,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

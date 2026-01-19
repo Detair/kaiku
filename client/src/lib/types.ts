@@ -392,3 +392,60 @@ export interface SetChannelOverrideRequest {
 export interface GuildMemberWithRoles extends GuildMember {
   role_ids: string[];
 }
+
+// Admin Types
+
+export interface AdminStats {
+  user_count: number;
+  guild_count: number;
+  banned_count: number;
+}
+
+export interface AdminStatus {
+  is_admin: boolean;
+  is_elevated: boolean;
+  elevation_expires_at: string | null;
+}
+
+export interface UserSummary {
+  id: string;
+  username: string;
+  display_name: string;
+  email: string | null;
+  created_at: string;
+  is_banned: boolean;
+}
+
+export interface GuildSummary {
+  id: string;
+  name: string;
+  owner_id: string;
+  member_count: number;
+  created_at: string;
+  suspended_at: string | null;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actor_id: string;
+  actor_username: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ElevateResponse {
+  elevated: boolean;
+  expires_at: string;
+  session_id: string;
+}
