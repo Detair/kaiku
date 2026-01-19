@@ -188,6 +188,8 @@ pub async fn start_call(
 
     // Broadcast IncomingCall to all participants (they're subscribed to the DM channel)
     let initiator_name = get_username(&state, auth.id).await?;
+    // Default capabilities: audio only for now
+    let capabilities = vec!["audio".to_string()];
     if let Err(e) = broadcast_to_channel(
         &state.redis,
         channel_id,
@@ -195,6 +197,7 @@ pub async fn start_call(
             channel_id,
             initiator: auth.id,
             initiator_name,
+            capabilities,
         },
     )
     .await

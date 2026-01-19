@@ -243,7 +243,7 @@ pub enum ServerEvent {
     },
 
     // Call events (DM voice calls)
-    /// Incoming call notification
+    /// Incoming call notification (sent to recipient)
     IncomingCall {
         /// DM channel ID.
         channel_id: Uuid,
@@ -251,11 +251,21 @@ pub enum ServerEvent {
         initiator: Uuid,
         /// Initiator's username.
         initiator_name: String,
+        /// Call capabilities (e.g., ["audio", "video"]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
     },
-    /// Call started (for the initiator)
+    /// Call started (acknowledgement for the initiator)
     CallStarted {
         /// DM channel ID.
         channel_id: Uuid,
+        /// User who initiated the call.
+        initiator: Uuid,
+        /// Initiator's username.
+        initiator_name: String,
+        /// Call capabilities (e.g., ["audio", "video"]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
     },
     /// Call ended
     CallEnded {
