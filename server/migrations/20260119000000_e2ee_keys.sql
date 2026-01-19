@@ -6,6 +6,14 @@
 -- - One-time prekeys for Olm session establishment
 -- - Encrypted key backups (password-protected)
 -- - Device-to-device key transfer with short TTL
+--
+-- NOTE: This migration adds tables for the new E2EE encryption system.
+-- The existing user_keys table from initial_schema.sql is a legacy placeholder
+-- that will be deprecated once E2EE is fully rolled out. The new system uses:
+-- - user_devices: Per-device identity keys (users can have multiple devices)
+-- - prekeys: One-time prekeys for Olm session establishment
+-- - key_backups: Encrypted backup of identity keys
+-- - device_transfers: Temporary key transfer between devices
 
 -- ============================================================================
 -- User Devices with Identity Keys
@@ -22,10 +30,14 @@ CREATE TABLE user_devices (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     is_verified BOOLEAN NOT NULL DEFAULT FALSE,
-    UNIQUE(user_id, identity_key_curve25519)
+    UNIQUE(user_id, identity_key_curve25519),
+    CONSTRAINT device_name_length CHECK (device_name IS NULL OR length(device_name) <= 128),
+    CONSTRAINT identity_ed25519_length CHECK (length(identity_key_ed25519) <= 64),
+    CONSTRAINT identity_curve25519_length CHECK (length(identity_key_curve25519) <= 64)
 );
 
 CREATE INDEX idx_user_devices_user_id ON user_devices(user_id);
+CREATE INDEX idx_user_devices_identity_curve25519 ON user_devices(identity_key_curve25519);
 
 -- ============================================================================
 -- One-Time Prekeys
@@ -41,7 +53,9 @@ CREATE TABLE prekeys (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     claimed_at TIMESTAMPTZ,
     claimed_by UUID REFERENCES users(id),
-    UNIQUE(device_id, key_id)
+    UNIQUE(device_id, key_id),
+    CONSTRAINT key_id_length CHECK (length(key_id) <= 64),
+    CONSTRAINT public_key_length CHECK (length(public_key) <= 64)
 );
 
 -- Index for efficiently finding unclaimed prekeys for a device
@@ -61,7 +75,10 @@ CREATE TABLE key_backups (
     ciphertext BYTEA NOT NULL,
     version INT NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(user_id)
+    UNIQUE(user_id),
+    CONSTRAINT salt_size CHECK (octet_length(salt) = 16),
+    CONSTRAINT nonce_size CHECK (octet_length(nonce) = 12),
+    CONSTRAINT ciphertext_max_size CHECK (octet_length(ciphertext) <= 1048576)  -- 1MB max
 );
 
 -- ============================================================================
@@ -76,7 +93,9 @@ CREATE TABLE device_transfers (
     encrypted_keys BYTEA NOT NULL,
     nonce BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes'
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes',
+    CONSTRAINT transfer_nonce_size CHECK (octet_length(nonce) = 12),
+    CONSTRAINT encrypted_keys_max_size CHECK (octet_length(encrypted_keys) <= 65536)  -- 64KB max
 );
 
 -- Index for looking up transfers by target device
