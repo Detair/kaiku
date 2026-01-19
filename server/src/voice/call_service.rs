@@ -5,6 +5,11 @@ use fred::prelude::*;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+/// Ring timeout - call ends after this many seconds if no one answers
+const RING_TIMEOUT_SECS: i64 = 90;
+/// Cleanup delay - ended calls stay visible for this many seconds
+const CLEANUP_DELAY_SECS: i64 = 5;
+
 /// Call service for managing DM voice call state
 pub struct CallService {
     redis: RedisClient,
@@ -21,6 +26,7 @@ impl CallService {
     }
 
     /// Get current call state by replaying events from stream
+    #[tracing::instrument(skip(self))]
     pub async fn get_call_state(&self, channel_id: Uuid) -> Result<Option<CallState>, CallError> {
         let key = Self::stream_key(channel_id);
 
@@ -56,8 +62,18 @@ impl CallService {
                     if let CallEventType::Started { initiator } = event_type {
                         // Get target users from fields
                         let targets_json = fields_map.get("targets").cloned().unwrap_or_default();
-                        let targets: HashSet<Uuid> =
-                            serde_json::from_str(&targets_json).unwrap_or_default();
+                        let targets: HashSet<Uuid> = match serde_json::from_str(&targets_json) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!(
+                                    channel_id = %channel_id,
+                                    targets_json = %targets_json,
+                                    error = %e,
+                                    "Failed to parse call targets, using empty set"
+                                );
+                                HashSet::new()
+                            }
+                        };
                         CallState::new_ringing(initiator, targets)
                     } else {
                         return Err(CallError::InvalidEvent(
@@ -76,6 +92,14 @@ impl CallService {
     }
 
     /// Start a new call
+    ///
+    /// # Race Condition (TOCTOU)
+    /// There is a time-of-check-to-time-of-use race between checking for an existing
+    /// call and creating the new one. This is acceptable for MVP because:
+    /// - Concurrent starts will both succeed but one will immediately fail on join
+    /// - DM calls are 1:1, making concurrent starts extremely rare
+    /// - The failure mode is graceful (user sees "call already exists" error)
+    #[tracing::instrument(skip(self))]
     pub async fn start_call(
         &self,
         channel_id: Uuid,
@@ -110,10 +134,10 @@ impl CallService {
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
 
-        // Set TTL for auto-cleanup (90s ring timeout)
+        // Set TTL for auto-cleanup (ring timeout)
         let _: bool = self
             .redis
-            .expire(&key, 90)
+            .expire(&key, RING_TIMEOUT_SECS)
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
 
@@ -121,6 +145,7 @@ impl CallService {
     }
 
     /// Record a user joining the call
+    #[tracing::instrument(skip(self))]
     pub async fn join_call(&self, channel_id: Uuid, user_id: Uuid) -> Result<CallState, CallError> {
         let state = self
             .get_call_state(channel_id)
@@ -151,6 +176,7 @@ impl CallService {
     }
 
     /// Record a user declining the call
+    #[tracing::instrument(skip(self))]
     pub async fn decline_call(
         &self,
         channel_id: Uuid,
@@ -189,6 +215,7 @@ impl CallService {
     /// This handles both:
     /// - Active calls: sends Left event
     /// - Ringing calls (initiator): sends Ended { Cancelled } event
+    #[tracing::instrument(skip(self))]
     pub async fn leave_call(
         &self,
         channel_id: Uuid,
@@ -244,6 +271,7 @@ impl CallService {
     }
 
     /// End a call with a specific reason
+    #[tracing::instrument(skip(self))]
     pub async fn end_call(
         &self,
         channel_id: Uuid,
@@ -275,12 +303,13 @@ impl CallService {
     }
 
     /// Clean up call stream after call ends
+    #[tracing::instrument(skip(self))]
     async fn cleanup_call(&self, channel_id: Uuid) -> Result<(), CallError> {
         let key = Self::stream_key(channel_id);
         // Keep stream for a short time for late-joiners to see "ended" state
         let _: bool = self
             .redis
-            .expire(&key, 5)
+            .expire(&key, CLEANUP_DELAY_SECS)
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
         Ok(())
