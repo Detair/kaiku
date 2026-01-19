@@ -2,7 +2,7 @@
 
 This roadmap outlines the development path from the current prototype to a production-ready, multi-tenant SaaS platform.
 
-**Current Phase:** Phase 4 (Advanced Features) - Planning
+**Current Phase:** Phase 4 (Advanced Features) - In Progress
 
 **Last Updated:** 2026-01-19
 
@@ -14,7 +14,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
 | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
-| **Phase 4** | 🔄 Planning | 0% | - |
+| **Phase 4** | 🔄 In Progress | 15% | E2EE Key Backup foundation (PR #22) |
 | **Phase 5** | 📋 Planned | 0% | - |
 
 **Production Ready Features:**
@@ -221,22 +221,25 @@ This roadmap outlines the development path from the current prototype to a produ
 ## Phase 4: Advanced Features
 *Goal: Add competitive differentiators and mobile support.*
 
-- [ ] **[Social] Rich Presence (Game Activity)** `New`
+- [ ] **[Social] Rich Presence (Game Activity)** `New` `Designed`
   - Detect running games via Process Scan (Tauri) or RPC.
   - Display "Playing X" status in Friends List and User Popups.
   - Enable "Ask to Join" logic.
+  - **Design:** `docs/plans/2026-01-19-rich-presence-design.md`
 - [ ] **[UX] Cross-Server Favorites** `New`
   - Allow pinning channels from different guilds into a single "Favorites" list.
 - [ ] **[Auth] SSO / OIDC Integration**
   - Enable "Login with Google/Microsoft" via `openidconnect`.
-- [ ] **[Security] E2EE Key Backup & Recovery** `New` `Designed`
+- [ ] **[Security] E2EE Key Backup & Recovery** `New` `In Progress`
   - Element X-style Security Key (256-bit random, Base58-encoded).
   - Optional backup after registration, skippable with reminder.
   - QR-code transfer between devices (60s timeout, optional PIN).
   - Full key verification with paste support before backup completion.
   - Auto-clear clipboard after 60s with visible countdown.
   - Key rotation with re-encryption when old key available.
-  - **Design:** `docs/plans/2026-01-17-recovery-key-design.md`
+  - **Design:** `docs/plans/2026-01-19-e2ee-key-backup-design.md`
+  - **Plan:** `docs/plans/2026-01-19-e2ee-implementation.md`
+  - **Backend PR:** #22 (OlmAccount, OlmSession, RecoveryKey, EncryptedBackup, DB tables, APIs)
 - [ ] **[Voice] Screen Sharing**
   - Update SFU to handle multiple video tracks (Webcam + Screen).
   - Update Client UI to render "Filmstrip" or "Grid" layouts.
