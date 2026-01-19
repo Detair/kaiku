@@ -6,7 +6,7 @@
 
 use crate::{CryptoError, Result};
 use argon2::{Argon2, Params};
-use zeroize::ZeroizeOnDrop;
+use zeroize::{Zeroizing, ZeroizeOnDrop};
 
 /// Recovery key for backing up E2EE identity keys.
 ///
@@ -14,6 +14,21 @@ use zeroize::ZeroizeOnDrop;
 /// The key is zeroized on drop to prevent memory leaks of sensitive data.
 #[derive(Clone, ZeroizeOnDrop)]
 pub struct RecoveryKey(pub(crate) [u8; 32]);
+
+/// Derived backup encryption key.
+///
+/// This key is derived from a [`RecoveryKey`] using Argon2id and is used
+/// to encrypt/decrypt the actual key backup data.
+/// Automatically zeroizes on drop to prevent sensitive key material from
+/// remaining in memory.
+#[derive(ZeroizeOnDrop)]
+pub struct BackupKey(pub(crate) [u8; 32]);
+
+impl AsRef<[u8]> for BackupKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 impl RecoveryKey {
     /// Generate a new random recovery key using the system CSPRNG.
@@ -48,9 +63,12 @@ impl RecoveryKey {
     /// or does not decode to exactly 32 bytes.
     pub fn from_formatted_string(s: &str) -> Result<Self> {
         let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-        let bytes = bs58::decode(&cleaned)
-            .into_vec()
-            .map_err(|e| CryptoError::InvalidKey(format!("Invalid recovery key: {e}")))?;
+        // Wrap in Zeroizing to ensure the intermediate Vec is zeroized on drop
+        let bytes: Zeroizing<Vec<u8>> = Zeroizing::new(
+            bs58::decode(&cleaned)
+                .into_vec()
+                .map_err(|e| CryptoError::InvalidKey(format!("Invalid recovery key: {e}")))?,
+        );
 
         if bytes.len() != 32 {
             return Err(CryptoError::InvalidKey(format!(
@@ -60,7 +78,7 @@ impl RecoveryKey {
         }
 
         let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
+        arr.copy_from_slice(bytes.as_slice());
         Ok(Self(arr))
     }
 
@@ -73,7 +91,9 @@ impl RecoveryKey {
     /// - Output: 32 bytes
     ///
     /// The salt should be randomly generated and stored alongside the backup.
-    pub fn derive_backup_key(&self, salt: &[u8; 16]) -> [u8; 32] {
+    ///
+    /// Returns a [`BackupKey`] which automatically zeroizes on drop.
+    pub fn derive_backup_key(&self, salt: &[u8; 16]) -> BackupKey {
         let params = Params::new(65536, 3, 1, Some(32)).expect("Invalid Argon2 params");
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
@@ -81,7 +101,7 @@ impl RecoveryKey {
         argon2
             .hash_password_into(&self.0, salt, &mut output)
             .expect("Argon2 hashing failed");
-        output
+        BackupKey(output)
     }
 }
 
@@ -164,11 +184,11 @@ mod tests {
         let salt = [0u8; 16];
 
         let backup_key = recovery_key.derive_backup_key(&salt);
-        assert_eq!(backup_key.len(), 32);
+        assert_eq!(backup_key.as_ref().len(), 32);
 
         // Same inputs should produce same output (deterministic)
         let backup_key2 = recovery_key.derive_backup_key(&salt);
-        assert_eq!(backup_key, backup_key2);
+        assert_eq!(backup_key.as_ref(), backup_key2.as_ref());
     }
 
     #[test]
@@ -181,7 +201,7 @@ mod tests {
         let backup_key2 = recovery_key.derive_backup_key(&salt2);
 
         // Different salts should produce different keys
-        assert_ne!(backup_key1, backup_key2);
+        assert_ne!(backup_key1.as_ref(), backup_key2.as_ref());
     }
 
     #[test]
@@ -194,6 +214,6 @@ mod tests {
         let backup_key2 = recovery_key2.derive_backup_key(&salt);
 
         // Different recovery keys should produce different backup keys
-        assert_ne!(backup_key1, backup_key2);
+        assert_ne!(backup_key1.as_ref(), backup_key2.as_ref());
     }
 }
