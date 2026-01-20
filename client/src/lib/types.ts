@@ -8,6 +8,31 @@
 
 export type UserStatus = "online" | "away" | "busy" | "offline";
 
+/** Type of activity the user is engaged in. */
+export type ActivityType = "game" | "listening" | "watching" | "coding" | "custom";
+
+/** Rich presence activity data. */
+export interface Activity {
+  /** Type of activity. */
+  type: ActivityType;
+  /** Display name (e.g., "Minecraft", "VS Code"). */
+  name: string;
+  /** ISO timestamp when the activity started. */
+  started_at: string;
+  /** Optional details (e.g., "Creative Mode"). */
+  details?: string;
+}
+
+/** Extended presence data with activity. */
+export interface UserPresence {
+  /** Current user status. */
+  status: UserStatus;
+  /** Current activity, if any. */
+  activity?: Activity | null;
+  /** ISO timestamp of when the user was last seen (for offline users). */
+  lastSeen?: string;
+}
+
 export interface UserProfile {
   id: string;
   username: string;
