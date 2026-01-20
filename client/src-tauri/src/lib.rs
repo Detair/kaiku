@@ -113,6 +113,12 @@ pub fn run() {
             commands::admin::admin_unban_user,
             commands::admin::admin_suspend_guild,
             commands::admin::admin_unsuspend_guild,
+            // Crypto commands
+            commands::crypto::get_server_settings,
+            commands::crypto::get_backup_status,
+            commands::crypto::generate_recovery_key,
+            commands::crypto::create_backup,
+            commands::crypto::restore_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
