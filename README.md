@@ -14,111 +14,27 @@ A self-hosted voice and text chat platform for gaming communities.
 - **SSO Support** – Integrate with Authentik, Keycloak, Azure AD, and more
 - **Open Source** – MIT/Apache-2.0 dual licensed
 
-## Quick Start
-
-### Server (Docker)
-
-```bash
-# Clone the repository
-git clone https://github.com/yourorg/voicechat.git
-cd voicechat
-
-# Copy and edit environment file
-cp .env.example .env
-# Edit .env with your settings
-
-# Start the server
-cd infra/compose
-docker compose up -d
-```
-
-### Desktop Client
-
-Download the latest release from [Releases](https://github.com/yourorg/voicechat/releases).
-
-## Development
-
-### Prerequisites
-
-- Rust 1.82+ (`rustup update stable`)
-- Bun 1.1+ (for package management and scripts)
-- Node.js 18+ (required for Playwright tests)
-- Docker & Docker Compose
-
-### Quick Setup
-
-```bash
-# Run the setup script (installs deps, starts Docker, runs migrations)
-./scripts/dev-setup.sh
-
-# Start the server in watch mode
-make dev
-
-# In another terminal, start the client
-make client
-```
-
-### Manual Setup
-
-```bash
-# Start development services (PostgreSQL, Redis, MinIO, MailHog)
-make docker-up
-
-# Run database migrations
-make db-migrate
-
-# Install client dependencies
-cd client && bun install
-
-# Run server
-cargo run -p vc-server
-
-# Run client (in another terminal)
-cd client && bun run tauri dev
-```
-
-### Useful Commands
-
-```bash
-make help         # Show all available commands
-make dev          # Start server in watch mode (auto-reload)
-make client       # Start client in dev mode
-make test         # Run all tests
-make check        # Run cargo check + clippy
-make db-reset     # Reset database
-make docker-logs  # View Docker service logs
-```
-
-### Test Users
-
-After setup, create test users:
-
-```bash
-./scripts/create-test-users.sh
-```
-
-Default credentials: `admin/admin123`, `alice/password123`, `bob/password123`
-
-## Project Structure
-
-```
-voicechat/
-├── server/          # Backend server (Rust/Axum)
-├── client/          # Desktop client (Tauri + Solid.js)
-├── shared/          # Shared Rust libraries
-│   ├── vc-common/   # Common types and protocols
-│   └── vc-crypto/   # E2EE cryptography
-├── infra/           # Infrastructure (Docker, scripts)
-├── docs/            # Documentation
-└── specs/           # Project specifications
-```
-
 ## Documentation
 
-- [Quick Start Guide](docs/setup/quick-start.md)
-- [Configuration](docs/setup/configuration.md)
-- [Architecture](specs/ARCHITECTURE.md)
-- [API Reference](docs/api/)
+All documentation is located in the [`docs/`](docs/) directory.
+
+### Getting Started
+- [System Dependencies](docs/getting-started/dependencies.md)
+- [Development Setup](docs/development/setup.md)
+- [Quick Resume (for existing devs)](docs/development/quick-resume.md)
+
+### Operations
+- [Configuration Guide](docs/ops/configuration.md)
+- [Deployment Guide](docs/ops/deployment.md)
+
+### Architecture & Security
+- [Architecture Overview](docs/architecture/overview.md)
+- [Encryption Architecture](docs/security/encryption.md)
+- [Dependency Review](docs/security/dependency-review.md)
+
+### Project
+- [Roadmap](docs/project/roadmap.md)
+- [Design Guidelines](docs/design/ux-guidelines.md)
 
 ## License
 

@@ -571,9 +571,9 @@ Licensed under ISC
 
 ## Referenzen
 
-- [PROJECT_SPEC.md](./PROJECT_SPEC.md) - Projektanforderungen
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - Technische Architektur
-- [STANDARDS.md](./STANDARDS.md) - Verwendete Standards und Protokolle
+- [PROJECT_SPEC.md](../project/specification.md) - Projektanforderungen
+- [ARCHITECTURE.md](../architecture/overview.md) - Technische Architektur
+- [STANDARDS.md](../development/standards.md) - Verwendete Standards und Protokolle
 - [SPDX License List](https://spdx.org/licenses/)
 - [Choose a License](https://choosealicense.com/)
 - [cargo-deny Documentation](https://embarkstudios.github.io/cargo-deny/)

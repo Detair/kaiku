@@ -307,7 +307,7 @@ Je nach Art der Ã„nderung sollten verschiedene Personas priorisiert werden:
 
 ## Referenzen
 
-- [PROJECT_SPEC.md](./PROJECT_SPEC.md) â€“ Projektanforderungen
-- [ARCHITECTURE.md](./ARCHITECTURE.md) â€“ Technische Architektur
-- [STANDARDS.md](./STANDARDS.md) â€“ Verwendete Standards
-- [LICENSE_COMPLIANCE.md](./LICENSE_COMPLIANCE.md) â€“ LizenzprÃ¼fung
+- [PROJECT_SPEC.md](../project/specification.md) â€“ Projektanforderungen
+- [ARCHITECTURE.md](../architecture/overview.md) â€“ Technische Architektur
+- [STANDARDS.md](../development/standards.md) â€“ Verwendete Standards
+- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) â€“ LizenzprÃ¼fung

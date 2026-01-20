@@ -330,6 +330,6 @@ Eine selbst-gehostete Voice- und Text-Chat-Plattform fÃ¼r Gaming-Communities, 
 
 ## Referenzen
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - Technische Architektur
-- [STANDARDS.md](./STANDARDS.md) - Verwendete Standards und Protokolle
-- [LICENSE_COMPLIANCE.md](./LICENSE_COMPLIANCE.md) - LizenzprÃ¼fung aller Dependencies
+- [ARCHITECTURE.md](../architecture/overview.md) - Technische Architektur
+- [STANDARDS.md](../development/standards.md) - Verwendete Standards und Protokolle
+- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) - LizenzprÃ¼fung aller Dependencies
