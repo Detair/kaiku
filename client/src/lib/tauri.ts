@@ -1739,3 +1739,22 @@ export async function adminUnsuspendGuild(
     `/api/admin/guilds/${guildId}/unsuspend`
   );
 }
+
+// ============================================================================
+// Generic API Helpers
+// ============================================================================
+
+/**
+ * Generic fetch helper for API calls.
+ * Handles authentication and error handling.
+ */
+export async function fetchApi<T>(path: string, options?: {
+  method?: string;
+  body?: unknown;
+}): Promise<T> {
+  return httpRequest<T>(
+    options?.method ?? "GET",
+    path,
+    options?.body
+  );
+}

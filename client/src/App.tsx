@@ -9,6 +9,7 @@ import ThemeDemo from "./pages/ThemeDemo";
 import InviteJoin from "./views/InviteJoin";
 import PageViewRoute from "./views/PageViewRoute";
 import AdminDashboard from "./views/AdminDashboard";
+import { ConnectionHistory } from "./pages/settings/ConnectionHistory";
 
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
@@ -61,6 +62,13 @@ const ProtectedAdmin: Component = () => (
   </AuthGuard>
 );
 
+// Protected connection history wrapper
+const ProtectedConnectionHistory: Component = () => (
+  <AuthGuard>
+    <ConnectionHistory />
+  </AuthGuard>
+);
+
 // Wrapped components for routes
 const LoginPage = () => <Layout><Login /></Layout>;
 const RegisterPage = () => <Layout><Register /></Layout>;
@@ -69,6 +77,7 @@ const ThemeDemoPage = () => <Layout><ThemeDemo /></Layout>;
 const InvitePage = () => <Layout><ProtectedInvite /></Layout>;
 const PagePage = () => <Layout><ProtectedPageView /></Layout>;
 const AdminPage = () => <Layout><ProtectedAdmin /></Layout>;
+const ConnectionHistoryPage = () => <Layout><ProtectedConnectionHistory /></Layout>;
 
 // Export routes as JSX Route elements
 export const AppRoutes = (): JSX.Element => (
@@ -80,6 +89,7 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />
     <Route path="/admin" component={AdminPage} />
+    <Route path="/settings/connection" component={ConnectionHistoryPage} />
     <Route path="/*" component={MainPage} />
   </>
 );
