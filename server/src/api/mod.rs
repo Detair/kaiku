@@ -2,6 +2,8 @@
 //!
 //! Central routing configuration and shared state.
 
+mod settings;
+
 use axum::{
     extract::DefaultBodyLimit, extract::State, middleware::from_fn, middleware::from_fn_with_state,
     routing::get, Json, Router,
@@ -117,6 +119,8 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(health_check))
+        // Public server settings
+        .route("/api/settings", get(settings::get_server_settings))
         // Auth routes (pass state for middleware)
         .nest("/auth", auth::router(state.clone()))
         // Protected chat and voice routes
