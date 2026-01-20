@@ -5,19 +5,13 @@
  */
 
 import { createStore, produce } from "solid-js/store";
-import type { UserStatus } from "@/lib/types";
+import type { Activity, UserPresence, UserStatus } from "@/lib/types";
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 // Type for unlisten function
 type UnlistenFn = () => void;
-
-// Presence info for a user
-interface UserPresence {
-  status: UserStatus;
-  lastSeen?: string;
-}
 
 interface PresenceState {
   // Map of user_id -> presence info
@@ -31,6 +25,7 @@ const [presenceState, setPresenceState] = createStore<PresenceState>({
 
 // Event listener cleanup
 let unlistener: UnlistenFn | null = null;
+let activityUnlistener: UnlistenFn | null = null;
 
 /**
  * Initialize presence event listeners.
@@ -52,6 +47,20 @@ export async function initPresence(): Promise<void> {
         updateUserPresence(user_id, status);
       }
     );
+
+    // Listen for local activity changes from presence service
+    activityUnlistener = await listen<Activity | null>("presence:activity_changed", async (_event) => {
+      // Get WebSocket to send activity to server
+      try {
+        const wsModule = await import("./websocket");
+        if (wsModule.isConnected()) {
+          // The websocket will handle sending SetActivity to server
+          // For now just emit to local - server sync handled in websocket.ts
+        }
+      } catch (e) {
+        console.error("Failed to get WebSocket module:", e);
+      }
+    });
   }
 }
 
@@ -63,18 +72,45 @@ export function cleanupPresence(): void {
     unlistener();
     unlistener = null;
   }
+  if (activityUnlistener) {
+    activityUnlistener();
+    activityUnlistener = null;
+  }
 }
 
 /**
- * Update a user's presence status.
+ * Update a user's presence status with optional activity.
  */
-export function updateUserPresence(userId: string, status: UserStatus): void {
+export function updateUserPresence(
+  userId: string,
+  status: UserStatus,
+  activity?: Activity | null
+): void {
   setPresenceState(
     produce((state) => {
       state.users[userId] = {
         status,
+        activity: activity !== undefined ? activity : state.users[userId]?.activity,
         lastSeen: status === "offline" ? new Date().toISOString() : undefined,
       };
+    })
+  );
+}
+
+/**
+ * Update only the activity for a user (keeps status unchanged).
+ */
+export function updateUserActivity(userId: string, activity: Activity | null): void {
+  setPresenceState(
+    produce((state) => {
+      if (state.users[userId]) {
+        state.users[userId].activity = activity;
+      } else {
+        state.users[userId] = {
+          status: "online",
+          activity,
+        };
+      }
     })
   );
 }
@@ -104,6 +140,13 @@ export function getUserStatus(userId: string): UserStatus {
  */
 export function getUserPresence(userId: string): UserPresence | undefined {
   return presenceState.users[userId];
+}
+
+/**
+ * Get activity for a user.
+ */
+export function getUserActivity(userId: string): Activity | null | undefined {
+  return presenceState.users[userId]?.activity;
 }
 
 /**
