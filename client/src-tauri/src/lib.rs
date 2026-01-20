@@ -37,6 +37,9 @@ pub fn run() {
             // Store app state
             app.manage(AppState::new());
 
+            // Start presence polling service
+            presence::start_presence_service(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -124,6 +127,8 @@ pub fn run() {
             commands::presence::scan_processes,
             commands::presence::scan_all_processes,
             commands::presence::get_known_games,
+            commands::presence::set_activity_sharing_enabled,
+            commands::presence::is_activity_sharing_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

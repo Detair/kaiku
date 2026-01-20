@@ -2,6 +2,8 @@
 
 mod games;
 mod scanner;
+mod service;
 
 pub use games::*;
 pub use scanner::*;
+pub use service::*;

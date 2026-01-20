@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::command;
 
-use crate::presence::ProcessScanner;
+use crate::presence::{self, ProcessScanner};
 
 /// Detected activity from process scan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,4 +58,16 @@ pub fn get_known_games() -> Vec<String> {
         return Vec::new();
     };
     scanner.games_db.games.iter().map(|g| g.name.clone()).collect()
+}
+
+/// Enable or disable activity sharing.
+#[command]
+pub fn set_activity_sharing_enabled(enabled: bool) {
+    presence::set_presence_enabled(enabled);
+}
+
+/// Check if activity sharing is enabled.
+#[command]
+pub fn is_activity_sharing_enabled() -> bool {
+    presence::is_presence_enabled()
 }
