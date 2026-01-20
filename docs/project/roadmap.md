@@ -14,7 +14,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
 | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
-| **Phase 4** | 🔄 In Progress | 25% | E2EE Key Backup foundation (PR #22), User Connectivity Monitor (PR #23) |
+| **Phase 4** | 🔄 In Progress | 40% | E2EE Key Backup foundation (PR #22), User Connectivity Monitor (PR #23), E2EE Key Backup UI (PR #29) |
 | **Phase 5** | 📋 Planned | 0% | - |
 
 **Production Ready Features:**
@@ -174,16 +174,17 @@ This roadmap outlines the development path from the current prototype to a produ
   - TimescaleDB support with graceful fallback to PostgreSQL.
   - Rate-limited stats broadcasting to prevent spam.
   - **Design:** `docs/plans/2026-01-19-user-connectivity-monitor-design.md`
-- [ ] **[Social] Rich Presence (Game Activity)** `Designed`
+- [ ] **[Social] Rich Presence (Game Activity)** `Next`
   - Detect running games via Process Scan (Tauri) or RPC.
   - Display "Playing X" status in Friends List and User Popups.
   - Enable "Ask to Join" logic.
   - **Design:** `docs/plans/2026-01-19-rich-presence-design.md`
-- [ ] **[Security] E2EE Key Backup UI & Recovery** `Next`
-  - Element X-style Security Key (256-bit random, Base58-encoded).
-  - Optional backup after registration, skippable with reminder.
-  - QR-code transfer between devices (60s timeout, optional PIN).
-  - Full key verification with paste support before backup completion.
+- [x] **[Security] E2EE Key Backup UI & Recovery** ✅ (PR #29)
+  - Recovery key modal with copy/download and confirmation flow.
+  - Security Settings tab showing backup status.
+  - Post-login E2EE setup prompt (skippable or mandatory via server config).
+  - Backup reminder banner for users without backup.
+  - Server configuration option `REQUIRE_E2EE_SETUP` for mandatory setup.
   - **Plan:** `docs/plans/2026-01-19-e2ee-implementation-phase-1.md`
 - [ ] **[UX] Cross-Server Favorites**
   - Allow pinning channels from different guilds into a single "Favorites" list.
@@ -221,6 +222,7 @@ This roadmap outlines the development path from the current prototype to a produ
 ## Recent Changes
 
 ### 2026-01-20
+- Merged PR #29: E2EE Key Backup UI - Recovery Key Modal, Security Settings, Tauri commands
 - Merged PR #23: User Connectivity Monitor
 - Fixed TimescaleDB migration to work conditionally (supports standard PostgreSQL)
 - Cleaned up obsolete documentation
