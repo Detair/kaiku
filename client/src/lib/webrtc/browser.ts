@@ -12,6 +12,8 @@ import type {
   VoiceAdapterEvents,
   AudioDeviceList,
   RemoteTrack,
+  ScreenShareOptions,
+  ScreenShareQuality,
 } from "./types";
 
 export class BrowserVoiceAdapter implements VoiceAdapter {
@@ -25,6 +27,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private remoteStreams = new Map<string, MediaStream>();
+
+  // Screen share state
+  private screenShareStream: MediaStream | null = null;
+  private screenShareTrack: RTCRtpSender | null = null;
 
   // Mic test
   private micTestStream: MediaStream | null = null;
@@ -150,6 +156,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   async leave(): Promise<VoiceResult<void>> {
     console.log("[BrowserVoiceAdapter] Leaving voice");
+
+    // Clean up screen share first
+    if (this.screenShareStream) {
+      this.screenShareStream.getTracks().forEach(track => track.stop());
+      this.screenShareStream = null;
+      this.screenShareTrack = null;
+    }
 
     // Send voice_leave message to server
     if (this.channelId) {
@@ -531,6 +544,103 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
   }
 
+  // Screen sharing
+
+  isScreenSharing(): boolean {
+    return this.screenShareStream !== null;
+  }
+
+  async startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>> {
+    if (!this.peerConnection) {
+      return { ok: false, error: { type: "not_connected" } };
+    }
+
+    if (this.screenShareStream) {
+      return { ok: false, error: { type: "unknown", message: "Already sharing screen" } };
+    }
+
+    try {
+      // Request display media with quality constraints
+      const constraints = this.getDisplayMediaConstraints(options?.quality ?? "medium");
+
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: constraints.video,
+        audio: options?.withAudio ?? false,
+      });
+
+      // Get the video track
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) {
+        stream.getTracks().forEach(t => t.stop());
+        return { ok: false, error: { type: "unknown", message: "No video track in stream" } };
+      }
+
+      // Listen for track ending (user clicked "Stop sharing" in browser UI)
+      videoTrack.onended = () => {
+        console.log("[BrowserVoiceAdapter] Screen share track ended by user");
+        this.handleScreenShareEnded();
+      };
+
+      // Add video track to peer connection
+      this.screenShareTrack = this.peerConnection.addTrack(videoTrack, stream);
+
+      // If audio track present, add it too
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        this.peerConnection.addTrack(audioTrack, stream);
+      }
+
+      this.screenShareStream = stream;
+
+      console.log("[BrowserVoiceAdapter] Screen share started", {
+        hasAudio: !!audioTrack,
+        quality: options?.quality ?? "medium",
+      });
+
+      return { ok: true, value: undefined };
+    } catch (err) {
+      console.error("[BrowserVoiceAdapter] Failed to start screen share:", err);
+
+      // Handle specific errors
+      if (err instanceof DOMException) {
+        if (err.name === "NotAllowedError") {
+          return { ok: false, error: { type: "permission_denied", message: "Screen share permission denied" } };
+        }
+        if (err.name === "AbortError") {
+          // User cancelled the picker
+          return { ok: false, error: { type: "unknown", message: "Screen share cancelled by user" } };
+        }
+      }
+
+      return { ok: false, error: { type: "unknown", message: String(err) } };
+    }
+  }
+
+  async stopScreenShare(): Promise<VoiceResult<void>> {
+    if (!this.screenShareStream) {
+      return { ok: false, error: { type: "unknown", message: "Not sharing screen" } };
+    }
+
+    try {
+      // Remove track from peer connection
+      if (this.screenShareTrack && this.peerConnection) {
+        this.peerConnection.removeTrack(this.screenShareTrack);
+      }
+
+      // Stop all tracks in the stream
+      this.screenShareStream.getTracks().forEach(track => track.stop());
+
+      this.screenShareStream = null;
+      this.screenShareTrack = null;
+
+      console.log("[BrowserVoiceAdapter] Screen share stopped");
+      return { ok: true, value: undefined };
+    } catch (err) {
+      console.error("[BrowserVoiceAdapter] Failed to stop screen share:", err);
+      return { ok: false, error: { type: "unknown", message: String(err) } };
+    }
+  }
+
   // Cleanup
 
   dispose(): void {
@@ -543,6 +653,34 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private setState(state: VoiceConnectionState) {
     this.state = state;
     this.eventHandlers.onStateChange?.(state);
+  }
+
+  private getDisplayMediaConstraints(quality: ScreenShareQuality): DisplayMediaStreamOptions {
+    const qualitySettings = {
+      low: { width: 854, height: 480, frameRate: 15 },
+      medium: { width: 1280, height: 720, frameRate: 30 },
+      high: { width: 1920, height: 1080, frameRate: 30 },
+      premium: { width: 1920, height: 1080, frameRate: 60 },
+    };
+
+    const settings = qualitySettings[quality];
+
+    return {
+      video: {
+        cursor: "always",
+        width: { ideal: settings.width, max: settings.width },
+        height: { ideal: settings.height, max: settings.height },
+        frameRate: { ideal: settings.frameRate, max: settings.frameRate },
+      } as MediaTrackConstraints,
+    };
+  }
+
+  private handleScreenShareEnded(): void {
+    this.screenShareStream = null;
+    this.screenShareTrack = null;
+    // Notify via event handler - need to get user ID
+    // For browser, we don't easily have our own user ID here, so pass empty
+    this.eventHandlers.onScreenShareStopped?.("", "user_stopped");
   }
 
   private setupPeerConnectionHandlers() {
