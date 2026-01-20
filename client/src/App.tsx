@@ -15,6 +15,7 @@ import { ConnectionHistory } from "./pages/settings/ConnectionHistory";
 import AuthGuard from "./components/auth/AuthGuard";
 import { AcceptanceManager } from "./components/pages";
 import { ToastContainer } from "./components/ui/Toast";
+import E2EESetupPrompt from "./components/E2EESetupPrompt";
 
 // Theme
 import { initTheme } from "./stores/theme";
@@ -36,6 +37,7 @@ const Layout: Component<ParentProps> = (props) => {
 // Protected route wrapper
 const ProtectedMain: Component = () => (
   <AuthGuard>
+    <E2EESetupPrompt />
     <AcceptanceManager />
     <Main />
   </AuthGuard>
