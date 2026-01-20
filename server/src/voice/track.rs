@@ -62,8 +62,8 @@ impl TrackRouter {
                 rtcp_feedback: vec![],
             },
             // Track ID needs to be unique. Using user_id + source type.
-            format!("{}-{:?}", source_user_id, source_type),
-            format!("voice-{}-{}", source_user_id, subscriber.user_id),
+            format!("{source_user_id}-{source_type:?}"),
+            format!("voice-{source_user_id}-{}", subscriber.user_id),
         ));
 
         // Store subscription

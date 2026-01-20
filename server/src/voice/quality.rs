@@ -19,7 +19,7 @@ pub enum Quality {
     Medium,
     /// 1080p @ 30fps, 3-5 Mbps - good connections.
     High,
-    /// 1080p @ 60fps, 4-8 Mbps - requires PREMIUM_VIDEO permission.
+    /// 1080p @ 60fps, 4-8 Mbps - requires `PREMIUM_VIDEO` permission.
     Premium,
 }
 
@@ -127,7 +127,7 @@ impl Quality {
     }
 
     /// Returns the ordinal value of the quality tier (for internal comparison).
-    const fn ordinal(&self) -> u8 {
+    const fn ordinal(self) -> u8 {
         match self {
             Self::Low => 0,
             Self::Medium => 1,

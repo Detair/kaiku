@@ -175,8 +175,8 @@ pub async fn start(
             quality: granted_quality,
         };
         
-        if let Err(_) = broadcast_to_channel(&state.redis, channel_id, &event).await {
-             // Log error but continue
+        if broadcast_to_channel(&state.redis, channel_id, &event).await.is_err() {
+            // Log error but continue
         }
     } else {
         // User not in voice room. Rollback limit.

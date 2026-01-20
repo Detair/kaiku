@@ -294,7 +294,7 @@ pub enum ServerEvent {
         initiator: Uuid,
         /// Initiator's username.
         initiator_name: String,
-        /// Call capabilities (e.g., ["audio", "video"]).
+        /// Call capabilities (e.g., `["audio", "video"]`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         capabilities: Vec<String>,
     },
@@ -306,7 +306,7 @@ pub enum ServerEvent {
         initiator: Uuid,
         /// Initiator's username.
         initiator_name: String,
-        /// Call capabilities (e.g., ["audio", "video"]).
+        /// Call capabilities (e.g., `["audio", "video"]`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         capabilities: Vec<String>,
     },

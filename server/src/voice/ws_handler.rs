@@ -93,18 +93,17 @@ async fn handle_join(
                 track
             ).await {
                 if let Err(e) = peer.add_outgoing_track(other_peer.user_id, *source_type, local_track).await {
-                     warn!("Failed to add outgoing track: {}", e);
-                } else {
-                    if *source_type == TrackSource::ScreenVideo {
-                        let pli = PictureLossIndication {
-                            sender_ssrc: 0,
-                            media_ssrc: track.ssrc(),
-                        };
-                        if let Err(e) = other_peer.peer_connection.write_rtcp(&[Box::new(pli)]).await {
-                             warn!("Failed to send PLI: {}", e);
-                        } else {
-                             debug!("Sent PLI to source {}", other_peer.user_id);
-                        }
+                    warn!("Failed to add outgoing track: {}", e);
+                } else if *source_type == TrackSource::ScreenVideo {
+                    // Send PLI to request keyframe for late joiners
+                    let pli = PictureLossIndication {
+                        sender_ssrc: 0,
+                        media_ssrc: track.ssrc(),
+                    };
+                    if let Err(e) = other_peer.peer_connection.write_rtcp(&[Box::new(pli)]).await {
+                        warn!("Failed to send PLI: {}", e);
+                    } else {
+                        debug!("Sent PLI to source {}", other_peer.user_id);
                     }
                 }
             }
@@ -147,8 +146,8 @@ async fn handle_join(
         ServerEvent::VoiceUserJoined {
             channel_id,
             user_id,
-            username: username,
-            display_name: display_name,
+            username,
+            display_name,
         },
     )
     .await;

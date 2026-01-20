@@ -507,8 +507,8 @@ impl SfuServer {
                     let source_type = match track.kind() {
                         RTPCodecType::Audio => TrackSource::Microphone,
                         RTPCodecType::Video => TrackSource::ScreenVideo,
-                        _ => {
-                            warn!("Unknown track kind: {:?}", track.kind());
+                        RTPCodecType::Unspecified => {
+                            warn!("Unspecified track kind: {:?}", track.kind());
                             return;
                         }
                     };
