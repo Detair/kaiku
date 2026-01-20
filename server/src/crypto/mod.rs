@@ -18,11 +18,13 @@ use crate::api::AppState;
 /// - POST /upload - Upload identity keys and prekeys for a device
 /// - GET /backup - Download encrypted key backup
 /// - POST /backup - Upload encrypted key backup
+/// - GET /backup/status - Check backup existence and metadata
 /// - GET /devices - Get current user's devices
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/upload", post(handlers::upload_keys))
         .route("/backup", get(handlers::get_backup).post(handlers::upload_backup))
+        .route("/backup/status", get(handlers::get_backup_status))
         .route("/devices", get(handlers::get_own_devices))
 }
 

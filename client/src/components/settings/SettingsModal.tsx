@@ -6,14 +6,17 @@
 
 import { Component, createSignal, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Palette, Volume2, Mic } from "lucide-solid";
+import { X, Palette, Volume2, Mic, Shield } from "lucide-solid";
+import { invoke } from "@tauri-apps/api/core";
 import AppearanceSettings from "./AppearanceSettings";
+import SecuritySettings from "./SecuritySettings";
+import RecoveryKeyModal from "./RecoveryKeyModal";
 
 interface SettingsModalProps {
   onClose: () => void;
 }
 
-type TabId = "appearance" | "audio" | "voice";
+type TabId = "appearance" | "audio" | "voice" | "security";
 
 interface TabDefinition {
   id: TabId;
@@ -25,10 +28,65 @@ const tabs: TabDefinition[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "audio", label: "Audio", icon: Volume2 },
   { id: "voice", label: "Voice", icon: Mic },
+  { id: "security", label: "Security", icon: Shield },
 ];
 
 const SettingsModal: Component<SettingsModalProps> = (props) => {
   const [activeTab, setActiveTab] = createSignal<TabId>("appearance");
+  const [showRecoveryKey, setShowRecoveryKey] = createSignal(false);
+  const [recoveryKey, setRecoveryKey] = createSignal<{
+    fullKey: string;
+    chunks: string[];
+  } | null>(null);
+  const [backupError, setBackupError] = createSignal<string | null>(null);
+  const [isBackingUp, setIsBackingUp] = createSignal(false);
+
+  const handleViewRecoveryKey = async () => {
+    setBackupError(null);
+    try {
+      const key = await invoke<{ full_key: string; chunks: string[] }>(
+        "generate_recovery_key"
+      );
+      setRecoveryKey({ fullKey: key.full_key, chunks: key.chunks });
+      setShowRecoveryKey(true);
+    } catch (e) {
+      console.error("Failed to generate recovery key:", e);
+      setBackupError("Failed to generate recovery key. Please try again.");
+    }
+  };
+
+  const handleConfirmRecoveryKey = async () => {
+    const key = recoveryKey();
+    if (!key) return;
+
+    setIsBackingUp(true);
+    setBackupError(null);
+
+    try {
+      // Create a backup with the key
+      // NOTE: This is a placeholder backup. When the full E2EE key store is
+      // implemented, this should include the actual identity keys and prekeys.
+      // For now, it validates the backup flow works end-to-end.
+      const backupData = JSON.stringify({
+        version: 1,
+        created_at: new Date().toISOString(),
+        // TODO: Add actual E2EE keys from key store when implemented
+        // identity_key: keyStore.getIdentityKey(),
+        // prekeys: keyStore.getPrekeys(),
+      });
+      await invoke("create_backup", {
+        recoveryKey: key.fullKey,
+        backupData,
+      });
+      setShowRecoveryKey(false);
+      setRecoveryKey(null);
+    } catch (e) {
+      console.error("Failed to create backup:", e);
+      setBackupError("Failed to create backup. Please try again.");
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
 
   // Close on escape key
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -112,9 +170,29 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
                   <p>Voice processing settings coming soon...</p>
                 </div>
               </Show>
+
+              <Show when={activeTab() === "security"}>
+                <SecuritySettings onViewRecoveryKey={handleViewRecoveryKey} />
+              </Show>
             </div>
           </div>
         </div>
+
+        {/* Recovery Key Modal */}
+        <Show when={showRecoveryKey() && recoveryKey()}>
+          <RecoveryKeyModal
+            keyChunks={recoveryKey()!.chunks}
+            fullKey={recoveryKey()!.fullKey}
+            onConfirm={handleConfirmRecoveryKey}
+            onClose={() => {
+              setShowRecoveryKey(false);
+              setRecoveryKey(null);
+              setBackupError(null);
+            }}
+            error={backupError()}
+            isLoading={isBackingUp()}
+          />
+        </Show>
       </div>
     </Portal>
   );

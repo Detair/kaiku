@@ -494,3 +494,54 @@ struct BackupRow {
     version: i32,
     created_at: chrono::DateTime<chrono::Utc>,
 }
+
+/// Response for backup status check.
+#[derive(Debug, Serialize)]
+pub struct BackupStatusResponse {
+    /// Whether a backup exists.
+    pub has_backup: bool,
+    /// When the backup was created (if exists).
+    pub backup_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Backup version (if exists).
+    pub version: Option<i32>,
+}
+
+/// Internal struct for fetching backup status.
+#[derive(Debug, FromRow)]
+struct BackupStatusRow {
+    version: i32,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Check if user has a key backup.
+///
+/// Returns the backup status including existence, creation timestamp, and version.
+/// This is a lightweight endpoint that doesn't return the actual backup data.
+///
+/// GET /api/keys/backup/status
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
+pub async fn get_backup_status(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<Json<BackupStatusResponse>, AuthError> {
+    let backup = sqlx::query_as::<_, BackupStatusRow>(
+        "SELECT version, created_at FROM key_backups WHERE user_id = $1",
+    )
+    .bind(auth_user.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AuthError::Database)?;
+
+    Ok(Json(match backup {
+        Some(b) => BackupStatusResponse {
+            has_backup: true,
+            backup_created_at: Some(b.created_at),
+            version: Some(b.version),
+        },
+        None => BackupStatusResponse {
+            has_backup: false,
+            backup_created_at: None,
+            version: None,
+        },
+    }))
+}

@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Encrypted key backup with AES-256-GCM and Argon2id key derivation
 - Multi-device support with per-device identity keys
 - One-time prekey upload and atomic claiming for session establishment
+- E2EE Key Backup UI with recovery key modal, security settings, and setup prompts
+  - Recovery key modal with copy/download and confirmation flow
+  - Security Settings tab showing backup status
+  - Post-login E2EE setup prompt (skippable or mandatory via server config)
+  - Backup reminder banner for users without backup
+  - Server configuration option `REQUIRE_E2EE_SETUP` for mandatory setup
 - Information Pages system for platform-wide and guild-specific content (ToS, Privacy Policy, FAQ, rules, guides)
 - Markdown editor with live preview, toolbar, and cheat sheet
 - Mermaid diagram support in markdown preview

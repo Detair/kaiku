@@ -5,6 +5,7 @@
 pub mod admin;
 pub mod auth;
 pub mod chat;
+pub mod crypto;
 pub mod pages;
 pub mod roles;
 pub mod settings;
