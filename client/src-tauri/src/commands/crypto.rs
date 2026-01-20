@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
 use tracing::info;
+use vc_crypto::RecoveryKey;
 
 use crate::AppState;
 
@@ -80,4 +81,29 @@ pub async fn get_backup_status(state: State<'_, AppState>) -> Result<BackupStatu
         .json::<BackupStatus>()
         .await
         .map_err(|e| format!("Parse error: {e}"))
+}
+
+/// Generate a new recovery key and return it for display.
+///
+/// The key is NOT stored - the UI must prompt user to save it,
+/// then call create_backup to actually store the encrypted backup.
+#[command]
+pub async fn generate_recovery_key() -> Result<RecoveryKeyDisplay, String> {
+    let key = RecoveryKey::generate();
+    let formatted = key.to_formatted_string();
+
+    // Get full key without spaces for copy/download
+    let full_key: String = formatted.chars().filter(|c| !c.is_whitespace()).collect();
+
+    // Split into 4-char chunks for display
+    let chunks: Vec<String> = full_key
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(4)
+        .map(|c| c.iter().collect::<String>())
+        .collect();
+
+    info!("Generated new recovery key");
+
+    Ok(RecoveryKeyDisplay { full_key, chunks })
 }
