@@ -199,6 +199,22 @@ export async function joinVoice(channelId: string): Promise<void> {
     onSpeakingChange: (speaking) => {
       setVoiceState({ speaking });
     },
+    onScreenShareTrack: (userId, track) => {
+      console.log("[Voice] Screen share track received:", userId);
+      // Import and call viewer store
+      import("@/stores/screenShareViewer").then(({ startViewing }) => {
+        startViewing(userId, track);
+      });
+    },
+    onScreenShareTrackRemoved: (userId) => {
+      console.log("[Voice] Screen share track removed:", userId);
+      import("@/stores/screenShareViewer").then(({ viewerState, stopViewing }) => {
+        // Only stop if we were viewing this user's share
+        if (viewerState.viewingUserId === userId) {
+          stopViewing();
+        }
+      });
+    },
   });
 
   const result = await adapter.join(channelId);
