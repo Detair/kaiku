@@ -34,6 +34,7 @@ opus = "0.3"
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+base64 = "0.22"
 
 # HTTP
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }

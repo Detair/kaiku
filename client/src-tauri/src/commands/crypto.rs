@@ -1,9 +1,10 @@
 //! E2EE Key Management Commands
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
-use tracing::info;
-use vc_crypto::RecoveryKey;
+use tracing::{error, info};
+use vc_crypto::{EncryptedBackup, RecoveryKey};
 
 use crate::AppState;
 
@@ -29,6 +30,15 @@ pub struct BackupStatus {
 pub struct ServerSettings {
     pub require_e2ee_setup: bool,
     pub oidc_enabled: bool,
+}
+
+/// Request to upload encrypted backup to server.
+#[derive(Debug, Serialize)]
+struct UploadBackupRequest {
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+    version: i32,
 }
 
 /// Get server settings.
@@ -106,4 +116,56 @@ pub async fn generate_recovery_key() -> Result<RecoveryKeyDisplay, String> {
     info!("Generated new recovery key");
 
     Ok(RecoveryKeyDisplay { full_key, chunks })
+}
+
+/// Create and upload an encrypted backup of the user's keys.
+///
+/// Takes the recovery key (Base58, with or without spaces) and the data to backup (JSON string).
+/// Encrypts locally using AES-256-GCM, then uploads to server.
+#[command]
+pub async fn create_backup(
+    state: State<'_, AppState>,
+    recovery_key: String,
+    backup_data: String,
+) -> Result<(), String> {
+    info!("Creating encrypted backup");
+
+    // Parse recovery key (handles both formatted and raw Base58)
+    let key = RecoveryKey::from_formatted_string(&recovery_key)
+        .map_err(|e| format!("Invalid recovery key: {e}"))?;
+
+    // Encrypt the backup data locally
+    let encrypted = EncryptedBackup::create(&key, backup_data.as_bytes());
+
+    // Prepare request with base64-encoded binary fields
+    let request = UploadBackupRequest {
+        salt: STANDARD.encode(encrypted.salt),
+        nonce: STANDARD.encode(encrypted.nonce),
+        ciphertext: STANDARD.encode(&encrypted.ciphertext),
+        #[allow(clippy::cast_possible_wrap)]
+        version: encrypted.version as i32,
+    };
+
+    // Upload to server
+    let auth = state.auth.read().await;
+    let server_url = auth.server_url.as_ref().ok_or("Not connected")?;
+    let token = auth.access_token.as_ref().ok_or("Not authenticated")?;
+
+    let response = state
+        .http
+        .post(format!("{server_url}/api/keys/backup"))
+        .bearer_auth(token)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("Upload failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        error!("Backup upload failed: {}", body);
+        return Err(format!("Server error: {body}"));
+    }
+
+    info!("Backup uploaded successfully");
+    Ok(())
 }
