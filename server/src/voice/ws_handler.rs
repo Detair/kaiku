@@ -107,6 +107,7 @@ async fn handle_join(
             username: p.username,
             display_name: p.display_name,
             muted: p.muted,
+            screen_sharing: false,
         })
         .collect();
 

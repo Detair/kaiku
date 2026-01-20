@@ -103,6 +103,9 @@ pub struct VoiceParticipant {
     pub display_name: Option<String>,
     /// Whether the user is muted.
     pub muted: bool,
+    /// Whether this participant is currently screen sharing.
+    #[serde(default)]
+    pub screen_sharing: bool,
 }
 
 /// Server-to-client events.
