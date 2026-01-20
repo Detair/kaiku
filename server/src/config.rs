@@ -64,6 +64,9 @@ pub struct Config {
 
     /// MFA secret encryption key (32-byte hex string)
     pub mfa_encryption_key: Option<String>,
+
+    /// Whether E2EE setup is required before using the app (default: false)
+    pub require_e2ee_setup: bool,
 }
 
 impl Config {
@@ -107,6 +110,10 @@ impl Config {
             turn_username: env::var("TURN_USERNAME").ok(),
             turn_credential: env::var("TURN_CREDENTIAL").ok(),
             mfa_encryption_key: env::var("MFA_ENCRYPTION_KEY").ok(),
+            require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
+                .ok()
+                .map(|v| v.to_lowercase() == "true" || v == "1")
+                .unwrap_or(false),
         })
     }
 
@@ -155,6 +162,7 @@ impl Config {
             turn_username: None,
             turn_credential: None,
             mfa_encryption_key: None,
+            require_e2ee_setup: false,
         }
     }
 }
