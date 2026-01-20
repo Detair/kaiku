@@ -31,6 +31,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   // Screen share state
   private screenShareStream: MediaStream | null = null;
   private screenShareTrack: RTCRtpSender | null = null;
+  private screenShareAudioTrack: RTCRtpSender | null = null;
 
   // Mic test
   private micTestStream: MediaStream | null = null;
@@ -159,9 +160,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Clean up screen share first
     if (this.screenShareStream) {
-      this.screenShareStream.getTracks().forEach(track => track.stop());
-      this.screenShareStream = null;
-      this.screenShareTrack = null;
+      this.cleanupScreenShareState();
     }
 
     // Send voice_leave message to server
@@ -587,7 +586,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // If audio track present, add it too
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
-        this.peerConnection.addTrack(audioTrack, stream);
+        this.screenShareAudioTrack = this.peerConnection.addTrack(audioTrack, stream);
       }
 
       this.screenShareStream = stream;
@@ -622,17 +621,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     try {
-      // Remove track from peer connection
-      if (this.screenShareTrack && this.peerConnection) {
-        this.peerConnection.removeTrack(this.screenShareTrack);
-      }
-
-      // Stop all tracks in the stream
-      this.screenShareStream.getTracks().forEach(track => track.stop());
-
-      this.screenShareStream = null;
-      this.screenShareTrack = null;
-
+      this.cleanupScreenShareState();
       console.log("[BrowserVoiceAdapter] Screen share stopped");
       return { ok: true, value: undefined };
     } catch (err) {
@@ -676,11 +665,32 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   private handleScreenShareEnded(): void {
-    this.screenShareStream = null;
-    this.screenShareTrack = null;
+    this.cleanupScreenShareState();
     // Notify via event handler - need to get user ID
     // For browser, we don't easily have our own user ID here, so pass empty
     this.eventHandlers.onScreenShareStopped?.("", "user_stopped");
+  }
+
+  private cleanupScreenShareState(): void {
+    // Remove tracks from peer connection
+    if (this.peerConnection) {
+      if (this.screenShareAudioTrack) {
+        this.peerConnection.removeTrack(this.screenShareAudioTrack);
+      }
+      if (this.screenShareTrack) {
+        this.peerConnection.removeTrack(this.screenShareTrack);
+      }
+    }
+
+    // Stop the stream tracks
+    if (this.screenShareStream) {
+      this.screenShareStream.getTracks().forEach(track => track.stop());
+    }
+
+    // Clear state
+    this.screenShareStream = null;
+    this.screenShareTrack = null;
+    this.screenShareAudioTrack = null;
   }
 
   private setupPeerConnectionHandlers() {
