@@ -230,6 +230,17 @@ function stopMetricsLoop(): void {
   }
 }
 
+// Tab visibility handling - pause metrics when tab is hidden to save resources
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      stopMetricsLoop();
+    } else if (voiceState.state === 'connected' && !metricsInterval) {
+      startMetricsLoop();
+    }
+  });
+}
+
 /**
  * Initialize voice event listeners.
  */
