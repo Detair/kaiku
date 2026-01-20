@@ -46,6 +46,9 @@ url = "2"
 # Secure Storage
 keyring = "2"
 
+# Process scanning
+sysinfo = "0.30"
+
 # Utils
 uuid.workspace = true
 chrono.workspace = true
