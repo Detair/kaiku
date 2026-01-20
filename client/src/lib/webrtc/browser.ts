@@ -13,6 +13,7 @@ import type {
   AudioDeviceList,
   RemoteTrack,
   ConnectionMetrics,
+  QualityLevel,
 } from "./types";
 
 export class BrowserVoiceAdapter implements VoiceAdapter {
@@ -43,6 +44,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   // Selected devices
   private inputDeviceId: string | null = null;
   // Output device selection implemented via setSinkId API (no need to store deviceId)
+
+  // Metrics tracking for delta calculation
+  private prevStats: { lost: number; received: number; timestamp: number } | null = null;
 
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
@@ -164,6 +168,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.cleanup();
     this.setState("disconnected");
     this.channelId = null;
+    this.prevStats = null;
 
     return { ok: true, value: undefined };
   }
@@ -366,10 +371,61 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return this.noiseSuppression;
   }
 
+  private calculateQuality(latency: number, loss: number, jitter: number): QualityLevel {
+    if (latency > 350 || loss > 5 || jitter > 80) return 'red';
+    if (latency > 200 || loss > 3 || jitter > 50) return 'orange';
+    if (latency > 100 || loss > 1 || jitter > 30) return 'yellow';
+    return 'green';
+  }
+
   async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
-    // TODO: Implement WebRTC stats collection
-    // This will be implemented when the connectivity monitoring feature is complete
-    return null;
+    if (!this.peerConnection) return null;
+
+    try {
+      const stats = await this.peerConnection.getStats();
+      let latency = 0;
+      let jitter = 0;
+      let totalLost = 0;
+      let totalReceived = 0;
+
+      stats.forEach((report) => {
+        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+          latency = (report.currentRoundTripTime ?? 0) * 1000;
+        }
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          totalLost += report.packetsLost ?? 0;
+          totalReceived += report.packetsReceived ?? 0;
+          jitter = Math.max(jitter, (report.jitter ?? 0) * 1000);
+        }
+      });
+
+      // Calculate delta packet loss since last sample
+      let packetLoss = 0;
+      const now = Date.now();
+
+      if (this.prevStats) {
+        const deltaLost = totalLost - this.prevStats.lost;
+        const deltaReceived = totalReceived - this.prevStats.received;
+        const deltaTotal = deltaLost + deltaReceived;
+
+        if (deltaTotal > 0) {
+          packetLoss = (deltaLost / deltaTotal) * 100;
+        }
+      }
+
+      this.prevStats = { lost: totalLost, received: totalReceived, timestamp: now };
+
+      return {
+        latency: Math.round(latency),
+        packetLoss: Math.round(packetLoss * 100) / 100,
+        jitter: Math.round(jitter),
+        quality: this.calculateQuality(latency, packetLoss, jitter),
+        timestamp: now,
+      };
+    } catch (err) {
+      console.warn('Failed to extract metrics:', err);
+      return null;
+    }
   }
 
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void {
