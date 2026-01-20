@@ -8,6 +8,8 @@
 import { Component, Show, For } from "solid-js";
 import { dmsState, getSelectedDM } from "@/stores/dms";
 import { getOnlineFriends } from "@/stores/friends";
+import { getUserActivity } from "@/stores/presence";
+import { ActivityIndicator } from "@/components/ui";
 
 const HomeRightPanel: Component = () => {
   const dm = () => getSelectedDM();
@@ -44,6 +46,12 @@ const HomeRightPanel: Component = () => {
                 <p class="text-sm text-text-secondary">
                   @{dm()?.participants[0]?.username}
                 </p>
+                {/* Activity */}
+                <Show when={dm()?.participants[0]?.user_id && getUserActivity(dm()!.participants[0].user_id)}>
+                  <div class="mt-3 w-full px-3 py-2 rounded-lg bg-white/5">
+                    <ActivityIndicator activity={getUserActivity(dm()!.participants[0].user_id)!} />
+                  </div>
+                </Show>
               </div>
             </div>
           }
@@ -56,13 +64,18 @@ const HomeRightPanel: Component = () => {
             <div class="space-y-2">
               <For each={dm()?.participants}>
                 {(p) => (
-                  <div class="flex items-center gap-2">
-                    <div class="w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center">
+                  <div class="flex items-start gap-2 py-1">
+                    <div class="w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center flex-shrink-0">
                       <span class="text-xs font-semibold text-surface-base">
                         {p.display_name.charAt(0).toUpperCase()}
                       </span>
                     </div>
-                    <span class="text-sm text-text-primary">{p.display_name}</span>
+                    <div class="min-w-0 flex-1">
+                      <span class="text-sm text-text-primary">{p.display_name}</span>
+                      <Show when={p.user_id && getUserActivity(p.user_id)}>
+                        <ActivityIndicator activity={getUserActivity(p.user_id)!} compact />
+                      </Show>
+                    </div>
                   </div>
                 )}
               </For>

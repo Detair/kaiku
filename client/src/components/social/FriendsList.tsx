@@ -15,7 +15,9 @@ import {
   rejectFriendRequest,
   removeFriend,
 } from "@/stores/friends";
+import { getUserActivity } from "@/stores/presence";
 import type { Friend } from "@/lib/types";
+import { ActivityIndicator } from "@/components/ui";
 import AddFriend from "./AddFriend";
 
 type FriendsTab = "online" | "all" | "pending" | "blocked";
@@ -195,6 +197,13 @@ const FriendItem: Component<FriendItemProps> = (props) => {
             - {props.friend.status_message}
           </Show>
         </div>
+        {/* Activity indicator */}
+        <Show when={getUserActivity(props.friend.user_id)}>
+          <ActivityIndicator
+            activity={getUserActivity(props.friend.user_id)!}
+            compact
+          />
+        </Show>
       </div>
 
       {/* Actions */}
