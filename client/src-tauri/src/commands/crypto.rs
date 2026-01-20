@@ -252,3 +252,89 @@ pub async fn restore_backup(
     info!("Backup restored successfully");
     Ok(data)
 }
+
+#[cfg(test)]
+mod tests {
+    use vc_crypto::RecoveryKey;
+
+    #[test]
+    fn test_recovery_key_chunks() {
+        // Generate a key and verify chunking (same logic as generate_recovery_key command)
+        let key = RecoveryKey::generate();
+        let formatted = key.to_formatted_string();
+
+        // Get full key without spaces (same as command does)
+        let full_key: String = formatted.chars().filter(|c| !c.is_whitespace()).collect();
+
+        let chunks: Vec<String> = full_key
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(4)
+            .map(|c| c.iter().collect::<String>())
+            .collect();
+
+        // Each chunk should be 4 chars (except possibly the last)
+        for (i, chunk) in chunks.iter().enumerate() {
+            if i < chunks.len() - 1 {
+                assert_eq!(chunk.len(), 4, "Chunk {} should be 4 chars", i);
+            } else {
+                assert!(chunk.len() <= 4, "Last chunk should be <= 4 chars");
+            }
+        }
+
+        // Joining chunks should equal original
+        let rejoined: String = chunks.join("");
+        assert_eq!(rejoined, full_key);
+    }
+
+    #[test]
+    fn test_recovery_key_roundtrip() {
+        // Test that a key can be serialized and parsed back
+        let key = RecoveryKey::generate();
+        let formatted = key.to_formatted_string();
+
+        let parsed = RecoveryKey::from_formatted_string(&formatted)
+            .expect("Should parse formatted key");
+
+        // The keys should be equivalent (same formatted output)
+        assert_eq!(key.to_formatted_string(), parsed.to_formatted_string());
+    }
+
+    #[test]
+    fn test_recovery_key_display_format() {
+        // Verify the display format used by the UI
+        let key = RecoveryKey::generate();
+        let formatted = key.to_formatted_string();
+
+        // Should contain spaces separating groups
+        assert!(formatted.contains(' '), "Formatted key should contain spaces");
+
+        // Each group should be 4 chars (except possibly the last)
+        let groups: Vec<&str> = formatted.split_whitespace().collect();
+        assert!(groups.len() >= 10, "Should have at least 10 groups");
+
+        for (i, group) in groups.iter().enumerate() {
+            if i < groups.len() - 1 {
+                assert_eq!(group.len(), 4, "Group {} should be 4 chars", i);
+            } else {
+                assert!(
+                    !group.is_empty() && group.len() <= 4,
+                    "Last group should be 1-4 chars"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_recovery_key_uniqueness() {
+        // Verify that generated keys are unique
+        let key1 = RecoveryKey::generate();
+        let key2 = RecoveryKey::generate();
+
+        assert_ne!(
+            key1.to_formatted_string(),
+            key2.to_formatted_string(),
+            "Generated keys should be unique"
+        );
+    }
+}
