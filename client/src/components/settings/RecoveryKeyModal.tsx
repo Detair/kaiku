@@ -5,9 +5,9 @@
  * User must acknowledge saving the key before continuing.
  */
 
-import { Component, createSignal, Show, For } from "solid-js";
+import { Component, createSignal, Show, For, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import { Copy, Download, X, Shield, Check } from "lucide-solid";
+import { Copy, Download, X, Shield, Check, Loader2, AlertTriangle } from "lucide-solid";
 
 interface RecoveryKeyModalProps {
   /** The recovery key chunks to display. */
@@ -22,16 +22,44 @@ interface RecoveryKeyModalProps {
   onSkip?: () => void;
   /** Called to close the modal. */
   onClose: () => void;
+  /** Error message to display. */
+  error?: string | null;
+  /** Whether the confirm action is in progress. */
+  isLoading?: boolean;
 }
 
 const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
   const [confirmed, setConfirmed] = createSignal(false);
   const [copied, setCopied] = createSignal(false);
+  let clipboardClearTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Clear clipboard timeout on cleanup
+  onCleanup(() => {
+    if (clipboardClearTimeout) {
+      clearTimeout(clipboardClearTimeout);
+    }
+  });
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(props.fullKey);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+
+    // Clear clipboard after 60 seconds for security
+    if (clipboardClearTimeout) {
+      clearTimeout(clipboardClearTimeout);
+    }
+    clipboardClearTimeout = setTimeout(async () => {
+      try {
+        // Only clear if clipboard still contains the key
+        const current = await navigator.clipboard.readText();
+        if (current === props.fullKey) {
+          await navigator.clipboard.writeText("");
+        }
+      } catch {
+        // Clipboard access may fail, ignore
+      }
+    }, 60000);
   };
 
   const handleDownload = () => {
@@ -121,22 +149,34 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
             </label>
           </div>
 
+          {/* Error Display */}
+          <Show when={props.error}>
+            <div class="mx-6 mb-0 mt-0 flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <AlertTriangle class="w-4 h-4 text-red-400 flex-shrink-0" />
+              <span class="text-sm text-red-200">{props.error}</span>
+            </div>
+          </Show>
+
           {/* Footer */}
           <div class="flex gap-3 px-6 py-4 border-t border-white/10">
             <Show when={props.isInitialSetup && props.onSkip}>
               <button
                 onClick={props.onSkip}
-                class="flex-1 px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
+                disabled={props.isLoading}
+                class="flex-1 px-4 py-2 text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
               >
                 Skip for Now
               </button>
             </Show>
             <button
               onClick={props.onConfirm}
-              disabled={!confirmed()}
-              class="flex-1 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-white transition-colors"
+              disabled={!confirmed() || props.isLoading}
+              class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-white transition-colors"
             >
-              Continue
+              <Show when={props.isLoading}>
+                <Loader2 class="w-4 h-4 animate-spin" />
+              </Show>
+              {props.isLoading ? "Saving..." : "Continue"}
             </button>
           </div>
         </div>

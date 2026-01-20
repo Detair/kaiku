@@ -8,9 +8,10 @@
  * - If require_e2ee_setup is false: Modal can be skipped
  */
 
-import { Component, createSignal, createResource, onMount, Show } from "solid-js";
+import { Component, createSignal, createResource, createEffect, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import RecoveryKeyModal from "./settings/RecoveryKeyModal";
+import { AlertTriangle } from "lucide-solid";
 
 // Type for backup status (matches Tauri command response)
 interface BackupStatus {
@@ -60,27 +61,23 @@ const E2EESetupPrompt: Component = () => {
   } | null>(null);
   const [isRequired, setIsRequired] = createSignal(false);
   const [dismissed, setDismissed] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const [isLoading, setIsLoading] = createSignal(false);
 
   // Fetch server settings and backup status on mount
   const [serverSettings] = createResource(fetchServerSettings);
   const [backupStatus] = createResource(fetchBackupStatus);
 
-  // Check if we need to show the modal when resources are loaded
-  onMount(() => {
-    checkAndShowModal();
-  });
-
-  // Monitor resource changes
-  const checkAndShowModal = async () => {
-    // Wait for resources to load
-    if (serverSettings.loading || backupStatus.loading) {
-      // Re-check when loading completes
-      setTimeout(checkAndShowModal, 100);
-      return;
-    }
+  // Use createEffect to react to resource changes (no polling/race condition)
+  createEffect(async () => {
+    // Skip if resources are still loading
+    if (serverSettings.loading || backupStatus.loading) return;
 
     // Skip if already dismissed in this session
     if (dismissed()) return;
+
+    // Skip if modal is already showing
+    if (showModal()) return;
 
     // Skip if there's an error loading data
     if (serverSettings.error || backupStatus.error) {
@@ -108,19 +105,29 @@ const E2EESetupPrompt: Component = () => {
       setShowModal(true);
     } catch (e) {
       console.error("[E2EESetupPrompt] Failed to generate recovery key:", e);
+      setError("Failed to generate recovery key. Please try again later.");
     }
-  };
+  });
 
   // Handle user confirming they saved the key
   const handleConfirm = async () => {
     const key = recoveryKey();
     if (!key) return;
 
+    setIsLoading(true);
+    setError(null);
+
     try {
       // Create a backup with the key
+      // NOTE: This is a placeholder backup. When the full E2EE key store is
+      // implemented, this should include the actual identity keys and prekeys.
+      // For now, it validates the backup flow works end-to-end.
       const backupData = JSON.stringify({
         version: 1,
         created_at: new Date().toISOString(),
+        // TODO: Add actual E2EE keys from key store when implemented
+        // identity_key: keyStore.getIdentityKey(),
+        // prekeys: keyStore.getPrekeys(),
       });
       await invoke("create_backup", {
         recoveryKey: key.fullKey,
@@ -132,6 +139,9 @@ const E2EESetupPrompt: Component = () => {
       setDismissed(true);
     } catch (e) {
       console.error("[E2EESetupPrompt] Failed to create backup:", e);
+      setError("Failed to create backup. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -152,16 +162,29 @@ const E2EESetupPrompt: Component = () => {
   };
 
   return (
-    <Show when={showModal() && recoveryKey()}>
-      <RecoveryKeyModal
-        keyChunks={recoveryKey()!.chunks}
-        fullKey={recoveryKey()!.fullKey}
-        isInitialSetup={true}
-        onConfirm={handleConfirm}
-        onSkip={isRequired() ? undefined : handleSkip}
-        onClose={handleClose}
-      />
-    </Show>
+    <>
+      {/* Error banner when modal is not shown but there's an error */}
+      <Show when={error() && !showModal()}>
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 bg-red-500/20 border border-red-500/50 rounded-xl text-red-200 shadow-lg">
+          <AlertTriangle class="w-5 h-5 flex-shrink-0" />
+          <span class="text-sm">{error()}</span>
+        </div>
+      </Show>
+
+      {/* Recovery Key Modal */}
+      <Show when={showModal() && recoveryKey()}>
+        <RecoveryKeyModal
+          keyChunks={recoveryKey()!.chunks}
+          fullKey={recoveryKey()!.fullKey}
+          isInitialSetup={true}
+          onConfirm={handleConfirm}
+          onSkip={isRequired() ? undefined : handleSkip}
+          onClose={handleClose}
+          error={error()}
+          isLoading={isLoading()}
+        />
+      </Show>
+    </>
   );
 };
 

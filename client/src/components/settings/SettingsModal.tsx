@@ -38,8 +38,11 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
     fullKey: string;
     chunks: string[];
   } | null>(null);
+  const [backupError, setBackupError] = createSignal<string | null>(null);
+  const [isBackingUp, setIsBackingUp] = createSignal(false);
 
   const handleViewRecoveryKey = async () => {
+    setBackupError(null);
     try {
       const key = await invoke<{ full_key: string; chunks: string[] }>(
         "generate_recovery_key"
@@ -48,6 +51,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
       setShowRecoveryKey(true);
     } catch (e) {
       console.error("Failed to generate recovery key:", e);
+      setBackupError("Failed to generate recovery key. Please try again.");
     }
   };
 
@@ -55,11 +59,20 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
     const key = recoveryKey();
     if (!key) return;
 
+    setIsBackingUp(true);
+    setBackupError(null);
+
     try {
-      // Create a simple backup with the key (actual key data would come from key store)
+      // Create a backup with the key
+      // NOTE: This is a placeholder backup. When the full E2EE key store is
+      // implemented, this should include the actual identity keys and prekeys.
+      // For now, it validates the backup flow works end-to-end.
       const backupData = JSON.stringify({
         version: 1,
         created_at: new Date().toISOString(),
+        // TODO: Add actual E2EE keys from key store when implemented
+        // identity_key: keyStore.getIdentityKey(),
+        // prekeys: keyStore.getPrekeys(),
       });
       await invoke("create_backup", {
         recoveryKey: key.fullKey,
@@ -69,6 +82,9 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
       setRecoveryKey(null);
     } catch (e) {
       console.error("Failed to create backup:", e);
+      setBackupError("Failed to create backup. Please try again.");
+    } finally {
+      setIsBackingUp(false);
     }
   };
 
@@ -171,7 +187,10 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
             onClose={() => {
               setShowRecoveryKey(false);
               setRecoveryKey(null);
+              setBackupError(null);
             }}
+            error={backupError()}
+            isLoading={isBackingUp()}
           />
         </Show>
       </div>
