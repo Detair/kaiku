@@ -12,6 +12,7 @@ import type {
   VoiceAdapterEvents,
   AudioDeviceList,
   RemoteTrack,
+  ConnectionMetrics,
 } from "./types";
 
 export class BrowserVoiceAdapter implements VoiceAdapter {
@@ -363,6 +364,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   isNoiseSuppressionEnabled(): boolean {
     return this.noiseSuppression;
+  }
+
+  async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
+    // TODO: Implement WebRTC stats collection
+    // This will be implemented when the connectivity monitoring feature is complete
+    return null;
   }
 
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void {
