@@ -7,6 +7,7 @@
 //! - Guild Management (bits 14-18): Administrative permissions
 //! - Invites (bits 19-20): Invite-related permissions
 //! - Pages (bit 21): Information page management
+//! - Screen Sharing (bit 22): Screen sharing in voice channels
 
 use bitflags::bitflags;
 
@@ -72,6 +73,10 @@ bitflags! {
         // === Pages (bit 21) ===
         /// Permission to create, edit, delete, and reorder guild information pages
         const MANAGE_PAGES       = 1 << 21;
+
+        // === Screen Sharing (bit 22) ===
+        /// Permission to start screen sharing in voice channels
+        const SCREEN_SHARE       = 1 << 22;
     }
 }
 
@@ -101,7 +106,8 @@ impl GuildPermissions {
         .union(Self::TIMEOUT_MEMBERS)
         .union(Self::KICK_MEMBERS)
         .union(Self::VIEW_AUDIT_LOG)
-        .union(Self::MANAGE_INVITES);
+        .union(Self::MANAGE_INVITES)
+        .union(Self::SCREEN_SHARE);
 
     /// Default permissions for officers (senior moderators).
     ///
@@ -128,7 +134,8 @@ impl GuildPermissions {
         .union(Self::MANAGE_GUILD)
         .union(Self::TRANSFER_OWNERSHIP)
         .union(Self::MANAGE_INVITES)
-        .union(Self::MANAGE_PAGES);
+        .union(Self::MANAGE_PAGES)
+        .union(Self::SCREEN_SHARE);
 
     // === Database Conversion ===
 
@@ -249,6 +256,11 @@ mod tests {
         assert_eq!(GuildPermissions::MANAGE_PAGES.bits(), 1 << 21);
     }
 
+    #[test]
+    fn test_screen_sharing_permission_bits() {
+        assert_eq!(GuildPermissions::SCREEN_SHARE.bits(), 1 << 22);
+    }
+
     // === Preset Tests ===
 
     #[test]
@@ -273,6 +285,9 @@ mod tests {
         assert!(!everyone.has(GuildPermissions::MANAGE_MESSAGES));
         assert!(!everyone.has(GuildPermissions::KICK_MEMBERS));
         assert!(!everyone.has(GuildPermissions::BAN_MEMBERS));
+
+        // Should NOT include screen sharing (privileged feature)
+        assert!(!everyone.has(GuildPermissions::SCREEN_SHARE));
     }
 
     #[test]
@@ -289,6 +304,7 @@ mod tests {
         assert!(moderator.has(GuildPermissions::TIMEOUT_MEMBERS));
         assert!(moderator.has(GuildPermissions::KICK_MEMBERS));
         assert!(moderator.has(GuildPermissions::VIEW_AUDIT_LOG));
+        assert!(moderator.has(GuildPermissions::SCREEN_SHARE));
 
         // But not ban or channel management
         assert!(!moderator.has(GuildPermissions::BAN_MEMBERS));
@@ -438,6 +454,7 @@ mod tests {
             GuildPermissions::TRANSFER_OWNERSHIP,
             GuildPermissions::MANAGE_INVITES,
             GuildPermissions::MANAGE_PAGES,
+            GuildPermissions::SCREEN_SHARE,
         ];
 
         for forbidden in forbidden_perms {
@@ -565,6 +582,7 @@ mod tests {
             GuildPermissions::CREATE_INVITE,
             GuildPermissions::MANAGE_INVITES,
             GuildPermissions::MANAGE_PAGES,
+            GuildPermissions::SCREEN_SHARE,
         ];
 
         // Check that combining all equals the sum of individual bits
