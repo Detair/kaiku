@@ -465,6 +465,11 @@ impl SfuServer {
         self.rate_limiter.check_join(user_id).await
     }
 
+    /// Check if a user can report voice stats (rate limit check).
+    pub async fn check_stats_rate_limit(&self, user_id: Uuid) -> Result<(), VoiceError> {
+        self.rate_limiter.check_stats(user_id).await
+    }
+
     /// Get active room count.
     #[allow(dead_code)]
     pub async fn room_count(&self) -> usize {

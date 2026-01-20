@@ -340,6 +340,12 @@ async fn handle_voice_stats(
     channel_id: Uuid,
     stats: VoiceStats,
 ) -> Result<(), VoiceError> {
+    // Rate limit check
+    if let Err(_) = sfu.check_stats_rate_limit(user_id).await {
+        warn!(user_id = %user_id, "User sent voice stats too frequently, dropping");
+        return Ok(());
+    }
+
     // Validate stats
     if let Err(reason) = stats.validate() {
         warn!(user_id = %user_id, "Invalid voice stats: {}", reason);
@@ -357,6 +363,11 @@ async fn handle_voice_stats(
     };
 
     if let Some(room) = sfu.get_room(channel_id).await {
+        // Verify user is actually in the room before broadcasting
+        if room.get_peer(user_id).await.is_none() {
+            warn!(user_id = %user_id, channel_id = %channel_id, "User attempted to broadcast stats to a room they are not in");
+            return Ok(());
+        }
         room.broadcast_except(user_id, broadcast).await;
     }
 
