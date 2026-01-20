@@ -76,6 +76,33 @@ const VoicePanel: Component = () => {
           </div>
         </Show>
 
+        {/* Active screen shares */}
+        <Show when={voiceState.screenShares.length > 0}>
+          <div class="px-3 pb-2 border-t border-background-secondary pt-2">
+            <div class="text-xs text-text-muted mb-1">Screen Shares</div>
+            <For each={voiceState.screenShares}>
+              {(share) => (
+                <div
+                  class="flex items-center gap-2 px-2 py-1.5 rounded bg-background-primary hover:bg-background-tertiary cursor-pointer transition-colors"
+                  onClick={() => {
+                    console.log("[VoicePanel] Clicked to view screen share:", share.user_id);
+                  }}
+                >
+                  <MonitorUp class="w-4 h-4 text-success" />
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm text-text-primary truncate">
+                      {share.username || share.user_id.slice(0, 8)}
+                    </div>
+                    <div class="text-xs text-text-muted">
+                      {share.quality} • {share.has_audio ? "With audio" : "No audio"}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+
         {/* Voice controls */}
         <VoiceControls />
       </div>
