@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Rich Presence (Game Activity) showing "Playing X" status in member lists
+  - Automatic game detection via process scanning (sysinfo crate)
+  - 15+ pre-configured games (Minecraft, Valorant, League of Legends, CS2, Fortnite, etc.)
+  - Activity display in guild member list, friends list, and DM panels
+  - Privacy toggle in settings to disable activity sharing
+  - Real-time activity sync via WebSocket
 - Screen sharing capability in browser clients with quality selection (480p/720p/1080p)
 - Screen share button in voice controls with quality picker dialog
 - Screen share indicator on participant avatars in voice panel
