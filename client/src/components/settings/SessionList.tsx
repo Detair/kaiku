@@ -20,11 +20,19 @@ interface SessionSummary {
   worst_quality: number | null;
 }
 
+interface SessionListResponse {
+  sessions: SessionSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 const qualityColors = ['bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-green-500'];
 const qualityLabels = ['Poor', 'Fair', 'Good', 'Excellent'];
 
 async function fetchSessions(offset: number): Promise<SessionSummary[]> {
-  return fetchApi(`/api/me/connection/sessions?limit=10&offset=${offset}`);
+  const response = await fetchApi<SessionListResponse>(`/api/me/connection/sessions?limit=10&offset=${offset}`);
+  return response.sessions;
 }
 
 export const SessionList: Component = () => {

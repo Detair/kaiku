@@ -181,9 +181,11 @@ function checkPacketLossThresholds(metrics: ConnectionMetrics): void {
 /**
  * Start the metrics collection loop.
  * Collects local WebRTC stats every 3 seconds and sends to server.
+ * Safe to call multiple times - always clears existing interval first to prevent orphans.
  */
 function startMetricsLoop(): void {
-  if (metricsInterval) return;
+  // Always stop first to prevent orphaned intervals from rapid join/leave
+  stopMetricsLoop();
 
   metricsInterval = window.setInterval(async () => {
     const adapter = getVoiceAdapter();
