@@ -1,7 +1,10 @@
-import { Component, For, Show } from "solid-js";
+import { Component, For, Show, createSignal } from "solid-js";
 import { User, MicOff, Volume2 } from "lucide-solid";
-import { voiceState } from "@/stores/voice";
+import { voiceState, getLocalMetrics, getParticipantMetrics } from "@/stores/voice";
 import { authState } from "@/stores/auth";
+import { QualityIndicator } from "./QualityIndicator";
+import { QualityTooltip } from "./QualityTooltip";
+import type { ConnectionMetrics } from "@/lib/webrtc/types";
 
 interface Props {
   channelId: string;
@@ -34,15 +37,35 @@ const VoiceParticipants: Component<Props> = (props) => {
     return participant.display_name || participant.username || participant.user_id.slice(0, 8);
   };
 
+  // Tooltip state for local user
+  const [showLocalTooltip, setShowLocalTooltip] = createSignal(false);
+
   return (
     <Show when={isActiveInChannel()}>
       <div class="ml-6 mt-1 space-y-1">
         {/* Local user (always show first when connected) */}
         <div class="flex items-center gap-2 px-2 py-1 text-xs">
           <User class="w-3 h-3 text-accent-primary" />
-          <span class="text-accent-primary font-medium">
+          <span class="flex-1 truncate text-accent-primary font-medium">
             {authState.user?.display_name || authState.user?.username || "You"}
           </span>
+
+          <div
+            class="relative"
+            onMouseEnter={() => setShowLocalTooltip(true)}
+            onMouseLeave={() => setShowLocalTooltip(false)}
+          >
+            <QualityIndicator
+              metrics={getLocalMetrics()}
+              mode="circle"
+            />
+            <Show when={showLocalTooltip() && typeof getLocalMetrics() === 'object'}>
+              <div class="absolute bottom-full right-0 mb-2 z-50">
+                <QualityTooltip metrics={getLocalMetrics() as ConnectionMetrics} />
+              </div>
+            </Show>
+          </div>
+
           <Show when={voiceState.muted}>
             <div title="Muted">
               <MicOff class="w-3 h-3 text-accent-danger" />
@@ -57,24 +80,59 @@ const VoiceParticipants: Component<Props> = (props) => {
 
         {/* Remote participants */}
         <For each={remoteParticipants()}>
-          {(participant) => (
-            <div class="flex items-center gap-2 px-2 py-1 text-xs">
-              <User class="w-3 h-3 text-text-secondary" />
-              <span class="text-text-secondary">
-                {getUserDisplay(participant)}
-              </span>
-              <Show when={participant.muted}>
-                <div title="Muted">
-                  <MicOff class="w-3 h-3 text-accent-danger" />
+          {(participant) => {
+            const [showTooltip, setShowTooltip] = createSignal(false);
+            const metrics = () => getParticipantMetrics(participant.user_id);
+
+            // Convert ParticipantMetrics to ConnectionMetrics format for tooltip
+            const metricsForTooltip = (): ConnectionMetrics | null => {
+              const m = metrics();
+              if (!m) return null;
+              return {
+                latency: m.latency,
+                packetLoss: m.packetLoss,
+                jitter: m.jitter,
+                quality: m.quality,
+                timestamp: Date.now(),
+              };
+            };
+
+            return (
+              <div class="flex items-center gap-2 px-2 py-1 text-xs">
+                <User class="w-3 h-3 text-text-secondary" />
+                <span class="flex-1 truncate text-text-secondary">
+                  {getUserDisplay(participant)}
+                </span>
+
+                <div
+                  class="relative"
+                  onMouseEnter={() => setShowTooltip(true)}
+                  onMouseLeave={() => setShowTooltip(false)}
+                >
+                  <QualityIndicator
+                    metrics={metricsForTooltip()}
+                    mode="circle"
+                  />
+                  <Show when={showTooltip() && metricsForTooltip()}>
+                    <div class="absolute bottom-full right-0 mb-2 z-50">
+                      <QualityTooltip metrics={metricsForTooltip()!} />
+                    </div>
+                  </Show>
                 </div>
-              </Show>
-              <Show when={participant.speaking}>
-                <div title="Speaking">
-                  <Volume2 class="w-3 h-3 text-accent-primary animate-pulse" />
-                </div>
-              </Show>
-            </div>
-          )}
+
+                <Show when={participant.muted}>
+                  <div title="Muted">
+                    <MicOff class="w-3 h-3 text-accent-danger" />
+                  </div>
+                </Show>
+                <Show when={participant.speaking}>
+                  <div title="Speaking">
+                    <Volume2 class="w-3 h-3 text-accent-primary animate-pulse" />
+                  </div>
+                </Show>
+              </div>
+            );
+          }}
         </For>
       </div>
     </Show>

@@ -5,10 +5,12 @@
  */
 
 import { createStore, produce } from "solid-js/store";
-import { createVoiceAdapter, type VoiceError } from "@/lib/webrtc";
+import { createVoiceAdapter, getVoiceAdapter, type VoiceError, type ConnectionMetrics, type ParticipantMetrics, type QualityLevel } from "@/lib/webrtc";
 import type { ScreenShareInfo, ScreenShareQuality } from "@/lib/webrtc/types";
 import type { VoiceParticipant } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
+import * as tauri from "@/lib/tauri";
+import { showToast, dismissToast } from "@/components/ui/Toast";
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -63,6 +65,14 @@ interface VoiceStoreState {
   screenSharing: boolean;
   screenShareInfo: ScreenShareInfo | null;
   screenShares: ScreenShareInfo[]; // All active screen shares in channel
+
+  // Session tracking for metrics
+  sessionId: string | null;
+  connectedAt: number | null;
+  // Local connection metrics
+  localMetrics: ConnectionMetrics | 'unknown' | null;
+  // Per-participant metrics from server
+  participantMetrics: Map<string, ParticipantMetrics>;
 }
 
 // Create the store
@@ -77,10 +87,175 @@ const [voiceState, setVoiceState] = createStore<VoiceStoreState>({
   screenSharing: false,
   screenShareInfo: null,
   screenShares: [],
+  sessionId: null,
+  connectedAt: null,
+  localMetrics: null,
+  participantMetrics: new Map(),
 });
 
 // Event listeners
 let unlisteners: UnlistenFn[] = [];
+
+// Metrics collection interval
+let metricsInterval: number | null = null;
+
+// Notification state for packet loss incidents
+let currentIncidentStart: number | null = null;
+let goodQualityStartTime: number | null = null;
+const INCIDENT_RECOVERY_THRESHOLD = 10_000; // 10s of good quality to clear incident
+
+/**
+ * Convert QualityLevel to numeric value for server transmission.
+ */
+function qualityToNumber(quality: QualityLevel): number {
+  switch (quality) {
+    case 'green': return 3;
+    case 'yellow': return 2;
+    case 'orange': return 1;
+    case 'red': return 0;
+  }
+}
+
+/**
+ * Convert numeric quality value to QualityLevel.
+ */
+function numberToQuality(n: number): QualityLevel {
+  switch (n) {
+    case 3: return 'green';
+    case 2: return 'yellow';
+    case 1: return 'orange';
+    default: return 'red';
+  }
+}
+
+/**
+ * Check packet loss thresholds and show/dismiss notifications.
+ * - >= 3%: Warning notification
+ * - >= 7%: Critical (error) notification
+ * - < 3% for 10s: Clear incident
+ */
+function checkPacketLossThresholds(metrics: ConnectionMetrics): void {
+  const now = Date.now();
+  const isBadQuality = metrics.packetLoss >= 3;
+
+  if (isBadQuality) {
+    // Reset recovery tracking when quality is bad
+    goodQualityStartTime = null;
+
+    if (!currentIncidentStart) {
+      // New incident started
+      currentIncidentStart = now;
+
+      if (metrics.packetLoss >= 7) {
+        // Critical packet loss - persistent error toast
+        showToast({
+          type: 'error',
+          title: 'Connection severely degraded',
+          message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
+          duration: 0,
+          id: 'connection-critical',
+        });
+      } else {
+        // Warning level packet loss
+        showToast({
+          type: 'warning',
+          title: 'Your connection is unstable',
+          message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
+          duration: 5000,
+          id: 'connection-warning',
+        });
+      }
+    } else if (metrics.packetLoss >= 7) {
+      // Escalate from warning to critical
+      dismissToast('connection-warning');
+      showToast({
+        type: 'error',
+        title: 'Connection severely degraded',
+        message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
+        duration: 0,
+        id: 'connection-critical',
+      });
+    }
+  } else {
+    // Quality is good - track recovery
+    if (!goodQualityStartTime) {
+      goodQualityStartTime = now; // Start tracking recovery
+    }
+
+    // Check if we should clear the incident (quality good for 10s)
+    if (currentIncidentStart && now - goodQualityStartTime > INCIDENT_RECOVERY_THRESHOLD) {
+      currentIncidentStart = null;
+      goodQualityStartTime = null;
+      dismissToast('connection-critical');
+      dismissToast('connection-warning');
+    }
+  }
+}
+
+/**
+ * Start the metrics collection loop.
+ * Collects local WebRTC stats every 3 seconds and sends to server.
+ * Safe to call multiple times - always clears existing interval first to prevent orphans.
+ */
+function startMetricsLoop(): void {
+  // Always stop first to prevent orphaned intervals from rapid join/leave
+  stopMetricsLoop();
+
+  metricsInterval = window.setInterval(async () => {
+    const adapter = getVoiceAdapter();
+    if (!adapter) return;
+
+    try {
+      const metrics = await adapter.getConnectionMetrics();
+      if (metrics) {
+        setVoiceState('localMetrics', metrics);
+
+        // Check packet loss thresholds and show notifications
+        checkPacketLossThresholds(metrics);
+
+        // Send to server
+        const sessionId = voiceState.sessionId;
+        if (sessionId && voiceState.channelId) {
+          tauri.wsSend({
+            type: 'VoiceStats',
+            channel_id: voiceState.channelId,
+            session_id: sessionId,
+            latency: metrics.latency,
+            packet_loss: metrics.packetLoss,
+            jitter: metrics.jitter,
+            quality: qualityToNumber(metrics.quality),
+            timestamp: metrics.timestamp,
+          });
+        }
+      } else {
+        setVoiceState('localMetrics', 'unknown');
+      }
+    } catch (err) {
+      console.warn('Failed to collect metrics:', err);
+    }
+  }, 3000);
+}
+
+/**
+ * Stop the metrics collection loop.
+ */
+function stopMetricsLoop(): void {
+  if (metricsInterval) {
+    clearInterval(metricsInterval);
+    metricsInterval = null;
+  }
+}
+
+// Tab visibility handling - pause metrics when tab is hidden to save resources
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      stopMetricsLoop();
+    } else if (voiceState.state === 'connected' && !metricsInterval) {
+      startMetricsLoop();
+    }
+  });
+}
 
 /**
  * Initialize voice event listeners.
@@ -163,6 +338,9 @@ export async function initVoice(): Promise<void> {
  * Cleanup voice listeners.
  */
 export async function cleanupVoice(): Promise<void> {
+  // Stop metrics collection to prevent orphaned intervals
+  stopMetricsLoop();
+
   for (const unlisten of unlisteners) {
     unlisten();
   }
@@ -226,6 +404,11 @@ export async function joinVoice(channelId: string): Promise<void> {
     setVoiceState({ state: "disconnected", channelId: null, error: result.error });
     throw new Error(getErrorMessage(result.error));
   }
+
+  // Start session tracking and metrics collection
+  setVoiceState('sessionId', crypto.randomUUID());
+  setVoiceState('connectedAt', Date.now());
+  startMetricsLoop();
 }
 
 /**
@@ -233,6 +416,15 @@ export async function joinVoice(channelId: string): Promise<void> {
  */
 export async function leaveVoice(): Promise<void> {
   if (voiceState.state === "disconnected") return;
+
+  // Stop metrics collection first
+  stopMetricsLoop();
+
+  // Reset notification state and dismiss any active connection toasts
+  currentIncidentStart = null;
+  goodQualityStartTime = null;
+  dismissToast('connection-critical');
+  dismissToast('connection-warning');
 
   const adapter = await createVoiceAdapter();
   const result = await adapter.leave();
@@ -249,6 +441,10 @@ export async function leaveVoice(): Promise<void> {
     screenSharing: false,
     screenShareInfo: null,
     screenShares: [],
+    sessionId: null,
+    connectedAt: null,
+    localMetrics: null,
+    participantMetrics: new Map(),
   });
 }
 
@@ -453,6 +649,49 @@ export function getVoiceChannelInfo(): { id: string; name: string } | null {
   }
 
   return { id: channel.id, name: channel.name };
+}
+
+/**
+ * Get local connection metrics.
+ * Returns null if not connected, 'unknown' if metrics unavailable.
+ */
+export function getLocalMetrics(): ConnectionMetrics | 'unknown' | null {
+  return voiceState.localMetrics;
+}
+
+/**
+ * Get metrics for a specific participant.
+ */
+export function getParticipantMetrics(userId: string): ParticipantMetrics | undefined {
+  return voiceState.participantMetrics.get(userId);
+}
+
+/**
+ * Handle incoming voice_user_stats event from server.
+ * Updates participant metrics in the store.
+ */
+export function handleVoiceUserStats(data: {
+  channel_id: string;
+  user_id: string;
+  latency: number;
+  packet_loss: number;
+  jitter: number;
+  quality: number;
+}): void {
+  const { channel_id, user_id, latency, packet_loss, jitter, quality } = data;
+
+  // Only update if we're in the same channel
+  if (channel_id !== voiceState.channelId) return;
+
+  const newMetrics = new Map(voiceState.participantMetrics);
+  newMetrics.set(user_id, {
+    userId: user_id,
+    latency,
+    packetLoss: packet_loss,
+    jitter,
+    quality: numberToQuality(quality),
+  });
+  setVoiceState('participantMetrics', newMetrics);
 }
 
 // Export the store for reading and writing

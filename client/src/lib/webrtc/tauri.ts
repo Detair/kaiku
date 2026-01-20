@@ -14,6 +14,7 @@ import type {
   VoiceAdapterEvents,
   AudioDeviceList,
   ScreenShareOptions,
+  ConnectionMetrics,
 } from "./types";
 
 export class TauriVoiceAdapter implements VoiceAdapter {
@@ -168,6 +169,12 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   isNoiseSuppressionEnabled(): boolean {
     return this.noiseSuppression;
+  }
+
+  async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
+    // TODO: Implement via Tauri command to get native WebRTC stats
+    // This will be implemented when the connectivity monitoring feature is complete
+    return null;
   }
 
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void {

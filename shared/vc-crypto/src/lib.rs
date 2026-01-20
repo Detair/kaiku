@@ -8,8 +8,10 @@
 pub mod error;
 pub mod megolm;
 pub mod olm;
+pub mod recovery;
 
 pub use error::{CryptoError, Result};
+pub use recovery::{EncryptedBackup, RecoveryKey};
 
 /// Re-export vodozemac types that are commonly needed.
 pub mod types {

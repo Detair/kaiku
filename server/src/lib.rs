@@ -8,6 +8,8 @@ pub mod api;
 pub mod auth;
 pub mod chat;
 pub mod config;
+pub mod connectivity;
+pub mod crypto;
 pub mod db;
 pub mod guild;
 pub mod pages;

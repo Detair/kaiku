@@ -88,6 +88,23 @@ pub enum ClientEvent {
         /// Voice channel.
         channel_id: Uuid,
     },
+    /// Report voice quality statistics
+    VoiceStats {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// Voice session ID.
+        session_id: Uuid,
+        /// Round-trip latency in milliseconds.
+        latency: i16,
+        /// Packet loss percentage (0.0-100.0).
+        packet_loss: f32,
+        /// Jitter in milliseconds.
+        jitter: i16,
+        /// Quality score (0-100).
+        quality: u8,
+        /// Timestamp when stats were collected (Unix epoch ms).
+        timestamp: i64,
+    },
 }
 
 /// Participant info for voice room state.
@@ -246,6 +263,21 @@ pub enum ServerEvent {
         code: String,
         /// Error message.
         message: String,
+    },
+    /// Voice quality statistics for a user (broadcast to channel)
+    VoiceUserStats {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// User whose stats are reported.
+        user_id: Uuid,
+        /// Round-trip latency in milliseconds.
+        latency: i16,
+        /// Packet loss percentage (0.0-100.0).
+        packet_loss: f32,
+        /// Jitter in milliseconds.
+        jitter: i16,
+        /// Quality score (0-100).
+        quality: u8,
     },
 
     // Screen Share events
@@ -579,7 +611,8 @@ async fn handle_client_message(
         | ClientEvent::VoiceAnswer { .. }
         | ClientEvent::VoiceIceCandidate { .. }
         | ClientEvent::VoiceMute { .. }
-        | ClientEvent::VoiceUnmute { .. } => {
+        | ClientEvent::VoiceUnmute { .. }
+        | ClientEvent::VoiceStats { .. } => {
             if let Err(e) = crate::voice::ws_handler::handle_voice_event(
                 &state.sfu, &state.db, &state.redis, user_id, event, tx,
             )

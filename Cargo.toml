@@ -69,6 +69,7 @@ thiserror = "1"
 anyhow = "1"
 bytes = "1"
 hex = "0.4"
+base64 = "0.22"
 lazy_static = "1.4"
 regex = "1"
 

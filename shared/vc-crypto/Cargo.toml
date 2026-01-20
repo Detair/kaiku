@@ -16,6 +16,12 @@ thiserror.workspace = true
 # For key storage
 zeroize = { version = "1", features = ["derive"] }
 
+# For recovery key
+bs58 = "0.5"
+getrandom = "0.2"
+argon2 = "0.5"
+aes-gcm = "0.10"
+
 [dev-dependencies]
 rand = "0.8"
 

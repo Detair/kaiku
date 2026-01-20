@@ -12,9 +12,11 @@ use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndicat
 use fred::clients::RedisClient;
 
 use super::error::VoiceError;
+use super::metrics::{finalize_session, get_guild_id, store_metrics};
 use super::sfu::SfuServer;
 use super::track_types::TrackSource;
 use super::screen_share::stop_screen_share;
+use super::stats::VoiceStats;
 use crate::ws::{ClientEvent, ServerEvent, VoiceParticipant};
 
 /// Handle a voice-related client event.
@@ -30,7 +32,9 @@ pub async fn handle_voice_event(
         ClientEvent::VoiceJoin { channel_id } => {
             handle_join(sfu, pool, user_id, channel_id, tx).await
         }
-        ClientEvent::VoiceLeave { channel_id } => handle_leave(sfu, redis, user_id, channel_id).await,
+        ClientEvent::VoiceLeave { channel_id } => {
+            handle_leave(sfu, pool, redis, user_id, channel_id).await
+        }
         ClientEvent::VoiceAnswer { channel_id, sdp } => {
             handle_answer(sfu, user_id, channel_id, &sdp).await
         }
@@ -41,6 +45,25 @@ pub async fn handle_voice_event(
         ClientEvent::VoiceMute { channel_id } => handle_mute(sfu, user_id, channel_id, true).await,
         ClientEvent::VoiceUnmute { channel_id } => {
             handle_mute(sfu, user_id, channel_id, false).await
+        }
+        ClientEvent::VoiceStats {
+            channel_id,
+            session_id,
+            latency,
+            packet_loss,
+            jitter,
+            quality,
+            timestamp,
+        } => {
+            let stats = VoiceStats {
+                session_id,
+                latency,
+                packet_loss,
+                jitter,
+                quality,
+                timestamp,
+            };
+            handle_voice_stats(sfu, pool, user_id, channel_id, stats).await
         }
         _ => Ok(()), // Non-voice events handled elsewhere
     }
@@ -164,6 +187,7 @@ async fn handle_join(
 /// Handle a user leaving a voice channel.
 async fn handle_leave(
     sfu: &Arc<SfuServer>,
+    pool: &PgPool,
     redis: &RedisClient,
     user_id: Uuid,
     channel_id: Uuid,
@@ -191,6 +215,33 @@ async fn handle_leave(
 
     // Remove peer from room
     if let Some(peer) = room.remove_peer(user_id).await {
+        // Finalize session in background
+        let guild_id = get_guild_id(pool, channel_id).await;
+        let pool_clone = pool.clone();
+        let session_id = peer.session_id;
+        let connected_at = peer.connected_at;
+
+        tokio::spawn(async move {
+            if let Err(e) = finalize_session(
+                &pool_clone,
+                user_id,
+                session_id,
+                channel_id,
+                guild_id,
+                connected_at,
+            )
+            .await
+            {
+                warn!(
+                    user_id = %user_id,
+                    session_id = %session_id,
+                    "Failed to finalize session: {}",
+                    e
+                );
+            }
+        });
+
+        // Close the peer connection
         if let Err(e) = peer.close().await {
             warn!(error = %e, "Error closing peer connection");
         }
@@ -310,6 +361,58 @@ async fn handle_mute(
     };
 
     room.broadcast_except(user_id, event).await;
+
+    Ok(())
+}
+
+/// Handle voice quality statistics from a client.
+///
+/// This broadcasts the stats to other participants in the room
+/// and stores them in the database for historical analysis.
+async fn handle_voice_stats(
+    sfu: &Arc<SfuServer>,
+    pool: &PgPool,
+    user_id: Uuid,
+    channel_id: Uuid,
+    stats: VoiceStats,
+) -> Result<(), VoiceError> {
+    // Rate limit check
+    if let Err(_) = sfu.check_stats_rate_limit(user_id).await {
+        warn!(user_id = %user_id, "User sent voice stats too frequently, dropping");
+        return Ok(());
+    }
+
+    // Validate stats
+    if let Err(reason) = stats.validate() {
+        warn!(user_id = %user_id, "Invalid voice stats: {}", reason);
+        return Ok(());
+    }
+
+    // Broadcast to room participants
+    let broadcast = ServerEvent::VoiceUserStats {
+        channel_id,
+        user_id,
+        latency: stats.latency,
+        packet_loss: stats.packet_loss,
+        jitter: stats.jitter,
+        quality: stats.quality,
+    };
+
+    if let Some(room) = sfu.get_room(channel_id).await {
+        // Verify user is actually in the room before broadcasting
+        if room.get_peer(user_id).await.is_none() {
+            warn!(user_id = %user_id, channel_id = %channel_id, "User attempted to broadcast stats to a room they are not in");
+            return Ok(());
+        }
+        room.broadcast_except(user_id, broadcast).await;
+    }
+
+    // Store in database (fire-and-forget)
+    let guild_id = get_guild_id(pool, channel_id).await;
+    let pool_clone = pool.clone();
+    tokio::spawn(async move {
+        store_metrics(pool_clone, stats, user_id, channel_id, guild_id).await;
+    });
 
     Ok(())
 }

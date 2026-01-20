@@ -24,13 +24,17 @@
 
 import { Component, createSignal, createEffect, onMount, onCleanup, Show } from "solid-js";
 import { Mic, MicOff, Headphones, Monitor, PhoneOff, Settings, GripVertical } from "lucide-solid";
-import { voiceState, setMute, setDeafen, leaveVoice, getVoiceChannelInfo } from "@/stores/voice";
+import { voiceState, setMute, setDeafen, leaveVoice, getVoiceChannelInfo, getLocalMetrics } from "@/stores/voice";
 import { formatElapsedTime } from "@/lib/utils";
 import AudioDeviceSettings from "@/components/voice/AudioDeviceSettings";
+import { QualityIndicator } from "@/components/voice/QualityIndicator";
+import { QualityTooltip } from "@/components/voice/QualityTooltip";
+import type { ConnectionMetrics } from "@/lib/webrtc/types";
 
 const VoiceIsland: Component = () => {
   const [elapsedTime, setElapsedTime] = createSignal<string>("00:00");
   const [showSettings, setShowSettings] = createSignal(false);
+  const [showQualityTooltip, setShowQualityTooltip] = createSignal(false);
 
   // Draggable state - default to top-center
   const getInitialPosition = () => {
@@ -252,6 +256,23 @@ const VoiceIsland: Component = () => {
 
       {/* Timer */}
       <div class="text-text-secondary text-sm font-mono">{elapsedTime()}</div>
+
+      {/* Quality Indicator */}
+      <div
+        class="relative"
+        onMouseEnter={() => setShowQualityTooltip(true)}
+        onMouseLeave={() => setShowQualityTooltip(false)}
+      >
+        <QualityIndicator
+          metrics={getLocalMetrics()}
+          mode={'circle'}
+        />
+        <Show when={showQualityTooltip() && typeof getLocalMetrics() === 'object'}>
+          <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50">
+            <QualityTooltip metrics={getLocalMetrics() as ConnectionMetrics} />
+          </div>
+        </Show>
+      </div>
 
       {/* Divider */}
       <div class="w-px h-6 bg-white/20" />

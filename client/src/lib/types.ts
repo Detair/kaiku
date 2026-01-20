@@ -229,7 +229,9 @@ export type ServerEvent =
   | { type: "call_ended"; channel_id: string; reason: string; duration_secs: number | null }
   | { type: "call_participant_joined"; channel_id: string; user_id: string; username: string }
   | { type: "call_participant_left"; channel_id: string; user_id: string }
-  | { type: "call_declined"; channel_id: string; user_id: string };
+  | { type: "call_declined"; channel_id: string; user_id: string }
+  // Voice metrics events
+  | { type: "voice_user_stats"; channel_id: string; user_id: string; latency: number; packet_loss: number; jitter: number; quality: number };
 
 // Settings Types
 

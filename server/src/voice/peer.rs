@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 use webrtc::{
@@ -45,6 +46,10 @@ pub struct Peer {
     pub muted: RwLock<bool>,
     /// Channel to send signaling messages back to the user.
     pub signal_tx: mpsc::Sender<ServerEvent>,
+    /// Unique session identifier for this connection.
+    pub session_id: Uuid,
+    /// Timestamp when this peer connected.
+    pub connected_at: DateTime<Utc>,
 }
 
 impl Peer {
@@ -70,6 +75,8 @@ impl Peer {
             outgoing_tracks: RwLock::new(HashMap::new()),
             muted: RwLock::new(false),
             signal_tx,
+            session_id: Uuid::now_v7(),
+            connected_at: Utc::now(),
         })
     }
 

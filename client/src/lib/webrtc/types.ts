@@ -125,6 +125,33 @@ export interface ScreenShareCheckResult {
 }
 
 /**
+ * Connection quality level for visual indicators
+ */
+export type QualityLevel = 'green' | 'yellow' | 'orange' | 'red';
+
+/**
+ * Connection metrics from WebRTC stats
+ */
+export interface ConnectionMetrics {
+  latency: number;      // RTT in ms
+  packetLoss: number;   // 0-100 percentage
+  jitter: number;       // ms
+  quality: QualityLevel;
+  timestamp: number;
+}
+
+/**
+ * Per-participant connection metrics
+ */
+export interface ParticipantMetrics {
+  userId: string;
+  latency: number;
+  packetLoss: number;
+  jitter: number;
+  quality: QualityLevel;
+}
+
+/**
  * VoiceAdapter interface - implemented by both browser and Tauri
  *
  * Ensures feature parity between implementations and allows
@@ -150,6 +177,9 @@ export interface VoiceAdapter {
   isMuted(): boolean;
   isDeafened(): boolean;
   isNoiseSuppressionEnabled(): boolean;
+
+  /** Get current connection metrics from WebRTC stats */
+  getConnectionMetrics(): Promise<ConnectionMetrics | null>;
 
   // Event registration
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void;

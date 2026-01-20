@@ -19,6 +19,10 @@ pub enum AuthError {
     #[error("User not found")]
     UserNotFound,
 
+    /// Resource not found.
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     /// User already exists (registration).
     #[error("Username or email already taken")]
     UserAlreadyExists,
@@ -82,6 +86,7 @@ impl IntoResponse for AuthError {
         let (status, code) = match &self {
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS"),
             Self::UserNotFound => (StatusCode::NOT_FOUND, "USER_NOT_FOUND"),
+            Self::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             Self::UserAlreadyExists => (StatusCode::CONFLICT, "USER_EXISTS"),
             Self::InvalidToken => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN"),
             Self::TokenExpired => (StatusCode::UNAUTHORIZED, "TOKEN_EXPIRED"),
