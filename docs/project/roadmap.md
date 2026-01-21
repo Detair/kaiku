@@ -186,6 +186,22 @@ This roadmap outlines the development path from the current prototype to a produ
   - Backup reminder banner for users without backup.
   - Server configuration option `REQUIRE_E2EE_SETUP` for mandatory setup.
   - **Plan:** `docs/plans/2026-01-19-e2ee-implementation-phase-1.md`
+- [ ] **[UX] Sound Pack (Notification Sounds)** `Next`
+  - Chat message notification sounds (DMs + mentions).
+  - 5 built-in sound options with volume control.
+  - Per-channel notification levels (all/mentions/none).
+  - Works on web (Web Audio API) and Tauri (rodio).
+  - **Design:** `docs/plans/2026-01-21-sound-pack-design.md`
+- [ ] **[Chat] Cross-Client Read Sync** `Planned`
+  - Sync read position across all user's devices/tabs.
+  - Clear unread badges and highlights when read on any client.
+  - Required for proper notification deduplication.
+- [ ] **[Settings] Server-Synced User Preferences** `Planned`
+  - Persist user settings (sound, theme, etc.) on server.
+  - Sync preferences across devices.
+- [ ] **[UX] Do Not Disturb Mode** `Planned`
+  - App-level DND toggle to silence all sounds.
+  - Integration with OS-level focus/DND modes.
 - [ ] **[UX] Modular Home Sidebar**
   - "Active Now" panel showing friends' activities (implemented).
   - "Pending & Suggestions" quick-action module (planned).
@@ -227,6 +243,7 @@ This roadmap outlines the development path from the current prototype to a produ
 ## Recent Changes
 
 ### 2026-01-21
+- Added Sound Pack (Notification Sounds) design to Phase 4.
 - Added Modular Home Sidebar to Phase 4 roadmap.
 - Refactored Home View Sidebar and Friends List UI.
 
