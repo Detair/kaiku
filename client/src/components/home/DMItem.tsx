@@ -59,15 +59,21 @@ const DMItem: Component<DMItemProps> = (props) => {
   };
 
   return (
-    <button
-      onClick={() => selectDM(props.dm.id)}
-      class="w-full flex items-start gap-3 p-2 rounded-lg transition-colors text-left"
-      classList={{
-        "bg-white/10": isSelected(),
-        "hover:bg-white/5": !isSelected(),
-      }}
-    >
-      {/* Avatar */}
+    <div class="relative group">
+      {/* Active Pill */}
+      <div
+        class="absolute -left-2 top-1/2 -translate-y-1/2 w-1 bg-white rounded-r-full transition-all duration-200"
+        style={{ height: isSelected() ? "20px" : "0px" }}
+      />
+      <button
+        onClick={() => selectDM(props.dm.id)}
+        class="w-full flex items-start gap-3 p-2 rounded-lg transition-colors text-left"
+        classList={{
+          "bg-white/10": isSelected(),
+          "hover:bg-white/5": !isSelected(),
+        }}
+      >
+        {/* Avatar */}
       <div class="relative flex-shrink-0">
         <Show
           when={isGroupDM()}
@@ -118,7 +124,8 @@ const DMItem: Component<DMItemProps> = (props) => {
           </Show>
         </div>
       </div>
-    </button>
+      </button>
+    </div>
   );
 };
 

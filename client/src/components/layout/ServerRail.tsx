@@ -47,7 +47,7 @@ const ServerRail: Component = () => {
   };
 
   return (
-    <aside class="w-[72px] flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-white/5 z-20">
+    <aside class="w-[72px] flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-white/10 z-20">
       {/* Home Icon - Canis Logo */}
       <div class="relative">
         {/* Pill Indicator */}

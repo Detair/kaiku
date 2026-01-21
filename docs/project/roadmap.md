@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 4 (Advanced Features) - In Progress
 
-**Last Updated:** 2026-01-20
+**Last Updated:** 2026-01-21
 
 ## Quick Status Overview
 
@@ -186,6 +186,11 @@ This roadmap outlines the development path from the current prototype to a produ
   - Backup reminder banner for users without backup.
   - Server configuration option `REQUIRE_E2EE_SETUP` for mandatory setup.
   - **Plan:** `docs/plans/2026-01-19-e2ee-implementation-phase-1.md`
+- [ ] **[UX] Modular Home Sidebar**
+  - "Active Now" panel showing friends' activities (implemented).
+  - "Pending & Suggestions" quick-action module (planned).
+  - "Global Pins / Scratchpad" personal utility module (planned).
+  - "Server Pulse" activity summary module (planned).
 - [ ] **[UX] Cross-Server Favorites**
   - Allow pinning channels from different guilds into a single "Favorites" list.
 - [ ] **[Auth] SSO / OIDC Integration**
@@ -221,18 +226,12 @@ This roadmap outlines the development path from the current prototype to a produ
 
 ## Recent Changes
 
+### 2026-01-21
+- Added Modular Home Sidebar to Phase 4 roadmap.
+- Refactored Home View Sidebar and Friends List UI.
+
 ### 2026-01-20
 - Merged PR #29: E2EE Key Backup UI - Recovery Key Modal, Security Settings, Tauri commands
 - Merged PR #23: User Connectivity Monitor
 - Fixed TimescaleDB migration to work conditionally (supports standard PostgreSQL)
 - Cleaned up obsolete documentation
-
-### 2026-01-19
-- Merged PR #22: E2EE Key Backup foundation
-- Added E2EE implementation Phase 1 plan
-- Added Rich Presence design document
-
-### 2026-01-18
-- Merged PR #21: DM Voice Calls
-- Completed Information Pages feature
-- Git workflow standardization

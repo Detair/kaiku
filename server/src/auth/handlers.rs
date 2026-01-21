@@ -1,13 +1,15 @@
 //! Authentication HTTP Handlers
 
 use axum::{
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, State},
     http::{header::USER_AGENT, HeaderMap},
     Extension, Json,
 };
+use bytes::Bytes;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::Cursor;
 use std::net::SocketAddr;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
@@ -17,7 +19,7 @@ use crate::api::AppState;
 use crate::db::{
     create_session, create_user, delete_session_by_token_hash, email_exists,
     find_session_by_token_hash, find_user_by_id, find_user_by_username, set_mfa_secret,
-    username_exists,
+    update_user_avatar, username_exists,
 };
 use crate::ratelimit::NormalizedIp;
 
@@ -420,10 +422,115 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
         username: auth_user.username,
         display_name: auth_user.display_name,
         email: auth_user.email,
-        avatar_url: None, // TODO: Load from User model
+        avatar_url: auth_user.avatar_url,
         status: "online".to_string(),
         mfa_enabled: auth_user.mfa_enabled,
     })
+}
+
+/// Upload user avatar.
+///
+/// POST /auth/me/avatar
+pub async fn upload_avatar(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    mut multipart: Multipart,
+) -> AuthResult<Json<UserProfile>> {
+    // Check if S3 is configured
+    let s3 = state
+        .s3
+        .as_ref()
+        .ok_or_else(|| AuthError::Internal("File storage not configured".to_string()))?;
+
+    // Get the file from multipart
+    let mut file_data = None;
+    let mut filename = None;
+    let mut content_type = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AuthError::Internal(format!("Multipart error: {e}")))?
+    {
+        if field.name() == Some("avatar") {
+            filename = field.file_name().map(ToString::to_string);
+            content_type = field.content_type().map(ToString::to_string);
+            
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AuthError::Internal(format!("Upload error: {e}")))?;
+            
+            file_data = Some(data);
+            break; // Only process the first file
+        }
+    }
+
+    let data = file_data.ok_or(AuthError::Validation("No avatar file provided".to_string()))?;
+    
+    // Validate mime type
+    let mime = content_type
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    
+    if !mime.starts_with("image/") {
+        return Err(AuthError::Validation("File must be an image".to_string()));
+    }
+
+    // Generate S3 key: avatars/{user_id}/{timestamp}_{filename}
+    let timestamp = Utc::now().timestamp();
+    let safe_filename = filename
+        .unwrap_or_else(|| "avatar.png".to_string())
+        .replace(|c: char| !c.is_alphanumeric() && c != '.', "_");
+    
+    let key = format!("avatars/{}/{}_{}", auth_user.id, timestamp, safe_filename);
+
+    // Upload to S3
+    s3.upload(&key, data.to_vec(), &mime)
+        .await
+        .map_err(|e| AuthError::Internal(format!("S3 upload failed: {e}")))?;
+
+    // Construct public URL (assuming bucket is public or proxied)
+    let bucket = &state.config.s3_bucket;
+    let endpoint = &state.config.s3_endpoint;
+    
+    // Handle localhost vs cloud endpoint formatting
+    let url = if endpoint.as_deref().map_or(false, |s| s.contains("localhost") || s.contains("127.0.0.1")) {
+        // For MinIO/Local: endpoint/bucket/key
+        // endpoint is Option, so unwrap safe because of check
+        format!("{}/{}/{}", endpoint.as_ref().unwrap(), bucket, key)
+    } else if let Some(ep) = endpoint {
+        // Custom endpoint (R2, etc): endpoint/bucket/key or bucket.endpoint/key
+        // We'll stick to path style for safety if custom endpoint is used
+        format!("{}/{}/{}", ep, bucket, key)
+    } else {
+        // AWS S3 standard: https://bucket.s3.region.amazonaws.com/key
+        // We assume standard path style for simplicity if no endpoint logic matches
+        // or just construct a relative path if proxied
+        format!("/{}/{}", bucket, key)
+    };
+
+    // Update user in DB
+    let user = update_user_avatar(&state.db, auth_user.id, Some(&url))
+        .await
+        .map_err(|e| AuthError::Internal(format!("Database update failed: {e}")))?;
+
+    // Convert status to string
+    let status_str = match user.status {
+        crate::db::UserStatus::Online => "online",
+        crate::db::UserStatus::Away => "away",
+        crate::db::UserStatus::Busy => "busy",
+        crate::db::UserStatus::Offline => "offline",
+    };
+
+    Ok(Json(UserProfile {
+        id: user.id.to_string(),
+        username: user.username,
+        display_name: user.display_name,
+        email: user.email,
+        avatar_url: user.avatar_url,
+        status: status_str.to_string(),
+        mfa_enabled: user.mfa_secret.is_some(),
+    }))
 }
 
 // ============================================================================

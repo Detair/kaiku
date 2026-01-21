@@ -26,6 +26,11 @@ export default defineConfig({
         primary: "var(--color-accent-primary)",
         danger: "var(--color-accent-danger)",
       },
+      error: {
+        bg: "var(--color-error-bg)",
+        border: "var(--color-error-border)",
+        text: "var(--color-error-text)",
+      },
       // Legacy compatibility (maps to new theme system)
       primary: {
         DEFAULT: "var(--color-accent-primary)",

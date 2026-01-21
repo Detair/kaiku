@@ -67,9 +67,9 @@ const Sidebar: Component = () => {
   };
 
   return (
-    <aside class="w-[240px] flex flex-col bg-surface-layer2 z-10 transition-all duration-300">
+    <aside class="w-[240px] flex flex-col bg-surface-layer2 z-10 transition-all duration-300 border-r border-white/10">
       {/* Server Header with Settings */}
-      <header class="h-12 px-4 flex items-center justify-between border-b border-white/5 group">
+      <header class="h-12 px-4 flex items-center justify-between border-b border-white/10 group">
         <div class="flex items-center gap-2 flex-1 min-w-0 cursor-pointer hover:bg-surface-highlight rounded-lg -ml-2 px-2 py-1">
           <h1 class="font-bold text-lg text-text-primary truncate">
             {activeGuild()?.name || "VoiceChat"}
@@ -98,6 +98,9 @@ const Sidebar: Component = () => {
           style="background-color: var(--color-surface-base)"
         />
       </div>
+
+      {/* Separator */}
+      <div class="mx-3 my-1 border-t border-white/10" />
 
       {/* Guild Pages Section */}
       <Show when={activeGuild() && guildPages().length > 0}>

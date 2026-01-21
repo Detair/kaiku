@@ -28,6 +28,8 @@ pub struct AuthUser {
     pub display_name: String,
     /// Email (if set).
     pub email: Option<String>,
+    /// Avatar URL (if set).
+    pub avatar_url: Option<String>,
     /// Whether MFA is enabled.
     pub mfa_enabled: bool,
 }
@@ -39,6 +41,7 @@ impl From<User> for AuthUser {
             username: user.username,
             display_name: user.display_name,
             email: user.email,
+            avatar_url: user.avatar_url,
             mfa_enabled: user.mfa_secret.is_some(),
         }
     }

@@ -19,39 +19,19 @@ The VoiceChat platform implements multiple layers of security:
 
 **Risk**: Database breach exposes all MFA secrets, allowing complete MFA bypass.
 
-**Status**: 🔴 **NOT YET IMPLEMENTED** - Currently stored in plaintext!
+**Status**: ✅ **IMPLEMENTED** - Stored using AES-256-GCM encryption.
 
-**Implementation Required**:
-
-```rust
-// Before INSERT/UPDATE
-let encrypted_mfa_secret = encrypt_mfa_secret(&mfa_secret, &server_key)?;
-db::update_user_mfa_secret(&pool, user_id, &encrypted_mfa_secret).await?;
-
-// When reading
-let encrypted_secret = user.mfa_secret.ok_or(Error::NoMfaSecret)?;
-let mfa_secret = decrypt_mfa_secret(&encrypted_secret, &server_key)?;
-```
-
-**Recommended Approach**:
-- Use **AES-256-GCM** for encryption
-- Store server-side master key in environment variable (`MFA_ENCRYPTION_KEY`)
-- Consider envelope encryption with per-user keys for defense in depth
-- Rotate keys periodically (implement key versioning)
+**Implementation**:
+- Secrets are encrypted using `aes-gcm` before storage.
+- Key is derived from `MFA_ENCRYPTION_KEY` environment variable.
+- Implementation located in `src/auth/mfa_crypto.rs`.
 
 **Key Management**:
+Ensure `MFA_ENCRYPTION_KEY` (32-byte hex string) is set in the environment.
 ```bash
 # Generate a secure 256-bit key
-openssl rand -hex 32 > /etc/voicechat/mfa_key.txt
-export MFA_ENCRYPTION_KEY=$(cat /etc/voicechat/mfa_key.txt)
+openssl rand -hex 32
 ```
-
-**Migration Path**:
-1. Deploy encryption code with feature flag disabled
-2. Create migration to encrypt existing plaintext MFA secrets
-3. Enable encryption for new MFA setups
-4. Run batch migration for existing users
-5. Add database constraint to reject unencrypted format (if detectable)
 
 ### 2. Megolm Session Data (`megolm_sessions.session_data`)
 
@@ -110,7 +90,7 @@ async fn on_user_leave_channel(channel_id: Uuid, user_id: Uuid) {
 
 **Risk**: Unbounded JSONB array can grow to gigabytes, causing DoS.
 
-**Status**: 🟡 **Enforced at application layer**
+**Status**: ✅ **Enforced at application layer**
 
 **Implementation**:
 
@@ -209,13 +189,11 @@ CONSTRAINT valid_position CHECK (position >= 0)
 
 ## Deleted Messages and GDPR Compliance
 
-**Current Implementation**: Soft delete (sets `deleted_at` timestamp)
+**Current Implementation**: ✅ **GDPR Compliant** - Soft delete with content scrubbing.
 
-**Issue**: Message content remains in database after "deletion", violating GDPR right to erasure.
+**Mechanism**:
+When a message is deleted, the `deleted_at` timestamp is set, and the `content` is replaced with `[deleted]`. This preserves the message ID/thread structure while removing the user's data.
 
-**Options**:
-
-### Option 1: Clear Content on Delete (Recommended)
 ```rust
 // In db/queries.rs
 pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool> {
@@ -235,42 +213,20 @@ pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bo
 }
 ```
 
-**Pros**: Preserves message IDs for threading, keeps message count accurate
-**Cons**: Can't restore accidentally deleted messages
-
-### Option 2: Hard Delete
-```rust
-pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool> {
-    let result = sqlx::query(
-        "DELETE FROM messages WHERE id = $1 AND user_id = $2"
-    )
-    .bind(id)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
-}
-```
-
-**Pros**: True deletion, GDPR compliant
-**Cons**: Breaks reply chains, message IDs become invalid
-
-**Recommendation**: Implement Option 1 (clear content) for better UX while remaining GDPR compliant.
-
 ## Rate Limiting
 
 ### Current Implementation
 
 ✅ **Voice channel joins** (`src/voice/rate_limit.rs`)
-- Redis-based sliding window
-- Configurable per-user limits
+- In-memory per-user limits
+- Prevents rapid join/leave spam
+
+✅ **Authentication endpoints** (`src/auth/handlers.rs`)
+- Redis-backed distributed rate limiting
+- Protects Login, Register, and Password Reset
+- Tracks failed attempts and blocks IPs
 
 ### Missing Implementation
-
-🔴 **Authentication endpoints** - No rate limiting
-- Risk: Brute force attacks on login
-- Recommendation: 5 attempts per 15 minutes per IP
 
 🔴 **Message creation** - No rate limiting
 - Risk: Spam flooding
@@ -279,23 +235,6 @@ pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bo
 🔴 **File uploads** - No rate limiting
 - Risk: Storage exhaustion
 - Recommendation: 5 uploads per minute per user
-
-**Implementation Pattern**:
-```rust
-use crate::voice::rate_limit::RateLimiter;
-
-// In handlers
-let rate_limiter = RateLimiter::new(
-    state.redis.clone(),
-    "login".to_string(),
-    5,  // max attempts
-    900 // window in seconds (15 min)
-);
-
-if !rate_limiter.check_rate_limit(&username).await? {
-    return Err(AuthError::RateLimited);
-}
-```
 
 ## Session Security
 

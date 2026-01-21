@@ -25,11 +25,12 @@ use webrtc::{
 
 use super::error::VoiceError;
 use super::peer::Peer;
-use super::rate_limit::VoiceRateLimiter;
+use super::rate_limit::VoiceStatsLimiter;
 use super::track::{spawn_rtp_forwarder, TrackRouter};
 use super::track_types::TrackSource;
 use super::screen_share::ScreenShareInfo;
 use crate::config::Config;
+use crate::ratelimit::{RateLimitCategory, RateLimiter};
 use crate::ws::ServerEvent;
 
 /// Default maximum participants per room.
@@ -209,13 +210,15 @@ pub struct SfuServer {
     api: Arc<API>,
     /// Server configuration.
     config: Arc<Config>,
-    /// Rate limiter for voice operations.
-    rate_limiter: Arc<VoiceRateLimiter>,
+    /// Rate limiter for voice operations (global/redis).
+    rate_limiter: Option<Arc<RateLimiter>>,
+    /// Rate limiter for voice stats (local/memory).
+    stats_limiter: Arc<VoiceStatsLimiter>,
 }
 
 impl SfuServer {
     /// Create a new SFU server.
-    pub fn new(config: Arc<Config>) -> Result<Self, VoiceError> {
+    pub fn new(config: Arc<Config>, rate_limiter: Option<RateLimiter>) -> Result<Self, VoiceError> {
         // Configure MediaEngine with Opus audio codec
         let mut media_engine = MediaEngine::default();
 
@@ -359,7 +362,8 @@ impl SfuServer {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             api: Arc::new(api),
             config,
-            rate_limiter: Arc::new(VoiceRateLimiter::default()),
+            rate_limiter: rate_limiter.map(Arc::new),
+            stats_limiter: Arc::new(VoiceStatsLimiter::default()),
         })
     }
 
@@ -619,12 +623,23 @@ impl SfuServer {
 
     /// Check if a user can join voice (rate limit check).
     pub async fn check_rate_limit(&self, user_id: Uuid) -> Result<(), VoiceError> {
-        self.rate_limiter.check_join(user_id).await
+        if let Some(limiter) = &self.rate_limiter {
+            // Note: We use user_id as identifier (stringified)
+            let result = limiter
+                .check(RateLimitCategory::VoiceJoin, &user_id.to_string())
+                .await
+                .map_err(|e| VoiceError::Internal(e.to_string()))?;
+            
+            if !result.allowed {
+                return Err(VoiceError::RateLimited);
+            }
+        }
+        Ok(())
     }
 
     /// Check if a user can report voice stats (rate limit check).
     pub async fn check_stats_rate_limit(&self, user_id: Uuid) -> Result<(), VoiceError> {
-        self.rate_limiter.check_stats(user_id).await
+        self.stats_limiter.check_stats(user_id).await
     }
 
     /// Get active room count.

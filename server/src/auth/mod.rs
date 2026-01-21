@@ -11,6 +11,7 @@ mod oidc;
 mod password;
 
 use axum::{
+    extract::DefaultBodyLimit,
     middleware as axum_middleware,
     routing::{get, post},
     Router,
@@ -36,6 +37,7 @@ pub use middleware::{require_auth, AuthUser};
 /// - POST /logout - Invalidate session
 /// - GET /me - Get current user profile
 /// - POST /me - Update profile
+/// - POST /me/avatar - Upload avatar
 /// - POST /mfa/setup - Setup MFA
 /// - POST /mfa/verify - Verify MFA
 /// - POST /mfa/disable - Disable MFA
@@ -106,6 +108,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/logout", post(handlers::logout))
         .route("/me", get(handlers::get_profile))
         .route("/me", post(handlers::update_profile))
+        .route(
+            "/me/avatar",
+            post(handlers::upload_avatar)
+                .layer(DefaultBodyLimit::max(5 * 1024 * 1024)), // 5MB limit
+        )
         .route("/mfa/setup", post(handlers::mfa_setup))
         .route("/mfa/verify", post(handlers::mfa_verify))
         .route("/mfa/disable", post(handlers::mfa_disable))

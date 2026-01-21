@@ -6,26 +6,58 @@
  */
 
 import { Component, Show, For } from "solid-js";
+import { Coffee } from "lucide-solid";
 import { dmsState, getSelectedDM } from "@/stores/dms";
 import { getOnlineFriends } from "@/stores/friends";
 import { getUserActivity } from "@/stores/presence";
 import { ActivityIndicator } from "@/components/ui";
+import ActiveActivityCard from "./ActiveActivityCard";
 
 const HomeRightPanel: Component = () => {
   const dm = () => getSelectedDM();
   const isGroupDM = () => dm()?.participants && dm()!.participants.length > 1;
 
+  // Filter friends with active status
+  const activeFriends = () => {
+    return getOnlineFriends().filter(f => getUserActivity(f.user_id));
+  };
+
   // Hide on smaller screens
   return (
-    <aside class="hidden xl:flex w-60 flex-col bg-surface-layer1 border-l border-white/5">
+    <aside class="hidden xl:flex w-[360px] flex-col bg-surface-layer1 border-l border-white/10 h-full">
       <Show
         when={!dmsState.isShowingFriends && dm()}
         fallback={
-          // Friends view - show online count
-          <div class="p-4">
-            <div class="text-sm text-text-secondary">
-              Online — {getOnlineFriends().length}
-            </div>
+          // Active Now Panel (Friends View)
+          <div class="flex-1 flex flex-col p-4 overflow-y-auto">
+            <h2 class="text-xl font-bold text-text-primary mb-4">Active Now</h2>
+            
+            <Show
+              when={activeFriends().length > 0}
+              fallback={
+                <div class="flex flex-col items-center justify-center flex-1 text-center opacity-60">
+                  <Coffee class="w-12 h-12 text-text-secondary mb-3" />
+                  <h3 class="text-lg font-medium text-text-primary">It's quiet for now...</h3>
+                  <p class="text-sm text-text-secondary mt-1">
+                    When friends start playing games, they'll show up here!
+                  </p>
+                </div>
+              }
+            >
+              <div class="space-y-3">
+                <For each={activeFriends()}>
+                  {(friend) => (
+                    <ActiveActivityCard
+                      userId={friend.user_id}
+                      displayName={friend.display_name}
+                      username={friend.username}
+                      avatarUrl={friend.avatar_url}
+                      activity={getUserActivity(friend.user_id)!}
+                    />
+                  )}
+                </For>
+              </div>
+            </Show>
           </div>
         }
       >

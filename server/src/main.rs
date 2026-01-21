@@ -64,11 +64,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Initialize SFU server for voice
-    let sfu = voice::SfuServer::new(std::sync::Arc::new(config.clone()))?;
-    info!("Voice SFU server initialized");
-
     // Initialize rate limiter (optional)
+    // Needs to be initialized before SFU to be passed to it
     let rate_limiter = {
         use vc_server::ratelimit::{RateLimitConfig, RateLimiter};
 
@@ -94,6 +91,13 @@ async fn main() -> Result<()> {
             None
         }
     };
+
+    // Initialize SFU server for voice
+    // Pass config and rate limiter
+    let sfu = voice::SfuServer::new(std::sync::Arc::new(config.clone()), rate_limiter.clone())?;
+    info!("Voice SFU server initialized");
+
+
 
     // Build application state
     let state = api::AppState::new(db_pool, redis, config.clone(), s3, sfu, rate_limiter);

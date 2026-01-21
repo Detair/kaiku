@@ -8,51 +8,27 @@ use uuid::Uuid;
 
 use super::error::VoiceError;
 
-/// Rate limiter for voice operations.
-pub struct VoiceRateLimiter {
-    /// Map of `user_id` to last join time.
-    last_join: Arc<RwLock<HashMap<Uuid, Instant>>>,
+/// Rate limiter for voice stats operations.
+pub struct VoiceStatsLimiter {
     /// Map of `user_id` to last stats reporting time.
     last_stats: Arc<RwLock<HashMap<Uuid, Instant>>>,
-    /// Minimum time between join requests.
-    min_join_interval: Duration,
     /// Minimum time between stats reports.
     min_stats_interval: Duration,
 }
 
-impl VoiceRateLimiter {
+impl VoiceStatsLimiter {
     /// Create a new rate limiter.
-    pub fn new(min_join_interval: Duration, min_stats_interval: Duration) -> Self {
+    pub fn new(min_stats_interval: Duration) -> Self {
         Self {
-            last_join: Arc::new(RwLock::new(HashMap::new())),
             last_stats: Arc::new(RwLock::new(HashMap::new())),
-            min_join_interval,
             min_stats_interval,
         }
     }
 
     /// Create a rate limiter with default settings.
-    /// - 1 join per second
     /// - 1 stats report per second
     pub fn default() -> Self {
-        Self::new(Duration::from_secs(1), Duration::from_secs(1))
-    }
-
-    /// Check if a user can join voice (rate limit check).
-    pub async fn check_join(&self, user_id: Uuid) -> Result<(), VoiceError> {
-        let mut map = self.last_join.write().await;
-
-        if let Some(last) = map.get(&user_id) {
-            let elapsed = last.elapsed();
-            if elapsed < self.min_join_interval {
-                // Still within rate limit window
-                return Err(VoiceError::RateLimited);
-            }
-        }
-
-        // Update last join time
-        map.insert(user_id, Instant::now());
-        Ok(())
+        Self::new(Duration::from_secs(1))
     }
 
     /// Check if a user can report voice stats (rate limit check).
@@ -76,11 +52,6 @@ impl VoiceRateLimiter {
     pub async fn cleanup(&self) {
         let now = Instant::now();
         
-        // Cleanup joins
-        let join_threshold = self.min_join_interval * 10;
-        let mut join_map = self.last_join.write().await;
-        join_map.retain(|_, last| now.duration_since(*last) < join_threshold);
-
         // Cleanup stats
         let stats_threshold = self.min_stats_interval * 10;
         let mut stats_map = self.last_stats.write().await;

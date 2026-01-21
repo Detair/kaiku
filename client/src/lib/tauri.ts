@@ -248,6 +248,18 @@ export async function login(
   return await httpRequest<User>("GET", "/auth/me");
 }
 
+/**
+ * Update the user's presence status (online, away, busy, offline).
+ */
+export async function updateStatus(status: "online" | "away" | "busy" | "offline"): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("update_status", { status });
+  }
+
+  await httpRequest<void>("POST", "/api/presence/status", { status });
+}
+
 export async function register(
   serverUrl: string,
   username: string,
@@ -366,6 +378,33 @@ export async function getCurrentUser(): Promise<User | null> {
     localStorage.removeItem("tokenExpiresAt");
     return null;
   }
+}
+
+export async function uploadAvatar(file: File): Promise<User> {
+  const token = browserState.accessToken || localStorage.getItem("accessToken");
+  const headers: Record<string, string> = {};
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const formData = new FormData();
+  formData.append("avatar", file);
+
+  const baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
+  
+  const response = await fetch(`${baseUrl}/auth/me/avatar`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(error.message || error.error || "Upload failed");
+  }
+
+  return response.json();
 }
 
 // Chat Commands

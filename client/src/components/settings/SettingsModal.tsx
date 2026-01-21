@@ -6,8 +6,9 @@
 
 import { Component, createSignal, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Palette, Volume2, Mic, Shield, Eye } from "lucide-solid";
+import { X, Palette, Volume2, Mic, Shield, Eye, User } from "lucide-solid";
 import { invoke } from "@tauri-apps/api/core";
+import AccountSettings from "./AccountSettings";
 import AppearanceSettings from "./AppearanceSettings";
 import SecuritySettings from "./SecuritySettings";
 import PrivacySettings from "./PrivacySettings";
@@ -17,7 +18,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type TabId = "appearance" | "audio" | "voice" | "privacy" | "security";
+type TabId = "account" | "appearance" | "audio" | "voice" | "privacy" | "security";
 
 interface TabDefinition {
   id: TabId;
@@ -26,6 +27,7 @@ interface TabDefinition {
 }
 
 const tabs: TabDefinition[] = [
+  { id: "account", label: "My Account", icon: User },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "audio", label: "Audio", icon: Volume2 },
   { id: "voice", label: "Voice", icon: Mic },
@@ -34,7 +36,7 @@ const tabs: TabDefinition[] = [
 ];
 
 const SettingsModal: Component<SettingsModalProps> = (props) => {
-  const [activeTab, setActiveTab] = createSignal<TabId>("appearance");
+  const [activeTab, setActiveTab] = createSignal<TabId>("account");
   const [showRecoveryKey, setShowRecoveryKey] = createSignal(false);
   const [recoveryKey, setRecoveryKey] = createSignal<{
     fullKey: string;
@@ -135,13 +137,13 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
                       onClick={() => setActiveTab(tab.id)}
                       class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors mb-1"
                       classList={{
-                        "bg-accent-primary/20 text-accent-primary":
+                        "bg-accent-primary/20 text-text-primary":
                           activeTab() === tab.id,
                         "text-text-secondary hover:text-text-primary hover:bg-white/5":
                           activeTab() !== tab.id,
                       }}
                     >
-                      <Icon class="w-4 h-4" />
+                      <Icon class="w-4 h-4" classList={{ "text-accent-primary": activeTab() === tab.id }} />
                       <span class="font-medium">{tab.label}</span>
                     </button>
                   );
@@ -151,6 +153,10 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
 
             {/* Content area */}
             <div class="flex-1 overflow-y-auto p-6">
+              <Show when={activeTab() === "account"}>
+                <AccountSettings />
+              </Show>
+
               <Show when={activeTab() === "appearance"}>
                 <AppearanceSettings />
               </Show>

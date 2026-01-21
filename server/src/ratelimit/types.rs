@@ -25,6 +25,8 @@ pub enum RateLimitCategory {
     WsMessage,
     /// Failed authentication tracking (for IP blocking)
     FailedAuth,
+    /// Voice channel join attempts
+    VoiceJoin,
 }
 
 impl RateLimitCategory {
@@ -41,6 +43,7 @@ impl RateLimitCategory {
             Self::WsConnect => "ws_connect",
             Self::WsMessage => "ws_message",
             Self::FailedAuth => "failed_auth",
+            Self::VoiceJoin => "voice_join",
         }
     }
 
@@ -56,6 +59,7 @@ impl RateLimitCategory {
             Self::Read,
             Self::WsConnect,
             Self::WsMessage,
+            Self::VoiceJoin,
         ]
     }
 }

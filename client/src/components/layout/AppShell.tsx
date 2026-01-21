@@ -12,7 +12,7 @@
  * 4. Voice Island (overlay) - Floating voice controls
  */
 
-import { Component, ParentProps, Show } from "solid-js";
+import { Component, JSX, ParentProps, Show } from "solid-js";
 import ServerRail from "./ServerRail";
 import Sidebar from "./Sidebar";
 import VoiceIsland from "./VoiceIsland";
@@ -25,6 +25,10 @@ interface AppShellProps extends ParentProps {
    * Currently hidden as guilds are not yet implemented.
    */
   showServerRail?: boolean;
+  /**
+   * Optional custom sidebar component to replace the default guild Sidebar.
+   */
+  sidebar?: JSX.Element;
 }
 
 const AppShell: Component<AppShellProps> = (props) => {
@@ -38,10 +42,12 @@ const AppShell: Component<AppShellProps> = (props) => {
       </Show>
 
       {/* 2. Context Sidebar (Middle-Left) */}
-      <Sidebar />
+      <Show when={props.sidebar} fallback={<Sidebar />}>
+        {props.sidebar}
+      </Show>
 
       {/* 3. Main Stage (Right) */}
-      <main class="flex-1 flex flex-col min-w-0 bg-surface-layer1 relative">
+      <main class="flex-1 flex flex-col min-w-0 bg-surface-layer1 relative border-l border-white/10">
         {/* Main content passed as children */}
         {props.children}
       </main>

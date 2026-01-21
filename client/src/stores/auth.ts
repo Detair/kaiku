@@ -192,5 +192,12 @@ export function clearError(): void {
   setAuthState({ error: null });
 }
 
+/**
+ * Update local user state.
+ */
+export function updateUser(updates: Partial<User>): void {
+  setAuthState("user", (prev) => (prev ? { ...prev, ...updates } : null));
+}
+
 // Export the store for reading
 export { authState };

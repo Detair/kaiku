@@ -12,6 +12,7 @@ import { Settings, Shield } from "lucide-solid";
 import { authState } from "@/stores/auth";
 import { adminState, checkAdminStatus } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
+import StatusPicker from "@/components/ui/StatusPicker";
 import { SettingsModal } from "@/components/settings";
 import { AdminQuickModal } from "@/components/admin";
 
@@ -19,6 +20,7 @@ const UserPanel: Component = () => {
   const user = () => authState.user;
   const [showSettings, setShowSettings] = createSignal(false);
   const [showAdmin, setShowAdmin] = createSignal(false);
+  const [showStatusPicker, setShowStatusPicker] = createSignal(false);
 
   onMount(() => {
     checkAdminStatus();
@@ -26,11 +28,26 @@ const UserPanel: Component = () => {
 
   return (
     <>
-      <div class="mt-auto p-3 bg-surface-base/50 border-t border-white/5">
+      <div class="mt-auto p-3 bg-surface-base/50 border-t border-white/10 relative">
+        <Show when={showStatusPicker()}>
+          <div 
+            class="fixed inset-0 z-40 cursor-default" 
+            onClick={() => setShowStatusPicker(false)} 
+          />
+          <StatusPicker 
+            currentStatus={user()?.status || "online"} 
+            onClose={() => setShowStatusPicker(false)} 
+          />
+        </Show>
+
         <div class="flex items-center gap-3">
-          {/* User info */}
+          {/* User info - Click to change status */}
           <Show when={user()}>
-            <div class="flex items-center gap-2.5 flex-1 min-w-0">
+            <button 
+              class="flex items-center gap-2.5 flex-1 min-w-0 text-left hover:bg-white/5 p-1 rounded-lg transition-colors -ml-1"
+              onClick={() => setShowStatusPicker(!showStatusPicker())}
+              title="Change Status"
+            >
               <Avatar
                 src={user()!.avatar_url}
                 alt={user()!.display_name}
@@ -46,7 +63,7 @@ const UserPanel: Component = () => {
                   @{user()!.username}
                 </div>
               </div>
-            </div>
+            </button>
           </Show>
 
           {/* Action buttons */}

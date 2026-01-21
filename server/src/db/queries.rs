@@ -102,6 +102,21 @@ pub async fn create_user(
     .await
 }
 
+/// Update user's avatar URL.
+pub async fn update_user_avatar(
+    pool: &PgPool,
+    user_id: Uuid,
+    avatar_url: Option<&str>,
+) -> sqlx::Result<User> {
+    sqlx::query_as::<_, User>(
+        "UPDATE users SET avatar_url = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
+    )
+    .bind(avatar_url)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
 /// Update user's MFA secret.
 pub async fn set_mfa_secret(
     pool: &PgPool,

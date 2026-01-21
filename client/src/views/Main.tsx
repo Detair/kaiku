@@ -17,6 +17,7 @@ import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { HomeView } from "@/components/home";
+import HomeSidebar from "@/components/home/HomeSidebar";
 import { selectedChannel } from "@/stores/channels";
 import { loadGuilds, guildsState } from "@/stores/guilds";
 
@@ -34,7 +35,10 @@ const Main: Component = () => {
       <CommandPalette />
 
       {/* Main Application Shell */}
-      <AppShell showServerRail={true}>
+      <AppShell
+        showServerRail={true}
+        sidebar={guildsState.activeGuildId === null ? <HomeSidebar /> : undefined}
+      >
         {/* Main Content Area */}
         <Show
           when={guildsState.activeGuildId === null}

@@ -92,6 +92,9 @@ const ChannelList: Component = () => {
         </div>
       </div>
 
+      {/* Separator */}
+      <div class="mx-3 my-2 border-t border-white/10" />
+
       {/* Voice Channels */}
       <div class="mb-4">
         <div class="flex items-center justify-between px-2 py-1 mb-1 rounded-lg hover:bg-white/5 transition-colors group">
