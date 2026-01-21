@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AdminQuickModal for quick admin access with elevation status and stats
 - Session elevation system with MFA verification and 15-minute expiry
 - Ban/unban users and suspend/unsuspend guilds (requires elevation)
+- Admin panel Phase 1 improvements
+  - User avatars and guild icons displayed in admin lists
+  - Skeleton loading animations replacing text placeholders
+  - Keyboard navigation (Arrow keys, Enter, Escape) in user/guild tables
 - Screen share viewer with three view modes (Spotlight, PiP, Theater)
 - Volume control for screen share audio
 - Screen share list in voice panel showing active shares
