@@ -514,6 +514,76 @@ export interface ElevateResponse {
   session_id: string;
 }
 
+// User Detail Types
+
+export interface UserGuildMembership {
+  guild_id: string;
+  guild_name: string;
+  guild_icon_url: string | null;
+  joined_at: string;
+  is_owner: boolean;
+}
+
+export interface UserDetailsResponse {
+  id: string;
+  username: string;
+  display_name: string;
+  email: string | null;
+  avatar_url: string | null;
+  created_at: string;
+  is_banned: boolean;
+  last_login: string | null;
+  guild_count: number;
+  guilds: UserGuildMembership[];
+}
+
+// Guild Detail Types
+
+export interface GuildMemberInfo {
+  user_id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+  joined_at: string;
+}
+
+export interface GuildOwnerInfo {
+  user_id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
+export interface GuildDetailsResponse {
+  id: string;
+  name: string;
+  icon_url: string | null;
+  member_count: number;
+  created_at: string;
+  suspended_at: string | null;
+  owner: GuildOwnerInfo;
+  top_members: GuildMemberInfo[];
+}
+
+// Bulk Action Types
+
+export interface BulkActionFailure {
+  id: string;
+  reason: string;
+}
+
+export interface BulkBanResponse {
+  banned_count: number;
+  already_banned: number;
+  failed: BulkActionFailure[];
+}
+
+export interface BulkSuspendResponse {
+  suspended_count: number;
+  already_suspended: number;
+  failed: BulkActionFailure[];
+}
+
 // Call State Types
 
 export type CallEndReason = "cancelled" | "all_declined" | "no_answer" | "last_left";

@@ -35,12 +35,16 @@ import type {
   AuditLogEntry,
   PaginatedResponse,
   ElevateResponse,
+  UserDetailsResponse,
+  GuildDetailsResponse,
+  BulkBanResponse,
+  BulkSuspendResponse,
   CallEndReason,
   CallStateResponse,
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, CallEndReason, CallStateResponse };
+export type { User, Channel, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse };
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -1647,6 +1651,44 @@ export async function adminListGuilds(
 }
 
 /**
+ * Get detailed user information (admin only).
+ */
+export async function adminGetUserDetails(
+  userId: string
+): Promise<UserDetailsResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<UserDetailsResponse>("admin_get_user_details", {
+      user_id: userId,
+    });
+  }
+
+  return httpRequest<UserDetailsResponse>(
+    "GET",
+    `/api/admin/users/${userId}/details`
+  );
+}
+
+/**
+ * Get detailed guild information (admin only).
+ */
+export async function adminGetGuildDetails(
+  guildId: string
+): Promise<GuildDetailsResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<GuildDetailsResponse>("admin_get_guild_details", {
+      guild_id: guildId,
+    });
+  }
+
+  return httpRequest<GuildDetailsResponse>(
+    "GET",
+    `/api/admin/guilds/${guildId}/details`
+  );
+}
+
+/**
  * Audit log filter options.
  */
 export interface AuditLogFilters {
@@ -1805,6 +1847,113 @@ export async function adminUnsuspendGuild(
   return httpRequest<{ suspended: boolean; guild_id: string }>(
     "POST",
     `/api/admin/guilds/${guildId}/unsuspend`
+  );
+}
+
+/**
+ * Export users to CSV (admin only).
+ * Returns CSV content as a blob for download.
+ */
+export async function adminExportUsersCsv(search?: string): Promise<Blob> {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  const query = params.toString();
+
+  const baseUrl = getServerUrl().replace(/\/+$/, "");
+  const token = getAccessToken();
+
+  const response = await fetch(
+    `${baseUrl}/api/admin/users/export${query ? `?${query}` : ""}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Export failed: ${response.statusText}`);
+  }
+
+  return response.blob();
+}
+
+/**
+ * Export guilds to CSV (admin only).
+ * Returns CSV content as a blob for download.
+ */
+export async function adminExportGuildsCsv(search?: string): Promise<Blob> {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  const query = params.toString();
+
+  const baseUrl = getServerUrl().replace(/\/+$/, "");
+  const token = getAccessToken();
+
+  const response = await fetch(
+    `${baseUrl}/api/admin/guilds/export${query ? `?${query}` : ""}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Export failed: ${response.statusText}`);
+  }
+
+  return response.blob();
+}
+
+/**
+ * Bulk ban multiple users (requires elevation).
+ */
+export async function adminBulkBanUsers(
+  userIds: string[],
+  reason: string,
+  expiresAt?: string
+): Promise<BulkBanResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_bulk_ban_users", {
+      user_ids: userIds,
+      reason,
+      expires_at: expiresAt,
+    });
+  }
+
+  return httpRequest<BulkBanResponse>("POST", "/api/admin/users/bulk-ban", {
+    user_ids: userIds,
+    reason,
+    expires_at: expiresAt,
+  });
+}
+
+/**
+ * Bulk suspend multiple guilds (requires elevation).
+ */
+export async function adminBulkSuspendGuilds(
+  guildIds: string[],
+  reason: string
+): Promise<BulkSuspendResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_bulk_suspend_guilds", {
+      guild_ids: guildIds,
+      reason,
+    });
+  }
+
+  return httpRequest<BulkSuspendResponse>(
+    "POST",
+    "/api/admin/guilds/bulk-suspend",
+    {
+      guild_ids: guildIds,
+      reason,
+    }
   );
 }
 

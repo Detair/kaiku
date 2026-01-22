@@ -12,6 +12,10 @@ import type {
   GuildSummary,
   AuditLogEntry,
   PaginatedResponse,
+  UserDetailsResponse,
+  GuildDetailsResponse,
+  BulkBanResponse,
+  BulkSuspendResponse,
 } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import type { AuditLogFilters } from "@/lib/tauri";
@@ -56,12 +60,16 @@ interface AdminStoreState {
   usersPagination: PaginationState;
   usersSearch: string;
   selectedUserId: string | null;
+  selectedUserDetails: UserDetailsResponse | null;
+  selectedUserIds: Set<string>;
 
   // Guilds list
   guilds: GuildSummary[];
   guildsPagination: PaginationState;
   guildsSearch: string;
   selectedGuildId: string | null;
+  selectedGuildDetails: GuildDetailsResponse | null;
+  selectedGuildIds: Set<string>;
 
   // Audit log
   auditLog: AuditLogEntry[];
@@ -73,9 +81,13 @@ interface AdminStoreState {
   isStatusLoading: boolean;
   isStatsLoading: boolean;
   isUsersLoading: boolean;
+  isUserDetailsLoading: boolean;
   isGuildsLoading: boolean;
+  isGuildDetailsLoading: boolean;
   isAuditLogLoading: boolean;
   isElevating: boolean;
+  isBulkActionLoading: boolean;
+  isExporting: boolean;
 
   // Error state
   error: string | null;
@@ -99,12 +111,16 @@ const [adminState, setAdminState] = createStore<AdminStoreState>({
   usersPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
   usersSearch: "",
   selectedUserId: null,
+  selectedUserDetails: null,
+  selectedUserIds: new Set(),
 
   // Guilds list
   guilds: [],
   guildsPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
   guildsSearch: "",
   selectedGuildId: null,
+  selectedGuildDetails: null,
+  selectedGuildIds: new Set(),
 
   // Audit log
   auditLog: [],
@@ -121,9 +137,13 @@ const [adminState, setAdminState] = createStore<AdminStoreState>({
   isStatusLoading: false,
   isStatsLoading: false,
   isUsersLoading: false,
+  isUserDetailsLoading: false,
   isGuildsLoading: false,
+  isGuildDetailsLoading: false,
   isAuditLogLoading: false,
   isElevating: false,
+  isBulkActionLoading: false,
+  isExporting: false,
 
   // Error state
   error: null,
@@ -424,7 +444,149 @@ export async function unbanUser(userId: string): Promise<boolean> {
  * Select a user in the list
  */
 export function selectUser(userId: string | null): void {
-  setAdminState({ selectedUserId: userId });
+  setAdminState({ selectedUserId: userId, selectedUserDetails: null });
+}
+
+/**
+ * Load detailed user information
+ */
+export async function loadUserDetails(userId: string): Promise<void> {
+  setAdminState({ isUserDetailsLoading: true });
+
+  try {
+    const details = await tauri.adminGetUserDetails(userId);
+    setAdminState({
+      selectedUserDetails: details,
+      isUserDetailsLoading: false,
+    });
+  } catch (err) {
+    console.error("[Admin] Failed to load user details:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to load user details",
+      isUserDetailsLoading: false,
+    });
+  }
+}
+
+// ============================================================================
+// User Selection Functions
+// ============================================================================
+
+/**
+ * Toggle user selection for bulk actions
+ */
+export function toggleUserSelection(userId: string): void {
+  const newSet = new Set(adminState.selectedUserIds);
+  if (newSet.has(userId)) {
+    newSet.delete(userId);
+  } else {
+    newSet.add(userId);
+  }
+  setAdminState({ selectedUserIds: newSet });
+}
+
+/**
+ * Select all users on current page
+ */
+export function selectAllUsers(): void {
+  const newSet = new Set(adminState.users.map((u) => u.id));
+  setAdminState({ selectedUserIds: newSet });
+}
+
+/**
+ * Clear user selection
+ */
+export function clearUserSelection(): void {
+  setAdminState({ selectedUserIds: new Set() });
+}
+
+/**
+ * Check if a user is selected
+ */
+export function isUserSelected(userId: string): boolean {
+  return adminState.selectedUserIds.has(userId);
+}
+
+/**
+ * Get count of selected users
+ */
+export function getSelectedUserCount(): number {
+  return adminState.selectedUserIds.size;
+}
+
+/**
+ * Export users to CSV
+ */
+export async function exportUsersCsv(): Promise<void> {
+  setAdminState({ isExporting: true, error: null });
+
+  try {
+    const blob = await tauri.adminExportUsersCsv(adminState.usersSearch || undefined);
+
+    // Create download link
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `users_export_${new Date().toISOString().split("T")[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+
+    setAdminState({ isExporting: false });
+  } catch (err) {
+    console.error("[Admin] Failed to export users:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to export users",
+      isExporting: false,
+    });
+  }
+}
+
+/**
+ * Bulk ban selected users
+ */
+export async function bulkBanUsers(reason: string): Promise<BulkBanResponse | null> {
+  if (adminState.selectedUserIds.size === 0) {
+    setAdminState({ error: "No users selected" });
+    return null;
+  }
+
+  setAdminState({ isBulkActionLoading: true, error: null });
+
+  try {
+    const userIds = Array.from(adminState.selectedUserIds);
+    const result = await tauri.adminBulkBanUsers(userIds, reason);
+
+    // Update local state for banned users
+    setAdminState("users", (users) =>
+      users.map((u) =>
+        userIds.includes(u.id) && !result.failed.some((f) => f.id === u.id)
+          ? { ...u, is_banned: true }
+          : u
+      )
+    );
+
+    // Update stats
+    if (adminState.stats) {
+      setAdminState("stats", {
+        ...adminState.stats,
+        banned_count: adminState.stats.banned_count + result.banned_count,
+      });
+    }
+
+    // Clear selection
+    setAdminState({ selectedUserIds: new Set(), isBulkActionLoading: false });
+
+    return result;
+  } catch (err) {
+    console.error("[Admin] Failed to bulk ban users:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to bulk ban users",
+      isBulkActionLoading: false,
+    });
+    return null;
+  }
 }
 
 // ============================================================================
@@ -542,7 +704,143 @@ export async function unsuspendGuild(guildId: string): Promise<boolean> {
  * Select a guild in the list
  */
 export function selectGuild(guildId: string | null): void {
-  setAdminState({ selectedGuildId: guildId });
+  setAdminState({ selectedGuildId: guildId, selectedGuildDetails: null });
+}
+
+/**
+ * Load detailed guild information
+ */
+export async function loadGuildDetails(guildId: string): Promise<void> {
+  setAdminState({ isGuildDetailsLoading: true });
+
+  try {
+    const details = await tauri.adminGetGuildDetails(guildId);
+    setAdminState({
+      selectedGuildDetails: details,
+      isGuildDetailsLoading: false,
+    });
+  } catch (err) {
+    console.error("[Admin] Failed to load guild details:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to load guild details",
+      isGuildDetailsLoading: false,
+    });
+  }
+}
+
+// ============================================================================
+// Guild Selection Functions
+// ============================================================================
+
+/**
+ * Toggle guild selection for bulk actions
+ */
+export function toggleGuildSelection(guildId: string): void {
+  const newSet = new Set(adminState.selectedGuildIds);
+  if (newSet.has(guildId)) {
+    newSet.delete(guildId);
+  } else {
+    newSet.add(guildId);
+  }
+  setAdminState({ selectedGuildIds: newSet });
+}
+
+/**
+ * Select all guilds on current page
+ */
+export function selectAllGuilds(): void {
+  const newSet = new Set(adminState.guilds.map((g) => g.id));
+  setAdminState({ selectedGuildIds: newSet });
+}
+
+/**
+ * Clear guild selection
+ */
+export function clearGuildSelection(): void {
+  setAdminState({ selectedGuildIds: new Set() });
+}
+
+/**
+ * Check if a guild is selected
+ */
+export function isGuildSelected(guildId: string): boolean {
+  return adminState.selectedGuildIds.has(guildId);
+}
+
+/**
+ * Get count of selected guilds
+ */
+export function getSelectedGuildCount(): number {
+  return adminState.selectedGuildIds.size;
+}
+
+/**
+ * Export guilds to CSV
+ */
+export async function exportGuildsCsv(): Promise<void> {
+  setAdminState({ isExporting: true, error: null });
+
+  try {
+    const blob = await tauri.adminExportGuildsCsv(adminState.guildsSearch || undefined);
+
+    // Create download link
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `guilds_export_${new Date().toISOString().split("T")[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+
+    setAdminState({ isExporting: false });
+  } catch (err) {
+    console.error("[Admin] Failed to export guilds:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to export guilds",
+      isExporting: false,
+    });
+  }
+}
+
+/**
+ * Bulk suspend selected guilds
+ */
+export async function bulkSuspendGuilds(
+  reason: string
+): Promise<BulkSuspendResponse | null> {
+  if (adminState.selectedGuildIds.size === 0) {
+    setAdminState({ error: "No guilds selected" });
+    return null;
+  }
+
+  setAdminState({ isBulkActionLoading: true, error: null });
+
+  try {
+    const guildIds = Array.from(adminState.selectedGuildIds);
+    const result = await tauri.adminBulkSuspendGuilds(guildIds, reason);
+
+    // Update local state for suspended guilds
+    setAdminState("guilds", (guilds) =>
+      guilds.map((g) =>
+        guildIds.includes(g.id) && !result.failed.some((f) => f.id === g.id)
+          ? { ...g, suspended_at: new Date().toISOString() }
+          : g
+      )
+    );
+
+    // Clear selection
+    setAdminState({ selectedGuildIds: new Set(), isBulkActionLoading: false });
+
+    return result;
+  } catch (err) {
+    console.error("[Admin] Failed to bulk suspend guilds:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to bulk suspend guilds",
+      isBulkActionLoading: false,
+    });
+    return null;
+  }
 }
 
 // ============================================================================
@@ -650,10 +948,14 @@ export function resetAdminState(): void {
     usersPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
     usersSearch: "",
     selectedUserId: null,
+    selectedUserDetails: null,
+    selectedUserIds: new Set(),
     guilds: [],
     guildsPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
     guildsSearch: "",
     selectedGuildId: null,
+    selectedGuildDetails: null,
+    selectedGuildIds: new Set(),
     auditLog: [],
     auditLogPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
     auditLogFilter: null,
@@ -666,9 +968,13 @@ export function resetAdminState(): void {
     isStatusLoading: false,
     isStatsLoading: false,
     isUsersLoading: false,
+    isUserDetailsLoading: false,
     isGuildsLoading: false,
+    isGuildDetailsLoading: false,
     isAuditLogLoading: false,
     isElevating: false,
+    isBulkActionLoading: false,
+    isExporting: false,
     error: null,
   });
 }

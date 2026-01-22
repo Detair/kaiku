@@ -5,15 +5,23 @@
  * Actions require session elevation (two-tier privilege model).
  */
 
-import { Component, Show, For, onMount, createSignal, createMemo, onCleanup } from "solid-js";
-import { Search, Ban, CheckCircle, ChevronLeft, ChevronRight, X } from "lucide-solid";
+import { Component, Show, For, onMount, createSignal, createMemo, onCleanup, createEffect } from "solid-js";
+import { Search, Ban, CheckCircle, ChevronLeft, ChevronRight, X, Clock, Crown, Loader2, Download, Square, CheckSquare } from "lucide-solid";
 import {
   adminState,
   loadUsers,
   selectUser,
+  loadUserDetails,
   banUser,
   unbanUser,
   searchUsers,
+  toggleUserSelection,
+  selectAllUsers,
+  clearUserSelection,
+  isUserSelected,
+  getSelectedUserCount,
+  exportUsersCsv,
+  bulkBanUsers,
 } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
@@ -26,11 +34,40 @@ const UsersPanel: Component = () => {
   const [searchQuery, setSearchQuery] = createSignal("");
   const [banReason, setBanReason] = createSignal("");
   const [showBanDialog, setShowBanDialog] = createSignal(false);
+  const [showBulkBanDialog, setShowBulkBanDialog] = createSignal(false);
+  const [bulkBanReason, setBulkBanReason] = createSignal("");
   const [actionLoading, setActionLoading] = createSignal(false);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
   let listRef: HTMLDivElement | undefined;
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Check if all users on current page are selected
+  const allSelected = createMemo(() => {
+    const users = adminState.users;
+    return users.length > 0 && users.every((u) => isUserSelected(u.id));
+  });
+
+  // Handle export
+  const handleExport = async () => {
+    await exportUsersCsv();
+  };
+
+  // Handle bulk ban
+  const handleBulkBan = async () => {
+    if (!bulkBanReason().trim()) return;
+
+    setActionLoading(true);
+    try {
+      const result = await bulkBanUsers(bulkBanReason());
+      if (result) {
+        setShowBulkBanDialog(false);
+        setBulkBanReason("");
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   // Load users on mount
   onMount(() => {
@@ -64,6 +101,14 @@ const UsersPanel: Component = () => {
   const selectedUser = createMemo(() =>
     adminState.users.find((u) => u.id === adminState.selectedUserId) ?? null
   );
+
+  // Load user details when a user is selected
+  createEffect(() => {
+    const userId = adminState.selectedUserId;
+    if (userId) {
+      loadUserDetails(userId);
+    }
+  });
 
   // Users are now filtered server-side
   const filteredUsers = createMemo(() => adminState.users);
@@ -155,21 +200,38 @@ const UsersPanel: Component = () => {
         <div class="flex items-center justify-between p-4 border-b border-white/10">
           <h2 class="text-lg font-bold text-text-primary">Users</h2>
 
-          {/* Search Input */}
-          <div class="relative">
-            <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
-            <input
-              type="text"
-              placeholder="Search users..."
-              value={searchQuery()}
-              onInput={(e) => handleSearchInput(e.currentTarget.value)}
-              class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
-            />
-            <Show when={adminState.isUsersLoading && searchQuery()}>
-              <div class="absolute right-3 top-1/2 -translate-y-1/2">
-                <div class="w-4 h-4 border-2 border-accent-primary/30 border-t-accent-primary rounded-full animate-spin" />
-              </div>
-            </Show>
+          <div class="flex items-center gap-3">
+            {/* Export Button */}
+            <button
+              onClick={handleExport}
+              disabled={adminState.isExporting}
+              class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-text-secondary hover:text-text-primary hover:bg-white/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+            >
+              <Show
+                when={!adminState.isExporting}
+                fallback={<Loader2 class="w-4 h-4 animate-spin" />}
+              >
+                <Download class="w-4 h-4" />
+              </Show>
+              Export CSV
+            </button>
+
+            {/* Search Input */}
+            <div class="relative">
+              <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
+              <input
+                type="text"
+                placeholder="Search users..."
+                value={searchQuery()}
+                onInput={(e) => handleSearchInput(e.currentTarget.value)}
+                class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
+              />
+              <Show when={adminState.isUsersLoading && searchQuery()}>
+                <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                  <div class="w-4 h-4 border-2 border-accent-primary/30 border-t-accent-primary rounded-full animate-spin" />
+                </div>
+              </Show>
+            </div>
           </div>
         </div>
 
@@ -180,8 +242,46 @@ const UsersPanel: Component = () => {
           tabIndex={0}
           onKeyDown={handleKeyDown}
         >
+        {/* Bulk Action Bar */}
+        <Show when={getSelectedUserCount() > 0}>
+          <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
+            <div class="flex items-center gap-3">
+              <span class="text-sm font-medium text-text-primary">
+                {getSelectedUserCount()} user{getSelectedUserCount() !== 1 ? "s" : ""} selected
+              </span>
+              <button
+                onClick={clearUserSelection}
+                class="text-sm text-text-secondary hover:text-text-primary transition-colors"
+              >
+                Clear selection
+              </button>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                onClick={() => setShowBulkBanDialog(true)}
+                disabled={!adminState.isElevated || adminState.isBulkActionLoading}
+                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-white text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Ban class="w-4 h-4" />
+                Bulk Ban
+              </button>
+            </div>
+          </div>
+        </Show>
+
           {/* Table Header */}
-          <div class="grid grid-cols-4 gap-4 px-4 py-3 border-b border-white/10 bg-white/5 text-xs font-medium text-text-secondary uppercase tracking-wide sticky top-0">
+          <div class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/10 bg-white/5 text-xs font-medium text-text-secondary uppercase tracking-wide sticky top-0">
+            <div class="flex items-center">
+              <button
+                onClick={() => allSelected() ? clearUserSelection() : selectAllUsers()}
+                class="p-1 text-text-secondary hover:text-text-primary transition-colors"
+                title={allSelected() ? "Deselect all" : "Select all"}
+              >
+                <Show when={allSelected()} fallback={<Square class="w-4 h-4" />}>
+                  <CheckSquare class="w-4 h-4 text-accent-primary" />
+                </Show>
+              </button>
+            </div>
             <div>Username</div>
             <div>Email</div>
             <div>Joined</div>
@@ -209,13 +309,28 @@ const UsersPanel: Component = () => {
                     selectUser(user.id);
                     setFocusedIndex(index());
                   }}
-                  class="grid grid-cols-4 gap-4 px-4 py-3 border-b border-white/5 cursor-pointer transition-colors"
+                  class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/5 cursor-pointer transition-colors"
                   classList={{
                     "bg-accent-primary/20": adminState.selectedUserId === user.id,
                     "hover:bg-white/5": adminState.selectedUserId !== user.id,
                     "ring-2 ring-accent-primary/50 ring-inset": focusedIndex() === index() && adminState.selectedUserId !== user.id,
                   }}
                 >
+                  {/* Checkbox */}
+                  <div class="flex items-center">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleUserSelection(user.id);
+                      }}
+                      class="p-1 text-text-secondary hover:text-text-primary transition-colors"
+                    >
+                      <Show when={isUserSelected(user.id)} fallback={<Square class="w-4 h-4" />}>
+                        <CheckSquare class="w-4 h-4 text-accent-primary" />
+                      </Show>
+                    </button>
+                  </div>
+
                   {/* Username */}
                   <div class="flex items-center gap-3 min-w-0 relative z-10">
                     <Avatar
@@ -386,6 +501,69 @@ const UsersPanel: Component = () => {
                     </Show>
                   </div>
                 </div>
+
+                {/* Last Login - from user details */}
+                <div class="space-y-1">
+                  <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
+                    Last Login
+                  </div>
+                  <div class="flex items-center gap-2 text-sm text-text-primary">
+                    <Clock class="w-4 h-4 text-text-secondary" />
+                    <Show
+                      when={!adminState.isUserDetailsLoading}
+                      fallback={<Loader2 class="w-4 h-4 animate-spin text-text-secondary" />}
+                    >
+                      {adminState.selectedUserDetails?.last_login
+                        ? formatDate(adminState.selectedUserDetails.last_login)
+                        : "Never"}
+                    </Show>
+                  </div>
+                </div>
+
+                {/* Guild Memberships - from user details */}
+                <div class="space-y-2">
+                  <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
+                    Guilds ({adminState.selectedUserDetails?.guild_count ?? "-"})
+                  </div>
+                  <Show
+                    when={!adminState.isUserDetailsLoading}
+                    fallback={<Loader2 class="w-4 h-4 animate-spin text-text-secondary" />}
+                  >
+                    <Show
+                      when={adminState.selectedUserDetails?.guilds.length}
+                      fallback={
+                        <div class="text-sm text-text-secondary">No guild memberships</div>
+                      }
+                    >
+                      <div class="space-y-2 max-h-32 overflow-y-auto">
+                        <For each={adminState.selectedUserDetails?.guilds}>
+                          {(guild) => (
+                            <div class="flex items-center gap-2 p-2 rounded-lg bg-white/5">
+                              <Avatar
+                                src={guild.guild_icon_url}
+                                alt={guild.guild_name}
+                                size="sm"
+                              />
+                              <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-1.5">
+                                  <span class="text-sm font-medium text-text-primary truncate">
+                                    {guild.guild_name}
+                                  </span>
+                                  <Show when={guild.is_owner}>
+                                    <Crown class="w-3 h-3 text-amber-400 flex-shrink-0" />
+                                  </Show>
+                                </div>
+                                <div class="text-xs text-text-secondary">
+                                  Joined {formatDate(guild.joined_at)}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
+                  </Show>
+                </div>
               </div>
 
               {/* Actions Section */}
@@ -484,6 +662,69 @@ const UsersPanel: Component = () => {
                   class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading() ? "Banning..." : "Confirm Ban"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      {/* Bulk Ban Dialog */}
+      <Show when={showBulkBanDialog()}>
+        <div class="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div
+            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowBulkBanDialog(false)}
+          />
+
+          {/* Dialog */}
+          <div
+            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
+            style="background-color: var(--color-surface-layer1)"
+          >
+            <div class="p-5 space-y-4">
+              <h3 class="text-lg font-bold text-text-primary">
+                Bulk Ban Users
+              </h3>
+
+              <p class="text-sm text-text-secondary">
+                Are you sure you want to ban{" "}
+                <span class="font-medium text-text-primary">
+                  {getSelectedUserCount()} user{getSelectedUserCount() !== 1 ? "s" : ""}
+                </span>
+                ? They will be unable to access the platform.
+              </p>
+
+              <div class="space-y-2">
+                <label class="text-sm font-medium text-text-secondary">
+                  Reason for ban (applies to all)
+                </label>
+                <textarea
+                  value={bulkBanReason()}
+                  onInput={(e) => setBulkBanReason(e.currentTarget.value)}
+                  placeholder="Enter reason..."
+                  rows={3}
+                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm resize-none"
+                />
+              </div>
+
+              <div class="flex gap-3 pt-2">
+                <button
+                  onClick={() => {
+                    setShowBulkBanDialog(false);
+                    setBulkBanReason("");
+                  }}
+                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleBulkBan}
+                  disabled={!bulkBanReason().trim() || actionLoading()}
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {actionLoading() ? "Banning..." : `Ban ${getSelectedUserCount()} Users`}
                 </button>
               </div>
             </div>

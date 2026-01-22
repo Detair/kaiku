@@ -136,3 +136,58 @@ pub struct AdminStatsResponse {
     pub guild_count: i64,
     pub banned_count: i64,
 }
+
+// ============================================================================
+// Bulk Action Types
+// ============================================================================
+
+/// Request to ban multiple users at once.
+#[derive(Debug, Deserialize)]
+pub struct BulkBanRequest {
+    /// List of user IDs to ban.
+    pub user_ids: Vec<Uuid>,
+    /// Reason for banning.
+    pub reason: String,
+    /// Optional expiration time for the ban.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Response for bulk ban operation.
+#[derive(Debug, Serialize)]
+pub struct BulkBanResponse {
+    /// Number of users successfully banned.
+    pub banned_count: usize,
+    /// Number of users that were already banned.
+    pub already_banned: usize,
+    /// User IDs that failed to ban (with reasons).
+    pub failed: Vec<BulkActionFailure>,
+}
+
+/// Request to suspend multiple guilds at once.
+#[derive(Debug, Deserialize)]
+pub struct BulkSuspendRequest {
+    /// List of guild IDs to suspend.
+    pub guild_ids: Vec<Uuid>,
+    /// Reason for suspension.
+    pub reason: String,
+}
+
+/// Response for bulk suspend operation.
+#[derive(Debug, Serialize)]
+pub struct BulkSuspendResponse {
+    /// Number of guilds successfully suspended.
+    pub suspended_count: usize,
+    /// Number of guilds that were already suspended.
+    pub already_suspended: usize,
+    /// Guild IDs that failed to suspend (with reasons).
+    pub failed: Vec<BulkActionFailure>,
+}
+
+/// Details about a failed bulk action item.
+#[derive(Debug, Serialize)]
+pub struct BulkActionFailure {
+    /// ID of the item that failed.
+    pub id: Uuid,
+    /// Reason for the failure.
+    pub reason: String,
+}
