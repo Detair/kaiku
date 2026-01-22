@@ -64,6 +64,10 @@ async fn create_test_limiter(redis: RedisClient) -> RateLimiter {
                 requests: 30,
                 window_secs: 60,
             },
+            voice_join: LimitConfig {
+                requests: 5,
+                window_secs: 60,
+            },
             failed_auth: FailedAuthConfig {
                 max_failures: 3,
                 block_duration_secs: 60,

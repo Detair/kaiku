@@ -438,7 +438,7 @@ mod tests {
             redis,
             config,
             None,
-            crate::voice::SfuServer::new(std::sync::Arc::new(Config::default_for_test())).unwrap(),
+            crate::voice::SfuServer::new(std::sync::Arc::new(Config::default_for_test()), None).unwrap(),
             None, // No rate limiter in tests
         )
     }

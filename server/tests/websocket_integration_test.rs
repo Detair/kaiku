@@ -21,7 +21,7 @@ async fn test_websocket_broadcast_flow() {
 
     // Create dummy SFU server (not used for text chat test)
     let sfu =
-        vc_server::voice::SfuServer::new(Arc::new(config.clone())).expect("Failed to create SFU");
+        vc_server::voice::SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SFU");
 
     let state = AppState::new(
         db_pool.clone(),

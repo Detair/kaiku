@@ -64,44 +64,17 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_rate_limiter_allows_first_join() {
-        let limiter = VoiceRateLimiter::new(Duration::from_millis(100), Duration::from_millis(100));
+    async fn test_rate_limiter_allows_first_stats() {
+        let limiter = VoiceStatsLimiter::new(Duration::from_millis(100));
         let user_id = Uuid::new_v4();
 
-        // First join should succeed
-        assert!(limiter.check_join(user_id).await.is_ok());
+        // First stats should succeed
+        assert!(limiter.check_stats(user_id).await.is_ok());
     }
 
     #[tokio::test]
-    async fn test_rate_limiter_blocks_rapid_joins() {
-        let limiter = VoiceRateLimiter::new(Duration::from_millis(100), Duration::from_millis(100));
-        let user_id = Uuid::new_v4();
-
-        // First join succeeds
-        assert!(limiter.check_join(user_id).await.is_ok());
-
-        // Immediate second join should fail
-        assert!(limiter.check_join(user_id).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_rate_limiter_allows_after_interval() {
-        let limiter = VoiceRateLimiter::new(Duration::from_millis(50), Duration::from_millis(50));
-        let user_id = Uuid::new_v4();
-
-        // First join succeeds
-        assert!(limiter.check_join(user_id).await.is_ok());
-
-        // Wait for rate limit to expire
-        tokio::time::sleep(Duration::from_millis(60)).await;
-
-        // Second join should now succeed
-        assert!(limiter.check_join(user_id).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_rate_limiter_stats() {
-        let limiter = VoiceRateLimiter::new(Duration::from_millis(100), Duration::from_millis(100));
+    async fn test_rate_limiter_blocks_rapid_stats() {
+        let limiter = VoiceStatsLimiter::new(Duration::from_millis(100));
         let user_id = Uuid::new_v4();
 
         // First stats succeeds
@@ -109,42 +82,48 @@ mod tests {
 
         // Immediate second stats should fail
         assert!(limiter.check_stats(user_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_allows_after_interval() {
+        let limiter = VoiceStatsLimiter::new(Duration::from_millis(50));
+        let user_id = Uuid::new_v4();
+
+        // First stats succeeds
+        assert!(limiter.check_stats(user_id).await.is_ok());
 
         // Wait for rate limit to expire
-        tokio::time::sleep(Duration::from_millis(110)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
 
-        // Third stats should now succeed
+        // Second stats should now succeed
         assert!(limiter.check_stats(user_id).await.is_ok());
     }
 
     #[tokio::test]
     async fn test_rate_limiter_independent_users() {
-        let limiter = VoiceRateLimiter::new(Duration::from_millis(100), Duration::from_millis(100));
+        let limiter = VoiceStatsLimiter::new(Duration::from_millis(100));
         let user1 = Uuid::new_v4();
         let user2 = Uuid::new_v4();
 
-        // Both users should be able to join
-        assert!(limiter.check_join(user1).await.is_ok());
-        assert!(limiter.check_join(user2).await.is_ok());
+        // Both users should be able to report stats
+        assert!(limiter.check_stats(user1).await.is_ok());
+        assert!(limiter.check_stats(user2).await.is_ok());
     }
 
     #[tokio::test]
     async fn test_cleanup_removes_old_entries() {
-        let limiter = VoiceRateLimiter::new(Duration::from_millis(10), Duration::from_millis(10));
+        let limiter = VoiceStatsLimiter::new(Duration::from_millis(10));
         let user_id = Uuid::new_v4();
 
-        // Join and verify entry exists
-        limiter.check_join(user_id).await.ok();
+        // Report stats and verify entry exists
         limiter.check_stats(user_id).await.ok();
-        assert_eq!(limiter.last_join.read().await.len(), 1);
         assert_eq!(limiter.last_stats.read().await.len(), 1);
 
-        // Wait for cleanup threshold
+        // Wait for cleanup threshold (10x the interval)
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         // Cleanup should remove old entries
         limiter.cleanup().await;
-        assert_eq!(limiter.last_join.read().await.len(), 0);
         assert_eq!(limiter.last_stats.read().await.len(), 0);
     }
 }
