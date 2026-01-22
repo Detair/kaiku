@@ -32,11 +32,13 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(handlers::ban_user).delete(handlers::unban_user),
         )
         .route("/users/:id/unban", post(handlers::unban_user))
+        .route("/users/bulk-ban", post(handlers::bulk_ban_users))
         .route(
             "/guilds/:id/suspend",
             post(handlers::suspend_guild).delete(handlers::unsuspend_guild),
         )
         .route("/guilds/:id/unsuspend", post(handlers::unsuspend_guild))
+        .route("/guilds/bulk-suspend", post(handlers::bulk_suspend_guilds))
         .route("/announcements", post(handlers::create_announcement))
         .layer(from_fn_with_state(state.clone(), require_elevated));
 
@@ -45,8 +47,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/health", get(|| async { "admin ok" }))
         .route("/stats", get(handlers::get_admin_stats))
         .route("/users", get(handlers::list_users))
+        .route("/users/export", get(handlers::export_users_csv))
         .route("/users/:id/details", get(handlers::get_user_details))
         .route("/guilds", get(handlers::list_guilds))
+        .route("/guilds/export", get(handlers::export_guilds_csv))
         .route("/guilds/:id/details", get(handlers::get_guild_details))
         .route("/audit-log", get(handlers::get_audit_log))
         .route(

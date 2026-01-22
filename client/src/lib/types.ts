@@ -565,6 +565,25 @@ export interface GuildDetailsResponse {
   top_members: GuildMemberInfo[];
 }
 
+// Bulk Action Types
+
+export interface BulkActionFailure {
+  id: string;
+  reason: string;
+}
+
+export interface BulkBanResponse {
+  banned_count: number;
+  already_banned: number;
+  failed: BulkActionFailure[];
+}
+
+export interface BulkSuspendResponse {
+  suspended_count: number;
+  already_suspended: number;
+  failed: BulkActionFailure[];
+}
+
 // Call State Types
 
 export type CallEndReason = "cancelled" | "all_declined" | "no_answer" | "last_left";

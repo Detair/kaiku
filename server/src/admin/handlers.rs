@@ -25,9 +25,13 @@ use crate::permissions::models::AuditLogEntry;
 use crate::permissions::queries::{create_elevated_session, write_audit_log};
 use sqlx::PgPool;
 
+use axum::http::header;
+use axum::response::IntoResponse;
+
 use super::types::{
-    AdminError, CreateAnnouncementRequest, ElevateRequest, ElevateResponse, ElevatedAdmin,
-    GlobalBanRequest, SuspendGuildRequest, SystemAdminUser,
+    AdminError, BulkActionFailure, BulkBanRequest, BulkBanResponse, BulkSuspendRequest,
+    BulkSuspendResponse, CreateAnnouncementRequest, ElevateRequest, ElevateResponse,
+    ElevatedAdmin, GlobalBanRequest, SuspendGuildRequest, SystemAdminUser,
 };
 
 // ============================================================================
@@ -1262,5 +1266,350 @@ pub async fn get_guild_details(
             avatar_url: owner.avatar_url,
         },
         top_members,
+    }))
+}
+
+// ============================================================================
+// Export Handlers
+// ============================================================================
+
+/// Export users to CSV.
+///
+/// `GET /api/admin/users/export`
+#[tracing::instrument(skip(state))]
+pub async fn export_users_csv(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<SystemAdminUser>,
+    Query(params): Query<PaginationParams>,
+) -> Result<impl IntoResponse, AdminError> {
+    // Build search condition (use empty string to match all if no search)
+    let search_pattern = params
+        .search
+        .as_ref()
+        .map(|s| format!("%{}%", s.to_lowercase()));
+
+    // Query all matching users (no pagination for export)
+    // Uses a single query with optional search filter
+    let users = sqlx::query!(
+        r#"
+        SELECT u.id, u.username, u.display_name, u.email, u.avatar_url, u.created_at,
+               EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as "is_banned!"
+        FROM users u
+        WHERE $1::text IS NULL
+           OR LOWER(u.username) LIKE $1
+           OR LOWER(u.display_name) LIKE $1
+           OR LOWER(COALESCE(u.email, '')) LIKE $1
+        ORDER BY u.created_at DESC
+        LIMIT 10000
+        "#,
+        search_pattern
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    // Build CSV content
+    let mut csv = String::from("id,username,display_name,email,created_at,is_banned\n");
+    for user in users {
+        csv.push_str(&format!(
+            "{},{},{},{},{},{}\n",
+            user.id,
+            escape_csv(&user.username),
+            escape_csv(&user.display_name),
+            escape_csv(&user.email.unwrap_or_default()),
+            user.created_at.format("%Y-%m-%d %H:%M:%S"),
+            user.is_banned
+        ));
+    }
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"users_export.csv\"",
+            ),
+        ],
+        csv,
+    ))
+}
+
+/// Export guilds to CSV.
+///
+/// `GET /api/admin/guilds/export`
+#[tracing::instrument(skip(state))]
+pub async fn export_guilds_csv(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<SystemAdminUser>,
+    Query(params): Query<PaginationParams>,
+) -> Result<impl IntoResponse, AdminError> {
+    // Build search condition (use empty string to match all if no search)
+    let search_pattern = params
+        .search
+        .as_ref()
+        .map(|s| format!("%{}%", s.to_lowercase()));
+
+    // Query all matching guilds (no pagination for export)
+    // Uses a single query with optional search filter
+    let guilds = sqlx::query!(
+        r#"
+        SELECT g.id, g.name, g.owner_id, g.icon_url, g.created_at, g.suspended_at,
+               (SELECT COUNT(*) FROM guild_members WHERE guild_id = g.id) as "member_count!"
+        FROM guilds g
+        WHERE $1::text IS NULL OR LOWER(g.name) LIKE $1
+        ORDER BY g.created_at DESC
+        LIMIT 10000
+        "#,
+        search_pattern
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    // Build CSV content
+    let mut csv =
+        String::from("id,name,owner_id,member_count,created_at,is_suspended,suspended_at\n");
+    for guild in guilds {
+        let suspended_at_str: String = guild
+            .suspended_at
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_default();
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{}\n",
+            guild.id,
+            escape_csv(&guild.name),
+            guild.owner_id,
+            guild.member_count,
+            guild.created_at.format("%Y-%m-%d %H:%M:%S"),
+            guild.suspended_at.is_some(),
+            suspended_at_str
+        ));
+    }
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"guilds_export.csv\"",
+            ),
+        ],
+        csv,
+    ))
+}
+
+/// Escape a string for CSV (handles commas and quotes).
+fn escape_csv(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+// ============================================================================
+// Bulk Action Handlers
+// ============================================================================
+
+/// Ban multiple users at once.
+///
+/// `POST /api/admin/users/bulk-ban`
+#[tracing::instrument(skip(state))]
+pub async fn bulk_ban_users(
+    State(state): State<AppState>,
+    Extension(admin): Extension<ElevatedAdmin>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<BulkBanRequest>,
+) -> Result<Json<BulkBanResponse>, AdminError> {
+    // Validate request
+    if body.user_ids.is_empty() {
+        return Err(AdminError::Validation("No user IDs provided".to_string()));
+    }
+    if body.user_ids.len() > 100 {
+        return Err(AdminError::Validation("Cannot ban more than 100 users at once".to_string()));
+    }
+    if body.reason.trim().is_empty() {
+        return Err(AdminError::Validation("Reason is required".to_string()));
+    }
+
+    let mut banned_count = 0;
+    let mut already_banned = 0;
+    let mut failed: Vec<BulkActionFailure> = Vec::new();
+    let ip_address = addr.ip().to_string();
+
+    for user_id in &body.user_ids {
+        // Check if user exists
+        let user_exists = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
+            user_id
+        )
+        .fetch_one(&state.db)
+        .await?
+        .unwrap_or(false);
+
+        if !user_exists {
+            failed.push(BulkActionFailure {
+                id: *user_id,
+                reason: "User not found".to_string(),
+            });
+            continue;
+        }
+
+        // Check if already banned
+        let is_banned = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
+            user_id
+        )
+        .fetch_one(&state.db)
+        .await?
+        .unwrap_or(false);
+
+        if is_banned {
+            already_banned += 1;
+            continue;
+        }
+
+        // Ban the user
+        let ban_result = sqlx::query(
+            r#"
+            INSERT INTO global_bans (user_id, banned_by, reason, expires_at)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(user_id)
+        .bind(admin.user_id)
+        .bind(&body.reason)
+        .bind(body.expires_at)
+        .execute(&state.db)
+        .await;
+
+        match ban_result {
+            Ok(_) => {
+                banned_count += 1;
+            }
+            Err(e) => {
+                failed.push(BulkActionFailure {
+                    id: *user_id,
+                    reason: format!("Database error: {}", e),
+                });
+            }
+        }
+    }
+
+    // Log the bulk action
+    write_audit_log(
+        &state.db,
+        admin.user_id,
+        "admin.users.bulk_ban",
+        Some("user"),
+        None,
+        Some(serde_json::json!({
+            "user_count": body.user_ids.len(),
+            "banned_count": banned_count,
+            "already_banned": already_banned,
+            "failed_count": failed.len(),
+            "reason": body.reason
+        })),
+        Some(&ip_address),
+    )
+    .await?;
+
+    Ok(Json(BulkBanResponse {
+        banned_count,
+        already_banned,
+        failed,
+    }))
+}
+
+/// Suspend multiple guilds at once.
+///
+/// `POST /api/admin/guilds/bulk-suspend`
+#[tracing::instrument(skip(state))]
+pub async fn bulk_suspend_guilds(
+    State(state): State<AppState>,
+    Extension(admin): Extension<ElevatedAdmin>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<BulkSuspendRequest>,
+) -> Result<Json<BulkSuspendResponse>, AdminError> {
+    // Validate request
+    if body.guild_ids.is_empty() {
+        return Err(AdminError::Validation("No guild IDs provided".to_string()));
+    }
+    if body.guild_ids.len() > 100 {
+        return Err(AdminError::Validation("Cannot suspend more than 100 guilds at once".to_string()));
+    }
+    if body.reason.trim().is_empty() {
+        return Err(AdminError::Validation("Reason is required".to_string()));
+    }
+
+    let mut suspended_count = 0;
+    let mut already_suspended = 0;
+    let mut failed: Vec<BulkActionFailure> = Vec::new();
+    let ip_address = addr.ip().to_string();
+
+    for guild_id in &body.guild_ids {
+        // Check if guild exists and get current status
+        let guild = sqlx::query!(
+            "SELECT id, suspended_at FROM guilds WHERE id = $1",
+            guild_id
+        )
+        .fetch_optional(&state.db)
+        .await?;
+
+        match guild {
+            None => {
+                failed.push(BulkActionFailure {
+                    id: *guild_id,
+                    reason: "Guild not found".to_string(),
+                });
+            }
+            Some(g) if g.suspended_at.is_some() => {
+                already_suspended += 1;
+            }
+            Some(_) => {
+                // Suspend the guild
+                let suspend_result = sqlx::query(
+                    "UPDATE guilds SET suspended_at = NOW(), suspension_reason = $1 WHERE id = $2"
+                )
+                .bind(&body.reason)
+                .bind(guild_id)
+                .execute(&state.db)
+                .await;
+
+                match suspend_result {
+                    Ok(_) => {
+                        suspended_count += 1;
+                    }
+                    Err(e) => {
+                        failed.push(BulkActionFailure {
+                            id: *guild_id,
+                            reason: format!("Database error: {}", e),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Log the bulk action
+    write_audit_log(
+        &state.db,
+        admin.user_id,
+        "admin.guilds.bulk_suspend",
+        Some("guild"),
+        None,
+        Some(serde_json::json!({
+            "guild_count": body.guild_ids.len(),
+            "suspended_count": suspended_count,
+            "already_suspended": already_suspended,
+            "failed_count": failed.len(),
+            "reason": body.reason
+        })),
+        Some(&ip_address),
+    )
+    .await?;
+
+    Ok(Json(BulkSuspendResponse {
+        suspended_count,
+        already_suspended,
+        failed,
     }))
 }

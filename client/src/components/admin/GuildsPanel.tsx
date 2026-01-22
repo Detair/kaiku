@@ -16,6 +16,9 @@ import {
   X,
   Crown,
   Loader2,
+  Download,
+  Square,
+  CheckSquare,
 } from "lucide-solid";
 import {
   adminState,
@@ -25,6 +28,13 @@ import {
   suspendGuild,
   unsuspendGuild,
   searchGuilds,
+  toggleGuildSelection,
+  selectAllGuilds,
+  clearGuildSelection,
+  isGuildSelected,
+  getSelectedGuildCount,
+  exportGuildsCsv,
+  bulkSuspendGuilds,
 } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
@@ -36,11 +46,40 @@ const GuildsPanel: Component = () => {
   const [searchQuery, setSearchQuery] = createSignal("");
   const [suspendReason, setSuspendReason] = createSignal("");
   const [showSuspendDialog, setShowSuspendDialog] = createSignal(false);
+  const [showBulkSuspendDialog, setShowBulkSuspendDialog] = createSignal(false);
+  const [bulkSuspendReason, setBulkSuspendReason] = createSignal("");
   const [actionLoading, setActionLoading] = createSignal(false);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
   let listRef: HTMLDivElement | undefined;
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Check if all guilds on current page are selected
+  const allSelected = createMemo(() => {
+    const guilds = adminState.guilds;
+    return guilds.length > 0 && guilds.every((g) => isGuildSelected(g.id));
+  });
+
+  // Handle export
+  const handleExport = async () => {
+    await exportGuildsCsv();
+  };
+
+  // Handle bulk suspend
+  const handleBulkSuspend = async () => {
+    if (!bulkSuspendReason().trim()) return;
+
+    setActionLoading(true);
+    try {
+      const result = await bulkSuspendGuilds(bulkSuspendReason());
+      if (result) {
+        setShowBulkSuspendDialog(false);
+        setBulkSuspendReason("");
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   // Load guilds on mount
   onMount(() => {
@@ -178,21 +217,38 @@ const GuildsPanel: Component = () => {
         <div class="flex items-center justify-between p-4 border-b border-white/10">
           <h2 class="text-lg font-bold text-text-primary">Guilds</h2>
 
-          {/* Search Input */}
-          <div class="relative">
-            <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
-            <input
-              type="text"
-              placeholder="Search guilds..."
-              value={searchQuery()}
-              onInput={(e) => handleSearchInput(e.currentTarget.value)}
-              class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
-            />
-            <Show when={adminState.isGuildsLoading && searchQuery()}>
-              <div class="absolute right-3 top-1/2 -translate-y-1/2">
-                <div class="w-4 h-4 border-2 border-accent-primary/30 border-t-accent-primary rounded-full animate-spin" />
-              </div>
-            </Show>
+          <div class="flex items-center gap-3">
+            {/* Export Button */}
+            <button
+              onClick={handleExport}
+              disabled={adminState.isExporting}
+              class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-text-secondary hover:text-text-primary hover:bg-white/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+            >
+              <Show
+                when={!adminState.isExporting}
+                fallback={<Loader2 class="w-4 h-4 animate-spin" />}
+              >
+                <Download class="w-4 h-4" />
+              </Show>
+              Export CSV
+            </button>
+
+            {/* Search Input */}
+            <div class="relative">
+              <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
+              <input
+                type="text"
+                placeholder="Search guilds..."
+                value={searchQuery()}
+                onInput={(e) => handleSearchInput(e.currentTarget.value)}
+                class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
+              />
+              <Show when={adminState.isGuildsLoading && searchQuery()}>
+                <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                  <div class="w-4 h-4 border-2 border-accent-primary/30 border-t-accent-primary rounded-full animate-spin" />
+                </div>
+              </Show>
+            </div>
           </div>
         </div>
 
@@ -203,8 +259,46 @@ const GuildsPanel: Component = () => {
           tabIndex={0}
           onKeyDown={handleKeyDown}
         >
+        {/* Bulk Action Bar */}
+        <Show when={getSelectedGuildCount() > 0}>
+          <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
+            <div class="flex items-center gap-3">
+              <span class="text-sm font-medium text-text-primary">
+                {getSelectedGuildCount()} guild{getSelectedGuildCount() !== 1 ? "s" : ""} selected
+              </span>
+              <button
+                onClick={clearGuildSelection}
+                class="text-sm text-text-secondary hover:text-text-primary transition-colors"
+              >
+                Clear selection
+              </button>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                onClick={() => setShowBulkSuspendDialog(true)}
+                disabled={!adminState.isElevated || adminState.isBulkActionLoading}
+                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-white text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Ban class="w-4 h-4" />
+                Bulk Suspend
+              </button>
+            </div>
+          </div>
+        </Show>
+
           {/* Table Header */}
-          <div class="grid grid-cols-4 gap-4 px-4 py-3 border-b border-white/10 bg-white/5 text-xs font-medium text-text-secondary uppercase tracking-wide sticky top-0">
+          <div class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/10 bg-white/5 text-xs font-medium text-text-secondary uppercase tracking-wide sticky top-0">
+            <div class="flex items-center">
+              <button
+                onClick={() => allSelected() ? clearGuildSelection() : selectAllGuilds()}
+                class="p-1 text-text-secondary hover:text-text-primary transition-colors"
+                title={allSelected() ? "Deselect all" : "Select all"}
+              >
+                <Show when={allSelected()} fallback={<Square class="w-4 h-4" />}>
+                  <CheckSquare class="w-4 h-4 text-accent-primary" />
+                </Show>
+              </button>
+            </div>
             <div>Name</div>
             <div>Members</div>
             <div>Created</div>
@@ -232,13 +326,28 @@ const GuildsPanel: Component = () => {
                     selectGuild(guild.id);
                     setFocusedIndex(index());
                   }}
-                  class="grid grid-cols-4 gap-4 px-4 py-3 border-b border-white/5 cursor-pointer transition-colors"
+                  class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/5 cursor-pointer transition-colors"
                   classList={{
                     "bg-accent-primary/20": adminState.selectedGuildId === guild.id,
                     "hover:bg-white/5": adminState.selectedGuildId !== guild.id,
                     "ring-2 ring-accent-primary/50 ring-inset": focusedIndex() === index() && adminState.selectedGuildId !== guild.id,
                   }}
                 >
+                  {/* Checkbox */}
+                  <div class="flex items-center">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleGuildSelection(guild.id);
+                      }}
+                      class="p-1 text-text-secondary hover:text-text-primary transition-colors"
+                    >
+                      <Show when={isGuildSelected(guild.id)} fallback={<Square class="w-4 h-4" />}>
+                        <CheckSquare class="w-4 h-4 text-accent-primary" />
+                      </Show>
+                    </button>
+                  </div>
+
                   {/* Name */}
                   <div class="flex items-center gap-3 min-w-0">
                     <Avatar
@@ -618,6 +727,69 @@ const GuildsPanel: Component = () => {
                   class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading() ? "Suspending..." : "Confirm Suspend"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      {/* Bulk Suspend Dialog */}
+      <Show when={showBulkSuspendDialog()}>
+        <div class="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div
+            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowBulkSuspendDialog(false)}
+          />
+
+          {/* Dialog */}
+          <div
+            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
+            style="background-color: var(--color-surface-layer1)"
+          >
+            <div class="p-5 space-y-4">
+              <h3 class="text-lg font-bold text-text-primary">
+                Bulk Suspend Guilds
+              </h3>
+
+              <p class="text-sm text-text-secondary">
+                Are you sure you want to suspend{" "}
+                <span class="font-medium text-text-primary">
+                  {getSelectedGuildCount()} guild{getSelectedGuildCount() !== 1 ? "s" : ""}
+                </span>
+                ? All members will be unable to access these guilds.
+              </p>
+
+              <div class="space-y-2">
+                <label class="text-sm font-medium text-text-secondary">
+                  Reason for suspension (applies to all)
+                </label>
+                <textarea
+                  value={bulkSuspendReason()}
+                  onInput={(e) => setBulkSuspendReason(e.currentTarget.value)}
+                  placeholder="Enter reason..."
+                  rows={3}
+                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm resize-none"
+                />
+              </div>
+
+              <div class="flex gap-3 pt-2">
+                <button
+                  onClick={() => {
+                    setShowBulkSuspendDialog(false);
+                    setBulkSuspendReason("");
+                  }}
+                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleBulkSuspend}
+                  disabled={!bulkSuspendReason().trim() || actionLoading()}
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {actionLoading() ? "Suspending..." : `Suspend ${getSelectedGuildCount()} Guilds`}
                 </button>
               </div>
             </div>
