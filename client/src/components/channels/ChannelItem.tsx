@@ -10,10 +10,11 @@
  */
 
 import { Component, Show, createSignal, createMemo } from "solid-js";
-import { Hash, Volume2, Settings } from "lucide-solid";
+import { Hash, Volume2, Settings, BellOff } from "lucide-solid";
 import type { Channel } from "@/lib/types";
 import { isInChannel, getParticipants, voiceState } from "@/stores/voice";
 import { authState } from "@/stores/auth";
+import { isChannelMuted } from "@/stores/sound";
 
 interface ChannelItemProps {
   channel: Channel;
@@ -103,6 +104,13 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
       >
         {props.channel.name}
       </span>
+
+      {/* Muted indicator */}
+      <Show when={isChannelMuted(props.channel.id)}>
+        <span title="Notifications muted" class="shrink-0">
+          <BellOff class="w-3.5 h-3.5 text-text-muted" />
+        </span>
+      </Show>
 
       {/* Participant count for voice channels - always show when there are participants */}
       <Show when={isVoice() && participantCount() > 0}>
