@@ -134,6 +134,7 @@ export interface Message {
   reply_to: string | null;
   edited_at: string | null;
   created_at: string;
+  mention_type: "direct" | "everyone" | "here" | null;
 }
 
 // Voice Types

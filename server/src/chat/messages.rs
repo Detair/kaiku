@@ -106,6 +106,18 @@ impl AttachmentInfo {
     }
 }
 
+/// Mention type for notification sounds.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MentionType {
+    /// Direct @username mention
+    Direct,
+    /// @everyone mention
+    Everyone,
+    /// @here mention (online users only)
+    Here,
+}
+
 /// Full message response with author info (matches client Message type).
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
@@ -118,6 +130,9 @@ pub struct MessageResponse {
     pub reply_to: Option<Uuid>,
     pub edited_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// Type of mention in this message (for notification sounds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mention_type: Option<MentionType>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +144,39 @@ pub struct ListMessagesQuery {
 
 const fn default_limit() -> i64 {
     50
+}
+
+/// Detect mention type in message content.
+/// Returns the highest priority mention type found.
+pub fn detect_mention_type(content: &str, author_username: Option<&str>) -> Option<MentionType> {
+    // Check for @everyone first (highest priority for notifications)
+    if content.contains("@everyone") {
+        return Some(MentionType::Everyone);
+    }
+
+    // Check for @here
+    if content.contains("@here") {
+        return Some(MentionType::Here);
+    }
+
+    // Check for direct @username mentions (excluding self-mentions)
+    // Simple pattern: @word where word is alphanumeric/underscore
+    let mention_pattern = regex::Regex::new(r"@(\w+)").ok()?;
+    for cap in mention_pattern.captures_iter(content) {
+        let mentioned = &cap[1];
+        // Skip if mentioning self
+        if let Some(author) = author_username {
+            if mentioned.eq_ignore_ascii_case(author) {
+                continue;
+            }
+        }
+        // Any other @mention is a direct mention
+        if mentioned != "everyone" && mentioned != "here" {
+            return Some(MentionType::Direct);
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -207,6 +255,13 @@ pub async fn list(
 
             let attachments = attachment_map.remove(&msg.id).unwrap_or_default();
 
+            // Detect mentions (skip for encrypted messages as content is not readable)
+            let mention_type = if msg.encrypted {
+                None
+            } else {
+                detect_mention_type(&msg.content, Some(&author.username))
+            };
+
             MessageResponse {
                 id: msg.id,
                 channel_id: msg.channel_id,
@@ -217,6 +272,7 @@ pub async fn list(
                 reply_to: msg.reply_to,
                 edited_at: msg.edited_at,
                 created_at: msg.created_at,
+                mention_type,
             }
         })
         .collect();
@@ -281,6 +337,13 @@ pub async fn create(
             status: "offline".to_string(),
         });
 
+    // Detect mentions (skip for encrypted messages)
+    let mention_type = if message.encrypted {
+        None
+    } else {
+        detect_mention_type(&message.content, Some(&author.username))
+    };
+
     let response = MessageResponse {
         id: message.id,
         channel_id: message.channel_id,
@@ -291,6 +354,7 @@ pub async fn create(
         reply_to: message.reply_to,
         edited_at: message.edited_at,
         created_at: message.created_at,
+        mention_type,
     };
 
     // Broadcast new message via Redis pub-sub
@@ -354,6 +418,7 @@ pub async fn update(
         reply_to: message.reply_to,
         edited_at: message.edited_at,
         created_at: message.created_at,
+        mention_type: None, // Edits don't trigger new notifications
     };
 
     // Broadcast edit via Redis pub-sub
