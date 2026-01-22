@@ -21,9 +21,9 @@ use uuid::Uuid;
 use crate::api::AppState;
 use crate::auth::mfa_crypto::decrypt_mfa_secret;
 use crate::db::find_user_by_id;
-use crate::permissions::queries::{
-    create_elevated_session, get_audit_log as query_audit_log, write_audit_log,
-};
+use crate::permissions::models::AuditLogEntry;
+use crate::permissions::queries::{create_elevated_session, write_audit_log};
+use sqlx::PgPool;
 
 use super::types::{
     AdminError, CreateAnnouncementRequest, ElevateRequest, ElevateResponse, ElevatedAdmin,
@@ -34,7 +34,7 @@ use super::types::{
 // Query Parameters
 // ============================================================================
 
-/// Pagination query parameters.
+/// Pagination query parameters with optional search.
 #[derive(Debug, Deserialize)]
 pub struct PaginationParams {
     /// Maximum number of items to return.
@@ -43,6 +43,8 @@ pub struct PaginationParams {
     /// Number of items to skip.
     #[serde(default)]
     pub offset: i64,
+    /// Search query (searches username, display_name, email for users; name for guilds).
+    pub search: Option<String>,
 }
 
 #[allow(clippy::missing_const_for_fn)]
@@ -61,6 +63,12 @@ pub struct AuditLogParams {
     pub offset: i64,
     /// Filter by action prefix (e.g., "admin." for all admin actions).
     pub action: Option<String>,
+    /// Filter entries created on or after this date (ISO 8601 format).
+    pub from_date: Option<DateTime<Utc>>,
+    /// Filter entries created on or before this date (ISO 8601 format).
+    pub to_date: Option<DateTime<Utc>>,
+    /// Filter by exact action type (e.g., "admin.users.ban").
+    pub action_type: Option<String>,
 }
 
 // ============================================================================
@@ -206,7 +214,7 @@ pub async fn get_admin_stats(
     }))
 }
 
-/// List all users with pagination.
+/// List all users with pagination and optional search.
 ///
 /// `GET /api/admin/users`
 #[tracing::instrument(skip(state))]
@@ -219,31 +227,72 @@ pub async fn list_users(
     let limit = params.limit.clamp(1, 100);
     let offset = params.offset.max(0);
 
-    // Get total count
-    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.db)
-        .await?;
+    // Prepare search pattern if provided
+    let search_pattern = params.search.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
 
-    // Get users with ban status
-    let users = sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>, DateTime<Utc>, bool)>(
-        r"
-        SELECT
-            u.id,
-            u.username,
-            u.display_name,
-            u.email,
-            u.avatar_url,
-            u.created_at,
-            EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as is_banned
-        FROM users u
-        ORDER BY u.created_at DESC
-        LIMIT $1 OFFSET $2
-        ",
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await?;
+    // Get total count (with or without search filter)
+    let total: (i64,) = if let Some(ref pattern) = search_pattern {
+        sqlx::query_as(
+            r"SELECT COUNT(*) FROM users u
+              WHERE LOWER(u.username) LIKE $1
+                 OR LOWER(u.display_name) LIKE $1
+                 OR LOWER(COALESCE(u.email, '')) LIKE $1"
+        )
+        .bind(pattern)
+        .fetch_one(&state.db)
+        .await?
+    } else {
+        sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(&state.db)
+            .await?
+    };
+
+    // Get users with ban status (with or without search filter)
+    let users = if let Some(ref pattern) = search_pattern {
+        sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>, DateTime<Utc>, bool)>(
+            r"
+            SELECT
+                u.id,
+                u.username,
+                u.display_name,
+                u.email,
+                u.avatar_url,
+                u.created_at,
+                EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as is_banned
+            FROM users u
+            WHERE LOWER(u.username) LIKE $3
+               OR LOWER(u.display_name) LIKE $3
+               OR LOWER(COALESCE(u.email, '')) LIKE $3
+            ORDER BY u.created_at DESC
+            LIMIT $1 OFFSET $2
+            ",
+        )
+        .bind(limit)
+        .bind(offset)
+        .bind(pattern)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>, DateTime<Utc>, bool)>(
+            r"
+            SELECT
+                u.id,
+                u.username,
+                u.display_name,
+                u.email,
+                u.avatar_url,
+                u.created_at,
+                EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as is_banned
+            FROM users u
+            ORDER BY u.created_at DESC
+            LIMIT $1 OFFSET $2
+            ",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await?
+    };
 
     let items: Vec<UserSummary> = users
         .into_iter()
@@ -266,7 +315,7 @@ pub async fn list_users(
     }))
 }
 
-/// List all guilds with pagination.
+/// List all guilds with pagination and optional search.
 ///
 /// `GET /api/admin/guilds`
 #[tracing::instrument(skip(state))]
@@ -279,31 +328,65 @@ pub async fn list_guilds(
     let limit = params.limit.clamp(1, 100);
     let offset = params.offset.max(0);
 
-    // Get total count
-    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM guilds")
-        .fetch_one(&state.db)
-        .await?;
+    // Prepare search pattern if provided
+    let search_pattern = params.search.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
 
-    // Get guilds with member count
-    let guilds = sqlx::query_as::<_, (Uuid, String, Uuid, Option<String>, i64, DateTime<Utc>, Option<DateTime<Utc>>)>(
-        r"
-        SELECT
-            g.id,
-            g.name,
-            g.owner_id,
-            g.icon_url,
-            COALESCE((SELECT COUNT(*) FROM guild_members gm WHERE gm.guild_id = g.id), 0) as member_count,
-            g.created_at,
-            g.suspended_at
-        FROM guilds g
-        ORDER BY g.created_at DESC
-        LIMIT $1 OFFSET $2
-        ",
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await?;
+    // Get total count (with or without search filter)
+    let total: (i64,) = if let Some(ref pattern) = search_pattern {
+        sqlx::query_as("SELECT COUNT(*) FROM guilds g WHERE LOWER(g.name) LIKE $1")
+            .bind(pattern)
+            .fetch_one(&state.db)
+            .await?
+    } else {
+        sqlx::query_as("SELECT COUNT(*) FROM guilds")
+            .fetch_one(&state.db)
+            .await?
+    };
+
+    // Get guilds with member count (with or without search filter)
+    let guilds = if let Some(ref pattern) = search_pattern {
+        sqlx::query_as::<_, (Uuid, String, Uuid, Option<String>, i64, DateTime<Utc>, Option<DateTime<Utc>>)>(
+            r"
+            SELECT
+                g.id,
+                g.name,
+                g.owner_id,
+                g.icon_url,
+                COALESCE((SELECT COUNT(*) FROM guild_members gm WHERE gm.guild_id = g.id), 0) as member_count,
+                g.created_at,
+                g.suspended_at
+            FROM guilds g
+            WHERE LOWER(g.name) LIKE $3
+            ORDER BY g.created_at DESC
+            LIMIT $1 OFFSET $2
+            ",
+        )
+        .bind(limit)
+        .bind(offset)
+        .bind(pattern)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        sqlx::query_as::<_, (Uuid, String, Uuid, Option<String>, i64, DateTime<Utc>, Option<DateTime<Utc>>)>(
+            r"
+            SELECT
+                g.id,
+                g.name,
+                g.owner_id,
+                g.icon_url,
+                COALESCE((SELECT COUNT(*) FROM guild_members gm WHERE gm.guild_id = g.id), 0) as member_count,
+                g.created_at,
+                g.suspended_at
+            FROM guilds g
+            ORDER BY g.created_at DESC
+            LIMIT $1 OFFSET $2
+            ",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await?
+    };
 
     let items: Vec<GuildSummary> = guilds
         .into_iter()
@@ -326,9 +409,124 @@ pub async fn list_guilds(
     }))
 }
 
-/// Get system audit log with pagination and optional action filter.
+/// Helper function to query audit log with dynamic filters.
+async fn get_audit_log_filtered(
+    pool: &PgPool,
+    limit: i64,
+    offset: i64,
+    action_filter: Option<&str>,
+    exact_action_match: bool,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+) -> Result<(Vec<AuditLogEntry>, (i64,)), AdminError> {
+    // Build WHERE clauses dynamically
+    let mut conditions: Vec<String> = Vec::new();
+    let mut param_idx = 1;
+
+    // Action filter
+    if action_filter.is_some() {
+        if exact_action_match {
+            conditions.push(format!("action = ${param_idx}"));
+        } else {
+            conditions.push(format!("action LIKE ${param_idx}"));
+        }
+        param_idx += 1;
+    }
+
+    // Date range filters
+    if from_date.is_some() {
+        conditions.push(format!("created_at >= ${param_idx}"));
+        param_idx += 1;
+    }
+    if to_date.is_some() {
+        conditions.push(format!("created_at <= ${param_idx}"));
+        param_idx += 1;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    // Build count query
+    let count_sql = format!("SELECT COUNT(*) FROM system_audit_log {where_clause}");
+
+    // Build main query
+    let main_sql = format!(
+        r"
+        SELECT
+            id,
+            actor_id,
+            action,
+            target_type,
+            target_id,
+            details,
+            host(ip_address) as ip_address,
+            created_at
+        FROM system_audit_log
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT ${param_idx} OFFSET ${}
+        ",
+        param_idx + 1
+    );
+
+    // Execute queries with dynamic parameter binding
+    // We need to handle this with raw query building since we have optional params
+    let action_pattern = action_filter.map(|a| {
+        if exact_action_match {
+            a.to_string()
+        } else {
+            format!("{a}%")
+        }
+    });
+
+    // Get total count
+    let total: (i64,) = {
+        let mut query = sqlx::query_as::<_, (i64,)>(&count_sql);
+        if let Some(ref pattern) = action_pattern {
+            query = query.bind(pattern);
+        }
+        if let Some(from) = from_date {
+            query = query.bind(from);
+        }
+        if let Some(to) = to_date {
+            query = query.bind(to);
+        }
+        query.fetch_one(pool).await?
+    };
+
+    // Get entries
+    let entries: Vec<AuditLogEntry> = {
+        let mut query = sqlx::query_as::<_, AuditLogEntry>(&main_sql);
+        if let Some(ref pattern) = action_pattern {
+            query = query.bind(pattern);
+        }
+        if let Some(from) = from_date {
+            query = query.bind(from);
+        }
+        if let Some(to) = to_date {
+            query = query.bind(to);
+        }
+        query = query.bind(limit).bind(offset);
+        query.fetch_all(pool).await?
+    };
+
+    Ok((entries, total))
+}
+
+/// Get system audit log with pagination and optional filters.
 ///
 /// `GET /api/admin/audit-log`
+///
+/// Query parameters:
+/// - `limit`: Max items to return (default 50, max 100)
+/// - `offset`: Number of items to skip
+/// - `action`: Filter by action prefix (e.g., "admin." for all admin actions)
+/// - `action_type`: Filter by exact action type (e.g., "admin.users.ban")
+/// - `from_date`: Filter entries created on or after this date (ISO 8601)
+/// - `to_date`: Filter entries created on or before this date (ISO 8601)
 #[tracing::instrument(skip(state))]
 pub async fn get_audit_log(
     State(state): State<AppState>,
@@ -339,21 +537,20 @@ pub async fn get_audit_log(
     let limit = params.limit.clamp(1, 100);
     let offset = params.offset.max(0);
 
-    // Get total count (with or without filter)
-    let total: (i64,) = if let Some(ref action_filter) = params.action {
-        let pattern = format!("{action_filter}%");
-        sqlx::query_as("SELECT COUNT(*) FROM system_audit_log WHERE action LIKE $1")
-            .bind(pattern)
-            .fetch_one(&state.db)
-            .await?
-    } else {
-        sqlx::query_as("SELECT COUNT(*) FROM system_audit_log")
-            .fetch_one(&state.db)
-            .await?
-    };
+    // Determine action filter (exact action_type takes precedence over prefix)
+    let action_filter = params.action_type.as_deref().or(params.action.as_deref());
 
-    // Get audit log entries
-    let entries = query_audit_log(&state.db, limit, offset, params.action.as_deref()).await?;
+    // Build dynamic query based on filters
+    let (entries, total) = get_audit_log_filtered(
+        &state.db,
+        limit,
+        offset,
+        action_filter,
+        params.action_type.is_some(), // exact match if action_type is provided
+        params.from_date,
+        params.to_date,
+    )
+    .await?;
 
     // Collect unique actor IDs for username lookup (deduplicated)
     let actor_ids: Vec<Uuid> = entries

@@ -14,14 +14,32 @@ import {
   Building2,
   Shield,
   FileText,
+  Calendar,
+  X,
 } from "lucide-solid";
-import { adminState, loadAuditLog } from "@/stores/admin";
+import { adminState, loadAuditLog, setAuditLogFilters, clearAuditLogFilters } from "@/stores/admin";
 import TableRowSkeleton from "./TableRowSkeleton";
 
 const PAGE_SIZE = 20;
 
+// Action types available for filtering
+const ACTION_TYPES = [
+  { value: "", label: "All Actions" },
+  { value: "admin.users.ban", label: "User Ban" },
+  { value: "admin.users.unban", label: "User Unban" },
+  { value: "admin.guilds.suspend", label: "Guild Suspend" },
+  { value: "admin.guilds.unsuspend", label: "Guild Unsuspend" },
+  { value: "admin.session.elevated", label: "Session Elevated" },
+  { value: "admin.session.de_elevated", label: "Session De-elevated" },
+  { value: "admin.announcements.create", label: "Announcement Created" },
+];
+
 const AuditLogPanel: Component = () => {
   const [filterValue, setFilterValue] = createSignal("");
+  const [actionType, setActionType] = createSignal("");
+  const [fromDate, setFromDate] = createSignal("");
+  const [toDate, setToDate] = createSignal("");
+  const [showFilters, setShowFilters] = createSignal(false);
 
   // Load audit log on mount
   onMount(() => {
@@ -33,16 +51,33 @@ const AuditLogPanel: Component = () => {
     Math.ceil(adminState.auditLogPagination.total / PAGE_SIZE) || 1
   );
 
-  // Apply filter
-  const applyFilter = () => {
-    const filter = filterValue().trim();
-    loadAuditLog(1, filter || undefined);
+  // Check if any filter is active
+  const hasActiveFilters = createMemo(() =>
+    filterValue().trim() || actionType() || fromDate() || toDate()
+  );
+
+  // Apply all filters
+  const applyFilters = () => {
+    setAuditLogFilters({
+      action: filterValue().trim() || undefined,
+      actionType: actionType() || undefined,
+      fromDate: fromDate() ? new Date(fromDate()).toISOString() : undefined,
+      toDate: toDate() ? new Date(toDate() + "T23:59:59").toISOString() : undefined,
+    });
   };
 
-  // Clear filter
-  const clearFilter = () => {
+  // Clear all filters
+  const clearAllFilters = () => {
     setFilterValue("");
-    loadAuditLog(1);
+    setActionType("");
+    setFromDate("");
+    setToDate("");
+    clearAuditLogFilters();
+  };
+
+  // Apply filter (alias for applyFilters)
+  const applyFilter = () => {
+    applyFilters();
   };
 
   // Handle page navigation
@@ -129,13 +164,14 @@ const AuditLogPanel: Component = () => {
         <div class="flex items-center justify-between p-4 border-b border-white/10">
           <h2 class="text-lg font-bold text-text-primary">Audit Log</h2>
 
-          {/* Filter Input */}
+          {/* Filter Controls */}
           <div class="flex items-center gap-2">
+            {/* Action prefix filter */}
             <div class="relative">
               <Filter class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
               <input
                 type="text"
-                placeholder="Filter by action..."
+                placeholder="Filter by action prefix..."
                 value={filterValue()}
                 onInput={(e) => setFilterValue(e.currentTarget.value)}
                 onKeyPress={(e) => {
@@ -143,35 +179,116 @@ const AuditLogPanel: Component = () => {
                     applyFilter();
                   }
                 }}
-                class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
+                class="pl-9 pr-4 py-2 w-48 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
               />
             </div>
+
+            {/* Toggle advanced filters */}
+            <button
+              onClick={() => setShowFilters(!showFilters())}
+              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
+              classList={{ "bg-accent-primary/20 text-accent-primary": showFilters() }}
+              title="Advanced filters"
+            >
+              <Calendar class="w-4 h-4" />
+            </button>
+
             <button
               onClick={applyFilter}
               class="px-4 py-2 rounded-lg bg-accent-primary text-white font-medium text-sm transition-colors hover:bg-accent-primary/90"
             >
               Apply
             </button>
-            <Show when={adminState.auditLogFilter}>
+            <Show when={hasActiveFilters()}>
               <button
-                onClick={clearFilter}
-                class="px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium text-sm transition-colors hover:bg-white/20"
+                onClick={clearAllFilters}
+                class="p-2 rounded-lg bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+                title="Clear all filters"
               >
-                Clear
+                <X class="w-4 h-4" />
               </button>
             </Show>
           </div>
         </div>
 
+        {/* Advanced Filters Panel */}
+        <Show when={showFilters()}>
+          <div class="px-4 py-3 border-b border-white/10 bg-white/5">
+            <div class="flex items-center gap-4 flex-wrap">
+              {/* Action Type Dropdown */}
+              <div class="flex items-center gap-2">
+                <label class="text-xs font-medium text-text-secondary uppercase tracking-wide">
+                  Action Type
+                </label>
+                <select
+                  value={actionType()}
+                  onChange={(e) => setActionType(e.currentTarget.value)}
+                  class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary"
+                >
+                  <For each={ACTION_TYPES}>
+                    {(type) => (
+                      <option value={type.value} class="bg-[#1a1a2e] text-text-primary">
+                        {type.label}
+                      </option>
+                    )}
+                  </For>
+                </select>
+              </div>
+
+              {/* Date Range */}
+              <div class="flex items-center gap-2">
+                <label class="text-xs font-medium text-text-secondary uppercase tracking-wide">
+                  From
+                </label>
+                <input
+                  type="date"
+                  value={fromDate()}
+                  onChange={(e) => setFromDate(e.currentTarget.value)}
+                  class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary"
+                />
+              </div>
+
+              <div class="flex items-center gap-2">
+                <label class="text-xs font-medium text-text-secondary uppercase tracking-wide">
+                  To
+                </label>
+                <input
+                  type="date"
+                  value={toDate()}
+                  onChange={(e) => setToDate(e.currentTarget.value)}
+                  class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary"
+                />
+              </div>
+            </div>
+          </div>
+        </Show>
+
         {/* Active Filter Indicator */}
-        <Show when={adminState.auditLogFilter}>
+        <Show when={hasActiveFilters()}>
           <div class="px-4 py-2 border-b border-white/10 bg-accent-primary/10">
-            <span class="text-sm text-text-secondary">
-              Filtering by:{" "}
-              <span class="font-medium text-accent-primary">
-                {adminState.auditLogFilter}
-              </span>
-            </span>
+            <div class="flex items-center gap-2 flex-wrap text-sm">
+              <span class="text-text-secondary">Active filters:</span>
+              <Show when={adminState.auditLogFilters.action}>
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                  prefix: {adminState.auditLogFilters.action}
+                </span>
+              </Show>
+              <Show when={adminState.auditLogFilters.actionType}>
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                  type: {ACTION_TYPES.find(t => t.value === adminState.auditLogFilters.actionType)?.label || adminState.auditLogFilters.actionType}
+                </span>
+              </Show>
+              <Show when={adminState.auditLogFilters.fromDate}>
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                  from: {new Date(adminState.auditLogFilters.fromDate!).toLocaleDateString()}
+                </span>
+              </Show>
+              <Show when={adminState.auditLogFilters.toDate}>
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                  to: {new Date(adminState.auditLogFilters.toDate!).toLocaleDateString()}
+                </span>
+              </Show>
+            </div>
           </div>
         </Show>
 

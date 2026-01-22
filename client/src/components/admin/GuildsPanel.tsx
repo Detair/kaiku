@@ -5,7 +5,7 @@
  * Actions require session elevation (two-tier privilege model).
  */
 
-import { Component, Show, For, onMount, createSignal, createMemo } from "solid-js";
+import { Component, Show, For, onMount, createSignal, createMemo, onCleanup } from "solid-js";
 import {
   Search,
   Ban,
@@ -21,11 +21,13 @@ import {
   selectGuild,
   suspendGuild,
   unsuspendGuild,
+  searchGuilds,
 } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
 
 const PAGE_SIZE = 20;
+const DEBOUNCE_MS = 300;
 
 const GuildsPanel: Component = () => {
   const [searchQuery, setSearchQuery] = createSignal("");
@@ -35,11 +37,30 @@ const GuildsPanel: Component = () => {
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
   let listRef: HTMLDivElement | undefined;
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Load guilds on mount
   onMount(() => {
     loadGuilds(1);
   });
+
+  // Cleanup debounce timer
+  onCleanup(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+  });
+
+  // Handle search input with debounce
+  const handleSearchInput = (value: string) => {
+    setSearchQuery(value);
+
+    // Clear previous timer
+    if (debounceTimer) clearTimeout(debounceTimer);
+
+    // Set new timer for debounced search
+    debounceTimer = setTimeout(() => {
+      searchGuilds(value);
+    }, DEBOUNCE_MS);
+  };
 
   // Calculate total pages
   const totalPages = createMemo(() =>
@@ -51,12 +72,8 @@ const GuildsPanel: Component = () => {
     adminState.guilds.find((g) => g.id === adminState.selectedGuildId) ?? null
   );
 
-  // Filter guilds by search query
-  const filteredGuilds = createMemo(() => {
-    const query = searchQuery().toLowerCase().trim();
-    if (!query) return adminState.guilds;
-    return adminState.guilds.filter((g) => g.name.toLowerCase().includes(query));
-  });
+  // Guilds are now filtered server-side
+  const filteredGuilds = createMemo(() => adminState.guilds);
 
   // Handle page navigation
   const goToPage = (page: number) => {
@@ -157,9 +174,14 @@ const GuildsPanel: Component = () => {
               type="text"
               placeholder="Search guilds..."
               value={searchQuery()}
-              onInput={(e) => setSearchQuery(e.currentTarget.value)}
+              onInput={(e) => handleSearchInput(e.currentTarget.value)}
               class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
             />
+            <Show when={adminState.isGuildsLoading && searchQuery()}>
+              <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                <div class="w-4 h-4 border-2 border-accent-primary/30 border-t-accent-primary rounded-full animate-spin" />
+              </div>
+            </Show>
           </div>
         </div>
 

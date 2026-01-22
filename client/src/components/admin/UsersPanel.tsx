@@ -5,7 +5,7 @@
  * Actions require session elevation (two-tier privilege model).
  */
 
-import { Component, Show, For, onMount, createSignal, createMemo } from "solid-js";
+import { Component, Show, For, onMount, createSignal, createMemo, onCleanup } from "solid-js";
 import { Search, Ban, CheckCircle, ChevronLeft, ChevronRight, X } from "lucide-solid";
 import {
   adminState,
@@ -13,11 +13,14 @@ import {
   selectUser,
   banUser,
   unbanUser,
+  searchUsers,
 } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
 
 const PAGE_SIZE = 20;
+
+const DEBOUNCE_MS = 300;
 
 const UsersPanel: Component = () => {
   const [searchQuery, setSearchQuery] = createSignal("");
@@ -27,11 +30,30 @@ const UsersPanel: Component = () => {
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
   let listRef: HTMLDivElement | undefined;
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Load users on mount
   onMount(() => {
     loadUsers(1);
   });
+
+  // Cleanup debounce timer
+  onCleanup(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+  });
+
+  // Handle search input with debounce
+  const handleSearchInput = (value: string) => {
+    setSearchQuery(value);
+
+    // Clear previous timer
+    if (debounceTimer) clearTimeout(debounceTimer);
+
+    // Set new timer for debounced search
+    debounceTimer = setTimeout(() => {
+      searchUsers(value);
+    }, DEBOUNCE_MS);
+  };
 
   // Calculate total pages
   const totalPages = createMemo(() =>
@@ -43,17 +65,8 @@ const UsersPanel: Component = () => {
     adminState.users.find((u) => u.id === adminState.selectedUserId) ?? null
   );
 
-  // Filter users by search query
-  const filteredUsers = createMemo(() => {
-    const query = searchQuery().toLowerCase().trim();
-    if (!query) return adminState.users;
-    return adminState.users.filter(
-      (u) =>
-        u.username.toLowerCase().includes(query) ||
-        u.display_name.toLowerCase().includes(query) ||
-        (u.email && u.email.toLowerCase().includes(query))
-    );
-  });
+  // Users are now filtered server-side
+  const filteredUsers = createMemo(() => adminState.users);
 
   // Handle page navigation
   const goToPage = (page: number) => {
@@ -149,9 +162,14 @@ const UsersPanel: Component = () => {
               type="text"
               placeholder="Search users..."
               value={searchQuery()}
-              onInput={(e) => setSearchQuery(e.currentTarget.value)}
+              onInput={(e) => handleSearchInput(e.currentTarget.value)}
               class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
             />
+            <Show when={adminState.isUsersLoading && searchQuery()}>
+              <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                <div class="w-4 h-4 border-2 border-accent-primary/30 border-t-accent-primary rounded-full animate-spin" />
+              </div>
+            </Show>
           </div>
         </div>
 

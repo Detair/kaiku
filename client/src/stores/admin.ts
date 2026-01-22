@@ -14,6 +14,7 @@ import type {
   PaginatedResponse,
 } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
+import type { AuditLogFilters } from "@/lib/tauri";
 
 // ============================================================================
 // Types
@@ -26,6 +27,16 @@ interface PaginationState {
   page: number;
   pageSize: number;
   total: number;
+}
+
+/**
+ * Audit log filter state
+ */
+interface AuditLogFilterState {
+  action: string | null;
+  actionType: string | null;
+  fromDate: string | null;
+  toDate: string | null;
 }
 
 /**
@@ -43,17 +54,20 @@ interface AdminStoreState {
   // Users list
   users: UserSummary[];
   usersPagination: PaginationState;
+  usersSearch: string;
   selectedUserId: string | null;
 
   // Guilds list
   guilds: GuildSummary[];
   guildsPagination: PaginationState;
+  guildsSearch: string;
   selectedGuildId: string | null;
 
   // Audit log
   auditLog: AuditLogEntry[];
   auditLogPagination: PaginationState;
   auditLogFilter: string | null;
+  auditLogFilters: AuditLogFilterState;
 
   // Loading states
   isStatusLoading: boolean;
@@ -83,17 +97,25 @@ const [adminState, setAdminState] = createStore<AdminStoreState>({
   // Users list
   users: [],
   usersPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
+  usersSearch: "",
   selectedUserId: null,
 
   // Guilds list
   guilds: [],
   guildsPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
+  guildsSearch: "",
   selectedGuildId: null,
 
   // Audit log
   auditLog: [],
   auditLogPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
   auditLogFilter: null,
+  auditLogFilters: {
+    action: null,
+    actionType: null,
+    fromDate: null,
+    toDate: null,
+  },
 
   // Loading states
   isStatusLoading: false,
@@ -283,16 +305,23 @@ export function getElevationTimeRemaining(): string {
 // ============================================================================
 
 /**
- * Load users list with pagination
+ * Load users list with pagination and optional search
  */
-export async function loadUsers(page: number = 1): Promise<void> {
+export async function loadUsers(page: number = 1, search?: string): Promise<void> {
+  // Update search state if provided
+  if (search !== undefined) {
+    setAdminState({ usersSearch: search });
+  }
+
   setAdminState({ isUsersLoading: true, error: null });
 
   try {
     const offset = (page - 1) * adminState.usersPagination.pageSize;
+    const searchQuery = search !== undefined ? search : adminState.usersSearch;
     const response: PaginatedResponse<UserSummary> = await tauri.adminListUsers(
       adminState.usersPagination.pageSize,
-      offset
+      offset,
+      searchQuery || undefined
     );
 
     setAdminState({
@@ -311,6 +340,20 @@ export async function loadUsers(page: number = 1): Promise<void> {
       isUsersLoading: false,
     });
   }
+}
+
+/**
+ * Set users search query and reload
+ */
+export function setUsersSearch(search: string): void {
+  setAdminState({ usersSearch: search });
+}
+
+/**
+ * Search users with debounce (should be called from component with debounce)
+ */
+export async function searchUsers(query: string): Promise<void> {
+  await loadUsers(1, query);
 }
 
 /**
@@ -389,16 +432,23 @@ export function selectUser(userId: string | null): void {
 // ============================================================================
 
 /**
- * Load guilds list with pagination
+ * Load guilds list with pagination and optional search
  */
-export async function loadGuilds(page: number = 1): Promise<void> {
+export async function loadGuilds(page: number = 1, search?: string): Promise<void> {
+  // Update search state if provided
+  if (search !== undefined) {
+    setAdminState({ guildsSearch: search });
+  }
+
   setAdminState({ isGuildsLoading: true, error: null });
 
   try {
     const offset = (page - 1) * adminState.guildsPagination.pageSize;
+    const searchQuery = search !== undefined ? search : adminState.guildsSearch;
     const response: PaginatedResponse<GuildSummary> = await tauri.adminListGuilds(
       adminState.guildsPagination.pageSize,
-      offset
+      offset,
+      searchQuery || undefined
     );
 
     setAdminState({
@@ -417,6 +467,20 @@ export async function loadGuilds(page: number = 1): Promise<void> {
       isGuildsLoading: false,
     });
   }
+}
+
+/**
+ * Set guilds search query
+ */
+export function setGuildsSearch(search: string): void {
+  setAdminState({ guildsSearch: search });
+}
+
+/**
+ * Search guilds with debounce (should be called from component with debounce)
+ */
+export async function searchGuilds(query: string): Promise<void> {
+  await loadGuilds(1, query);
 }
 
 /**
@@ -486,21 +550,39 @@ export function selectGuild(guildId: string | null): void {
 // ============================================================================
 
 /**
- * Load audit log with pagination and optional filter
+ * Load audit log with pagination and optional filters
  */
 export async function loadAuditLog(
   page: number = 1,
-  actionFilter?: string
+  filters?: AuditLogFilters | string
 ): Promise<void> {
   setAdminState({ isAuditLogLoading: true, error: null });
 
   try {
     const offset = (page - 1) * adminState.auditLogPagination.pageSize;
+
+    // Build filters object
+    let filterObj: AuditLogFilters;
+    if (typeof filters === "string") {
+      // Legacy support: string is action prefix filter
+      filterObj = { action: filters };
+    } else if (filters) {
+      filterObj = filters;
+    } else {
+      // Use existing filters from state
+      filterObj = {
+        action: adminState.auditLogFilters.action || undefined,
+        actionType: adminState.auditLogFilters.actionType || undefined,
+        fromDate: adminState.auditLogFilters.fromDate || undefined,
+        toDate: adminState.auditLogFilters.toDate || undefined,
+      };
+    }
+
     const response: PaginatedResponse<AuditLogEntry> =
       await tauri.adminGetAuditLog(
         adminState.auditLogPagination.pageSize,
         offset,
-        actionFilter
+        filterObj
       );
 
     setAdminState({
@@ -510,7 +592,13 @@ export async function loadAuditLog(
         pageSize: response.limit,
         total: response.total,
       },
-      auditLogFilter: actionFilter || null,
+      auditLogFilter: filterObj.action || filterObj.actionType || null,
+      auditLogFilters: {
+        action: filterObj.action || null,
+        actionType: filterObj.actionType || null,
+        fromDate: filterObj.fromDate || null,
+        toDate: filterObj.toDate || null,
+      },
       isAuditLogLoading: false,
     });
   } catch (err) {
@@ -520,6 +608,20 @@ export async function loadAuditLog(
       isAuditLogLoading: false,
     });
   }
+}
+
+/**
+ * Set audit log filters and reload
+ */
+export async function setAuditLogFilters(filters: AuditLogFilters): Promise<void> {
+  await loadAuditLog(1, filters);
+}
+
+/**
+ * Clear all audit log filters and reload
+ */
+export async function clearAuditLogFilters(): Promise<void> {
+  await loadAuditLog(1, {});
 }
 
 // ============================================================================
@@ -546,13 +648,21 @@ export function resetAdminState(): void {
     stats: null,
     users: [],
     usersPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
+    usersSearch: "",
     selectedUserId: null,
     guilds: [],
     guildsPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
+    guildsSearch: "",
     selectedGuildId: null,
     auditLog: [],
     auditLogPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
     auditLogFilter: null,
+    auditLogFilters: {
+      action: null,
+      actionType: null,
+      fromDate: null,
+      toDate: null,
+    },
     isStatusLoading: false,
     isStatsLoading: false,
     isUsersLoading: false,

@@ -1593,19 +1593,22 @@ export async function getAdminStats(): Promise<AdminStats> {
  */
 export async function adminListUsers(
   limit?: number,
-  offset?: number
+  offset?: number,
+  search?: string
 ): Promise<PaginatedResponse<UserSummary>> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<PaginatedResponse<UserSummary>>("admin_list_users", {
       limit,
       offset,
+      search,
     });
   }
 
   const params = new URLSearchParams();
   if (limit !== undefined) params.set("limit", limit.toString());
   if (offset !== undefined) params.set("offset", offset.toString());
+  if (search) params.set("search", search);
   const query = params.toString();
 
   return httpRequest<PaginatedResponse<UserSummary>>(
@@ -1619,19 +1622,22 @@ export async function adminListUsers(
  */
 export async function adminListGuilds(
   limit?: number,
-  offset?: number
+  offset?: number,
+  search?: string
 ): Promise<PaginatedResponse<GuildSummary>> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<PaginatedResponse<GuildSummary>>("admin_list_guilds", {
       limit,
       offset,
+      search,
     });
   }
 
   const params = new URLSearchParams();
   if (limit !== undefined) params.set("limit", limit.toString());
   if (offset !== undefined) params.set("offset", offset.toString());
+  if (search) params.set("search", search);
   const query = params.toString();
 
   return httpRequest<PaginatedResponse<GuildSummary>>(
@@ -1641,26 +1647,49 @@ export async function adminListGuilds(
 }
 
 /**
+ * Audit log filter options.
+ */
+export interface AuditLogFilters {
+  /** Filter by action prefix (e.g., "admin." for all admin actions) */
+  action?: string;
+  /** Filter by exact action type (e.g., "admin.users.ban") */
+  actionType?: string;
+  /** Filter entries created on or after this date (ISO 8601) */
+  fromDate?: string;
+  /** Filter entries created on or before this date (ISO 8601) */
+  toDate?: string;
+}
+
+/**
  * Get audit log (admin only).
  */
 export async function adminGetAuditLog(
   limit?: number,
   offset?: number,
-  actionFilter?: string
+  filters?: AuditLogFilters | string
 ): Promise<PaginatedResponse<AuditLogEntry>> {
+  // Support legacy string parameter (action filter prefix)
+  const filterObj: AuditLogFilters = typeof filters === "string" ? { action: filters } : filters || {};
+
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<PaginatedResponse<AuditLogEntry>>("admin_get_audit_log", {
       limit,
       offset,
-      action_filter: actionFilter,
+      action_filter: filterObj.action,
+      action_type: filterObj.actionType,
+      from_date: filterObj.fromDate,
+      to_date: filterObj.toDate,
     });
   }
 
   const params = new URLSearchParams();
   if (limit !== undefined) params.set("limit", limit.toString());
   if (offset !== undefined) params.set("offset", offset.toString());
-  if (actionFilter) params.set("action", actionFilter);
+  if (filterObj.action) params.set("action", filterObj.action);
+  if (filterObj.actionType) params.set("action_type", filterObj.actionType);
+  if (filterObj.fromDate) params.set("from_date", filterObj.fromDate);
+  if (filterObj.toDate) params.set("to_date", filterObj.toDate);
   const query = params.toString();
 
   return httpRequest<PaginatedResponse<AuditLogEntry>>(
