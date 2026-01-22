@@ -29,6 +29,7 @@ webrtc.workspace = true
 # Audio
 cpal = "0.15"
 opus = "0.3"
+rodio = "0.19"
 # nnnoiseless = "0.5"
 
 # Serialization
