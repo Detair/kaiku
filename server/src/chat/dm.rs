@@ -14,6 +14,7 @@ use crate::{
     api::AppState,
     auth::AuthUser,
     db::{self, Channel, ChannelType},
+    ws::{broadcast_to_user, ServerEvent},
 };
 
 use super::channels::{ChannelError, ChannelResponse};
@@ -544,7 +545,25 @@ pub async fn mark_as_read(
     .execute(&state.db)
     .await?;
 
-    // TODO: Broadcast dm_read event to all user's WebSocket sessions
+    // Broadcast dm_read event to all user's other WebSocket sessions
+    // Note: Broadcast failure shouldn't fail the request since the DB state is already updated
+    if let Err(e) = broadcast_to_user(
+        &state.redis,
+        auth.id,
+        &ServerEvent::DmRead {
+            channel_id,
+            last_read_message_id: body.last_read_message_id,
+        },
+    )
+    .await
+    {
+        tracing::warn!(
+            user_id = %auth.id,
+            channel_id = %channel_id,
+            error = %e,
+            "Failed to broadcast DmRead event"
+        );
+    }
 
     Ok(Json(MarkAsReadResponse {
         channel_id,

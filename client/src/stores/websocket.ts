@@ -21,6 +21,7 @@ import { playNotification } from "@/lib/sound";
 import { getChannel, channelsState } from "./channels";
 import { currentUser } from "./auth";
 import type { MentionType, SoundEventType } from "@/lib/sound/types";
+import { handleDMReadEvent } from "./dms";
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -455,6 +456,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "admin_guild_unsuspended":
       await handleAdminGuildUnsuspended(event.guild_id, event.guild_name);
+      break;
+
+    // DM read sync event
+    case "dm_read":
+      handleDMReadEvent(event.channel_id);
       break;
 
     default:

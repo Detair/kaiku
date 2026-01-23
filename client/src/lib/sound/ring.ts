@@ -5,7 +5,7 @@
  * Uses Web Audio API for precise looping and volume control.
  */
 
-import { getSoundVolume, getSoundEnabled } from "@/stores/sound";
+import { getSoundVolume, getSoundEnabled, isDndActive } from "@/stores/sound";
 
 // ============================================================================
 // Constants
@@ -116,6 +116,12 @@ async function playRingOnce(): Promise<void> {
  * Start the ring loop for an incoming call.
  */
 export function startRinging(): void {
+  // Check if DND is active - suppress ring sound but allow call UI
+  if (isDndActive()) {
+    console.log("[Ring] Suppressed by DND");
+    return;
+  }
+
   // Don't start if already ringing
   if (ringInterval) return;
 

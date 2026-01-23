@@ -4,19 +4,35 @@
  * Sound notification settings with sound selection, volume control, and test button.
  */
 
-import { Component, For, createSignal } from "solid-js";
-import { Check, Volume2, Play } from "lucide-solid";
+import { Component, For, createSignal, createMemo } from "solid-js";
+import { Check, Volume2, Play, Moon, Clock } from "lucide-solid";
 import {
   soundSettings,
   setSoundEnabled,
   setSoundVolume,
   setSelectedSound,
+  getQuietHours,
+  setQuietHoursEnabled,
+  setQuietHoursTime,
+  isWithinQuietHours,
 } from "@/stores/sound";
 import { AVAILABLE_SOUNDS, type SoundInfo } from "@/lib/sound/types";
 import { testSound } from "@/lib/sound";
 
 const NotificationSettings: Component = () => {
   const [isTesting, setIsTesting] = createSignal(false);
+
+  // Quiet hours status preview
+  const quietHoursStatus = createMemo(() => {
+    const quietHours = getQuietHours();
+    if (!quietHours.enabled) {
+      return null;
+    }
+    if (isWithinQuietHours()) {
+      return { active: true, text: "Quiet hours active" };
+    }
+    return { active: false, text: `Next quiet period: ${quietHours.startTime}` };
+  });
 
   const handleTestSound = async () => {
     if (isTesting()) return;
@@ -160,10 +176,80 @@ const NotificationSettings: Component = () => {
         </div>
       </div>
 
+      {/* Quiet Hours */}
+      <div>
+        <h3 class="text-lg font-semibold mb-4 text-text-primary flex items-center gap-2">
+          <Moon class="w-5 h-5" />
+          Quiet Hours
+        </h3>
+
+        <p class="text-sm text-text-secondary mb-4">
+          Automatically suppress notification sounds during scheduled times
+        </p>
+
+        <label class="flex items-center gap-3 cursor-pointer mb-4">
+          <input
+            type="checkbox"
+            checked={getQuietHours().enabled}
+            onChange={(e) => setQuietHoursEnabled(e.currentTarget.checked)}
+            class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
+          />
+          <span class="text-text-primary">Enable quiet hours</span>
+        </label>
+
+        <div
+          classList={{
+            "opacity-50 pointer-events-none": !getQuietHours().enabled,
+          }}
+        >
+          <div class="flex items-center gap-4 mb-4">
+            <div class="flex items-center gap-2">
+              <Clock class="w-4 h-4 text-text-secondary" />
+              <span class="text-sm text-text-secondary">From</span>
+              <input
+                type="time"
+                value={getQuietHours().startTime}
+                onChange={(e) =>
+                  setQuietHoursTime(e.currentTarget.value, getQuietHours().endTime)
+                }
+                class="px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary transition-colors"
+              />
+            </div>
+
+            <div class="flex items-center gap-2">
+              <span class="text-sm text-text-secondary">To</span>
+              <input
+                type="time"
+                value={getQuietHours().endTime}
+                onChange={(e) =>
+                  setQuietHoursTime(getQuietHours().startTime, e.currentTarget.value)
+                }
+                class="px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary transition-colors"
+              />
+            </div>
+          </div>
+
+          {/* Status preview */}
+          {quietHoursStatus() && (
+            <div
+              class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
+              classList={{
+                "bg-accent-primary/10 text-accent-primary": quietHoursStatus()?.active,
+                "bg-surface-highlight text-text-secondary": !quietHoursStatus()?.active,
+              }}
+            >
+              <Moon class="w-4 h-4" />
+              <span>{quietHoursStatus()?.text}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Info text */}
       <p class="text-xs text-text-muted">
         Sounds will only play for messages from others, and respect per-channel
-        notification settings.
+        notification settings. Setting your status to "Do Not Disturb" will also
+        suppress sounds.
       </p>
     </div>
   );

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Cross-client read sync for DMs
+  - When reading a DM on one device, unread badges clear on all other devices instantly
+  - Uses new `user:{user_id}` Redis channel for user-targeted events
+  - Real-time synchronization via WebSocket
+- Do Not Disturb mode for notifications
+  - Notification sounds suppressed when user status is "Do Not Disturb" (Busy)
+  - Scheduled quiet hours with configurable start/end times
+  - Handles overnight ranges (e.g., 22:00 to 08:00)
+  - Call ring sounds also suppressed during DND
+  - Quiet Hours settings UI in Settings > Notifications
 - DM voice calls client integration
   - Voice connection wiring: WebRTC starts after accepting/starting calls
   - Tauri commands for call lifecycle (start, join, decline, leave)

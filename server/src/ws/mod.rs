@@ -406,6 +406,15 @@ pub enum ServerEvent {
         user_id: Uuid,
     },
 
+    // DM read sync events
+    /// DM read position updated (sent to other sessions of the same user)
+    DmRead {
+        /// DM channel ID.
+        channel_id: Uuid,
+        /// Last read message ID (None if no messages read).
+        last_read_message_id: Option<Uuid>,
+    },
+
     /// Rich presence activity update.
     RichPresenceUpdate {
         user_id: Uuid,
@@ -466,6 +475,12 @@ pub mod channels {
 
     /// Redis channel for admin events.
     pub const ADMIN_EVENTS: &str = "admin:events";
+
+    /// Redis channel for user-specific events (read sync, etc.)
+    #[must_use]
+    pub fn user_events(user_id: Uuid) -> String {
+        format!("user:{user_id}")
+    }
 }
 
 /// Broadcast a server event to a channel via Redis.
@@ -494,6 +509,22 @@ pub async fn broadcast_admin_event(
 
     redis
         .publish::<(), _, _>(channels::ADMIN_EVENTS, payload)
+        .await?;
+
+    Ok(())
+}
+
+/// Broadcast an event to a specific user's sessions via Redis.
+pub async fn broadcast_to_user(
+    redis: &RedisClient,
+    user_id: Uuid,
+    event: &ServerEvent,
+) -> Result<(), RedisError> {
+    let payload = serde_json::to_string(event)
+        .map_err(|e| RedisError::new(RedisErrorKind::Parse, format!("JSON error: {e}")))?;
+
+    redis
+        .publish::<(), _, _>(channels::user_events(user_id), payload)
         .await?;
 
     Ok(())
@@ -596,7 +627,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     let subscribed_clone = subscribed_channels.clone();
     let admin_subscribed_clone = admin_subscribed.clone();
     let pubsub_handle = tokio::spawn(async move {
-        handle_pubsub(redis_client, tx_clone, subscribed_clone, admin_subscribed_clone, friend_ids).await;
+        handle_pubsub(redis_client, tx_clone, subscribed_clone, admin_subscribed_clone, friend_ids, user_id).await;
     });
 
     // Spawn task to forward events to WebSocket
@@ -830,6 +861,7 @@ async fn handle_pubsub(
     subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
     friend_ids: Vec<Uuid>,
+    user_id: Uuid,
 ) {
     // Create a subscriber client
     let subscriber = redis.clone_new();
@@ -871,6 +903,14 @@ async fn handle_pubsub(
         }
     }
 
+    // Subscribe to own user channel for cross-device sync (read sync, etc.)
+    let user_channel = channels::user_events(user_id);
+    if let Err(e) = subscriber.subscribe(&user_channel).await {
+        warn!("Failed to subscribe to user channel: {}", e);
+    } else {
+        debug!("Subscribed to user channel: {}", user_channel);
+    }
+
     while let Ok(message) = pubsub_stream.recv().await {
         let channel_name = message.channel.to_string();
 
@@ -906,6 +946,17 @@ async fn handle_pubsub(
         // Handle presence events (presence:{uuid})
         else if channel_name.starts_with("presence:") {
             // Forward presence updates from friends directly
+            if let Some(payload) = message.value.as_str() {
+                if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
+                    if tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        // Handle user events (user:{uuid}) for cross-device sync
+        else if channel_name.starts_with("user:") {
+            // Forward all user-targeted events (read sync, etc.)
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                     if tx.send(event).await.is_err() {
