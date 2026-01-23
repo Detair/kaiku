@@ -130,6 +130,9 @@ pub fn run() {
             commands::presence::get_known_games,
             commands::presence::set_activity_sharing_enabled,
             commands::presence::is_activity_sharing_enabled,
+            // Sound commands
+            commands::sound::play_sound,
+            commands::sound::get_available_sounds,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

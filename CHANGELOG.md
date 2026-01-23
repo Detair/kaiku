@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Sound notification system for chat messages
+  - 5 notification sounds: Default, Subtle, Ping, Chime, Bell
+  - Global notification settings in Settings > Notifications tab
+  - Per-channel notification levels: All messages, Mentions only, or Muted
+  - Volume control with test sound button
+  - Smart playback with cooldown, tab leader election (web), and mention detection
+  - Native audio playback via rodio in Tauri, Web Audio API fallback in browser
+  - Muted channel indicator (bell-off icon) in channel list
 - Home View Overhaul with "Friends First" design
   - Unified `HomeSidebar` replacing the legacy double-sidebar layout
   - Default "Friends" landing view with filter search (Online/All/Pending/Blocked)

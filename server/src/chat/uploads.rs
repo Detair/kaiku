@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::messages::{AttachmentInfo, AuthorProfile, MessageResponse};
+use super::messages::{detect_mention_type, AttachmentInfo, AuthorProfile, MessageResponse};
 use crate::{
     api::AppState,
     auth::{jwt::validate_access_token, AuthUser},
@@ -540,6 +540,8 @@ pub async fn upload_message_with_file(
             status: "offline".to_string(),
         });
 
+    let mention_type = detect_mention_type(&message.content, Some(&author.username));
+
     let response = MessageResponse {
         id: message.id,
         channel_id: message.channel_id,
@@ -550,6 +552,7 @@ pub async fn upload_message_with_file(
         reply_to: message.reply_to,
         edited_at: message.edited_at,
         created_at: message.created_at,
+        mention_type,
     };
 
     // Broadcast new message via Redis pub-sub

@@ -17,6 +17,10 @@ import {
   participantLeft,
   type EndReason,
 } from "./call";
+import { playNotification } from "@/lib/sound";
+import { getChannel, channelsState } from "./channels";
+import { currentUser } from "./auth";
+import type { MentionType, SoundEventType } from "@/lib/sound/types";
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -60,6 +64,47 @@ const typingTimers: Record<string, NodeJS.Timeout> = {};
 const TYPING_TIMEOUT = 5000; // 5 seconds
 
 /**
+ * Handle notification sound for incoming message.
+ */
+function handleMessageNotification(message: Message): void {
+  const user = currentUser();
+
+  // Don't notify for own messages
+  if (user && message.author.id === user.id) {
+    return;
+  }
+
+  // Don't notify for currently focused channel
+  if (channelsState.selectedChannelId === message.channel_id) {
+    // TODO: Also check if window is focused
+    return;
+  }
+
+  // Determine if this is a DM
+  const channel = getChannel(message.channel_id);
+  const isDm = channel?.channel_type === "dm" || channel?.guild_id === null;
+
+  // Determine event type based on channel and mention
+  let eventType: SoundEventType;
+  if (isDm) {
+    eventType = "message_dm";
+  } else if (message.mention_type === "direct" || message.mention_type === "everyone" || message.mention_type === "here") {
+    eventType = "message_mention";
+  } else {
+    eventType = "message_channel";
+  }
+
+  // Play notification
+  playNotification({
+    type: eventType,
+    channelId: message.channel_id,
+    isDm,
+    mentionType: message.mention_type as MentionType,
+    authorId: message.author.id,
+  });
+}
+
+/**
  * Initialize WebSocket event listeners.
  * Call this once when the app starts (after auth).
  */
@@ -100,6 +145,7 @@ export async function initWebSocket(): Promise<void> {
     unlisteners.push(
       await listen<{ channel_id: string; message: Message }>("ws:message_new", (event) => {
         addMessage(event.payload.message);
+        handleMessageNotification(event.payload.message);
       })
     );
 
@@ -252,6 +298,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
   switch (event.type) {
     case "message_new":
       addMessage(event.message);
+      handleMessageNotification(event.message);
       break;
 
     case "message_edit":

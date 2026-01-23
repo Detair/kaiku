@@ -10,5 +10,6 @@ pub mod pages;
 pub mod presence;
 pub mod roles;
 pub mod settings;
+pub mod sound;
 pub mod voice;
 pub mod websocket;
