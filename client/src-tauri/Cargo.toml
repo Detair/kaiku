@@ -55,6 +55,9 @@ sysinfo = "0.30"
 arboard = "3"
 sha2 = "0.10"
 
+# Zeroize
+zeroize.workspace = true
+
 # Utils
 uuid.workspace = true
 chrono.workspace = true
@@ -64,6 +67,9 @@ anyhow.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -62,6 +62,9 @@ vodozemac = "0.5"
 # Random
 rand = "0.8"
 
+# Zeroize
+zeroize = { version = "1", features = ["derive"] }
+
 # Utils
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
