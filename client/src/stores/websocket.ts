@@ -9,6 +9,7 @@ import * as tauri from "@/lib/tauri";
 import type { Activity, Message, ServerEvent, UserStatus } from "@/lib/types";
 import { updateUserActivity } from "./presence";
 import { addMessage, removeMessage } from "./messages";
+import { handlePreferencesUpdated } from "./preferences";
 import {
   receiveIncomingCall,
   callConnected,
@@ -455,6 +456,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "admin_guild_unsuspended":
       await handleAdminGuildUnsuspended(event.guild_id, event.guild_name);
+      break;
+
+    // Preferences events
+    case "preferences_updated":
+      handlePreferencesUpdated(event);
       break;
 
     default:
