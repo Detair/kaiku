@@ -210,9 +210,12 @@ This roadmap outlines the development path from the current prototype to a produ
   - Clear unread badges instantly when read on any client.
   - New `user:{user_id}` Redis channel for user-targeted events.
   - **Design:** `docs/plans/2026-01-23-read-sync-dnd-design.md`
-- [ ] **[Settings] Server-Synced User Preferences** `Planned`
-  - Persist user settings (sound, theme, etc.) on server.
-  - Sync preferences across devices.
+- [x] **[Settings] Server-Synced User Preferences** ✅
+  - Theme, sound settings, quiet hours, and per-channel notifications sync across all devices
+  - Real-time updates via WebSocket when preferences change on another device
+  - Last-write-wins conflict resolution with timestamps
+  - Migration from legacy localStorage keys
+  - **Design:** `docs/plans/2026-01-23-server-synced-preferences-design.md`
 - [x] **[UX] Do Not Disturb Mode** ✅
   - Notification sounds suppressed when user status is "Busy" (DND).
   - Scheduled quiet hours with configurable start/end times.

@@ -2,6 +2,7 @@
 //!
 //! Central routing configuration and shared state.
 
+pub mod preferences;
 mod settings;
 
 use axum::{
@@ -100,6 +101,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/dm", voice::call_handlers::call_router())
         .nest("/api/voice", voice::router())
         .nest("/api/me/connection", connectivity::router())
+        .nest("/api/me/preferences", preferences::router())
         .nest("/api/keys", crypto::router())
         .nest("/api/users/{user_id}/keys", crypto::user_keys_router())
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))

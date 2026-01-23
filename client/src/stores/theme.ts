@@ -1,11 +1,12 @@
 /**
  * Theme Store
  *
- * Manages theme state with persistence via settings or localStorage fallback.
+ * Manages theme state with persistence via unified preferences store.
+ * Theme data is synced across devices through the preferences system.
  */
 
-import { createStore } from "solid-js/store";
-import * as tauri from "@/lib/tauri";
+import { createEffect } from "solid-js";
+import { preferences, updatePreference } from "./preferences";
 
 export type ThemeName = "focused-hybrid" | "solarized-dark" | "solarized-light";
 
@@ -16,105 +17,70 @@ export interface ThemeDefinition {
   isDark: boolean;
 }
 
-interface ThemeState {
-  currentTheme: ThemeName;
-  availableThemes: ThemeDefinition[];
-  isInitialized: boolean;
-}
+// ============================================================================
+// Constants
+// ============================================================================
 
-const [themeState, setThemeState] = createStore<ThemeState>({
-  currentTheme: "focused-hybrid",
-  availableThemes: [
-    {
-      id: "focused-hybrid",
-      name: "Focused Hybrid",
-      description: "Modern dark theme with high contrast",
-      isDark: true,
-    },
-    {
-      id: "solarized-dark",
-      name: "Solarized Dark",
-      description: "Precision colors for machines and people",
-      isDark: true,
-    },
-    {
-      id: "solarized-light",
-      name: "Solarized Light",
-      description: "Warm light theme for daytime use",
-      isDark: false,
-    },
-  ],
-  isInitialized: false,
+export const availableThemes: ThemeDefinition[] = [
+  {
+    id: "focused-hybrid",
+    name: "Focused Hybrid",
+    description: "Modern dark theme with high contrast",
+    isDark: true,
+  },
+  {
+    id: "solarized-dark",
+    name: "Solarized Dark",
+    description: "Precision colors for machines and people",
+    isDark: true,
+  },
+  {
+    id: "solarized-light",
+    name: "Solarized Light",
+    description: "Warm light theme for daytime use",
+    isDark: false,
+  },
+];
+
+// ============================================================================
+// Derived Signals
+// ============================================================================
+
+/**
+ * Get the current theme name from preferences.
+ */
+export const theme = () => preferences().theme;
+
+// ============================================================================
+// Theme Application Effect
+// ============================================================================
+
+/**
+ * Apply theme to document whenever it changes.
+ * This effect runs automatically when preferences are initialized or updated.
+ */
+createEffect(() => {
+  const currentTheme = theme();
+  document.documentElement.setAttribute("data-theme", currentTheme);
 });
 
-/**
- * Apply theme to document.
- */
-function applyTheme(theme: ThemeName): void {
-  document.documentElement.setAttribute("data-theme", theme);
-}
+// ============================================================================
+// Theme Functions
+// ============================================================================
 
 /**
- * Initialize theme from settings or localStorage.
+ * Set the current theme.
+ * Updates through the unified preferences store which handles sync.
  */
-export async function initTheme(): Promise<void> {
-  if (themeState.isInitialized) return;
-
-  try {
-    // Try to get theme from app settings
-    const settings = await tauri.getSettings();
-    // Map dark/light to specific theme, or use stored preference
-    const storedTheme = localStorage.getItem("theme") as ThemeName | null;
-    
-    let theme: ThemeName;
-    if (storedTheme && themeState.availableThemes.some(t => t.id === storedTheme)) {
-      // Use specific stored theme preference
-      theme = storedTheme;
-    } else {
-      // Fall back to dark/light preference from settings
-      theme = settings.theme === "light" ? "solarized-light" : "focused-hybrid";
-    }
-    
-    setThemeState({ currentTheme: theme, isInitialized: true });
-    applyTheme(theme);
-  } catch {
-    // Fallback to localStorage only
-    const saved = localStorage.getItem("theme") as ThemeName | null;
-    const theme = saved && themeState.availableThemes.some(t => t.id === saved)
-      ? saved
-      : "focused-hybrid";
-    
-    setThemeState({ currentTheme: theme, isInitialized: true });
-    applyTheme(theme);
-  }
-}
-
-/**
- * Set and persist the current theme.
- */
-export async function setTheme(theme: ThemeName): Promise<void> {
-  setThemeState({ currentTheme: theme });
-  applyTheme(theme);
-  
-  // Persist to localStorage for specific theme preference
-  localStorage.setItem("theme", theme);
-  
-  // Also update settings dark/light preference
-  try {
-    const settings = await tauri.getSettings();
-    const isDark = themeState.availableThemes.find(t => t.id === theme)?.isDark ?? true;
-    await tauri.updateSettings({ ...settings, theme: isDark ? "dark" : "light" });
-  } catch {
-    // Settings update failed, localStorage is the fallback
-    console.warn("[Theme] Failed to persist theme to settings");
-  }
+export function setTheme(newTheme: ThemeName): void {
+  updatePreference("theme", newTheme);
 }
 
 /**
  * Get the current theme definition.
  */
 export function getCurrentTheme(): ThemeDefinition | undefined {
-  return themeState.availableThemes.find(t => t.id === themeState.currentTheme);
+  return availableThemes.find((t) => t.id === theme());
 }
 
 /**
@@ -124,4 +90,33 @@ export function isDarkTheme(): boolean {
   return getCurrentTheme()?.isDark ?? true;
 }
 
-export { themeState };
+/**
+ * @deprecated Use initPreferences() from preferences store instead.
+ * This is kept for backwards compatibility during migration.
+ */
+export async function initTheme(): Promise<void> {
+  // Theme is now initialized through initPreferences()
+  // The createEffect above will apply the theme when preferences load
+  console.log(
+    "[Theme] initTheme() called - theme is now managed by preferences store"
+  );
+}
+
+// ============================================================================
+// Legacy Compatibility
+// ============================================================================
+
+/**
+ * @deprecated Access theme() directly or use preferences().theme
+ * This object is kept for backwards compatibility.
+ */
+export const themeState = {
+  get currentTheme() {
+    return theme();
+  },
+  availableThemes,
+  get isInitialized() {
+    // Always true since preferences handle initialization
+    return true;
+  },
+};

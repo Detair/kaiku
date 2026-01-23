@@ -9,6 +9,7 @@ import type { User } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { initWebSocket, connect as wsConnect, disconnect as wsDisconnect, cleanupWebSocket } from "./websocket";
 import { initPresence, cleanupPresence } from "./presence";
+import { initPreferences } from "./preferences";
 
 // Auth state interface
 interface AuthState {
@@ -50,7 +51,7 @@ export async function initAuth(): Promise<void> {
       isInitialized: true,
     });
 
-    // If user is restored, also reconnect WebSocket
+    // If user is restored, also reconnect WebSocket and init preferences
     if (user) {
       await initWebSocket();
       await initPresence();
@@ -59,6 +60,14 @@ export async function initAuth(): Promise<void> {
         console.log("[Auth] WebSocket reconnected after session restore");
       } catch (wsErr) {
         console.error("[Auth] WebSocket reconnection failed:", wsErr);
+      }
+      // Initialize preferences sync after session restore
+      try {
+        await initPreferences();
+        console.log("[Auth] Preferences initialized after session restore");
+      } catch (prefErr) {
+        console.error("[Auth] Preferences initialization failed:", prefErr);
+        // Continue even if preferences fail - non-critical
       }
     }
   } catch (err) {
@@ -99,6 +108,15 @@ export async function login(
     } catch (wsErr) {
       console.error("WebSocket connection failed:", wsErr);
       // Continue even if WebSocket fails - user is still logged in
+    }
+
+    // Initialize preferences sync after login
+    try {
+      await initPreferences();
+      console.log("[Auth] Preferences initialized after login");
+    } catch (prefErr) {
+      console.error("[Auth] Preferences initialization failed:", prefErr);
+      // Continue even if preferences fail - non-critical
     }
 
     return user;
@@ -143,6 +161,15 @@ export async function register(
       await wsConnect();
     } catch (wsErr) {
       console.error("WebSocket connection failed:", wsErr);
+    }
+
+    // Initialize preferences sync after registration
+    try {
+      await initPreferences();
+      console.log("[Auth] Preferences initialized after registration");
+    } catch (prefErr) {
+      console.error("[Auth] Preferences initialization failed:", prefErr);
+      // Continue even if preferences fail - non-critical
     }
 
     return user;

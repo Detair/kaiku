@@ -15,6 +15,7 @@ use fred::prelude::*;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use chrono::{DateTime, Utc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -421,6 +422,15 @@ pub enum ServerEvent {
         activity: Option<crate::presence::Activity>,
     },
 
+    // User-specific events (broadcast to user's devices)
+    /// User preferences were updated on another device.
+    PreferencesUpdated {
+        /// Updated preferences JSON.
+        preferences: serde_json::Value,
+        /// When the preferences were updated.
+        updated_at: DateTime<Utc>,
+    },
+
     // Admin events (broadcast to admin subscribers)
     /// User was banned
     AdminUserBanned {
@@ -469,18 +479,18 @@ pub mod channels {
         format!("presence:{user_id}")
     }
 
+    /// Redis channel for user-specific events (preferences sync, etc.).
+    #[must_use]
+    pub fn user_events(user_id: Uuid) -> String {
+        format!("user:{user_id}")
+    }
+
     /// Redis channel for global events (future feature).
     #[allow(dead_code)]
     pub const GLOBAL_EVENTS: &str = "global";
 
     /// Redis channel for admin events.
     pub const ADMIN_EVENTS: &str = "admin:events";
-
-    /// Redis channel for user-specific events (read sync, etc.)
-    #[must_use]
-    pub fn user_events(user_id: Uuid) -> String {
-        format!("user:{user_id}")
-    }
 }
 
 /// Broadcast a server event to a channel via Redis.
@@ -514,7 +524,7 @@ pub async fn broadcast_admin_event(
     Ok(())
 }
 
-/// Broadcast an event to a specific user's sessions via Redis.
+/// Broadcast an event to all of a user's connected sessions via Redis.
 pub async fn broadcast_to_user(
     redis: &RedisClient,
     user_id: Uuid,
@@ -627,7 +637,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     let subscribed_clone = subscribed_channels.clone();
     let admin_subscribed_clone = admin_subscribed.clone();
     let pubsub_handle = tokio::spawn(async move {
-        handle_pubsub(redis_client, tx_clone, subscribed_clone, admin_subscribed_clone, friend_ids, user_id).await;
+        handle_pubsub(redis_client, tx_clone, subscribed_clone, admin_subscribed_clone, user_id, friend_ids).await;
     });
 
     // Spawn task to forward events to WebSocket
@@ -860,8 +870,8 @@ async fn handle_pubsub(
     tx: mpsc::Sender<ServerEvent>,
     subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
-    friend_ids: Vec<Uuid>,
     user_id: Uuid,
+    friend_ids: Vec<Uuid>,
 ) {
     // Create a subscriber client
     let subscriber = redis.clone_new();
@@ -881,6 +891,14 @@ async fn handle_pubsub(
     if let Err(e) = subscriber.psubscribe("channel:*").await {
         error!("Failed to psubscribe: {}", e);
         return;
+    }
+
+    // Subscribe to user's own events channel (for preferences sync, etc.)
+    let user_channel = channels::user_events(user_id);
+    if let Err(e) = subscriber.subscribe(&user_channel).await {
+        warn!("Failed to subscribe to user events channel: {}", e);
+    } else {
+        debug!("Subscribed to user events channel: {}", user_channel);
     }
 
     // Subscribe to admin events channel
@@ -903,14 +921,6 @@ async fn handle_pubsub(
         }
     }
 
-    // Subscribe to own user channel for cross-device sync (read sync, etc.)
-    let user_channel = channels::user_events(user_id);
-    if let Err(e) = subscriber.subscribe(&user_channel).await {
-        warn!("Failed to subscribe to user channel: {}", e);
-    } else {
-        debug!("Subscribed to user channel: {}", user_channel);
-    }
-
     while let Ok(message) = pubsub_stream.recv().await {
         let channel_name = message.channel.to_string();
 
@@ -926,6 +936,16 @@ async fn handle_pubsub(
                                 break;
                             }
                         }
+                    }
+                }
+            }
+        }
+        // Handle user events (user:{uuid}) - for preferences sync across devices
+        else if channel_name == user_channel {
+            if let Some(payload) = message.value.as_str() {
+                if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
+                    if tx.send(event).await.is_err() {
+                        break;
                     }
                 }
             }

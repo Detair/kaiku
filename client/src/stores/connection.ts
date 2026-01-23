@@ -1,56 +1,52 @@
 /**
  * Connection Settings Store
  *
- * Manages user preferences for connection status display with localStorage persistence.
+ * Manages user preferences for connection status display through the unified preferences store.
+ * Connection settings are synced across devices through the preferences system.
  */
 
-import { createSignal } from "solid-js";
+import { preferences, updateNestedPreference } from "./preferences";
+
+// ============================================================================
+// Types
+// ============================================================================
 
 export interface ConnectionSettings {
   displayMode: "circle" | "number";
   showNotifications: boolean;
 }
 
-const STORAGE_KEY = "connection-settings";
+// ============================================================================
+// Derived Signals
+// ============================================================================
 
-const defaultSettings: ConnectionSettings = {
-  displayMode: "circle",
-  showNotifications: true,
+/**
+ * Get connection settings from preferences.
+ */
+export const connectionSettings = (): ConnectionSettings => {
+  const connection = preferences().connection;
+  return {
+    displayMode: connection.displayMode,
+    showNotifications: connection.showNotifications,
+  };
 };
 
-function loadConnectionSettings(): ConnectionSettings {
-  if (typeof localStorage === "undefined") return defaultSettings;
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (!stored) return defaultSettings;
-  try {
-    return { ...defaultSettings, ...JSON.parse(stored) };
-  } catch {
-    return defaultSettings;
-  }
-}
-
-const [connectionSettings, setConnectionSettings] = createSignal(
-  loadConnectionSettings()
-);
+// ============================================================================
+// Connection Settings Functions
+// ============================================================================
 
 export function getConnectionDisplayMode(): "circle" | "number" {
-  return connectionSettings().displayMode;
+  return preferences().connection.displayMode;
 }
 
 export function setConnectionDisplayMode(mode: "circle" | "number"): void {
-  const updated = { ...connectionSettings(), displayMode: mode };
-  setConnectionSettings(updated);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  updateNestedPreference("connection", "displayMode", mode);
 }
 
 export function getShowNotifications(): boolean {
-  return connectionSettings().showNotifications;
+  return preferences().connection.showNotifications;
 }
 
 export function setShowNotifications(show: boolean): void {
-  const updated = { ...connectionSettings(), showNotifications: show };
-  setConnectionSettings(updated);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  updateNestedPreference("connection", "showNotifications", show);
 }
-
-export { connectionSettings };

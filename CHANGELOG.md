@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Server-synced user preferences
+  - Theme, sound settings, quiet hours, and per-channel notifications sync across all devices
+  - Real-time updates via WebSocket when preferences change on another device
+  - Offline support with automatic sync on reconnect
+  - Migration from legacy localStorage keys
 - Cross-client read sync for DMs
   - When reading a DM on one device, unread badges clear on all other devices instantly
   - Uses new `user:{user_id}` Redis channel for user-targeted events

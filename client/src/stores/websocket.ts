@@ -9,6 +9,7 @@ import * as tauri from "@/lib/tauri";
 import type { Activity, Message, ServerEvent, UserStatus } from "@/lib/types";
 import { updateUserActivity } from "./presence";
 import { addMessage, removeMessage } from "./messages";
+import { handlePreferencesUpdated } from "./preferences";
 import {
   receiveIncomingCall,
   callConnected,
@@ -461,6 +462,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     // DM read sync event
     case "dm_read":
       handleDMReadEvent(event.channel_id);
+      break;
+
+    // Preferences events
+    case "preferences_updated":
+      handlePreferencesUpdated(event);
       break;
 
     default:

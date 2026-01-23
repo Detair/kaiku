@@ -160,6 +160,9 @@ pub fn run() {
             commands::calls::decline_dm_call,
             commands::calls::leave_dm_call,
             commands::calls::get_dm_call,
+            // Preferences commands
+            commands::preferences::fetch_preferences,
+            commands::preferences::update_preferences,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
