@@ -247,6 +247,10 @@ pub async fn stop_screen_share(redis: &RedisClient, channel_id: Uuid) {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // ScreenShareInfo Tests
+    // =========================================================================
+
     #[test]
     fn test_screen_share_info_creation() {
         let user_id = Uuid::new_v4();
@@ -266,6 +270,47 @@ mod tests {
     }
 
     #[test]
+    fn test_screen_share_info_without_audio() {
+        let user_id = Uuid::new_v4();
+        let info = ScreenShareInfo::new(
+            user_id,
+            "bob".to_string(),
+            "Firefox".to_string(),
+            false,
+            Quality::Medium,
+        );
+
+        assert!(!info.has_audio);
+        assert_eq!(info.quality, Quality::Medium);
+    }
+
+    #[test]
+    fn test_screen_share_info_serialization() {
+        let user_id = Uuid::new_v4();
+        let info = ScreenShareInfo::new(
+            user_id,
+            "alice".to_string(),
+            "Display 1".to_string(),
+            true,
+            Quality::High,
+        );
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"username\":\"alice\""));
+        assert!(json.contains("\"source_label\":\"Display 1\""));
+        assert!(json.contains("\"has_audio\":true"));
+
+        // Roundtrip
+        let deserialized: ScreenShareInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.user_id, user_id);
+        assert_eq!(deserialized.username, "alice");
+    }
+
+    // =========================================================================
+    // ScreenShareCheckResponse Tests
+    // =========================================================================
+
+    #[test]
     fn test_check_response_allowed() {
         let resp = ScreenShareCheckResponse::allowed(Quality::High);
         assert!(resp.allowed);
@@ -279,5 +324,199 @@ mod tests {
         assert!(!resp.allowed);
         assert!(resp.granted_quality.is_none());
         assert_eq!(resp.error, Some(ScreenShareError::LimitReached));
+    }
+
+    #[test]
+    fn test_check_response_all_quality_tiers() {
+        for quality in [Quality::Low, Quality::Medium, Quality::High, Quality::Premium] {
+            let resp = ScreenShareCheckResponse::allowed(quality);
+            assert!(resp.allowed);
+            assert_eq!(resp.granted_quality, Some(quality));
+        }
+    }
+
+    #[test]
+    fn test_check_response_all_error_types() {
+        let errors = [
+            ScreenShareError::NoPermission,
+            ScreenShareError::LimitReached,
+            ScreenShareError::NotInChannel,
+            ScreenShareError::QualityNotAllowed,
+            ScreenShareError::RenegotiationFailed,
+            ScreenShareError::InternalError,
+            ScreenShareError::InvalidSourceLabel,
+            ScreenShareError::AlreadySharing,
+        ];
+
+        for error in errors {
+            let resp = ScreenShareCheckResponse::denied(error.clone());
+            assert!(!resp.allowed);
+            assert_eq!(resp.error, Some(error));
+        }
+    }
+
+    #[test]
+    fn test_check_response_serialization_allowed() {
+        let resp = ScreenShareCheckResponse::allowed(Quality::High);
+        let json = serde_json::to_string(&resp).unwrap();
+
+        assert!(json.contains("\"allowed\":true"));
+        assert!(json.contains("\"granted_quality\""));
+        // error should be skipped when None
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn test_check_response_serialization_denied() {
+        let resp = ScreenShareCheckResponse::denied(ScreenShareError::NoPermission);
+        let json = serde_json::to_string(&resp).unwrap();
+
+        assert!(json.contains("\"allowed\":false"));
+        assert!(json.contains("\"error\":\"no_permission\""));
+        // granted_quality should be skipped when None
+        assert!(!json.contains("\"granted_quality\""));
+    }
+
+    // =========================================================================
+    // validate_source_label Tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_source_label_valid_simple() {
+        assert!(validate_source_label("Display 1").is_ok());
+        assert!(validate_source_label("Firefox").is_ok());
+        assert!(validate_source_label("Google Chrome").is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_label_valid_with_punctuation() {
+        assert!(validate_source_label("Display #1").is_ok());
+        assert!(validate_source_label("My App (Window)").is_ok());
+        assert!(validate_source_label("VS Code - project.rs").is_ok());
+        assert!(validate_source_label("Terminal: bash").is_ok());
+        assert!(validate_source_label("What's this?").is_ok());
+        assert!(validate_source_label("File \"test.txt\"").is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_label_valid_unicode_alphanumeric() {
+        // Unicode letters and numbers should be valid
+        assert!(validate_source_label("日本語アプリ").is_ok());
+        assert!(validate_source_label("Écran 2").is_ok());
+        assert!(validate_source_label("Fenêtre principale").is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_label_empty() {
+        // Empty string should be valid (no invalid chars)
+        assert!(validate_source_label("").is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_label_too_long() {
+        let long_label = "a".repeat(256);
+        assert_eq!(
+            validate_source_label(&long_label),
+            Err(ScreenShareError::InvalidSourceLabel)
+        );
+
+        // Exactly 255 should be ok
+        let max_label = "a".repeat(255);
+        assert!(validate_source_label(&max_label).is_ok());
+    }
+
+    #[test]
+    fn test_validate_source_label_invalid_chars() {
+        // Control characters (null) should be invalid
+        assert_eq!(
+            validate_source_label("test\x00null"),
+            Err(ScreenShareError::InvalidSourceLabel)
+        );
+
+        // Note: tab (\t) is whitespace in Rust and thus allowed by is_whitespace()
+        // This is intentional - tabs are valid whitespace in source labels
+        assert!(validate_source_label("test\ttab").is_ok());
+
+        // Unusual symbols not in allowed list
+        assert_eq!(
+            validate_source_label("test<script>"),
+            Err(ScreenShareError::InvalidSourceLabel)
+        );
+        assert_eq!(
+            validate_source_label("test|pipe"),
+            Err(ScreenShareError::InvalidSourceLabel)
+        );
+        assert_eq!(
+            validate_source_label("test\\backslash"),
+            Err(ScreenShareError::InvalidSourceLabel)
+        );
+    }
+
+    // =========================================================================
+    // ScreenShareError Tests
+    // =========================================================================
+
+    #[test]
+    fn test_screen_share_error_serialization() {
+        // All variants should serialize to snake_case
+        let test_cases = [
+            (ScreenShareError::NoPermission, "no_permission"),
+            (ScreenShareError::LimitReached, "limit_reached"),
+            (ScreenShareError::NotInChannel, "not_in_channel"),
+            (ScreenShareError::QualityNotAllowed, "quality_not_allowed"),
+            (ScreenShareError::RenegotiationFailed, "renegotiation_failed"),
+            (ScreenShareError::InternalError, "internal_error"),
+            (ScreenShareError::InvalidSourceLabel, "invalid_source_label"),
+            (ScreenShareError::AlreadySharing, "already_sharing"),
+        ];
+
+        for (error, expected) in test_cases {
+            let json = serde_json::to_string(&error).unwrap();
+            assert_eq!(json, format!("\"{}\"", expected));
+        }
+    }
+
+    #[test]
+    fn test_screen_share_error_deserialization() {
+        let error: ScreenShareError = serde_json::from_str("\"no_permission\"").unwrap();
+        assert_eq!(error, ScreenShareError::NoPermission);
+
+        let error: ScreenShareError = serde_json::from_str("\"limit_reached\"").unwrap();
+        assert_eq!(error, ScreenShareError::LimitReached);
+    }
+
+    #[test]
+    fn test_screen_share_error_equality() {
+        assert_eq!(ScreenShareError::NoPermission, ScreenShareError::NoPermission);
+        assert_ne!(ScreenShareError::NoPermission, ScreenShareError::LimitReached);
+    }
+
+    // =========================================================================
+    // ScreenShareStartRequest Tests
+    // =========================================================================
+
+    #[test]
+    fn test_start_request_deserialization() {
+        let json = r#"{"quality":"high","has_audio":true,"source_label":"Display 1"}"#;
+        let req: ScreenShareStartRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(req.quality, Quality::High);
+        assert!(req.has_audio);
+        assert_eq!(req.source_label, "Display 1");
+    }
+
+    #[test]
+    fn test_start_request_deserialization_all_qualities() {
+        let qualities = ["low", "medium", "high", "premium"];
+        let expected = [Quality::Low, Quality::Medium, Quality::High, Quality::Premium];
+
+        for (quality_str, expected_quality) in qualities.iter().zip(expected.iter()) {
+            let json = format!(
+                r#"{{"quality":"{}","has_audio":false,"source_label":"test"}}"#,
+                quality_str
+            );
+            let req: ScreenShareStartRequest = serde_json::from_str(&json).unwrap();
+            assert_eq!(req.quality, *expected_quality);
+        }
     }
 }

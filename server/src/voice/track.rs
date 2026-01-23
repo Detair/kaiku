@@ -175,6 +175,172 @@ impl Default for TrackRouter {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // TrackRouter Construction Tests
+    // =========================================================================
+
+    #[test]
+    fn test_track_router_new() {
+        let router = TrackRouter::new();
+        // Router should be empty initially
+        // We can't directly check internal state, but we can verify it was created
+        assert!(std::mem::size_of_val(&router) > 0);
+    }
+
+    #[test]
+    fn test_track_router_default() {
+        let router = TrackRouter::default();
+        assert!(std::mem::size_of_val(&router) > 0);
+    }
+
+    // =========================================================================
+    // Empty Router Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_subscriber_count_empty_router() {
+        let router = TrackRouter::new();
+        let user_id = Uuid::new_v4();
+
+        // All track sources should have 0 subscribers on empty router
+        assert_eq!(router.subscriber_count(user_id, TrackSource::Microphone).await, 0);
+        assert_eq!(router.subscriber_count(user_id, TrackSource::ScreenVideo).await, 0);
+        assert_eq!(router.subscriber_count(user_id, TrackSource::ScreenAudio).await, 0);
+        assert_eq!(router.subscriber_count(user_id, TrackSource::Webcam).await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_remove_subscriber_empty_router_does_not_panic() {
+        let router = TrackRouter::new();
+        let source_id = Uuid::new_v4();
+        let subscriber_id = Uuid::new_v4();
+
+        // Should not panic on empty router
+        router
+            .remove_subscriber(source_id, TrackSource::Microphone, subscriber_id)
+            .await;
+        router
+            .remove_subscriber(source_id, TrackSource::ScreenVideo, subscriber_id)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_remove_source_empty_router_does_not_panic() {
+        let router = TrackRouter::new();
+        let source_id = Uuid::new_v4();
+
+        // Should not panic on empty router
+        router.remove_source(source_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_remove_subscriber_from_all_empty_router_does_not_panic() {
+        let router = TrackRouter::new();
+        let subscriber_id = Uuid::new_v4();
+
+        // Should not panic on empty router
+        router.remove_subscriber_from_all(subscriber_id).await;
+    }
+
+    // =========================================================================
+    // Forward RTP Tests (edge cases)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_forward_rtp_no_subscribers_does_not_panic() {
+        let router = TrackRouter::new();
+        let source_id = Uuid::new_v4();
+
+        // Create a minimal RTP packet
+        let rtp_packet = RtpPacket {
+            header: webrtc::rtp::header::Header {
+                version: 2,
+                padding: false,
+                extension: false,
+                marker: false,
+                payload_type: 96,
+                sequence_number: 1,
+                timestamp: 0,
+                ssrc: 12345,
+                csrc: vec![],
+                extension_profile: 0,
+                extensions: vec![],
+                extensions_padding: 0,
+            },
+            payload: bytes::Bytes::from_static(&[0u8; 160]),
+        };
+
+        // Should not panic when no subscribers exist
+        router
+            .forward_rtp(source_id, TrackSource::Microphone, &rtp_packet)
+            .await;
+        router
+            .forward_rtp(source_id, TrackSource::ScreenVideo, &rtp_packet)
+            .await;
+    }
+
+    // =========================================================================
+    // Concurrent Access Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_subscriber_count_reads() {
+        let router = Arc::new(TrackRouter::new());
+        let user_id = Uuid::new_v4();
+
+        // Spawn multiple concurrent reads
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let router_clone = router.clone();
+            handles.push(tokio::spawn(async move {
+                router_clone
+                    .subscriber_count(user_id, TrackSource::Microphone)
+                    .await
+            }));
+        }
+
+        // All should complete without deadlock
+        for handle in handles {
+            let count = handle.await.unwrap();
+            assert_eq!(count, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_remove_operations() {
+        let router = Arc::new(TrackRouter::new());
+
+        // Spawn multiple concurrent remove operations
+        let mut handles = vec![];
+        for i in 0..10 {
+            let router_clone = router.clone();
+            let source_id = Uuid::new_v4();
+            let subscriber_id = Uuid::new_v4();
+
+            handles.push(tokio::spawn(async move {
+                if i % 3 == 0 {
+                    router_clone.remove_source(source_id).await;
+                } else if i % 3 == 1 {
+                    router_clone
+                        .remove_subscriber(source_id, TrackSource::ScreenVideo, subscriber_id)
+                        .await;
+                } else {
+                    router_clone.remove_subscriber_from_all(subscriber_id).await;
+                }
+            }));
+        }
+
+        // All should complete without deadlock or panic
+        for handle in handles {
+            handle.await.unwrap();
+        }
+    }
+}
+
 /// Spawn a task to read RTP packets from a track and forward them.
 pub fn spawn_rtp_forwarder(
     source_user_id: Uuid,
