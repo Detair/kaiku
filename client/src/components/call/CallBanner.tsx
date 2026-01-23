@@ -13,7 +13,7 @@ import {
   declineCall,
   endCall,
 } from "@/stores/call";
-import { joinDMCall, declineDMCall, leaveDMCall } from "@/lib/tauri";
+import { joinDMCall, declineDMCall, leaveDMCall, joinVoice, leaveVoice } from "@/lib/tauri";
 
 interface CallBannerProps {
   channelId: string;
@@ -46,6 +46,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
     try {
       joinCall(props.channelId);
       await joinDMCall(props.channelId);
+      // Start voice connection after signaling join
+      await joinVoice(props.channelId);
     } catch (err) {
       console.error("Failed to join call:", err);
       // Reset state on error
@@ -72,11 +74,14 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   const handleLeave = async () => {
     setIsLoading(true);
     try {
+      // Stop voice connection first
+      await leaveVoice();
       await leaveDMCall(props.channelId);
       endCall(props.channelId, "last_left");
     } catch (err) {
       console.error("Failed to leave call:", err);
       // If call not found (404) or conflict (409), just clean up local state
+      await leaveVoice().catch(() => {}); // Best effort cleanup
       endCall(props.channelId, "last_left");
     } finally {
       setIsLoading(false);
@@ -86,11 +91,14 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   const handleCancel = async () => {
     setIsLoading(true);
     try {
+      // Stop voice connection first (initiator may have started voice)
+      await leaveVoice();
       await leaveDMCall(props.channelId);
       endCall(props.channelId, "cancelled");
     } catch (err) {
       console.error("Failed to cancel call:", err);
       // If call not found (404) or already ended, just clean up local state
+      await leaveVoice().catch(() => {}); // Best effort cleanup
       endCall(props.channelId, "cancelled");
     } finally {
       setIsLoading(false);

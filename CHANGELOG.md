@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- DM voice calls client integration
+  - Voice connection wiring: WebRTC starts after accepting/starting calls
+  - Tauri commands for call lifecycle (start, join, decline, leave)
+  - Ring sound notification with looping playback for incoming calls
+  - Call indicator in DM sidebar with pulsing animation for incoming calls
 - Clipboard protection system for secure copy/paste operations
   - ClipboardGuard service with SHA-256 hash-based tamper detection
   - Auto-clear timers based on sensitivity (Critical: 60s, Sensitive: 120s)

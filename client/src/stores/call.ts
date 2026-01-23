@@ -5,6 +5,7 @@
  */
 
 import { createStore, produce } from "solid-js/store";
+import { startRinging, stopRinging } from "@/lib/sound/ring";
 
 // Constants
 const CALL_ENDED_DISPLAY_MS = 3000;
@@ -67,6 +68,8 @@ export function receiveIncomingCall(
       initiator,
       initiatorName,
     });
+    // Start ringing for incoming call
+    startRinging();
   }
   // Always track in activeCallsByChannel for sidebar indicator
   setCallState("activeCallsByChannel", channelId, {
@@ -80,6 +83,8 @@ export function receiveIncomingCall(
  * Transition to connecting state when joining a call.
  */
 export function joinCall(channelId: string): void {
+  // Stop ringing when answering the call
+  stopRinging();
   setCallState("currentCall", {
     status: "connecting",
     channelId,
@@ -162,6 +167,8 @@ export function participantLeft(channelId: string, userId: string): void {
 export function declineCall(channelId: string): void {
   const current = callState.currentCall;
   if (current.status === "incoming_ringing" && current.channelId === channelId) {
+    // Stop ringing when declining the call
+    stopRinging();
     setCallState("currentCall", { status: "idle" });
   }
 }
@@ -216,6 +223,10 @@ export function callEndedExternally(
   // Update current call if it's the one that ended
   const current = callState.currentCall;
   if (current.status !== "idle" && "channelId" in current && current.channelId === channelId) {
+    // Stop ringing if we were being called
+    if (current.status === "incoming_ringing") {
+      stopRinging();
+    }
     endCall(channelId, reason, duration);
   }
 }

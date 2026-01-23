@@ -5,8 +5,10 @@
  */
 
 import { Component, Show } from "solid-js";
+import { Phone } from "lucide-solid";
 import type { DMListItem } from "@/lib/types";
 import { dmsState, selectDM } from "@/stores/dms";
+import { hasActiveCallInChannel, callState } from "@/stores/call";
 
 interface DMItemProps {
   dm: DMListItem;
@@ -30,6 +32,17 @@ const DMItem: Component<DMItemProps> = (props) => {
     if (isGroupDM()) return false;
     // TODO: Check presence store for online status
     return false;
+  };
+
+  // Check if there's an active call in this DM
+  const hasActiveCall = () => hasActiveCallInChannel(props.dm.id);
+
+  // Check if this is an incoming call (ringing)
+  const isIncomingCall = () => {
+    const current = callState.currentCall;
+    return current.status === "incoming_ringing" &&
+           "channelId" in current &&
+           current.channelId === props.dm.id;
   };
 
   const formatTimestamp = (dateStr: string) => {
@@ -95,6 +108,20 @@ const DMItem: Component<DMItemProps> = (props) => {
         {/* Online indicator for 1:1 DMs */}
         <Show when={!isGroupDM() && isOnline()}>
           <div class="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-surface-base rounded-full" />
+        </Show>
+
+        {/* Call indicator */}
+        <Show when={hasActiveCall()}>
+          <div
+            class="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full flex items-center justify-center"
+            classList={{
+              "bg-green-500 animate-pulse": isIncomingCall(),
+              "bg-green-500": !isIncomingCall(),
+            }}
+            title={isIncomingCall() ? "Incoming call" : "Active call"}
+          >
+            <Phone class="w-2.5 h-2.5 text-white" />
+          </div>
         </Show>
       </div>
 

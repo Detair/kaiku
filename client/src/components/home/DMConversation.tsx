@@ -12,7 +12,7 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { CallBanner } from "@/components/call";
 import { callState, startCall, isInCallForChannel } from "@/stores/call";
-import { startDMCall } from "@/lib/tauri";
+import { startDMCall, joinVoice } from "@/lib/tauri";
 
 const DMConversation: Component = () => {
   const dm = () => getSelectedDM();
@@ -26,6 +26,8 @@ const DMConversation: Component = () => {
     try {
       await startDMCall(currentDM.id);
       startCall(currentDM.id);
+      // Start voice connection immediately as the initiator
+      await joinVoice(currentDM.id);
     } catch (err) {
       console.error("Failed to start call:", err);
     } finally {

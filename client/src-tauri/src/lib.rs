@@ -145,6 +145,12 @@ pub fn run() {
             commands::clipboard::get_clipboard_status,
             commands::clipboard::update_clipboard_settings,
             commands::clipboard::get_clipboard_settings,
+            // Call commands
+            commands::calls::start_dm_call,
+            commands::calls::join_dm_call,
+            commands::calls::decline_dm_call,
+            commands::calls::leave_dm_call,
+            commands::calls::get_dm_call,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,6 +4,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod calls;
 pub mod chat;
 pub mod clipboard;
 pub mod crypto;

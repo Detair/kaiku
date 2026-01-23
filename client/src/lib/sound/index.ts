@@ -8,6 +8,7 @@
 import type { SoundEvent, SoundOption } from "./types";
 import { playSound, preloadSounds, isWebAudioSupported, playNotificationFallback } from "./browser";
 import { initTabLeader, isTabLeader, cleanup as cleanupTabLeader } from "./tab-leader";
+import { preloadRingSound, stopRinging } from "./ring";
 import {
   getSoundEnabled,
   getSelectedSound,
@@ -58,6 +59,7 @@ export async function initSoundService(): Promise<void> {
   // Preload sounds
   if (isWebAudioSupported()) {
     await preloadSounds();
+    await preloadRingSound();
   }
 
   // Handle pending sound if AudioContext was suspended
@@ -82,6 +84,9 @@ export async function initSoundService(): Promise<void> {
  * Cleanup sound service resources.
  */
 export function cleanupSoundService(): void {
+  // Stop any active ring
+  stopRinging();
+
   if (!isTauri()) {
     cleanupTabLeader();
   }
@@ -206,3 +211,4 @@ export async function testSound(soundId?: SoundOption): Promise<void> {
 
 export * from "./types";
 export { isTabLeader };
+export { startRinging, stopRinging, isRinging } from "./ring";
