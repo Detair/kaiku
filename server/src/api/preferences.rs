@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::AuthUser;
+use crate::ws::{broadcast_to_user, ServerEvent};
 
 // ============================================================================
 // Error Types
@@ -142,6 +143,16 @@ pub async fn update_preferences(
     .bind(&request.preferences)
     .fetch_one(&state.db)
     .await?;
+
+    // Broadcast to all user's devices via WebSocket
+    let event = ServerEvent::PreferencesUpdated {
+        preferences: row.preferences.clone(),
+        updated_at: row.updated_at,
+    };
+    if let Err(e) = broadcast_to_user(&state.redis, auth_user.id, &event).await {
+        tracing::warn!("Failed to broadcast preferences update: {}", e);
+        // Don't fail the request if broadcast fails - the update was successful
+    }
 
     Ok(Json(PreferencesResponse {
         preferences: row.preferences,
