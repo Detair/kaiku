@@ -109,8 +109,16 @@ export interface Channel {
 
 export interface ChannelCategory {
   id: string;
+  guild_id: string;
   name: string;
   position: number;
+  parent_id: string | null;
+  collapsed: boolean;
+  created_at: string;
+}
+
+/** ChannelCategory with nested channels for UI rendering */
+export interface ChannelCategoryWithChannels extends ChannelCategory {
   channels: Channel[];
 }
 
