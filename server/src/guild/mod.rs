@@ -1,7 +1,8 @@
 //! Guild (Server) Management Module
 //!
-//! Handles guild creation, membership, invites, roles, and management.
+//! Handles guild creation, membership, invites, roles, categories, and management.
 
+pub mod categories;
 pub mod handlers;
 pub mod invites;
 pub mod roles;
@@ -48,6 +49,16 @@ pub fn router() -> Router<AppState> {
             get(invites::list_invites).post(invites::create_invite),
         )
         .route("/:id/invites/:code", delete(invites::delete_invite))
+        // Category routes
+        .route(
+            "/:id/categories",
+            get(categories::list_categories).post(categories::create_category),
+        )
+        .route(
+            "/:id/categories/:category_id",
+            patch(categories::update_category).delete(categories::delete_category),
+        )
+        .route("/:id/categories/reorder", post(categories::reorder_categories))
 }
 
 /// Create the invite join router (separate for public access pattern)
