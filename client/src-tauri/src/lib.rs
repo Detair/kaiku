@@ -169,6 +169,12 @@ pub fn run() {
             commands::pins::update_pin,
             commands::pins::delete_pin,
             commands::pins::reorder_pins,
+            // Favorites commands
+            commands::favorites::fetch_favorites,
+            commands::favorites::add_favorite,
+            commands::favorites::remove_favorite,
+            commands::favorites::reorder_favorite_channels,
+            commands::favorites::reorder_favorite_guilds,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

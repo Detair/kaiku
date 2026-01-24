@@ -14,6 +14,8 @@ import { useNavigate } from "@solidjs/router";
 import { ChevronDown, Settings } from "lucide-solid";
 import { loadChannels } from "@/stores/channels";
 import { getActiveGuild } from "@/stores/guilds";
+import { loadFavorites } from "@/stores/favorites";
+import FavoritesSection from "./FavoritesSection";
 import {
   pagesState,
   loadGuildPages,
@@ -31,10 +33,11 @@ const Sidebar: Component = () => {
   const [selectedPageId, setSelectedPageId] = createSignal<string | null>(null);
   const [pagesExpanded, setPagesExpanded] = createSignal(true);
 
-  // Load channels when sidebar mounts
+  // Load channels and favorites when sidebar mounts
   onMount(() => {
     loadChannels();
     loadPendingAcceptance();
+    loadFavorites();
   });
 
   const activeGuild = () => getActiveGuild();
@@ -101,6 +104,9 @@ const Sidebar: Component = () => {
 
       {/* Separator */}
       <div class="mx-3 my-1 border-t border-white/10" />
+
+      {/* Favorites Section */}
+      <FavoritesSection />
 
       {/* Guild Pages Section */}
       <Show when={activeGuild() && guildPages().length > 0}>

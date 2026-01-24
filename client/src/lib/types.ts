@@ -479,6 +479,42 @@ export interface UpdatePinRequest {
   metadata?: Record<string, unknown>;
 }
 
+// ============================================================================
+// Favorites Types
+// ============================================================================
+
+export interface FavoriteChannel {
+  channel_id: string;
+  channel_name: string;
+  channel_type: "text" | "voice";
+  guild_id: string;
+  guild_name: string;
+  guild_icon: string | null;
+  guild_position: number;
+  channel_position: number;
+}
+
+export interface FavoritesResponse {
+  favorites: FavoriteChannel[];
+}
+
+export interface Favorite {
+  channel_id: string;
+  guild_id: string;
+  guild_position: number;
+  channel_position: number;
+  created_at: string;
+}
+
+export interface ReorderChannelsRequest {
+  guild_id: string;
+  channel_ids: string[];
+}
+
+export interface ReorderGuildsRequest {
+  guild_ids: string[];
+}
+
 // Role Types
 
 export interface GuildRole {

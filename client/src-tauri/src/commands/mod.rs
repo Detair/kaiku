@@ -8,6 +8,7 @@ pub mod calls;
 pub mod chat;
 pub mod clipboard;
 pub mod crypto;
+pub mod favorites;
 pub mod pages;
 pub mod pins;
 pub mod preferences;
