@@ -340,13 +340,16 @@ pub async fn reorder_channels(
     let guild_id =
         Uuid::parse_str(&request.guild_id).map_err(|_| FavoritesError::InvalidGuilds)?;
 
+    // Start transaction for atomic reorder
+    let mut tx = state.db.begin().await?;
+
     // Verify all channel IDs belong to user's favorites in this guild
     let existing: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT channel_id FROM user_favorite_channels WHERE user_id = $1 AND guild_id = $2",
     )
     .bind(auth_user.id)
     .bind(guild_id)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
 
     let existing_ids: std::collections::HashSet<String> =
@@ -359,7 +362,7 @@ pub async fn reorder_channels(
         }
     }
 
-    // Update positions
+    // Update positions within transaction
     for (position, channel_id_str) in request.channel_ids.iter().enumerate() {
         let channel_id =
             Uuid::parse_str(channel_id_str).map_err(|_| FavoritesError::InvalidChannels)?;
@@ -370,10 +373,11 @@ pub async fn reorder_channels(
         .bind(auth_user.id)
         .bind(channel_id)
         .bind(position as i32)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     }
 
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -383,11 +387,14 @@ pub async fn reorder_guilds(
     auth_user: AuthUser,
     Json(request): Json<ReorderGuildsRequest>,
 ) -> Result<StatusCode, FavoritesError> {
+    // Start transaction for atomic reorder
+    let mut tx = state.db.begin().await?;
+
     // Verify all guild IDs belong to user's favorites
     let existing: Vec<(Uuid,)> =
         sqlx::query_as("SELECT guild_id FROM user_favorite_guilds WHERE user_id = $1")
             .bind(auth_user.id)
-            .fetch_all(&state.db)
+            .fetch_all(&mut *tx)
             .await?;
 
     let existing_ids: std::collections::HashSet<String> =
@@ -400,7 +407,7 @@ pub async fn reorder_guilds(
         }
     }
 
-    // Update positions
+    // Update positions within transaction
     for (position, guild_id_str) in request.guild_ids.iter().enumerate() {
         let guild_id =
             Uuid::parse_str(guild_id_str).map_err(|_| FavoritesError::InvalidGuilds)?;
@@ -411,9 +418,10 @@ pub async fn reorder_guilds(
         .bind(auth_user.id)
         .bind(guild_id)
         .bind(position as i32)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     }
 
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
