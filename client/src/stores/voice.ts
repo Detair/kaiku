@@ -539,11 +539,32 @@ export async function startScreenShare(
 
   const adapter = await createVoiceAdapter();
 
+  // Start the capture first (user selects screen/window)
   const result = await adapter.startScreenShare({ quality });
 
   if (!result.ok) {
     console.error("Failed to start screen share:", result.error);
     return { ok: false, error: getErrorMessage(result.error) };
+  }
+
+  // Get actual screen share info from the adapter
+  const shareInfo = adapter.getScreenShareInfo();
+  const hasAudio = shareInfo?.hasAudio ?? false;
+  const sourceLabel = shareInfo?.sourceLabel ?? "Screen";
+
+  // Notify server about screen share start
+  try {
+    await tauri.wsScreenShareStart(
+      voiceState.channelId,
+      quality || "medium",
+      hasAudio,
+      sourceLabel
+    );
+  } catch (err) {
+    console.error("Failed to notify server of screen share start:", err);
+    // Stop capture since server notification failed
+    await adapter.stopScreenShare();
+    return { ok: false, error: "Failed to notify server" };
   }
 
   setVoiceState({ screenSharing: true });
@@ -556,11 +577,29 @@ export async function startScreenShare(
 export async function stopScreenShare(): Promise<void> {
   if (!voiceState.screenSharing) return;
 
+  const channelId = voiceState.channelId;
+
   const adapter = await createVoiceAdapter();
   const result = await adapter.stopScreenShare();
 
   if (!result.ok) {
     console.error("Failed to stop screen share:", result.error);
+  }
+
+  // Notify server about screen share stop
+  if (channelId) {
+    try {
+      await tauri.wsScreenShareStop(channelId);
+    } catch (err) {
+      console.error("Failed to notify server of screen share stop:", err);
+      // Show toast so user knows server wasn't notified (screen share stopped locally)
+      showToast({
+        type: "warning",
+        title: "Screen share stopped locally",
+        message: "Server may still show you as sharing. Reconnect if needed.",
+        duration: 5000,
+      });
+    }
   }
 
   setVoiceState({

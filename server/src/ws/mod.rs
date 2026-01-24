@@ -127,6 +127,22 @@ pub enum ClientEvent {
         /// Timestamp when stats were collected (Unix epoch ms).
         timestamp: i64,
     },
+    /// Start screen sharing in voice channel
+    VoiceScreenShareStart {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// Requested quality tier.
+        quality: Quality,
+        /// Whether to include system audio.
+        has_audio: bool,
+        /// Label of the shared source (e.g., "Display 1", "Firefox").
+        source_label: String,
+    },
+    /// Stop screen sharing in voice channel
+    VoiceScreenShareStop {
+        /// Voice channel.
+        channel_id: Uuid,
+    },
 
     /// Set rich presence activity (game, music, etc).
     SetActivity {
@@ -782,7 +798,9 @@ async fn handle_client_message(
         | ClientEvent::VoiceIceCandidate { .. }
         | ClientEvent::VoiceMute { .. }
         | ClientEvent::VoiceUnmute { .. }
-        | ClientEvent::VoiceStats { .. } => {
+        | ClientEvent::VoiceStats { .. }
+        | ClientEvent::VoiceScreenShareStart { .. }
+        | ClientEvent::VoiceScreenShareStop { .. } => {
             if let Err(e) = crate::voice::ws_handler::handle_voice_event(
                 &state.sfu, &state.db, &state.redis, user_id, event, tx,
             )

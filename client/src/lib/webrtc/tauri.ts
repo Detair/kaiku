@@ -260,6 +260,24 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     return this.screenSharing;
   }
 
+  /**
+   * Get information about the current screen share.
+   * Returns null if not sharing.
+   */
+  getScreenShareInfo(): { hasAudio: boolean; sourceLabel: string } | null {
+    if (!this.screenShareStream) {
+      return null;
+    }
+
+    const videoTrack = this.screenShareStream.getVideoTracks()[0];
+    const hasAudio = this.screenShareStream.getAudioTracks().length > 0;
+
+    // Get source label from video track (e.g., "screen:0:0", window title, etc.)
+    const sourceLabel = videoTrack?.label || "Screen";
+
+    return { hasAudio, sourceLabel };
+  }
+
   async startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>> {
     console.log("[TauriVoiceAdapter] Starting screen share via WebView", options);
 
