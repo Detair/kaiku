@@ -2215,3 +2215,45 @@ export async function uploadKeys(
     }
   );
 }
+
+// ============================================================================
+// Reaction Commands
+// ============================================================================
+
+/**
+ * Add a reaction to a message.
+ */
+export async function addReaction(
+  channelId: string,
+  messageId: string,
+  emoji: string
+): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("add_reaction", { channelId, messageId, emoji });
+  }
+
+  await httpRequest<void>(
+    "PUT",
+    `/api/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`
+  );
+}
+
+/**
+ * Remove a reaction from a message.
+ */
+export async function removeReaction(
+  channelId: string,
+  messageId: string,
+  emoji: string
+): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("remove_reaction", { channelId, messageId, emoji });
+  }
+
+  await httpRequest<void>(
+    "DELETE",
+    `/api/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`
+  );
+}

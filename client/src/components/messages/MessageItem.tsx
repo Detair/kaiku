@@ -1,16 +1,20 @@
-import { Component, Show, createMemo, For } from "solid-js";
+import { Component, Show, createMemo, For, createSignal } from "solid-js";
 import { marked } from "marked";
-import { File, Download } from "lucide-solid";
+import { File, Download, SmilePlus } from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
 import CodeBlock from "@/components/ui/CodeBlock";
-import { getServerUrl, getAccessToken } from "@/lib/tauri";
+import ReactionBar from "./ReactionBar";
+import EmojiPicker from "@/components/emoji/EmojiPicker";
+import { getServerUrl, getAccessToken, addReaction, removeReaction } from "@/lib/tauri";
 
 interface MessageItemProps {
   message: Message;
   /** If true, shows compact version without avatar/name (for grouped messages) */
   compact?: boolean;
+  /** Guild ID for custom emoji support in reactions */
+  guildId?: string;
 }
 
 // Configure marked for GitHub Flavored Markdown
@@ -33,8 +37,28 @@ interface TextBlock {
 type ContentBlock = CodeBlockData | TextBlock;
 
 const MessageItem: Component<MessageItemProps> = (props) => {
+  const [showReactionPicker, setShowReactionPicker] = createSignal(false);
+
   const author = () => props.message.author;
   const isEdited = () => !!props.message.edited_at;
+  const hasReactions = () => props.message.reactions && props.message.reactions.length > 0;
+
+  const handleAddReaction = async (emoji: string) => {
+    try {
+      await addReaction(props.message.channel_id, props.message.id, emoji);
+    } catch (err) {
+      console.error("Failed to add reaction:", err);
+    }
+    setShowReactionPicker(false);
+  };
+
+  const handleRemoveReaction = async (emoji: string) => {
+    try {
+      await removeReaction(props.message.channel_id, props.message.id, emoji);
+    } catch (err) {
+      console.error("Failed to remove reaction:", err);
+    }
+  };
 
   const getDownloadUrl = (attachment: Attachment) => {
     // Construct absolute URL for the attachment with token for browser requests
@@ -204,6 +228,39 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                 </Show>
               </div>
             ))}
+          </div>
+        </Show>
+
+        {/* Reactions */}
+        <Show when={hasReactions()}>
+          <ReactionBar
+            reactions={props.message.reactions!}
+            onAddReaction={handleAddReaction}
+            onRemoveReaction={handleRemoveReaction}
+            guildId={props.guildId}
+          />
+        </Show>
+
+        {/* Add reaction button (shown on hover when no reactions exist) */}
+        <Show when={!hasReactions()}>
+          <div class="relative mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              class="w-6 h-6 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+              onClick={() => setShowReactionPicker(!showReactionPicker())}
+              title="Add reaction"
+            >
+              <SmilePlus class="w-4 h-4" />
+            </button>
+
+            <Show when={showReactionPicker()}>
+              <div class="absolute bottom-full left-0 mb-2 z-50">
+                <EmojiPicker
+                  onSelect={handleAddReaction}
+                  onClose={() => setShowReactionPicker(false)}
+                  guildId={props.guildId}
+                />
+              </div>
+            </Show>
           </div>
         </Show>
       </div>

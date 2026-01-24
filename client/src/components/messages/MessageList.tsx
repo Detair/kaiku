@@ -9,6 +9,8 @@ import { shouldGroupWithPrevious } from "@/lib/utils";
 
 interface MessageListProps {
   channelId: string;
+  /** Guild ID for custom emoji support in reactions */
+  guildId?: string;
 }
 
 const MessageList: Component<MessageListProps> = (props) => {
@@ -164,7 +166,7 @@ const MessageList: Component<MessageListProps> = (props) => {
         <div class="py-4">
           <For each={messagesWithCompact()}>
             {(item) => (
-              <MessageItem message={item.message} compact={item.isCompact} />
+              <MessageItem message={item.message} compact={item.isCompact} guildId={props.guildId} />
             )}
           </For>
         </div>
