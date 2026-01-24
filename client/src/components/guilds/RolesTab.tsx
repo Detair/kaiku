@@ -3,14 +3,16 @@
  */
 
 import { Component, createSignal, For, Show, onMount } from "solid-js";
-import { Plus, Settings, MoreVertical, Trash2, Users } from "lucide-solid";
+import { Plus, Settings, MoreVertical, Trash2, Users, GripVertical } from "lucide-solid";
 import {
   permissionsState,
   loadGuildRoles,
   loadMemberRoles,
   getGuildRoles,
   deleteRole,
+  reorderRole,
   memberHasPermission,
+  getUserHighestRolePosition,
 } from "@/stores/permissions";
 import { authState } from "@/stores/auth";
 import { isGuildOwner } from "@/stores/guilds";
@@ -26,6 +28,8 @@ interface RolesTabProps {
 const RolesTab: Component<RolesTabProps> = (props) => {
   const [menuOpen, setMenuOpen] = createSignal<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = createSignal<string | null>(null);
+  const [draggedRoleId, setDraggedRoleId] = createSignal<string | null>(null);
+  const [dropTargetId, setDropTargetId] = createSignal<string | null>(null);
 
   onMount(() => {
     loadGuildRoles(props.guildId);
@@ -42,6 +46,81 @@ const RolesTab: Component<RolesTabProps> = (props) => {
       isOwner(),
       PermissionBits.MANAGE_ROLES
     );
+
+  // Get user's highest role position (lower = higher rank)
+  const userHighestPosition = () =>
+    isOwner() ? -1 : getUserHighestRolePosition(props.guildId, authState.user?.id || "");
+
+  // Check if user can reorder a specific role (must be below their highest role)
+  const canReorderRole = (role: GuildRole) => {
+    if (role.is_default) return false; // Can't reorder @everyone
+    if (isOwner()) return true;
+    return role.position > userHighestPosition();
+  };
+
+  // Drag handlers
+  const handleDragStart = (e: DragEvent, roleId: string) => {
+    if (!e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", roleId);
+    setDraggedRoleId(roleId);
+  };
+
+  const handleDragOver = (e: DragEvent, role: GuildRole) => {
+    e.preventDefault();
+    if (!e.dataTransfer) return;
+
+    const draggedId = draggedRoleId();
+    if (!draggedId || draggedId === role.id) return;
+
+    // Don't allow dropping on @everyone
+    if (role.is_default) return;
+
+    // Check if user can move to this position
+    const draggedRole = roles().find((r) => r.id === draggedId);
+    if (!draggedRole) return;
+
+    // Can't move role above user's highest role
+    if (!isOwner() && role.position <= userHighestPosition()) {
+      e.dataTransfer.dropEffect = "none";
+      return;
+    }
+
+    e.dataTransfer.dropEffect = "move";
+    setDropTargetId(role.id);
+  };
+
+  const handleDragLeave = () => {
+    setDropTargetId(null);
+  };
+
+  const handleDrop = async (e: DragEvent, targetRole: GuildRole) => {
+    e.preventDefault();
+    setDropTargetId(null);
+
+    const draggedId = draggedRoleId();
+    if (!draggedId || draggedId === targetRole.id) return;
+
+    // Don't allow dropping on @everyone
+    if (targetRole.is_default) return;
+
+    const draggedRole = roles().find((r) => r.id === draggedId);
+    if (!draggedRole) return;
+
+    // Security check: Can't move above user's highest role
+    if (!isOwner() && targetRole.position <= userHighestPosition()) return;
+
+    try {
+      await reorderRole(props.guildId, draggedId, targetRole.position);
+    } catch (err) {
+      console.error("Failed to reorder role:", err);
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDraggedRoleId(null);
+    setDropTargetId(null);
+  };
 
   const countPermissions = (permissions: number): number => {
     let count = 0;
@@ -93,9 +172,27 @@ const RolesTab: Component<RolesTabProps> = (props) => {
           <For each={roles()}>
             {(role) => (
               <div
-                class="flex items-center gap-3 p-3 rounded-lg border border-white/10 hover:bg-white/5 transition-colors group"
+                class="flex items-center gap-3 p-3 rounded-lg border transition-colors group"
+                classList={{
+                  "border-white/10 hover:bg-white/5": dropTargetId() !== role.id,
+                  "border-accent-primary bg-accent-primary/10": dropTargetId() === role.id,
+                  "opacity-50": draggedRoleId() === role.id,
+                }}
                 style="background-color: var(--color-surface-layer1)"
+                draggable={canManageRoles() && canReorderRole(role)}
+                onDragStart={(e) => handleDragStart(e, role.id)}
+                onDragOver={(e) => handleDragOver(e, role)}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, role)}
+                onDragEnd={handleDragEnd}
               >
+                {/* Drag handle */}
+                <Show when={canManageRoles() && canReorderRole(role)}>
+                  <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                    <GripVertical class="w-4 h-4" />
+                  </div>
+                </Show>
+
                 {/* Color dot */}
                 <div
                   class="w-3 h-3 rounded-full flex-shrink-0"

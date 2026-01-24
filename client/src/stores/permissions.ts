@@ -130,6 +130,63 @@ export async function deleteRole(guildId: string, roleId: string): Promise<void>
   );
 }
 
+/**
+ * Reorder a role to a new position.
+ * Moves the role and adjusts other roles' positions accordingly.
+ */
+export async function reorderRole(
+  guildId: string,
+  roleId: string,
+  newPosition: number
+): Promise<void> {
+  // Optimistically update the UI first
+  const roles = getGuildRoles(guildId);
+  const roleIndex = roles.findIndex((r) => r.id === roleId);
+  if (roleIndex === -1) return;
+
+  const role = roles[roleIndex];
+  const oldPosition = role.position;
+
+  // Can't reorder the @everyone role (always at the bottom)
+  if (role.is_default) return;
+
+  // Create new array with updated positions
+  const updatedRoles = roles.map((r) => {
+    if (r.id === roleId) {
+      return { ...r, position: newPosition };
+    }
+    // Shift roles between old and new position
+    if (oldPosition < newPosition) {
+      // Moving down: shift roles in between up
+      if (r.position > oldPosition && r.position <= newPosition) {
+        return { ...r, position: r.position - 1 };
+      }
+    } else {
+      // Moving up: shift roles in between down
+      if (r.position >= newPosition && r.position < oldPosition) {
+        return { ...r, position: r.position + 1 };
+      }
+    }
+    return r;
+  });
+
+  // Sort by position
+  updatedRoles.sort((a, b) => a.position - b.position);
+
+  // Update local state optimistically
+  setPermissionsState("roles", guildId, updatedRoles);
+
+  try {
+    // Send update to server
+    await tauri.updateGuildRole(guildId, roleId, { position: newPosition });
+  } catch (err) {
+    console.error("[Permissions] Failed to reorder role:", err);
+    // Revert on failure by reloading
+    await loadGuildRoles(guildId);
+    throw err;
+  }
+}
+
 // ============================================================================
 // Member Role Functions
 // ============================================================================
