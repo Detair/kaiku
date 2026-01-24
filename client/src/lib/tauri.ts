@@ -7,6 +7,7 @@
 import type {
   User,
   Channel,
+  ChannelCategory,
   Message,
   AppSettings,
   Guild,
@@ -51,7 +52,7 @@ import type {
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse };
+export type { User, Channel, ChannelCategory, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse };
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -433,11 +434,12 @@ export async function createChannel(
   name: string,
   channelType: "text" | "voice",
   guildId?: string,
-  topic?: string
+  topic?: string,
+  categoryId?: string
 ): Promise<Channel> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_channel", { name, channelType, guildId, topic });
+    return invoke("create_channel", { name, channelType, guildId, topic, categoryId });
   }
 
   return httpRequest<Channel>("POST", "/api/channels", {
@@ -445,6 +447,7 @@ export async function createChannel(
     channel_type: channelType,
     guild_id: guildId,
     topic,
+    category_id: categoryId,
   });
 }
 
@@ -725,6 +728,103 @@ export async function kickGuildMember(guildId: string, userId: string): Promise<
   }
 
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}/members/${userId}`);
+}
+
+// Guild Category Commands
+
+/**
+ * Get all categories for a guild.
+ */
+export async function getGuildCategories(guildId: string): Promise<ChannelCategory[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_guild_categories", { guildId });
+  }
+
+  return httpRequest<ChannelCategory[]>("GET", `/api/guilds/${guildId}/categories`);
+}
+
+/**
+ * Create a new category in a guild.
+ */
+export async function createGuildCategory(
+  guildId: string,
+  name: string,
+  parentId?: string
+): Promise<ChannelCategory> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("create_guild_category", { guildId, name, parentId });
+  }
+
+  return httpRequest<ChannelCategory>("POST", `/api/guilds/${guildId}/categories`, {
+    name,
+    parent_id: parentId,
+  });
+}
+
+/**
+ * Update a category.
+ */
+export async function updateGuildCategory(
+  guildId: string,
+  categoryId: string,
+  updates: {
+    name?: string;
+    position?: number;
+    parentId?: string | null;
+  }
+): Promise<ChannelCategory> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("update_guild_category", { guildId, categoryId, ...updates });
+  }
+
+  return httpRequest<ChannelCategory>(
+    "PATCH",
+    `/api/guilds/${guildId}/categories/${categoryId}`,
+    {
+      name: updates.name,
+      position: updates.position,
+      parent_id: updates.parentId,
+    }
+  );
+}
+
+/**
+ * Delete a category.
+ */
+export async function deleteGuildCategory(
+  guildId: string,
+  categoryId: string
+): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("delete_guild_category", { guildId, categoryId });
+  }
+
+  await httpRequest<void>("DELETE", `/api/guilds/${guildId}/categories/${categoryId}`);
+}
+
+/**
+ * Reorder categories in a guild.
+ */
+export async function reorderGuildCategories(
+  guildId: string,
+  categories: Array<{ id: string; position: number; parentId?: string | null }>
+): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("reorder_guild_categories", { guildId, categories });
+  }
+
+  await httpRequest<void>("POST", `/api/guilds/${guildId}/categories/reorder`, {
+    categories: categories.map((c) => ({
+      id: c.id,
+      position: c.position,
+      parent_id: c.parentId,
+    })),
+  });
 }
 
 // Friends Commands

@@ -12,6 +12,8 @@ import { Portal } from "solid-js/web";
 interface CreateChannelModalProps {
   guildId: string;
   initialType?: "text" | "voice";
+  /** Optional category ID to create the channel in */
+  categoryId?: string | null;
   onClose: () => void;
   onCreated?: (channelId: string) => void;
 }
@@ -40,7 +42,13 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
     setError(null);
 
     try {
-      const channel = await createChannel(channelName, channelType(), props.guildId);
+      const channel = await createChannel(
+        channelName,
+        channelType(),
+        props.guildId,
+        undefined, // topic
+        props.categoryId ?? undefined
+      );
       props.onCreated?.(channel.id);
       props.onClose();
     } catch (err) {
