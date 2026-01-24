@@ -2,6 +2,7 @@ import { Component, For, Show } from "solid-js";
 import { UserStatus } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { markManualStatusChange } from "@/stores/presence";
+import StatusIndicator from "./StatusIndicator";
 
 interface StatusPickerProps {
   currentStatus: UserStatus;
@@ -9,11 +10,11 @@ interface StatusPickerProps {
   onCustomStatusClick?: () => void;
 }
 
-const STATUS_OPTIONS: { value: UserStatus; label: string; color: string }[] = [
-  { value: "online", label: "Online", color: "bg-green-500" },
-  { value: "idle", label: "Idle", color: "bg-yellow-500" },
-  { value: "dnd", label: "Do Not Disturb", color: "bg-red-500" },
-  { value: "invisible", label: "Invisible", color: "bg-gray-500" },
+const STATUS_OPTIONS: { value: UserStatus; label: string }[] = [
+  { value: "online", label: "Online" },
+  { value: "idle", label: "Idle" },
+  { value: "dnd", label: "Do Not Disturb" },
+  { value: "invisible", label: "Invisible" },
 ];
 
 const StatusPicker: Component<StatusPickerProps> = (props) => {
@@ -39,7 +40,9 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
               onClick={() => handleSelect(option.value)}
               class="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-left group"
             >
-              <div class={`w-3 h-3 rounded-full ${option.color} group-hover:scale-110 transition-transform`} />
+              <div class="group-hover:scale-110 transition-transform">
+                <StatusIndicator status={option.value} size="sm" />
+              </div>
               <span class="text-sm font-medium text-text-primary">
                 {option.label}
               </span>
