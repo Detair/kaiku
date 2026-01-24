@@ -318,6 +318,28 @@ export interface AppSettings {
   notifications_enabled: boolean;
 }
 
+// Display Preferences Types
+export type DisplayMode = "dense" | "minimal" | "discord";
+export type ReactionStyle = "bar" | "compact";
+
+export interface DisplayPreferences {
+  /** How status indicators are displayed (dense=full info, minimal=compact, discord=Discord-style) */
+  indicatorMode: DisplayMode;
+  /** Whether to show latency numbers on voice indicators */
+  showLatencyNumbers: boolean;
+  /** How reactions are displayed on messages */
+  reactionStyle: ReactionStyle;
+  /** Minutes of inactivity before user is marked as idle */
+  idleTimeoutMinutes: number;
+}
+
+export const DEFAULT_DISPLAY_PREFERENCES: DisplayPreferences = {
+  indicatorMode: "dense",
+  showLatencyNumbers: true,
+  reactionStyle: "bar",
+  idleTimeoutMinutes: 5,
+};
+
 // User Preferences (synced across devices)
 export interface UserPreferences {
   // Theme
@@ -352,6 +374,9 @@ export interface UserPreferences {
       pins: boolean;
     };
   };
+
+  // Display preferences for UI customization
+  display: DisplayPreferences;
 }
 
 export interface PreferencesResponse {

@@ -12,6 +12,7 @@ import type {
   PreferencesResponse,
   StoredPreferences,
 } from "@/lib/types";
+import { DEFAULT_DISPLAY_PREFERENCES } from "@/lib/types";
 
 // ============================================================================
 // Constants
@@ -51,6 +52,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
       pins: false,
     },
   },
+  display: DEFAULT_DISPLAY_PREFERENCES,
 };
 
 // ============================================================================
