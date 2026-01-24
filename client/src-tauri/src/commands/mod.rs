@@ -9,6 +9,7 @@ pub mod chat;
 pub mod clipboard;
 pub mod crypto;
 pub mod pages;
+pub mod pins;
 pub mod preferences;
 pub mod presence;
 pub mod roles;

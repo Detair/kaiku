@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 4 (Advanced Features) - In Progress
 
-**Last Updated:** 2026-01-23
+**Last Updated:** 2026-01-24
 
 ## Quick Status Overview
 
@@ -222,11 +222,12 @@ This roadmap outlines the development path from the current prototype to a produ
   - Handles overnight ranges (e.g., 22:00 to 08:00).
   - Call ring sounds also suppressed during DND.
   - **Design:** `docs/plans/2026-01-23-read-sync-dnd-design.md`
-- [ ] **[UX] Modular Home Sidebar**
-  - "Active Now" panel showing friends' activities (implemented).
-  - "Pending & Suggestions" quick-action module (planned).
-  - "Global Pins / Scratchpad" personal utility module (planned).
-  - "Server Pulse" activity summary module (planned).
+- [x] **[UX] Modular Home Sidebar** ✅
+  - Collapsible module framework with server-synced state
+  - Active Now module showing friends' game activity
+  - Pending module for friend requests
+  - Pins module for notes, links, and bookmarks
+  - **Design:** `docs/plans/2026-01-24-modular-home-sidebar-design.md`
 - [ ] **[UX] Cross-Server Favorites**
   - Allow pinning channels from different guilds into a single "Favorites" list.
 - [ ] **[Auth] SSO / OIDC Integration**
@@ -261,6 +262,9 @@ This roadmap outlines the development path from the current prototype to a produ
 ---
 
 ## Recent Changes
+
+### 2026-01-24
+- Added Modular Home Sidebar - Collapsible modules (Active Now, Pending, Pins) in Home right panel with server-synced preferences.
 
 ### 2026-01-23
 - Marked Rich Presence (Game Activity) complete - was already implemented.

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Modular Home Sidebar with collapsible modules:
+  - Active Now module shows friends currently playing games
+  - Pending module with quick accept/decline for friend requests
+  - Pins module for saving notes and links across devices
+  - Module collapse state syncs across all devices via server preferences
 - Server-synced user preferences
   - Theme, sound settings, quiet hours, and per-channel notifications sync across all devices
   - Real-time updates via WebSocket when preferences change on another device
