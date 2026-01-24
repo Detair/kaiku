@@ -1,313 +1,313 @@
-# VoiceChat Platform – Projekt-Personas
+# VoiceChat Platform – Project Personas
 
-Dieses Dokument definiert die Personas, die bei Design-Entscheidungen, Code-Reviews und Feature-Diskussionen als Perspektiven herangezogen werden. Jede Persona repräsentiert eine wichtige Stakeholder-Sicht auf das Projekt.
+This document defines the personas used as perspectives in design decisions, code reviews, and feature discussions. Each persona represents an important stakeholder view on the project.
 
 ---
 
-## Übersicht
+## Overview
 
-| Persona | Rolle | Fokus | Kernfrage |
-|---------|-------|-------|-----------|
-| **Elrond** | Software Architect | Systemdesign, Erweiterbarkeit | „Skaliert das?" |
-| **Éowyn** | Senior Fullstack Dev | Code-Qualität, UX | „Ist das wartbar?" |
-| **Samweis** | DevOps Engineer | Deployment, Ops | „Läuft das zuverlässig?" |
-| **Faramir** | Security Engineer | Angriffsvektoren, Crypto | „Wie kann das gehackt werden?" |
-| **Gimli** | Compliance Specialist | Lizenzen, Legal | „Ist das lizenzkonform?" |
-| **Legolas** | QA Engineer | Testing, Edge-Cases | „Ist das getestet?" |
-| **Pippin** | Community Manager | User Experience | „Verstehen Nutzer das?" |
-| **Bilbo** | Self-Hoster | Installation, Docs | „Kann ich das einrichten?" |
-| **Gandalf** | Performance Engineer | Latenz, Profiling | „Wie schnell ist das wirklich?" |
+| Persona | Role | Focus | Core Question |
+|---------|------|-------|---------------|
+| **Elrond** | Software Architect | System Design, Extensibility | "Does this scale?" |
+| **Éowyn** | Senior Fullstack Dev | Code Quality, UX | "Is this maintainable?" |
+| **Samweis** | DevOps Engineer | Deployment, Ops | "Does this run reliably?" |
+| **Faramir** | Security Engineer | Attack Vectors, Crypto | "How can this be hacked?" |
+| **Gimli** | Compliance Specialist | Licenses, Legal | "Is this license-compliant?" |
+| **Legolas** | QA Engineer | Testing, Edge Cases | "Is this tested?" |
+| **Pippin** | Community Manager | User Experience | "Do users understand this?" |
+| **Bilbo** | Self-Hoster | Installation, Docs | "Can I set this up?" |
+| **Gandalf** | Performance Engineer | Latency, Profiling | "How fast is this really?" |
 
 ---
 
 ## 1. Elrond – Software Architect
 
-**Hintergrund:** 12 Jahre Erfahrung, davon 4 Jahre mit Rust. Hat zuvor an einem Video-Streaming-Dienst gearbeitet. Denkt in Systemen und Abstraktionen. Hat schon viele Technologien kommen und gehen sehen.
+**Background:** 12 years of experience, 4 of which with Rust. Previously worked on a video streaming service. Thinks in systems and abstractions. Has seen many technologies come and go.
 
-**Perspektive:** Sieht das große Ganze, achtet auf Erweiterbarkeit und saubere Schnittstellen. Ist pragmatisch – will kein Over-Engineering, aber auch keine technischen Schulden von Anfang an. Plant für Jahrzehnte, nicht für Sprints.
+**Perspective:** Sees the big picture, focuses on extensibility and clean interfaces. Is pragmatic – wants no over-engineering, but also no technical debt from the start. Plans for decades, not sprints.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Wie skaliert das, wenn wir später doch Multi-Node brauchen?"
-- „Ist die Service-Grenze hier richtig gezogen oder schaffen wir uns zirkuläre Dependencies?"
-- „Können wir das Interface so gestalten, dass MLS später ein Drop-in-Replacement ist?"
-- „Ich habe diese Architektur schon einmal scheitern sehen – was machen wir anders?"
+- "How does this scale if we need multi-node later?"
+- "Is the service boundary drawn correctly here, or are we creating circular dependencies?"
+- "Can we design this interface so MLS can be a drop-in replacement later?"
+- "I've seen this architecture fail before – what are we doing differently?"
 
-**Mantra:** *„Die beste Architektur ist die, die man in 2 Jahren noch verstehen und ändern kann."*
+**Mantra:** *"The best architecture is one you can still understand and modify in 2 years."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- API-Design und Schnittstellen
-- Modul-Grenzen und Abhängigkeiten
-- Erweiterbarkeit und Zukunftssicherheit
-- Trade-offs zwischen Komplexität und Flexibilität
+- API design and interfaces
+- Module boundaries and dependencies
+- Extensibility and future-proofing
+- Trade-offs between complexity and flexibility
 
 ---
 
 ## 2. Éowyn – Senior Fullstack Developer
 
-**Hintergrund:** 7 Jahre Erfahrung, TypeScript-Expertin, lernt gerade Rust. Hat bei einem Gaming-Startup gearbeitet und kennt die Schmerzpunkte von Discord aus Nutzersicht. Unterschätzt man leicht – zu Unrecht.
+**Background:** 7 years of experience, TypeScript expert, currently learning Rust. Worked at a gaming startup and knows Discord's pain points from a user perspective. Often underestimated – wrongly so.
 
-**Perspektive:** Brücke zwischen Backend und Frontend. Denkt an Developer Experience und User Experience gleichzeitig. Will, dass der Code lesbar und wartbar bleibt. Scheut sich nicht, auch Backend-Aufgaben zu übernehmen.
+**Perspective:** Bridge between backend and frontend. Thinks about developer experience and user experience simultaneously. Wants code to remain readable and maintainable. Not afraid to take on backend tasks.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Wie fühlt sich die Latenz beim Tippen im Chat an?"
-- „Sind die Tauri-Commands gut strukturiert oder wird das Frontend zum Chaos?"
-- „Können wir hier einen optimistischen UI-Update machen?"
-- „Warum muss das so kompliziert sein? Geht das nicht einfacher?"
+- "How does the latency feel when typing in chat?"
+- "Are the Tauri commands well-structured, or is the frontend becoming chaotic?"
+- "Can we do an optimistic UI update here?"
+- "Why does this have to be so complicated? Can't it be simpler?"
 
-**Mantra:** *„Wenn ich den Code in 6 Monaten nicht mehr verstehe, ist er falsch."*
+**Mantra:** *"If I can't understand the code in 6 months, it's wrong."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- Code-Lesbarkeit und Wartbarkeit
-- Frontend-Backend-Interaktion
-- Error-Handling und User-Feedback
-- TypeScript-Typisierung und Rust-API-Ergonomie
+- Code readability and maintainability
+- Frontend-backend interaction
+- Error handling and user feedback
+- TypeScript typing and Rust API ergonomics
 
 ---
 
 ## 3. Samweis – DevOps / Infrastructure Engineer
 
-**Hintergrund:** 9 Jahre Erfahrung, kommt aus der Linux-Welt. Betreibt selbst einen Homelab-Cluster. Liebt Docker, hasst „es funktioniert auf meinem Rechner". Gibt nicht auf, bis es läuft.
+**Background:** 9 years of experience, comes from the Linux world. Runs a homelab cluster. Loves Docker, hates "it works on my machine". Doesn't give up until it works.
 
-**Perspektive:** Denkt an Deployment, Monitoring, Backups und was passiert, wenn nachts um 3 Uhr der Server brennt. Will, dass Self-Hoster eine gute Erfahrung haben. Kümmert sich um die Dinge, die andere vergessen.
+**Perspective:** Thinks about deployment, monitoring, backups, and what happens when the server catches fire at 3 AM. Wants self-hosters to have a good experience. Takes care of the things others forget.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Wie sieht das docker-compose für einen Nicht-Techniker aus?"
-- „Was passiert, wenn PostgreSQL voll läuft?"
-- „Haben wir Health-Checks und vernünftige Logs?"
-- „Wie migrieren wir die Datenbank bei Updates?"
-- „Ich trag das Backup schon, keine Sorge."
+- "What does the docker-compose look like for a non-technical user?"
+- "What happens when PostgreSQL runs out of disk space?"
+- "Do we have health checks and proper logs?"
+- "How do we migrate the database on updates?"
+- "I'll carry the backup, don't worry."
 
-**Mantra:** *„Wenn es nicht automatisiert ist, existiert es nicht."*
+**Mantra:** *"If it's not automated, it doesn't exist."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- Docker-Konfiguration und Compose-Files
-- Logging und Monitoring
-- Backup- und Recovery-Prozesse
-- Migrations- und Update-Strategien
-- Ressourcen-Limits und Health-Checks
+- Docker configuration and compose files
+- Logging and monitoring
+- Backup and recovery processes
+- Migration and update strategies
+- Resource limits and health checks
 
 ---
 
 ## 4. Faramir – Cyber Security Engineer
 
-**Hintergrund:** 10 Jahre Security, Pentesting-Background, hat CVEs in bekannter Software gefunden. Geht davon aus, dass alles gehackt werden kann und wird. Vorsichtig, aber nicht paranoid – wägt Risiken ab.
+**Background:** 10 years in security, pentesting background, has found CVEs in well-known software. Assumes everything can and will be hacked. Cautious but not paranoid – weighs risks.
 
-**Perspektive:** Der skeptische Advocatus Diaboli. Sucht aktiv nach Schwachstellen. Fragt immer: „Was, wenn ein Angreifer X tut?" Sieht E2EE nicht als Allheilmittel. Wird oft ignoriert, behält aber meistens recht.
+**Perspective:** The skeptical devil's advocate. Actively looks for vulnerabilities. Always asks: "What if an attacker does X?" Doesn't see E2EE as a silver bullet. Often ignored, but usually right.
 
-**Typische Fragen/Bedenken:**
+**Typical Questions/Concerns:**
 
-- „DTLS-SRTP heißt, der Server sieht Audio – ist das den Nutzern klar?"
-- „Wie schützen wir die One-Time-Prekeys vor Depletion-Attacken?"
-- „Was passiert bei Key Compromise? Wie ist der Recovery-Prozess?"
-- „Rate-Limiting auf Login ist gut, aber was ist mit WebSocket-Flooding?"
-- „Der JWT ist 15 Minuten gültig – was wenn er geleakt wird?"
-- „Ich würde das nicht so bauen. Aber ich werde es verteidigen, wenn ihr es tut."
+- "DTLS-SRTP means the server sees audio – is that clear to users?"
+- "How do we protect one-time prekeys from depletion attacks?"
+- "What happens on key compromise? What's the recovery process?"
+- "Rate limiting on login is good, but what about WebSocket flooding?"
+- "The JWT is valid for 15 minutes – what if it gets leaked?"
+- "I wouldn't build it this way. But I'll defend it if you do."
 
-**Mantra:** *„Sicherheit ist kein Feature, das man später hinzufügt."*
+**Mantra:** *"Security is not a feature you add later."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- Authentifizierung und Autorisierung
-- Input-Validierung und Injection-Prävention
-- Kryptografische Implementierungen
-- Rate-Limiting und DoS-Schutz
-- Secrets-Management und Key-Rotation
+- Authentication and authorization
+- Input validation and injection prevention
+- Cryptographic implementations
+- Rate limiting and DoS protection
+- Secrets management and key rotation
 
 ---
 
 ## 5. Gimli – Compliance & Licensing Specialist
 
-**Hintergrund:** Juristischer Background mit Tech-Fokus. Arbeitet seit 6 Jahren an Open-Source-Compliance. Hat schon GPL-Verstöße in Unternehmen aufgedeckt. Stur, wenn es um Regeln geht – aber loyal.
+**Background:** Legal background with tech focus. Has worked on open-source compliance for 6 years. Has uncovered GPL violations in companies. Stubborn about rules – but loyal.
 
-**Perspektive:** Paranoid bezüglich Lizenzen. Weiß, dass ein einziger AGPL-Import das ganze Projekt infizieren kann. Liest jeden `Cargo.toml`-Eintrag. Versteht keinen Spaß bei Lizenzfragen.
+**Perspective:** Paranoid about licenses. Knows that a single AGPL import can infect the entire project. Reads every `Cargo.toml` entry. Doesn't joke about licensing issues.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Ist libsignal wirklich komplett raus? Auch in transitiven Dependencies?"
-- „Was steht in der NOTICE-Datei von ring? Müssen wir das dokumentieren?"
-- „Wenn jemand einen Fork macht und MongoDB anbindet, was passiert dann lizenzrechtlich?"
-- „Haben wir cargo-deny in der CI?"
-- „Das steht so im Vertrag. Und an Verträge hält man sich."
+- "Is libsignal completely gone? Including transitive dependencies?"
+- "What does the NOTICE file of ring say? Do we need to document that?"
+- "If someone forks and connects MongoDB, what happens legally?"
+- "Do we have cargo-deny in CI?"
+- "That's what the contract says. And you honor contracts."
 
-**Mantra:** *„Eine vergessene Lizenz ist eine tickende Zeitbombe."*
+**Mantra:** *"A forgotten license is a ticking time bomb."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- Neue Dependencies und deren Lizenzen
-- Transitive Abhängigkeiten
-- THIRD_PARTY_NOTICES.md Aktualität
-- cargo-deny Konfiguration
-- Attribution und Copyright-Header
+- New dependencies and their licenses
+- Transitive dependencies
+- THIRD_PARTY_NOTICES.md currency
+- cargo-deny configuration
+- Attribution and copyright headers
 
 ---
 
 ## 6. Legolas – Quality Assurance Engineer
 
-**Hintergrund:** 8 Jahre QA, davon 3 Jahre in Real-Time-Systemen. Hat ein Händchen dafür, Edge-Cases zu finden, an die niemand gedacht hat. Sieht Bugs, bevor sie entstehen.
+**Background:** 8 years QA, 3 of which in real-time systems. Has a knack for finding edge cases no one thought of. Sees bugs before they happen.
 
-**Perspektive:** Denkt in Testszenarien und User-Flows. Fragt: „Was passiert, wenn..." Interessiert sich für Reproduzierbarkeit und Testautomatisierung. Präzise und detailorientiert.
+**Perspective:** Thinks in test scenarios and user flows. Asks: "What happens when..." Interested in reproducibility and test automation. Precise and detail-oriented.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Wie testen wir Voice-Qualität automatisiert?"
-- „Was passiert, wenn ein User während des Sprechens die Verbindung verliert?"
-- „Können wir E2EE-Flows testen ohne die Crypto zu mocken?"
-- „Wie simulieren wir 50 gleichzeitige Voice-User?"
-- „Was ist die Test-Strategie für SSO mit verschiedenen Providern?"
-- „Da war etwas. Im dritten Request. Habt ihr das auch gesehen?"
+- "How do we test voice quality automatically?"
+- "What happens when a user loses connection while speaking?"
+- "Can we test E2EE flows without mocking crypto?"
+- "How do we simulate 50 concurrent voice users?"
+- "What's the test strategy for SSO with different providers?"
+- "There was something. In the third request. Did you see it too?"
 
-**Mantra:** *„Wenn es keinen Test gibt, ist es kaputt – wir wissen es nur noch nicht."*
+**Mantra:** *"If there's no test, it's broken – we just don't know it yet."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- Test-Coverage und Test-Qualität
-- Edge-Cases und Fehlerszenarien
-- Integration-Tests und E2E-Tests
-- Testbarkeit des Codes
-- Reproduzierbarkeit von Bugs
+- Test coverage and test quality
+- Edge cases and error scenarios
+- Integration tests and E2E tests
+- Code testability
+- Bug reproducibility
 
 ---
 
 ## 7. Pippin – Community Manager / Early Adopter
 
-**Hintergrund:** Enthusiastischer Gamer, moderiert mehrere Discord-Server. Kein Entwickler, aber technisch interessiert. Repräsentiert die Zielgruppe. Fragt Dinge, die Entwickler für selbstverständlich halten.
+**Background:** Enthusiastic gamer, moderates several Discord servers. Not a developer, but technically curious. Represents the target audience. Asks things developers take for granted.
 
-**Perspektive:** Die Stimme der Nutzer. Testet Features aus User-Sicht. Gibt ehrliches Feedback, auch wenn es wehtut. Findet UX-Probleme durch Ausprobieren. Manchmal chaotisch, aber bringt frischen Wind.
+**Perspective:** The voice of users. Tests features from a user perspective. Gives honest feedback, even when it hurts. Finds UX problems through trying things out. Sometimes chaotic, but brings fresh air.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Warum muss ich hier dreimal klicken? Bei Discord geht das mit einem."
-- „Was bedeutet ‚DTLS-SRTP Handshake fehlgeschlagen'? Das sagt mir nichts."
-- „Kann ich meine Freunde einladen, ohne dass sie IT studiert haben?"
-- „Die Emojis sind zu klein. Das ist wichtig, glaubt mir."
-- „Oh, was macht dieser Knopf?"
+- "Why do I have to click three times here? Discord does it with one."
+- "What does 'DTLS-SRTP handshake failed' mean? That tells me nothing."
+- "Can I invite my friends without them having an IT degree?"
+- "The emojis are too small. This is important, trust me."
+- "Oh, what does this button do?"
 
-**Mantra:** *„Wenn ich es nicht verstehe, versteht es niemand in meiner Community."*
+**Mantra:** *"If I don't understand it, nobody in my community will."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- Fehlermeldungen und deren Verständlichkeit
-- Onboarding-Flow für neue Nutzer
-- Feature-Discoverability
-- Vergleich mit Discord/TeamSpeak/Mumble
-- Community-relevante Features (Emojis, Mentions, etc.)
+- Error messages and their clarity
+- Onboarding flow for new users
+- Feature discoverability
+- Comparison with Discord/TeamSpeak/Mumble
+- Community-relevant features (emojis, mentions, etc.)
 
 ---
 
 ## 8. Bilbo – Self-Hoster Enthusiast
 
-**Hintergrund:** Technisch versiert, aber kein Entwickler. Betreibt zu Hause einen kleinen Server mit Nextcloud und Pi-hole. Will Kontrolle über seine Daten. Abenteuerlustig, aber schätzt gute Dokumentation.
+**Background:** Technically savvy, but not a developer. Runs a small home server with Nextcloud and Pi-hole. Wants control over his data. Adventurous, but values good documentation.
 
-**Perspektive:** Testet die Installations-Dokumentation. Repräsentiert den typischen Self-Hoster: motiviert, aber begrenzte Zeit und Geduld. Wenn Bilbo es installieren kann, kann es jeder.
+**Perspective:** Tests the installation documentation. Represents the typical self-hoster: motivated but with limited time and patience. If Bilbo can install it, anyone can.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Steht irgendwo, welche Ports ich freigeben muss?"
-- „Was bedeutet ‚OIDC_ISSUER_URL'? Brauche ich das?"
-- „Kann ich das auch ohne Docker installieren?"
-- „Was mache ich, wenn das Update schiefgeht?"
-- „Das mit dem Backup – muss das sein, oder ist das optional?"
-- „Ein Abenteuer! Aber bitte mit Anleitung."
+- "Does it say anywhere which ports I need to open?"
+- "What does 'OIDC_ISSUER_URL' mean? Do I need that?"
+- "Can I also install this without Docker?"
+- "What do I do if the update goes wrong?"
+- "The backup thing – is that required, or is it optional?"
+- "An adventure! But please with instructions."
 
-**Mantra:** *„Ich will es selbst hosten, nicht selbst debuggen."*
+**Mantra:** *"I want to self-host it, not self-debug it."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- README und Installations-Dokumentation
-- docker-compose.yml Verständlichkeit
-- Umgebungsvariablen und deren Dokumentation
-- Troubleshooting-Guides
-- Upgrade-Dokumentation
+- README and installation documentation
+- docker-compose.yml clarity
+- Environment variables and their documentation
+- Troubleshooting guides
+- Upgrade documentation
 
 ---
 
 ## 9. Gandalf – Performance Engineer
 
-**Hintergrund:** 15 Jahre Erfahrung, hat an Low-Latency-Systemen gearbeitet (Börsenhandel, Gaming-Server). Versteht, was auf CPU-Cycle-Ebene passiert. Kommt genau dann, wenn man ihn braucht.
+**Background:** 15 years of experience, has worked on low-latency systems (stock trading, gaming servers). Understands what happens at the CPU cycle level. Arrives exactly when needed.
 
-**Perspektive:** Fokus auf Latenz-Optimierung, Profiling, Memory-Leaks. Weiß, dass Performance-Probleme meist architektonische Ursachen haben. Misst alles, vermutet nichts.
+**Perspective:** Focus on latency optimization, profiling, memory leaks. Knows that performance problems usually have architectural causes. Measures everything, assumes nothing.
 
-**Typische Fragen:**
+**Typical Questions:**
 
-- „Warum allokieren wir hier bei jedem Frame neu?"
-- „Haben wir Flame-Graphs vom Voice-Path?"
-- „Was ist die P99-Latenz unter Last?"
-- „Dieser Lock hier – wie lange wird der gehalten?"
-- „50ms ist zu viel. 20ms ist akzeptabel. 10ms ist das Ziel."
-- „Ein Performance-Problem ist nie zu spät erkannt – nur zu spät behoben."
+- "Why are we allocating here on every frame?"
+- "Do we have flame graphs from the voice path?"
+- "What's the P99 latency under load?"
+- "This lock here – how long is it held?"
+- "50ms is too much. 20ms is acceptable. 10ms is the goal."
+- "A performance problem is never detected too late – only fixed too late."
 
-**Mantra:** *„Premature optimization ist das Problem. Aber mature optimization ist die Lösung."*
+**Mantra:** *"Premature optimization is the problem. But mature optimization is the solution."*
 
-**Review-Fokus:**
+**Review Focus:**
 
-- Hot-Paths und deren Optimierung
-- Allokationen und Memory-Management
-- Lock-Contention und Concurrency
-- Benchmarks und Performance-Tests
-- Profiling-Ergebnisse und Flame-Graphs
+- Hot paths and their optimization
+- Allocations and memory management
+- Lock contention and concurrency
+- Benchmarks and performance tests
+- Profiling results and flame graphs
 
 ---
 
-## Verwendung der Personas
+## Using the Personas
 
-### In Design-Diskussionen
+### In Design Discussions
 
-Bei neuen Features oder Architektur-Entscheidungen sollten folgende Fragen gestellt werden:
+When discussing new features or architecture decisions, the following questions should be asked:
 
-1. **Elrond:** Passt das in die Gesamtarchitektur?
-2. **Faramir:** Welche Sicherheitsrisiken entstehen?
-3. **Gimli:** Gibt es Lizenzprobleme?
-4. **Gandalf:** Welche Performance-Implikationen hat das?
+1. **Elrond:** Does this fit the overall architecture?
+2. **Faramir:** What security risks arise?
+3. **Gimli:** Are there licensing issues?
+4. **Gandalf:** What are the performance implications?
 
-### In Code-Reviews
+### In Code Reviews
 
-Je nach Art der Änderung sollten verschiedene Personas priorisiert werden:
+Depending on the type of change, different personas should be prioritized:
 
-| Art der Änderung | Primäre Personas |
-|------------------|------------------|
-| Neue Dependency | Gimli, Faramir |
-| API-Änderung | Elrond, Éowyn |
-| Performance-kritischer Code | Gandalf, Legolas |
-| UI/UX-Änderung | Pippin, Éowyn |
+| Type of Change | Primary Personas |
+|----------------|------------------|
+| New Dependency | Gimli, Faramir |
+| API Change | Elrond, Éowyn |
+| Performance-critical Code | Gandalf, Legolas |
+| UI/UX Change | Pippin, Éowyn |
 | Deployment/Config | Samweis, Bilbo |
-| Sicherheitsrelevant | Faramir, Legolas |
+| Security-relevant | Faramir, Legolas |
 
-### In der Dokumentation
+### In Documentation
 
-- **README.md:** Bilbo-Perspektive (Self-Hoster)
-- **ARCHITECTURE.md:** Elrond-Perspektive (Architektur)
-- **SECURITY.md:** Faramir-Perspektive (Security)
-- **CONTRIBUTING.md:** Éowyn-Perspektive (Developer)
+- **README.md:** Bilbo perspective (Self-Hoster)
+- **ARCHITECTURE.md:** Elrond perspective (Architecture)
+- **SECURITY.md:** Faramir perspective (Security)
+- **CONTRIBUTING.md:** Éowyn perspective (Developer)
 
 ---
 
-## Persona-Checkliste für PRs
+## Persona Checklist for PRs
 
 ```markdown
-## Persona-Check
+## Persona Check
 
-- [ ] **Elrond:** Architektur-Impact geprüft?
-- [ ] **Éowyn:** Code lesbar und wartbar?
-- [ ] **Samweis:** Deployment-Impact bedacht?
-- [ ] **Faramir:** Security-Implikationen geprüft?
-- [ ] **Gimli:** Neue Dependencies lizenzkonform?
-- [ ] **Legolas:** Tests vorhanden und sinnvoll?
-- [ ] **Pippin:** UX-Impact für Endnutzer?
-- [ ] **Bilbo:** Dokumentation aktualisiert?
-- [ ] **Gandalf:** Performance-kritische Pfade geprüft?
+- [ ] **Elrond:** Architecture impact reviewed?
+- [ ] **Éowyn:** Code readable and maintainable?
+- [ ] **Samweis:** Deployment impact considered?
+- [ ] **Faramir:** Security implications reviewed?
+- [ ] **Gimli:** New dependencies license-compliant?
+- [ ] **Legolas:** Tests present and meaningful?
+- [ ] **Pippin:** UX impact for end users?
+- [ ] **Bilbo:** Documentation updated?
+- [ ] **Gandalf:** Performance-critical paths reviewed?
 ```
 
 ---
 
-## Referenzen
+## References
 
-- [PROJECT_SPEC.md](../project/specification.md) – Projektanforderungen
-- [ARCHITECTURE.md](../architecture/overview.md) – Technische Architektur
-- [STANDARDS.md](../development/standards.md) – Verwendete Standards
-- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) – Lizenzprüfung
+- [PROJECT_SPEC.md](../project/specification.md) – Project Requirements
+- [ARCHITECTURE.md](../architecture/overview.md) – Technical Architecture
+- [STANDARDS.md](../development/standards.md) – Standards Used
+- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) – License Compliance

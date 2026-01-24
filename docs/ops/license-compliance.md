@@ -1,62 +1,62 @@
-# VoiceChat Platform - Lizenz-Compliance
+# VoiceChat Platform - License Compliance
 
-Dieses Dokument dokumentiert die Lizenzprüfung aller verwendeten Dependencies, um sicherzustellen, dass das Projekt als Open Source (MIT OR Apache-2.0) veröffentlicht werden kann.
+This document documents the license review of all dependencies used, to ensure the project can be released as open source (MIT OR Apache-2.0).
 
 ---
 
-## Projekt-Lizenz
+## Project License
 
 ```
 SPDX-License-Identifier: MIT OR Apache-2.0
 ```
 
-**Dual-Lizenzierung:** Nutzer können zwischen MIT und Apache 2.0 wählen.
+**Dual Licensing:** Users can choose between MIT and Apache 2.0.
 
-### Begründung für Dual-Lizenz
+### Rationale for Dual License
 
-| Aspekt | MIT | Apache 2.0 |
+| Aspect | MIT | Apache 2.0 |
 |--------|-----|------------|
-| Einfachheit | ✅ Sehr kurz und einfach | ⚠️ Länger, komplexer |
-| Patent-Schutz | ❌ Keiner | ✅ Expliziter Patent-Grant |
-| Attribution | ✅ Nur Copyright Notice | ✅ Copyright + NOTICE File |
-| Kompatibilität | ✅ Fast alles | ✅ Fast alles |
-| Unternehmensfreundlich | ✅ Ja | ✅ Ja (bevorzugt) |
+| Simplicity | ✅ Very short and simple | ⚠️ Longer, more complex |
+| Patent Protection | ❌ None | ✅ Explicit patent grant |
+| Attribution | ✅ Only copyright notice | ✅ Copyright + NOTICE file |
+| Compatibility | ✅ Almost everything | ✅ Almost everything |
+| Enterprise-friendly | ✅ Yes | ✅ Yes (preferred) |
 
-Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexibilität.
+Dual licensing is standard in the Rust ecosystem and provides maximum flexibility.
 
 ---
 
-## Lizenz-Kompatibilität
+## License Compatibility
 
-### Kompatibilitätsmatrix
+### Compatibility Matrix
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│              LIZENZ-KOMPATIBILITÄT MIT MIT/Apache 2.0           │
+│              LICENSE COMPATIBILITY WITH MIT/Apache 2.0          │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  ✅ KOMPATIBEL (können verwendet werden)                        │
+│  ✅ COMPATIBLE (can be used)                                    │
 │  ─────────────────────────────────────                          │
 │  • MIT                    - Permissive                          │
 │  • Apache 2.0             - Permissive + Patent                 │
 │  • BSD-2-Clause           - Permissive                          │
 │  • BSD-3-Clause           - Permissive                          │
-│  • ISC                    - Permissive (wie MIT)                │
+│  • ISC                    - Permissive (like MIT)               │
 │  • Zlib                   - Permissive                          │
 │  • CC0-1.0                - Public Domain                       │
 │  • Unlicense              - Public Domain                       │
 │  • Unicode-DFS-2016       - Permissive (Unicode Data)           │
 │                                                                  │
-│  ⚠️ EINGESCHRÄNKT KOMPATIBEL                                    │
+│  ⚠️ LIMITED COMPATIBILITY                                       │
 │  ───────────────────────────                                    │
 │  • MPL 2.0                - File-Level Copyleft                 │
-│                             (Änderungen an MPL-Dateien müssen   │
-│                              unter MPL bleiben, Rest ist frei)  │
+│                             (Changes to MPL files must          │
+│                              remain under MPL, rest is free)    │
 │                                                                  │
-│  ❌ NICHT KOMPATIBEL (dürfen NICHT verwendet werden)            │
+│  ❌ NOT COMPATIBLE (must NOT be used)                           │
 │  ──────────────────────────────────────────────────             │
-│  • GPL 2.0/3.0            - Starkes Copyleft                    │
-│  • LGPL 2.1/3.0           - Library Copyleft (bei static link) │
+│  • GPL 2.0/3.0            - Strong Copyleft                     │
+│  • LGPL 2.1/3.0           - Library Copyleft (with static link) │
 │  • AGPL 3.0               - Network Copyleft                    │
 │  • Proprietary            - Closed Source                       │
 │  • SSPL                   - Server-Side Public License          │
@@ -66,11 +66,11 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 
 ---
 
-## Server Dependencies Prüfung
+## Server Dependencies Review
 
 ### Web Framework & Runtime
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | axum | 0.7 | MIT | ✅ | MIT |
 | tokio | 1.x | MIT | ✅ | MIT |
@@ -80,14 +80,14 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 
 ### WebSocket & Real-Time
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | tokio-tungstenite | 0.21 | MIT | ✅ | MIT |
 | tungstenite | 0.21 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 
 ### WebRTC
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | webrtc | 0.11 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | webrtc-data | 0.9 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
@@ -98,9 +98,9 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 | webrtc-srtp | 0.13 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | webrtc-util | 0.9 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 
-### Datenbank
+### Database
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | sqlx | 0.7 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | sqlx-core | 0.7 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
@@ -108,13 +108,13 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 
 ### Redis
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | fred | 8.x | MIT | ✅ | MIT |
 
-### Authentifizierung
+### Authentication
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | jsonwebtoken | 9.x | MIT | ✅ | MIT |
 | argon2 | 0.5 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
@@ -122,12 +122,12 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 | openidconnect | 3.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | oauth2 | 4.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 
-### Kryptografie
+### Cryptography
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | rustls | 0.22 | MIT/Apache 2.0/ISC | ✅ | MIT OR Apache-2.0 OR ISC |
-| ring | 0.17 | MIT + ISC + OpenSSL | ✅ | Siehe Notiz¹ |
+| ring | 0.17 | MIT + ISC + OpenSSL | ✅ | See Note¹ |
 | x25519-dalek | 2.x | BSD-3-Clause | ✅ | BSD-3-Clause |
 | ed25519-dalek | 2.x | BSD-3-Clause | ✅ | BSD-3-Clause |
 | curve25519-dalek | 4.x | BSD-3-Clause | ✅ | BSD-3-Clause |
@@ -138,24 +138,24 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 | hmac | 0.12 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | rand | 0.8 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 
-¹ **ring Lizenz-Notiz:** ring verwendet Code unter MIT, ISC und OpenSSL-Lizenzen. Alle sind permissive und kompatibel.
+¹ **ring License Note:** ring uses code under MIT, ISC, and OpenSSL licenses. All are permissive and compatible.
 
 ### E2EE (Text)
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | vodozemac | 0.5 | Apache 2.0 | ✅ | Apache-2.0 |
 
-**Wichtig:** Wir verwenden bewusst `vodozemac` statt `libsignal`:
+**Important:** We intentionally use `vodozemac` instead of `libsignal`:
 
-| Library | Lizenz | Kompatibel? |
+| Library | License | Compatible? |
 |---------|--------|-------------|
-| vodozemac | Apache 2.0 | ✅ Ja |
-| libsignal-protocol | AGPL 3.0 | ❌ Nein |
+| vodozemac | Apache 2.0 | ✅ Yes |
+| libsignal-protocol | AGPL 3.0 | ❌ No |
 
-### Serialisierung
+### Serialization
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | serde | 1.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | serde_json | 1.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
@@ -163,7 +163,7 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 
 ### Utilities
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | uuid | 1.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | chrono | 0.4 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
@@ -176,32 +176,32 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 
 ### S3 Storage
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | aws-sdk-s3 | 1.x | Apache 2.0 | ✅ | Apache-2.0 |
 | aws-config | 1.x | Apache 2.0 | ✅ | Apache-2.0 |
 | aws-smithy-runtime | 1.x | Apache 2.0 | ✅ | Apache-2.0 |
 
-### API Dokumentation
+### API Documentation
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | utoipa | 4.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | utoipa-swagger-ui | 6.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 
 ### Markdown
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | pulldown-cmark | 0.10 | MIT | ✅ | MIT |
 
 ---
 
-## Client Dependencies Prüfung
+## Client Dependencies Review
 
 ### Tauri
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | tauri | 2.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 | tauri-build | 2.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
@@ -212,40 +212,40 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 
 ### Audio
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | cpal | 0.15 | Apache 2.0 | ✅ | Apache-2.0 |
 | opus | 0.3 | MIT | ✅ | MIT |
 | nnnoiseless | 0.5 | BSD-3-Clause | ✅ | BSD-3-Clause |
 
-**Notiz zu libopus:** Die native `libopus` Library ist BSD-3-Clause lizenziert.
+**Note on libopus:** The native `libopus` library is licensed under BSD-3-Clause.
 
 ### Secure Storage
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | keyring | 2.x | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 
 ### HTTP Client
 
-| Crate | Version | Lizenz | Status | SPDX |
+| Crate | Version | License | Status | SPDX |
 |-------|---------|--------|--------|------|
 | reqwest | 0.11 | MIT/Apache 2.0 | ✅ | MIT OR Apache-2.0 |
 
 ---
 
-## Frontend Dependencies Prüfung
+## Frontend Dependencies Review
 
 ### Frameworks
 
-| Package | Version | Lizenz | Status | SPDX |
+| Package | Version | License | Status | SPDX |
 |---------|---------|--------|--------|------|
 | solid-js | 1.8 | MIT | ✅ | MIT |
 | @solidjs/router | 0.10 | MIT | ✅ | MIT |
 
 ### Build Tools
 
-| Package | Version | Lizenz | Status | SPDX |
+| Package | Version | License | Status | SPDX |
 |---------|---------|--------|--------|------|
 | vite | 5.x | MIT | ✅ | MIT |
 | vite-plugin-solid | 2.8 | MIT | ✅ | MIT |
@@ -254,35 +254,35 @@ Die Dual-Lizenzierung ist Standard im Rust-Ökosystem und bietet maximale Flexib
 
 ### Styling
 
-| Package | Version | Lizenz | Status | SPDX |
+| Package | Version | License | Status | SPDX |
 |---------|---------|--------|--------|------|
 | unocss | 0.58 | MIT | ✅ | MIT |
 | @unocss/preset-uno | 0.58 | MIT | ✅ | MIT |
 
 ### Icons
 
-| Package | Version | Lizenz | Status | SPDX |
+| Package | Version | License | Status | SPDX |
 |---------|---------|--------|--------|------|
 | lucide-solid | 0.300 | ISC | ✅ | ISC |
 
 ---
 
-## Abgelehnte Dependencies
+## Rejected Dependencies
 
-Diese Libraries wurden geprüft und **bewusst nicht verwendet**:
+These libraries were reviewed and **intentionally not used**:
 
-| Library | Lizenz | Grund für Ablehnung |
+| Library | License | Reason for Rejection |
 |---------|--------|---------------------|
-| libsignal-protocol | AGPL 3.0 | Würde AGPL für gesamtes Projekt erzwingen |
-| ffmpeg | GPL/LGPL | GPL-Komponenten, komplizierte Lizenz |
-| openssl (native) | Apache 2.0 | Okay, aber rustls bevorzugt (pure Rust) |
-| Matrix SDK | Apache 2.0 | Zu komplex, nur vodozemac für Crypto genutzt |
+| libsignal-protocol | AGPL 3.0 | Would force AGPL for entire project |
+| ffmpeg | GPL/LGPL | GPL components, complicated license |
+| openssl (native) | Apache 2.0 | Okay, but rustls preferred (pure Rust) |
+| Matrix SDK | Apache 2.0 | Too complex, only vodozemac used for crypto |
 
 ---
 
-## Lizenz-Dateien im Repository
+## License Files in Repository
 
-Das Repository muss folgende Dateien enthalten:
+The repository must contain the following files:
 
 ### LICENSE-MIT
 
@@ -317,7 +317,7 @@ SOFTWARE.
                         Version 2.0, January 2004
                      http://www.apache.org/licenses/
 
-[Vollständiger Apache 2.0 Text]
+[Full Apache 2.0 Text]
 ```
 
 ### Cargo.toml
@@ -334,7 +334,7 @@ keywords = ["voip", "chat", "webrtc", "e2ee"]
 categories = ["multimedia", "network-programming"]
 ```
 
-### README.md (Lizenz-Sektion)
+### README.md (License Section)
 
 ```markdown
 ## License
@@ -357,9 +357,9 @@ dual licensed as above, without any additional terms or conditions.
 
 ---
 
-## Automatisierte Compliance-Prüfung
+## Automated Compliance Checking
 
-### cargo-deny Konfiguration
+### cargo-deny Configuration
 
 ```toml
 # deny.toml
@@ -432,7 +432,7 @@ wildcards = "deny"
 highlight = "all"
 
 deny = [
-    # Explizit verbotene Crates
+    # Explicitly banned crates
 ]
 
 [sources]
@@ -458,16 +458,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install cargo-deny
         run: cargo install cargo-deny
-        
+
       - name: Check licenses
         run: cargo deny check licenses
-        
+
       - name: Check advisories
         run: cargo deny check advisories
-        
+
       - name: Check bans
         run: cargo deny check bans
 ```
@@ -476,7 +476,7 @@ jobs:
 
 ## Third-Party Notices
 
-Bei Distribution müssen folgende Attributions enthalten sein:
+When distributing, the following attributions must be included:
 
 ### THIRD_PARTY_NOTICES.md
 
@@ -503,7 +503,7 @@ Licensed under BSD-3-Clause
 Copyright (c) 2010-2015 Xiph.Org Foundation, Skype Limited
 Licensed under BSD-3-Clause
 
-[... weitere nach Bedarf ...]
+[... more as needed ...]
 
 ## JavaScript/TypeScript Packages
 
@@ -514,66 +514,66 @@ Licensed under MIT
 ### Lucide Icons
 Licensed under ISC
 
-[... weitere nach Bedarf ...]
+[... more as needed ...]
 ```
 
 ---
 
-## Compliance-Checkliste
+## Compliance Checklist
 
-### Vor jedem Release
+### Before Each Release
 
-- [ ] `cargo deny check` läuft erfolgreich
-- [ ] Keine neuen GPL/AGPL Dependencies
-- [ ] THIRD_PARTY_NOTICES.md aktualisiert
-- [ ] LICENSE-MIT und LICENSE-APACHE vorhanden
-- [ ] Cargo.toml enthält korrekte `license` Angabe
+- [ ] `cargo deny check` runs successfully
+- [ ] No new GPL/AGPL dependencies
+- [ ] THIRD_PARTY_NOTICES.md updated
+- [ ] LICENSE-MIT and LICENSE-APACHE present
+- [ ] Cargo.toml contains correct `license` field
 
-### Bei neuen Dependencies
+### When Adding New Dependencies
 
-- [ ] Lizenz geprüft (muss auf Allow-Liste sein)
-- [ ] Transitive Dependencies geprüft
-- [ ] In diesem Dokument dokumentiert
-- [ ] THIRD_PARTY_NOTICES.md aktualisiert (falls nötig)
+- [ ] License reviewed (must be on allow list)
+- [ ] Transitive dependencies reviewed
+- [ ] Documented in this document
+- [ ] THIRD_PARTY_NOTICES.md updated (if needed)
 
 ---
 
-## Zusammenfassung
+## Summary
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    LIZENZ-COMPLIANCE STATUS                      │
+│                    LICENSE COMPLIANCE STATUS                     │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  ✅ VOLLSTÄNDIG KOMPATIBEL                                      │
+│  ✅ FULLY COMPATIBLE                                            │
 │                                                                  │
-│  Server Dependencies:      45+ Crates  ✅ Alle geprüft          │
-│  Client Dependencies:      25+ Crates  ✅ Alle geprüft          │
-│  Frontend Dependencies:    10+ Packages ✅ Alle geprüft         │
+│  Server Dependencies:      45+ Crates   ✅ All reviewed         │
+│  Client Dependencies:      25+ Crates   ✅ All reviewed         │
+│  Frontend Dependencies:    10+ Packages ✅ All reviewed         │
 │                                                                  │
-│  Lizenzen im Einsatz:                                           │
+│  Licenses in Use:                                               │
 │  • MIT                     ~60%                                 │
 │  • MIT/Apache 2.0 Dual     ~30%                                 │
 │  • Apache 2.0              ~5%                                  │
 │  • BSD-3-Clause            ~3%                                  │
 │  • ISC                     ~2%                                  │
 │                                                                  │
-│  Projekt-Lizenz:           MIT OR Apache-2.0                    │
+│  Project License:          MIT OR Apache-2.0                    │
 │                                                                  │
-│  Automatisierung:          cargo-deny in CI/CD                  │
+│  Automation:               cargo-deny in CI/CD                  │
 │                                                                  │
-│  Letzte Prüfung:           [Datum einfügen]                     │
+│  Last Review:              [Insert Date]                        │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Referenzen
+## References
 
-- [PROJECT_SPEC.md](../project/specification.md) - Projektanforderungen
-- [ARCHITECTURE.md](../architecture/overview.md) - Technische Architektur
-- [STANDARDS.md](../development/standards.md) - Verwendete Standards und Protokolle
+- [PROJECT_SPEC.md](../project/specification.md) - Project Requirements
+- [ARCHITECTURE.md](../architecture/overview.md) - Technical Architecture
+- [STANDARDS.md](../development/standards.md) - Standards and Protocols Used
 - [SPDX License List](https://spdx.org/licenses/)
 - [Choose a License](https://choosealicense.com/)
 - [cargo-deny Documentation](https://embarkstudios.github.io/cargo-deny/)

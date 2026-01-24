@@ -1,34 +1,34 @@
-# VoiceChat Platform - Standards & Protokolle
+# VoiceChat Platform - Standards & Protocols
 
-Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Libraries auf. Das Ziel ist, Eigenentwicklungen zu minimieren und auf bewährte, geprüfte Lösungen zu setzen.
+This document lists all open standards, protocols, and libraries used. The goal is to minimize custom development and rely on proven, tested solutions.
 
 ---
 
-## Übersicht: Build vs. Use
+## Overview: Build vs. Use
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    BUILD vs. USE DECISION                        │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  ✅ NUTZEN (Standards/Libraries)     ❌ NICHT selbst bauen      │
+│  ✅ USE (Standards/Libraries)          ❌ DO NOT build yourself │
 │  ─────────────────────────────────   ───────────────────────    │
-│  • WebRTC Stack                      • Eigenes RTP Protocol     │
-│  • Opus Codec                        • Eigener Audio Codec      │
-│  • TLS/DTLS                          • Eigene Crypto            │
-│  • Olm/Megolm (vodozemac)            • Eigenes E2EE Protocol    │
-│  • OAuth 2.0 / OIDC                  • Eigenes SSO System       │
-│  • Argon2 Password Hashing           • Eigenes Passwort-Hash    │
-│  • JWT (für API)                     • Eigenes Token-Format     │
-│  • PostgreSQL                        • Eigene Datenbank         │
-│  • S3 API                            • Eigenes Storage Protocol │
-│  • WebSocket                         • Eigenes Real-Time Proto  │
-│  • JSON / JSON-RPC                   • Eigene Serialisierung    │
-│  • CommonMark                        • Eigener Markdown Parser  │
+│  • WebRTC Stack                      • Custom RTP Protocol      │
+│  • Opus Codec                        • Custom Audio Codec       │
+│  • TLS/DTLS                          • Custom Crypto            │
+│  • Olm/Megolm (vodozemac)            • Custom E2EE Protocol     │
+│  • OAuth 2.0 / OIDC                  • Custom SSO System        │
+│  • Argon2 Password Hashing           • Custom Password Hash     │
+│  • JWT (for API)                     • Custom Token Format      │
+│  • PostgreSQL                        • Custom Database          │
+│  • S3 API                            • Custom Storage Protocol  │
+│  • WebSocket                         • Custom Real-Time Proto   │
+│  • JSON / JSON-RPC                   • Custom Serialization     │
+│  • CommonMark                        • Custom Markdown Parser   │
 │                                                                  │
-│  🔧 SELBST ENTWICKELN (Business Logic)                          │
+│  🔧 BUILD YOURSELF (Business Logic)                             │
 │  ─────────────────────────────────────                          │
-│  • Server-Orchestrierung (Channels, Permissions)                │
+│  • Server Orchestration (Channels, Permissions)                 │
 │  • Client UI/UX                                                  │
 │  • Signaling Logic (WebRTC Coordination)                        │
 │  • User/Channel Management                                       │
@@ -40,19 +40,19 @@ Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Librar
 
 ---
 
-## 1. Kommunikation & Real-Time
+## 1. Communication & Real-Time
 
 ### WebRTC
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | W3C WebRTC + IETF RFC 8825-8835 |
-| **Zweck** | Real-Time Audio/Video Kommunikation |
+| **Purpose** | Real-Time Audio/Video Communication |
 | **Rust Library** | `webrtc-rs` (webrtc = "0.11") |
-| **Lizenz** | MIT/Apache 2.0 |
-| **Dokumentation** | https://webrtc.rs |
+| **License** | MIT/Apache 2.0 |
+| **Documentation** | https://webrtc.rs |
 
-**Enthaltene Protokolle:**
+**Included Protocols:**
 - ICE (Interactive Connectivity Establishment) - RFC 8445
 - STUN (Session Traversal Utilities for NAT) - RFC 5389
 - TURN (Traversal Using Relays around NAT) - RFC 5766
@@ -63,32 +63,32 @@ Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Librar
 
 ### WebSocket
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | IETF RFC 6455 |
-| **Zweck** | Bidirektionale Real-Time Kommunikation |
+| **Purpose** | Bidirectional Real-Time Communication |
 | **Rust Library** | `tokio-tungstenite` (0.21) |
-| **Lizenz** | MIT |
+| **License** | MIT |
 
 ### JSON-RPC 2.0
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
-| **Standard** | jsonrpc.org Spezifikation |
-| **Zweck** | Strukturiertes Signaling-Format |
+| **Standard** | jsonrpc.org Specification |
+| **Purpose** | Structured Signaling Format |
 | **Rust Library** | `jsonrpsee` (0.22) |
-| **Lizenz** | MIT |
+| **License** | MIT |
 
-**Verwendung:** WebRTC Signaling und Real-Time Events über WebSocket.
+**Usage:** WebRTC Signaling and Real-Time Events over WebSocket.
 
 ### REST API
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | OpenAPI 3.1 |
-| **Zweck** | API-Dokumentation und -Validierung |
+| **Purpose** | API Documentation and Validation |
 | **Rust Library** | `utoipa` (4.2) |
-| **Lizenz** | MIT/Apache 2.0 |
+| **License** | MIT/Apache 2.0 |
 
 ---
 
@@ -96,240 +96,240 @@ Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Librar
 
 ### Opus Audio Codec
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | IETF RFC 6716 |
-| **Zweck** | Voice-Encoding mit niedriger Latenz |
+| **Purpose** | Voice Encoding with Low Latency |
 | **Rust Library** | `opus` (0.3) / `audiopus` (0.3) |
-| **Lizenz** | BSD-3 (libopus) |
-| **Bitrate** | 6-510 kbit/s (default: 64 kbit/s für Voice) |
+| **License** | BSD-3 (libopus) |
+| **Bitrate** | 6-510 kbit/s (default: 64 kbit/s for Voice) |
 | **Frame Size** | 2.5-60 ms (default: 20 ms) |
 
-**Warum Opus:**
-- Speziell für Voice und Musik optimiert
-- Niedrigste Latenz aller modernen Codecs
-- Hervorragende Qualität bei niedrigen Bitraten
-- Open Source und lizenzfrei
+**Why Opus:**
+- Specifically optimized for voice and music
+- Lowest latency of all modern codecs
+- Excellent quality at low bitrates
+- Open source and royalty-free
 
-### Video Codecs (optional, für später)
+### Video Codecs (optional, for later)
 
-| Codec | Standard | Rust Library | Lizenz | Status |
+| Codec | Standard | Rust Library | License | Status |
 |-------|----------|--------------|--------|--------|
-| VP8 | WebM Project | `vpx-rs` | BSD-3 | Empfohlen für Kompatibilität |
-| VP9 | WebM Project | `vpx-rs` | BSD-3 | Bessere Qualität |
-| AV1 | AOMedia | `rav1e` | BSD-2 | Zukunft, noch CPU-intensiv |
+| VP8 | WebM Project | `vpx-rs` | BSD-3 | Recommended for compatibility |
+| VP9 | WebM Project | `vpx-rs` | BSD-3 | Better quality |
+| AV1 | AOMedia | `rav1e` | BSD-2 | Future, still CPU-intensive |
 
 ### Audio Processing
 
-| Feature | Standard/Library | Lizenz |
+| Feature | Standard/Library | License |
 |---------|------------------|--------|
 | Echo Cancellation | WebRTC AEC (in webrtc-rs) | MIT/Apache 2.0 |
 | Noise Suppression | WebRTC NS (in webrtc-rs) | MIT/Apache 2.0 |
-| Noise Cancellation (KI) | `nnnoiseless` (RNNoise Port) | BSD-3 |
+| Noise Cancellation (AI) | `nnnoiseless` (RNNoise Port) | BSD-3 |
 | Audio I/O | `cpal` | Apache 2.0 |
 
 ---
 
-## 3. Verschlüsselung & Sicherheit
+## 3. Encryption & Security
 
 ### Transport Layer Security
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | TLS 1.3 (IETF RFC 8446) |
-| **Zweck** | Verschlüsselung aller HTTP/WebSocket Verbindungen |
+| **Purpose** | Encryption of all HTTP/WebSocket connections |
 | **Rust Library** | `rustls` (0.22) |
-| **Lizenz** | MIT/Apache 2.0/ISC |
+| **License** | MIT/Apache 2.0/ISC |
 
-**Konfiguration:**
-- Nur TLS 1.3 (keine älteren Versionen)
+**Configuration:**
+- Only TLS 1.3 (no older versions)
 - Cipher Suites: TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
-- Certificate Pinning optional im Client
+- Certificate Pinning optional in client
 
 ### Voice Encryption (MVP)
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | DTLS-SRTP (IETF RFC 5764) |
-| **Zweck** | Voice-Stream-Verschlüsselung |
-| **Implementation** | Teil von `webrtc-rs` |
+| **Purpose** | Voice Stream Encryption |
+| **Implementation** | Part of `webrtc-rs` |
 
-### Voice Encryption (Paranoid Mode, später)
+### Voice Encryption (Paranoid Mode, later)
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | MLS (IETF RFC 9420) |
-| **Zweck** | Echte Ende-zu-Ende-Verschlüsselung |
+| **Purpose** | True End-to-End Encryption |
 | **Rust Library** | `openmls` |
-| **Lizenz** | MIT |
+| **License** | MIT |
 
 ### Text E2EE
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
-| **Protokoll** | Olm (1:1) + Megolm (Gruppen) |
+| **Protocol** | Olm (1:1) + Megolm (Groups) |
 | **Basis** | Double Ratchet Algorithm |
 | **Rust Library** | `vodozemac` (0.5) |
-| **Lizenz** | Apache 2.0 |
-| **Entwickler** | Matrix.org / Element |
+| **License** | Apache 2.0 |
+| **Developer** | Matrix.org / Element |
 
 **Features:**
 - X3DH Key Agreement
-- Double Ratchet für Perfect Forward Secrecy
-- Megolm für effiziente Gruppen-Verschlüsselung
+- Double Ratchet for Perfect Forward Secrecy
+- Megolm for efficient group encryption
 - Post-Compromise Security
 
-**Warum vodozemac statt libsignal:**
-- libsignal ist AGPL 3.0 (würde Projekt-Lizenz erzwingen)
-- vodozemac ist Apache 2.0 (kompatibel)
-- Production-tested durch Matrix/Element
-- Äquivalente Sicherheit
+**Why vodozemac instead of libsignal:**
+- libsignal is AGPL 3.0 (would force project license)
+- vodozemac is Apache 2.0 (compatible)
+- Production-tested by Matrix/Element
+- Equivalent security
 
-### Kryptografische Primitive
+### Cryptographic Primitives
 
-| Algorithmus | Standard | Rust Library | Lizenz | Verwendung |
+| Algorithm | Standard | Rust Library | License | Usage |
 |-------------|----------|--------------|--------|------------|
-| AES-256-GCM | NIST FIPS 197 | `aes-gcm` | MIT/Apache 2.0 | Daten at-rest |
+| AES-256-GCM | NIST FIPS 197 | `aes-gcm` | MIT/Apache 2.0 | Data at-rest |
 | X25519 | IETF RFC 7748 | `x25519-dalek` | BSD-3 | Key Exchange |
-| Ed25519 | IETF RFC 8032 | `ed25519-dalek` | BSD-3 | Signaturen |
+| Ed25519 | IETF RFC 8032 | `ed25519-dalek` | BSD-3 | Signatures |
 | SHA-256 | NIST FIPS 180-4 | `sha2` | MIT/Apache 2.0 | Hashing |
 | HKDF | IETF RFC 5869 | `hkdf` | MIT/Apache 2.0 | Key Derivation |
 | Argon2id | IETF RFC 9106 | `argon2` | MIT/Apache 2.0 | Password Hashing |
 
 ---
 
-## 4. Authentifizierung & Identität
+## 4. Authentication & Identity
 
 ### OpenID Connect
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | OpenID Connect 1.0 |
 | **Basis** | OAuth 2.1 (IETF draft-ietf-oauth-v2-1) |
 | **Rust Library** | `openidconnect` (3.x) |
-| **Lizenz** | MIT/Apache 2.0 |
+| **License** | MIT/Apache 2.0 |
 
-**Unterstützte Provider:**
+**Supported Providers:**
 - Authentik
 - Keycloak
 - Azure AD
 - Okta
 - Google
-- Generische OIDC Provider
+- Generic OIDC Providers
 
 ### JWT (JSON Web Tokens)
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | IETF RFC 7519 |
-| **Zweck** | Access Tokens für API-Zugriff |
+| **Purpose** | Access Tokens for API Access |
 | **Rust Library** | `jsonwebtoken` (9.x) |
-| **Lizenz** | MIT |
-| **Algorithmus** | EdDSA (Ed25519) oder RS256 |
+| **License** | MIT |
+| **Algorithm** | EdDSA (Ed25519) or RS256 |
 
 ### TOTP (Time-based One-Time Password)
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | IETF RFC 6238 |
-| **Zweck** | Multi-Faktor-Authentifizierung |
+| **Purpose** | Multi-Factor Authentication |
 | **Rust Library** | `totp-rs` (5.x) |
-| **Lizenz** | MIT |
-| **Kompatibilität** | Google Authenticator, Authy, etc. |
+| **License** | MIT |
+| **Compatibility** | Google Authenticator, Authy, etc. |
 
-### WebAuthn (später)
+### WebAuthn (later)
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | W3C WebAuthn Level 2 |
-| **Zweck** | Hardware-basierte MFA (YubiKey, etc.) |
+| **Purpose** | Hardware-based MFA (YubiKey, etc.) |
 | **Rust Library** | `webauthn-rs` |
-| **Lizenz** | MPL 2.0 |
+| **License** | MPL 2.0 |
 
 ---
 
-## 5. Datenformate & Serialisierung
+## 5. Data Formats & Serialization
 
 ### JSON
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | IETF RFC 8259 |
-| **Zweck** | API Payloads, Konfiguration |
+| **Purpose** | API Payloads, Configuration |
 | **Rust Library** | `serde_json` (1.x) |
-| **Lizenz** | MIT/Apache 2.0 |
+| **License** | MIT/Apache 2.0 |
 
 ### UUID
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | IETF RFC 9562 (UUIDv7) |
-| **Zweck** | Eindeutige, zeitlich sortierbare IDs |
+| **Purpose** | Unique, time-sortable IDs |
 | **Rust Library** | `uuid` (1.x) |
-| **Lizenz** | MIT/Apache 2.0 |
+| **License** | MIT/Apache 2.0 |
 
-**Warum UUIDv7:**
-- Zeitlich sortierbar (bessere DB-Performance)
-- Keine Koordination zwischen Servern nötig
-- Moderner Standard (2024)
+**Why UUIDv7:**
+- Time-sortable (better DB performance)
+- No coordination between servers needed
+- Modern standard (2024)
 
 ### Timestamps
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | ISO 8601 |
-| **Zweck** | Einheitliche Zeitformate |
+| **Purpose** | Uniform time formats |
 | **Rust Library** | `chrono` (0.4) |
-| **Lizenz** | MIT/Apache 2.0 |
+| **License** | MIT/Apache 2.0 |
 | **Format** | `2024-01-15T14:30:00Z` |
 
 ### CommonMark (Markdown)
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | commonmark.org |
-| **Zweck** | Rich-Text in Nachrichten |
+| **Purpose** | Rich text in messages |
 | **Rust Library** | `pulldown-cmark` (0.10) |
-| **Lizenz** | MIT |
+| **License** | MIT |
 
 ---
 
-## 6. Datenspeicherung
+## 6. Data Storage
 
 ### PostgreSQL
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Version** | 16.x |
-| **Zweck** | Persistente Datenspeicherung |
+| **Purpose** | Persistent data storage |
 | **Rust Library** | `sqlx` (0.7) |
-| **Lizenz** | PostgreSQL License (MIT-ähnlich) |
+| **License** | PostgreSQL License (MIT-like) |
 
-**Features genutzt:**
-- JSONB für flexible Schemas (Permissions, Settings)
-- UUID als Primary Keys
-- Full-Text Search für Nachrichtensuche
+**Features Used:**
+- JSONB for flexible schemas (Permissions, Settings)
+- UUID as Primary Keys
+- Full-Text Search for message search
 - Row-Level Security (optional)
 
 ### Redis
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Version** | 7.x |
-| **Zweck** | Sessions, Caching, Pub/Sub, Presence |
+| **Purpose** | Sessions, Caching, Pub/Sub, Presence |
 | **Rust Library** | `fred` (8.x) |
-| **Lizenz** | BSD-3 |
+| **License** | BSD-3 |
 
 ### S3-Compatible Storage
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
-| **Standard** | AWS S3 API (de-facto Standard) |
-| **Zweck** | File Storage, Backups |
-| **Rust Library** | `aws-sdk-s3` (1.x) oder `rust-s3` |
-| **Lizenz** | Apache 2.0 |
+| **Standard** | AWS S3 API (de-facto standard) |
+| **Purpose** | File Storage, Backups |
+| **Rust Library** | `aws-sdk-s3` (1.x) or `rust-s3` |
+| **License** | Apache 2.0 |
 
-**Kompatible Backends:**
+**Compatible Backends:**
 - AWS S3
 - MinIO (Self-Hosted)
 - Backblaze B2
@@ -342,7 +342,7 @@ Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Librar
 
 ### OCI Container Standards
 
-| Standard | Spezifikation | Tool |
+| Standard | Specification | Tool |
 |----------|---------------|------|
 | OCI Image Spec | opencontainers.org | Docker/Podman |
 | OCI Runtime Spec | opencontainers.org | Docker/Podman |
@@ -350,24 +350,24 @@ Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Librar
 
 ### Logging
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Format** | JSON Lines (jsonlines.org) |
 | **Rust Library** | `tracing` + `tracing-subscriber` |
-| **Lizenz** | MIT |
+| **License** | MIT |
 
-**Log-Format:**
+**Log Format:**
 ```json
 {"timestamp":"2024-01-15T14:30:00Z","level":"INFO","target":"voicechat_api","message":"User logged in","user_id":"..."}
 ```
 
 ### Metrics
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
-| **Standard** | OpenMetrics (Prometheus-kompatibel) |
+| **Standard** | OpenMetrics (Prometheus-compatible) |
 | **Rust Library** | `metrics` + `metrics-exporter-prometheus` |
-| **Lizenz** | MIT |
+| **License** | MIT |
 | **Endpoint** | `/metrics` |
 
 ---
@@ -376,60 +376,60 @@ Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Librar
 
 ### Tauri 2.0
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
-| **Zweck** | Cross-Platform Desktop Framework |
+| **Purpose** | Cross-Platform Desktop Framework |
 | **Backend** | Rust |
 | **Frontend** | WebView (System WebView) |
-| **Lizenz** | MIT/Apache 2.0 |
-| **Dokumentation** | https://tauri.app |
+| **License** | MIT/Apache 2.0 |
+| **Documentation** | https://tauri.app |
 
 ### Frontend Framework
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Framework** | Solid.js |
-| **Lizenz** | MIT |
+| **License** | MIT |
 | **Bundle Size** | ~7 KB |
 
-**Warum Solid.js:**
-- Kleinster Bundle Size unter reaktiven Frameworks
-- Beste Performance (kein Virtual DOM)
+**Why Solid.js:**
+- Smallest bundle size among reactive frameworks
+- Best performance (no Virtual DOM)
 - TypeScript-first
-- Ähnliche API wie React (leichter Einstieg)
+- Similar API to React (easy onboarding)
 
 ### CSS
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Approach** | Utility-First |
-| **Framework** | UnoCSS (Tailwind-kompatibel) |
-| **Lizenz** | MIT |
+| **Framework** | UnoCSS (Tailwind-compatible) |
+| **License** | MIT |
 | **Theming** | CSS Custom Properties |
 
 ### Accessibility
 
-| Standard | Spezifikation | Umsetzung |
+| Standard | Specification | Implementation |
 |----------|---------------|-----------|
-| WCAG 2.1 AA | W3C | Kontrastverhältnisse, Fokusindikatoren |
-| WAI-ARIA | W3C | ARIA Attributes für Screen Reader |
-| Keyboard Navigation | – | Alle Funktionen per Tastatur erreichbar |
+| WCAG 2.1 AA | W3C | Contrast ratios, focus indicators |
+| WAI-ARIA | W3C | ARIA Attributes for Screen Reader |
+| Keyboard Navigation | – | All functions accessible via keyboard |
 
 ---
 
-## 9. Text-Chat Features
+## 9. Text Chat Features
 
 ### Emoji
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | Unicode 15.0 |
 | **Rust Library** | `emojis` |
-| **Lizenz** | MIT/Apache 2.0 |
+| **License** | MIT/Apache 2.0 |
 
 ### Link Previews
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | Open Graph Protocol (ogp.me) |
 | **Fallback** | oEmbed (oembed.com) |
@@ -437,15 +437,15 @@ Dieses Dokument listet alle verwendeten offenen Standards, Protokolle und Librar
 
 ### Media Types
 
-| Attribut | Wert |
+| Attribute | Value |
 |----------|------|
 | **Standard** | MIME Types (IETF RFC 6838) |
 | **Rust Library** | `mime` |
-| **Lizenz** | MIT/Apache 2.0 |
+| **License** | MIT/Apache 2.0 |
 
 ---
 
-## 10. Vollständige Dependency-Liste
+## 10. Complete Dependency List
 
 ### Server (Cargo.toml)
 
@@ -567,11 +567,11 @@ reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 
 ---
 
-## 11. Compliance-Tooling
+## 11. Compliance Tooling
 
 ### cargo-deny
 
-Automatische Lizenzprüfung in CI/CD:
+Automatic license checking in CI/CD:
 
 ```toml
 # deny.toml
@@ -592,7 +592,7 @@ allow = [
 
 deny = [
     "GPL-2.0",
-    "GPL-3.0", 
+    "GPL-3.0",
     "AGPL-3.0",
     "LGPL-2.0",
     "LGPL-2.1",
@@ -615,8 +615,8 @@ cargo deny check licenses
 
 ---
 
-## Referenzen
+## References
 
-- [PROJECT_SPEC.md](../project/specification.md) - Projektanforderungen
-- [ARCHITECTURE.md](../architecture/overview.md) - Technische Architektur
-- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) - Detaillierte Lizenzprüfung
+- [PROJECT_SPEC.md](../project/specification.md) - Project Requirements
+- [ARCHITECTURE.md](../architecture/overview.md) - Technical Architecture
+- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) - Detailed License Review

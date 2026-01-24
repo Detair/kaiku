@@ -1,6 +1,6 @@
-# VoiceChat Platform - Technische Architektur
+# VoiceChat Platform - Technical Architecture
 
-## Architektur-Übersicht
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -88,9 +88,9 @@
 
 ---
 
-## Komponenten-Details
+## Component Details
 
-### 1. Client-Architektur (Tauri 2.0)
+### 1. Client Architecture (Tauri 2.0)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -101,7 +101,7 @@
 │  │                    FRONTEND (WebView)                       │ │
 │  │                                                             │ │
 │  │  Framework: Solid.js                                        │ │
-│  │  Styling:   UnoCSS (Tailwind-kompatibel)                   │ │
+│  │  Styling:   UnoCSS (Tailwind-compatible)                    │ │
 │  │  State:     Solid Stores + Signals                          │ │
 │  │  Icons:     Lucide                                          │ │
 │  │                                                             │ │
@@ -148,20 +148,20 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Client-Ressourcenziele
+#### Client Resource Targets
 
-| Metrik | Ziel | Discord zum Vergleich |
-|--------|------|----------------------|
+| Metric | Target | Discord for Comparison |
+|--------|--------|------------------------|
 | RAM (Idle) | <80 MB | ~300-400 MB |
-| RAM (Voice aktiv) | <120 MB | ~400-500 MB |
+| RAM (Voice active) | <120 MB | ~400-500 MB |
 | CPU (Idle) | <1% | ~2-5% |
-| CPU (Voice aktiv) | <5% | ~5-10% |
-| Binärgröße | <50 MB | ~150 MB |
+| CPU (Voice active) | <5% | ~5-10% |
+| Binary Size | <50 MB | ~150 MB |
 | Startup | <3s | ~5-10s |
 
 ---
 
-### 2. Server-Architektur
+### 2. Server Architecture
 
 #### Auth Service
 
@@ -172,15 +172,15 @@
 │                                                                  │
 │  Endpoints:                                                      │
 │  ──────────                                                      │
-│  POST   /auth/register          Lokale User-Registrierung       │
-│  POST   /auth/login             Login (lokal oder SSO Start)    │
-│  POST   /auth/logout            Session beenden                  │
-│  POST   /auth/refresh           Access Token erneuern            │
-│  GET    /auth/oidc/callback     SSO Callback Handler             │
-│  POST   /auth/mfa/setup         TOTP Setup                       │
-│  POST   /auth/mfa/verify        TOTP Verifizierung               │
+│  POST   /auth/register          Local user registration          │
+│  POST   /auth/login             Login (local or SSO start)       │
+│  POST   /auth/logout            End session                      │
+│  POST   /auth/refresh           Renew access token               │
+│  GET    /auth/oidc/callback     SSO callback handler             │
+│  POST   /auth/mfa/setup         TOTP setup                       │
+│  POST   /auth/mfa/verify        TOTP verification                │
 │                                                                  │
-│  Interne Funktionen:                                             │
+│  Internal Functions:                                             │
 │  ───────────────────                                             │
 │  • Password Hashing (Argon2id)                                   │
 │  • JWT Generation/Validation                                     │
@@ -188,11 +188,11 @@
 │  • OIDC Provider Integration                                     │
 │  • JIT User Provisioning                                         │
 │                                                                  │
-│  Token-Strategie:                                                │
+│  Token Strategy:                                                 │
 │  ────────────────                                                │
-│  • Access Token:  JWT, 15 min Gültigkeit                        │
-│  • Refresh Token: Opaque, 7 Tage, in Redis                      │
-│  • Session:       Redis mit User-Metadata                        │
+│  • Access Token:  JWT, 15 min validity                           │
+│  • Refresh Token: Opaque, 7 days, in Redis                       │
+│  • Session:       Redis with user metadata                       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -206,33 +206,33 @@
 │                                                                  │
 │  REST Endpoints:                                                 │
 │  ───────────────                                                 │
-│  GET    /channels                    Liste aller Channels        │
-│  POST   /channels                    Channel erstellen           │
-│  GET    /channels/:id                Channel Details             │
-│  PATCH  /channels/:id                Channel bearbeiten          │
-│  DELETE /channels/:id                Channel löschen             │
-│  GET    /channels/:id/messages       Nachrichten laden           │
-│  POST   /channels/:id/messages       Nachricht senden            │
-│  PATCH  /messages/:id                Nachricht bearbeiten        │
-│  DELETE /messages/:id                Nachricht löschen           │
-│  POST   /upload                      Datei hochladen             │
+│  GET    /channels                    List all channels           │
+│  POST   /channels                    Create channel              │
+│  GET    /channels/:id                Channel details             │
+│  PATCH  /channels/:id                Edit channel                │
+│  DELETE /channels/:id                Delete channel              │
+│  GET    /channels/:id/messages       Load messages               │
+│  POST   /channels/:id/messages       Send message                │
+│  PATCH  /messages/:id                Edit message                │
+│  DELETE /messages/:id                Delete message              │
+│  POST   /upload                      Upload file                 │
 │                                                                  │
 │  WebSocket Events (Signaling):                                   │
 │  ──────────────────────────────                                  │
-│  → message.new          Neue Nachricht                           │
-│  → message.edit         Nachricht bearbeitet                     │
-│  → message.delete       Nachricht gelöscht                       │
-│  → typing.start         User tippt                               │
-│  → typing.stop          User tippt nicht mehr                    │
-│  → presence.update      Online-Status geändert                   │
-│  → channel.update       Channel-Änderung                         │
+│  → message.new          New message                              │
+│  → message.edit         Message edited                           │
+│  → message.delete       Message deleted                          │
+│  → typing.start         User is typing                           │
+│  → typing.stop          User stopped typing                      │
+│  → presence.update      Online status changed                    │
+│  → channel.update       Channel changed                          │
 │                                                                  │
 │  E2EE Integration:                                               │
 │  ─────────────────                                               │
-│  • Olm Sessions für 1:1 DMs                                      │
-│  • Megolm Sessions für Gruppen-Channels                          │
-│  • Key Exchange über separaten Kanal                             │
-│  • Server speichert nur verschlüsselte Nachrichten               │
+│  • Olm Sessions for 1:1 DMs                                      │
+│  • Megolm Sessions for group channels                            │
+│  • Key exchange over separate channel                            │
+│  • Server stores only encrypted messages                         │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -244,7 +244,7 @@
 │                      VOICE SERVICE (SFU)                         │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Architektur: Selective Forwarding Unit                          │
+│  Architecture: Selective Forwarding Unit                         │
 │  ─────────────────────────────────────                           │
 │                                                                  │
 │     Client A          SFU Server           Client B              │
@@ -256,43 +256,43 @@
 │        │◄=== Media =======│◄====== Media =====│                  │
 │        │                  │                   │                  │
 │                                                                  │
-│  Der SFU:                                                        │
-│  • Empfängt Media von jedem Client einmal                        │
-│  • Leitet an alle anderen Clients weiter                         │
-│  • Kein Mixing/Transcoding (CPU-effizient)                       │
-│  • Skaliert besser als Mesh für >4 User                          │
+│  The SFU:                                                        │
+│  • Receives media from each client once                          │
+│  • Forwards to all other clients                                 │
+│  • No mixing/transcoding (CPU-efficient)                         │
+│  • Scales better than mesh for >4 users                          │
 │                                                                  │
-│  WebRTC Signaling (JSON-RPC über WebSocket):                     │
+│  WebRTC Signaling (JSON-RPC over WebSocket):                     │
 │  ───────────────────────────────────────────                     │
-│  → voice.join           Voice-Channel beitreten                  │
-│  → voice.leave          Voice-Channel verlassen                  │
+│  → voice.join           Join voice channel                       │
+│  → voice.leave          Leave voice channel                      │
 │  → voice.offer          SDP Offer                                │
 │  → voice.answer         SDP Answer                               │
 │  → voice.ice            ICE Candidate                            │
-│  → voice.mute           Selbst muten                             │
-│  → voice.unmute         Selbst unmuten                           │
-│  ← voice.user_joined    User ist beigetreten                     │
-│  ← voice.user_left      User hat verlassen                       │
-│  ← voice.speaking       User spricht                             │
+│  → voice.mute           Self mute                                │
+│  → voice.unmute         Self unmute                              │
+│  ← voice.user_joined    User has joined                          │
+│  ← voice.user_left      User has left                            │
+│  ← voice.speaking       User is speaking                         │
 │                                                                  │
 │  Audio Pipeline:                                                 │
 │  ──────────────                                                  │
 │  Capture → Opus Encode → SRTP Encrypt → Network                  │
 │  Network → SRTP Decrypt → Opus Decode → Playback                 │
 │                                                                  │
-│  Konfigurierbare Parameter:                                      │
+│  Configurable Parameters:                                        │
 │  ──────────────────────────                                      │
-│  • Opus Bitrate: 24-96 kbps (default: 64 kbps)                  │
-│  • Opus Frame Size: 10-60 ms (default: 20 ms)                   │
-│  • Max Users pro Channel: 50-100 (default: 50)                  │
-│  • Jitter Buffer: 20-200 ms (adaptive)                          │
+│  • Opus Bitrate: 24-96 kbps (default: 64 kbps)                   │
+│  • Opus Frame Size: 10-60 ms (default: 20 ms)                    │
+│  • Max Users per Channel: 50-100 (default: 50)                   │
+│  • Jitter Buffer: 20-200 ms (adaptive)                           │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### 3. Datenbank-Schema (Übersicht)
+### 3. Database Schema (Overview)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -340,7 +340,7 @@
 │  ├──────────────┤       │ id (UUID)    │ ├──────────────┤       │
 │  │ channel_id   │       │ channel_id   │ │ channel_id   │       │
 │  │ user_id      │       │ user_id      │ │ session_id   │       │
-│  │ role_id      │       │ content_enc  │◄─ verschlüsselt│       │
+│  │ role_id      │       │ content_enc  │◄─ encrypted    │       │
 │  │ joined_at    │       │ nonce        │ │ sender_key   │       │
 │  └──────────────┘       │ reply_to     │ │ created_at   │       │
 │                         │ edited_at    │ └──────────────┘       │
@@ -364,21 +364,21 @@
 
 ---
 
-### 4. Verschlüsselungsarchitektur
+### 4. Encryption Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                  ENCRYPTION ARCHITECTURE                         │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  LAYER 1: Transport (alle Verbindungen)                         │
+│  LAYER 1: Transport (all connections)                            │
 │  ═══════════════════════════════════════                        │
 │                                                                  │
 │  Client ◄────── TLS 1.3 ──────► Server                          │
 │                                                                  │
-│  • Alle HTTP/WebSocket Verbindungen                              │
-│  • Certificate Pinning im Client (optional)                      │
-│  • rustls für Implementation                                     │
+│  • All HTTP/WebSocket connections                                │
+│  • Certificate pinning in client (optional)                      │
+│  • rustls for implementation                                     │
 │                                                                  │
 │  ─────────────────────────────────────────────────────────────  │
 │                                                                  │
@@ -390,16 +390,16 @@
 │  │Client A │◄─DTLS──►│   SFU   │◄─DTLS──►│Client B │           │
 │  └─────────┘  SRTP   └─────────┘  SRTP   └─────────┘           │
 │                          │                                       │
-│                    Server sieht                                  │
-│                    Media (trusted)                               │
+│                    Server sees                                   │
+│                    media (trusted)                               │
 │                                                                  │
-│  Später (Paranoid Mode): MLS                                    │
+│  Later (Paranoid Mode): MLS                                     │
 │  ┌─────────┐         ┌─────────┐         ┌─────────┐           │
 │  │Client A │◄─MLS────│   SFU   │────MLS─►│Client B │           │
 │  └─────────┘ E2EE    └─────────┘  E2EE   └─────────┘           │
 │                          │                                       │
-│                    Server sieht                                  │
-│                    nur Ciphertext                                │
+│                    Server sees                                   │
+│                    only ciphertext                               │
 │                                                                  │
 │  ─────────────────────────────────────────────────────────────  │
 │                                                                  │
@@ -433,19 +433,19 @@
 │             └───────────────┘                                    │
 │                                                                  │
 │  Key Distribution:                                              │
-│  • Olm Sessions zum sicheren Key-Austausch                      │
-│  • Megolm Session Keys via Olm verteilt                          │
-│  • Bei User Join/Leave: Key Rotation                             │
+│  • Olm Sessions for secure key exchange                         │
+│  • Megolm Session Keys distributed via Olm                      │
+│  • On User Join/Leave: Key Rotation                             │
 │                                                                  │
 │  ─────────────────────────────────────────────────────────────  │
 │                                                                  │
 │  LAYER 4: Data at Rest                                          │
 │  ═══════════════════════════════════════                        │
 │                                                                  │
-│  • Messages: Bereits E2EE verschlüsselt gespeichert             │
-│  • Files: AES-256-GCM vor S3 Upload                             │
-│  • Backups: Verschlüsselt mit Server-Key                        │
-│  • User Keys: Im OS Keychain (Client-side)                      │
+│  • Messages: Already stored E2EE encrypted                      │
+│  • Files: AES-256-GCM before S3 upload                          │
+│  • Backups: Encrypted with server key                           │
+│  • User Keys: In OS Keychain (client-side)                      │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -509,7 +509,7 @@
 │  │                                                              ││
 │  └──────────────────────────────────────────────────────────────┘│
 │                                                                  │
-│  SSO Attribute Mapping (konfigurierbar):                        │
+│  SSO Attribute Mapping (configurable):                          │
 │  ───────────────────────────────────────                        │
 │  display_name:  preferred_username → name → email               │
 │  avatar:        picture → avatar_url → (none)                   │
@@ -518,15 +518,15 @@
 │                                                                  │
 │  JIT Provisioning Flow:                                         │
 │  ──────────────────────                                         │
-│  1. User klickt "Login with SSO"                                │
-│  2. Redirect zu OIDC Provider                                   │
-│  3. User authentifiziert sich                                   │
-│  4. Callback mit Authorization Code                             │
-│  5. Token Exchange für ID Token                                 │
-│  6. UserInfo abrufen                                            │
-│  7. User existiert? → Session erstellen                         │
-│     User neu? → Profil erstellen, dann Session                  │
-│  8. Redirect zu App mit Session Cookie                          │
+│  1. User clicks "Login with SSO"                                │
+│  2. Redirect to OIDC provider                                   │
+│  3. User authenticates                                          │
+│  4. Callback with authorization code                            │
+│  5. Token exchange for ID token                                 │
+│  6. Fetch UserInfo                                              │
+│  7. User exists? → Create session                               │
+│     User new? → Create profile, then session                    │
+│  8. Redirect to app with session cookie                         │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -588,16 +588,16 @@
 │                                                                  │
 │  Volumes:                                                        │
 │  ────────                                                        │
-│  • postgres_data    - Datenbank-Persistenz                      │
-│  • redis_data       - Redis Persistenz (optional)               │
-│  • uploads          - Lokale Datei-Uploads (oder S3)            │
-│  • certs            - TLS Zertifikate (wenn nicht Let's Encrypt)│
+│  • postgres_data    - Database persistence                       │
+│  • redis_data       - Redis persistence (optional)               │
+│  • uploads          - Local file uploads (or S3)                 │
+│  • certs            - TLS certificates (if not Let's Encrypt)    │
 │                                                                  │
-│  Externe Verbindungen:                                          │
+│  External Connections:                                          │
 │  ─────────────────────                                          │
-│  • S3-kompatibles Storage (MinIO, Backblaze, AWS)               │
-│  • SMTP Server (für E-Mail-Benachrichtigungen)                  │
-│  • OIDC Provider (Authentik, Keycloak, etc.)                    │
+│  • S3-compatible storage (MinIO, Backblaze, AWS)                │
+│  • SMTP server (for email notifications)                        │
+│  • OIDC provider (Authentik, Keycloak, etc.)                    │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -611,24 +611,24 @@
 │                    BACKUP ARCHITECTURE                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Backup-Komponenten:                                            │
+│  Backup Components:                                             │
 │  ───────────────────                                            │
 │                                                                  │
 │  1. PostgreSQL Database                                         │
-│     • pg_dump täglich um 03:00 UTC                              │
-│     • WAL Archiving für Point-in-Time Recovery                  │
-│     • Retention: 30 Tage                                        │
+│     • pg_dump daily at 03:00 UTC                                │
+│     • WAL Archiving for Point-in-Time Recovery                  │
+│     • Retention: 30 days                                        │
 │                                                                  │
 │  2. Uploaded Files                                              │
 │     • S3 Sync/Versioning                                        │
-│     • Oder: tar + encrypt bei lokalem Storage                   │
+│     • Or: tar + encrypt for local storage                       │
 │                                                                  │
 │  3. Configuration                                               │
 │     • docker-compose.yml                                        │
-│     • .env Dateien (verschlüsselt)                              │
-│     • TLS Zertifikate                                           │
+│     • .env files (encrypted)                                    │
+│     • TLS certificates                                          │
 │                                                                  │
-│  Backup-Flow:                                                   │
+│  Backup Flow:                                                   │
 │  ────────────                                                   │
 │                                                                  │
 │  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐       │
@@ -646,20 +646,20 @@
 │                      │             │     │   30 days   │        │
 │                      └─────────────┘     └─────────────┘        │
 │                                                                  │
-│  Restore-Prozess:                                               │
+│  Restore Process:                                               │
 │  ────────────────                                               │
 │                                                                  │
 │  $ ./scripts/restore.sh --from s3://bucket/backup-2024-01-15    │
 │                                                                  │
-│  1. Services stoppen                                            │
-│  2. Backup herunterladen + entschlüsseln                        │
+│  1. Stop services                                               │
+│  2. Download + decrypt backup                                   │
 │  3. PostgreSQL restore                                          │
 │  4. Files restore                                               │
-│  5. Services starten                                            │
-│  6. Health Check                                                │
+│  5. Start services                                              │
+│  6. Health check                                                │
 │                                                                  │
-│  RTO (Recovery Time Objective): < 30 Minuten                    │
-│  RPO (Recovery Point Objective): < 24 Stunden                   │
+│  RTO (Recovery Time Objective): < 30 minutes                    │
+│  RPO (Recovery Point Objective): < 24 hours                     │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -784,8 +784,8 @@ No rate limiting on API endpoints or WebSocket messages.
 
 ---
 
-## Referenzen
+## References
 
-- [PROJECT_SPEC.md](../project/specification.md) - Projektanforderungen
-- [STANDARDS.md](../development/standards.md) - Verwendete Standards
-- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) - Lizenzprüfung
+- [PROJECT_SPEC.md](../project/specification.md) - Project Requirements
+- [STANDARDS.md](../development/standards.md) - Standards Used
+- [LICENSE_COMPLIANCE.md](../ops/license-compliance.md) - License Review
