@@ -15,8 +15,9 @@ use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
 use super::sfu::SfuServer;
 use super::track_types::TrackSource;
-use super::screen_share::stop_screen_share;
+use super::screen_share::{stop_screen_share, try_start_screen_share, validate_source_label, ScreenShareInfo, ScreenShareError};
 use super::stats::VoiceStats;
+use super::Quality;
 use crate::ws::{ClientEvent, ServerEvent, VoiceParticipant};
 
 /// Handle a voice-related client event.
@@ -64,6 +65,15 @@ pub async fn handle_voice_event(
                 timestamp,
             };
             handle_voice_stats(sfu, pool, user_id, channel_id, stats).await
+        }
+        ClientEvent::VoiceScreenShareStart {
+            channel_id,
+            quality,
+            has_audio,
+            source_label,
+        } => handle_screen_share_start(sfu, pool, redis, user_id, channel_id, quality, has_audio, &source_label).await,
+        ClientEvent::VoiceScreenShareStop { channel_id } => {
+            handle_screen_share_stop(sfu, redis, user_id, channel_id).await
         }
         _ => Ok(()), // Non-voice events handled elsewhere
     }
@@ -413,6 +423,139 @@ async fn handle_voice_stats(
     tokio::spawn(async move {
         store_metrics(pool_clone, stats, user_id, channel_id, guild_id).await;
     });
+
+    Ok(())
+}
+
+/// Default max screen shares per channel.
+const DEFAULT_MAX_SCREEN_SHARES: u32 = 2;
+
+/// Handle starting a screen share.
+async fn handle_screen_share_start(
+    sfu: &Arc<SfuServer>,
+    _pool: &PgPool,  // Will be used for channel settings lookup
+    redis: &RedisClient,
+    user_id: Uuid,
+    channel_id: Uuid,
+    quality: Quality,
+    has_audio: bool,
+    source_label: &str,
+) -> Result<(), VoiceError> {
+    info!(user_id = %user_id, channel_id = %channel_id, quality = ?quality, "User starting screen share");
+
+    // Validate source label
+    if let Err(e) = validate_source_label(source_label) {
+        warn!(user_id = %user_id, "Invalid source label: {:?}", e);
+        return Err(VoiceError::Signaling("Invalid source label".to_string()));
+    }
+
+    // Get the room
+    let room = sfu
+        .get_room(channel_id)
+        .await
+        .ok_or(VoiceError::RoomNotFound(channel_id))?;
+
+    // Check user is in the room
+    let peer = room
+        .get_peer(user_id)
+        .await
+        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+
+    // Check if user is already sharing
+    {
+        let shares = room.screen_shares.read().await;
+        if shares.contains_key(&user_id) {
+            return Err(VoiceError::Signaling("Already sharing screen".to_string()));
+        }
+    }
+
+    // Try to reserve a slot (Redis limit check)
+    // TODO: Get max_screen_shares from channel settings
+    let max_shares = DEFAULT_MAX_SCREEN_SHARES;
+
+    if let Err(e) = try_start_screen_share(redis, channel_id, max_shares).await {
+        warn!(user_id = %user_id, channel_id = %channel_id, error = ?e, "Screen share limit check failed");
+        return Err(VoiceError::Signaling(match e {
+            ScreenShareError::LimitReached => "Screen share limit reached".to_string(),
+            ScreenShareError::InternalError => "Internal error".to_string(),
+            _ => format!("{:?}", e),
+        }));
+    }
+
+    // Get username for the info
+    let username = peer.username.clone();
+
+    // Create screen share info
+    let info = ScreenShareInfo::new(
+        user_id,
+        username.clone(),
+        source_label.to_string(),
+        has_audio,
+        quality,
+    );
+
+    // Add to room's screen shares
+    room.add_screen_share(info.clone()).await;
+
+    // Broadcast to room (including the sharer, so they get confirmation)
+    room.broadcast_all(ServerEvent::ScreenShareStarted {
+        channel_id,
+        user_id,
+        username,
+        source_label: source_label.to_string(),
+        has_audio,
+        quality,
+    })
+    .await;
+
+    info!(
+        user_id = %user_id,
+        channel_id = %channel_id,
+        quality = ?quality,
+        "Screen share started"
+    );
+
+    Ok(())
+}
+
+/// Handle stopping a screen share.
+async fn handle_screen_share_stop(
+    sfu: &Arc<SfuServer>,
+    redis: &RedisClient,
+    user_id: Uuid,
+    channel_id: Uuid,
+) -> Result<(), VoiceError> {
+    info!(user_id = %user_id, channel_id = %channel_id, "User stopping screen share");
+
+    // Get the room
+    let room = sfu
+        .get_room(channel_id)
+        .await
+        .ok_or(VoiceError::RoomNotFound(channel_id))?;
+
+    // Remove screen share from room
+    if room.remove_screen_share(user_id).await.is_none() {
+        // User wasn't sharing, but that's okay - idempotent
+        debug!(user_id = %user_id, "User tried to stop screen share but wasn't sharing");
+        return Ok(());
+    }
+
+    // Decrement Redis counter
+    stop_screen_share(redis, channel_id).await;
+
+    // Broadcast to room
+    room.broadcast_all(ServerEvent::ScreenShareStopped {
+        channel_id,
+        user_id,
+        reason: "user_stopped".to_string(),
+    })
+    .await;
+
+    info!(
+        user_id = %user_id,
+        channel_id = %channel_id,
+        "Screen share stopped"
+    );
 
     Ok(())
 }

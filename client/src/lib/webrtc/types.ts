@@ -198,6 +198,8 @@ export interface VoiceAdapter {
   startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>>;
   stopScreenShare(): Promise<VoiceResult<void>>;
   isScreenSharing(): boolean;
+  /** Get info about current screen share (hasAudio, sourceLabel). Returns null if not sharing. */
+  getScreenShareInfo(): { hasAudio: boolean; sourceLabel: string } | null;
 
   // Cleanup
   dispose(): void;

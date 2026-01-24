@@ -1169,6 +1169,34 @@ export async function wsAdminUnsubscribe(): Promise<void> {
   await wsSend({ type: "admin_unsubscribe" });
 }
 
+/**
+ * Start screen sharing in a voice channel (notifies server).
+ */
+export async function wsScreenShareStart(
+  channelId: string,
+  quality: "low" | "medium" | "high" | "premium",
+  hasAudio: boolean,
+  sourceLabel: string
+): Promise<void> {
+  await wsSend({
+    type: "voice_screen_share_start",
+    channel_id: channelId,
+    quality,
+    has_audio: hasAudio,
+    source_label: sourceLabel,
+  });
+}
+
+/**
+ * Stop screen sharing in a voice channel (notifies server).
+ */
+export async function wsScreenShareStop(channelId: string): Promise<void> {
+  await wsSend({
+    type: "voice_screen_share_stop",
+    channel_id: channelId,
+  });
+}
+
 // Pages Commands
 
 /**
