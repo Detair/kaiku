@@ -8,7 +8,7 @@ mod settings;
 
 use axum::{
     extract::DefaultBodyLimit, extract::State, middleware::from_fn, middleware::from_fn_with_state,
-    routing::get, Json, Router,
+    routing::{get, put}, Json, Router,
 };
 use serde::Serialize;
 use sqlx::PgPool;
@@ -104,6 +104,8 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/me/connection", connectivity::router())
         .nest("/api/me/preferences", preferences::router())
         .route("/api/me/pins", get(pins::list_pins).post(pins::create_pin))
+        .route("/api/me/pins/reorder", put(pins::reorder_pins))
+        .route("/api/me/pins/{id}", put(pins::update_pin).delete(pins::delete_pin))
         .nest("/api/keys", crypto::router())
         .nest("/api/users/{user_id}/keys", crypto::user_keys_router())
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))

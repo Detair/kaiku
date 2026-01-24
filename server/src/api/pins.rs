@@ -3,7 +3,7 @@
 //! CRUD operations for user's global pins (notes, links, pinned messages).
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -226,4 +226,98 @@ pub async fn create_pin(
     .await?;
 
     Ok(Json(Pin::from(row)))
+}
+
+/// PUT /api/me/pins/:id - Update a pin
+pub async fn update_pin(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(pin_id): Path<Uuid>,
+    Json(request): Json<UpdatePinRequest>,
+) -> Result<Json<Pin>, PinsError> {
+    // Validate content length if provided
+    if let Some(ref content) = request.content {
+        if content.len() > MAX_CONTENT_LENGTH {
+            return Err(PinsError::ContentTooLong);
+        }
+    }
+
+    // Validate title length if provided
+    if let Some(ref title) = request.title {
+        if title.len() > MAX_TITLE_LENGTH {
+            return Err(PinsError::TitleTooLong);
+        }
+    }
+
+    // Check pin exists and belongs to user
+    let existing = sqlx::query_as::<_, PinRow>(
+        "SELECT * FROM user_pins WHERE id = $1 AND user_id = $2",
+    )
+    .bind(pin_id)
+    .bind(auth_user.id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if existing.is_none() {
+        return Err(PinsError::NotFound);
+    }
+
+    // Update pin
+    let row = sqlx::query_as::<_, PinRow>(
+        r#"
+        UPDATE user_pins
+        SET content = COALESCE($3, content),
+            title = COALESCE($4, title),
+            metadata = COALESCE($5, metadata)
+        WHERE id = $1 AND user_id = $2
+        RETURNING id, user_id, pin_type, content, title, metadata, created_at, position
+        "#,
+    )
+    .bind(pin_id)
+    .bind(auth_user.id)
+    .bind(&request.content)
+    .bind(&request.title)
+    .bind(&request.metadata)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(Pin::from(row)))
+}
+
+/// DELETE /api/me/pins/:id - Delete a pin
+pub async fn delete_pin(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(pin_id): Path<Uuid>,
+) -> Result<StatusCode, PinsError> {
+    let result = sqlx::query("DELETE FROM user_pins WHERE id = $1 AND user_id = $2")
+        .bind(pin_id)
+        .bind(auth_user.id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(PinsError::NotFound);
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// PUT /api/me/pins/reorder - Reorder pins
+pub async fn reorder_pins(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(request): Json<ReorderPinsRequest>,
+) -> Result<StatusCode, PinsError> {
+    // Update positions based on order in request
+    for (position, pin_id) in request.pin_ids.iter().enumerate() {
+        sqlx::query("UPDATE user_pins SET position = $3 WHERE id = $1 AND user_id = $2")
+            .bind(pin_id)
+            .bind(auth_user.id)
+            .bind(position as i32)
+            .execute(&state.db)
+            .await?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
