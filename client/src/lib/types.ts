@@ -322,6 +322,15 @@ export interface UserPreferences {
 
   // Per-channel notification levels
   channelNotifications: Record<string, "all" | "mentions" | "muted">;
+
+  // Home sidebar section collapse states
+  homeSidebar: {
+    collapsed: {
+      activeNow: boolean;
+      pending: boolean;
+      pins: boolean;
+    };
+  };
 }
 
 export interface PreferencesResponse {
@@ -439,6 +448,35 @@ export interface UpdatePageRequest {
   slug?: string;
   content?: string;
   requires_acceptance?: boolean;
+}
+
+// ============================================================================
+// Pins Types
+// ============================================================================
+
+export type PinType = "note" | "link" | "message";
+
+export interface Pin {
+  id: string;
+  pin_type: PinType;
+  content: string;
+  title?: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  position: number;
+}
+
+export interface CreatePinRequest {
+  pin_type: PinType;
+  content: string;
+  title?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdatePinRequest {
+  content?: string;
+  title?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // Role Types
