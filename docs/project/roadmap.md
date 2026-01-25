@@ -235,6 +235,10 @@ This roadmap outlines the development path from the current prototype to a produ
   - Expandable Favorites section in Sidebar grouped by guild
   - Maximum 25 favorites per user with automatic cleanup
   - **Design:** `docs/plans/2026-01-24-cross-server-favorites-design.md`
+- [ ] **[Auth] First User Setup (Admin Bootstrap)**
+  - First registered user automatically gets admin/superuser permissions.
+  - Server flag to detect "fresh install" state.
+  - Admin setup wizard for initial configuration.
 - [ ] **[Auth] Forgot Password Workflow**
   - Email-based password reset with secure token generation.
   - Rate-limited reset requests to prevent abuse.
