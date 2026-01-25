@@ -167,6 +167,7 @@ fi
 # Check Docker or Podman
 if ! $NO_DOCKER; then
     CONTAINER_ENGINE=""
+    COMPOSE_CMD=""  # Will be set below; empty means not found
     if check_command docker; then
         CONTAINER_ENGINE="docker"
         log_success "Docker $(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)"
@@ -340,7 +341,7 @@ if ! $NO_DOCKER; then
 
     cd "${PROJECT_ROOT}"
 
-    ${COMPOSE_CMD} -f docker-compose.dev.yml up -d
+    ${COMPOSE_CMD:-docker compose} -f docker-compose.dev.yml up -d
 
     log_info "Waiting for services to be healthy..."
 

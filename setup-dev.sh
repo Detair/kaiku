@@ -154,7 +154,7 @@ setup_distrobox_container() {
 
     # Check if container already exists
     CONTAINER_EXISTS=false
-    if distrobox list | grep -q "^${CONTAINER_NAME}\s"; then
+    if distrobox list 2>/dev/null | grep -qw "${CONTAINER_NAME}"; then
         log_info "Container '${CONTAINER_NAME}' already exists."
         read -p "Do you want to recreate it? This will delete the existing container. (y/N) " -n 1 -r
         echo ""
@@ -204,7 +204,7 @@ setup_distrobox_container() {
             echo "Rust is already installed."
         else
             echo "Installing Rust..."
-            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source "$HOME/.cargo/env"
         fi
 
