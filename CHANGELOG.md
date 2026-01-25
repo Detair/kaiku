@@ -127,6 +127,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - User avatars and guild icons displayed in admin lists
   - Skeleton loading animations replacing text placeholders
   - Keyboard navigation (Arrow keys, Enter, Escape) in user/guild tables
+- Admin panel Phase 2 improvements
+  - Server-side search for users (by username, display name, email) and guilds (by name)
+  - Debounced search input with 300ms delay for reduced API calls
+  - Audit log advanced filters: date range picker and action type dropdown
+  - Active filter indicators showing current filter state
+- Admin panel Phase 3 improvements
+  - User detail expansion showing last login, guild count, and guild memberships
+  - Guild member preview with owner info and stacked avatar display of top members
+  - Lazy-loaded detail panels to reduce initial load time
+- Admin panel Phase 4 improvements
+  - CSV export for users and guilds with current search/filter applied
+  - Bulk ban users with checkbox selection and confirmation dialog
+  - Bulk suspend guilds with multi-select and reason input
+  - Select all / clear selection controls in bulk action bar
 - Admin panel Phase 5 improvements
   - Real-time updates via WebSocket for admin actions (ban/unban, suspend/unsuspend)
   - Undo functionality with toast notifications for ban and suspend actions (5-second window)
