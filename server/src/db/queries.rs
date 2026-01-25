@@ -564,6 +564,58 @@ pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool>
     Ok(result.rows_affected() > 0)
 }
 
+/// Search messages within a guild using PostgreSQL full-text search.
+/// Uses `websearch_to_tsquery` for user-friendly query syntax (supports AND, OR, quotes).
+pub async fn search_messages(
+    pool: &PgPool,
+    guild_id: Uuid,
+    query: &str,
+    limit: i64,
+    offset: i64,
+) -> sqlx::Result<Vec<Message>> {
+    sqlx::query_as::<_, Message>(
+        r"
+        SELECT m.*
+        FROM messages m
+        JOIN channels c ON m.channel_id = c.id
+        WHERE c.guild_id = $1
+          AND m.deleted_at IS NULL
+          AND m.content_search @@ websearch_to_tsquery('english', $2)
+        ORDER BY m.created_at DESC
+        LIMIT $3 OFFSET $4
+        ",
+    )
+    .bind(guild_id)
+    .bind(query)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+}
+
+/// Count total search results for pagination.
+pub async fn count_search_messages(
+    pool: &PgPool,
+    guild_id: Uuid,
+    query: &str,
+) -> sqlx::Result<i64> {
+    let result: (i64,) = sqlx::query_as(
+        r"
+        SELECT COUNT(*)
+        FROM messages m
+        JOIN channels c ON m.channel_id = c.id
+        WHERE c.guild_id = $1
+          AND m.deleted_at IS NULL
+          AND m.content_search @@ websearch_to_tsquery('english', $2)
+        ",
+    )
+    .bind(guild_id)
+    .bind(query)
+    .fetch_one(pool)
+    .await?;
+    Ok(result.0)
+}
+
 // ============================================================================
 // File Attachment Queries
 // ============================================================================

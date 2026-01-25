@@ -49,10 +49,11 @@ import type {
   ClaimedPrekeyInput,
   UserKeysResponse,
   ClaimedPrekeyResponse,
+  SearchResponse,
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, ChannelCategory, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse };
+export type { User, Channel, ChannelCategory, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse };
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -661,6 +662,24 @@ export async function getGuildChannels(guildId: string): Promise<Channel[]> {
   }
 
   return httpRequest<Channel[]>("GET", `/api/guilds/${guildId}/channels`);
+}
+
+/**
+ * Search messages in a guild using full-text search.
+ */
+export async function searchGuildMessages(
+  guildId: string,
+  query: string,
+  limit: number = 25,
+  offset: number = 0
+): Promise<SearchResponse> {
+  // Always use HTTP for search - no Tauri command needed since search is server-side
+  const params = new URLSearchParams({
+    q: query,
+    limit: limit.toString(),
+    offset: offset.toString(),
+  });
+  return httpRequest<SearchResponse>("GET", `/api/guilds/${guildId}/search?${params}`);
 }
 
 // Guild Invite Commands

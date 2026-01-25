@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Optional rpm-ostree layering fallback (with reboot requirement)
   - Export of development tools (cargo, bun, sqlx) to host `~/.local/bin`
   - Podman support alongside Docker for container orchestration
+- Full-text message search using PostgreSQL tsvector
+  - Search messages within a guild using `websearch_to_tsquery` syntax (supports AND, OR, quotes)
+  - GIN index for fast search performance
+  - Search panel in sidebar with debounced input (300ms)
+  - Results show channel name, author, timestamp, and highlighted content preview
+  - Click results to navigate directly to the message
+  - Pagination support with "Load more" for large result sets
 
 ### Changed
 - Replaced Redis with Valkey as key-value store

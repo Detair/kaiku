@@ -11,10 +11,11 @@
 
 import { Component, createSignal, createEffect, onMount, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { ChevronDown, Settings } from "lucide-solid";
+import { ChevronDown, Settings, Search } from "lucide-solid";
 import { loadChannels } from "@/stores/channels";
 import { getActiveGuild } from "@/stores/guilds";
 import { loadFavorites } from "@/stores/favorites";
+import { clearSearch } from "@/stores/search";
 import FavoritesSection from "./FavoritesSection";
 import {
   pagesState,
@@ -23,6 +24,7 @@ import {
 } from "@/stores/pages";
 import ChannelList from "@/components/channels/ChannelList";
 import { PageSection } from "@/components/pages";
+import { SearchPanel } from "@/components/search";
 import UserPanel from "./UserPanel";
 import GuildSettingsModal from "@/components/guilds/GuildSettingsModal";
 import type { PageListItem } from "@/lib/types";
@@ -32,6 +34,13 @@ const Sidebar: Component = () => {
   const [showGuildSettings, setShowGuildSettings] = createSignal(false);
   const [selectedPageId, setSelectedPageId] = createSignal<string | null>(null);
   const [pagesExpanded, setPagesExpanded] = createSignal(true);
+  const [showSearch, setShowSearch] = createSignal(false);
+
+  // Close search panel and clear results
+  const handleCloseSearch = () => {
+    setShowSearch(false);
+    clearSearch();
+  };
 
   // Load channels and favorites when sidebar mounts
   onMount(() => {
@@ -94,12 +103,24 @@ const Sidebar: Component = () => {
 
       {/* Search Bar */}
       <div class="px-3 py-2">
-        <input
-          type="text"
-          placeholder="Search..."
-          class="w-full px-3 py-2 rounded-xl text-sm text-text-input placeholder:text-text-secondary/50 outline-none focus:ring-2 focus:ring-accent-primary/30 border border-white/5"
-          style="background-color: var(--color-surface-base)"
-        />
+        <Show when={activeGuild()}>
+          <button
+            onClick={() => setShowSearch(true)}
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-text-secondary/50 border border-white/5 hover:border-white/10 transition-colors"
+            style="background-color: var(--color-surface-base)"
+          >
+            <Search class="w-4 h-4" />
+            <span>Search messages...</span>
+          </button>
+        </Show>
+        <Show when={!activeGuild()}>
+          <div
+            class="w-full px-3 py-2 rounded-xl text-sm text-text-secondary/50 border border-white/5"
+            style="background-color: var(--color-surface-base)"
+          >
+            Search...
+          </div>
+        </Show>
       </div>
 
       {/* Separator */}
@@ -133,6 +154,11 @@ const Sidebar: Component = () => {
           guildId={activeGuild()!.id}
           onClose={() => setShowGuildSettings(false)}
         />
+      </Show>
+
+      {/* Search Panel Overlay */}
+      <Show when={showSearch() && activeGuild()}>
+        <SearchPanel onClose={handleCloseSearch} />
       </Show>
     </aside>
   );

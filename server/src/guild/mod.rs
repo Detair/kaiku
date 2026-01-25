@@ -1,11 +1,12 @@
 //! Guild (Server) Management Module
 //!
-//! Handles guild creation, membership, invites, roles, categories, and management.
+//! Handles guild creation, membership, invites, roles, categories, search, and management.
 
 pub mod categories;
 pub mod handlers;
 pub mod invites;
 pub mod roles;
+pub mod search;
 pub mod types;
 
 use axum::{
@@ -60,6 +61,8 @@ pub fn router() -> Router<AppState> {
             patch(categories::update_category).delete(categories::delete_category),
         )
         .route("/:id/categories/reorder", post(categories::reorder_categories))
+        // Search route
+        .route("/:id/search", get(search::search_messages))
 }
 
 /// Create the invite join router (separate for public access pattern)

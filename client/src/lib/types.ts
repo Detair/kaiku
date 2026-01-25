@@ -196,6 +196,31 @@ export interface Message {
   reactions?: Reaction[];
 }
 
+// Search Types
+
+export interface SearchAuthor {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
+export interface SearchResult {
+  id: string;
+  channel_id: string;
+  channel_name: string;
+  author: SearchAuthor;
+  content: string;
+  created_at: string;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // Voice Types
 
 export interface VoiceParticipant {
