@@ -1,5 +1,6 @@
 import { Component, Show, createMemo, For, createSignal } from "solid-js";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import { File, Download, SmilePlus } from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
@@ -22,6 +23,18 @@ marked.setOptions({
   breaks: true,
   gfm: true,
 });
+
+// Configure DOMPurify for safe HTML rendering (XSS prevention)
+const PURIFY_CONFIG = {
+  ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'code', 'pre', 'a', 'ul', 'ol', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'del', 's', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
+  ALLOWED_ATTR: ['href', 'target', 'rel'],
+  ALLOW_DATA_ATTR: false,
+  RETURN_TRUSTED_TYPE: false as const,
+};
+
+const sanitizeHtml = (html: string): string => {
+  return DOMPurify.sanitize(html, PURIFY_CONFIG) as string;
+};
 
 interface CodeBlockData {
   type: 'code';
@@ -86,7 +99,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       if (match.index > lastIndex) {
         const text = content.substring(lastIndex, match.index);
         if (text.trim()) {
-          const html = marked.parse(text, { async: false }) as string;
+          const html = sanitizeHtml(marked.parse(text, { async: false }) as string);
           blocks.push({ type: 'text', html });
         }
       }
@@ -105,14 +118,14 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     if (lastIndex < content.length) {
       const text = content.substring(lastIndex);
       if (text.trim()) {
-        const html = marked.parse(text, { async: false }) as string;
+        const html = sanitizeHtml(marked.parse(text, { async: false }) as string);
         blocks.push({ type: 'text', html });
       }
     }
 
     // If no code blocks found, just parse the whole content
     if (blocks.length === 0) {
-      const html = marked.parse(content, { async: false }) as string;
+      const html = sanitizeHtml(marked.parse(content, { async: false }) as string);
       blocks.push({ type: 'text', html });
     }
 
