@@ -100,6 +100,12 @@ validator = { version = "0.16", features = ["derive"] }
 # MIME type detection
 mime_guess = "2"
 
+# Image format detection
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# Lock-free concurrent data structures
+dashmap = "6"
+
 # Internal Crates
 vc-common = { path = "shared/vc-common" }
 vc-crypto = { path = "shared/vc-crypto" }

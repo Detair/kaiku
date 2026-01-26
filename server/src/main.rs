@@ -97,14 +97,12 @@ async fn main() -> Result<()> {
     let sfu = voice::SfuServer::new(std::sync::Arc::new(config.clone()), rate_limiter.clone())?;
 
     // Start background cleanup task for voice stats rate limiter to prevent memory leaks
-    let _cleanup_handle = sfu.start_cleanup_task();
+    let cleanup_handle = sfu.start_cleanup_task();
 
     info!("Voice SFU server initialized");
 
-
-
     // Build application state
-    let state = api::AppState::new(db_pool, redis, config.clone(), s3, sfu, rate_limiter);
+    let state = api::AppState::new(db_pool.clone(), redis.clone(), config.clone(), s3, sfu, rate_limiter);
 
     // Build router
     let app = api::create_router(state);
@@ -113,12 +111,12 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind_address).await?;
     info!(address = %config.bind_address, "Server listening");
 
-    // Graceful shutdown handler
+    // Graceful shutdown handler with proper cleanup
     let shutdown_signal = async {
         tokio::signal::ctrl_c()
             .await
             .expect("Failed to install CTRL+C signal handler");
-        info!("Received shutdown signal, cleaning up...");
+        info!("Received shutdown signal, initiating graceful shutdown...");
     };
 
     axum::serve(
@@ -127,6 +125,28 @@ async fn main() -> Result<()> {
     )
     .with_graceful_shutdown(shutdown_signal)
     .await?;
+
+    // =========================================================================
+    // Graceful shutdown: clean up background tasks
+    // =========================================================================
+
+    info!("HTTP server stopped, cleaning up background tasks...");
+
+    // 1. Abort background cleanup task
+    cleanup_handle.abort();
+    // Wait for it to finish (will return Err(JoinError) due to abort, which is expected)
+    let _ = cleanup_handle.await;
+    info!("Voice stats cleanup task stopped");
+
+    // 2. Close database pool gracefully
+    // This waits for active queries to complete (up to acquire_timeout)
+    db_pool.close().await;
+    info!("Database pool closed");
+
+    // 3. Close Redis connection
+    // fred doesn't have an explicit close, but dropping the client handles cleanup
+    drop(redis);
+    info!("Redis connection closed");
 
     info!("Server shutdown complete");
 

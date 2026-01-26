@@ -1,11 +1,11 @@
 //! Track Routing and RTP Forwarding
 //!
 //! Manages RTP packet forwarding between participants in a voice room.
+//! Uses DashMap for lock-free concurrent access in the RTP hot path.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use dashmap::DashMap;
 use tracing::{debug, warn};
 use uuid::Uuid;
 use webrtc::{
@@ -29,16 +29,20 @@ struct Subscription {
 }
 
 /// Manages RTP packet forwarding between participants.
+///
+/// Uses `DashMap` for lock-free concurrent access, which is critical for the
+/// RTP hot path that processes ~50 packets/second per participant.
 pub struct TrackRouter {
     /// Map: `(source_user_id, source_type)` -> list of subscriptions
-    subscriptions: RwLock<HashMap<(Uuid, TrackSource), Vec<Subscription>>>,
+    /// Using DashMap to avoid lock contention in the RTP forwarding hot path.
+    subscriptions: DashMap<(Uuid, TrackSource), Vec<Subscription>>,
 }
 
 impl TrackRouter {
     /// Create a new track router.
     pub fn new() -> Self {
         Self {
-            subscriptions: RwLock::new(HashMap::new()),
+            subscriptions: DashMap::new(),
         }
     }
 
@@ -72,9 +76,9 @@ impl TrackRouter {
             local_track: local_track.clone(),
         };
 
-        let mut subs = self.subscriptions.write().await;
-        subs.entry((source_user_id, source_type))
-            .or_insert_with(Vec::new)
+        self.subscriptions
+            .entry((source_user_id, source_type))
+            .or_default()
             .push(subscription);
 
         debug!(
@@ -88,16 +92,18 @@ impl TrackRouter {
     }
 
     /// Forward an RTP packet from source to all subscribers.
+    ///
+    /// This is the hot path called ~50 times/second per participant.
+    /// Uses DashMap for lock-free concurrent reads to avoid contention.
     pub async fn forward_rtp(
         &self,
         source_user_id: Uuid,
         source_type: TrackSource,
         rtp_packet: &RtpPacket,
     ) {
-        let subs = self.subscriptions.read().await;
-
-        if let Some(subscribers) = subs.get(&(source_user_id, source_type)) {
-            for sub in subscribers {
+        // DashMap::get returns a guard that provides lock-free concurrent read access
+        if let Some(subscribers) = self.subscriptions.get(&(source_user_id, source_type)) {
+            for sub in subscribers.value() {
                 // Write RTP packet to local track (forwards to subscriber)
                 if let Err(e) = sub.local_track.write_rtp(rtp_packet).await {
                     warn!(
@@ -119,14 +125,16 @@ impl TrackRouter {
         source_type: TrackSource,
         subscriber_id: Uuid,
     ) {
-        let mut subs = self.subscriptions.write().await;
+        let key = (source_user_id, source_type);
 
-        if let Some(subscribers) = subs.get_mut(&(source_user_id, source_type)) {
-            subscribers.retain(|s| s.subscriber_id != subscriber_id);
+        // Use entry API for atomic check-and-modify
+        if let Some(mut entry) = self.subscriptions.get_mut(&key) {
+            entry.retain(|s| s.subscriber_id != subscriber_id);
 
-            // Remove source entry if no subscribers left
-            if subscribers.is_empty() {
-                subs.remove(&(source_user_id, source_type));
+            // Check if we should remove the entry (do this outside the guard)
+            if entry.is_empty() {
+                drop(entry); // Release the mutable reference first
+                self.subscriptions.remove(&key);
             }
         }
 
@@ -140,32 +148,30 @@ impl TrackRouter {
 
     /// Remove all subscriptions for a source user (all tracks).
     pub async fn remove_source(&self, source_user_id: Uuid) {
-        let mut subs = self.subscriptions.write().await;
         // Remove all keys where the tuple starts with source_user_id
-        subs.retain(|(uid, _), _| *uid != source_user_id);
+        self.subscriptions.retain(|(uid, _), _| *uid != source_user_id);
 
         debug!(source = %source_user_id, "Removed source and all subscriptions");
     }
 
     /// Remove a subscriber from all sources (when subscriber leaves).
     pub async fn remove_subscriber_from_all(&self, subscriber_id: Uuid) {
-        let mut subs = self.subscriptions.write().await;
-
-        for (_, subscribers) in subs.iter_mut() {
-            subscribers.retain(|s| s.subscriber_id != subscriber_id);
+        // First pass: remove subscriber from all entries
+        for mut entry in self.subscriptions.iter_mut() {
+            entry.retain(|s| s.subscriber_id != subscriber_id);
         }
 
-        // Clean up empty entries
-        subs.retain(|_, v| !v.is_empty());
+        // Second pass: clean up empty entries
+        self.subscriptions.retain(|_, v| !v.is_empty());
 
         debug!(subscriber = %subscriber_id, "Removed subscriber from all sources");
     }
 
     /// Get the number of subscribers for a source.
     pub async fn subscriber_count(&self, source_user_id: Uuid, source_type: TrackSource) -> usize {
-        let subs = self.subscriptions.read().await;
-        subs.get(&(source_user_id, source_type))
-            .map_or(0, std::vec::Vec::len)
+        self.subscriptions
+            .get(&(source_user_id, source_type))
+            .map_or(0, |entry| entry.value().len())
     }
 }
 
@@ -187,14 +193,13 @@ mod tests {
     fn test_track_router_new() {
         let router = TrackRouter::new();
         // Router should be empty initially
-        // We can't directly check internal state, but we can verify it was created
-        assert!(std::mem::size_of_val(&router) > 0);
+        assert!(router.subscriptions.is_empty());
     }
 
     #[test]
     fn test_track_router_default() {
         let router = TrackRouter::default();
-        assert!(std::mem::size_of_val(&router) > 0);
+        assert!(router.subscriptions.is_empty());
     }
 
     // =========================================================================
@@ -284,7 +289,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Concurrent Access Tests
+    // Concurrent Access Tests (DashMap should handle these without deadlocks)
     // =========================================================================
 
     #[tokio::test]
@@ -292,7 +297,7 @@ mod tests {
         let router = Arc::new(TrackRouter::new());
         let user_id = Uuid::new_v4();
 
-        // Spawn multiple concurrent reads
+        // Spawn multiple concurrent reads - DashMap handles this lock-free
         let mut handles = vec![];
         for _ in 0..10 {
             let router_clone = router.clone();
@@ -314,7 +319,7 @@ mod tests {
     async fn test_concurrent_remove_operations() {
         let router = Arc::new(TrackRouter::new());
 
-        // Spawn multiple concurrent remove operations
+        // Spawn multiple concurrent remove operations - DashMap handles concurrent writes
         let mut handles = vec![];
         for i in 0..10 {
             let router_clone = router.clone();

@@ -1,12 +1,28 @@
 //! Database Queries
 //!
 //! Runtime queries (no compile-time `DATABASE_URL` required).
+//!
+//! All query functions include error context logging to aid debugging.
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
+use tracing::error;
 use uuid::Uuid;
 
 use super::models::{Channel, ChannelMember, ChannelType, FileAttachment, Message, Session, User};
+
+/// Log and return a database error with context.
+///
+/// This helper ensures all database errors are logged with relevant context
+/// before being propagated, making production debugging easier.
+macro_rules! db_error {
+    ($query:expr, $($field:tt)*) => {
+        |e| {
+            error!(query = $query, $($field)*, error = %e, "Database query failed");
+            e
+        }
+    };
+}
 
 // ============================================================================
 // User Queries
@@ -18,6 +34,7 @@ pub async fn find_user_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<Use
         .bind(id)
         .fetch_optional(pool)
         .await
+        .map_err(db_error!("find_user_by_id", user_id = %id))
 }
 
 /// Find user by username.
@@ -26,6 +43,7 @@ pub async fn find_user_by_username(pool: &PgPool, username: &str) -> sqlx::Resul
         .bind(username)
         .fetch_optional(pool)
         .await
+        .map_err(db_error!("find_user_by_username", username = %username))
 }
 
 /// Find user by external ID (for OIDC).
@@ -37,6 +55,7 @@ pub async fn find_user_by_external_id(
         .bind(external_id)
         .fetch_optional(pool)
         .await
+        .map_err(db_error!("find_user_by_external_id", external_id = %external_id))
 }
 
 /// Find user by email.
@@ -45,6 +64,7 @@ pub async fn find_user_by_email(pool: &PgPool, email: &str) -> sqlx::Result<Opti
         .bind(email)
         .fetch_optional(pool)
         .await
+        .map_err(db_error!("find_user_by_email", email = %email))
 }
 
 /// Find multiple users by IDs (bulk lookup to avoid N+1 queries).
@@ -159,6 +179,7 @@ pub async fn create_session(
     .bind(user_agent)
     .fetch_one(pool)
     .await
+    .map_err(db_error!("create_session", user_id = %user_id))
 }
 
 /// Find session by token hash.
@@ -176,6 +197,10 @@ pub async fn find_session_by_token_hash(
     .bind(token_hash)
     .fetch_optional(pool)
     .await
+    .map_err(|e| {
+        error!(query = "find_session_by_token_hash", error = %e, "Database query failed");
+        e
+    })
 }
 
 /// Delete a session by ID.
@@ -183,7 +208,8 @@ pub async fn delete_session(pool: &PgPool, session_id: Uuid) -> sqlx::Result<()>
     sqlx::query("DELETE FROM sessions WHERE id = $1")
         .bind(session_id)
         .execute(pool)
-        .await?;
+        .await
+        .map_err(db_error!("delete_session", session_id = %session_id))?;
     Ok(())
 }
 
@@ -192,7 +218,11 @@ pub async fn delete_session_by_token_hash(pool: &PgPool, token_hash: &str) -> sq
     sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
         .bind(token_hash)
         .execute(pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            error!(query = "delete_session_by_token_hash", error = %e, "Database query failed");
+            e
+        })?;
     Ok(())
 }
 
@@ -201,7 +231,8 @@ pub async fn delete_all_user_sessions(pool: &PgPool, user_id: Uuid) -> sqlx::Res
     let result = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(user_id)
         .execute(pool)
-        .await?;
+        .await
+        .map_err(db_error!("delete_all_user_sessions", user_id = %user_id))?;
     Ok(result.rows_affected())
 }
 
@@ -260,6 +291,7 @@ pub async fn find_channel_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<
     .bind(id)
     .fetch_optional(pool)
     .await
+    .map_err(db_error!("find_channel_by_id", channel_id = %id))
 }
 
 /// Create a new channel.
@@ -482,6 +514,7 @@ pub async fn find_message_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<
         .bind(id)
         .fetch_optional(pool)
         .await
+        .map_err(db_error!("find_message_by_id", message_id = %id))
 }
 
 /// Create a new message.

@@ -109,20 +109,27 @@ impl S3Client {
     /// * `key` - The S3 object key (path)
     /// * `data` - File contents as bytes
     /// * `content_type` - MIME type of the file
+    ///
+    /// # Timeout
+    /// Operations are protected by a 30-second timeout to prevent slow S3
+    /// responses from blocking tokio threads and cascading failures.
     pub async fn upload(
         &self,
         key: &str,
         data: Vec<u8>,
         content_type: &str,
     ) -> Result<(), S3Error> {
-        self.client
+        let upload_future = self.client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
             .body(ByteStream::from(data))
             .content_type(content_type)
-            .send()
+            .send();
+
+        tokio::time::timeout(Duration::from_secs(30), upload_future)
             .await
+            .map_err(|_| S3Error::Upload("S3 upload timed out after 30 seconds".to_string()))?
             .map_err(|e| S3Error::Upload(e.to_string()))?;
 
         Ok(())
@@ -131,58 +138,77 @@ impl S3Client {
     /// Generate a presigned URL for downloading a file.
     ///
     /// The URL is valid for the configured expiry duration.
+    /// Protected by a 10-second timeout.
     pub async fn presign_get(&self, key: &str) -> Result<String, S3Error> {
         let presign_config = PresigningConfig::builder()
             .expires_in(self.presign_expiry)
             .build()
             .map_err(|e| S3Error::Presign(e.to_string()))?;
 
-        let presigned = self
+        let presign_future = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
-            .presigned(presign_config)
+            .presigned(presign_config);
+
+        let presigned = tokio::time::timeout(Duration::from_secs(10), presign_future)
             .await
+            .map_err(|_| S3Error::Presign("S3 presign timed out after 10 seconds".to_string()))?
             .map_err(|e| S3Error::Presign(e.to_string()))?;
 
         Ok(presigned.uri().to_string())
     }
 
     /// Delete a file from S3.
+    ///
+    /// Protected by a 30-second timeout.
     pub async fn delete(&self, key: &str) -> Result<(), S3Error> {
-        self.client
+        let delete_future = self.client
             .delete_object()
             .bucket(&self.bucket)
             .key(key)
-            .send()
+            .send();
+
+        tokio::time::timeout(Duration::from_secs(30), delete_future)
             .await
+            .map_err(|_| S3Error::Delete("S3 delete timed out after 30 seconds".to_string()))?
             .map_err(|e| S3Error::Delete(e.to_string()))?;
 
         Ok(())
     }
 
     /// Check if the bucket is accessible (health check).
+    ///
+    /// Protected by a 10-second timeout.
     pub async fn health_check(&self) -> Result<(), S3Error> {
-        self.client
+        let health_future = self.client
             .head_bucket()
             .bucket(&self.bucket)
-            .send()
+            .send();
+
+        tokio::time::timeout(Duration::from_secs(10), health_future)
             .await
+            .map_err(|_| S3Error::Config("S3 health check timed out after 10 seconds".to_string()))?
             .map_err(|e| S3Error::Config(format!("Bucket not accessible: {e}")))?;
 
         Ok(())
     }
 
     /// Get the raw object stream for a file (for proxying).
+    ///
+    /// Protected by a 30-second timeout for initial response.
+    /// Note: Streaming the body itself may take longer for large files.
     pub async fn get_object_stream(&self, key: &str) -> Result<ByteStream, S3Error> {
-        let output = self
-            .client
+        let get_future = self.client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
-            .send()
+            .send();
+
+        let output = tokio::time::timeout(Duration::from_secs(30), get_future)
             .await
+            .map_err(|_| S3Error::Download("S3 download timed out after 30 seconds".to_string()))?
             .map_err(|e| S3Error::Download(e.to_string()))?;
 
         Ok(output.body)

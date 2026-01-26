@@ -22,6 +22,18 @@ use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, Ra
 
 pub use error::{AuthError, AuthResult};
 pub use middleware::{require_auth, AuthUser};
+pub use password::{hash_password, verify_password};
+
+/// Hash a token for secure storage using SHA256.
+///
+/// Used for storing refresh tokens - we never store the raw token.
+#[must_use]
+pub fn hash_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 /// Create authentication router.
 ///

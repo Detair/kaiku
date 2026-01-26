@@ -7,7 +7,6 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
@@ -134,25 +133,22 @@ lazy_static::lazy_static! {
 // Helper Functions
 // ============================================================================
 
-/// Hash a refresh token for storage (we don't store raw tokens).
-fn hash_token(token: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    hex::encode(hasher.finalize())
-}
+// Re-use the public hash_token function from parent module
+use super::hash_token;
 
-/// Extract User-Agent from headers (truncated to 512 chars for DB storage).
+/// Extract User-Agent from headers (sanitized and truncated to 512 chars for DB storage).
 fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
     headers
         .get(USER_AGENT)
         .and_then(|h| h.to_str().ok())
         .map(|s| {
-            // Truncate to 512 chars to prevent DoS and match DB constraint
-            if s.len() > 512 {
-                s.chars().take(512).collect()
-            } else {
-                s.to_string()
-            }
+            // Sanitize: remove control characters (except whitespace) to prevent
+            // injection attacks and display issues in admin panels
+            // Then truncate to 512 chars to prevent DoS and match DB constraint
+            s.chars()
+                .filter(|c| !c.is_control() || c.is_whitespace())
+                .take(512)
+                .collect()
         })
 }
 
@@ -502,13 +498,33 @@ pub async fn upload_avatar(
     }
 
     let data = file_data.ok_or(AuthError::Validation("No avatar file provided".to_string()))?;
-    
-    // Validate mime type
+
+    // Validate mime type from header
     let mime = content_type
         .unwrap_or_else(|| "application/octet-stream".to_string());
-    
+
     if !mime.starts_with("image/") {
         return Err(AuthError::Validation("File must be an image".to_string()));
+    }
+
+    // Reject SVG files (potential XSS vector via embedded JavaScript)
+    if mime.contains("svg") {
+        return Err(AuthError::Validation("SVG files are not allowed for avatars".to_string()));
+    }
+
+    // Validate actual file content using magic bytes (don't trust client-provided MIME type)
+    let detected_format = image::guess_format(&data)
+        .map_err(|_| AuthError::Validation("Unable to detect image format. File may be corrupted or not a valid image.".to_string()))?;
+
+    // Only allow safe raster formats
+    match detected_format {
+        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP => {}
+        _ => {
+            return Err(AuthError::Validation(format!(
+                "Unsupported image format: {:?}. Only PNG, JPEG, GIF, and WebP are allowed.",
+                detected_format
+            )));
+        }
     }
 
     // Generate S3 key: avatars/{user_id}/{timestamp}_{filename}

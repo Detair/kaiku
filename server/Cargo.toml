@@ -79,6 +79,12 @@ validator.workspace = true
 # MIME detection
 mime_guess.workspace = true
 
+# Image format detection
+image.workspace = true
+
+# Lock-free concurrent data structures
+dashmap.workspace = true
+
 # Bitflags
 bitflags.workspace = true
 

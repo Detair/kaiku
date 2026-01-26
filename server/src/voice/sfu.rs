@@ -167,25 +167,45 @@ impl Room {
     }
 
     /// Broadcast an event to all peers except one.
+    ///
+    /// Clones the peer list before sending to avoid holding the lock during I/O,
+    /// which could delay peer additions/removals during broadcasts.
     pub async fn broadcast_except(&self, exclude_user_id: Uuid, event: ServerEvent) {
-        let peers = self.peers.read().await;
+        // Clone sender handles to release lock before I/O
+        let senders: Vec<(Uuid, mpsc::Sender<ServerEvent>)> = {
+            let peers = self.peers.read().await;
+            peers
+                .iter()
+                .filter(|(id, _)| **id != exclude_user_id)
+                .map(|(id, peer)| (*id, peer.signal_tx.clone()))
+                .collect()
+        };
 
-        for (user_id, peer) in peers.iter() {
-            if *user_id != exclude_user_id {
-                if let Err(e) = peer.signal_tx.send(event.clone()).await {
-                    warn!(user_id = %user_id, error = %e, "Failed to send event to peer");
-                }
+        // Send without holding the lock
+        for (user_id, tx) in senders {
+            if let Err(e) = tx.send(event.clone()).await {
+                warn!(user_id = %user_id, error = %e, "Failed to send event to peer");
             }
         }
     }
 
     /// Broadcast an event to all peers.
+    ///
+    /// Clones the peer list before sending to avoid holding the lock during I/O.
     #[allow(dead_code)]
     pub async fn broadcast_all(&self, event: ServerEvent) {
-        let peers = self.peers.read().await;
+        // Clone sender handles to release lock before I/O
+        let senders: Vec<(Uuid, mpsc::Sender<ServerEvent>)> = {
+            let peers = self.peers.read().await;
+            peers
+                .iter()
+                .map(|(id, peer)| (*id, peer.signal_tx.clone()))
+                .collect()
+        };
 
-        for (user_id, peer) in peers.iter() {
-            if let Err(e) = peer.signal_tx.send(event.clone()).await {
+        // Send without holding the lock
+        for (user_id, tx) in senders {
+            if let Err(e) = tx.send(event.clone()).await {
                 warn!(user_id = %user_id, error = %e, "Failed to send event to peer");
             }
         }

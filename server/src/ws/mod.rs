@@ -1,6 +1,22 @@
 //! WebSocket Handler
 //!
 //! Real-time communication for chat and voice signaling.
+//!
+//! ## Authentication
+//!
+//! WebSocket authentication uses the `Sec-WebSocket-Protocol` header instead of
+//! query parameters to avoid token exposure in logs, browser history, and referrer
+//! headers.
+//!
+//! Client should connect with:
+//! ```text
+//! Sec-WebSocket-Protocol: access_token.<jwt_token>
+//! ```
+//!
+//! Server responds with:
+//! ```text
+//! Sec-WebSocket-Protocol: access_token
+//! ```
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -8,7 +24,8 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{Query, State, WebSocketUpgrade},
+    extract::{State, WebSocketUpgrade},
+    http::HeaderMap,
     response::Response,
 };
 use fred::prelude::*;
@@ -41,11 +58,26 @@ impl Default for ActivityState {
     }
 }
 
-/// WebSocket connection query params.
-#[derive(Debug, Deserialize)]
-pub struct WsQuery {
-    /// JWT access token for authentication
-    pub token: String,
+/// WebSocket protocol header name for authentication.
+const WS_PROTOCOL_PREFIX: &str = "access_token.";
+
+/// Extract JWT token from Sec-WebSocket-Protocol header.
+///
+/// Expected format: `access_token.<jwt_token>`
+///
+/// Returns `None` if the header is missing or malformed.
+fn extract_token_from_protocol(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("sec-websocket-protocol")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|protocols| {
+            // The header may contain multiple protocols separated by commas
+            protocols
+                .split(',')
+                .map(str::trim)
+                .find(|p| p.starts_with(WS_PROTOCOL_PREFIX))
+                .map(|p| p[WS_PROTOCOL_PREFIX.len()..].to_string())
+        })
 }
 
 /// Client-to-server events.
@@ -597,13 +629,32 @@ async fn broadcast_presence_update(state: &AppState, user_id: Uuid, event: &Serv
 }
 
 /// WebSocket upgrade handler.
+///
+/// Authentication is performed via the `Sec-WebSocket-Protocol` header to avoid
+/// token exposure in server logs and browser history (OWASP recommendation).
+///
+/// # Protocol
+///
+/// Client sends: `Sec-WebSocket-Protocol: access_token.<jwt_token>`
+/// Server responds: `Sec-WebSocket-Protocol: access_token`
 pub async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    Query(query): Query<WsQuery>,
+    headers: HeaderMap,
 ) -> Response {
+    // Extract token from Sec-WebSocket-Protocol header
+    let token = match extract_token_from_protocol(&headers) {
+        Some(t) => t,
+        None => {
+            return Response::builder()
+                .status(401)
+                .body("Missing or invalid Sec-WebSocket-Protocol header. Expected: access_token.<jwt>".into())
+                .unwrap();
+        }
+    };
+
     // Validate token before upgrade
-    let claims = match jwt::validate_access_token(&query.token, &state.config.jwt_public_key) {
+    let claims = match jwt::validate_access_token(&token, &state.config.jwt_public_key) {
         Ok(claims) => claims,
         Err(_) => {
             return Response::builder()
@@ -623,7 +674,9 @@ pub async fn handler(
         }
     };
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, user_id))
+    // Respond with the protocol to confirm (required for WebSocket handshake)
+    ws.protocols(["access_token"])
+        .on_upgrade(move |socket| handle_socket(socket, state, user_id))
 }
 
 /// Handle WebSocket connection.

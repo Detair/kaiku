@@ -9,6 +9,8 @@ pub mod user_features;
 #[cfg(test)]
 mod tests;
 
+use std::time::Duration;
+
 use anyhow::Result;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tracing::info;
@@ -17,10 +19,16 @@ pub use models::*;
 pub use queries::*;
 pub use user_features::UserFeatures;
 
-/// Create `PostgreSQL` connection pool.
+/// Create `PostgreSQL` connection pool with health configuration.
 pub async fn create_pool(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(20)
+        // Prevent hanging requests on pool exhaustion
+        .acquire_timeout(Duration::from_secs(5))
+        // Clean up idle connections to prevent stale connection issues
+        .idle_timeout(Duration::from_secs(600))
+        // Validate connections before use to catch stale/broken connections
+        .test_before_acquire(true)
         .connect(database_url)
         .await?;
 

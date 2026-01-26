@@ -110,12 +110,13 @@ pub async fn rate_limit_by_ip(
     let result = match rate_limiter.check(category, &normalized_ip).await {
         Ok(result) => result,
         Err(RateLimitError::RedisUnavailable) => {
-            // Fail open if configured
+            // Fail open if configured - SECURITY WARNING: rate limiting is disabled!
             if rate_limiter.config().fail_open {
                 warn!(
                     category = %category.as_str(),
                     ip = %normalized_ip,
-                    "Redis unavailable, allowing request (fail_open=true)"
+                    security_impact = "high",
+                    "SECURITY WARNING: Redis unavailable - RATE LIMITING DISABLED! API vulnerable to abuse/DoS attacks. Investigate Redis connectivity immediately."
                 );
                 return Ok(next.run(request).await);
             }
@@ -210,11 +211,13 @@ pub async fn rate_limit_by_user(
     let result = match rate_limiter.check(category, &identifier).await {
         Ok(result) => result,
         Err(RateLimitError::RedisUnavailable) => {
+            // Fail open if configured - SECURITY WARNING: rate limiting is disabled!
             if rate_limiter.config().fail_open {
                 warn!(
                     category = %category.as_str(),
                     identifier = %identifier,
-                    "Redis unavailable, allowing request (fail_open=true)"
+                    security_impact = "high",
+                    "SECURITY WARNING: Redis unavailable - RATE LIMITING DISABLED! API vulnerable to abuse/DoS attacks. Investigate Redis connectivity immediately."
                 );
                 return Ok(next.run(request).await);
             }
@@ -287,10 +290,12 @@ pub async fn check_ip_not_blocked(
     let is_blocked = match rate_limiter.is_blocked(&normalized_ip).await {
         Ok(blocked) => blocked,
         Err(RateLimitError::RedisUnavailable) => {
+            // Fail open if configured - SECURITY WARNING: IP blocking is disabled!
             if rate_limiter.config().fail_open {
                 warn!(
                     ip = %normalized_ip,
-                    "Redis unavailable, allowing request (fail_open=true)"
+                    security_impact = "critical",
+                    "SECURITY WARNING: Redis unavailable - IP BLOCKING DISABLED! Brute-force protection inactive. Investigate Redis connectivity immediately."
                 );
                 return Ok(next.run(request).await);
             }

@@ -74,7 +74,9 @@ impl Default for RateLimitConfig {
         Self {
             enabled: true,
             redis_key_prefix: "canis:rl".to_string(),
-            fail_open: true,
+            // Security: fail_closed by default - reject requests when Redis unavailable
+            // Set RATE_LIMIT_FAIL_OPEN=true only if availability > security for your use case
+            fail_open: false,
             trust_proxy: false,
             allowlist: HashSet::new(),
             limits: RateLimits::default(),
@@ -145,7 +147,7 @@ impl RateLimitConfig {
     /// Environment variables:
     /// - `RATE_LIMIT_ENABLED`: Enable/disable rate limiting (default: true)
     /// - `RATE_LIMIT_PREFIX`: Redis key prefix (default: "canis:rl")
-    /// - `RATE_LIMIT_FAIL_OPEN`: Allow requests when Redis unavailable (default: true)
+    /// - `RATE_LIMIT_FAIL_OPEN`: Allow requests when Redis unavailable (default: false)
     /// - `RATE_LIMIT_TRUST_PROXY`: Trust X-Forwarded-For headers (default: false)
     /// - `RATE_LIMIT_ALLOWLIST`: Comma-separated IP allowlist
     /// - `RATE_LIMIT_AUTH_LOGIN`: Login limit as "`requests,window_secs`"
@@ -168,7 +170,7 @@ impl RateLimitConfig {
             config.redis_key_prefix = val;
         }
         if let Ok(val) = std::env::var("RATE_LIMIT_FAIL_OPEN") {
-            config.fail_open = val.parse().unwrap_or(true);
+            config.fail_open = val.parse().unwrap_or(false);
         }
         if let Ok(val) = std::env::var("RATE_LIMIT_TRUST_PROXY") {
             config.trust_proxy = val.parse().unwrap_or(false);
@@ -285,7 +287,7 @@ mod tests {
         let config = RateLimitConfig::default();
         assert!(config.enabled);
         assert_eq!(config.redis_key_prefix, "canis:rl");
-        assert!(config.fail_open);
+        assert!(!config.fail_open);
         assert!(!config.trust_proxy);
         assert!(config.allowlist.is_empty());
     }
