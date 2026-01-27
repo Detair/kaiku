@@ -70,6 +70,10 @@ pub struct Config {
 
     /// Whether E2EE setup is required before using the app (default: false)
     pub require_e2ee_setup: bool,
+
+    /// Allowed CORS origins (comma-separated, default: "*" for dev)
+    /// Set to specific origins in production (e.g., "https://app.example.com")
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl Config {
@@ -118,6 +122,15 @@ impl Config {
                 .ok()
                 .map(|v| v.to_lowercase() == "true" || v == "1")
                 .unwrap_or(false),
+            cors_allowed_origins: env::var("CORS_ALLOWED_ORIGINS")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(|o| o.trim().to_string())
+                        .filter(|o| !o.is_empty())
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["*".to_string()]),
         })
     }
 
@@ -169,6 +182,7 @@ impl Config {
             turn_credential: None,
             mfa_encryption_key: None,
             require_e2ee_setup: false,
+            cors_allowed_origins: vec!["*".to_string()],
         }
     }
 }

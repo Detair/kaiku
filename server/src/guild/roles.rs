@@ -45,36 +45,36 @@ impl IntoResponse for RoleError {
         let (status, body) = match &self {
             Self::NotFound => (
                 StatusCode::NOT_FOUND,
-                serde_json::json!({"error": "not_found", "message": "Role not found"}),
+                serde_json::json!({"error": "ROLE_NOT_FOUND", "message": "Role not found"}),
             ),
             Self::NotMember => (
                 StatusCode::FORBIDDEN,
-                serde_json::json!({"error": "not_member", "message": "Not a member of this guild"}),
+                serde_json::json!({"error": "NOT_MEMBER", "message": "Not a member of this guild"}),
             ),
             Self::Permission(e) => {
                 let body = match e {
                     PermissionError::MissingPermission(p) => serde_json::json!({
-                        "error": "missing_permission",
+                        "error": "MISSING_PERMISSION",
                         "required": format!("{:?}", p),
                         "message": e.to_string()
                     }),
                     PermissionError::RoleHierarchy { actor_position, target_position } => serde_json::json!({
-                        "error": "role_hierarchy",
+                        "error": "ROLE_HIERARCHY",
                         "your_position": actor_position,
                         "target_position": target_position,
                         "message": e.to_string()
                     }),
                     PermissionError::CannotEscalate(p) => serde_json::json!({
-                        "error": "cannot_escalate",
+                        "error": "CANNOT_ESCALATE",
                         "attempted": format!("{:?}", p),
                         "message": e.to_string()
                     }),
                     PermissionError::NotGuildMember => serde_json::json!({
-                        "error": "not_member",
+                        "error": "NOT_MEMBER",
                         "message": e.to_string()
                     }),
                     _ => serde_json::json!({
-                        "error": "permission",
+                        "error": "PERMISSION_DENIED",
                         "message": e.to_string()
                     }),
                 };
@@ -82,11 +82,11 @@ impl IntoResponse for RoleError {
             }
             Self::Validation(msg) => (
                 StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "validation", "message": msg}),
+                serde_json::json!({"error": "VALIDATION_ERROR", "message": msg}),
             ),
             Self::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "database", "message": "Database error"}),
+                serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
             ),
         };
         (status, Json(body)).into_response()

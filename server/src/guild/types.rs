@@ -19,6 +19,15 @@ pub struct Guild {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Guild with member count for list responses.
+#[derive(Debug, Clone, Serialize)]
+pub struct GuildWithMemberCount {
+    #[serde(flatten)]
+    pub guild: Guild,
+    /// Total number of members in the guild.
+    pub member_count: i64,
+}
+
 // ============================================================================
 // Request Types
 // ============================================================================

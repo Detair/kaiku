@@ -31,19 +31,19 @@ impl IntoResponse for SearchError {
         let (status, body) = match &self {
             Self::GuildNotFound => (
                 StatusCode::NOT_FOUND,
-                serde_json::json!({"error": "not_found", "message": "Guild not found"}),
+                serde_json::json!({"error": "NOT_FOUND", "message": "Guild not found"}),
             ),
             Self::NotMember => (
                 StatusCode::FORBIDDEN,
-                serde_json::json!({"error": "forbidden", "message": "Not a member of this guild"}),
+                serde_json::json!({"error": "FORBIDDEN", "message": "Not a member of this guild"}),
             ),
             Self::InvalidQuery(msg) => (
                 StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "invalid_query", "message": msg}),
+                serde_json::json!({"error": "INVALID_QUERY", "message": msg}),
             ),
             Self::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "internal_error", "message": "Database error"}),
+                serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
             ),
         };
         (status, Json(body)).into_response()

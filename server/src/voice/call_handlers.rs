@@ -374,9 +374,9 @@ pub fn call_router() -> axum::Router<AppState> {
     use axum::routing::{get, post};
 
     axum::Router::new()
-        .route("/:id/call", get(get_call))
-        .route("/:id/call/start", post(start_call))
-        .route("/:id/call/join", post(join_call))
-        .route("/:id/call/decline", post(decline_call))
-        .route("/:id/call/leave", post(leave_call))
+        .route("/{id}/call", get(get_call))
+        .route("/{id}/call/start", post(start_call))
+        .route("/{id}/call/join", post(join_call))
+        .route("/{id}/call/decline", post(decline_call))
+        .route("/{id}/call/leave", post(leave_call))
 }

@@ -19,6 +19,7 @@ use std::sync::Arc;
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
 
@@ -80,10 +81,53 @@ impl AppState {
 
 /// Create the main application router.
 pub fn create_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // Configure CORS based on allowed origins
+    // In production, set CORS_ALLOWED_ORIGINS to specific origins
+    let cors = if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
+        // Development mode: allow any origin
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        // Production mode: restrict to configured origins
+        use axum::http::{header, HeaderName, Method};
+        let origins: Vec<_> = state
+            .config
+            .cors_allowed_origins
+            .iter()
+            .filter_map(|o| {
+                match o.parse() {
+                    Ok(origin) => Some(origin),
+                    Err(_) => {
+                        tracing::warn!(origin = %o, "Invalid CORS origin in configuration, skipping");
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        if origins.is_empty() {
+            tracing::error!("No valid CORS origins configured! All cross-origin requests will fail.");
+        }
+
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                header::AUTHORIZATION,
+                HeaderName::from_static("x-request-id"),
+            ])
+            .allow_credentials(true)
+    };
 
     // Get max upload size from config (default 50MB)
     let max_upload_size = state.config.max_upload_size;
@@ -156,6 +200,9 @@ pub fn create_router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(cors)
+        // Request ID for tracing correlation
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         // Increase body limit for file uploads (default is 2MB)
         .layer(DefaultBodyLimit::max(max_upload_size))
         // State

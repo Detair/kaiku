@@ -12,7 +12,7 @@ use validator::Validate;
 
 use serde::Serialize;
 
-use super::types::{CreateGuildRequest, Guild, GuildMember, JoinGuildRequest, UpdateGuildRequest};
+use super::types::{CreateGuildRequest, Guild, GuildMember, GuildWithMemberCount, JoinGuildRequest, UpdateGuildRequest};
 use crate::{
     api::AppState,
     auth::AuthUser,
@@ -132,22 +132,44 @@ pub async fn create_guild(
     Ok(Json(guild))
 }
 
-/// List guilds for the current user
+/// List guilds for the current user with member counts
 #[tracing::instrument(skip(state))]
 pub async fn list_guilds(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<Guild>>, GuildError> {
-    let guilds = sqlx::query_as::<_, Guild>(
-        r"SELECT g.id, g.name, g.owner_id, g.icon_url, g.description, g.created_at
+) -> Result<Json<Vec<GuildWithMemberCount>>, GuildError> {
+    // Query guilds with member count in a single query
+    let rows: Vec<(Uuid, String, Uuid, Option<String>, Option<String>, chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(
+        r#"SELECT
+            g.id, g.name, g.owner_id, g.icon_url, g.description, g.created_at,
+            COUNT(gm2.user_id) as member_count
            FROM guilds g
            INNER JOIN guild_members gm ON g.id = gm.guild_id
+           LEFT JOIN guild_members gm2 ON g.id = gm2.guild_id
            WHERE gm.user_id = $1
-           ORDER BY g.created_at",
+           GROUP BY g.id, g.name, g.owner_id, g.icon_url, g.description, g.created_at
+           ORDER BY g.created_at"#,
     )
     .bind(auth.id)
     .fetch_all(&state.db)
     .await?;
+
+    let guilds = rows
+        .into_iter()
+        .map(|(id, name, owner_id, icon_url, description, created_at, member_count)| {
+            GuildWithMemberCount {
+                guild: Guild {
+                    id,
+                    name,
+                    owner_id,
+                    icon_url,
+                    description,
+                    created_at,
+                },
+                member_count,
+            }
+        })
+        .collect();
 
     Ok(Json(guilds))
 }

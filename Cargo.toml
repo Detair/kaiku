@@ -26,7 +26,7 @@ futures = "0.3"
 # Web Framework
 axum = { version = "0.7", features = ["ws", "multipart"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id", "util"] }
 
 # WebSocket
 tokio-tungstenite = "0.21"
