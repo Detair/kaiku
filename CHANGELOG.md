@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebSocket notifications for friend requests
+  - Real-time notification when receiving a friend request
+  - Real-time notification when a friend request is accepted
 - Profile update endpoint (`POST /auth/me`) for changing display_name and email
 - Real-time state synchronization via WebSocket patch events
   - Incremental updates for users, guilds, and members (only changed fields sent)
@@ -188,6 +191,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- DM list now shows online status for 1:1 conversations using presence store
+- Kick member button now properly checks KICK_MEMBERS permission
 
 ### Security
 - Prevented `@everyone` role from being assigned dangerous permissions (e.g., `MANAGE_GUILD`, `BAN_MEMBERS`) via API validation
