@@ -10,13 +10,28 @@ use serde::Deserialize;
 use uuid::Uuid;
 use validator::Validate;
 
+use serde::Serialize;
+
 use super::types::{CreateGuildRequest, Guild, GuildMember, JoinGuildRequest, UpdateGuildRequest};
 use crate::{
     api::AppState,
     auth::AuthUser,
-    db,
+    db::{self, ChannelType},
     permissions::{require_guild_permission, GuildPermissions, PermissionError},
 };
+
+// ============================================================================
+// Response Types
+// ============================================================================
+
+/// Channel with unread message count for the current user.
+#[derive(Debug, Serialize)]
+pub struct ChannelWithUnread {
+    #[serde(flatten)]
+    pub channel: db::Channel,
+    /// Number of unread messages (only for text channels).
+    pub unread_count: i64,
+}
 
 // ============================================================================
 // Request Types
@@ -400,13 +415,13 @@ pub async fn kick_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// List guild channels
+/// List guild channels with unread counts
 #[tracing::instrument(skip(state))]
 pub async fn list_channels(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(guild_id): Path<Uuid>,
-) -> Result<Json<Vec<db::Channel>>, GuildError> {
+) -> Result<Json<Vec<ChannelWithUnread>>, GuildError> {
     // Verify membership
     let is_member = db::is_guild_member(&state.db, guild_id, auth.id).await?;
     if !is_member {
@@ -415,7 +430,50 @@ pub async fn list_channels(
 
     let channels = db::get_guild_channels(&state.db, guild_id).await?;
 
-    Ok(Json(channels))
+    let mut result = Vec::with_capacity(channels.len());
+    for channel in channels {
+        let unread_count = if channel.channel_type == ChannelType::Text {
+            // Get read state for this user/channel
+            let read_state = sqlx::query!(
+                r#"SELECT last_read_at FROM channel_read_state
+                   WHERE user_id = $1 AND channel_id = $2"#,
+                auth.id,
+                channel.id
+            )
+            .fetch_optional(&state.db)
+            .await?;
+
+            if let Some(rs) = read_state {
+                // Count messages since last read
+                sqlx::query_scalar!(
+                    r#"SELECT COUNT(*) as "count!" FROM messages
+                       WHERE channel_id = $1 AND created_at > $2"#,
+                    channel.id,
+                    rs.last_read_at
+                )
+                .fetch_one(&state.db)
+                .await?
+            } else {
+                // No read state = all messages are unread
+                sqlx::query_scalar!(
+                    r#"SELECT COUNT(*) as "count!" FROM messages WHERE channel_id = $1"#,
+                    channel.id
+                )
+                .fetch_one(&state.db)
+                .await?
+            }
+        } else {
+            // Voice channels don't have unread counts
+            0
+        };
+
+        result.push(ChannelWithUnread {
+            channel,
+            unread_count,
+        });
+    }
+
+    Ok(Json(result))
 }
 
 /// Reorder channels in a guild.
