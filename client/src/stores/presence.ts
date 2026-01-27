@@ -258,5 +258,48 @@ export function markManualStatusChange(status: UserStatus): void {
   }
 }
 
+/**
+ * Apply a partial patch to a user's data.
+ * Updates presence state and auth store's current user if applicable.
+ */
+export function patchUser(userId: string, diff: Record<string, unknown>): void {
+  // Update presence state if there are presence-related fields
+  if ("status" in diff || "activity" in diff) {
+    setPresenceState(
+      produce((state) => {
+        if (state.users[userId]) {
+          if ("status" in diff) {
+            state.users[userId].status = diff.status as UserStatus;
+          }
+          if ("activity" in diff) {
+            state.users[userId].activity = diff.activity as Activity | null | undefined;
+          }
+        }
+      })
+    );
+  }
+
+  // Update current user in auth store if this is the current user
+  const user = currentUser();
+  if (user && user.id === userId) {
+    // Import updateUser dynamically to avoid circular deps
+    import("./auth").then(({ updateUser }) => {
+      // Filter to only valid User fields
+      const validFields: (keyof import("@/lib/types").User)[] = [
+        "username", "display_name", "avatar_url", "email", "mfa_enabled"
+      ];
+      const updates: Partial<import("@/lib/types").User> = {};
+      for (const field of validFields) {
+        if (field in diff) {
+          (updates as Record<string, unknown>)[field] = diff[field];
+        }
+      }
+      if (Object.keys(updates).length > 0) {
+        updateUser(updates);
+      }
+    });
+  }
+}
+
 // Export the store for reading
 export { presenceState };

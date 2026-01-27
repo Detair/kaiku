@@ -27,6 +27,10 @@ pub enum AuthError {
     #[error("Username or email already taken")]
     UserAlreadyExists,
 
+    /// Email already taken by another user.
+    #[error("Email already in use by another account")]
+    EmailTaken,
+
     /// Invalid or expired token.
     #[error("Invalid or expired token")]
     InvalidToken,
@@ -88,6 +92,7 @@ impl IntoResponse for AuthError {
             Self::UserNotFound => (StatusCode::NOT_FOUND, "USER_NOT_FOUND"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             Self::UserAlreadyExists => (StatusCode::CONFLICT, "USER_EXISTS"),
+            Self::EmailTaken => (StatusCode::CONFLICT, "EMAIL_TAKEN"),
             Self::InvalidToken => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN"),
             Self::TokenExpired => (StatusCode::UNAUTHORIZED, "TOKEN_EXPIRED"),
             Self::MissingAuthHeader => (StatusCode::UNAUTHORIZED, "MISSING_AUTH"),

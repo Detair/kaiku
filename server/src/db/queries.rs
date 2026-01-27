@@ -137,6 +137,56 @@ pub async fn update_user_avatar(
     .await
 }
 
+/// Update user's profile (display_name, email).
+///
+/// Only non-None values are updated.
+pub async fn update_user_profile(
+    pool: &PgPool,
+    user_id: Uuid,
+    display_name: Option<&str>,
+    email: Option<Option<&str>>, // Some(Some(email)) = set, Some(None) = clear, None = no change
+) -> sqlx::Result<User> {
+    // Build dynamic update query based on what's provided
+    let mut query = String::from("UPDATE users SET updated_at = NOW()");
+    let mut param_idx = 1;
+
+    if display_name.is_some() {
+        query.push_str(&format!(", display_name = ${param_idx}"));
+        param_idx += 1;
+    }
+    if email.is_some() {
+        query.push_str(&format!(", email = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    query.push_str(&format!(" WHERE id = ${param_idx} RETURNING *"));
+
+    // Build the query with dynamic bindings
+    let mut q = sqlx::query_as::<_, User>(&query);
+
+    if let Some(name) = display_name {
+        q = q.bind(name);
+    }
+    if let Some(mail) = email {
+        q = q.bind(mail);
+    }
+    q = q.bind(user_id);
+
+    q.fetch_one(pool).await
+}
+
+/// Get list of guild IDs the user is a member of.
+pub async fn get_user_guild_ids(pool: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
+    let guild_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT guild_id FROM guild_members WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(guild_ids)
+}
+
 /// Update user's MFA secret.
 pub async fn set_mfa_secret(
     pool: &PgPool,

@@ -16,8 +16,9 @@ use crate::api::AppState;
 use crate::db::{
     create_session, create_user, delete_session_by_token_hash, email_exists,
     find_session_by_token_hash, find_user_by_id, find_user_by_username, set_mfa_secret,
-    update_user_avatar, username_exists,
+    update_user_avatar, update_user_profile, username_exists,
 };
+use crate::ws::broadcast_user_patch;
 use crate::ratelimit::NormalizedIp;
 
 use super::error::{AuthError, AuthResult};
@@ -118,6 +119,24 @@ pub struct MfaSetupResponse {
 pub struct MfaVerifyRequest {
     /// 6-digit TOTP code.
     pub code: String,
+}
+
+/// Update profile request.
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateProfileRequest {
+    /// New display name (1-64 characters).
+    #[validate(length(min = 1, max = 64))]
+    pub display_name: Option<String>,
+    /// New email address (optional, set to null to clear).
+    #[validate(email)]
+    pub email: Option<String>,
+}
+
+/// Update profile response.
+#[derive(Debug, Serialize)]
+pub struct UpdateProfileResponse {
+    /// Updated fields.
+    pub updated: Vec<String>,
 }
 
 // ============================================================================
@@ -585,14 +604,83 @@ pub async fn upload_avatar(
 }
 
 // ============================================================================
-// Phase 2 Stubs (Not Yet Implemented)
+// Profile Update
 // ============================================================================
 
 /// Update current user profile.
 ///
 /// POST /auth/me
-pub async fn update_profile(State(_state): State<AppState>) -> AuthResult<()> {
-    Err(AuthError::Internal("Not implemented".to_string()))
+///
+/// Updates display_name and/or email, then broadcasts a patch event
+/// to all subscribers so they see the changes in real-time.
+pub async fn update_profile(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(body): Json<UpdateProfileRequest>,
+) -> AuthResult<Json<UpdateProfileResponse>> {
+    // Validate request
+    body.validate().map_err(|e| AuthError::Validation(e.to_string()))?;
+
+    // Check if there's anything to update
+    if body.display_name.is_none() && body.email.is_none() {
+        return Err(AuthError::Validation("No fields to update".to_string()));
+    }
+
+    // Check email uniqueness if changing email
+    if let Some(ref email) = body.email {
+        if email_exists(&state.db, email).await.map_err(AuthError::Database)? {
+            // Check if it's the same user's email
+            let current_user = find_user_by_id(&state.db, auth_user.id)
+                .await
+                .map_err(AuthError::Database)?
+                .ok_or_else(|| AuthError::NotFound("User".to_string()))?;
+
+            if current_user.email.as_ref() != Some(email) {
+                return Err(AuthError::EmailTaken);
+            }
+        }
+    }
+
+    // Build diff for patch event before update
+    let mut diff = serde_json::Map::new();
+    let mut updated_fields = Vec::new();
+
+    if let Some(ref display_name) = body.display_name {
+        diff.insert("display_name".to_string(), serde_json::json!(display_name));
+        updated_fields.push("display_name".to_string());
+    }
+    if let Some(ref email) = body.email {
+        diff.insert("email".to_string(), serde_json::json!(email));
+        updated_fields.push("email".to_string());
+    }
+
+    // Update database
+    let _updated_user = update_user_profile(
+        &state.db,
+        auth_user.id,
+        body.display_name.as_deref(),
+        body.email.as_ref().map(|e| Some(e.as_str())),
+    )
+    .await
+    .map_err(AuthError::Database)?;
+
+    // Broadcast patch event to subscribers
+    if !diff.is_empty() {
+        if let Err(e) = broadcast_user_patch(
+            &state.redis,
+            auth_user.id,
+            serde_json::Value::Object(diff),
+        )
+        .await
+        {
+            tracing::warn!("Failed to broadcast user patch: {}", e);
+            // Don't fail the request, update was successful
+        }
+    }
+
+    Ok(Json(UpdateProfileResponse {
+        updated: updated_fields,
+    }))
 }
 
 /// Setup MFA (TOTP).

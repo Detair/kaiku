@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Profile update endpoint (`POST /auth/me`) for changing display_name and email
+- Real-time state synchronization via WebSocket patch events
+  - Incremental updates for users, guilds, and members (only changed fields sent)
+  - Automatic subscription to guild event channels for member updates
+  - Client-side patch handlers with field validation
 - Fedora Atomic (Silverblue/Kinoite) support in development setup scripts
   - Automatic detection of immutable Fedora systems
   - Distrobox-based development container with all dependencies

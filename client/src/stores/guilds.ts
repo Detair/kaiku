@@ -332,5 +332,30 @@ export function isChannelInActiveGuild(channel: Channel): boolean {
   return channel.guild_id === guildsState.activeGuildId;
 }
 
-// Export the store for reading
-export { guildsState };
+/**
+ * Apply a partial patch to a guild's data.
+ * Updates the guild in the store if it exists.
+ */
+export function patchGuild(guildId: string, diff: Record<string, unknown>): void {
+  const guildIndex = guildsState.guilds.findIndex((g) => g.id === guildId);
+  if (guildIndex === -1) {
+    // Guild not in store, ignore patch
+    return;
+  }
+
+  // Filter to only valid Guild fields
+  const validFields: (keyof Guild)[] = ["name", "icon_url", "description", "owner_id"];
+  const updates: Partial<Guild> = {};
+  for (const field of validFields) {
+    if (field in diff) {
+      (updates as Record<string, unknown>)[field] = diff[field];
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    setGuildsState("guilds", guildIndex, (prev) => ({ ...prev, ...updates }));
+  }
+}
+
+// Export the store for reading and modifying (for members store)
+export { guildsState, setGuildsState };

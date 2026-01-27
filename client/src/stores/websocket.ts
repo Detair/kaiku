@@ -478,6 +478,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       handleReactionRemove(event.channel_id, event.message_id, event.user_id, event.emoji);
       break;
 
+    // State sync events
+    case "patch":
+      await handlePatchEvent(event.entity_type, event.entity_id, event.diff);
+      break;
+
     default:
       console.log("Unhandled server event:", event.type);
   }
@@ -999,6 +1004,38 @@ function handleReactionRemove(channelId: string, messageId: string, userId: stri
 
     // Update the message in the store
     setMessagesState("byChannel", channelId, messageIndex, "reactions", reactions.length > 0 ? reactions : undefined);
+  }
+}
+
+// State sync event handler
+
+async function handlePatchEvent(entityType: string, entityId: string, diff: Record<string, unknown>): Promise<void> {
+  console.log(`[WebSocket] Patch event: ${entityType}/${entityId}`, diff);
+
+  switch (entityType) {
+    case "user":
+      {
+        const { patchUser } = await import("@/stores/presence");
+        patchUser(entityId, diff);
+      }
+      break;
+
+    case "guild":
+      {
+        const { patchGuild } = await import("@/stores/guilds");
+        patchGuild(entityId, diff);
+      }
+      break;
+
+    case "member":
+      {
+        const { patchMember } = await import("@/stores/members");
+        patchMember(entityId, diff);
+      }
+      break;
+
+    default:
+      console.warn(`[WebSocket] Unknown patch entity type: ${entityType}`);
   }
 }
 

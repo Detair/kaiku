@@ -357,7 +357,9 @@ export type ServerEvent =
   | { type: "preferences_updated"; preferences: Partial<UserPreferences>; updated_at: string }
   // Reaction events
   | { type: "reaction_add"; channel_id: string; message_id: string; user_id: string; emoji: string }
-  | { type: "reaction_remove"; channel_id: string; message_id: string; user_id: string; emoji: string };
+  | { type: "reaction_remove"; channel_id: string; message_id: string; user_id: string; emoji: string }
+  // State sync events
+  | { type: "patch"; entity_type: string; entity_id: string; diff: Record<string, unknown> };
 
 // Settings Types
 
