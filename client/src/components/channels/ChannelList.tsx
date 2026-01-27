@@ -14,13 +14,15 @@
  * - Nesting categories (2-level max)
  */
 
-import { Component, For, Show, createSignal, createEffect, createMemo } from "solid-js";
+import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup } from "solid-js";
 import { Plus, Mic, GripVertical } from "lucide-solid";
 import {
   channelsState,
   selectChannel,
   moveChannel,
   moveChannelToCategory,
+  markChannelAsRead,
+  getUnreadCount,
 } from "@/stores/channels";
 import {
   categoriesState,
@@ -37,7 +39,7 @@ import { authState } from "@/stores/auth";
 import { joinVoice, leaveVoice, isInChannel } from "@/stores/voice";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
-import type { Channel, ChannelCategory } from "@/lib/types";
+import type { ChannelWithUnread, ChannelCategory } from "@/lib/types";
 import CategoryHeader from "./CategoryHeader";
 import ChannelItem from "./ChannelItem";
 import CreateChannelModal from "./CreateChannelModal";
@@ -69,6 +71,17 @@ const ChannelList: Component = () => {
     }
   });
 
+  // Auto-mark selected channel as read after a short delay
+  createEffect(() => {
+    const channelId = channelsState.selectedChannelId;
+    if (channelId && getUnreadCount(channelId) > 0) {
+      const timer = setTimeout(() => {
+        markChannelAsRead(channelId);
+      }, 1000);
+      onCleanup(() => clearTimeout(timer));
+    }
+  });
+
   // Get active guild for favorites
   const activeGuild = () => {
     const guildId = guildsState.activeGuildId;
@@ -95,8 +108,8 @@ const ChannelList: Component = () => {
 
   // Get channels grouped by category
   const channelsByCategory = createMemo(() => {
-    const result: Record<string, Channel[]> = {};
-    const uncategorized: Channel[] = [];
+    const result: Record<string, ChannelWithUnread[]> = {};
+    const uncategorized: ChannelWithUnread[] = [];
 
     for (const channel of channelsState.channels) {
       if (channel.category_id) {
@@ -119,17 +132,17 @@ const ChannelList: Component = () => {
   });
 
   // Get channels for a specific category
-  const getChannelsForCategory = (categoryId: string): Channel[] => {
+  const getChannelsForCategory = (categoryId: string): ChannelWithUnread[] => {
     return channelsByCategory().byCategory[categoryId] ?? [];
   };
 
   // Get uncategorized channels
   const uncategorizedChannels = () => channelsByCategory().uncategorized;
 
-  // Check if a category has any unread channels (placeholder for future)
-  const categoryHasUnread = (_categoryId: string): boolean => {
-    // TODO: Implement unread tracking per channel
-    return false;
+  // Check if a category has any unread channels
+  const categoryHasUnread = (categoryId: string): boolean => {
+    const channels = getChannelsForCategory(categoryId);
+    return channels.some((c) => c.channel_type === "text" && c.unread_count > 0);
   };
 
   const handleVoiceChannelClick = async (channelId: string) => {
@@ -320,7 +333,7 @@ const ChannelList: Component = () => {
   // ============================================================================
 
   // Render a single channel (text or voice) with drag support
-  const renderChannel = (channel: Channel, categoryId: string | null) => {
+  const renderChannel = (channel: ChannelWithUnread, categoryId: string | null) => {
     const isVoice = channel.channel_type === "voice";
     const draggable = canManageChannels();
 

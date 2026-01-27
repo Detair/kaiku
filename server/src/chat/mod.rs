@@ -36,6 +36,8 @@ pub fn channels_router() -> Router<AppState> {
             "/:id/overrides/:role_id",
             put(overrides::set_override).delete(overrides::delete_override),
         )
+        // Read state
+        .route("/:id/read", post(channels::mark_as_read))
         // Screen Share
         .route("/:id/screenshare/check", post(screenshare::check))
         .route("/:id/screenshare/start", post(screenshare::start))

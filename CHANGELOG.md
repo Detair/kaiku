@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - When reading a DM on one device, unread badges clear on all other devices instantly
   - Uses new `user:{user_id}` Valkey channel for user-targeted events
   - Real-time synchronization via WebSocket
+- Unread message tracking for guild channels
+  - Unread badge on text channels shows count of unread messages (capped at 99+)
+  - Auto-marks channel as read after 1 second when viewing
+  - Cross-device sync: reading on one device clears badges on all devices
+  - Category headers indicate when any channel within has unread messages
 - Do Not Disturb mode for notifications
   - Notification sounds suppressed when user status is "Do Not Disturb" (Busy)
   - Scheduled quiet hours with configurable start/end times

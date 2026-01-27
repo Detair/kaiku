@@ -14,6 +14,7 @@ use crate::{
     api::AppState,
     auth::AuthUser,
     db::{self, ChannelType},
+    ws::{broadcast_to_user, ServerEvent},
 };
 
 // ============================================================================
@@ -302,4 +303,81 @@ pub async fn remove_member(
     } else {
         Err(ChannelError::NotFound)
     }
+}
+
+// ============================================================================
+// Mark as Read (Guild Channels)
+// ============================================================================
+
+/// Request body for marking a guild channel as read.
+#[derive(Debug, Deserialize)]
+pub struct MarkChannelAsReadRequest {
+    pub last_read_message_id: Option<Uuid>,
+}
+
+/// Mark a guild channel as read.
+/// POST /api/channels/:id/read
+#[tracing::instrument(skip(state))]
+pub async fn mark_as_read(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(channel_id): Path<Uuid>,
+    Json(body): Json<MarkChannelAsReadRequest>,
+) -> Result<Json<()>, ChannelError> {
+    // 1. Verify channel exists and is a guild channel (not a DM)
+    let channel = db::find_channel_by_id(&state.db, channel_id)
+        .await?
+        .ok_or(ChannelError::NotFound)?;
+
+    let guild_id = channel.guild_id.ok_or(ChannelError::NotFound)?;
+
+    // 2. Verify user is a guild member
+    let is_member = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2) as "exists!""#,
+        guild_id,
+        auth.id
+    )
+    .fetch_one(&state.db)
+    .await?;
+
+    if !is_member {
+        return Err(ChannelError::Forbidden);
+    }
+
+    let now = chrono::Utc::now();
+
+    // 3. UPSERT into channel_read_state
+    sqlx::query!(
+        r#"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (user_id, channel_id)
+           DO UPDATE SET last_read_at = $3, last_read_message_id = $4"#,
+        auth.id,
+        channel_id,
+        now,
+        body.last_read_message_id
+    )
+    .execute(&state.db)
+    .await?;
+
+    // 4. Broadcast ChannelRead event to all user's other sessions
+    if let Err(e) = broadcast_to_user(
+        &state.redis,
+        auth.id,
+        &ServerEvent::ChannelRead {
+            channel_id,
+            last_read_message_id: body.last_read_message_id,
+        },
+    )
+    .await
+    {
+        tracing::warn!(
+            user_id = %auth.id,
+            channel_id = %channel_id,
+            error = %e,
+            "Failed to broadcast ChannelRead event"
+        );
+    }
+
+    Ok(Json(()))
 }

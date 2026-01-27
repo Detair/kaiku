@@ -8,6 +8,7 @@ import type {
   User,
   Channel,
   ChannelCategory,
+  ChannelWithUnread,
   Message,
   AppSettings,
   Guild,
@@ -53,7 +54,7 @@ import type {
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, ChannelCategory, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse };
+export type { User, Channel, ChannelCategory, ChannelWithUnread, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse };
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -655,13 +656,32 @@ export async function getGuildMembers(guildId: string): Promise<GuildMember[]> {
   return httpRequest<GuildMember[]>("GET", `/api/guilds/${guildId}/members`);
 }
 
-export async function getGuildChannels(guildId: string): Promise<Channel[]> {
+export async function getGuildChannels(guildId: string): Promise<ChannelWithUnread[]> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("get_guild_channels", { guildId });
   }
 
-  return httpRequest<Channel[]>("GET", `/api/guilds/${guildId}/channels`);
+  return httpRequest<ChannelWithUnread[]>("GET", `/api/guilds/${guildId}/channels`);
+}
+
+/**
+ * Mark a guild channel as read.
+ * @param channelId - Channel ID to mark as read
+ * @param lastReadMessageId - Optional ID of the last read message
+ */
+export async function markChannelAsRead(
+  channelId: string,
+  lastReadMessageId?: string
+): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("mark_channel_as_read", { channelId, lastReadMessageId });
+  }
+
+  await httpRequest<void>("POST", `/api/channels/${channelId}/read`, {
+    last_read_message_id: lastReadMessageId,
+  });
 }
 
 /**

@@ -11,14 +11,14 @@
 
 import { Component, Show, createSignal, createMemo } from "solid-js";
 import { Hash, Volume2, Settings, BellOff, Star } from "lucide-solid";
-import type { Channel } from "@/lib/types";
+import type { ChannelWithUnread } from "@/lib/types";
 import { isInChannel, getParticipants, voiceState } from "@/stores/voice";
 import { authState } from "@/stores/auth";
 import { isChannelMuted } from "@/stores/sound";
 import { isFavorited, toggleFavorite } from "@/stores/favorites";
 
 interface ChannelItemProps {
-  channel: Channel;
+  channel: ChannelWithUnread;
   isSelected: boolean;
   onClick: () => void;
   /** Callback when settings button is clicked (only shown if provided) */
@@ -109,6 +109,13 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
       >
         {props.channel.name}
       </span>
+
+      {/* Unread badge for text channels */}
+      <Show when={props.channel.channel_type === "text" && props.channel.unread_count > 0}>
+        <span class="ml-auto flex-shrink-0 min-w-5 h-5 px-1.5 bg-accent-primary text-surface-base text-xs font-bold rounded-full flex items-center justify-center">
+          {props.channel.unread_count > 99 ? "99+" : props.channel.unread_count}
+        </span>
+      </Show>
 
       {/* Muted indicator */}
       <Show when={isChannelMuted(props.channel.id)}>

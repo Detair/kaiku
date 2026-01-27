@@ -10,13 +10,28 @@ use serde::Deserialize;
 use uuid::Uuid;
 use validator::Validate;
 
+use serde::Serialize;
+
 use super::types::{CreateGuildRequest, Guild, GuildMember, JoinGuildRequest, UpdateGuildRequest};
 use crate::{
     api::AppState,
     auth::AuthUser,
-    db,
+    db::{self, ChannelType},
     permissions::{require_guild_permission, GuildPermissions, PermissionError},
 };
+
+// ============================================================================
+// Response Types
+// ============================================================================
+
+/// Channel with unread message count for the current user.
+#[derive(Debug, Serialize)]
+pub struct ChannelWithUnread {
+    #[serde(flatten)]
+    pub channel: db::Channel,
+    /// Number of unread messages (only for text channels).
+    pub unread_count: i64,
+}
 
 // ============================================================================
 // Request Types
@@ -400,13 +415,13 @@ pub async fn kick_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// List guild channels
+/// List guild channels with unread counts
 #[tracing::instrument(skip(state))]
 pub async fn list_channels(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(guild_id): Path<Uuid>,
-) -> Result<Json<Vec<db::Channel>>, GuildError> {
+) -> Result<Json<Vec<ChannelWithUnread>>, GuildError> {
     // Verify membership
     let is_member = db::is_guild_member(&state.db, guild_id, auth.id).await?;
     if !is_member {
@@ -415,7 +430,56 @@ pub async fn list_channels(
 
     let channels = db::get_guild_channels(&state.db, guild_id).await?;
 
-    Ok(Json(channels))
+    // Collect text channel IDs for batched unread count query
+    let text_channel_ids: Vec<Uuid> = channels
+        .iter()
+        .filter(|c| c.channel_type == ChannelType::Text)
+        .map(|c| c.id)
+        .collect();
+
+    // Batch query: get unread counts for all text channels in a single query
+    // Uses LEFT JOIN to handle both cases (with and without read state)
+    let unread_counts: std::collections::HashMap<Uuid, i64> = if !text_channel_ids.is_empty() {
+        sqlx::query!(
+            r#"
+            SELECT
+                c.id as channel_id,
+                COUNT(m.id) as "unread_count!"
+            FROM channels c
+            LEFT JOIN channel_read_state crs
+                ON crs.channel_id = c.id AND crs.user_id = $1
+            LEFT JOIN messages m
+                ON m.channel_id = c.id
+                AND (crs.last_read_at IS NULL OR m.created_at > crs.last_read_at)
+            WHERE c.id = ANY($2)
+            GROUP BY c.id
+            "#,
+            auth.id,
+            &text_channel_ids
+        )
+        .fetch_all(&state.db)
+        .await?
+        .into_iter()
+        .map(|row| (row.channel_id, row.unread_count))
+        .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    // Build result with unread counts from the HashMap
+    let result: Vec<ChannelWithUnread> = channels
+        .into_iter()
+        .map(|channel| {
+            let unread_count = if channel.channel_type == ChannelType::Text {
+                *unread_counts.get(&channel.id).unwrap_or(&0)
+            } else {
+                0
+            };
+            ChannelWithUnread { channel, unread_count }
+        })
+        .collect();
+
+    Ok(Json(result))
 }
 
 /// Reorder channels in a guild.
