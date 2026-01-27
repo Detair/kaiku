@@ -50,7 +50,9 @@ export async function loadChannels(): Promise<void> {
   setChannelsState({ isLoading: true, error: null });
 
   try {
-    const channels = await tauri.getChannels();
+    const rawChannels = await tauri.getChannels();
+    // Map to ChannelWithUnread (legacy endpoint doesn't return unread counts)
+    const channels: ChannelWithUnread[] = rawChannels.map((c) => ({ ...c, unread_count: 0 }));
     setChannelsState({
       channels,
       isLoading: false,
@@ -148,7 +150,10 @@ export async function loadDMChannels(): Promise<void> {
     // For now, use the generic getChannels and filter for DMs
     // In Phase 3 Task 5, this will use a dedicated /api/dm endpoint
     const allChannels = await tauri.getChannels();
-    const dmChannels = allChannels.filter((c) => c.guild_id === null);
+    // Map to ChannelWithUnread (legacy endpoint doesn't return unread counts)
+    const dmChannels: ChannelWithUnread[] = allChannels
+      .filter((c) => c.guild_id === null)
+      .map((c) => ({ ...c, unread_count: 0 }));
 
     setChannelsState({
       channels: dmChannels,
