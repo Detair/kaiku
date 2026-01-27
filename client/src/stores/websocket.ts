@@ -19,7 +19,7 @@ import {
   type EndReason,
 } from "./call";
 import { playNotification } from "@/lib/sound";
-import { getChannel, channelsState } from "./channels";
+import { getChannel, channelsState, handleChannelReadEvent, incrementUnreadCount } from "./channels";
 import { currentUser } from "./auth";
 import type { MentionType, SoundEventType } from "@/lib/sound/types";
 import { handleDMReadEvent } from "./dms";
@@ -301,6 +301,14 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "message_new":
       await addMessage(event.message);
       handleMessageNotification(event.message);
+      // Increment unread count if message is not in the selected channel
+      // and the channel is a guild text channel
+      if (event.channel_id !== channelsState.selectedChannelId) {
+        const channel = getChannel(event.channel_id);
+        if (channel && channel.guild_id && channel.channel_type === "text") {
+          incrementUnreadCount(event.channel_id);
+        }
+      }
       break;
 
     case "message_edit":
@@ -462,6 +470,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     // DM read sync event
     case "dm_read":
       handleDMReadEvent(event.channel_id);
+      break;
+
+    // Guild channel read sync event
+    case "channel_read":
+      handleChannelReadEvent(event.channel_id);
       break;
 
     // Preferences events
