@@ -512,6 +512,34 @@ pub enum ServerEvent {
         updated_at: DateTime<Utc>,
     },
 
+    // Friend events
+    /// Friend request received (sent to the addressee).
+    FriendRequestReceived {
+        /// Friendship ID.
+        friendship_id: Uuid,
+        /// User who sent the request.
+        from_user_id: Uuid,
+        /// Requester's username.
+        from_username: String,
+        /// Requester's display name.
+        from_display_name: String,
+        /// Requester's avatar URL.
+        from_avatar_url: Option<String>,
+    },
+    /// Friend request accepted (sent to the original requester).
+    FriendRequestAccepted {
+        /// Friendship ID.
+        friendship_id: Uuid,
+        /// User who accepted the request.
+        user_id: Uuid,
+        /// Accepter's username.
+        username: String,
+        /// Accepter's display name.
+        display_name: String,
+        /// Accepter's avatar URL.
+        avatar_url: Option<String>,
+    },
+
     // Admin events (broadcast to admin subscribers)
     /// User was banned
     AdminUserBanned {

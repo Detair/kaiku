@@ -8,6 +8,7 @@ use validator::Validate;
 use super::types::{Friend, Friendship, FriendshipStatus, SendFriendRequestBody, SocialError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
+use crate::ws::{broadcast_to_user, ServerEvent};
 
 /// POST /api/friends/request
 /// Send a friend request to another user
@@ -65,7 +66,26 @@ pub async fn send_friend_request(
     .fetch_one(&state.db)
     .await?;
 
-    // TODO: Send WebSocket notification to addressee
+    // Send WebSocket notification to addressee
+    // Fetch requester's info for the notification
+    let requester_info = sqlx::query!(
+        "SELECT username, display_name, avatar_url FROM users WHERE id = $1",
+        auth.id
+    )
+    .fetch_one(&state.db)
+    .await?;
+
+    let event = ServerEvent::FriendRequestReceived {
+        friendship_id: friendship.id,
+        from_user_id: auth.id,
+        from_username: requester_info.username,
+        from_display_name: requester_info.display_name,
+        from_avatar_url: requester_info.avatar_url,
+    };
+
+    if let Err(e) = broadcast_to_user(&state.redis, target_id, &event).await {
+        tracing::warn!("Failed to send friend request notification: {}", e);
+    }
 
     Ok(Json(friendship))
 }
@@ -211,7 +231,26 @@ pub async fn accept_friend_request(
     .fetch_one(&state.db)
     .await?;
 
-    // TODO: Send WebSocket notification to requester
+    // Send WebSocket notification to the original requester
+    // Fetch accepter's info for the notification
+    let accepter_info = sqlx::query!(
+        "SELECT username, display_name, avatar_url FROM users WHERE id = $1",
+        auth.id
+    )
+    .fetch_one(&state.db)
+    .await?;
+
+    let event = ServerEvent::FriendRequestAccepted {
+        friendship_id: updated.id,
+        user_id: auth.id,
+        username: accepter_info.username,
+        display_name: accepter_info.display_name,
+        avatar_url: accepter_info.avatar_url,
+    };
+
+    if let Err(e) = broadcast_to_user(&state.redis, friendship.requester_id, &event).await {
+        tracing::warn!("Failed to send friend request accepted notification: {}", e);
+    }
 
     Ok(Json(updated))
 }

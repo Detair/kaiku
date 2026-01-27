@@ -9,6 +9,7 @@ import { Phone } from "lucide-solid";
 import type { DMListItem } from "@/lib/types";
 import { dmsState, selectDM } from "@/stores/dms";
 import { hasActiveCallInChannel, callState } from "@/stores/call";
+import { isUserOnline } from "@/stores/presence";
 
 interface DMItemProps {
   dm: DMListItem;
@@ -30,8 +31,9 @@ const DMItem: Component<DMItemProps> = (props) => {
   // Get online status for 1:1 DMs
   const isOnline = () => {
     if (isGroupDM()) return false;
-    // TODO: Check presence store for online status
-    return false;
+    const otherUser = props.dm.participants[0];
+    if (!otherUser) return false;
+    return isUserOnline(otherUser.user_id);
   };
 
   // Check if there's an active call in this DM

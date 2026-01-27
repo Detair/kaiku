@@ -10,9 +10,11 @@ import {
   assignMemberRole,
   removeMemberRole,
   canManageRole,
+  memberHasPermission,
 } from "@/stores/permissions";
 import { authState } from "@/stores/auth";
 import { isGuildOwner, kickMember } from "@/stores/guilds";
+import { PermissionBits } from "@/lib/permissionConstants";
 
 interface MemberRoleDropdownProps {
   guildId: string;
@@ -68,8 +70,7 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
     if (isMemberOwner()) return false;
     if (props.userId === currentUserId()) return false;
     if (isOwner()) return true;
-    // TODO: Check KICK_MEMBERS permission
-    return false;
+    return memberHasPermission(props.guildId, currentUserId(), isOwner(), PermissionBits.KICK_MEMBERS);
   };
 
   return (
