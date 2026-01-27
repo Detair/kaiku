@@ -140,6 +140,12 @@ export interface Channel {
   created_at: string;
 }
 
+/** Channel with unread message count (returned from guild channel list). */
+export interface ChannelWithUnread extends Channel {
+  /** Number of unread messages (only for text channels). */
+  unread_count: number;
+}
+
 export interface ChannelCategory {
   id: string;
   guild_id: string;
@@ -152,7 +158,7 @@ export interface ChannelCategory {
 
 /** ChannelCategory with nested channels for UI rendering */
 export interface ChannelCategoryWithChannels extends ChannelCategory {
-  channels: Channel[];
+  channels: ChannelWithUnread[];
 }
 
 // Message Types
@@ -353,6 +359,8 @@ export type ServerEvent =
   | { type: "admin_guild_unsuspended"; guild_id: string; guild_name: string }
   // DM read sync event
   | { type: "dm_read"; channel_id: string }
+  // Guild channel read sync event
+  | { type: "channel_read"; channel_id: string; last_read_message_id?: string }
   // Preferences events
   | { type: "preferences_updated"; preferences: Partial<UserPreferences>; updated_at: string }
   // Reaction events
