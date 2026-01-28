@@ -18,6 +18,7 @@ import {
   participantLeft,
   type EndReason,
 } from "./call";
+import { loadFriends, loadPendingRequests } from "./friends";
 import { playNotification } from "@/lib/sound";
 import { getChannel, channelsState, handleChannelReadEvent, incrementUnreadCount } from "./channels";
 import { currentUser } from "./auth";
@@ -494,6 +495,17 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "reaction_remove":
       handleReactionRemove(event.channel_id, event.message_id, event.user_id, event.emoji);
+      break;
+
+    // Friend events
+    case "friend_request_received":
+      // New incoming friend request — refresh pending list
+      loadPendingRequests();
+      break;
+
+    case "friend_request_accepted":
+      // Someone accepted our friend request — refresh both lists
+      Promise.all([loadFriends(), loadPendingRequests()]);
       break;
 
     // State sync events
