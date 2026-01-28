@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- First user setup wizard with automatic admin bootstrap
+  - First user to register automatically receives system admin permissions
+  - Mandatory setup wizard for configuring server name, registration policy, and legal URLs
+  - Setup completion is permanent and cannot be re-triggered (prevents takeover)
+  - Transaction-based race condition prevention for concurrent first-user registrations
+  - Setup status exposed in authentication responses (`setup_required` flag)
+  - API endpoints: `GET /api/setup/status`, `GET /api/setup/config`, `POST /api/setup/complete`
 - Custom avatars for DM and Group DM conversations (#104)
   - Click avatar in conversation header to upload custom icon
   - Avatars visible in sidebar and conversation header
