@@ -97,7 +97,49 @@ async fn main() -> Result<()> {
     let sfu = voice::SfuServer::new(std::sync::Arc::new(config.clone()), rate_limiter.clone())?;
 
     // Start background cleanup task for voice stats rate limiter to prevent memory leaks
-    let cleanup_handle = sfu.start_cleanup_task();
+    let voice_cleanup_handle = sfu.start_cleanup_task();
+
+    // Start background cleanup task for database (sessions, prekeys, device transfers)
+    let db_pool_clone = db_pool.clone();
+    let db_cleanup_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Every hour
+        loop {
+            interval.tick().await;
+
+            // Cleanup expired sessions
+            match db::cleanup_expired_sessions(&db_pool_clone).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!(count, "Cleaned up expired sessions");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to cleanup expired sessions");
+                }
+                _ => {}
+            }
+
+            // Cleanup claimed prekeys older than 7 days
+            match db::cleanup_claimed_prekeys(&db_pool_clone).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!(count, "Cleaned up claimed prekeys");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to cleanup claimed prekeys");
+                }
+                _ => {}
+            }
+
+            // Cleanup expired device transfers
+            match db::cleanup_expired_device_transfers(&db_pool_clone).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!(count, "Cleaned up expired device transfers");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to cleanup expired device transfers");
+                }
+                _ => {}
+            }
+        }
+    });
 
     info!("Voice SFU server initialized");
 
@@ -132,11 +174,13 @@ async fn main() -> Result<()> {
 
     info!("HTTP server stopped, cleaning up background tasks...");
 
-    // 1. Abort background cleanup task
-    cleanup_handle.abort();
-    // Wait for it to finish (will return Err(JoinError) due to abort, which is expected)
-    let _ = cleanup_handle.await;
-    info!("Voice stats cleanup task stopped");
+    // 1. Abort background cleanup tasks
+    voice_cleanup_handle.abort();
+    db_cleanup_handle.abort();
+    // Wait for them to finish (will return Err(JoinError) due to abort, which is expected)
+    let _ = voice_cleanup_handle.await;
+    let _ = db_cleanup_handle.await;
+    info!("Background cleanup tasks stopped");
 
     // 2. Close database pool gracefully
     // This waits for active queries to complete (up to acquire_timeout)

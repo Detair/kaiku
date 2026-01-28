@@ -22,6 +22,8 @@ pub use user_features::UserFeatures;
 /// Create `PostgreSQL` connection pool with health configuration.
 pub async fn create_pool(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
+        // Keep minimum connections warm to prevent cold-start latency
+        .min_connections(5)
         .max_connections(20)
         // Prevent hanging requests on pool exhaustion
         .acquire_timeout(Duration::from_secs(5))

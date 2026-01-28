@@ -22,7 +22,6 @@ pub use s3::S3Client;
 /// Create channels router.
 pub fn channels_router() -> Router<AppState> {
     Router::new()
-        .route("/", get(channels::list))
         .route("/", post(channels::create))
         .route("/{id}", get(channels::get))
         .route("/{id}", patch(channels::update))

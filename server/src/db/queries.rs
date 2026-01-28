@@ -294,40 +294,32 @@ pub async fn cleanup_expired_sessions(pool: &PgPool) -> sqlx::Result<u64> {
     Ok(result.rows_affected())
 }
 
+/// Clean up claimed prekeys older than 7 days (for background job).
+///
+/// Prekeys are one-time use keys for establishing E2EE sessions.
+/// Once claimed, they're no longer needed and can be cleaned up after a retention period.
+pub async fn cleanup_claimed_prekeys(pool: &PgPool) -> sqlx::Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM prekeys WHERE claimed_at IS NOT NULL AND claimed_at < NOW() - INTERVAL '7 days'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Clean up expired device transfers (for background job).
+///
+/// Device transfers have a 5-minute TTL for security. This removes expired entries.
+pub async fn cleanup_expired_device_transfers(pool: &PgPool) -> sqlx::Result<u64> {
+    let result = sqlx::query("DELETE FROM device_transfers WHERE expires_at < NOW()")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 // ============================================================================
 // Channel Queries
 // ============================================================================
-
-/// List all channels.
-pub async fn list_channels(pool: &PgPool) -> sqlx::Result<Vec<Channel>> {
-    sqlx::query_as::<_, Channel>(
-        r"
-        SELECT id, name, channel_type, category_id, guild_id, topic, user_limit, position, max_screen_shares, created_at, updated_at
-        FROM channels
-        ORDER BY position ASC
-        "
-    )
-    .fetch_all(pool)
-    .await
-}
-
-/// List channels by category.
-pub async fn list_channels_by_category(
-    pool: &PgPool,
-    category_id: Option<Uuid>,
-) -> sqlx::Result<Vec<Channel>> {
-    sqlx::query_as::<_, Channel>(
-        r"
-        SELECT id, name, channel_type, category_id, guild_id, topic, user_limit, position, max_screen_shares, created_at, updated_at
-        FROM channels
-        WHERE category_id IS NOT DISTINCT FROM $1
-        ORDER BY position ASC
-        ",
-    )
-    .bind(category_id)
-    .fetch_all(pool)
-    .await
-}
 
 /// Find channel by ID.
 pub async fn find_channel_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<Channel>> {
@@ -794,26 +786,40 @@ pub async fn delete_file_attachments_by_message(
 
 /// Check if a user has access to an attachment.
 ///
-/// Currently returns true for any authenticated user if the attachment exists,
-/// since channels don't require membership for viewing/sending messages.
-/// This keeps download access consistent with upload/message creation behavior.
+/// Returns true only if the user has access to the channel containing the attachment:
+/// - For guild channels: user must be a guild member
+/// - For DM channels: user must be a DM participant
 pub async fn check_attachment_access(
     pool: &PgPool,
     attachment_id: Uuid,
-    _user_id: Uuid,
+    user_id: Uuid,
 ) -> sqlx::Result<bool> {
-    // Just verify the attachment exists - any authenticated user can access
-    // since we don't require channel membership for other operations
     let result: (bool,) = sqlx::query_as(
         r"
         SELECT EXISTS(
             SELECT 1
             FROM file_attachments fa
+            JOIN messages m ON fa.message_id = m.id
+            JOIN channels c ON m.channel_id = c.id
             WHERE fa.id = $1
+              AND (
+                -- Guild channel: user is guild member
+                (c.guild_id IS NOT NULL AND EXISTS(
+                    SELECT 1 FROM guild_members gm
+                    WHERE gm.guild_id = c.guild_id AND gm.user_id = $2
+                ))
+                OR
+                -- DM channel: user is participant
+                (c.channel_type = 'dm' AND EXISTS(
+                    SELECT 1 FROM dm_participants dp
+                    WHERE dp.channel_id = c.id AND dp.user_id = $2
+                ))
+              )
         )
         ",
     )
     .bind(attachment_id)
+    .bind(user_id)
     .fetch_one(pool)
     .await?;
 

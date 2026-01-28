@@ -126,16 +126,6 @@ pub struct MemberResponse {
 // Handlers
 // ============================================================================
 
-/// List all channels.
-/// GET /api/channels
-pub async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<ChannelResponse>>, ChannelError> {
-    let channels = db::list_channels(&state.db).await?;
-    let response: Vec<ChannelResponse> = channels.into_iter().map(Into::into).collect();
-    Ok(Json(response))
-}
-
 /// Create a new channel.
 /// POST /api/channels
 pub async fn create(

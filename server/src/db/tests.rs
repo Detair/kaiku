@@ -296,7 +296,7 @@ mod postgres_tests {
     // ========================================================================
 
     #[sqlx::test]
-    async fn test_create_and_list_channels(pool: PgPool) {
+    async fn test_create_channels(pool: PgPool) {
         // Create text channel
         let text_channel = create_channel(
             &pool,
@@ -331,9 +331,18 @@ mod postgres_tests {
         assert_eq!(voice_channel.channel_type, ChannelType::Voice);
         assert_eq!(voice_channel.user_limit, Some(10));
 
-        // List all channels
-        let channels = list_channels(&pool).await.expect("Failed to list channels");
-        assert!(channels.len() >= 2);
+        // Verify channels can be found by ID
+        let found_text = find_channel_by_id(&pool, text_channel.id)
+            .await
+            .expect("Failed to find text channel")
+            .expect("Text channel not found");
+        assert_eq!(found_text.name, "general");
+
+        let found_voice = find_channel_by_id(&pool, voice_channel.id)
+            .await
+            .expect("Failed to find voice channel")
+            .expect("Voice channel not found");
+        assert_eq!(found_voice.name, "voice-lobby");
     }
 
     #[sqlx::test]
