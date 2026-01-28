@@ -55,6 +55,14 @@ export const availableThemes: ThemeDefinition[] = [
     family: "standard",
     preview: { surface: "#fdf6e3", accent: "#268bd2", text: "#657b83" },
   },
+  {
+    id: "pixel-cozy",
+    name: "Pixel Cozy",
+    description: "Cozy 8-bit RPG aesthetic with warm earth tones",
+    isDark: true,
+    family: "pixel",
+    preview: { surface: "#2C2418", accent: "#7BAE7F", text: "#E8D8C4" },
+  },
 ];
 
 /** Theme IDs derived from availableThemes for validation use. */

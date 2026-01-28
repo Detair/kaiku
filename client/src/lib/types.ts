@@ -11,6 +11,7 @@ export const THEME_NAMES = [
   "focused-hybrid",
   "solarized-dark",
   "solarized-light",
+  "pixel-cozy",
 ] as const;
 
 /** Valid theme name identifier. Derived from THEME_NAMES array. */
