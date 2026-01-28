@@ -253,6 +253,20 @@ This roadmap outlines the development path from the current prototype to a produ
 - [ ] **[Voice] Screen Sharing**
   - Update SFU to handle multiple video tracks (Webcam + Screen).
   - Update Client UI to render "Filmstrip" or "Grid" layouts.
+- [ ] **[UX] Advanced Browser Context Menus**
+  - **Context:** Standardize right-click behavior across the app to reduce reliance on visible icons and improve desktop-like feel.
+  - **Strategy:** Implement a global `ContextMenuProvider` using Solid.js Portals. Intercept `onContextMenu` in `MessageItem.tsx` and `ChannelItem.tsx` to provide context-bound actions like "Mark as Unread", "Copy ID", or "Quote Message".
+- [ ] **[UX] Home Page Unread Aggregator**
+  - **Context:** Users currently lack a centralized view of activity when not inside a specific guild.
+  - **Strategy:** Create a "Home Dashboard" module in `HomeRightPanel.tsx`. Backend implementation requires a new aggregate query in `queries.rs` to fetch unread counts across all user-joined `guild_members` and active DMs.
+- [ ] **[Chat] Content Spoilers & Enhanced Mentions**
+  - **Context:** Improve privacy and moderation for sensitive content and mass notifications.
+  - **Strategy:** 
+    - **Spoilers:** Support `||spoiler||` syntax via CSS `filter: blur()` and a Solid.js state toggle for click-to-reveal.
+    - **Mentions:** Add `MENTION_EVERYONE` (bit 23) to `GuildPermissions`. Validate this permission bit in `server/src/chat/messages.rs` before processing `@here` or `@everyone` tags.
+- [ ] **[Chat] Emoji Picker Polish**
+  - **Context:** Resolving UI regressions where the reaction window is transparent or cut off by container bounds.
+  - **Strategy:** Refactor `EmojiPicker.tsx` styles for opacity and fix max-height. Use `floating-ui` for smart positioning to ensure the picker always remains visible regardless of message location.
 - [ ] **[Client] Mobile Support**
   - Adapt Tauri frontend for mobile or begin Flutter/Native implementation.
 
@@ -278,12 +292,92 @@ This roadmap outlines the development path from the current prototype to a produ
 - [ ] **[SaaS] Limits & Monetization Logic**
   - Enforce limits (storage, members) per Guild.
   - Prepare "Boost" logic for lifting limits.
+- [ ] **[Safety] Advanced Moderation & Safety Filters**
+  - **Context:** Protect users and platform reputation with proactive content scanning.
+  - **Strategy:** Implement a backend `ModerationService`. Pre-prepare filter sets for **Hate Speech**, **Discrimination**, and **Abusive Language**. Guild admins can toggle these filters and decide on actions (shadow-ban, delete + warn, or log for review).
+- [ ] **[Safety] User Reporting & Workflow**
+  - **Context:** Empower users to flag inappropriate content.
+  - **Strategy:** Add a "Report" action to the new Context Menu. Create an `AdminQueue` UI for system admins to review reports with historical context.
+- [ ] **[Safety] Absolute User Blocking**
+  - **Context:** Ensure users can completely sever communication with malicious actors.
+  - **Strategy:** Extend the existing `Blocked` friendship status. Implement **Backend Interceptors** that drop message delivery and WebSocket events (typing, voice, presence) if a block exists between users. The frontend must automatically hide messages and profiles of blocked users in shared guild channels.
+- [ ] **[Ecosystem] Webhooks & Bot Gateway**
+  - **Context:** Expand the platform's utility with third-party integrations.
+  - **Strategy:** Create a `Webhooks` microservice to handle outgoing POST requests safely. Implement a separate `BotGateway` WebSocket endpoint to prevent bot traffic from impacting user-facing real-time performance.
+- [ ] **[UX] Production-Scale Polish**
+  - **Strategy:** Implement **Virtualized Message Lists** (DOM recycling) to handle massive chat histories. Create a global **Toast Notification Service** for consistent asynchronous feedback.
+- [ ] **[UX] Friction-Reduction & Productivity**
+  - **Context:** Streamline daily interactions to make the platform feel snappy and reliable.
+  - **Strategy:** 
+    - **Persistent Drafts:** Store unsent message text in the `messagesState` store to prevent data loss when switching channels.
+    - **Quick Message Actions & Reactions:** Implement a floating hover toolbar for messages with one-click common reactions (👍, ❤️, 😂) and actions (Reply, Edit, Delete).
+    - **Smart Input Auto-complete:** Add suggestion popups when typing `@` (users), `#` (channels), `:`, `#`, or `/` in the message input.
+    - **Multi-line Input Upgrade:** Transition from a single-line `<input>` to a self-expanding `<textarea>` supporting Shift+Enter.
+- [ ] **[Growth] Discovery & Onboarding**
+  - **Guild Discovery:** Implement a public guild directory with tag-based search and "Featured Communities."
+  - **Rich Onboarding (FTE):** Create an interactive first-time experience that guides users through mic setup, theme selection, and joining their first server.
+- [ ] **[UX] Advanced Search & Discovery**
+  - **Full-Text Search:** Implement a powerful search engine (likely using pg_search or a dedicated index) for messages across all DMs and guilds.
+  - **Bulk Read Management:** Provide "Mark all as read" actions at the category, guild, and global levels.
+- [ ] **[Compliance] SaaS Trust & Data Governance**
+  - **Strategy:** Implement "Data Export" tool (generates JSON/ZIP) and "Account Erasure" workflows to meet GDPR/CCPA requirements. Added per-guild rate limiting to prevent resource exhaustion.
+- [ ] **[Chat] Slack-style Message Threads**
+  - **Context:** Keep channel conversations organized by allowing side-discussions without cluttering the main feed.
+  - **Strategy:** Schema change required: add `parent_id` (foreign key to `messages.id`) to the `messages` table. The frontend will render a `ThreadSidebar` when a message's thread is opened, with server-side toggles for guild admins to enable/disable.
+- [ ] **[Media] Advanced Media Processing**
+  - **Context:** Improve perceived performance and bandwidth efficiency.
+  - **Strategy:** Refactor the upload pipeline to compute `Blurhash` strings and generate lower-resolution thumbnails using the `image` crate during the S3 upload phase.
+
+---
+
+## Phase 6: Competitive Differentiators & Mastery
+*Goal: Surpass industry leaders with unique utility and sovereignty features.*
+
+- [ ] **[UX] Personal Workspaces (Favorites v2)**
+  - **Context:** Solve "Discord Bloat" by letting users aggregate channels from disparate guilds.
+  - **Strategy:** Allow users to create custom "Workspaces" that act as virtual folders. Users can drag-and-drop channels from any guild into these workspaces for a unified Mission Control view.
+- [ ] **[Content] Sovereign Guild Model (BYO Infrastructure)**
+  - **Context:** Provide ultimate data ownership for privacy-conscious groups.
+  - **Strategy:** Allow Guild Admins in the SaaS version to provide their own **S3 API** keys and **SFU Relay** configurations, ensuring their media and voice traffic never touches Canis-owned storage.
+- [ ] **[Voice] Live Session Toolkits**
+  - **Context:** Turn voice channels into productive spaces.
+  - **Strategy:** 
+    - **Gaming/Raid Kit:** Multi-timer overlays and restricted side-notes for raid leads/shot-callers.
+    - **Work/Task Kit:** Shared markdown notepad and collaborative "Action Item" tracking that auto-posts summaries to the channel post-session.
+- [ ] **[UX] Context-Aware Focus Engine**
+  - **Context:** Prevent platform fatigue with intelligent notification routing.
+  - **Strategy:** Use Tauri's desktop APIs to detect active foreground apps (e.g., IDEs, DAWs). Implement **VIP/Emergency Overrides** that allow specific users or channels to bypass DND during focused work sessions.
+- [ ] **[SaaS] The Digital Library (Wiki Mastery)**
+  - **Context:** Transform "Information Pages" into a structured Knowledge Base.
+  - **Strategy:** Enhance current Info Pages with version recovery, deep-linkable sections, and a "Library" view for long-term guild documentation.
+
+---
+
+## Phase 7: Long-term / Optional SaaS Polish
+*Goal: Highly optional features aimed at commercial scale and enterprise utility.*
+
+- [ ] **[SaaS] Billing & Subscription Infrastructure**
+  - **Context:** Enable monetization for the managed hosting version.
+  - **Strategy:** Integrate **Stripe** for subscription management. Create a `BillingService` to handle quotas, "Boost" payments, and tiered access levels.
+- [ ] **[Compliance] Accessibility (A11y) & Mastery**
+  - **Context:** Ensure the platform is usable by everyone and meets enterprise requirements.
+  - **Strategy:** Conduct a full A11y audit. Implement WCAG compliance standards, screen-reader optimizations, and a robust Keyboard-Only navigation mode (`Cmd+K` Quick Switcher).
+- [ ] **[SaaS] Identity Trust & OAuth Linking**
+  - **Context:** Improve community trust and security.
+  - **Strategy:** Allow users to link external accounts (GitHub, Discord, LinkedIn). Enable Guilds to set entrance requirements based on "Verified Identity" signals.
+- [ ] **[Infra] SaaS Observability & Telemetry**
+  - **Context:** Maintain uptime and catch bugs at scale.
+  - **Strategy:** Integrate **Sentry** (error tracking) and **OpenTelemetry** for performance monitoring across the Rust backend and Tauri clients.
 
 ---
 
 ## Recent Changes
 
 ### 2026-01-28
+- Added **Phase 7: Optional SaaS Polish**: Documented low-priority commercial features (Billing, A11y, OAuth Identity, Observability) as secondary to the self-hosted focus.
+- Added **Phase 6: Competitive Mastery**: Integrated unique features including Personal Workspaces, Sovereign Guild (BYO Storage), Live Session Toolkits (Gaming/Work), and Context-Aware Focus Engine.
+- Expanded Roadmap with SaaS Pillars: Added granular plans for **User Safety** (Blocking, Moderation Filters, Reporting), **Developer Ecosystem** (Webhooks, Bot Gateway), **Scale UX** (Virtualization, Toasts), **Discovery** (Guild Directory, Onboarding), and **Search**.
+- Added Roadmap Extension: Unified file size limits, Home unread summaries, Context menus, Spoilers, Mention permissions, and Message threading.
 - Added Guild Emoji Manager (PR #46) - Custom guild emojis, animated support, manager UI, and upload tools.
 - Fixed server build issues by adding `Deserialize` to `GuildEmoji`.
 - Fixed various clippy warnings and documentation issues.
