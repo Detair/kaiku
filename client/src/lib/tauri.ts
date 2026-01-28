@@ -1190,11 +1190,14 @@ export async function wsConnect(): Promise<void> {
   }
 
   browserWsStatus = { type: "connecting" };
-  // Server expects token in query string
-  const wsUrl = browserState.serverUrl.replace(/^http/, "ws") + "/ws?token=" + encodeURIComponent(browserState.accessToken);
+  // Server expects token in Sec-WebSocket-Protocol header.
+  // Send both the token protocol and "access_token" so the server can echo
+  // back "access_token" (which the browser accepts as a matching protocol).
+  const wsUrl = browserState.serverUrl.replace(/^http/, "ws") + "/ws";
+  const wsTokenProtocol = `access_token.${browserState.accessToken}`;
 
   return new Promise((resolve, reject) => {
-    browserWs = new WebSocket(wsUrl);
+    browserWs = new WebSocket(wsUrl, [wsTokenProtocol, "access_token"]);
 
     browserWs.onopen = async () => {
       browserWsStatus = { type: "connected" };
