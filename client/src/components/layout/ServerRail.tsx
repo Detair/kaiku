@@ -15,14 +15,16 @@
  */
 
 import { Component, createSignal, For, Show } from "solid-js";
-import { Home, Plus } from "lucide-solid";
+import { Home, Plus, UserPlus } from "lucide-solid";
 import { guildsState, selectHome, selectGuild } from "@/stores/guilds";
 import CreateGuildModal from "@/components/guilds/CreateGuildModal";
+import JoinGuildModal from "@/components/guilds/JoinGuildModal";
 
 const ServerRail: Component = () => {
   // Hover state (still local to component)
   const [hoveredServerId, setHoveredServerId] = createSignal<string | null>(null);
   const [showCreateModal, setShowCreateModal] = createSignal(false);
+  const [showJoinModal, setShowJoinModal] = createSignal(false);
 
   // Active server comes from guild store
   const isActive = (id: string) => {
@@ -136,15 +138,37 @@ const ServerRail: Component = () => {
           onMouseEnter={() => setHoveredServerId("add")}
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => setShowCreateModal(true)}
-          title="Add Server"
+          title="Create Server"
         >
           <Plus class="w-6 h-6 text-accent-primary transition-transform duration-200 group-hover:rotate-90" />
+        </button>
+      </div>
+
+      {/* Join Server Button */}
+      <div class="relative">
+        <button
+          class="w-12 h-12 flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group"
+          style={{
+            "border-radius": isHovered("join") ? "16px" : "50%",
+            opacity: isHovered("join") ? 1 : 0.8,
+          }}
+          onMouseEnter={() => setHoveredServerId("join")}
+          onMouseLeave={() => setHoveredServerId(null)}
+          onClick={() => setShowJoinModal(true)}
+          title="Join Server"
+        >
+          <UserPlus class="w-5 h-5 text-accent-primary" />
         </button>
       </div>
 
       {/* Create Guild Modal */}
       <Show when={showCreateModal()}>
         <CreateGuildModal onClose={() => setShowCreateModal(false)} />
+      </Show>
+
+      {/* Join Guild Modal */}
+      <Show when={showJoinModal()}>
+        <JoinGuildModal onClose={() => setShowJoinModal(false)} />
       </Show>
     </aside>
   );
