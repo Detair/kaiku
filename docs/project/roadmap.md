@@ -235,6 +235,11 @@ This roadmap outlines the development path from the current prototype to a produ
   - Expandable Favorites section in Sidebar grouped by guild
   - Maximum 25 favorites per user with automatic cleanup
   - **Design:** `docs/plans/2026-01-24-cross-server-favorites-design.md`
+- [x] **[Content] Custom Emojis (Guild Emoji Manager)** ✅ (PR #46)
+  - Guild custom emoji database schema and API
+  - Animated emoji support (GIF, WebP)
+  - Emoji Manager UI in Guild Settings
+  - Drag-and-drop upload and bulk upload utility
 - [ ] **[Auth] First User Setup (Admin Bootstrap)**
   - First registered user automatically gets admin/superuser permissions.
   - Server flag to detect "fresh install" state.
@@ -263,8 +268,10 @@ This roadmap outlines the development path from the current prototype to a produ
   - Add `is_bot` user flag.
   - Create Gateway WebSocket for bot events.
   - Implement Slash Commands structure.
-- [ ] **[Content] Custom Emojis**
-  - Allow Guilds to upload custom emoji packs.
+- [ ] **[API] Bot Ecosystem**
+  - Add `is_bot` user flag.
+  - Create Gateway WebSocket for bot events.
+  - Implement Slash Commands structure.
 - [ ] **[Voice] Multi-Stream Support**
   - Simultaneous Webcam and Screen Sharing.
   - Implement Simulcast (quality tiers) for bandwidth management.
@@ -275,6 +282,11 @@ This roadmap outlines the development path from the current prototype to a produ
 ---
 
 ## Recent Changes
+
+### 2026-01-28
+- Added Guild Emoji Manager (PR #46) - Custom guild emojis, animated support, manager UI, and upload tools.
+- Fixed server build issues by adding `Deserialize` to `GuildEmoji`.
+- Fixed various clippy warnings and documentation issues.
 
 ### 2026-01-24
 - Added Cross-Server Favorites (PR #45) - Pin channels from different guilds, star icon toggle, grouped Favorites section.

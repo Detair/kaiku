@@ -190,6 +190,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Collapsible category headers with unread indicators
 - Drag-and-drop reordering for channels and categories
 - Display preferences for indicator modes (dense/minimal/discord)
+- Guild Emoji Manager
+  - Custom guild emoji support with `MANAGE_EMOJIS_AND_STICKERS` permission
+  - Animated emoji support (GIF, WebP)
+  - Drag-and-drop upload in Guild Settings > Emojis tab
+  - Bulk upload utility script (`scripts/upload_emojis.py`)
 
 ### Changed
 - JWT signing algorithm upgraded from HS256 → EdDSA (Ed25519) for stronger cryptographic security
@@ -221,6 +226,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pixel font rendering fixed (blurry text in pixel themes)
 - Reaction API endpoints corrected with proper WebSocket handlers
 - Message pagination cursor comparison corrected for stable ordering
+- Server build failure fixed by adding `Deserialize` to `GuildEmoji`
+- Documentation formatting in admin handlers fixed
 
 ### Security
 - Attachment access now enforces guild/DM membership (previously any authenticated user could access any file)
