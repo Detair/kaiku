@@ -301,12 +301,27 @@ pub async fn create_emoji(
         guild_id,
         emojis: all_emojis,
     };
-    
+
     // Manual broadcast using Redis
-    // Need channel name helper.
     let channel = crate::ws::channels::guild_events(guild_id);
-    if let Ok(payload) = serde_json::to_string(&event) {
-        let _ = state.redis.publish::<(), _, _>(channel, payload).await;
+    match serde_json::to_string(&event) {
+        Ok(payload) => {
+            if let Err(e) = state.redis.publish::<(), _, _>(channel, payload).await {
+                tracing::error!(
+                    error = %e,
+                    guild_id = %guild_id,
+                    event = "GuildEmojiUpdated",
+                    "Failed to broadcast emoji creation via Redis - other clients will not receive real-time update"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                guild_id = %guild_id,
+                "Failed to serialize GuildEmojiUpdated event - broadcast skipped"
+            );
+        }
     }
 
     Ok(Json(emoji))
@@ -365,9 +380,26 @@ pub async fn update_emoji(
         guild_id,
         emojis: all_emojis,
     };
+
     let channel = crate::ws::channels::guild_events(guild_id);
-    if let Ok(payload) = serde_json::to_string(&event) {
-        let _ = state.redis.publish::<(), _, _>(channel, payload).await;
+    match serde_json::to_string(&event) {
+        Ok(payload) => {
+            if let Err(e) = state.redis.publish::<(), _, _>(channel, payload).await {
+                tracing::error!(
+                    error = %e,
+                    guild_id = %guild_id,
+                    event = "GuildEmojiUpdated",
+                    "Failed to broadcast emoji update via Redis - other clients will not receive real-time update"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                guild_id = %guild_id,
+                "Failed to serialize GuildEmojiUpdated event - broadcast skipped"
+            );
+        }
     }
 
     Ok(Json(updated))
@@ -422,9 +454,26 @@ pub async fn delete_emoji(
         guild_id,
         emojis: all_emojis,
     };
+
     let channel = crate::ws::channels::guild_events(guild_id);
-    if let Ok(payload) = serde_json::to_string(&event) {
-        let _ = state.redis.publish::<(), _, _>(channel, payload).await;
+    match serde_json::to_string(&event) {
+        Ok(payload) => {
+            if let Err(e) = state.redis.publish::<(), _, _>(channel, payload).await {
+                tracing::error!(
+                    error = %e,
+                    guild_id = %guild_id,
+                    event = "GuildEmojiUpdated",
+                    "Failed to broadcast emoji deletion via Redis - other clients will not receive real-time update"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                guild_id = %guild_id,
+                "Failed to serialize GuildEmojiUpdated event - broadcast skipped"
+            );
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

@@ -14,6 +14,7 @@ import { authState } from "@/stores/auth";
 import { isGuildOwner } from "@/stores/guilds";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
+import { validateFileSize } from "@/lib/tauri";
 
 interface EmojisTabProps {
     guildId: string;
@@ -44,9 +45,18 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
         if (!input.files?.length) return;
 
         const file = input.files[0];
-        const name = file.name.split('.')[0].replace(/[^a-zA-Z0-9_]/g, "_");
 
         setUploadError(null);
+
+        // Frontend validation before upload
+        const validationError = validateFileSize(file, 'emoji');
+        if (validationError) {
+            setUploadError(validationError);
+            input.value = ""; // Clear selection
+            return;
+        }
+
+        const name = file.name.split('.')[0].replace(/[^a-zA-Z0-9_]/g, "_");
         setIsUploading(true);
 
         try {

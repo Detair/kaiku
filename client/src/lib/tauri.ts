@@ -112,14 +112,41 @@ export async function fetchUploadLimits(): Promise<void> {
     const response = await fetch(`${serverUrl}/api/config/upload-limits`);
 
     if (!response.ok) {
-      console.warn(`Failed to fetch upload limits (HTTP ${response.status}), using defaults`);
+      console.error(`[Upload Limits] Failed to fetch (HTTP ${response.status}), using defaults`);
       return;
     }
 
-    uploadLimits = await response.json();
-    console.log('[Upload Limits] Fetched from server:', uploadLimits);
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      console.error('[Upload Limits] Failed to parse JSON response:', parseError);
+      console.error('[Upload Limits] Response was not valid JSON - using defaults');
+      return;
+    }
+
+    // Validate response structure
+    if (!data || typeof data !== 'object' ||
+        typeof (data as any).max_avatar_size !== 'number' ||
+        typeof (data as any).max_emoji_size !== 'number' ||
+        typeof (data as any).max_upload_size !== 'number') {
+      console.error('[Upload Limits] Invalid response structure:', data);
+      console.error('[Upload Limits] Expected {max_avatar_size: number, max_emoji_size: number, max_upload_size: number}');
+      return;
+    }
+
+    // Validate limits are positive
+    const limits = data as UploadLimitsResponse;
+    if (limits.max_avatar_size <= 0 || limits.max_emoji_size <= 0 || limits.max_upload_size <= 0) {
+      console.error('[Upload Limits] Invalid limit values (must be positive):', limits);
+      return;
+    }
+
+    uploadLimits = limits;
+    console.log('[Upload Limits] Successfully fetched from server:', uploadLimits);
   } catch (error) {
-    console.warn('[Upload Limits] Failed to fetch, using defaults:', error);
+    console.error('[Upload Limits] Unexpected error fetching limits:', error);
+    console.error('[Upload Limits] Using defaults as fallback');
   }
 }
 
