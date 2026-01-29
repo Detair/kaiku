@@ -18,6 +18,7 @@ interface AuthState {
   isLoading: boolean;
   isInitialized: boolean;
   error: string | null;
+  setupRequired: boolean;
 }
 
 // Create the store
@@ -27,6 +28,7 @@ const [authState, setAuthState] = createStore<AuthState>({
   isLoading: false,
   isInitialized: false,
   error: null,
+  setupRequired: false,
 });
 
 // Derived state
@@ -95,12 +97,13 @@ export async function login(
   setAuthState({ isLoading: true, error: null });
 
   try {
-    const user = await tauri.login(serverUrl, username, password);
+    const result = await tauri.login(serverUrl, username, password);
     setAuthState({
-      user,
+      user: result.user,
       serverUrl,
       isLoading: false,
       error: null,
+      setupRequired: result.setup_required,
     });
 
     // Initialize WebSocket and presence after login
@@ -125,7 +128,7 @@ export async function login(
     // Initialize idle detection after preferences (uses idleTimeoutMinutes setting)
     initIdleDetection();
 
-    return user;
+    return result.user;
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });
@@ -146,7 +149,7 @@ export async function register(
   setAuthState({ isLoading: true, error: null });
 
   try {
-    const user = await tauri.register(
+    const result = await tauri.register(
       serverUrl,
       username,
       password,
@@ -154,10 +157,11 @@ export async function register(
       displayName
     );
     setAuthState({
-      user,
+      user: result.user,
       serverUrl,
       isLoading: false,
       error: null,
+      setupRequired: result.setup_required,
     });
 
     // Initialize WebSocket and presence after registration
@@ -181,7 +185,7 @@ export async function register(
     // Initialize idle detection after preferences (uses idleTimeoutMinutes setting)
     initIdleDetection();
 
-    return user;
+    return result.user;
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });
@@ -236,5 +240,5 @@ export function updateUser(updates: Partial<User>): void {
   setAuthState("user", (prev) => (prev ? { ...prev, ...updates } : null));
 }
 
-// Export the store for reading
-export { authState };
+// Export the store for reading and writing
+export { authState, setAuthState };

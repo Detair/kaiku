@@ -70,6 +70,13 @@ interface AuthResponse {
   refresh_token: string;
   expires_in: number;
   token_type: string;
+  setup_required: boolean;
+}
+
+// Auth result type (returned by login/register)
+export interface AuthResult {
+  user: User;
+  setup_required: boolean;
 }
 
 // Browser state (when not in Tauri)
@@ -231,7 +238,7 @@ export async function login(
   serverUrl: string,
   username: string,
   password: string
-): Promise<User> {
+): Promise<AuthResult> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("login", {
@@ -264,7 +271,12 @@ export async function login(
   console.log(`[Auth] Login successful, token expires in ${response.expires_in}s`);
 
   // Fetch user profile after login
-  return await httpRequest<User>("GET", "/auth/me");
+  const user = await httpRequest<User>("GET", "/auth/me");
+
+  return {
+    user,
+    setup_required: response.setup_required,
+  };
 }
 
 /**
@@ -285,7 +297,7 @@ export async function register(
   password: string,
   email?: string,
   displayName?: string
-): Promise<User> {
+): Promise<AuthResult> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("register", {
@@ -324,7 +336,12 @@ export async function register(
   console.log(`[Auth] Registration successful, token expires in ${response.expires_in}s`);
 
   // Fetch user profile after registration
-  return await httpRequest<User>("GET", "/auth/me");
+  const user = await httpRequest<User>("GET", "/auth/me");
+
+  return {
+    user,
+    setup_required: response.setup_required,
+  };
 }
 
 export async function logout(): Promise<void> {
