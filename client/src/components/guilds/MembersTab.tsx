@@ -12,6 +12,7 @@ import { authState } from "@/stores/auth";
 import MemberRoleDropdown from "./MemberRoleDropdown";
 import { ActivityIndicator } from "../ui";
 import type { GuildMember } from "@/lib/types";
+import { showUserContextMenu } from "@/lib/contextMenuBuilders";
 
 interface MembersTabProps {
   guildId: string;
@@ -124,6 +125,7 @@ const MembersTab: Component<MembersTabProps> = (props) => {
               return (
                 <div
                   class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors group"
+                  onContextMenu={(e) => showUserContextMenu(e, { id: member.user_id, username: member.username, display_name: member.display_name })}
                 >
                   {/* Avatar with status indicator */}
                   <div class="relative flex-shrink-0">

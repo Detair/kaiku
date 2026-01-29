@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 4 (Advanced Features) - In Progress
 
-**Last Updated:** 2026-01-24
+**Last Updated:** 2026-01-29
 
 ## Quick Status Overview
 
@@ -240,6 +240,22 @@ This roadmap outlines the development path from the current prototype to a produ
   - Animated emoji support (GIF, WebP)
   - Emoji Manager UI in Guild Settings
   - Drag-and-drop upload and bulk upload utility
+- [x] **[UX] DM Avatars** ✅ (Issue #104)
+  - Added `icon_url` to channels table via migration
+  - DM avatar upload endpoint with authenticated access
+  - UI for uploading and displaying DM group avatars
+  - Fallback to generated avatars for DMs without custom icons
+- [x] **[UX] Pinned Notes System** ✅ (Issue #105)
+  - Fixed note persistence and display in Home sidebar
+  - Pins module with add/edit/delete functionality
+- [ ] **[Media] Unified File Size Upload Limits**
+  - **Context:** Standardize file size restrictions across all upload types
+  - **Implementation:**
+    - Add `max_avatar_size` and `max_emoji_size` to `AppConfig`
+    - Implement explicit size checks in `auth/handlers.rs` for profile avatars
+    - Refactor `emojis.rs` to use configurable `max_emoji_size`
+    - Refactor `dm.rs` avatar upload to use configurable `max_avatar_size`
+    - Add frontend validation before upload to provide immediate feedback
 - [x] **[Auth] First User Setup (Admin Bootstrap)** ✅ (PR #110)
   - First registered user automatically gets admin/superuser permissions.
   - PostgreSQL row-level locking to prevent race conditions.
@@ -266,18 +282,44 @@ This roadmap outlines the development path from the current prototype to a produ
   - Update Client UI to render "Filmstrip" or "Grid" layouts.
 - [ ] **[UX] Advanced Browser Context Menus**
   - **Context:** Standardize right-click behavior across the app to reduce reliance on visible icons and improve desktop-like feel.
-  - **Strategy:** Implement a global `ContextMenuProvider` using Solid.js Portals. Intercept `onContextMenu` in `MessageItem.tsx` and `ChannelItem.tsx` to provide context-bound actions like "Mark as Unread", "Copy ID", or "Quote Message".
+  - **Strategy:**
+    - Implement a global `ContextMenuProvider` using Solid.js Portals
+    - Create `ContextMenu.tsx` with standard actions (Copy, Reply, Delete, Mark as Read)
+    - Add `onContextMenu` listeners to `MessageItem.tsx` and `ChannelItem.tsx`
+    - Support keyboard navigation and accessibility
+  - **Implementation:**
+    - Architecture: `ContextMenuProvider.tsx` with portal support
+    - UI Component: `ContextMenu.tsx` with positioning logic
+    - Integration: Message and channel context actions
 - [ ] **[UX] Home Page Unread Aggregator**
   - **Context:** Users currently lack a centralized view of activity when not inside a specific guild.
-  - **Strategy:** Create a "Home Dashboard" module in `HomeRightPanel.tsx`. Backend implementation requires a new aggregate query in `queries.rs` to fetch unread counts across all user-joined `guild_members` and active DMs.
+  - **Implementation:**
+    - **Backend:** Create aggregate unread count query in `server/src/db/queries.rs`
+    - **Backend:** Query across all user-joined guilds and active DMs
+    - **Frontend:** Implement `UnreadDashboard.tsx` in `client/src/components/home`
+    - **Frontend:** Display unread counts grouped by guild with direct navigation
+    - **Integration:** Add unread module to `HomeRightPanel.tsx`
 - [ ] **[Chat] Content Spoilers & Enhanced Mentions**
   - **Context:** Improve privacy and moderation for sensitive content and mass notifications.
-  - **Strategy:** 
-    - **Spoilers:** Support `||spoiler||` syntax via CSS `filter: blur()` and a Solid.js state toggle for click-to-reveal.
-    - **Mentions:** Add `MENTION_EVERYONE` (bit 23) to `GuildPermissions`. Validate this permission bit in `server/src/chat/messages.rs` before processing `@here` or `@everyone` tags.
+  - **Implementation:**
+    - **Spoilers:**
+      - Add `.spoiler` CSS styles (blur/blackout) to `client/src/index.css`
+      - Update markdown renderer to support `||text||` syntax
+      - Implement "Click to Reveal" persistent state for spoiler blocks
+      - Maintain reveal state across re-renders
+    - **Mentions:**
+      - Re-add `MENTION_EVERYONE` bit (bit 23) to `GuildPermissions`
+      - Validate permission in `server/src/chat/messages.rs` during message creation
+      - Update `PermissionsTab.tsx` to include mention toggle in UI
+      - Block `@here` and `@everyone` for users without permission
 - [ ] **[Chat] Emoji Picker Polish**
   - **Context:** Resolving UI regressions where the reaction window is transparent or cut off by container bounds.
-  - **Strategy:** Refactor `EmojiPicker.tsx` styles for opacity and fix max-height. Use `floating-ui` for smart positioning to ensure the picker always remains visible regardless of message location.
+  - **Implementation:**
+    - Fix sizing issues in `EmojiPicker.tsx` (ensure proper `max-h-96` and background opacity)
+    - Implement viewport boundary checks for portal positioning
+    - Integrate `floating-ui` for smart positioning that adapts to available space
+    - Ensure picker always remains visible regardless of message location
+    - Handle edge cases (top/bottom of viewport, narrow windows)
 - [ ] **[Client] Mobile Support**
   - Adapt Tauri frontend for mobile or begin Flutter/Native implementation.
 
@@ -305,39 +347,171 @@ This roadmap outlines the development path from the current prototype to a produ
   - Prepare "Boost" logic for lifting limits.
 - [ ] **[Safety] Advanced Moderation & Safety Filters**
   - **Context:** Protect users and platform reputation with proactive content scanning.
-  - **Strategy:** Implement a backend `ModerationService`. Pre-prepare filter sets for **Hate Speech**, **Discrimination**, and **Abusive Language**. Guild admins can toggle these filters and decide on actions (shadow-ban, delete + warn, or log for review).
+  - **Implementation:**
+    - **Backend:**
+      - Create `ModerationService` in `server/src/moderation/`
+      - Implement pre-defined filter sets: Hate Speech, Discrimination, Abusive Language
+      - Support configurable actions: shadow-ban, delete + warn, log for review
+      - Add filter pattern matching with false-positive handling
+    - **Frontend:**
+      - Add "Safety" tab to Guild Settings
+      - Allow guild admins to toggle filter categories
+      - Configure action policies per filter type
+      - View moderation logs with context
 - [ ] **[Safety] User Reporting & Workflow**
   - **Context:** Empower users to flag inappropriate content.
-  - **Strategy:** Add a "Report" action to the new Context Menu. Create an `AdminQueue` UI for system admins to review reports with historical context.
+  - **Implementation:**
+    - **Backend:**
+      - Create `reports` table with message/user references and report categories
+      - Store reporter info and timestamp
+      - Add API endpoints for creating and managing reports
+    - **Frontend:**
+      - Add "Report" action to Context Menu on messages and profiles
+      - Create report modal with category selection and description
+      - Implement `AdminQueue.tsx` UI for system admins
+      - Show historical context for reported messages (surrounding messages)
+      - Support bulk actions (dismiss, ban, warn)
 - [ ] **[Safety] Absolute User Blocking**
   - **Context:** Ensure users can completely sever communication with malicious actors.
-  - **Strategy:** Extend the existing `Blocked` friendship status. Implement **Backend Interceptors** that drop message delivery and WebSocket events (typing, voice, presence) if a block exists between users. The frontend must automatically hide messages and profiles of blocked users in shared guild channels.
+  - **Implementation:**
+    - **Backend:**
+      - Update `db/queries.rs` to include block-aware message fetching
+      - Implement interceptors that drop message delivery between blocked users
+      - Filter WebSocket events (typing, presence, voice state) based on `blocked` status
+      - Block direct voice calls between blocked users
+    - **Frontend:**
+      - Implement message hiding in `MessageList.tsx` for blocked users
+      - Show "Blocked User" placeholder with option to reveal
+      - Hide blocked user profiles in shared guild channels
+      - Filter blocked users from autocomplete and search results
 - [ ] **[Ecosystem] Webhooks & Bot Gateway**
   - **Context:** Expand the platform's utility with third-party integrations.
-  - **Strategy:** Create a `Webhooks` microservice to handle outgoing POST requests safely. Implement a separate `BotGateway` WebSocket endpoint to prevent bot traffic from impacting user-facing real-time performance.
+  - **Implementation:**
+    - **Webhooks:**
+      - Create `Webhooks` service to handle outgoing POST requests
+      - Implement retry logic with exponential backoff
+      - Add webhook delivery queue with Redis
+      - Support event filtering and payload customization
+      - Add webhook management UI in Guild Settings
+    - **Bot Gateway:**
+      - Implement separate `BotGateway` WebSocket endpoint
+      - Isolate bot traffic from user-facing real-time performance
+      - Add rate limiting specific to bot connections
+      - Support Gateway intents for event filtering
 - [ ] **[UX] Production-Scale Polish**
-  - **Strategy:** Implement **Virtualized Message Lists** (DOM recycling) to handle massive chat histories. Create a global **Toast Notification Service** for consistent asynchronous feedback.
+  - **Implementation:**
+    - **Virtualized Message Lists:**
+      - Research and implement list virtualization for `MessageList.tsx`
+      - Use DOM recycling to handle 10,000+ message histories efficiently
+      - Maintain scroll position and smooth scrolling behavior
+      - Optimize re-renders with memo and granular updates
+    - **Global Toast Notification Service:**
+      - Create Global Toast Provider using Solid.js context
+      - Support multiple notification types (success, error, warning, info)
+      - Queue management with automatic dismissal
+      - Position control (top-right, bottom-right, etc.)
+      - Action buttons for interactive notifications
 - [ ] **[UX] Friction-Reduction & Productivity**
   - **Context:** Streamline daily interactions to make the platform feel snappy and reliable.
-  - **Strategy:** 
-    - **Persistent Drafts:** Store unsent message text in the `messagesState` store to prevent data loss when switching channels.
-    - **Quick Message Actions & Reactions:** Implement a floating hover toolbar for messages with one-click common reactions (👍, ❤️, 😂) and actions (Reply, Edit, Delete).
-    - **Smart Input Auto-complete:** Add suggestion popups when typing `@` (users), `#` (channels), `:`, `#`, or `/` in the message input.
-    - **Multi-line Input Upgrade:** Transition from a single-line `<input>` to a self-expanding `<textarea>` supporting Shift+Enter.
+  - **Implementation:**
+    - **Persistent Drafts:**
+      - Add `drafts: Record<string, string>` to `MessagesState` in `client/src/stores/messages.ts`
+      - Update `setContent` to sync with store drafts automatically
+      - Restore draft when navigating back to channel
+      - Clear draft only on successful send
+    - **Quick Message Actions & Reactions:**
+      - Create `MessageActions.tsx` component with common emojis (👍, ❤️, 😂) and action buttons
+      - Mount toolbar in `MessageItem.tsx` on hover
+      - Position dynamically based on available space
+      - Support keyboard shortcuts for quick reactions
+    - **Smart Input Auto-complete:**
+      - Create `SuggestionPopup.tsx` component with fuzzy matching
+      - Trigger popup based on cursor position and prefixes: `@` (users), `#` (channels), `:` (emojis), `/` (commands)
+      - Support keyboard navigation (↑↓ + Enter)
+      - Cache recent mentions for faster access
+    - **Multi-line Input Upgrade:**
+      - Refactor: Replace `<input>` with `<textarea>` in `MessageInput.tsx`
+      - Implement auto-resize based on content height (max 8 lines)
+      - Support Shift+Enter for new lines, Enter for send
+      - Maintain cursor position on resize
 - [ ] **[Growth] Discovery & Onboarding**
-  - **Guild Discovery:** Implement a public guild directory with tag-based search and "Featured Communities."
-  - **Rich Onboarding (FTE):** Create an interactive first-time experience that guides users through mic setup, theme selection, and joining their first server.
+  - **Guild Discovery:**
+    - **Backend:** Create public guild listing API with search and filters
+    - **Backend:** Add guild tags/categories system
+    - **Frontend:** Implement `DiscoveryView.tsx` with category filters and search
+    - **Frontend:** Show guild preview cards with member count, description, banner
+    - **Admin:** Allow guild owners to opt-in to public directory
+  - **Rich Onboarding (FTE):**
+    - **Frontend:** Create `OnboardingOverlay.tsx` with step-by-step guide
+    - **Steps:** Welcome → Profile Setup → Mic Test → Theme Selection → Join First Guild
+    - **UX:** Support skip/back navigation between steps
+    - **Integration:** Launch on first login, can be retriggered from settings
 - [ ] **[UX] Advanced Search & Discovery**
-  - **Full-Text Search:** Implement a powerful search engine (likely using pg_search or a dedicated index) for messages across all DMs and guilds.
-  - **Bulk Read Management:** Provide "Mark all as read" actions at the category, guild, and global levels.
+  - **Full-Text Search:**
+    - **Backend:** Implement full-text search indexing using PostgreSQL pg_search or dedicated search index
+    - **Backend:** Index messages across all DMs and guilds user has access to
+    - **Backend:** Support filters: date range, channel, author, has:link, has:file
+    - **Frontend:** Create `GlobalSearch.tsx` results page with filters
+    - **Frontend:** Show message context with jump-to-message links
+    - **Performance:** Add pagination and result limits
+  - **Bulk Read Management:**
+    - **Backend:** Add bulk mark-as-read API endpoints
+    - **Frontend:** Implement "Mark all as read" in `MessagesState`
+    - **UI:** Add actions at category level (DMs, Guild channels)
+    - **UI:** Add guild-level "Mark all as read" button
+    - **UI:** Add global "Mark everything as read" in Home view
 - [ ] **[Compliance] SaaS Trust & Data Governance**
-  - **Strategy:** Implement "Data Export" tool (generates JSON/ZIP) and "Account Erasure" workflows to meet GDPR/CCPA requirements. Added per-guild rate limiting to prevent resource exhaustion.
+  - **Implementation:**
+    - **Data Export (GDPR/CCPA):**
+      - Create data export aggregator that generates JSON/ZIP of all user data
+      - Include: messages, DMs, profile data, guild memberships, attachments
+      - Queue export jobs to prevent resource exhaustion
+      - Email download link when export is ready
+      - Add "Export My Data" button in Settings > Privacy
+    - **Account Erasure:**
+      - Implement "Delete Account" workflow with confirmation
+      - Soft-delete for 30 days with option to cancel
+      - Hard-delete after grace period: anonymize messages, delete profile
+      - Notify guild owners when admin users delete accounts
+    - **Rate Limiting:**
+      - Add per-guild rate limiting to prevent resource exhaustion
+      - Protect export endpoints from abuse
 - [ ] **[Chat] Slack-style Message Threads**
   - **Context:** Keep channel conversations organized by allowing side-discussions without cluttering the main feed.
-  - **Strategy:** Schema change required: add `parent_id` (foreign key to `messages.id`) to the `messages` table. The frontend will render a `ThreadSidebar` when a message's thread is opened, with server-side toggles for guild admins to enable/disable.
+  - **Implementation:**
+    - **Database:**
+      - Migration to add `parent_id` (foreign key to `messages.id`) to `messages` table
+      - Add `thread_count` field to parent messages for quick display
+      - Add index on `parent_id` for efficient thread queries
+    - **Backend:**
+      - Update `Message` model with thread fields
+      - Implement recursive thread retrieval logic
+      - Add thread-specific WebSocket events
+      - Add guild-level toggle to enable/disable threads
+    - **Frontend:**
+      - Create `ThreadSidebar.tsx` for side conversation UI
+      - Add "Reply in Thread" action to message context menu
+      - Show thread participant count and last reply timestamp
+      - Implement thread notifications (separate from channel notifications)
 - [ ] **[Media] Advanced Media Processing**
   - **Context:** Improve perceived performance and bandwidth efficiency.
-  - **Strategy:** Refactor the upload pipeline to compute `Blurhash` strings and generate lower-resolution thumbnails using the `image` crate during the S3 upload phase.
+  - **Implementation:**
+    - **Backend:**
+      - Integrate `blurhash` crate for placeholder generation
+      - Use `image` crate to generate lower-resolution thumbnails (preview quality)
+      - Process images during S3 upload phase (async job)
+      - Store blurhash string and thumbnail URL in database
+    - **Frontend:**
+      - Display blurhash placeholders while images load
+      - Progressive loading: blurhash → thumbnail → full image
+      - Smart image loading based on viewport visibility
+    - **Storage:**
+      - Store multiple resolutions: thumbnail (256px), medium (1024px), full
+      - Serve appropriate resolution based on context (list vs detail view)
+- [x] **[Branding] Visual Identity & Mascot** ✅
+  - **Context:** Establish a recognizable and friendly brand for the platform.
+  - **Strategy:** The project mascot is a **Finnish Lapphund**. Generated a premium suite of Solarized Dark assets (Hero, Icon, Monochrome).
+  - **Asset Integration Manual:** [asset_integration_manual.md](file:///home/detair/.gemini/antigravity/brain/e405dfe9-b997-4d83-a4a9-ce56d2846159/asset_integration_manual.md)
 
 ---
 
@@ -393,6 +567,20 @@ This roadmap outlines the development path from the current prototype to a produ
   - JWT token validation before API calls (structure and expiry checks)
   - Structured error logging for database operations (query context for debugging)
 - Added tech debt items for HTTP integration tests and additional error handling improvements.
+- **Enhanced Phase 4-5 Implementation Details**: Merged detailed implementation plans from project brain storage into main roadmap.
+- **Added Completed Items**: DM Avatars (Issue #104), Pinned Notes System (Issue #105).
+- **Added New Phase 4 Item**: Unified File Size Upload Limits - standardize avatar, emoji, and attachment size restrictions across all upload endpoints.
+- **Expanded Context Menus**: Added detailed implementation steps for ContextMenuProvider architecture.
+- **Expanded Home Unread Aggregator**: Added backend query and frontend component details.
+- **Expanded Spoilers & Mentions**: Added specific CSS, parser, and permission bit implementation details.
+- **Expanded Emoji Picker Polish**: Added floating-ui integration and viewport boundary handling details.
+- **Expanded UX Productivity Features**: Added detailed implementation for persistent drafts, hover toolbar, auto-complete, and multi-line input.
+- **Expanded Production-Scale Polish**: Added virtualized message list and global toast notification implementation details.
+- **Expanded Safety Features**: Added detailed implementation for moderation filters, user blocking, and reporting workflows.
+- **Expanded Ecosystem Features**: Added webhook delivery queue and bot gateway implementation details.
+- **Expanded Discovery & Onboarding**: Added guild directory API and step-by-step onboarding flow details.
+- **Expanded Search & Threads**: Added full-text search indexing, bulk read management, and Slack-style thread implementation details.
+- **Expanded Media & Compliance**: Added blurhash generation, progressive loading, and GDPR data export implementation details.
 
 ### 2026-01-28
 - Added **Phase 7: Optional SaaS Polish**: Documented low-priority commercial features (Billing, A11y, OAuth Identity, Observability) as secondary to the self-hosted focus.

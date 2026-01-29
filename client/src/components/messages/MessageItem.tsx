@@ -1,7 +1,7 @@
 import { Component, Show, createMemo, For, createSignal } from "solid-js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { File, Download, SmilePlus } from "lucide-solid";
+import { File, Download, SmilePlus, Copy, Link, Hash, Trash2 } from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
@@ -9,6 +9,9 @@ import CodeBlock from "@/components/ui/CodeBlock";
 import ReactionBar from "./ReactionBar";
 import EmojiPicker from "@/components/emoji/EmojiPicker";
 import { getServerUrl, getAccessToken, addReaction, removeReaction } from "@/lib/tauri";
+import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
+import { currentUser } from "@/stores/auth";
+import { showUserContextMenu } from "@/lib/contextMenuBuilders";
 
 interface MessageItemProps {
   message: Message;
@@ -132,8 +135,50 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     return blocks;
   });
 
+  const handleContextMenu = (e: MouseEvent) => {
+    const msg = props.message;
+    const me = currentUser();
+    const isOwn = me?.id === msg.author.id;
+
+    const items: ContextMenuEntry[] = [
+      {
+        label: "Copy Text",
+        icon: Copy,
+        action: () => navigator.clipboard.writeText(msg.content),
+      },
+      {
+        label: "Copy Message Link",
+        icon: Link,
+        action: () => navigator.clipboard.writeText(`${window.location.origin}/channels/${msg.channel_id}/${msg.id}`),
+      },
+      {
+        label: "Copy ID",
+        icon: Hash,
+        action: () => navigator.clipboard.writeText(msg.id),
+      },
+    ];
+
+    if (isOwn) {
+      items.push(
+        { separator: true },
+        {
+          label: "Delete Message",
+          icon: Trash2,
+          danger: true,
+          action: () => {
+            // TODO: trigger delete confirmation
+            console.log("Delete message:", msg.id);
+          },
+        },
+      );
+    }
+
+    showContextMenu(e, items);
+  };
+
   return (
     <div
+      onContextMenu={handleContextMenu}
       class={`group flex gap-4 px-4 py-0.5 hover:bg-white/3 transition-colors ${
         props.compact ? "mt-0" : "mt-4"
       }`}
@@ -141,12 +186,19 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       {/* Avatar column */}
       <div class="w-10 flex-shrink-0">
         <Show when={!props.compact}>
-          <Avatar
-            src={author().avatar_url}
-            alt={author().display_name}
-            status={author().status}
-            size="md"
-          />
+          <div
+            onContextMenu={(e: MouseEvent) => {
+              e.stopPropagation();
+              showUserContextMenu(e, { id: author().id, username: author().username, display_name: author().display_name });
+            }}
+          >
+            <Avatar
+              src={author().avatar_url}
+              alt={author().display_name}
+              status={author().status}
+              size="md"
+            />
+          </div>
         </Show>
         <Show when={props.compact}>
           {/* Show timestamp on hover for compact messages */}
@@ -163,7 +215,13 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       <div class="flex-1 min-w-0">
         <Show when={!props.compact}>
           <div class="flex items-baseline gap-2 mb-0.5">
-            <span class="font-semibold text-text-primary hover:underline cursor-pointer transition-colors">
+            <span
+              class="font-semibold text-text-primary hover:underline cursor-pointer transition-colors"
+              onContextMenu={(e: MouseEvent) => {
+                e.stopPropagation();
+                showUserContextMenu(e, { id: author().id, username: author().username, display_name: author().display_name });
+              }}
+            >
               {author().display_name}
             </span>
             <span class="text-xs text-text-secondary">

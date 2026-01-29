@@ -10,12 +10,13 @@
  */
 
 import { Component, Show, createSignal, createMemo } from "solid-js";
-import { Hash, Volume2, Settings, BellOff, Star } from "lucide-solid";
+import { Hash, Volume2, Settings, BellOff, Star, CheckCheck, Bell, StarOff, Copy } from "lucide-solid";
 import type { ChannelWithUnread } from "@/lib/types";
 import { isInChannel, getParticipants, voiceState } from "@/stores/voice";
 import { authState } from "@/stores/auth";
 import { isChannelMuted } from "@/stores/sound";
 import { isFavorited, toggleFavorite } from "@/stores/favorites";
+import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
 
 interface ChannelItemProps {
   channel: ChannelWithUnread;
@@ -65,8 +66,76 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
     return localSpeaking || remoteSpeaking;
   });
 
+  const handleContextMenu = (e: MouseEvent) => {
+    const ch = props.channel;
+    const muted = isChannelMuted(ch.id);
+    const favorited = props.guildId ? isFavorited(ch.id) : false;
+
+    const items: ContextMenuEntry[] = [];
+
+    // Mark as Read (only for text channels with unreads)
+    if (ch.channel_type === "text" && ch.unread_count > 0) {
+      items.push({
+        label: "Mark as Read",
+        icon: CheckCheck,
+        action: () => {
+          // TODO: call markChannelAsRead when implemented
+          console.log("Mark as read:", ch.id);
+        },
+      });
+    }
+
+    // Mute/Unmute
+    items.push({
+      label: muted ? "Unmute Channel" : "Mute Channel",
+      icon: muted ? Bell : BellOff,
+      action: () => {
+        // TODO: call toggleChannelMute
+        console.log("Toggle mute:", ch.id);
+      },
+    });
+
+    // Favorites
+    if (props.guildId && props.guildName) {
+      items.push({
+        label: favorited ? "Remove from Favorites" : "Add to Favorites",
+        icon: favorited ? StarOff : Star,
+        action: () => {
+          toggleFavorite(
+            ch.id,
+            props.guildId!,
+            props.guildName!,
+            props.guildIcon ?? null,
+            ch.name,
+            ch.channel_type as "text" | "voice",
+          );
+        },
+      });
+    }
+
+    items.push({ separator: true });
+
+    // Edit Channel (if settings callback exists = user has permission)
+    if (props.onSettings) {
+      items.push({
+        label: "Edit Channel",
+        icon: Settings,
+        action: () => props.onSettings!(),
+      });
+    }
+
+    // Copy ID
+    items.push({
+      label: "Copy Channel ID",
+      icon: Copy,
+      action: () => navigator.clipboard.writeText(ch.id),
+    });
+
+    showContextMenu(e, items);
+  };
+
   return (
-    <div class="relative">
+    <div class="relative" onContextMenu={handleContextMenu}>
       <button
         class="w-full flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all duration-200 group"
         classList={{
