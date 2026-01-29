@@ -2,70 +2,82 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Fix EmojiPicker positioning bugs (clipping at viewport edges, cut off by scrollable containers) by introducing `@floating-ui/dom` for smart positioning, rendering via Portal, and adapting max-height to available viewport space.
+**Goal:** Fix emoji picker UX regressions (transparent background, viewport clipping) and implement smart positioning that adapts to available screen space.
 
-**Architecture:** New `FloatingEmojiPicker` wrapper component handles positioning via `@floating-ui/dom` + Solid.js Portal. The existing `EmojiPicker` component stays unchanged (pure content). All usage sites switch to the floating wrapper.
+**Architecture:** Migrate from fixed CSS positioning to Portal-based rendering with `@floating-ui/dom` for dynamic positioning. Picker detects viewport boundaries and flips position (top/bottom) automatically.
 
-**Tech Stack:** `@floating-ui/dom` (MIT license, ~3KB), Solid.js Portal, existing EmojiPicker component.
+**Tech Stack:** Solid.js Portal, `@floating-ui/dom`, existing EmojiPicker component (refactor positioning only).
 
 ---
 
 ## Context
 
-### Existing Infrastructure (DO NOT recreate)
+### Current Issues
 
-| Component | Location | What it does |
-|-----------|----------|--------------|
-| `EmojiPicker` | `client/src/components/emoji/EmojiPicker.tsx` | Self-contained picker with search, recents, guild emojis, 6 categories |
-| `ReactionBar` | `client/src/components/messages/ReactionBar.tsx` | Shows reactions + "add reaction" button that opens EmojiPicker |
-| `MessageItem` | `client/src/components/messages/MessageItem.tsx:316-335` | Hover "add reaction" button (no existing reactions) opens EmojiPicker |
-| `ContextMenu` | `client/src/components/ui/ContextMenu.tsx` | Uses Portal + manual viewport flipping (pattern reference) |
-| `Toast` | `client/src/components/ui/Toast.tsx` | Uses Portal (pattern reference) |
+1. **Fixed Upward Positioning** — Always opens upward (`bottom-full`) regardless of available space
+2. **Viewport Clipping** — Picker cut off when message is near top of viewport
+3. **No Dynamic Repositioning** — Cannot flip to bottom when no room at top
+4. **Parent Container Clipping** — Can be cut off by `overflow:hidden` containers
+5. **Possible Transparency** — Background may not render properly in certain contexts
 
-### What's Broken
+### Current Implementation
 
-1. **Viewport clipping** — EmojiPicker uses static `absolute bottom-full left-0` in both MessageItem.tsx:327 and ReactionBar.tsx:63. For messages near the top of the viewport, the picker renders above the viewport and is invisible.
-2. **Container overflow clipping** — The message list has `overflow-y-auto`. Absolutely positioned children inside a scrollable container can be clipped by the container's bounds. No Portal is used.
-3. **Fixed max-height** — `max-h-96` (384px) is applied regardless of available viewport space. If only 200px is available in the chosen direction, the picker still tries to be 384px and clips.
-4. **No click-outside handling** — EmojiPicker has no built-in click-outside dismiss. Each usage site handles closing differently (MessageItem uses a signal toggle, ReactionBar uses a signal toggle). Neither has a proper click-outside listener.
-5. **Category truncation** — Each emoji category is hard-capped at 32 emojis via `.slice(0, 32)` with no "show more" or scroll behavior within categories.
+| Component | Location | Issue |
+|-----------|----------|-------|
+| `EmojiPicker` | `client/src/components/emoji/EmojiPicker.tsx` | Background/sizing OK, but positioning rigid |
+| MessageItem usage | `client/src/components/messages/MessageItem.tsx:326-334` | Fixed `bottom-full left-0` positioning |
+| ReactionBar usage | `client/src/components/messages/ReactionBar.tsx:62-70` | Fixed `bottom-full left-0` positioning |
 
-### What's NOT Broken (leave alone)
+**Current positioning pattern:**
+```tsx
+<div class="absolute bottom-full left-0 mb-2 z-50">
+  <EmojiPicker ... />
+</div>
+```
 
-- Background opacity — `bg-surface-layer2` is opaque (the roadmap mentioned transparency but research confirmed backgrounds are solid)
-- Search functionality works correctly
-- Guild emoji integration works correctly
-- Recent emojis work correctly
+**Problems:**
+- `absolute` positioning relative to parent (can clip)
+- `bottom-full` always opens upward
+- No viewport boundary detection
+- `z-50` may not be high enough in complex stacking contexts
 
 ---
 
 ## Files to Modify
 
-### Client
+### Dependencies
 | File | Changes |
 |------|---------|
-| `client/package.json` | Add `@floating-ui/dom` dependency |
-| `client/src/components/emoji/FloatingEmojiPicker.tsx` | **NEW** — Wrapper that handles positioning + Portal + click-outside |
-| `client/src/components/emoji/EmojiPicker.tsx` | Remove `.slice(0, 32)` cap, minor style tweaks |
-| `client/src/components/messages/MessageItem.tsx` | Replace inline EmojiPicker with FloatingEmojiPicker |
-| `client/src/components/messages/ReactionBar.tsx` | Replace inline EmojiPicker with FloatingEmojiPicker |
+| `client/package.json` | Add `@floating-ui/dom` |
+
+### New Files
+| File | Purpose |
+|------|---------|
+| `client/src/components/emoji/EmojiPickerPortal.tsx` | Portal wrapper with floating-ui positioning |
+
+### Modified Files
+| File | Changes |
+|------|---------|
+| `client/src/components/emoji/EmojiPicker.tsx` | Fix background opacity, ensure proper sizing |
+| `client/src/components/messages/MessageItem.tsx` | Replace fixed positioning with Portal |
+| `client/src/components/messages/ReactionBar.tsx` | Replace fixed positioning with Portal |
 
 ---
 
 ## Implementation Tasks
 
-### Task 1: Add @floating-ui/dom Dependency
+### Task 1: Install @floating-ui/dom
 
 **Files:**
 - Modify: `client/package.json`
 
-**Step 1: Install the package**
+**Step 1: Add dependency**
 
 ```bash
 cd client && bun add @floating-ui/dom
 ```
 
-`@floating-ui/dom` is MIT licensed (compatible with project constraints per CLAUDE.md).
+Expected version: `^1.5.0` or later.
 
 **Step 2: Verify installation**
 
@@ -73,253 +85,246 @@ cd client && bun add @floating-ui/dom
 cd client && bun run check
 ```
 
-**Note:** `@floating-ui/dom` is framework-agnostic (pure DOM). There is no Solid.js-specific wrapper needed — we use `computePosition()` directly in an effect.
+**Step 3: Commit**
+
+```bash
+git add client/package.json client/bun.lockb
+git commit -m "chore(client): add @floating-ui/dom for emoji picker positioning"
+```
 
 ---
 
-### Task 2: Create FloatingEmojiPicker Component
+### Task 2: Fix EmojiPicker Background and Sizing
 
 **Files:**
-- Create: `client/src/components/emoji/FloatingEmojiPicker.tsx`
+- Modify: `client/src/components/emoji/EmojiPicker.tsx`
 
-**Purpose:** A wrapper component that:
-1. Renders EmojiPicker inside a Portal (escapes scrollable containers)
-2. Uses `@floating-ui/dom` for viewport-aware positioning
-3. Handles click-outside to close
-4. Adapts max-height to available space
+**Purpose:** Ensure picker has proper background opacity and consistent sizing before adding dynamic positioning.
+
+**Step 1: Update root div classes**
+
+Find the root `<div>` (line 31) and update:
+
+```tsx
+// BEFORE:
+<div class="bg-surface-layer2 rounded-lg shadow-xl w-80 max-h-96 overflow-hidden flex flex-col border border-white/10">
+
+// AFTER:
+<div class="bg-surface-layer2/95 backdrop-blur-sm rounded-lg shadow-2xl w-80 max-h-96 overflow-hidden flex flex-col border border-white/10">
+```
+
+**Changes:**
+- `bg-surface-layer2/95` → Adds 95% opacity (fixes potential transparency)
+- `backdrop-blur-sm` → Adds background blur for better readability
+- `shadow-2xl` → Stronger shadow for better visual separation
+
+**Step 2: Ensure consistent height**
+
+The `max-h-96` (384px) is good. Verify that the picker doesn't collapse when there are few emojis. The `flex flex-col` layout should handle this, but let's add a min-height for consistency:
+
+```tsx
+// AFTER (add min-h to ensure picker doesn't become tiny):
+<div class="bg-surface-layer2/95 backdrop-blur-sm rounded-lg shadow-2xl w-80 min-h-64 max-h-96 overflow-hidden flex flex-col border border-white/10">
+```
+
+This ensures picker is at least 256px tall (min-h-64).
+
+**Step 3: Verify z-index handling**
+
+The z-index will be handled by the Portal (renders at document root), so remove z-index concerns from EmojiPicker itself. This component should not set z-index.
+
+**Verification:**
+```bash
+cd client && bun run check
+```
+
+**Commit:**
+```bash
+git add client/src/components/emoji/EmojiPicker.tsx
+git commit -m "fix(emoji): improve picker background opacity and sizing"
+```
+
+---
+
+### Task 3: Create EmojiPickerPortal Component
+
+**Files:**
+- Create: `client/src/components/emoji/EmojiPickerPortal.tsx`
+
+**Purpose:** Portal wrapper that uses floating-ui to dynamically position the picker based on viewport boundaries.
 
 ```tsx
 /**
- * FloatingEmojiPicker — Renders EmojiPicker in a Portal with smart positioning.
- * Uses @floating-ui/dom to avoid viewport clipping and adapt to available space.
+ * EmojiPickerPortal - Smart positioning wrapper for EmojiPicker.
+ * 
+ * Uses Portal to render outside parent hierarchy and @floating-ui/dom
+ * for dynamic positioning that adapts to viewport boundaries.
  */
-import { Component, Show, onMount, onCleanup, createSignal } from "solid-js";
+import { Component, createEffect, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { computePosition, flip, shift, offset, size } from "@floating-ui/dom";
+import { computePosition, flip, shift, offset, autoUpdate } from "@floating-ui/dom";
 import EmojiPicker from "./EmojiPicker";
 
-interface FloatingEmojiPickerProps {
-  /** The trigger element to anchor the picker to */
-  anchorRef: HTMLElement;
-  /** Called when an emoji is selected */
+interface EmojiPickerPortalProps {
+  /** Reference element (the button that opened the picker) */
+  anchorElement: HTMLElement | null;
+  /** Whether the picker is visible */
+  show: boolean;
+  /** Callback when emoji selected */
   onSelect: (emoji: string) => void;
-  /** Called when the picker should close (click outside, Escape, selection) */
+  /** Callback to close picker */
   onClose: () => void;
-  /** Guild ID for custom emoji support */
+  /** Optional guild ID for guild emojis */
   guildId?: string;
 }
 
-const FloatingEmojiPicker: Component<FloatingEmojiPickerProps> = (props) => {
-  let pickerRef: HTMLDivElement | undefined;
-  const [position, setPosition] = createSignal({ x: 0, y: 0 });
-  const [maxHeight, setMaxHeight] = createSignal(384); // default max-h-96
-  const [ready, setReady] = createSignal(false);
+const EmojiPickerPortal: Component<EmojiPickerPortalProps> = (props) => {
+  let floatingEl: HTMLDivElement | undefined;
 
-  const updatePosition = async () => {
-    if (!pickerRef || !props.anchorRef) return;
+  createEffect(() => {
+    if (!props.show || !props.anchorElement || !floatingEl) return;
 
-    const result = await computePosition(props.anchorRef, pickerRef, {
-      placement: "top-start",
-      middleware: [
-        offset(8), // 8px gap between anchor and picker
-        flip({
-          fallbackPlacements: ["bottom-start", "top-end", "bottom-end"],
-          padding: 8,
-        }),
-        shift({ padding: 8 }),
-        size({
-          padding: 8,
-          apply({ availableHeight }) {
-            // Adapt max-height to available space (min 200px, max 384px)
-            setMaxHeight(Math.max(200, Math.min(384, availableHeight)));
-          },
-        }),
-      ],
-    });
+    // Auto-update positioning when scrolling or resizing
+    const cleanup = autoUpdate(
+      props.anchorElement,
+      floatingEl,
+      () => {
+        if (!props.anchorElement || !floatingEl) return;
 
-    setPosition({ x: result.x, y: result.y });
-    setReady(true);
-  };
+        computePosition(props.anchorElement, floatingEl, {
+          placement: "top-start", // Prefer top-left, but will flip if no room
+          middleware: [
+            offset(8), // 8px gap from anchor
+            flip({
+              fallbackPlacements: ["bottom-start", "top-end", "bottom-end"],
+              padding: 8, // 8px padding from viewport edges
+            }),
+            shift({
+              padding: 8, // Ensure picker stays within viewport horizontally
+            }),
+          ],
+        }).then(({ x, y, placement }) => {
+          if (!floatingEl) return;
 
-  // Click outside handler
-  const handleClickOutside = (e: MouseEvent) => {
-    if (
-      pickerRef && !pickerRef.contains(e.target as Node) &&
-      !props.anchorRef.contains(e.target as Node)
-    ) {
-      props.onClose();
-    }
-  };
+          Object.assign(floatingEl.style, {
+            left: `${x}px`,
+            top: `${y}px`,
+          });
 
-  // Escape key handler
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      props.onClose();
-    }
-  };
+          // Optional: Add data attribute for placement-specific styling
+          floatingEl.dataset.placement = placement;
+        });
+      },
+      {
+        // Update on scroll and resize
+        ancestorScroll: true,
+        elementResize: true,
+      }
+    );
 
-  // Scroll handler — reposition on scroll
-  const handleScroll = () => {
-    updatePosition();
-  };
-
-  onMount(() => {
-    updatePosition();
-    // Use capture to catch clicks before they bubble
-    document.addEventListener("mousedown", handleClickOutside, true);
-    document.addEventListener("keydown", handleKeyDown);
-    // Reposition on scroll (message list scrolling)
-    window.addEventListener("scroll", handleScroll, true);
-    window.addEventListener("resize", updatePosition);
-  });
-
-  onCleanup(() => {
-    document.removeEventListener("mousedown", handleClickOutside, true);
-    document.removeEventListener("keydown", handleKeyDown);
-    window.removeEventListener("scroll", handleScroll, true);
-    window.removeEventListener("resize", updatePosition);
+    onCleanup(cleanup);
   });
 
   return (
-    <Portal>
-      <div
-        ref={pickerRef}
-        class="fixed z-[9990]"
-        style={{
-          left: `${position().x}px`,
-          top: `${position().y}px`,
-          // Hide until position is calculated to prevent flash at 0,0
-          visibility: ready() ? "visible" : "hidden",
-        }}
-      >
-        <div style={{ "max-height": `${maxHeight()}px` }}>
+    <Show when={props.show}>
+      <Portal>
+        {/* Click-outside backdrop */}
+        <div
+          class="fixed inset-0 z-50"
+          onClick={props.onClose}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            props.onClose();
+          }}
+        />
+        
+        {/* Floating picker */}
+        <div
+          ref={floatingEl}
+          class="fixed z-50"
+          style={{
+            // Initial position (will be updated by floating-ui)
+            left: "0px",
+            top: "0px",
+          }}
+          onClick={(e) => e.stopPropagation()} // Prevent backdrop click
+        >
           <EmojiPicker
             onSelect={props.onSelect}
             onClose={props.onClose}
             guildId={props.guildId}
           />
         </div>
-      </div>
-    </Portal>
+      </Portal>
+    </Show>
   );
 };
 
-export default FloatingEmojiPicker;
+export default EmojiPickerPortal;
 ```
 
-**Design decisions:**
-
-- **`z-[9990]`** — Below ContextMenu (`z-[9999]`) but above everything else. Context menus should overlay emoji pickers if both are somehow open.
-- **Portal** — Escapes all parent overflow containers. Same pattern as ContextMenu and Toast.
-- **`placement: "top-start"`** — Default opens upward (above the reaction button), like Discord. `flip` middleware falls back to bottom if no room above.
-- **`shift`** — Slides horizontally to stay within viewport bounds.
-- **`size` middleware** — Dynamically reduces `maxHeight` when there isn't enough vertical space.
-- **`visibility: hidden` until ready** — Prevents a flash at `(0,0)` before `computePosition` resolves.
-- **Click outside uses `mousedown`** — Catches clicks before they trigger other handlers (same reason ContextMenu uses `click` with capture).
-- **Scroll repositioning** — Re-runs `computePosition` when the message list scrolls, keeping the picker anchored.
+**Key Features:**
+1. **Portal rendering** — Renders at document root, bypasses parent clipping
+2. **floating-ui positioning** — Smart placement that flips based on space
+3. **autoUpdate** — Repositions on scroll/resize
+4. **Click-outside** — Backdrop closes picker
+5. **Fallback placements** — Tries top-start → bottom-start → top-end → bottom-end
+6. **Viewport padding** — 8px padding from screen edges
 
 **Verification:**
 ```bash
 cd client && bun run check
 ```
 
----
-
-### Task 3: Update EmojiPicker Internal Styles
-
-**Files:**
-- Modify: `client/src/components/emoji/EmojiPicker.tsx`
-
-**Purpose:** Two fixes:
-1. Remove the hard `.slice(0, 32)` category cap (show all emojis, the scrollable container handles overflow)
-2. Move `max-h-96` from the root `<div>` to be controlled by the FloatingEmojiPicker wrapper (via the `maxHeight` style). The root div should use `max-h-full` instead so it respects the parent's constraint.
-
-**Step 1: Update root div class**
-
-Change line 33:
-
-```tsx
-// Before:
-<div class="bg-surface-layer2 rounded-lg shadow-xl w-80 max-h-96 overflow-hidden flex flex-col border border-white/10">
-
-// After:
-<div class="bg-surface-layer2 rounded-lg shadow-xl w-80 max-h-full overflow-hidden flex flex-col border border-white/10">
-```
-
-**Rationale:** The parent (`FloatingEmojiPicker` wrapper div) now controls max-height dynamically. `max-h-full` means the picker fills whatever height the parent allows.
-
-**Step 2: Remove the .slice(0, 32) cap**
-
-Change line 112:
-
-```tsx
-// Before:
-<For each={category.emojis.slice(0, 32)}>
-
-// After:
-<For each={category.emojis}>
-```
-
-**Rationale:** The picker is already scrollable (`overflow-y-auto` on the grid container). Capping at 32 emojis per category hides most emojis. Users should be able to scroll through the full set.
-
-**Verification:**
+**Commit:**
 ```bash
-cd client && bun run check
+git add client/src/components/emoji/EmojiPickerPortal.tsx
+git commit -m "feat(emoji): add portal wrapper with floating-ui positioning"
 ```
 
 ---
 
-### Task 4: Update MessageItem.tsx Usage
+### Task 4: Update MessageItem to Use Portal
 
 **Files:**
 - Modify: `client/src/components/messages/MessageItem.tsx`
 
-**Purpose:** Replace the inline absolute-positioned EmojiPicker with FloatingEmojiPicker.
+**Step 1: Import EmojiPickerPortal**
 
-**Step 1: Update import**
-
-```typescript
-// Remove (if only used for emoji picker positioning):
-// No import change needed for EmojiPicker (FloatingEmojiPicker imports it internally)
-
-// Add:
-import FloatingEmojiPicker from "@/components/emoji/FloatingEmojiPicker";
-```
-
-Remove the direct `EmojiPicker` import since it's no longer used directly:
+Replace the EmojiPicker import:
 
 ```typescript
-// Remove this line:
+// BEFORE:
 import EmojiPicker from "@/components/emoji/EmojiPicker";
+
+// AFTER:
+import EmojiPickerPortal from "@/components/emoji/EmojiPickerPortal";
 ```
 
-**Step 2: Add ref for the trigger button**
+**Step 2: Add ref for anchor element**
 
-The "add reaction" button (lines 318-324) needs a ref so FloatingEmojiPicker can anchor to it:
-
-```tsx
-let reactionBtnRef: HTMLButtonElement | undefined;
-```
-
-Add `ref={reactionBtnRef}` to the button element at line 318:
+Find the reaction button that opens the picker (around line 320). Add a ref:
 
 ```tsx
+let reactionButtonRef: HTMLButtonElement | undefined;
+
+// In the button:
 <button
-  ref={reactionBtnRef}
-  class="w-6 h-6 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
-  onClick={() => setShowReactionPicker(!showReactionPicker())}
+  ref={reactionButtonRef}
+  class="... existing classes ..."
+  onClick={() => setShowReactionPicker(true)}
   title="Add reaction"
 >
   <SmilePlus class="w-4 h-4" />
 </button>
 ```
 
-**Step 3: Replace the EmojiPicker rendering**
+**Step 3: Replace the picker rendering**
 
-Replace lines 326-334:
+Find the section that renders EmojiPicker (around line 326-334). Replace:
 
 ```tsx
-// Before:
+// BEFORE:
 <Show when={showReactionPicker()}>
   <div class="absolute bottom-full left-0 mb-2 z-50">
     <EmojiPicker
@@ -330,68 +335,72 @@ Replace lines 326-334:
   </div>
 </Show>
 
-// After:
-<Show when={showReactionPicker() && reactionBtnRef}>
-  <FloatingEmojiPicker
-    anchorRef={reactionBtnRef!}
-    onSelect={handleAddReaction}
-    onClose={() => setShowReactionPicker(false)}
-    guildId={props.guildId}
-  />
-</Show>
+// AFTER:
+<EmojiPickerPortal
+  anchorElement={reactionButtonRef ?? null}
+  show={showReactionPicker()}
+  onSelect={handleAddReaction}
+  onClose={() => setShowReactionPicker(false)}
+  guildId={props.guildId}
+/>
 ```
 
-**Note:** The `<Show>` no longer needs a wrapping `<div>` with absolute positioning — FloatingEmojiPicker handles all positioning internally via Portal.
+**Note:** The Portal renders outside the component hierarchy, so the wrapping `<div>` is no longer needed.
 
 **Verification:**
 ```bash
 cd client && bun run check
 ```
 
+**Commit:**
+```bash
+git add client/src/components/messages/MessageItem.tsx
+git commit -m "refactor(emoji): use portal positioning in MessageItem"
+```
+
 ---
 
-### Task 5: Update ReactionBar.tsx Usage
+### Task 5: Update ReactionBar to Use Portal
 
 **Files:**
 - Modify: `client/src/components/messages/ReactionBar.tsx`
 
-**Purpose:** Same change as MessageItem — switch to FloatingEmojiPicker.
+**Step 1: Import EmojiPickerPortal**
 
-**Step 1: Update import**
+Replace the EmojiPicker import:
 
 ```typescript
-// Before:
+// BEFORE:
 import EmojiPicker from "@/components/emoji/EmojiPicker";
 
-// After:
-import FloatingEmojiPicker from "@/components/emoji/FloatingEmojiPicker";
+// AFTER:
+import EmojiPickerPortal from "@/components/emoji/EmojiPickerPortal";
 ```
 
-**Step 2: Add ref for the trigger button**
+**Step 2: Add ref for anchor element**
 
-Add inside the component:
-
-```typescript
-let addReactionBtnRef: HTMLButtonElement | undefined;
-```
-
-Add `ref={addReactionBtnRef}` to the button at line 49:
+Find the button that opens the picker (around line 50). Add a ref:
 
 ```tsx
+let emojiButtonRef: HTMLButtonElement | undefined;
+
+// In the button:
 <button
-  ref={addReactionBtnRef}
-  class="w-6 h-6 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+  ref={emojiButtonRef}
   onClick={() => setShowPicker(!showPicker())}
+  class="... existing classes ..."
   title="Add reaction"
 >
+  {/* SVG content */}
+</button>
 ```
 
-**Step 3: Replace the EmojiPicker rendering**
+**Step 3: Replace the picker rendering**
 
-Replace lines 62-70:
+Find the section that renders EmojiPicker (around line 62-70). Replace:
 
 ```tsx
-// Before:
+// BEFORE:
 <Show when={showPicker()}>
   <div class="absolute bottom-full left-0 mb-2 z-50">
     <EmojiPicker
@@ -402,24 +411,25 @@ Replace lines 62-70:
   </div>
 </Show>
 
-// After:
-<Show when={showPicker() && addReactionBtnRef}>
-  <FloatingEmojiPicker
-    anchorRef={addReactionBtnRef!}
-    onSelect={handleAddReaction}
-    onClose={() => setShowPicker(false)}
-    guildId={props.guildId}
-  />
-</Show>
+// AFTER:
+<EmojiPickerPortal
+  anchorElement={emojiButtonRef ?? null}
+  show={showPicker()}
+  onSelect={handleAddReaction}
+  onClose={() => setShowPicker(false)}
+  guildId={props.guildId}
+/>
 ```
-
-**Step 4: Simplify the wrapper div**
-
-The `<div class="relative">` wrapper around the button (line 48) was only needed for absolute positioning of the old picker. It can be simplified but keeping it doesn't cause harm — leave it for now to minimize diff.
 
 **Verification:**
 ```bash
 cd client && bun run check
+```
+
+**Commit:**
+```bash
+git add client/src/components/messages/ReactionBar.tsx
+git commit -m "refactor(emoji): use portal positioning in ReactionBar"
 ```
 
 ---
@@ -432,12 +442,14 @@ cd client && bun run check
 Add under `### Fixed` in the `[Unreleased]` section:
 
 ```markdown
-- Emoji picker positioning fixed with smart viewport-aware placement
-  - Picker no longer clips at viewport edges (uses `@floating-ui/dom` for auto-flip and shift)
-  - Picker renders via Portal, preventing clipping by scrollable message list containers
-  - Adaptive max-height reduces picker size when viewport space is limited
-  - Click-outside and Escape key dismiss the picker consistently
-  - Full emoji category display (removed 32-emoji-per-category cap)
+- Emoji Picker positioning and visibility issues
+  - Smart positioning with `@floating-ui/dom` adapts to viewport boundaries
+  - Picker automatically flips from top to bottom when space is limited
+  - Portal rendering prevents clipping by parent containers
+  - Improved background opacity (95%) with backdrop blur for better readability
+  - Consistent minimum height (256px) to prevent tiny picker
+  - Click-outside-to-close with backdrop overlay
+  - Auto-repositions on scroll and window resize
 ```
 
 **Verification:**
@@ -445,56 +457,182 @@ Add under `### Fixed` in the `[Unreleased]` section:
 cd client && bun run check
 ```
 
+**Commit:**
+```bash
+git add CHANGELOG.md
+git commit -m "docs: add emoji picker polish to changelog"
+```
+
 ---
 
 ## Verification
 
-### Client
+### Build Check
 ```bash
 cd client && bun run check
 ```
 
 ### Manual Testing
 
-**Viewport clipping (top):**
-1. Send several messages to push content down
-2. On the FIRST message (near viewport top), click the reaction button
-3. Verify picker opens BELOW the button (flipped) instead of clipping above viewport
+**Basic Functionality:**
+1. Open a chat channel with messages
+2. Hover over a message → click "Add reaction" button (SmilePlus icon)
+3. Emoji picker should appear
+4. Verify picker has solid background (not transparent)
+5. Select an emoji → picker closes, reaction added
 
-**Viewport clipping (bottom):**
-1. Scroll to the bottom message
-2. Click the reaction button on the last visible message
-3. Verify picker opens ABOVE the button (default placement) or flips if needed
+**Viewport Boundary Testing:**
 
-**Viewport clipping (right edge):**
-1. If the message/reaction button is near the right edge, verify the picker shifts left to stay within viewport
+**Test 1: Top of viewport (picker should flip down)**
+1. Scroll so a message is near the top of the screen (first visible message)
+2. Click "Add reaction" on that message
+3. Expected: Picker opens BELOW the button (flipped from default top placement)
+4. Verify picker is fully visible, not cut off
 
-**Scrollable container:**
-1. Open emoji picker on any message
-2. Scroll the message list — picker should reposition to stay anchored to the button
-3. Verify picker is NOT clipped by the message list's overflow bounds
+**Test 2: Bottom of viewport (picker should open up)**
+1. Scroll so a message is near the bottom of the screen
+2. Click "Add reaction"
+3. Expected: Picker opens ABOVE the button (default placement)
+4. Verify picker is fully visible
 
-**Adaptive height:**
-1. Resize browser window to be very short (~400px tall)
-2. Open emoji picker — verify it reduces its height to fit available space
-3. Verify scrolling still works inside the reduced-height picker
+**Test 3: Left edge (picker should shift right)**
+1. Find a message at the left edge of the screen
+2. Click "Add reaction"
+3. Expected: Picker shifts horizontally to stay within viewport
+4. Verify picker doesn't extend past left edge
 
-**Click outside:**
+**Test 4: Right edge (picker should shift left)**
+1. Find a message at the right edge of the screen (or resize window narrow)
+2. Click "Add reaction"
+3. Expected: Picker shifts left to stay within viewport
+4. Verify picker doesn't extend past right edge
+
+**Test 5: Scroll repositioning**
 1. Open emoji picker
-2. Click anywhere outside the picker AND outside the trigger button
-3. Verify picker closes
+2. While picker is open, scroll the message list
+3. Expected: Picker follows the anchor button smoothly
+4. Verify picker stays positioned relative to button
 
-**Escape key:**
+**Test 6: Window resize**
 1. Open emoji picker
-2. Press Escape
-3. Verify picker closes
+2. Resize browser window (make it narrower)
+3. Expected: Picker repositions to stay within viewport
+4. Try making window very narrow → picker should stay visible
 
-**Full emoji categories:**
+**Test 7: Click outside to close**
 1. Open emoji picker
-2. Scroll through categories
-3. Verify more than 32 emojis per category are visible
+2. Click anywhere outside the picker (on the backdrop)
+3. Expected: Picker closes immediately
+4. Right-click outside → also closes
 
-**ReactionBar picker:**
-1. Add a reaction to a message (so ReactionBar is visible)
-2. Click the "+" button on the ReactionBar
-3. Verify picker opens with proper positioning (same behavior as above tests)
+**Test 8: Narrow container**
+1. Open DM conversation (typically narrower than guild chat)
+2. Click "Add reaction"
+3. Verify picker positions correctly and doesn't clip
+
+**ReactionBar Testing:**
+1. Find a message with existing reactions
+2. Click the smile icon in the ReactionBar (below reactions)
+3. Verify picker opens with same smart positioning
+4. Test all viewport boundary cases (top, bottom, left, right)
+
+**Search Functionality:**
+1. Open picker → type "heart" in search
+2. Verify filtered results show correctly
+3. Search results should scroll if many matches
+
+**Guild Emojis:**
+1. In a guild with custom emojis: open picker
+2. Verify "Server Emojis" section appears
+3. Click a custom emoji → should insert `:emojiname:`
+
+**Recents:**
+1. Use several emojis
+2. Open picker again
+3. Verify "Recent" section shows last used emojis at top
+
+---
+
+## Edge Cases & Known Limitations
+
+### Edge Cases Handled
+1. ✅ Picker at screen edges (shift middleware)
+2. ✅ Picker at top/bottom of viewport (flip middleware)
+3. ✅ Scroll repositioning (autoUpdate)
+4. ✅ Window resize (autoUpdate)
+5. ✅ Click outside to close (backdrop)
+6. ✅ Parent container clipping (Portal bypasses)
+
+### Known Limitations
+
+**1. Multi-Monitor Setups**
+- If user drags window between monitors with different DPIs, picker may need manual reopen
+- **Mitigation:** autoUpdate handles most cases, but extreme DPI changes may glitch momentarily
+
+**2. Mobile/Touch Devices**
+- Click-outside uses `onClick`, not touch events
+- **Future Enhancement:** Add `onTouchStart` to backdrop for better mobile support
+- **Current Status:** Should work on mobile but may feel less responsive
+
+**3. Very Small Viewports**
+- If viewport is smaller than picker minimum size (256px height + 320px width), picker may extend past edges
+- **Mitigation:** shift middleware keeps it within viewport horizontally, but may overlap content
+- **Future Enhancement:** Add responsive sizing for mobile (e.g., full-screen modal on <640px)
+
+**4. Accessibility**
+- No keyboard navigation to open picker (must click button)
+- **Future Enhancement:** Add keyboard shortcut (e.g., Ctrl+E when message focused)
+- Picker itself should be keyboard navigable (verify with Tab key)
+
+**5. Performance with Many Emojis**
+- Rendering 500+ emojis in categories may cause scroll lag
+- **Current:** Limits to 32 emojis per category (`slice(0, 32)`)
+- **Future Enhancement:** Virtualized scrolling for full emoji set
+
+---
+
+## Performance Considerations
+
+### Before (Fixed Positioning)
+- ❌ Re-renders on parent scroll (repaints absolute positioned element)
+- ❌ Can trigger expensive layout recalculations
+- ❌ Z-index stacking issues with other modals
+
+### After (Portal + floating-ui)
+- ✅ Renders at document root (stable stacking context)
+- ✅ autoUpdate throttles position updates efficiently
+- ✅ GPU-accelerated transforms (left/top properties)
+- ⚠️ Slightly more JavaScript overhead for position calculations
+- **Net Result:** Better UX, acceptable performance cost
+
+### Optimization Notes
+- `autoUpdate` is efficient and throttles updates automatically
+- Consider adding `{ strategy: 'fixed' }` to computePosition options if experiencing jank on scroll
+- Current `strategy: 'absolute'` (default) is fine for most cases
+
+---
+
+## Future Enhancements (Out of Scope)
+
+1. **Emoji Skin Tone Picker** — Hold emoji to select skin tone variant
+2. **Emoji Categories Tab Bar** — Quick jump to category (Smileys, Animals, Food, etc.)
+3. **GIF Support** — Integrate Tenor API for GIF picker
+4. **Emoji Paste** — Paste emoji directly from system emoji picker
+5. **Virtualized Scrolling** — Handle thousands of emojis without lag
+6. **Mobile Optimization** — Full-screen modal on small devices
+7. **Keyboard Shortcuts** — Arrow keys to navigate, Enter to select
+8. **Recent Emojis Persistence** — Save to server preferences (currently localStorage only)
+
+---
+
+## Dependencies
+
+### Package Versions
+- `@floating-ui/dom`: ^1.5.0 (MIT license)
+
+### Browser Compatibility
+- Chrome/Edge: 90+
+- Firefox: 88+
+- Safari: 15+
+
+Solid.js Portal requires modern browsers. If IE11 support needed (not recommended), would require polyfills.
