@@ -15,6 +15,7 @@ import { ConnectionHistory } from "./pages/settings/ConnectionHistory";
 import AuthGuard from "./components/auth/AuthGuard";
 import { AcceptanceManager } from "./components/pages";
 import { ToastContainer } from "./components/ui/Toast";
+import { ContextMenuContainer } from "./components/ui/ContextMenu";
 import E2EESetupPrompt from "./components/E2EESetupPrompt";
 
 // Theme
@@ -30,6 +31,7 @@ const Layout: Component<ParentProps> = (props) => {
     <div class="h-screen bg-background-tertiary text-text-primary">
       {props.children}
       <ToastContainer />
+      <ContextMenuContainer />
     </div>
   );
 };

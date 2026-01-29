@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Right-click context menus for messages, channels, and users
+  - Message menu: Copy Text, Copy Message Link, Copy ID, Delete (own messages)
+  - Channel menu: Mark as Read, Mute/Unmute, Add to Favorites, Edit Channel, Copy ID
+  - User menu: View Profile, Send Message, Add Friend, Block, Copy User ID
+  - Keyboard navigation with Arrow keys, Enter, Home/End, and Escape
 - Custom avatars for DM and Group DM conversations (#104)
   - Click avatar in conversation header to upload custom icon
   - Avatars visible in sidebar and conversation header
