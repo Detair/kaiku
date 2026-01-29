@@ -211,7 +211,6 @@ pub async fn create_emoji(
 
     let mut name: Option<String> = None;
     let mut file_data: Option<Vec<u8>> = None;
-    let mut content_type: Option<String> = None;
 
     // Parse multipart
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -222,7 +221,6 @@ pub async fn create_emoji(
                 name = Some(text);
             }
             "file" => {
-                content_type = field.content_type().map(ToString::to_string);
                 let data = field.bytes().await.map_err(|e| EmojiError::Validation(e.to_string()))?;
                 if data.len() > state.config.max_emoji_size {
                     return Err(EmojiError::FileTooLarge {
@@ -236,7 +234,6 @@ pub async fn create_emoji(
     }
 
     let file_data = file_data.ok_or(EmojiError::NoFile)?;
-    let content_type = content_type.ok_or(EmojiError::InvalidFileType)?;
     let name_str = name.ok_or(EmojiError::Validation("Name required".into()))?;
 
     // Validate request manually since we parsed multipart
@@ -245,20 +242,20 @@ pub async fn create_emoji(
         return Err(EmojiError::Validation(e.to_string()));
     }
 
-    // Validate mime type
-    if !["image/png", "image/jpeg", "image/gif", "image/webp"].contains(&content_type.as_str()) {
-        return Err(EmojiError::InvalidFileType);
-    }
+    // Validate actual file content using magic bytes (don't trust client-provided MIME type)
+    let format = image::guess_format(&file_data)
+        .map_err(|_| EmojiError::Validation("Unable to detect image format".to_string()))?;
+
+    let (content_type, extension) = match format {
+        image::ImageFormat::Png => ("image/png", "png"),
+        image::ImageFormat::Jpeg => ("image/jpeg", "jpg"),
+        image::ImageFormat::Gif => ("image/gif", "gif"),
+        image::ImageFormat::WebP => ("image/webp", "webp"),
+        _ => return Err(EmojiError::Validation("Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string())),
+    };
 
     let animated = content_type == "image/gif";
     let emoji_id = Uuid::now_v7();
-    let extension = match content_type.as_str() {
-        "image/gif" => "gif",
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        _ => "bin",
-    };
 
     let s3_key = format!("emojis/{}/{}.{}", guild_id, emoji_id, extension);
     

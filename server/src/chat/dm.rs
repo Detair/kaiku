@@ -624,12 +624,10 @@ pub async fn upload_dm_icon(
 
     let mut file_data: Option<Vec<u8>> = None;
     let mut _filename: Option<String> = None; // Unused but parsed
-    let mut content_type: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("file") {
             _filename = field.file_name().map(String::from);
-            content_type = field.content_type().map(String::from);
             
             let data = field.bytes().await.map_err(|e| UploadError::Validation(e.to_string()))?;
             
@@ -643,22 +641,20 @@ pub async fn upload_dm_icon(
     }
 
     let file_data = file_data.ok_or(UploadError::NoFile)?;
-    // Default to png if unknown, logic similar to uploads.rs can be improved with mime_guess if needed
-    let content_type = content_type.unwrap_or_else(|| "image/png".to_string());
+    
+    // Validate actual file content using magic bytes (don't trust client-provided MIME type)
+    let format = image::guess_format(&file_data)
+        .map_err(|_| UploadError::Validation("Unable to detect image format".to_string()))?;
 
-    // Validate image type
-    if !content_type.starts_with("image/") {
-        return Err(UploadError::InvalidMimeType { mime_type: content_type });
-    }
-
-    // S3 Key: avatars/channels/{channel_id}/{uuid}.{ext}
-    let file_id = Uuid::now_v7();
-    let extension = match content_type.as_str() {
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        _ => "png",
+    let (content_type, extension) = match format {
+        image::ImageFormat::Png => ("image/png", "png"),
+        image::ImageFormat::Jpeg => ("image/jpeg", "jpg"),
+        image::ImageFormat::Gif => ("image/gif", "gif"),
+        image::ImageFormat::WebP => ("image/webp", "webp"),
+        _ => return Err(UploadError::Validation("Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string())),
     };
+    
+    let file_id = Uuid::now_v7();
     let s3_key = format!("avatars/channels/{}/{}.{}", channel_id, file_id, extension);
 
     // Upload to S3

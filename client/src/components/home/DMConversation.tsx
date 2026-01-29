@@ -14,7 +14,7 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { CallBanner } from "@/components/call";
 import { callState, startCall, isInCallForChannel } from "@/stores/call";
-import { startDMCall, joinVoice, uploadDMAvatar, updateDMName } from "@/lib/tauri";
+import { startDMCall, joinVoice, uploadDMAvatar, updateDMName, validateFileSize, getUploadLimitText } from "@/lib/tauri";
 
 const DMConversation: Component = () => {
   const dm = () => getSelectedDM();
@@ -22,6 +22,7 @@ const DMConversation: Component = () => {
   const [showEncryptionTooltip, setShowEncryptionTooltip] = createSignal(false);
   const [isEditingName, setIsEditingName] = createSignal(false);
   const [editName, setEditName] = createSignal("");
+  const [uploadError, setUploadError] = createSignal<string | null>(null);
 
   // E2EE status for encryption indicator
   const isEncrypted = () => e2eeStatus().initialized;
@@ -124,7 +125,7 @@ const DMConversation: Component = () => {
     >
       <div class="flex-1 flex flex-col min-h-0 bg-surface-layer1">
         {/* Header */}
-        <header class="h-12 px-4 flex items-center gap-3 border-b border-white/5 bg-surface-layer1 shadow-sm">
+        <header class="h-12 px-4 flex items-center gap-3 border-b border-white/5 bg-surface-layer1 shadow-sm relative">
           <input
             type="file"
             accept="image/*"
@@ -134,12 +135,26 @@ const DMConversation: Component = () => {
               el.onchange = async (e: any) => {
                 const file = e.target.files?.[0];
                 if (file && dm()) {
+                  setUploadError(null);
+
+                  // Frontend validation
+                  const validationError = validateFileSize(file, 'avatar');
+                  if (validationError) {
+                    setUploadError(validationError);
+                    setTimeout(() => setUploadError(null), 5000);
+                    e.target.value = ""; // Clear selection
+                    return;
+                  }
+
                   try {
                     const result = await uploadDMAvatar(dm()!.id, file);
                     updateDMIconUrl(dm()!.id, result.icon_url);
                   } catch (err) {
                     console.error("Failed to upload icon", err);
+                    setUploadError("Failed to upload icon");
+                    setTimeout(() => setUploadError(null), 3000);
                   }
+                  e.target.value = ""; // Clear selection
                 }
               };
             }}
@@ -152,6 +167,7 @@ const DMConversation: Component = () => {
               "bg-accent-primary": !dm()?.icon_url,
               "bg-surface-layer2": !!dm()?.icon_url,
             }}
+            title={`Change icon (Max ${getUploadLimitText('avatar')})`}
           >
             <Show
               when={dm()?.icon_url}
@@ -171,6 +187,14 @@ const DMConversation: Component = () => {
               </svg>
             </div>
           </label>
+
+          {/* Upload Error Tooltip/Toast */}
+          <Show when={uploadError()}>
+            <div class="absolute top-12 left-4 z-50 p-2 text-xs bg-error-bg text-error-text border border-error-border rounded shadow-lg whitespace-nowrap">
+              {uploadError()}
+            </div>
+          </Show>
+
           {/* Editable name for group DMs */}
           <Show
             when={isGroupDM() && isEditingName()}
