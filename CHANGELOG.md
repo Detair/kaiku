@@ -215,6 +215,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Animated emoji support (GIF, WebP)
   - Drag-and-drop upload in Guild Settings > Emojis tab
   - Bulk upload utility script (`scripts/upload_emojis.py`)
+- Configurable file size limits for different upload types
+  - `MAX_AVATAR_SIZE` environment variable for user and DM avatars (default: 5MB)
+  - `MAX_EMOJI_SIZE` environment variable for guild custom emojis (default: 256KB)
+  - `MAX_UPLOAD_SIZE` for message attachments (default: 50MB)
+- Frontend validation helper function (`validateFileSize()`) for instant user feedback before upload
+- User-friendly error messages showing both file size and limit in human-readable format (KB/MB)
 
 ### Changed
 - **BREAKING:** Authentication responses now include `setup_required` boolean field
@@ -234,6 +240,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated error banners to use semantic theme tokens for better visibility
   - Added clearer separator lines in sidebars for visual hierarchy
   - Increased border visibility to `border-white/10` for main layout framing
+- DM group avatar size limit reduced from 50MB to 5MB for consistency with user avatars
+- Guild custom emoji size limit is now configurable (previously hardcoded at 256KB)
 
 ### Deprecated
 
@@ -269,6 +277,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - XSS hardening for Mermaid SVG rendering (forbid foreignObject, style, script tags)
 - Ownership verification in page reorder operations prevents cross-guild attacks
 - Fail-fast permission checks on database errors (no silent auth bypass)
+- Fixed missing size validation for user avatar uploads (previously relied only on DefaultBodyLimit middleware)
 
 ## [0.1.0] - 2026-01-18
 
