@@ -760,6 +760,7 @@ export async function uploadFile(
   // Frontend validation
   const error = validateFileSize(file, 'attachment');
   if (error) {
+    console.warn('[uploadFile] Frontend validation failed:', error);
     throw new Error(error);
   }
 
@@ -786,11 +787,33 @@ export async function uploadFile(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(error.message || error.error || "Upload failed");
+    let errorMessage = `Upload failed (HTTP ${response.status})`;
+
+    try {
+      const errorBody = await response.json();
+      errorMessage = errorBody.message || errorBody.error || errorMessage;
+    } catch (parseError) {
+      console.warn('[uploadFile] Failed to parse error response:', parseError);
+      errorMessage = response.statusText || errorMessage;
+    }
+
+    console.error('[uploadFile] Upload failed:', {
+      status: response.status,
+      error: errorMessage,
+      messageId,
+      fileSize: file.size,
+      fileName: file.name,
+    });
+
+    throw new Error(errorMessage);
   }
 
-  return response.json();
+  try {
+    return await response.json();
+  } catch (parseError) {
+    console.error('[uploadFile] Failed to parse success response:', parseError);
+    throw new Error('Server returned invalid response');
+  }
 }
 
 /**

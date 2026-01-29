@@ -668,7 +668,7 @@ pub async fn upload_avatar(
 
     let data = file_data.ok_or(AuthError::Validation("No avatar file provided".to_string()))?;
 
-    // SECURITY: Check file size (was missing!)
+    // SECURITY: Validate file size before processing to prevent resource exhaustion
     if data.len() > state.config.max_avatar_size {
         return Err(AuthError::Validation(format!(
             "Avatar file too large ({}). Maximum size is {}",
