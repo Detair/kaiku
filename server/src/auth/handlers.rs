@@ -179,6 +179,14 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
 
 /// Register a new local user.
 ///
+/// **First User Behavior:** The first user to register is automatically granted
+/// system admin permissions within the registration transaction. This is serialized
+/// by a FOR UPDATE lock on the server_config.setup_complete row to prevent race
+/// conditions where multiple concurrent registrations both see user_count=0.
+///
+/// After the first user is created, subsequent registrations will not receive admin
+/// permissions unless explicitly granted by an existing admin.
+///
 /// POST /auth/register
 #[tracing::instrument(skip(state, body), fields(username = %body.username))]
 pub async fn register(
@@ -219,16 +227,34 @@ pub async fn register(
         e
     })?;
 
-    // Lock users table and check if this is the first user
-    // FOR UPDATE prevents concurrent first-user registrations
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users FOR UPDATE")
+    // FOR UPDATE on setup_complete serializes concurrent registrations at the lock
+    // acquisition point. Multiple transactions can BEGIN concurrently, but they will
+    // block at this SELECT FOR UPDATE until the lock is released. This prevents the
+    // race condition where two concurrent registrations both see user_count=0 and
+    // both grant admin permissions.
+    let _lock = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            error = %e,
+            username = %body.username,
+            "Failed to lock setup_complete config during registration"
+        );
+        e
+    })?;
+
+    // Now safely count users (serialized by the lock above)
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
             tracing::error!(
                 error = %e,
                 username = %body.username,
-                "Failed to count users with lock during registration"
+                "Failed to count users during registration"
             );
             e
         })?;
@@ -368,7 +394,14 @@ pub async fn login(
         () => {
             if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip)
             {
-                let _ = rl.record_failed_auth(&nip.0).await;
+                if let Err(e) = rl.record_failed_auth(&nip.0).await {
+                    tracing::warn!(
+                        error = %e,
+                        ip = ?nip.0,
+                        username = %body.username,
+                        "Failed to record failed authentication attempt - rate limiting may not be working"
+                    );
+                }
             }
         };
     }
@@ -779,11 +812,17 @@ pub async fn update_profile(
         if let Err(e) = broadcast_user_patch(
             &state.redis,
             auth_user.id,
-            serde_json::Value::Object(diff),
+            serde_json::Value::Object(diff.clone()),
         )
         .await
         {
-            tracing::warn!("Failed to broadcast user patch: {}", e);
+            tracing::error!(
+                error = %e,
+                user_id = %auth_user.id,
+                changed_fields = ?updated_fields,
+                diff = ?diff,
+                "Failed to broadcast user profile update to Redis - other clients may see stale data. Consider implementing retry queue."
+            );
             // Don't fail the request, update was successful
         }
     }

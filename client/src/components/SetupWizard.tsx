@@ -46,10 +46,23 @@ async function fetchSetupConfig(): Promise<SetupConfig> {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch setup config: ${response.statusText}`);
+    let errorMessage = `Failed to fetch setup config (HTTP ${response.status})`;
+
+    try {
+      const errorBody = await response.json();
+      errorMessage = errorBody.message || errorBody.error || errorMessage;
+    } catch {
+      errorMessage += `: ${response.statusText}`;
+    }
+
+    throw new Error(errorMessage);
   }
 
-  return response.json();
+  try {
+    return await response.json();
+  } catch (parseError) {
+    throw new Error(`Server returned invalid JSON: ${parseError instanceof Error ? parseError.message : 'Parse failed'}`);
+  }
 }
 
 // Complete server setup
@@ -79,8 +92,31 @@ async function completeSetup(config: SetupConfig): Promise<void> {
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to complete setup: ${error}`);
+    let errorMessage = `Setup failed (HTTP ${response.status})`;
+
+    try {
+      const errorBody = await response.json();
+      errorMessage = errorBody.message || errorBody.error || errorMessage;
+
+      // Handle specific error codes
+      if (response.status === 403 && errorBody.error === "SETUP_ALREADY_COMPLETE") {
+        // Setup was completed by another admin - just return, don't error
+        console.warn("[SetupWizard] Setup already completed by another admin");
+        return;
+      }
+
+      if (response.status === 401) {
+        throw new Error("Your session has expired. Please log in again.");
+      }
+    } catch (parseError) {
+      if (parseError instanceof Error && parseError.message.includes("session has expired")) {
+        throw parseError; // Re-throw specific errors
+      }
+      const text = await response.text();
+      errorMessage += `: ${text}`;
+    }
+
+    throw new Error(errorMessage);
   }
 }
 
@@ -93,12 +129,16 @@ const SetupWizard: Component = () => {
 
   // UI state
   const [isLoading, setIsLoading] = createSignal(false);
+  const [isLoadingConfig, setIsLoadingConfig] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [isConfigLoaded, setIsConfigLoaded] = createSignal(false);
 
-  // Load current config when wizard opens
-  createEffect(async () => {
+  // Load config from server (async function called by effect)
+  async function loadConfig() {
     if (!authState.setupRequired || isConfigLoaded()) return;
+
+    setIsLoadingConfig(true);
+    setError(null);
 
     try {
       const config = await fetchSetupConfig();
@@ -108,9 +148,24 @@ const SetupWizard: Component = () => {
       setPrivacyUrl(config.privacy_url || "");
       setIsConfigLoaded(true);
     } catch (err) {
-      console.error("[SetupWizard] Failed to load config:", err);
-      setError("Failed to load setup configuration. Please refresh the page.");
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      console.error("[SetupWizard] Failed to load config:", {
+        error: errorMessage,
+        setupRequired: authState.setupRequired,
+        timestamp: new Date().toISOString()
+      });
+      setError(
+        `Failed to load setup configuration. Please check your connection and refresh the page. Error: ${errorMessage}`
+      );
+    } finally {
+      setIsLoadingConfig(false);
     }
+  }
+
+  // Load current config when wizard opens
+  createEffect(() => {
+    if (!authState.setupRequired || isConfigLoaded()) return;
+    loadConfig();
   });
 
   const handleSubmit = async (e: Event) => {
@@ -172,6 +227,13 @@ const SetupWizard: Component = () => {
               These settings can be changed later in the admin panel.
             </p>
           </div>
+
+          {/* Loading state */}
+          <Show when={isLoadingConfig()}>
+            <div class="flex items-center justify-center p-8">
+              <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary"></div>
+            </div>
+          </Show>
 
           {/* Error banner */}
           <Show when={error()}>

@@ -57,11 +57,23 @@ export async function initAuth(): Promise<void> {
     if (user) {
       await initWebSocket();
       await initPresence();
+
+      // Listen for WebSocket reconnection to clear error message
+      if (typeof window !== "undefined") {
+        window.addEventListener("ws-reconnected", () => {
+          console.log("[Auth] WebSocket reconnected, clearing error message");
+          setAuthState("error", null);
+        });
+      }
+
       try {
         await wsConnect();
         console.log("[Auth] WebSocket reconnected after session restore");
       } catch (wsErr) {
         console.error("[Auth] WebSocket reconnection failed:", wsErr);
+        // WebSocket failure is critical for real-time messaging
+        // The WebSocket module will auto-retry, but user should know there's an issue
+        setAuthState("error", "Real-time messaging temporarily unavailable. Reconnecting...");
       }
       // Initialize preferences sync after session restore
       try {
@@ -109,11 +121,23 @@ export async function login(
     // Initialize WebSocket and presence after login
     await initWebSocket();
     await initPresence();
+
+    // Listen for WebSocket reconnection to clear error message
+    if (typeof window !== "undefined") {
+      window.addEventListener("ws-reconnected", () => {
+        console.log("[Auth] WebSocket reconnected, clearing error message");
+        setAuthState({ error: null });
+      });
+    }
+
     try {
       await wsConnect();
     } catch (wsErr) {
       console.error("WebSocket connection failed:", wsErr);
-      // Continue even if WebSocket fails - user is still logged in
+      // WebSocket failure is critical for real-time messaging
+      // The WebSocket module will auto-retry, but user should know there's an issue
+      setAuthState({ error: "Real-time messaging temporarily unavailable. Reconnecting..." });
+      // Continue - user is still logged in and WebSocket will auto-retry
     }
 
     // Initialize preferences sync after login

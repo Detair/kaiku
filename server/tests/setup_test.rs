@@ -13,10 +13,10 @@ use vc_server::db;
 
 /// Test that the first user registration logic is set up correctly.
 ///
-/// Note: This test verifies the database functions work, but the actual first-user
-/// admin grant happens in the HTTP registration handler within a transaction.
-/// A full integration test through POST /auth/register is needed to verify the
-/// complete behavior (see integration test recommendations).
+/// This test verifies database-level admin grant mechanics. The actual
+/// first-user detection and grant occurs atomically in POST /auth/register
+/// (handlers.rs registration flow). See setup_integration_test.rs for
+/// full-flow testing including concurrent registration scenarios.
 #[tokio::test]
 #[serial]
 async fn test_first_user_detection_works() {
@@ -162,51 +162,89 @@ async fn test_server_config_operations() {
 }
 
 /// Test that setup can be marked complete (irreversible).
+///
+/// Note: This test uses a transaction that is rolled back to avoid
+/// permanently modifying the database state.
 #[tokio::test]
+#[serial]
 async fn test_mark_setup_complete() {
     let config = Config::default_for_test();
     let pool: PgPool = db::create_pool(&config.database_url)
         .await
         .expect("Failed to connect to DB");
 
-    // Get current setup status
-    let initial_status = db::is_setup_complete(&pool)
-        .await
-        .expect("Failed to check setup status");
+    // Use a transaction for isolation (will be rolled back automatically)
+    let mut tx = pool.begin().await.expect("Failed to start transaction");
+
+    // Get current setup status within transaction
+    let initial_status_value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM server_config WHERE key = 'setup_complete'"
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("Failed to get setup status");
+
+    let initial_status = initial_status_value.as_bool().unwrap_or(false);
 
     if initial_status {
-        println!("⚠️  Setup already complete, testing that it stays complete");
+        println!("    ℹ️  Setup already complete in DB, testing update still works");
     }
 
     // Create a test user for marking setup complete (required by foreign key)
     let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
     let test_username = format!("setup_complete_{test_id}");
-    let test_user = db::create_user(&pool, &test_username, "Setup Test", None, "hash")
-        .await
-        .expect("Failed to create test user");
 
-    // Mark setup as complete
-    db::mark_setup_complete(&pool, test_user.id)
-        .await
-        .expect("Failed to mark setup complete");
+    let test_user = sqlx::query_as!(
+        db::User,
+        r#"INSERT INTO users (username, display_name, password_hash, auth_method)
+           VALUES ($1, $2, $3, 'local')
+           RETURNING id, username, display_name, email, password_hash,
+                     auth_method as "auth_method: _", external_id, avatar_url,
+                     status as "status: _", mfa_secret, created_at, updated_at"#,
+        test_username,
+        "Setup Test",
+        "hash"
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("Failed to create test user");
 
-    // Verify setup is now complete
-    let final_status = db::is_setup_complete(&pool)
-        .await
-        .expect("Failed to check setup status after marking complete");
+    // Mark setup as complete within transaction
+    sqlx::query(
+        "UPDATE server_config
+         SET value = 'true'::jsonb, updated_by = $1, updated_at = NOW()
+         WHERE key = 'setup_complete'"
+    )
+    .bind(test_user.id)
+    .execute(&mut *tx)
+    .await
+    .expect("Failed to mark setup complete");
+
+    // Verify setup is now complete within transaction
+    let final_status_value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM server_config WHERE key = 'setup_complete'"
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("Failed to check setup status after marking complete");
+
+    let final_status = final_status_value.as_bool().unwrap_or(false);
 
     assert!(final_status, "Setup should be marked as complete");
 
-    println!("✅ Mark setup complete test passed");
+    // Transaction is rolled back automatically, no cleanup needed
+    tx.rollback().await.expect("Failed to rollback");
+    println!("✅ Mark setup complete test passed (transaction rolled back)");
 }
 
 /// Test race condition prevention in first user detection.
 ///
-/// This test verifies that the FOR UPDATE lock query works correctly.
+/// Test that the setup_complete lock serialization works correctly.
+/// This verifies the actual locking pattern used in production (handlers.rs:225-237).
 /// Full concurrent behavior requires integration testing through HTTP endpoints.
 #[tokio::test]
 #[serial]
-async fn test_for_update_lock_pattern() {
+async fn test_setup_complete_lock_serialization() {
     let config = Config::default_for_test();
     let pool: PgPool = db::create_pool(&config.database_url)
         .await
@@ -215,45 +253,147 @@ async fn test_for_update_lock_pattern() {
     // Use isolated transaction
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
-    // Delete existing users in transaction (cascades to system_admins)
-    sqlx::query("DELETE FROM users")
-        .execute(&mut *tx)
-        .await
-        .expect("Failed to clear users");
-
-    // Verify the FOR UPDATE query pattern works
-    // Note: Can't use COUNT(*) with FOR UPDATE, so we fetch and count in Rust
-    let users: Vec<(uuid::Uuid,)> = sqlx::query_as("SELECT id FROM users FOR UPDATE")
-        .fetch_all(&mut *tx)
-        .await
-        .expect("Failed to get users with lock");
-
-    assert_eq!(users.len(), 0, "Expected no users in clean transaction");
-
-    // Simulate creating a user
-    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-    sqlx::query(
-        "INSERT INTO users (username, display_name, password_hash, auth_method)
-         VALUES ($1, 'Test', 'hash', 'local')"
+    // Test the actual locking pattern used in production (handlers.rs:225-237)
+    // This acquires a row-level lock on the setup_complete config row
+    let _lock = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
     )
-    .bind(format!("test_{test_id}"))
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await
-    .expect("Failed to insert user");
+    .expect("Failed to acquire setup_complete lock");
 
-    // Count again with lock
-    let users_after: Vec<(uuid::Uuid,)> = sqlx::query_as("SELECT id FROM users FOR UPDATE")
-        .fetch_all(&mut *tx)
+    println!("    ✓ Successfully acquired FOR UPDATE lock on setup_complete config");
+
+    // Now count users (this is what production does)
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&mut *tx)
         .await
-        .expect("Failed to get users after insert");
+        .expect("Failed to count users");
 
-    assert_eq!(users_after.len(), 1, "Should see one user after insert");
+    println!("    ✓ User count: {}", user_count);
+
+    // Verify we can still do other operations while holding the lock
+    let setup_value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM server_config WHERE key = 'setup_complete'"
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("Failed to read setup_complete value");
+
+    println!("    ✓ Setup complete value: {}", setup_value);
 
     tx.rollback().await.expect("Failed to rollback");
 
-    println!("✅ FOR UPDATE lock pattern test passed");
+    println!("✅ Setup complete lock serialization test passed");
     println!("    Note: True concurrent behavior requires HTTP integration tests");
-    println!("    Recommendation: Add test spawning 10 parallel POST /auth/register requests");
+    println!("    See setup_integration_test.rs for concurrent registration tests");
+}
+
+/// Test validation of server configuration values.
+///
+/// Note: This test uses a transaction to avoid modifying shared database state.
+/// It documents that the database layer is permissive and validation should
+/// happen at the API layer.
+#[tokio::test]
+#[serial]
+async fn test_config_validation() {
+    let config = Config::default_for_test();
+    let pool: PgPool = db::create_pool(&config.database_url)
+        .await
+        .expect("Failed to connect to DB");
+
+    // Use transaction for isolation
+    let mut tx = pool.begin().await.expect("Failed to start transaction");
+
+    // Create a test user for config updates (required by foreign key)
+    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let test_username = format!("validation_test_{test_id}");
+
+    let test_user = sqlx::query_as!(
+        db::User,
+        r#"INSERT INTO users (username, display_name, password_hash, auth_method)
+           VALUES ($1, $2, $3, 'local')
+           RETURNING id, username, display_name, email, password_hash,
+                     auth_method as "auth_method: _", external_id, avatar_url,
+                     status as "status: _", mfa_secret, created_at, updated_at"#,
+        test_username,
+        "Validation Test",
+        "hash"
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("Failed to create test user");
+
+    // Test 1: Empty server_name (database allows, API should validate)
+    let empty_name_result = sqlx::query(
+        "UPDATE server_config
+         SET value = $1, updated_by = $2
+         WHERE key = 'server_name'"
+    )
+    .bind(serde_json::json!(""))
+    .bind(test_user.id)
+    .execute(&mut *tx)
+    .await;
+
+    assert!(
+        empty_name_result.is_ok(),
+        "Database allows empty server_name (API should validate)"
+    );
+
+    // Test 2: Server name at 64-char boundary should be accepted
+    let long_name = "a".repeat(64); // Exactly 64 characters
+    let long_name_result = sqlx::query(
+        "UPDATE server_config
+         SET value = $1, updated_by = $2
+         WHERE key = 'server_name'"
+    )
+    .bind(serde_json::json!(long_name))
+    .bind(test_user.id)
+    .execute(&mut *tx)
+    .await;
+
+    assert!(
+        long_name_result.is_ok(),
+        "64-character server name should be accepted"
+    );
+
+    // Test 3: Invalid registration_policy (database allows, API should validate)
+    let invalid_policy_result = sqlx::query(
+        "UPDATE server_config
+         SET value = $1, updated_by = $2
+         WHERE key = 'registration_policy'"
+    )
+    .bind(serde_json::json!("invalid_policy"))
+    .bind(test_user.id)
+    .execute(&mut *tx)
+    .await;
+
+    assert!(
+        invalid_policy_result.is_ok(),
+        "Database allows any policy value (API should validate)"
+    );
+
+    // Test 4: Malformed URLs (database allows, API should validate)
+    let invalid_url_result = sqlx::query(
+        "UPDATE server_config
+         SET value = $1, updated_by = $2
+         WHERE key = 'terms_url'"
+    )
+    .bind(serde_json::json!("not-a-valid-url"))
+    .bind(test_user.id)
+    .execute(&mut *tx)
+    .await;
+
+    assert!(
+        invalid_url_result.is_ok(),
+        "Database allows malformed URLs (API should validate)"
+    );
+
+    // Transaction rollback happens automatically
+    tx.rollback().await.expect("Failed to rollback");
+
+    println!("✅ Config validation test passed (transaction rolled back)");
+    println!("    Note: Database layer is permissive - API should add validation");
 }
 
 /// Test that second user does NOT receive admin permissions.

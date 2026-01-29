@@ -874,7 +874,16 @@ pub async fn get_config_value(pool: &PgPool, key: &str) -> sqlx::Result<serde_js
     let row = sqlx::query("SELECT value FROM server_config WHERE key = $1")
         .bind(key)
         .fetch_one(pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                error_debug = ?e,
+                config_key = %key,
+                "Failed to get config value from database"
+            );
+            e
+        })?;
     Ok(row.get("value"))
 }
 
@@ -893,7 +902,17 @@ pub async fn set_config_value(
     .bind(value)
     .bind(updated_by)
     .execute(pool)
-    .await?;
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            error = %e,
+            error_debug = ?e,
+            config_key = %key,
+            updated_by = %updated_by,
+            "Failed to execute config value update query"
+        );
+        e
+    })?;
 
     if result.rows_affected() == 0 {
         tracing::error!(
@@ -936,9 +955,18 @@ pub async fn mark_setup_complete(pool: &PgPool, updated_by: Uuid) -> sqlx::Resul
 }
 
 /// Count total number of users in the database.
+/// Used in critical first-user registration path - errors must be logged for debugging.
 pub async fn count_users(pool: &PgPool) -> sqlx::Result<i64> {
     let row = sqlx::query("SELECT COUNT(*) as count FROM users")
         .fetch_one(pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                error_debug = ?e,
+                "Failed to count users in database - this is critical for first-user registration"
+            );
+            e
+        })?;
     Ok(row.get("count"))
 }

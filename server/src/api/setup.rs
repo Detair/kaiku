@@ -9,6 +9,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use validator::Validate;
 
 use crate::{
@@ -21,12 +22,19 @@ use crate::{
 // Error Types
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum SetupError {
+    #[error("Server setup has already been completed")]
     SetupAlreadyComplete,
+
+    #[error("Only system administrators can complete setup")]
     Unauthorized,
+
+    #[error("Validation error: {0}")]
     Validation(String),
-    Database(sqlx::Error),
+
+    #[error("Database error")]
+    Database(#[from] sqlx::Error),
 }
 
 impl IntoResponse for SetupError {
@@ -40,39 +48,32 @@ impl IntoResponse for SetupError {
             );
         }
 
-        let (status, code, message) = match &self {
+        let (status, code) = match &self {
             Self::SetupAlreadyComplete => (
                 StatusCode::FORBIDDEN,
                 "SETUP_ALREADY_COMPLETE",
-                "Server setup has already been completed".to_string(),
             ),
             Self::Unauthorized => (
                 StatusCode::FORBIDDEN,
-                "UNAUTHORIZED",
-                "Only system administrators can complete setup".to_string(),
+                "FORBIDDEN",
             ),
-            Self::Validation(msg) => (
+            Self::Validation(_) => (
                 StatusCode::BAD_REQUEST,
                 "VALIDATION_ERROR",
-                msg.clone(),
             ),
             Self::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
-                "Database error".to_string(),
             ),
         };
+
+        let message = self.to_string();
+
         (
             status,
             Json(serde_json::json!({ "error": code, "message": message })),
         )
             .into_response()
-    }
-}
-
-impl From<sqlx::Error> for SetupError {
-    fn from(err: sqlx::Error) -> Self {
-        Self::Database(err)
     }
 }
 
@@ -246,8 +247,12 @@ pub async fn complete(
         SetupError::Database(e)
     })?;
 
-    // Atomically check and mark setup as complete
-    // This prevents race condition where two admins both pass the check
+    // Atomically check and mark setup as complete using compare-and-swap pattern.
+    // This prevents TOCTOU (Time-Of-Check-Time-Of-Use) race where two concurrent
+    // admins both see setup_complete=false and both attempt to complete setup.
+    // Only ONE transaction will update the row (WHERE value = 'false') - the other
+    // will see updated=None and return SetupAlreadyComplete error.
+    // This is a critical security mechanism preventing duplicate setup completion.
     let updated = sqlx::query!(
         r#"UPDATE server_config
            SET value = 'true'::jsonb, updated_by = $1, updated_at = NOW()
