@@ -250,13 +250,16 @@ This roadmap outlines the development path from the current prototype to a produ
 - [x] **[UX] Pinned Notes System** ✅ (Issue #105)
   - Fixed note persistence and display in Home sidebar
   - Pins module with add/edit/delete functionality
-- [ ] **[Media] Unified File Size Upload Limits**
+- [x] **[Media] Unified File Size Upload Limits** ✅
   - **Context:** Standardize file size restrictions across all upload types
-  - **Implementation:**
-    - Add `max_avatar_size` and `max_emoji_size` to `AppConfig`
-    - Implement explicit size checks in `auth/handlers.rs` for profile avatars
-    - Refactor `emojis.rs` to use configurable `max_emoji_size`
-    - Refactor `dm.rs` avatar upload to use configurable `max_avatar_size`
+  - **Completed:**
+    - Added `max_avatar_size` (5MB default) and `max_emoji_size` (256KB default) to Config
+    - Implemented size validation for user profile avatars (fixed security issue)
+    - Made emoji size limits configurable via `MAX_EMOJI_SIZE` environment variable
+    - Updated DM avatar upload to use `max_avatar_size` instead of `max_upload_size`
+    - Added frontend validation for immediate user feedback
+    - Created comprehensive integration tests (7 tests, 1 ignored for future DM feature)
+    - Fixed 5 critical issues identified in PR review
     - Add frontend validation before upload to provide immediate feedback
 - [x] **[Auth] First User Setup (Admin Bootstrap)** ✅ (PR #110)
   - First registered user automatically gets admin/superuser permissions.
