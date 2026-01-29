@@ -35,6 +35,26 @@ const [authState, setAuthState] = createStore<AuthState>({
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
 
+// WebSocket reconnection listener (registered once globally to prevent leaks)
+let wsReconnectListenerRegistered = false;
+
+function registerWebSocketReconnectListener() {
+  if (typeof window !== "undefined" && !wsReconnectListenerRegistered) {
+    try {
+      const handler = () => {
+        console.log("[Auth] WebSocket reconnected, clearing error message");
+        setAuthState("error", null);
+      };
+      window.addEventListener("ws-reconnected", handler);
+      wsReconnectListenerRegistered = true;
+      console.log("[Auth] WebSocket reconnection listener registered");
+    } catch (e) {
+      console.error("[Auth] Failed to register WebSocket reconnect listener:", e);
+      // Non-critical, continue
+    }
+  }
+}
+
 // Actions
 
 /**
@@ -58,13 +78,8 @@ export async function initAuth(): Promise<void> {
       await initWebSocket();
       await initPresence();
 
-      // Listen for WebSocket reconnection to clear error message
-      if (typeof window !== "undefined") {
-        window.addEventListener("ws-reconnected", () => {
-          console.log("[Auth] WebSocket reconnected, clearing error message");
-          setAuthState("error", null);
-        });
-      }
+      // Register WebSocket reconnection listener (once globally)
+      registerWebSocketReconnectListener();
 
       try {
         await wsConnect();
@@ -122,13 +137,8 @@ export async function login(
     await initWebSocket();
     await initPresence();
 
-    // Listen for WebSocket reconnection to clear error message
-    if (typeof window !== "undefined") {
-      window.addEventListener("ws-reconnected", () => {
-        console.log("[Auth] WebSocket reconnected, clearing error message");
-        setAuthState({ error: null });
-      });
-    }
+    // Register WebSocket reconnection listener (once globally)
+    registerWebSocketReconnectListener();
 
     try {
       await wsConnect();
@@ -264,5 +274,14 @@ export function updateUser(updates: Partial<User>): void {
   setAuthState("user", (prev) => (prev ? { ...prev, ...updates } : null));
 }
 
-// Export the store for reading and writing
-export { authState, setAuthState };
+/**
+ * Clear the setup required flag.
+ * Called after completing the setup wizard.
+ */
+export function clearSetupRequired(): void {
+  setAuthState("setupRequired", false);
+}
+
+// Export the store for reading only
+// Use the exported functions (login, register, logout, etc.) to modify state
+export { authState };

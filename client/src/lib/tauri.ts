@@ -165,7 +165,31 @@ export async function refreshAccessToken(): Promise<boolean> {
       data = await response.json();
     } catch (parseError) {
       console.error("[Auth] Failed to parse token refresh response as JSON:", parseError);
+
+      // Clear tokens - refresh failed
+      browserState.accessToken = null;
+      browserState.refreshToken = null;
+      browserState.tokenExpiresAt = null;
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      localStorage.removeItem("tokenExpiresAt");
+
       throw new Error(`Token refresh returned invalid JSON: ${parseError instanceof Error ? parseError.message : 'Parse failed'}`);
+    }
+
+    // Validate tokens are not empty
+    if (!data.access_token || !data.refresh_token) {
+      console.error("[Auth] Token refresh returned empty tokens");
+
+      // Clear any existing tokens
+      browserState.accessToken = null;
+      browserState.refreshToken = null;
+      browserState.tokenExpiresAt = null;
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      localStorage.removeItem("tokenExpiresAt");
+
+      throw new Error("Token refresh returned empty tokens");
     }
 
     // Store new tokens
@@ -416,10 +440,32 @@ export async function getCurrentUser(): Promise<User | null> {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.warn(`[Auth] Failed to fetch current user: ${errorMessage}`);
 
-    // Only try refresh if error looks like auth failure (not network error)
+    // Determine if this is an auth failure or other error
     const isAuthError = errorMessage.includes("401") ||
                         errorMessage.includes("403") ||
-                        errorMessage.includes("Unauthorized");
+                        errorMessage.includes("Unauthorized") ||
+                        errorMessage.includes("Forbidden");
+
+    const isJsonParseError = errorMessage.includes("invalid JSON") ||
+                            errorMessage.includes("Parse failed");
+
+    // If JSON parse failed on what might be an auth response, assume auth failure
+    // We cannot reliably determine auth state with malformed responses
+    if (isJsonParseError && errorMessage.includes("HTTP")) {
+      console.error("[Auth] JSON parse error on HTTP response - cannot determine auth state, clearing tokens");
+      // Clear all token state - safest approach when we can't parse server response
+      if (browserState.refreshTimer) {
+        clearTimeout(browserState.refreshTimer);
+        browserState.refreshTimer = null;
+      }
+      browserState.accessToken = null;
+      browserState.refreshToken = null;
+      browserState.tokenExpiresAt = null;
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      localStorage.removeItem("tokenExpiresAt");
+      return null;
+    }
 
     if (isAuthError && browserState.refreshToken) {
       console.log("[Auth] Token appears invalid, attempting refresh...");

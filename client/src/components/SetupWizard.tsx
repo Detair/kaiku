@@ -12,7 +12,7 @@
  */
 
 import { Component, createSignal, createEffect, Show } from "solid-js";
-import { authState, setAuthState } from "@/stores/auth";
+import { authState, clearSetupRequired } from "@/stores/auth";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
 
 // Setup config interface (matches server API)
@@ -61,7 +61,14 @@ async function fetchSetupConfig(): Promise<SetupConfig> {
   try {
     return await response.json();
   } catch (parseError) {
-    throw new Error(`Server returned invalid JSON: ${parseError instanceof Error ? parseError.message : 'Parse failed'}`);
+    // Distinguish between JSON syntax errors and other unexpected errors
+    if (parseError instanceof SyntaxError) {
+      throw new Error(`Server returned invalid JSON: ${parseError.message}`);
+    } else {
+      // Unexpected error (OOM, extension interference, etc.)
+      console.error("[SetupWizard] Unexpected error parsing JSON:", parseError);
+      throw new Error(`Failed to parse server response: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`);
+    }
   }
 }
 
@@ -94,26 +101,40 @@ async function completeSetup(config: SetupConfig): Promise<void> {
   if (!response.ok) {
     let errorMessage = `Setup failed (HTTP ${response.status})`;
 
+    // Read body as text first to avoid double consumption
+    let bodyText = '';
     try {
-      const errorBody = await response.json();
-      errorMessage = errorBody.message || errorBody.error || errorMessage;
+      bodyText = await response.text();
+    } catch (textError) {
+      console.error("[SetupWizard] Failed to read error response body:", textError);
+    }
 
-      // Handle specific error codes
-      if (response.status === 403 && errorBody.error === "SETUP_ALREADY_COMPLETE") {
-        // Setup was completed by another admin - just return, don't error
-        console.warn("[SetupWizard] Setup already completed by another admin");
-        return;
-      }
+    // Try to parse as JSON
+    try {
+      if (bodyText) {
+        const errorBody = JSON.parse(bodyText);
+        errorMessage = errorBody.message || errorBody.error || errorMessage;
 
-      if (response.status === 401) {
-        throw new Error("Your session has expired. Please log in again.");
+        // Handle specific error codes
+        if (response.status === 403 && errorBody.error === "SETUP_ALREADY_COMPLETE") {
+          // Setup was completed by another admin - just return, don't error
+          console.warn("[SetupWizard] Setup already completed by another admin");
+          return;
+        }
+
+        if (response.status === 401) {
+          throw new Error("Your session has expired. Please log in again.");
+        }
       }
     } catch (parseError) {
+      // If JSON parse fails but we have specific errors from above, re-throw them
       if (parseError instanceof Error && parseError.message.includes("session has expired")) {
-        throw parseError; // Re-throw specific errors
+        throw parseError;
       }
-      const text = await response.text();
-      errorMessage += `: ${text}`;
+      // Otherwise, use the raw text as error message
+      if (bodyText.length > 0 && bodyText.length < 500) {
+        errorMessage += `: ${bodyText}`;
+      }
     }
 
     throw new Error(errorMessage);
@@ -190,7 +211,7 @@ const SetupWizard: Component = () => {
       await completeSetup(config);
 
       // Update auth state to hide the wizard
-      setAuthState("setupRequired", false);
+      clearSetupRequired();
 
       console.log("[SetupWizard] Server setup completed successfully");
     } catch (err) {

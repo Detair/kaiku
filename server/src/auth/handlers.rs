@@ -227,11 +227,11 @@ pub async fn register(
         e
     })?;
 
-    // FOR UPDATE on setup_complete serializes concurrent registrations at the lock
-    // acquisition point. Multiple transactions can BEGIN concurrently, but they will
-    // block at this SELECT FOR UPDATE until the lock is released. This prevents the
-    // race condition where two concurrent registrations both see user_count=0 and
-    // both grant admin permissions.
+    // FOR UPDATE on setup_complete serializes concurrent registrations by acquiring
+    // a row-level lock. Multiple transactions can BEGIN concurrently, but they will
+    // block at this SELECT FOR UPDATE until the first transaction COMMITS or ROLLS BACK.
+    // The lock is held for the entire transaction duration, preventing the race condition
+    // where two concurrent registrations both see user_count=0 and both grant admin.
     let _lock = sqlx::query_scalar::<_, serde_json::Value>(
         "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
     )
@@ -390,17 +390,23 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> AuthResult<Json<AuthResponse>> {
     // Helper macro to record failed auth (if rate limiter is configured)
+    // SECURITY: Fails request if rate limiter is down (fail-closed pattern)
     macro_rules! record_failed_auth {
         () => {
             if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip)
             {
                 if let Err(e) = rl.record_failed_auth(&nip.0).await {
-                    tracing::warn!(
+                    tracing::error!(
                         error = %e,
                         ip = ?nip.0,
                         username = %body.username,
-                        "Failed to record failed authentication attempt - rate limiting may not be working"
+                        "SECURITY: Failed to record failed authentication - BLOCKING REQUEST to prevent rate limit bypass"
                     );
+                    // Fail closed - deny request when rate limiter is unavailable
+                    // This prevents attackers from bypassing rate limiting by triggering rate limiter failures
+                    return Err(AuthError::Internal(
+                        "Authentication service temporarily unavailable. Please try again later.".to_string()
+                    ));
                 }
             }
         };
