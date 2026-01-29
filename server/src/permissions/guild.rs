@@ -77,6 +77,10 @@ bitflags! {
         // === Screen Sharing (bit 22) ===
         /// Permission to start screen sharing in voice channels
         const SCREEN_SHARE       = 1 << 22;
+
+        // === Mentions (bit 23) ===
+        /// Permission to mention @everyone and @here
+        const MENTION_EVERYONE   = 1 << 23;
     }
 }
 
@@ -107,7 +111,8 @@ impl GuildPermissions {
         .union(Self::KICK_MEMBERS)
         .union(Self::VIEW_AUDIT_LOG)
         .union(Self::MANAGE_INVITES)
-        .union(Self::SCREEN_SHARE);
+        .union(Self::SCREEN_SHARE)
+        .union(Self::MENTION_EVERYONE);
 
     /// Default permissions for officers (senior moderators).
     ///
@@ -135,7 +140,8 @@ impl GuildPermissions {
         .union(Self::TRANSFER_OWNERSHIP)
         .union(Self::MANAGE_INVITES)
         .union(Self::MANAGE_PAGES)
-        .union(Self::SCREEN_SHARE);
+        .union(Self::SCREEN_SHARE)
+        .union(Self::MENTION_EVERYONE);
 
     // === Database Conversion ===
 
@@ -259,6 +265,11 @@ mod tests {
     #[test]
     fn test_screen_sharing_permission_bits() {
         assert_eq!(GuildPermissions::SCREEN_SHARE.bits(), 1 << 22);
+    }
+
+    #[test]
+    fn test_mention_everyone_permission_bits() {
+        assert_eq!(GuildPermissions::MENTION_EVERYONE.bits(), 1 << 23);
     }
 
     // === Preset Tests ===
@@ -455,6 +466,7 @@ mod tests {
             GuildPermissions::MANAGE_INVITES,
             GuildPermissions::MANAGE_PAGES,
             GuildPermissions::SCREEN_SHARE,
+            GuildPermissions::MENTION_EVERYONE,
         ];
 
         for forbidden in forbidden_perms {
@@ -583,6 +595,7 @@ mod tests {
             GuildPermissions::MANAGE_INVITES,
             GuildPermissions::MANAGE_PAGES,
             GuildPermissions::SCREEN_SHARE,
+            GuildPermissions::MENTION_EVERYONE,
         ];
 
         // Check that combining all equals the sum of individual bits

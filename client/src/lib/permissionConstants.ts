@@ -41,6 +41,9 @@ export const PermissionBits = {
   // Pages (bit 21)
   MANAGE_PAGES: 1 << 21,
   MANAGE_EMOJIS_AND_STICKERS: 1 << 22,
+
+  // Mentions (bit 23)
+  MENTION_EVERYONE: 1 << 23,
 } as const;
 
 export type PermissionBit = (typeof PermissionBits)[keyof typeof PermissionBits];
@@ -261,6 +264,14 @@ export const PERMISSIONS: PermissionDefinition[] = [
     category: "guild_management",
     forbiddenForEveryone: true,
   },
+  {
+    key: "MENTION_EVERYONE",
+    bit: PermissionBits.MENTION_EVERYONE,
+    name: "Mention @everyone",
+    description: "Allows mentioning @everyone and @here",
+    category: "content",
+    forbiddenForEveryone: true,
+  },
 ];
 
 // Category display names
@@ -317,7 +328,8 @@ export const MODERATOR_DEFAULT =
   PermissionBits.TIMEOUT_MEMBERS |
   PermissionBits.KICK_MEMBERS |
   PermissionBits.VIEW_AUDIT_LOG |
-  PermissionBits.MANAGE_INVITES;
+  PermissionBits.MANAGE_INVITES |
+  PermissionBits.MENTION_EVERYONE;
 
 export const OFFICER_DEFAULT =
   MODERATOR_DEFAULT |
@@ -340,7 +352,8 @@ export const EVERYONE_FORBIDDEN =
   PermissionBits.MANAGE_GUILD |
   PermissionBits.TRANSFER_OWNERSHIP |
   PermissionBits.MANAGE_INVITES |
-  PermissionBits.MANAGE_PAGES;
+  PermissionBits.MANAGE_PAGES |
+  PermissionBits.MENTION_EVERYONE;
 
 // Check if a permission is valid for @everyone role
 export function isValidForEveryone(permissions: number): boolean {

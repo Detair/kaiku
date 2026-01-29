@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Content spoilers with `||text||` syntax for hiding sensitive information
+  - Click-to-reveal functionality with persistent reveal state
+  - Supports markdown and inline spoilers
+- @everyone and @here mention permission control
+  - New MENTION_EVERYONE permission bit (bit 23) for guild roles
+  - Server-side validation prevents unauthorized mass mentions
+  - Permission UI toggle in guild role settings
+  - Forbidden for @everyone role by default (moderator+ permission)
 - First user setup wizard with automatic admin bootstrap
   - First user to register automatically receives system admin permissions
   - Mandatory setup wizard for configuring server name, registration policy, and legal URLs

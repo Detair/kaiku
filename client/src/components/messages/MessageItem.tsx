@@ -1,4 +1,4 @@
-import { Component, Show, createMemo, For, createSignal } from "solid-js";
+import { Component, Show, createMemo, For, createSignal, onMount } from "solid-js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { File, Download, SmilePlus, Copy, Link, Hash, Trash2 } from "lucide-solid";
@@ -21,11 +21,37 @@ interface MessageItemProps {
   guildId?: string;
 }
 
+// Custom spoiler extension for ||text|| syntax
+const spoilerExtension = {
+  name: 'spoiler',
+  level: 'inline' as const,
+  start(src: string) {
+    const index = src.indexOf('||');
+    return index >= 0 ? index : undefined;
+  },
+  tokenizer(src: string) {
+    const match = /^\|\|(.+?)\|\|/.exec(src);
+    if (match) {
+      return {
+        type: 'spoiler',
+        raw: match[0],
+        text: match[1],
+      };
+    }
+    return undefined;
+  },
+  renderer(token: { text: string }) {
+    return `<span class="spoiler" data-spoiler="true">${token.text}</span>`;
+  },
+};
+
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
   breaks: true,
   gfm: true,
 });
+
+marked.use({ extensions: [spoilerExtension] });
 
 // Configure DOMPurify for safe HTML rendering (XSS prevention)
 const PURIFY_CONFIG = {
@@ -54,10 +80,23 @@ type ContentBlock = CodeBlockData | TextBlock;
 
 const MessageItem: Component<MessageItemProps> = (props) => {
   const [showReactionPicker, setShowReactionPicker] = createSignal(false);
+  let contentRef: HTMLDivElement | undefined;
 
   const author = () => props.message.author;
   const isEdited = () => !!props.message.edited_at;
   const hasReactions = () => props.message.reactions && props.message.reactions.length > 0;
+
+  // Setup spoiler click-to-reveal functionality
+  onMount(() => {
+    if (contentRef) {
+      const spoilers = contentRef.querySelectorAll('.spoiler[data-spoiler="true"]');
+      spoilers.forEach((spoiler) => {
+        spoiler.addEventListener('click', function(this: HTMLElement) {
+          this.classList.add('revealed');
+        });
+      });
+    }
+  });
 
   const handleAddReaction = async (emoji: string) => {
     try {
@@ -230,7 +269,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           </div>
         </Show>
 
-        <div class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none">
+        <div ref={contentRef} class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none">
           <For each={contentBlocks()}>
             {(block) => (
               <Show
