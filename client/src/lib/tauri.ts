@@ -79,6 +79,84 @@ export interface AuthResult {
   setup_required: boolean;
 }
 
+// ============================================================================
+// File Upload Size Limits
+// ============================================================================
+
+/**
+ * Upload limits response from server
+ */
+interface UploadLimitsResponse {
+  max_avatar_size: number;
+  max_emoji_size: number;
+  max_upload_size: number;
+}
+
+/**
+ * File upload size limits fetched from server.
+ * Falls back to defaults if fetch fails.
+ */
+let uploadLimits: UploadLimitsResponse = {
+  max_avatar_size: 5 * 1024 * 1024,      // 5MB default
+  max_emoji_size: 256 * 1024,             // 256KB default
+  max_upload_size: 50 * 1024 * 1024,      // 50MB default
+};
+
+/**
+ * Fetch upload size limits from server.
+ * Should be called on app startup.
+ */
+export async function fetchUploadLimits(): Promise<void> {
+  try {
+    const serverUrl = getServerUrl();
+    const response = await fetch(`${serverUrl}/api/config/upload-limits`);
+
+    if (!response.ok) {
+      console.warn(`Failed to fetch upload limits (HTTP ${response.status}), using defaults`);
+      return;
+    }
+
+    uploadLimits = await response.json();
+    console.log('[Upload Limits] Fetched from server:', uploadLimits);
+  } catch (error) {
+    console.warn('[Upload Limits] Failed to fetch, using defaults:', error);
+  }
+}
+
+type UploadType = 'avatar' | 'emoji' | 'attachment';
+
+/**
+ * Validate file size on frontend before upload.
+ * Uses limits fetched from server, with fallback to hardcoded defaults.
+ *
+ * @param file - File to validate
+ * @param type - Type of upload (avatar, emoji, or attachment)
+ * @returns Error message if file is too large, null if valid
+ */
+function validateFileSize(file: File, type: UploadType): string | null {
+  const maxSize = type === 'avatar'
+    ? uploadLimits.max_avatar_size
+    : type === 'emoji'
+    ? uploadLimits.max_emoji_size
+    : uploadLimits.max_upload_size;
+
+  if (file.size > maxSize) {
+    // Format sizes based on magnitude
+    const formatSize = (bytes: number): string => {
+      if (bytes < 1024 * 1024) {
+        return `${(bytes / 1024).toFixed(0)}KB`;
+      }
+      return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+    };
+
+    return `File too large (${formatSize(file.size)}). Maximum size is ${formatSize(maxSize)}.`;
+  }
+  return null;
+}
+
+// Export for use in components
+export { validateFileSize };
+
 // Browser state (when not in Tauri)
 const browserState = {
   serverUrl: "http://localhost:8080",
@@ -505,6 +583,12 @@ export async function getCurrentUser(): Promise<User | null> {
 }
 
 export async function uploadAvatar(file: File): Promise<User> {
+  // Frontend validation
+  const error = validateFileSize(file, 'avatar');
+  if (error) {
+    throw new Error(error);
+  }
+
   const token = browserState.accessToken || localStorage.getItem("accessToken");
   const headers: Record<string, string> = {};
 
@@ -610,6 +694,12 @@ export async function uploadFile(
   messageId: string,
   file: File
 ): Promise<any> {
+  // Frontend validation
+  const error = validateFileSize(file, 'attachment');
+  if (error) {
+    throw new Error(error);
+  }
+
   // For now, we use standard fetch for both Browser and Tauri
   // Tauri 2.0 supports fetch with proper configuration
 
@@ -956,6 +1046,12 @@ export async function uploadGuildEmoji(
   name: string,
   file: File
 ): Promise<GuildEmoji> {
+  // Frontend validation
+  const error = validateFileSize(file, 'emoji');
+  if (error) {
+    throw new Error(error);
+  }
+
   const token = browserState.accessToken || localStorage.getItem("accessToken");
   const headers: Record<string, string> = {};
 
@@ -1164,6 +1260,12 @@ export interface DMIconResponse {
 }
 
 export async function uploadDMAvatar(channelId: string, file: File): Promise<DMIconResponse> {
+  // Frontend validation
+  const error = validateFileSize(file, 'avatar');
+  if (error) {
+    throw new Error(error);
+  }
+
   const formData = new FormData();
   formData.append("file", file);
 

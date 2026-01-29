@@ -81,7 +81,7 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
                 <div>
                     <h3 class="text-lg font-semibold text-text-primary">Emojis</h3>
                     <p class="text-sm text-text-secondary">
-                        Upload custom emojis for your server.
+                        Upload custom emojis for your server. Maximum size: 256KB
                     </p>
                 </div>
 

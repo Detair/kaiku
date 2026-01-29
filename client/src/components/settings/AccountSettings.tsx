@@ -3,6 +3,7 @@ import { Camera, Upload } from "lucide-solid";
 import { authState, updateUser } from "@/stores/auth";
 import Avatar from "@/components/ui/Avatar";
 import * as tauri from "@/lib/tauri";
+import { validateFileSize } from "@/lib/tauri";
 
 const AccountSettings: Component = () => {
   const user = () => authState.user;
@@ -15,9 +16,12 @@ const AccountSettings: Component = () => {
     const file = target.files?.[0];
     if (!file) return;
 
-    // Validate file size (e.g. 5MB limit)
-    if (file.size > 5 * 1024 * 1024) {
-      setError("File size must be less than 5MB");
+    setError(null);
+
+    // Frontend validation before attempting upload
+    const validationError = validateFileSize(file, 'avatar');
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
@@ -28,7 +32,6 @@ const AccountSettings: Component = () => {
     }
 
     setIsUploading(true);
-    setError(null);
 
     try {
       const updatedUser = await tauri.uploadAvatar(file);
@@ -84,7 +87,7 @@ const AccountSettings: Component = () => {
             <h4 class="text-xl font-bold text-text-primary truncate">
               {user()?.display_name}
             </h4>
-            <button 
+            <button
               class="btn-primary py-1.5 px-3 text-sm flex items-center gap-2"
               onClick={() => fileInput?.click()}
               disabled={isUploading()}
@@ -93,6 +96,9 @@ const AccountSettings: Component = () => {
               {isUploading() ? "Uploading..." : "Change Avatar"}
             </button>
           </div>
+          <p class="text-xs text-text-secondary">
+            Maximum size: 5MB
+          </p>
           <div class="space-y-1">
             <div class="flex items-center gap-2 text-sm">
               <span class="text-text-secondary w-20">Username:</span>

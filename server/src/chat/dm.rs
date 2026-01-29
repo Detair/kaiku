@@ -633,8 +633,8 @@ pub async fn upload_dm_icon(
             
             let data = field.bytes().await.map_err(|e| UploadError::Validation(e.to_string()))?;
             
-            if data.len() > state.config.max_upload_size {
-                return Err(UploadError::TooLarge { max_size: state.config.max_upload_size });
+            if data.len() > state.config.max_avatar_size {
+                return Err(UploadError::TooLarge { max_size: state.config.max_avatar_size });
             }
             
             file_data = Some(data.to_vec());

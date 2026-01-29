@@ -21,11 +21,16 @@ import SetupWizard from "./components/SetupWizard";
 
 // Theme
 import { initTheme } from "./stores/theme";
+import { fetchUploadLimits } from "./lib/tauri";
 
 // Layout wrapper
 const Layout: Component<ParentProps> = (props) => {
   onMount(async () => {
     await initTheme();
+    // Fetch upload size limits from server (non-blocking)
+    fetchUploadLimits().catch(err =>
+      console.warn('[App] Failed to fetch upload limits:', err)
+    );
   });
 
   return (

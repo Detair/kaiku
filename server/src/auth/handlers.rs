@@ -28,6 +28,21 @@ use super::middleware::AuthUser;
 use super::password::{hash_password, verify_password};
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+/// Format file size in human-readable units
+fn format_file_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{} bytes", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{}KB", bytes / 1024)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+// ============================================================================
 // Request/Response Types
 // ============================================================================
 
@@ -666,6 +681,15 @@ pub async fn upload_avatar(
     }
 
     let data = file_data.ok_or(AuthError::Validation("No avatar file provided".to_string()))?;
+
+    // SECURITY: Check file size (was missing!)
+    if data.len() > state.config.max_avatar_size {
+        return Err(AuthError::Validation(format!(
+            "Avatar file too large ({}). Maximum size is {}",
+            format_file_size(data.len()),
+            format_file_size(state.config.max_avatar_size)
+        )));
+    }
 
     // Validate mime type from header
     let mime = content_type

@@ -2,7 +2,7 @@ import { Component, createSignal, Show, For, onCleanup } from "solid-js";
 import { PlusCircle, Send, UploadCloud, X, File as FileIcon } from "lucide-solid";
 import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
-import { uploadMessageWithFile } from "@/lib/tauri";
+import { uploadMessageWithFile, validateFileSize } from "@/lib/tauri";
 
 interface MessageInputProps {
   channelId: string;
@@ -18,6 +18,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const [content, setContent] = createSignal("");
   const [isSending, setIsSending] = createSignal(false);
   const [isDragging, setIsDragging] = createSignal(false);
+  const [uploadError, setUploadError] = createSignal<string | null>(null);
   const [pendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
   let typingTimeout: NodeJS.Timeout | undefined;
   let inputRef: HTMLInputElement | undefined;
@@ -36,6 +37,15 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
   // Add file to pending list with preview
   const addPendingFile = (file: File) => {
+    // Frontend validation before adding to pending list
+    const validationError = validateFileSize(file, 'attachment');
+    if (validationError) {
+      setUploadError(validationError);
+      setTimeout(() => setUploadError(null), 5000); // Clear after 5 seconds
+      return;
+    }
+
+    setUploadError(null);
     const isImage = file.type.startsWith("image/");
     const previewUrl = isImage ? URL.createObjectURL(file) : null;
     setPendingFiles((prev) => [...prev, { file, previewUrl }]);
@@ -169,6 +179,17 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         <div class="absolute inset-0 z-50 bg-surface-base/90 backdrop-blur-sm rounded-lg border-2 border-dashed border-accent-primary flex flex-col items-center justify-center pointer-events-none m-4">
           <UploadCloud class="w-12 h-12 text-accent-primary mb-2" />
           <p class="text-text-primary font-medium">Drop files to upload</p>
+          <p class="text-xs text-text-secondary mt-1">Maximum size: 50MB</p>
+        </div>
+      </Show>
+
+      {/* Upload Error */}
+      <Show when={uploadError()}>
+        <div class="mb-2 p-3 bg-error-bg border border-error-border rounded-lg text-sm text-error-text flex items-center justify-between">
+          <span>{uploadError()}</span>
+          <button onClick={() => setUploadError(null)}>
+            <X class="w-4 h-4" />
+          </button>
         </div>
       </Show>
 

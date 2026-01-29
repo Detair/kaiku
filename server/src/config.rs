@@ -53,6 +53,12 @@ pub struct Config {
     /// Maximum file upload size in bytes (default: 50MB)
     pub max_upload_size: usize,
 
+    /// Maximum avatar size in bytes (user profiles and DM groups, default: 5MB)
+    pub max_avatar_size: usize,
+
+    /// Maximum emoji size in bytes (guild custom emojis, default: 256KB)
+    pub max_emoji_size: usize,
+
     /// WebRTC STUN server
     pub stun_server: String,
 
@@ -112,6 +118,14 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(50 * 1024 * 1024), // 50MB
+            max_avatar_size: env::var("MAX_AVATAR_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5 * 1024 * 1024), // 5MB
+            max_emoji_size: env::var("MAX_EMOJI_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(256 * 1024), // 256KB
             stun_server: env::var("STUN_SERVER")
                 .unwrap_or_else(|_| "stun:stun.l.google.com:19302".into()),
             turn_server: env::var("TURN_SERVER").ok(),
@@ -173,6 +187,8 @@ impl Config {
             s3_presign_expiry: 3600,
             allowed_mime_types: None,
             max_upload_size: 50 * 1024 * 1024,
+            max_avatar_size: 5 * 1024 * 1024,
+            max_emoji_size: 256 * 1024,
             oidc_issuer_url: None,
             oidc_client_id: None,
             oidc_client_secret: None,
