@@ -1,4 +1,4 @@
-# Content Spoilers & Enhanced Mentions — Implementation Plan
+# Content Spoilers & Enhanced Mentions — Implementation Plan v2
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -40,7 +40,7 @@
 ### Server
 | File | Changes |
 |------|---------|
-| `server/src/permissions/guild.rs` | Add `MENTION_EVERYONE` bit 23 |
+| `server/src/permissions/guild.rs` | Add `MENTION_EVERYONE` bit 23, potentially add `check_guild_permission` |
 | `server/src/chat/messages.rs` | Enforce mention permission in `create()` handler |
 
 ### Client
@@ -110,13 +110,83 @@ cd server && cargo test -- permissions
 ### Task 2: Server-Side Mention Enforcement
 
 **Files:**
+- Modify: `server/src/permissions/guild.rs` (if check_guild_permission missing)
 - Modify: `server/src/chat/messages.rs`
 
 **Purpose:** When a user sends a message containing `@everyone` or `@here`, check if they have the `MENTION_EVERYONE` permission. If not, strip the mentions from the content before saving.
 
+**Step 0: Verify permission checking infrastructure**
+
+Check if `check_guild_permission` function exists:
+
+```bash
+grep -rn "fn check_guild_permission" server/src/permissions/
+```
+
+**If the function DOES NOT exist**, add it to `server/src/permissions/guild.rs`:
+
+```rust
+use sqlx::PgPool;
+use uuid::Uuid;
+
+/// Check if a user has a specific guild permission.
+/// Returns false if user is not a member or permission check fails.
+pub async fn check_guild_permission(
+    pool: &PgPool,
+    guild_id: Uuid,
+    user_id: Uuid,
+    permission: GuildPermissions,
+) -> Result<bool, sqlx::Error> {
+    // Get user's guild membership
+    let member = sqlx::query!(
+        r#"SELECT role_ids FROM guild_members WHERE guild_id = $1 AND user_id = $2"#,
+        guild_id,
+        user_id
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(member) = member else {
+        return Ok(false); // Not a member
+    };
+
+    // Compute effective permissions (union of all role permissions)
+    let role_ids = member.role_ids.unwrap_or_default();
+    let mut effective_perms = GuildPermissions::empty();
+
+    for role_id in role_ids {
+        let role = sqlx::query!(
+            r#"SELECT permissions FROM guild_roles WHERE id = $1"#,
+            role_id
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(role) = role {
+            effective_perms = effective_perms.union(
+                GuildPermissions::from_bits_truncate(role.permissions as u64)
+            );
+        }
+    }
+
+    Ok(effective_perms.contains(permission))
+}
+```
+
+Then export it from `server/src/permissions/mod.rs`:
+
+```rust
+pub use guild::check_guild_permission;
+```
+
+Verify compilation:
+```bash
+cd server && cargo check
+```
+
 **Step 1: Import permission checking**
 
-Add the required imports:
+In `server/src/chat/messages.rs`, add the required imports:
 
 ```rust
 use crate::permissions::guild::GuildPermissions;
@@ -135,13 +205,20 @@ let final_content = if !message_body.encrypted {
 
     if has_mass_mention {
         // Check if this is a guild channel
-        let channel = sqlx::query_as!(
-            Channel,
-            "SELECT * FROM channels WHERE id = $1",
+        let channel = sqlx::query!(
+            r#"SELECT id, guild_id, channel_type FROM channels WHERE id = $1"#,
             channel_id
         )
-        .fetch_one(&state.db)
-        .await?;
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to fetch channel for mention check: {:?}", e);
+            ChatError::DatabaseError(e)
+        })?
+        .ok_or_else(|| {
+            tracing::warn!("Message sent to non-existent channel: {}", channel_id);
+            ChatError::ChannelNotFound
+        })?;
 
         if let Some(guild_id) = channel.guild_id {
             let can_mention = check_guild_permission(
@@ -163,8 +240,10 @@ let final_content = if !message_body.encrypted {
                 message_body.content.clone()
             }
         } else {
-            // DMs: @everyone/@here are always allowed (no permission concept)
-            message_body.content.clone()
+            // DMs: @everyone/@here don't make sense, always strip them
+            message_body.content
+                .replace("@everyone", "@\u{200B}everyone")
+                .replace("@here", "@\u{200B}here")
         }
     } else {
         message_body.content.clone()
@@ -182,17 +261,57 @@ let final_content = if !message_body.encrypted {
 
 **Step 3: Use `final_content` for database insert and mention detection**
 
-Pass `final_content` instead of `message_body.content` to both `db::create_message()` and `detect_mention_type()`.
+Find the database INSERT query (typically looks like):
 
-**Note:** The `check_guild_permission` function should already exist in the permissions module. If it doesn't exist as a standalone function, the implementer should check how permission checks are done in other handlers (e.g., `kick_member`) and follow the same pattern. The typical pattern involves:
-1. Get user's guild member record
-2. Get user's roles
-3. Compute effective permissions (role union + overrides)
-4. Check if the target bit is set
+```rust
+// BEFORE:
+let message = sqlx::query!(
+    r#"INSERT INTO messages (id, channel_id, author_id, content, encrypted, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       RETURNING *"#,
+    message_id,
+    channel_id,
+    auth.id,
+    message_body.content,  // OLD - using original content
+    message_body.encrypted,
+)
+.fetch_one(&state.db)
+.await
+.map_err(ChatError::DatabaseError)?;
+```
+
+Change to:
+
+```rust
+// AFTER:
+let message = sqlx::query!(
+    r#"INSERT INTO messages (id, channel_id, author_id, content, encrypted, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       RETURNING *"#,
+    message_id,
+    channel_id,
+    auth.id,
+    final_content,  // NEW - using stripped content
+    message_body.encrypted,
+)
+.fetch_one(&state.db)
+.await
+.map_err(ChatError::DatabaseError)?;
+```
+
+Also update the mention type detection:
+
+```rust
+// BEFORE:
+let mention_type = detect_mention_type(&message_body.content);
+
+// AFTER:
+let mention_type = detect_mention_type(&final_content);
+```
 
 **Verification:**
 ```bash
-cd server && cargo test
+cd server && cargo check && cargo test
 ```
 
 ---
@@ -366,7 +485,7 @@ content -> split by code blocks -> for each text segment:
 import SpoilerText from "./SpoilerText";
 ```
 
-**Step 2: Update PURIFY_CONFIG**
+**Step 2: Update PURIFY_CONFIG and add sanitizeHtml helper**
 
 Add `mark` and `span` to `ALLOWED_TAGS`:
 
@@ -382,6 +501,15 @@ Add `class` to `ALLOWED_ATTR`:
 ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
 ```
 
+Add sanitizeHtml helper function after PURIFY_CONFIG:
+
+```typescript
+/** Helper wrapper for DOMPurify sanitization */
+function sanitizeHtml(html: string): string {
+  return DOMPurify.sanitize(html, PURIFY_CONFIG);
+}
+```
+
 **Step 3: Add mention highlighting function**
 
 Before the component, add:
@@ -390,21 +518,28 @@ Before the component, add:
 /**
  * Highlight @mentions in text before markdown parsing.
  * Wraps @everyone, @here, and @username in styled <mark> tags.
+ * 
+ * Escapes any existing mark tags to prevent nesting issues.
  */
 function highlightMentions(text: string): string {
-  // @everyone and @here -- high-visibility
+  // Escape any existing mark tags first to avoid nesting
+  text = text.replace(/<mark/g, '&lt;mark').replace(/<\/mark>/g, '&lt;/mark&gt;');
+  
+  // @everyone and @here -- high-visibility (word boundary required)
   let result = text.replace(
-    /@(everyone|here)\b/g,
+    /\B@(everyone|here)\b/g,
     '<mark class="mention-everyone">@$1</mark>'
   );
-  // @username -- normal mention (2-32 chars, not inside an HTML tag)
+  
+  // @username -- normal mention (word boundary, 2-32 chars, alphanumeric + underscore)
   result = result.replace(
-    /@(\w{2,32})(?![^<]*>)/g,
+    /\B@([\w]{2,32})\b/g,
     (match, username) => {
-      if (username === "everyone" || username === "here") return match;
+      if (username === "everyone" || username === "here") return match; // Already handled
       return `<mark class="mention-user">@${username}</mark>`;
     }
   );
+  
   return result;
 }
 ```
@@ -438,15 +573,13 @@ Add to `client/src/styles/global.css`:
 
 **Step 5: Modify ContentBlock type**
 
-Add a spoiler block variant:
+Add a spoiler block variant using discriminated union:
 
 ```typescript
-interface SpoilerBlock {
-  type: 'spoiler';
-  html: string;
-}
-
-type ContentBlock = CodeBlockData | TextBlock | SpoilerBlock;
+type ContentBlock = 
+  | { type: 'code'; language: string; code: string }
+  | { type: 'text'; html: string }
+  | { type: 'spoiler'; html: string };
 ```
 
 **Step 6: Add processTextSegment function**
@@ -456,6 +589,7 @@ This replaces direct `marked.parse()` calls for text segments:
 ```typescript
 /**
  * Process a text segment: split by spoilers, highlight mentions, parse markdown.
+ * Returns an array of ContentBlocks (text and/or spoiler).
  */
 function processTextSegment(text: string): ContentBlock[] {
   const blocks: ContentBlock[] = [];
@@ -476,9 +610,13 @@ function processTextSegment(text: string): ContentBlock[] {
 
     // Spoiler content (also parse markdown inside)
     const spoilerContent = match[1];
-    const processed = highlightMentions(spoilerContent);
-    const html = sanitizeHtml(marked.parse(processed, { async: false }) as string);
-    blocks.push({ type: 'spoiler', html });
+    
+    // Skip empty or whitespace-only spoilers
+    if (spoilerContent.trim()) {
+      const processed = highlightMentions(spoilerContent);
+      const html = sanitizeHtml(marked.parse(processed, { async: false }) as string);
+      blocks.push({ type: 'spoiler', html });
+    }
 
     lastIdx = match.index + match[0].length;
   }
@@ -506,6 +644,16 @@ function processTextSegment(text: string): ContentBlock[] {
 
 **Step 7: Update contentBlocks() memo**
 
+Add optimization comment at the top of the memo:
+
+```typescript
+// IMPORTANT: This memo should only re-run when message.content changes.
+// Do not reference any other reactive values inside this memo to prevent unnecessary parsing.
+const contentBlocks = createMemo(() => {
+  const content = props.message.content;
+  // ... existing logic
+```
+
 Replace all direct `marked.parse()` / `sanitizeHtml()` calls for text segments with `processTextSegment()`. The code block extraction logic stays the same. Where previously:
 
 ```typescript
@@ -523,24 +671,24 @@ Do this for all three places where text blocks are created (before code block, a
 
 **Step 8: Update the render template**
 
-Replace the existing `<For>` block:
+Replace the existing `<For>` block with type-safe Switch/Match pattern:
 
 ```tsx
 <For each={contentBlocks()}>
   {(block) => (
-    <>
-      <Show when={block.type === 'code'}>
-        <CodeBlock language={(block as CodeBlockData).language}>
-          {(block as CodeBlockData).code}
+    <Switch>
+      <Match when={block.type === 'code'}>
+        <CodeBlock language={block.language}>
+          {block.code}
         </CodeBlock>
-      </Show>
-      <Show when={block.type === 'text'}>
-        <div innerHTML={(block as TextBlock).html} />
-      </Show>
-      <Show when={block.type === 'spoiler'}>
-        <SpoilerText html={(block as SpoilerBlock).html} />
-      </Show>
-    </>
+      </Match>
+      <Match when={block.type === 'text'}>
+        <div innerHTML={block.html} />
+      </Match>
+      <Match when={block.type === 'spoiler'}>
+        <SpoilerText html={block.html} />
+      </Match>
+    </Switch>
   )}
 </For>
 ```
@@ -564,17 +712,21 @@ Add under `### Added` in the `[Unreleased]` section:
   - Blurred text that reveals on click
   - Supports markdown formatting inside spoilers
   - Accessible with keyboard (Enter/Space to toggle)
+  - Empty spoilers automatically filtered
 - Enhanced Mentions
   - `MENTION_EVERYONE` permission (bit 23) controls who can use @everyone and @here
   - Unpermitted @everyone/@here silently stripped server-side
+  - @everyone/@here always stripped in DMs (not applicable in direct messages)
   - Visual highlighting for @everyone, @here, and @username mentions
   - Moderator+ roles have MENTION_EVERYONE by default
+  - Improved mention regex to prevent nesting issues
 ```
 
 Add under `### Security`:
 
 ```markdown
 - Prevented `@everyone` role from being assigned `MENTION_EVERYONE` permission via API validation
+- Server-side mention stripping prevents notification spam from unpermitted users
 ```
 
 **Verification:**
@@ -607,12 +759,15 @@ cd client && bun run check
 5. Test keyboard: Tab to spoiler, press Enter -- reveals
 6. Test spoiler with markdown: `||**bold** spoiler||` -- verify bold renders inside
 7. Test multiple spoilers: `||first|| and ||second||` -- both work independently
+8. Test empty spoiler: `||  ||` -- should render nothing (filtered)
+9. Test whitespace: `|| test ||` -- should work
+10. Test newline in spoiler: `||line1\nline2||` -- should work
 
 **Mention Permission:**
 1. As guild owner (has all permissions): send `@everyone hello` -- renders highlighted, triggers notification
-2. As regular member (no MENTION_EVERYONE): send `@everyone hello` -- renders as plain text, no notification
+2. As regular member (no MENTION_EVERYONE): send `@everyone hello` -- renders with zero-width space, no notification
 3. As moderator (has MENTION_EVERYONE by default): send `@here` -- works, highlighted
-4. In DM: `@everyone` -- always works (no guild permission concept)
+4. In DM: `@everyone` -- always stripped (makes no sense in DM context)
 5. In guild settings > Roles: verify MENTION_EVERYONE toggle appears in "Mentions" category
 
 **Mention Highlighting:**
@@ -620,3 +775,103 @@ cd client && bun run check
 2. Send `@here test` -- "@here" similarly highlighted
 3. Send `@username test` -- "@username" highlighted with lighter style
 4. Send `@nonexistent` -- still highlighted (client can't validate usernames inline)
+
+**Edge Cases:**
+5. Test mention in inline code: `` `code @everyone` `` -- @everyone should NOT be highlighted inside backticks
+6. Test mention in code block:
+   ```
+   @everyone
+   ```
+   -- Should NOT be highlighted (preserved as plain text)
+7. Test spoiler with mention: `||@everyone secret||` -- mention should be highlighted inside revealed spoiler
+8. Test nested marks: Send `<mark>test</mark> @alice` -- existing marks escaped, @alice highlighted correctly
+9. Test edge mention: `@@username` -- only second @ matches (first @ breaks word boundary)
+10. Test permission check: User with MENTION_EVERYONE sends `@everyone` -- stored as-is, highlighted
+11. Test permission check: User without MENTION_EVERYONE sends `@everyone` -- stored with zero-width space, renders normally but no notification
+
+---
+
+## Known Limitations
+
+### 1. Spoiler State Not Persistent
+- Revealed spoilers reset when scrolling away and back
+- **Workaround:** Store revealed state in messages store by spoiler ID
+- **Future Enhancement:** Add `revealedSpoilers: Set<string>` to store, pass to SpoilerText
+
+Example:
+```typescript
+const [revealedSpoilers, setRevealedSpoilers] = createStore<Set<string>>(new Set());
+
+<SpoilerText 
+  id={`${props.message.id}-${index}`}
+  html={html}
+  revealed={revealedSpoilers().has(id)}
+  onToggle={(id) => {
+    if (revealedSpoilers().has(id)) {
+      revealedSpoilers().delete(id);
+    } else {
+      revealedSpoilers().add(id);
+    }
+  }}
+/>
+```
+
+### 2. Mention Click Has No Action
+- Mention highlighting uses `cursor: pointer` but no click handler
+- **Future Enhancement:** Add click handler to open user profile or DM
+
+Example:
+```typescript
+// After highlighting, add data attributes:
+<mark class="mention-user" data-username="alice">@alice</mark>
+
+// Add global click handler:
+document.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.classList.contains('mention-user')) {
+    const username = target.dataset.username;
+    // Open user profile modal or navigate to DM
+  }
+});
+```
+
+### 3. Mention Highlighting in Code Blocks
+- Current implementation may highlight mentions inside inline code if not properly extracted
+- **Mitigation:** The existing code block extraction in `contentBlocks()` should prevent this
+- **Verify:** Test inline code `` `@everyone` `` and code blocks during manual testing
+- **If fails:** Move mention highlighting to AFTER code block extraction
+
+### 4. Performance with Very Long Messages
+- Each message re-parses spoilers and highlights mentions on render
+- **Mitigation:** `contentBlocks()` is a memo, only runs when `props.message.content` changes
+- **Future Enhancement:** Cache parsed blocks on message object if using `createMutable` store
+
+---
+
+## Changes from v1
+
+### Blocking Fixes
+1. ✅ **Task 2 Code Integration:** Added complete database INSERT and detect_mention_type call examples (Step 3)
+2. ✅ **check_guild_permission:** Added Task 2 Step 0 with verification bash command + complete implementation if missing
+3. ✅ **Performance Optimization:** Added memo optimization comment to prevent unnecessary re-parsing
+
+### Should Fix
+4. ✅ **Error Handling:** Changed channel fetch from `fetch_one()` to `fetch_optional()` with explicit error handling and logging
+5. ✅ **Edge Case Testing:** Added 11 edge case tests for mentions in code blocks, spoilers, empty spoilers, nested marks
+6. ✅ **Mention Regex:** Improved regex to use word boundaries (`\B`, `\b`), escape existing marks, avoid nesting
+7. ✅ **sanitizeHtml:** Added explicit function definition as DOMPurify wrapper in Task 5 Step 2
+8. ✅ **Spoiler Validation:** Added `if (spoilerContent.trim())` check to skip empty/whitespace spoilers
+9. ✅ **TypeScript Safety:** Changed `<Show>` components to `<Switch>/<Match>` for proper type narrowing with discriminated union
+
+### Nice to Have
+10. ✅ **Spoiler Persistence:** Documented in Known Limitations with complete store-based solution
+11. ✅ **Mention Click Action:** Documented in Known Limitations with event handler example
+12. ✅ **DM @everyone Logic:** Changed from "always allowed" to "always stripped" (makes more sense - @everyone in DM is meaningless)
+
+### Additional Improvements
+- Complete import statements in all code snippets
+- Explicit verification commands after each task
+- Comprehensive edge case testing scenarios
+- Known Limitations section with workarounds
+- Better error messages for channel fetch failures
+- Security section in CHANGELOG

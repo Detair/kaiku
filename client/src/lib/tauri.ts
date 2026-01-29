@@ -127,9 +127,9 @@ export async function fetchUploadLimits(): Promise<void> {
 
     // Validate response structure
     if (!data || typeof data !== 'object' ||
-        typeof (data as any).max_avatar_size !== 'number' ||
-        typeof (data as any).max_emoji_size !== 'number' ||
-        typeof (data as any).max_upload_size !== 'number') {
+      typeof (data as any).max_avatar_size !== 'number' ||
+      typeof (data as any).max_emoji_size !== 'number' ||
+      typeof (data as any).max_upload_size !== 'number') {
       console.error('[Upload Limits] Invalid response structure:', data);
       console.error('[Upload Limits] Expected {max_avatar_size: number, max_emoji_size: number, max_upload_size: number}');
       return;
@@ -176,8 +176,8 @@ export function getUploadLimitText(type: UploadType): string {
   const maxSize = type === 'avatar'
     ? uploadLimits.max_avatar_size
     : type === 'emoji'
-    ? uploadLimits.max_emoji_size
-    : uploadLimits.max_upload_size;
+      ? uploadLimits.max_emoji_size
+      : uploadLimits.max_upload_size;
 
   return formatFileSize(maxSize);
 }
@@ -194,8 +194,8 @@ export function validateFileSize(file: File, type: UploadType): string | null {
   const maxSize = type === 'avatar'
     ? uploadLimits.max_avatar_size
     : type === 'emoji'
-    ? uploadLimits.max_emoji_size
-    : uploadLimits.max_upload_size;
+      ? uploadLimits.max_emoji_size
+      : uploadLimits.max_upload_size;
 
   if (file.size > maxSize) {
     return `File too large (${formatFileSize(file.size)}). Maximum size is ${formatFileSize(maxSize)}.`;
@@ -568,12 +568,12 @@ export async function getCurrentUser(): Promise<User | null> {
 
     // Determine if this is an auth failure or other error
     const isAuthError = errorMessage.includes("401") ||
-                        errorMessage.includes("403") ||
-                        errorMessage.includes("Unauthorized") ||
-                        errorMessage.includes("Forbidden");
+      errorMessage.includes("403") ||
+      errorMessage.includes("Unauthorized") ||
+      errorMessage.includes("Forbidden");
 
     const isJsonParseError = errorMessage.includes("invalid JSON") ||
-                            errorMessage.includes("Parse failed");
+      errorMessage.includes("Parse failed");
 
     // If JSON parse failed on what might be an auth response, assume auth failure
     // We cannot reliably determine auth state with malformed responses
@@ -1167,36 +1167,61 @@ export async function uploadGuildEmoji(
   file: File
 ): Promise<GuildEmoji> {
   // Frontend validation
-  const error = validateFileSize(file, 'emoji');
-  if (error) {
-    throw new Error(error);
+  const validationError = validateFileSize(file, 'emoji');
+  if (validationError) {
+    console.warn('[uploadGuildEmoji] Frontend validation failed:', validationError);
+    throw new Error(validationError);
+  }
+}
+
+const token = browserState.accessToken || localStorage.getItem("accessToken");
+const headers: Record<string, string> = {};
+
+if (token) {
+  headers["Authorization"] = `Bearer ${token}`;
+}
+
+const formData = new FormData();
+formData.append("name", name);
+formData.append("file", file);
+
+const baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
+
+const response = await fetch(`${baseUrl}/api/guilds/${guildId}/emojis`, {
+  method: "POST",
+  headers,
+  body: formData,
+});
+
+if (!response.ok) {
+  let errorMessage = `Upload failed (HTTP ${response.status})`;
+
+  try {
+    const errorBody = await response.json();
+    errorMessage = errorBody.message || errorBody.error || errorMessage;
+  } catch (parseError) {
+    console.warn('[uploadGuildEmoji] Failed to parse error response:', parseError);
+    errorMessage = response.statusText || errorMessage;
   }
 
-  const token = browserState.accessToken || localStorage.getItem("accessToken");
-  const headers: Record<string, string> = {};
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  const formData = new FormData();
-  formData.append("name", name);
-  formData.append("file", file);
-
-  const baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
-
-  const response = await fetch(`${baseUrl}/api/guilds/${guildId}/emojis`, {
-    method: "POST",
-    headers,
-    body: formData,
+  console.error('[uploadGuildEmoji] Upload failed:', {
+    status: response.status,
+    error: errorMessage,
+    guildId,
+    emojiName: name,
+    fileSize: file.size,
+    fileName: file.name,
   });
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(error.message || error.error || "Upload failed");
-  }
+  throw new Error(errorMessage);
+}
 
-  return response.json();
+try {
+  return await response.json();
+} catch (parseError) {
+  console.error('[uploadGuildEmoji] Failed to parse success response:', parseError);
+  throw new Error('Server returned invalid response');
+}
 }
 
 export async function updateGuildEmoji(
@@ -1381,31 +1406,56 @@ export interface DMIconResponse {
 
 export async function uploadDMAvatar(channelId: string, file: File): Promise<DMIconResponse> {
   // Frontend validation
-  const error = validateFileSize(file, 'avatar');
-  if (error) {
-    throw new Error(error);
+  const validationError = validateFileSize(file, 'avatar');
+  if (validationError) {
+    console.warn('[uploadDMAvatar] Frontend validation failed:', validationError);
+    throw new Error(validationError);
+  }
+}
+
+const formData = new FormData();
+formData.append("file", file);
+
+const token = getAccessToken();
+const headers: HeadersInit = {};
+if (token) {
+  headers["Authorization"] = `Bearer ${token}`;
+}
+
+const response = await fetch(`${getServerUrl()}/api/dm/${channelId}/icon`, {
+  method: "POST",
+  headers,
+  body: formData,
+});
+
+if (!response.ok) {
+  let errorMessage = `Upload failed (HTTP ${response.status})`;
+
+  try {
+    const errorBody = await response.json();
+    errorMessage = errorBody.message || errorBody.error || errorMessage;
+  } catch (parseError) {
+    console.warn('[uploadDMAvatar] Failed to parse error response:', parseError);
+    errorMessage = response.statusText || errorMessage;
   }
 
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const token = getAccessToken();
-  const headers: HeadersInit = {};
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  const response = await fetch(`${getServerUrl()}/api/dm/${channelId}/icon`, {
-    method: "POST",
-    headers,
-    body: formData,
+  console.error('[uploadDMAvatar] Upload failed:', {
+    status: response.status,
+    error: errorMessage,
+    channelId,
+    fileSize: file.size,
+    fileName: file.name,
   });
 
-  if (!response.ok) {
-    throw new Error(`Upload failed: ${response.statusText}`);
-  }
+  throw new Error(errorMessage);
+}
 
-  return response.json();
+try {
+  return await response.json();
+} catch (parseError) {
+  console.error('[uploadDMAvatar] Failed to parse success response:', parseError);
+  throw new Error('Server returned invalid response');
+}
 }
 
 export async function getDMs(): Promise<DMChannel[]> {
