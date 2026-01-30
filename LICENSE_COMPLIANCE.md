@@ -14,11 +14,11 @@ This document tracks third-party dependencies and their licenses for the VoiceCh
 ## Email
 
 ### lettre
-- **License:** MIT OR Apache-2.0
+- **License:** MIT
 - **Source:** https://crates.io/crates/lettre
 - **Version:** 0.11
 - **Usage:** SMTP email transport for transactional emails (password reset)
-- **Compliance:** Dual-licensed MIT/Apache-2.0, fully compatible with project license
+- **Compliance:** MIT licensed, fully compatible with project license
 
 ## Checking Dependency Licenses
 
