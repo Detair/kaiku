@@ -10,9 +10,9 @@ mod redis_tests {
     use uuid::Uuid;
 
     /// Helper to create a test Redis client
-    async fn create_test_redis() -> RedisClient {
-        let config = RedisConfig::from_url("redis://localhost:6379").unwrap();
-        let client = RedisClient::new(config, None, None, None);
+    async fn create_test_redis() -> Client {
+        let config = fred::types::config::Config::from_url("redis://localhost:6379").unwrap();
+        let client = Client::new(config, None, None, None);
         client.connect();
         client
             .wait_for_connect()
@@ -22,7 +22,7 @@ mod redis_tests {
     }
 
     /// Helper to clean up test keys
-    async fn cleanup_key(client: &RedisClient, key: &str) {
+    async fn cleanup_key(client: &Client, key: &str) {
         let _ = client.del::<(), _>(key).await;
     }
 
@@ -35,7 +35,7 @@ mod redis_tests {
         let client = create_test_redis().await;
 
         // Test basic ping
-        let pong: String = client.ping().await.expect("Ping failed");
+        let pong: String = client.ping(None).await.expect("Ping failed");
         assert_eq!(pong, "PONG");
     }
 
@@ -451,7 +451,7 @@ mod redis_tests {
             .expect("Failed to HSET ip");
 
         // Set session expiry (15 minutes)
-        let _: i64 = client.expire(&key, 900).await.expect("Failed to EXPIRE");
+        let _: i64 = client.expire(&key, 900, None).await.expect("Failed to EXPIRE");
 
         // Retrieve session
         let user_id: String = client
@@ -480,7 +480,7 @@ mod redis_tests {
 
             // Set expiry on first request
             if i == 1 {
-                let _: i64 = client.expire(&key, 10).await.expect("Failed to EXPIRE");
+                let _: i64 = client.expire(&key, 10, None).await.expect("Failed to EXPIRE");
             }
         }
 

@@ -133,7 +133,7 @@ impl ScreenShareCheckResponse {
 
 /// Check if screen share limit is reached for a channel (without incrementing).
 pub async fn check_limit(
-    redis: &RedisClient,
+    redis: &Client,
     channel_id: Uuid,
     max_shares: u32,
 ) -> Result<(), ScreenShareError> {
@@ -164,7 +164,7 @@ pub async fn check_limit(
 /// Try to start screen sharing using atomic Redis WATCH/MULTI/EXEC.
 /// Uses optimistic locking to prevent race conditions.
 pub async fn try_start_screen_share(
-    redis: &RedisClient,
+    redis: &Client,
     channel_id: Uuid,
     max_shares: u32,
 ) -> Result<(), ScreenShareError> {
@@ -202,7 +202,7 @@ pub async fn try_start_screen_share(
     }
 
     // Set expiration (5 minutes to allow recovery from crashes)
-    if let Err(e) = redis.expire::<(), _>(&key, 300).await {
+    if let Err(e) = redis.expire::<(), _>(&key, 300, None).await {
         warn!(
             channel_id = %channel_id,
             error = %e,
@@ -215,7 +215,7 @@ pub async fn try_start_screen_share(
 
 /// Stop screen sharing, decrementing the limit counter.
 /// Logs errors but continues, as cleanup must complete.
-pub async fn stop_screen_share(redis: &RedisClient, channel_id: Uuid) {
+pub async fn stop_screen_share(redis: &Client, channel_id: Uuid) {
     let key = format!("screenshare:limit:{channel_id}");
 
     // Get current count to prevent going negative

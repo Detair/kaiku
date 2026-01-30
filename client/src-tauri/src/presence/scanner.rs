@@ -1,7 +1,7 @@
 //! Process scanner for detecting running games/applications.
 
 use super::{GameEntry, GamesDatabase};
-use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
 /// Scanner for detecting running games.
 pub struct ProcessScanner {
@@ -14,7 +14,7 @@ impl ProcessScanner {
     pub fn new() -> Self {
         Self {
             system: System::new_with_specifics(
-                RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+                RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
             ),
             games_db: GamesDatabase::load(),
         }
@@ -24,13 +24,20 @@ impl ProcessScanner {
     /// Returns the first matching game found.
     /// Uses match_args filtering for games that require command line argument checking.
     pub fn scan(&mut self) -> Option<GameEntry> {
-        self.system.refresh_processes();
+        self.system
+            .refresh_processes(ProcessesToUpdate::All, true);
 
         for process in self.system.processes().values() {
-            let name = process.name();
-            let cmd_args = process.cmd();
+            let Some(name) = process.name().to_str() else {
+                continue;
+            };
+            let cmd_args: Vec<String> = process
+                .cmd()
+                .iter()
+                .filter_map(|s| s.to_str().map(String::from))
+                .collect();
 
-            if let Some(game) = self.games_db.find_by_process_and_args(name, cmd_args) {
+            if let Some(game) = self.games_db.find_by_process_and_args(name, &cmd_args) {
                 return Some(game.clone());
             }
         }
@@ -40,16 +47,23 @@ impl ProcessScanner {
     /// Scan and return all detected games (not just first).
     /// Uses match_args filtering for games that require command line argument checking.
     pub fn scan_all(&mut self) -> Vec<GameEntry> {
-        self.system.refresh_processes();
+        self.system
+            .refresh_processes(ProcessesToUpdate::All, true);
 
         let mut found = Vec::new();
         let mut seen_names = std::collections::HashSet::new();
 
         for process in self.system.processes().values() {
-            let name = process.name();
-            let cmd_args = process.cmd();
+            let Some(name) = process.name().to_str() else {
+                continue;
+            };
+            let cmd_args: Vec<String> = process
+                .cmd()
+                .iter()
+                .filter_map(|s| s.to_str().map(String::from))
+                .collect();
 
-            if let Some(game) = self.games_db.find_by_process_and_args(name, cmd_args) {
+            if let Some(game) = self.games_db.find_by_process_and_args(name, &cmd_args) {
                 if seen_names.insert(game.name.clone()) {
                     found.push(game.clone());
                 }

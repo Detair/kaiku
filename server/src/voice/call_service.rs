@@ -12,11 +12,11 @@ const CLEANUP_DELAY_SECS: i64 = 5;
 
 /// Call service for managing DM voice call state
 pub struct CallService {
-    redis: RedisClient,
+    redis: Client,
 }
 
 impl CallService {
-    pub const fn new(redis: RedisClient) -> Self {
+    pub const fn new(redis: Client) -> Self {
         Self { redis }
     }
 
@@ -137,7 +137,7 @@ impl CallService {
         // Set TTL for auto-cleanup (ring timeout)
         let _: bool = self
             .redis
-            .expire(&key, RING_TIMEOUT_SECS)
+            .expire(&key, RING_TIMEOUT_SECS, None)
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
 
@@ -309,7 +309,7 @@ impl CallService {
         // Keep stream for a short time for late-joiners to see "ended" state
         let _: bool = self
             .redis
-            .expire(&key, CLEANUP_DELAY_SECS)
+            .expire(&key, CLEANUP_DELAY_SECS, None)
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
         Ok(())

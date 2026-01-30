@@ -24,21 +24,21 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # Web Framework
-axum = { version = "0.7", features = ["ws", "multipart"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id", "util"] }
+axum = { version = "0.8", features = ["ws", "multipart", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "request-id", "util"] }
 
 # WebSocket
-tokio-tungstenite = "0.21"
+tokio-tungstenite = "0.28"
 
 # WebRTC
 webrtc = "0.11"
 
 # Database
-sqlx = { version = "0.7", features = ["postgres", "runtime-tokio", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "chrono", "json", "macros", "migrate"] }
 
 # Redis
-fred = "8"
+fred = { version = "10", features = ["i-scripts"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -52,12 +52,10 @@ openidconnect = "3"
 
 # Crypto
 rustls = { version = "0.23", features = ["ring"] }
-x25519-dalek = "2"
-ed25519-dalek = "2"
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
-vodozemac = "0.5"
+vodozemac = "0.9"
 
 # Random
 rand = "0.8"
@@ -68,7 +66,7 @@ zeroize = { version = "1", features = ["derive"] }
 # Utils
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-thiserror = "1"
+thiserror = "2"
 anyhow = "1"
 bytes = "1"
 hex = "0.4"
@@ -85,17 +83,17 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-ve
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 
 # API Docs
-utoipa = { version = "4", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "6", features = ["axum"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # Markdown
-pulldown-cmark = "0.10"
+pulldown-cmark = "0.13"
 
 # Bitflags
 bitflags = { version = "2.4", features = ["serde"] }
 
 # Validation
-validator = { version = "0.16", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 
 # MIME type detection
 mime_guess = "2"

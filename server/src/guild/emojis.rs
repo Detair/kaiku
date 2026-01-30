@@ -130,7 +130,7 @@ async fn check_guild_membership(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_emojis).post(create_emoji))
-        .route("/:emoji_id", get(get_emoji).patch(update_emoji).delete(delete_emoji))
+        .route("/{emoji_id}", get(get_emoji).patch(update_emoji).delete(delete_emoji))
 }
 
 // ============================================================================
@@ -139,7 +139,7 @@ pub fn router() -> Router<AppState> {
 
 /// List guild emojis.
 ///
-/// `GET /api/guilds/:id/emojis`
+/// `GET /api/guilds/{id}/emojis`
 pub async fn list_emojis(
     State(state): State<AppState>,
     Path(guild_id): Path<Uuid>,
@@ -166,7 +166,7 @@ pub async fn list_emojis(
 
 /// Get specific emoji.
 ///
-/// `GET /api/guilds/:id/emojis/:emoji_id`
+/// `GET /api/guilds/{id}/emojis/{emoji_id}`
 pub async fn get_emoji(
     State(state): State<AppState>,
     Path((guild_id, emoji_id)): Path<(Uuid, Uuid)>,
@@ -194,7 +194,7 @@ pub async fn get_emoji(
 
 /// Create a custom emoji.
 ///
-/// `POST /api/guilds/:id/emojis`
+/// `POST /api/guilds/{id}/emojis`
 /// Expects multipart form with `name` and `file`.
 #[tracing::instrument(skip(state, auth_user, multipart))]
 pub async fn create_emoji(
@@ -326,7 +326,7 @@ pub async fn create_emoji(
 
 /// Update an emoji.
 ///
-/// `PATCH /api/guilds/:id/emojis/:emoji_id`
+/// `PATCH /api/guilds/{id}/emojis/{emoji_id}`
 pub async fn update_emoji(
     State(state): State<AppState>,
     Path((guild_id, emoji_id)): Path<(Uuid, Uuid)>,
@@ -404,7 +404,7 @@ pub async fn update_emoji(
 
 /// Delete an emoji.
 ///
-/// `DELETE /api/guilds/:id/emojis/:emoji_id`
+/// `DELETE /api/guilds/{id}/emojis/{emoji_id}`
 pub async fn delete_emoji(
     State(state): State<AppState>,
     Path((guild_id, emoji_id)): Path<(Uuid, Uuid)>,

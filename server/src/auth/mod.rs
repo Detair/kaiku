@@ -42,7 +42,7 @@ pub fn hash_token(token: &str) -> String {
 /// - POST /login - Login with username/password
 /// - POST /refresh - Refresh access token
 /// - GET /oidc/providers - List OIDC providers
-/// - GET /oidc/authorize/:provider - Initiate OIDC flow
+/// - GET /oidc/authorize/{provider} - Initiate OIDC flow
 /// - GET /oidc/callback - OIDC callback
 ///
 /// Protected routes (auth required):
@@ -93,7 +93,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // OIDC routes - authorize gets rate limiting to prevent abuse
     let oidc_authorize_route = Router::new()
-        .route("/oidc/authorize/:provider", get(handlers::oidc_authorize))
+        .route("/oidc/authorize/{provider}", get(handlers::oidc_authorize))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,

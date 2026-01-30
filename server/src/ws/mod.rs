@@ -636,12 +636,12 @@ pub mod channels {
 
 /// Broadcast a server event to a channel via Redis.
 pub async fn broadcast_to_channel(
-    redis: &RedisClient,
+    redis: &Client,
     channel_id: Uuid,
     event: &ServerEvent,
-) -> Result<(), RedisError> {
+) -> Result<(), Error> {
     let payload = serde_json::to_string(event)
-        .map_err(|e| RedisError::new(RedisErrorKind::Parse, format!("JSON error: {e}")))?;
+        .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     redis
         .publish::<(), _, _>(channels::channel_events(channel_id), payload)
@@ -652,11 +652,11 @@ pub async fn broadcast_to_channel(
 
 /// Broadcast an admin event to all admin subscribers via Redis.
 pub async fn broadcast_admin_event(
-    redis: &RedisClient,
+    redis: &Client,
     event: &ServerEvent,
-) -> Result<(), RedisError> {
+) -> Result<(), Error> {
     let payload = serde_json::to_string(event)
-        .map_err(|e| RedisError::new(RedisErrorKind::Parse, format!("JSON error: {e}")))?;
+        .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     redis
         .publish::<(), _, _>(channels::ADMIN_EVENTS, payload)
@@ -667,12 +667,12 @@ pub async fn broadcast_admin_event(
 
 /// Broadcast an event to all of a user's connected sessions via Redis.
 pub async fn broadcast_to_user(
-    redis: &RedisClient,
+    redis: &Client,
     user_id: Uuid,
     event: &ServerEvent,
-) -> Result<(), RedisError> {
+) -> Result<(), Error> {
     let payload = serde_json::to_string(event)
-        .map_err(|e| RedisError::new(RedisErrorKind::Parse, format!("JSON error: {e}")))?;
+        .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     redis
         .publish::<(), _, _>(channels::user_events(user_id), payload)
@@ -693,7 +693,7 @@ async fn broadcast_presence_update(state: &AppState, user_id: Uuid, event: &Serv
 
     // Broadcast on presence channel
     let channel = format!("presence:{}", user_id);
-    let result: Result<(), RedisError> = state.redis.publish(&channel, &json).await;
+    let result: Result<(), Error> = state.redis.publish(&channel, &json).await;
     if let Err(e) = result {
         error!("Failed to broadcast presence update: {}", e);
     }
@@ -704,10 +704,10 @@ async fn broadcast_presence_update(state: &AppState, user_id: Uuid, event: &Serv
 /// This sends only the changed fields instead of full objects,
 /// reducing bandwidth by up to 90% for partial updates.
 pub async fn broadcast_user_patch(
-    redis: &RedisClient,
+    redis: &Client,
     user_id: Uuid,
     diff: serde_json::Value,
-) -> Result<(), RedisError> {
+) -> Result<(), Error> {
     if diff.as_object().is_none_or(|m| m.is_empty()) {
         return Ok(()); // Nothing to broadcast
     }
@@ -719,7 +719,7 @@ pub async fn broadcast_user_patch(
     };
 
     let payload = serde_json::to_string(&event)
-        .map_err(|e| RedisError::new(RedisErrorKind::Parse, format!("JSON error: {e}")))?;
+        .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     // Broadcast on presence channel so friends/guild members see it
     let channel = format!("presence:{}", user_id);
@@ -730,10 +730,10 @@ pub async fn broadcast_user_patch(
 
 /// Broadcast a guild patch to all guild members via Redis.
 pub async fn broadcast_guild_patch(
-    redis: &RedisClient,
+    redis: &Client,
     guild_id: Uuid,
     diff: serde_json::Value,
-) -> Result<(), RedisError> {
+) -> Result<(), Error> {
     if diff.as_object().is_none_or(|m| m.is_empty()) {
         return Ok(()); // Nothing to broadcast
     }
@@ -745,7 +745,7 @@ pub async fn broadcast_guild_patch(
     };
 
     let payload = serde_json::to_string(&event)
-        .map_err(|e| RedisError::new(RedisErrorKind::Parse, format!("JSON error: {e}")))?;
+        .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     // Broadcast to guild channel
     redis.publish::<(), _, _>(channels::guild_events(guild_id), payload).await?;
@@ -755,11 +755,11 @@ pub async fn broadcast_guild_patch(
 
 /// Broadcast a member patch to all guild members via Redis.
 pub async fn broadcast_member_patch(
-    redis: &RedisClient,
+    redis: &Client,
     guild_id: Uuid,
     user_id: Uuid,
     diff: serde_json::Value,
-) -> Result<(), RedisError> {
+) -> Result<(), Error> {
     if diff.as_object().is_none_or(|m| m.is_empty()) {
         return Ok(()); // Nothing to broadcast
     }
@@ -774,7 +774,7 @@ pub async fn broadcast_member_patch(
     };
 
     let payload = serde_json::to_string(&event)
-        .map_err(|e| RedisError::new(RedisErrorKind::Parse, format!("JSON error: {e}")))?;
+        .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     // Broadcast to guild channel
     redis.publish::<(), _, _>(channels::guild_events(guild_id), payload).await?;
@@ -912,7 +912,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                 }
             };
 
-            let send_result: Result<(), axum::Error> = ws_sender.send(Message::Text(msg)).await;
+            let send_result: Result<(), axum::Error> = ws_sender.send(Message::Text(msg.into())).await;
             if send_result.is_err() {
                 break;
             }
@@ -1129,7 +1129,7 @@ async fn handle_client_message(
 
 /// Handle Redis pub/sub messages.
 async fn handle_pubsub(
-    redis: RedisClient,
+    redis: Client,
     tx: mpsc::Sender<ServerEvent>,
     subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,

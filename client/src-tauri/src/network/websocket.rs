@@ -282,7 +282,7 @@ async fn connection_loop(
                             if let Some(ev) = event {
                                 if let Ok(json) = serde_json::to_string(&ev) {
                                     debug!("Sending: {}", json);
-                                    if let Err(e) = write.send(Message::Text(json)).await {
+                                    if let Err(e) = write.send(Message::Text(json.into())).await {
                                         error!("Failed to send message: {}", e);
                                         break;
                                     }

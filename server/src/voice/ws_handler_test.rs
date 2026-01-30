@@ -12,9 +12,9 @@ mod tests {
     use uuid::Uuid;
 
     /// Helper to create a test Redis client.
-    async fn create_test_redis() -> RedisClient {
-        let config = RedisConfig::from_url("redis://localhost:6379").unwrap();
-        let client = RedisClient::new(config, None, None, None);
+    async fn create_test_redis() -> Client {
+        let config = fred::types::config::Config::from_url("redis://localhost:6379").unwrap();
+        let client = Client::new(config, None, None, None);
         client.connect();
         client
             .wait_for_connect()

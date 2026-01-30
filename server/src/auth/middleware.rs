@@ -111,23 +111,28 @@ where
 {
     type Rejection = AuthError;
 
-    fn from_request_parts<'life0, 'life1, 'async_trait>(
-        parts: &'life0 mut axum::http::request::Parts,
-        _state: &'life1 S,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Self, Self::Rejection>> + Send + 'async_trait>,
-    >
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move {
-            parts
-                .extensions
-                .get::<Self>()
-                .cloned()
-                .ok_or(AuthError::MissingAuthHeader)
-        })
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<Self>()
+            .cloned()
+            .ok_or(AuthError::MissingAuthHeader)
+    }
+}
+
+impl<S> axum::extract::OptionalFromRequestParts<S> for AuthUser
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        Ok(parts.extensions.get::<Self>().cloned())
     }
 }

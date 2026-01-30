@@ -1,6 +1,6 @@
 //! Sound playback commands for notification sounds.
 
-use rodio::{Decoder, OutputStream, Sink};
+use rodio::{Decoder, OutputStreamBuilder, Sink};
 use std::io::Cursor;
 use std::thread;
 use tauri::command;
@@ -50,12 +50,11 @@ pub fn play_sound(sound_id: String) -> Result<(), String> {
 /// Blocking sound playback (runs in dedicated thread).
 fn play_sound_blocking(sound_data: &'static [u8]) -> Result<(), String> {
     // Create audio output
-    let (_stream, stream_handle) =
-        OutputStream::try_default().map_err(|e| format!("Failed to open audio output: {}", e))?;
+    let stream = OutputStreamBuilder::open_default_stream()
+        .map_err(|e| format!("Failed to open audio output: {}", e))?;
 
     // Create sink
-    let sink =
-        Sink::try_new(&stream_handle).map_err(|e| format!("Failed to create audio sink: {}", e))?;
+    let sink = Sink::connect_new(stream.mixer());
 
     // Decode and play
     let cursor = Cursor::new(sound_data);

@@ -146,10 +146,9 @@ pub struct UpdateProfileResponse {
 // Regex for validation
 // ============================================================================
 
-lazy_static::lazy_static! {
-    /// Username validation regex (matches DB constraint).
-    static ref USERNAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-z0-9_]{3,32}$").unwrap();
-}
+/// Username validation regex (matches DB constraint).
+static USERNAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z0-9_]{3,32}$").unwrap());
 
 // ============================================================================
 // Helper Functions

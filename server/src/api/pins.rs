@@ -315,7 +315,7 @@ pub async fn reorder_pins(
     // Update positions based on order in request
     for (position, pin_id) in request.pin_ids.iter().enumerate() {
         // Verify pin belongs to user and update position
-        let result = sqlx::query("UPDATE user_pins SET position = $3 WHERE id = $1 AND user_id = $2")
+        let _result = sqlx::query("UPDATE user_pins SET position = $3 WHERE id = $1 AND user_id = $2")
             .bind(pin_id)
             .bind(auth_user.id)
             .bind(position as i32)

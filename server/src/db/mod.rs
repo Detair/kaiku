@@ -46,11 +46,11 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
 }
 
 /// Create Redis client.
-pub async fn create_redis_client(redis_url: &str) -> Result<fred::clients::RedisClient> {
+pub async fn create_redis_client(redis_url: &str) -> Result<fred::clients::Client> {
     use fred::prelude::*;
 
-    let config = RedisConfig::from_url(redis_url)?;
-    let client = RedisClient::new(config, None, None, None);
+    let config = Config::from_url(redis_url)?;
+    let client = Client::new(config, None, None, None);
     client.connect();
     client.wait_for_connect().await?;
 

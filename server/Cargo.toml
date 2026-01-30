@@ -94,7 +94,7 @@ tokio-util = { version = "0.7.18", features = ["io", "compat"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 serial_test = "3.2"
 
 [features]

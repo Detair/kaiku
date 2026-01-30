@@ -74,7 +74,6 @@ fn add_rate_limit_headers(response: &mut Response, result: &RateLimitResult) {
 #[tracing::instrument(skip(state, request, next))]
 pub async fn rate_limit_by_ip(
     State(state): State<AppState>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, RateLimitError> {
@@ -91,6 +90,7 @@ pub async fn rate_limit_by_ip(
     };
 
     // Extract and normalize client IP
+    let connect_info = request.extensions().get::<ConnectInfo<SocketAddr>>().cloned();
     let trust_proxy = rate_limiter.config().trust_proxy;
     let client_ip = extract_client_ip(request.headers(), connect_info.as_ref(), trust_proxy);
     let normalized_ip = normalize_ip(client_ip);
@@ -166,7 +166,6 @@ pub async fn rate_limit_by_ip(
 #[tracing::instrument(skip(state, request, next))]
 pub async fn rate_limit_by_user(
     State(state): State<AppState>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, RateLimitError> {
@@ -187,6 +186,7 @@ pub async fn rate_limit_by_user(
         format!("user:{}", auth_user.id)
     } else {
         // Fall back to IP-based rate limiting
+        let connect_info = request.extensions().get::<ConnectInfo<SocketAddr>>().cloned();
         let trust_proxy = rate_limiter.config().trust_proxy;
         let client_ip = extract_client_ip(request.headers(), connect_info.as_ref(), trust_proxy);
         let normalized_ip = normalize_ip(client_ip);
@@ -267,7 +267,6 @@ pub async fn rate_limit_by_user(
 #[tracing::instrument(skip(state, request, next))]
 pub async fn check_ip_not_blocked(
     State(state): State<AppState>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, RateLimitError> {
@@ -277,6 +276,7 @@ pub async fn check_ip_not_blocked(
     };
 
     // Extract and normalize client IP
+    let connect_info = request.extensions().get::<ConnectInfo<SocketAddr>>().cloned();
     let trust_proxy = rate_limiter.config().trust_proxy;
     let client_ip = extract_client_ip(request.headers(), connect_info.as_ref(), trust_proxy);
     let normalized_ip = normalize_ip(client_ip);

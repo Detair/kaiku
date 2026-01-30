@@ -17,8 +17,8 @@ pub fn router() -> Router<AppState> {
         .route("/friends/pending", get(friends::list_pending_requests))
         .route("/friends/blocked", get(friends::list_blocked))
         // Friend actions
-        .route("/friends/:id/accept", post(friends::accept_friend_request))
-        .route("/friends/:id/reject", post(friends::reject_friend_request))
-        .route("/friends/:id/block", post(friends::block_user))
-        .route("/friends/:id", delete(friends::remove_friend))
+        .route("/friends/{id}/accept", post(friends::accept_friend_request))
+        .route("/friends/{id}/reject", post(friends::reject_friend_request))
+        .route("/friends/{id}/block", post(friends::block_user))
+        .route("/friends/{id}", delete(friends::remove_friend))
 }

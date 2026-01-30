@@ -29,7 +29,7 @@ struct ScriptShas {
 /// IP blocking for failed authentication, and allowlist bypassing.
 #[derive(Clone)]
 pub struct RateLimiter {
-    redis: RedisClient,
+    redis: Client,
     config: Arc<RateLimitConfig>,
     scripts: Arc<RwLock<ScriptShas>>,
 }
@@ -38,7 +38,7 @@ impl RateLimiter {
     /// Creates a new rate limiter instance.
     ///
     /// Call `init()` after creation to load the Lua scripts into Redis.
-    pub fn new(redis: RedisClient, config: RateLimitConfig) -> Self {
+    pub fn new(redis: Client, config: RateLimitConfig) -> Self {
         Self {
             redis,
             config: Arc::new(config),
@@ -49,14 +49,14 @@ impl RateLimiter {
     /// Initializes the rate limiter by loading Lua scripts into Redis.
     ///
     /// Must be called before using `check()` or `record_failed_auth()`.
-    pub async fn init(&mut self) -> Result<(), RedisError> {
+    pub async fn init(&mut self) -> Result<(), Error> {
         self.load_scripts().await
     }
 
     /// Loads or reloads Lua scripts into Redis.
     ///
     /// Called during init and when NOSCRIPT errors are encountered.
-    async fn load_scripts(&self) -> Result<(), RedisError> {
+    async fn load_scripts(&self) -> Result<(), Error> {
         let rate_limit_sha: String = self.redis.script_load(RATE_LIMIT_SCRIPT).await?;
         let failed_auth_sha: String = self.redis.script_load(FAILED_AUTH_SCRIPT).await?;
 
@@ -73,7 +73,7 @@ impl RateLimiter {
     }
 
     /// Checks if an error is a NOSCRIPT error (script not found in Redis).
-    fn is_noscript_error(error: &RedisError) -> bool {
+    fn is_noscript_error(error: &Error) -> bool {
         error.to_string().contains("NOSCRIPT")
     }
 
@@ -468,8 +468,8 @@ mod tests {
     }
 
     /// Helper to create a mock Redis client for tests that don't need actual Redis.
-    fn create_mock_client() -> RedisClient {
-        let config = RedisConfig::from_url("redis://localhost:6379").unwrap();
-        RedisClient::new(config, None, None, None)
+    fn create_mock_client() -> Client {
+        let config = Config::from_url("redis://localhost:6379").unwrap();
+        Client::new(config, None, None, None)
     }
 }

@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
-use fred::clients::RedisClient;
+use fred::clients::Client;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
@@ -24,7 +24,7 @@ use crate::ws::{ClientEvent, ServerEvent, VoiceParticipant};
 pub async fn handle_voice_event(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
-    redis: &RedisClient,
+    redis: &Client,
     user_id: Uuid,
     event: ClientEvent,
     tx: &mpsc::Sender<ServerEvent>,
@@ -198,7 +198,7 @@ async fn handle_join(
 async fn handle_leave(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
-    redis: &RedisClient,
+    redis: &Client,
     user_id: Uuid,
     channel_id: Uuid,
 ) -> Result<(), VoiceError> {
@@ -467,7 +467,7 @@ const DEFAULT_MAX_SCREEN_SHARES: u32 = 2;
 async fn handle_screen_share_start(
     sfu: &Arc<SfuServer>,
     _pool: &PgPool,  // Will be used for channel settings lookup
-    redis: &RedisClient,
+    redis: &Client,
     user_id: Uuid,
     channel_id: Uuid,
     quality: Quality,
@@ -554,7 +554,7 @@ async fn handle_screen_share_start(
 /// Handle stopping a screen share.
 async fn handle_screen_share_stop(
     sfu: &Arc<SfuServer>,
-    redis: &RedisClient,
+    redis: &Client,
     user_id: Uuid,
     channel_id: Uuid,
 ) -> Result<(), VoiceError> {

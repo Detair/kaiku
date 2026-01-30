@@ -27,7 +27,7 @@ use uuid::Uuid;
 /// This checks both system admin status and elevated session validity.
 ///
 /// Security: Always falls back to database on cache miss to ensure fail-secure behavior.
-pub async fn is_elevated_admin(redis: &RedisClient, db: &PgPool, user_id: Uuid) -> bool {
+pub async fn is_elevated_admin(redis: &Client, db: &PgPool, user_id: Uuid) -> bool {
     // Check cache first (fast path)
     let cache_key = format!("admin:elevated:{}", user_id);
     let cached: Option<String> = redis.get(&cache_key).await.ok().flatten();
@@ -62,7 +62,7 @@ async fn check_elevated_in_db(db: &PgPool, user_id: Uuid) -> bool {
 }
 
 /// Cache elevated admin status in Redis (called after elevation).
-pub async fn cache_elevated_status(redis: &RedisClient, user_id: Uuid, is_elevated: bool, ttl_secs: i64) {
+pub async fn cache_elevated_status(redis: &Client, user_id: Uuid, is_elevated: bool, ttl_secs: i64) {
     let cache_key = format!("admin:elevated:{}", user_id);
     let value = if is_elevated { "1" } else { "0" };
 
@@ -80,16 +80,16 @@ pub fn router(state: AppState) -> Router<AppState> {
     // Elevated routes (require both system admin and elevated session)
     let elevated_routes = Router::new()
         .route(
-            "/users/:id/ban",
+            "/users/{id}/ban",
             post(handlers::ban_user).delete(handlers::unban_user),
         )
-        .route("/users/:id/unban", post(handlers::unban_user))
+        .route("/users/{id}/unban", post(handlers::unban_user))
         .route("/users/bulk-ban", post(handlers::bulk_ban_users))
         .route(
-            "/guilds/:id/suspend",
+            "/guilds/{id}/suspend",
             post(handlers::suspend_guild).delete(handlers::unsuspend_guild),
         )
-        .route("/guilds/:id/unsuspend", post(handlers::unsuspend_guild))
+        .route("/guilds/{id}/unsuspend", post(handlers::unsuspend_guild))
         .route("/guilds/bulk-suspend", post(handlers::bulk_suspend_guilds))
         .route("/announcements", post(handlers::create_announcement))
         .layer(from_fn_with_state(state.clone(), require_elevated));
@@ -100,10 +100,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/stats", get(handlers::get_admin_stats))
         .route("/users", get(handlers::list_users))
         .route("/users/export", get(handlers::export_users_csv))
-        .route("/users/:id/details", get(handlers::get_user_details))
+        .route("/users/{id}/details", get(handlers::get_user_details))
         .route("/guilds", get(handlers::list_guilds))
         .route("/guilds/export", get(handlers::export_guilds_csv))
-        .route("/guilds/:id/details", get(handlers::get_guild_details))
+        .route("/guilds/{id}/details", get(handlers::get_guild_details))
         .route("/audit-log", get(handlers::get_audit_log))
         .route(
             "/elevate",

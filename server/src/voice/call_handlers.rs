@@ -138,7 +138,7 @@ async fn verify_dm_participant(
     Ok(participants)
 }
 
-/// GET /api/dm/:id/call - Get current call state
+/// GET /api/dm/{id}/call - Get current call state
 #[tracing::instrument(skip(state, auth))]
 pub async fn get_call(
     State(state): State<AppState>,
@@ -166,7 +166,7 @@ async fn get_username(state: &AppState, user_id: Uuid) -> Result<String, CallHan
     Ok(user.username)
 }
 
-/// POST /api/dm/:id/call/start - Start a new call
+/// POST /api/dm/{id}/call/start - Start a new call
 #[tracing::instrument(skip(state, auth))]
 pub async fn start_call(
     State(state): State<AppState>,
@@ -218,7 +218,7 @@ pub async fn start_call(
     ))
 }
 
-/// POST /api/dm/:id/call/join - Join an active call
+/// POST /api/dm/{id}/call/join - Join an active call
 #[tracing::instrument(skip(state, auth))]
 pub async fn join_call(
     State(state): State<AppState>,
@@ -254,7 +254,7 @@ pub async fn join_call(
     }))
 }
 
-/// POST /api/dm/:id/call/decline - Decline a call
+/// POST /api/dm/{id}/call/decline - Decline a call
 #[tracing::instrument(skip(state, auth))]
 pub async fn decline_call(
     State(state): State<AppState>,
@@ -309,7 +309,7 @@ pub async fn decline_call(
     }))
 }
 
-/// POST /api/dm/:id/call/leave - Leave an active call
+/// POST /api/dm/{id}/call/leave - Leave an active call
 #[tracing::instrument(skip(state, auth))]
 pub async fn leave_call(
     State(state): State<AppState>,
@@ -374,9 +374,9 @@ pub fn call_router() -> axum::Router<AppState> {
     use axum::routing::{get, post};
 
     axum::Router::new()
-        .route("/:id/call", get(get_call))
-        .route("/:id/call/start", post(start_call))
-        .route("/:id/call/join", post(join_call))
-        .route("/:id/call/decline", post(decline_call))
-        .route("/:id/call/leave", post(leave_call))
+        .route("/{id}/call", get(get_call))
+        .route("/{id}/call/start", post(start_call))
+        .route("/{id}/call/join", post(join_call))
+        .route("/{id}/call/decline", post(decline_call))
+        .route("/{id}/call/leave", post(leave_call))
 }

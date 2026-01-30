@@ -27,9 +27,9 @@ futures.workspace = true
 webrtc.workspace = true
 
 # Audio
-cpal = "0.15"
+cpal = "0.17"
 opus = "0.3"
-rodio = "0.19"
+rodio = "0.21"
 # nnnoiseless = "0.5"
 
 # Serialization
@@ -38,18 +38,18 @@ serde_json.workspace = true
 base64 = "0.22"
 
 # HTTP
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # WebSocket
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite.workspace = true
 url = "2"
 
 # Secure Storage
 keyring = "2"
-rusqlite = { version = "0.29", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Process scanning
-sysinfo = "0.30"
+sysinfo = "0.34"
 
 # Clipboard
 arboard = "3"

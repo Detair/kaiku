@@ -75,18 +75,27 @@ impl AudioHandle {
         let default_input = self.host.default_input_device();
         let default_output = self.host.default_output_device();
 
-        let default_input_name = default_input.as_ref().and_then(|d| d.name().ok());
-        let default_output_name = default_output.as_ref().and_then(|d| d.name().ok());
+        let default_input_name = default_input
+            .as_ref()
+            .and_then(|d| d.description().ok())
+            .map(|desc| desc.name().to_string());
+        let default_output_name = default_output
+            .as_ref()
+            .and_then(|d| d.description().ok())
+            .map(|desc| desc.name().to_string());
 
         let inputs: Vec<AudioDevice> = self
             .host
             .input_devices()
             .map_err(|e| AudioError::ConfigError(e.to_string()))?
             .filter_map(|d| {
-                d.name().ok().map(|name| AudioDevice {
-                    device_id: name.clone(),
-                    label: name.clone(),
-                    is_default: Some(&name) == default_input_name.as_ref(),
+                d.description().ok().map(|desc| {
+                    let name = desc.name().to_string();
+                    AudioDevice {
+                        device_id: name.clone(),
+                        label: name.clone(),
+                        is_default: Some(&name) == default_input_name.as_ref(),
+                    }
                 })
             })
             .collect();
@@ -96,10 +105,13 @@ impl AudioHandle {
             .output_devices()
             .map_err(|e| AudioError::ConfigError(e.to_string()))?
             .filter_map(|d| {
-                d.name().ok().map(|name| AudioDevice {
-                    device_id: name.clone(),
-                    label: name.clone(),
-                    is_default: Some(&name) == default_output_name.as_ref(),
+                d.description().ok().map(|desc| {
+                    let name = desc.name().to_string();
+                    AudioDevice {
+                        device_id: name.clone(),
+                        label: name.clone(),
+                        is_default: Some(&name) == default_output_name.as_ref(),
+                    }
                 })
             })
             .collect();
@@ -129,7 +141,7 @@ impl AudioHandle {
                 .map_err(|e| AudioError::ConfigError(e.to_string()))?;
 
                 devices
-                    .find(|d| d.name().map(|n| n == name).unwrap_or(false))
+                    .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
                     .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
             }
             None => {
@@ -292,11 +304,11 @@ fn run_capture_task(
     control_rx: &mut mpsc::Receiver<CaptureControl>,
 ) {
     use cpal::traits::StreamTrait;
-    use cpal::{BufferSize, SampleRate, StreamConfig};
+    use cpal::{BufferSize, StreamConfig};
 
     let config = StreamConfig {
         channels: CHANNELS,
-        sample_rate: SampleRate(SAMPLE_RATE),
+        sample_rate: SAMPLE_RATE,
         buffer_size: BufferSize::Default,
     };
 
@@ -388,11 +400,11 @@ fn run_playback_task(
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
 ) {
     use cpal::traits::StreamTrait;
-    use cpal::{BufferSize, SampleRate, StreamConfig};
+    use cpal::{BufferSize, StreamConfig};
 
     let config = StreamConfig {
         channels: CHANNELS,
-        sample_rate: SampleRate(SAMPLE_RATE),
+        sample_rate: SAMPLE_RATE,
         buffer_size: BufferSize::Default,
     };
 
@@ -492,11 +504,11 @@ fn run_mic_test_task(
     control_rx: &mut mpsc::Receiver<()>,
 ) {
     use cpal::traits::StreamTrait;
-    use cpal::{BufferSize, SampleRate, StreamConfig};
+    use cpal::{BufferSize, StreamConfig};
 
     let config = StreamConfig {
         channels: CHANNELS,
-        sample_rate: SampleRate(SAMPLE_RATE),
+        sample_rate: SAMPLE_RATE,
         buffer_size: BufferSize::Default,
     };
 
