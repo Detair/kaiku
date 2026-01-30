@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Content spoilers with `||text||` syntax for hiding sensitive information
+  - Click-to-reveal functionality with persistent reveal state
+  - Supports markdown and inline spoilers
+  - ReDoS protection (500 character limit)
+  - XSS prevention via DOMPurify allowlist
+- @everyone and @here mention permission control
+  - New MENTION_EVERYONE permission bit (bit 23) for guild roles
+  - Server-side validation prevents unauthorized mass mentions
+  - Permission UI toggle in guild role settings
+  - Forbidden for @everyone role by default (moderator+ permission)
 - Home page unread aggregator in modular sidebar
   - Centralized view of unread messages across all guilds and DMs
   - Grouped by guild with channel-level unread counts

@@ -16,6 +16,7 @@ use crate::{
     api::AppState,
     auth::AuthUser,
     db,
+    permissions::{get_member_permission_context, GuildPermissions},
     ws::{broadcast_to_channel, ServerEvent},
 };
 
@@ -330,9 +331,26 @@ pub async fn create(
         .map_err(|e| MessageError::Validation(e.to_string()))?;
 
     // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, channel_id)
+    let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(MessageError::ChannelNotFound)?;
+
+    // Check for @everyone/@here mentions in guild channels
+    if let Some(guild_id) = channel.guild_id {
+        if body.content.contains("@everyone") || body.content.contains("@here") {
+            // Load user's permissions in this guild
+            if let Ok(Some(ctx)) = get_member_permission_context(&state.db, guild_id, auth_user.id).await {
+                if !ctx.has_permission(GuildPermissions::MENTION_EVERYONE) {
+                    return Err(MessageError::Validation(
+                        "You do not have permission to mention @everyone or @here".to_string(),
+                    ));
+                }
+            } else {
+                // User is not a guild member, should not happen if channel access is correct
+                return Err(MessageError::Forbidden);
+            }
+        }
+    }
 
     // Validate encrypted messages have nonce
     if body.encrypted && body.nonce.is_none() {

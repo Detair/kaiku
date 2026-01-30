@@ -60,3 +60,30 @@ textarea.bg-transparent {
   opacity: 0;
   transition: opacity 150ms ease-in-out;
 }
+
+/* Spoiler styling */
+.spoiler {
+  display: inline-block;
+  background-color: var(--color-text-secondary);
+  color: transparent;
+  border-radius: 4px;
+  padding: 0 4px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.spoiler:hover {
+  background-color: var(--color-surface-highlight);
+}
+
+.spoiler.revealed {
+  background-color: transparent;
+  color: var(--color-text-primary);
+  cursor: text;
+  user-select: text;
+}
+
+.spoiler.revealed:hover {
+  background-color: transparent;
+}
