@@ -1,4 +1,4 @@
-import { Component, Show, createMemo, For, createSignal, onMount } from "solid-js";
+import { Component, Show, createMemo, For, createSignal, onMount, onCleanup } from "solid-js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { File, Download, SmilePlus, Copy, Link, Hash, Trash2 } from "lucide-solid";
@@ -30,7 +30,8 @@ const spoilerExtension = {
     return index >= 0 ? index : undefined;
   },
   tokenizer(src: string) {
-    const match = /^\|\|(.+?)\|\|/.exec(src);
+    // Limit spoiler content to 500 chars to prevent ReDoS
+    const match = /^\|\|(.{1,500}?)\|\|/.exec(src);
     if (match) {
       return {
         type: 'spoiler',
@@ -90,9 +91,19 @@ const MessageItem: Component<MessageItemProps> = (props) => {
   onMount(() => {
     if (contentRef) {
       const spoilers = contentRef.querySelectorAll('.spoiler[data-spoiler="true"]');
+      const listeners: Array<{ element: Element; handler: EventListener }> = [];
+
       spoilers.forEach((spoiler) => {
-        spoiler.addEventListener('click', function(this: HTMLElement) {
+        const handler: EventListener = function(this: HTMLElement) {
           this.classList.add('revealed');
+        };
+        spoiler.addEventListener('click', handler);
+        listeners.push({ element: spoiler, handler });
+      });
+
+      onCleanup(() => {
+        listeners.forEach(({ element, handler }) => {
+          element.removeEventListener('click', handler);
         });
       });
     }
