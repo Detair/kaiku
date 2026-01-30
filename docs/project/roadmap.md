@@ -14,7 +14,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
 | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
-| **Phase 4** | 🔄 In Progress | 75% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish |
+| **Phase 4** | 🔄 In Progress | 80% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator |
 | **Phase 5** | 📋 Planned | 0% | - |
 
 **Production Ready Features:**
@@ -298,14 +298,15 @@ This roadmap outlines the development path from the current prototype to a produ
     - Architecture: `ContextMenuProvider.tsx` with portal support
     - UI Component: `ContextMenu.tsx` with positioning logic
     - Integration: Message and channel context actions
-- [ ] **[UX] Home Page Unread Aggregator**
-  - **Context:** Users currently lack a centralized view of activity when not inside a specific guild.
-  - **Implementation:**
-    - **Backend:** Create aggregate unread count query in `server/src/db/queries.rs`
-    - **Backend:** Query across all user-joined guilds and active DMs
-    - **Frontend:** Implement `UnreadDashboard.tsx` in `client/src/components/home`
-    - **Frontend:** Display unread counts grouped by guild with direct navigation
-    - **Integration:** Add unread module to `HomeRightPanel.tsx`
+- [x] **[UX] Home Page Unread Aggregator** ✅ (PR #127)
+  - Centralized view of unread messages across all guilds and DMs
+  - API endpoint `GET /api/me/unread` with optimized aggregate query
+  - UnreadModule component with guild-grouped and DM unread counts
+  - Direct navigation to channels with unread messages
+  - Comprehensive error handling with toast notifications
+  - Performance-optimized database query with covering indexes
+  - Automatic refresh on window focus
+  - Collapsible module with total unread badge
 - [ ] **[Chat] Content Spoilers & Enhanced Mentions**
   - **Context:** Improve privacy and moderation for sensitive content and mass notifications.
   - **Implementation:**
@@ -567,6 +568,10 @@ This roadmap outlines the development path from the current prototype to a produ
 ---
 
 ## Recent Changes
+
+### 2026-01-30
+- Completed **Home Page Unread Aggregator** (PR #127) - Centralized view of unread messages across all guilds and DMs in modular sidebar with optimized database queries, direct navigation, comprehensive error handling with toast notifications, and automatic refresh on window focus.
+- Phase 4 completion increased to 80% (19 of 24 features complete).
 
 ### 2026-01-29
 - Completed **First User Setup (Admin Bootstrap)** (PR #110) - First user automatically receives system admin permissions with PostgreSQL row-level locking to prevent race conditions, setup wizard for server configuration, and atomic setup completion using compare-and-swap pattern.
