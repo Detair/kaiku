@@ -1086,7 +1086,13 @@ pub async fn forgot_password(
     }
 
     // Invalidate existing tokens for this user
-    let _ = invalidate_user_reset_tokens(&state.db, user.id).await;
+    if let Err(e) = invalidate_user_reset_tokens(&state.db, user.id).await {
+        tracing::warn!(
+            error = %e,
+            user_id = %user.id,
+            "Failed to invalidate existing reset tokens"
+        );
+    }
 
     // Generate 32 random bytes → base64url token
     use base64::Engine;
@@ -1103,24 +1109,24 @@ pub async fn forgot_password(
     // Insert token into DB
     create_password_reset_token(&state.db, user.id, &token_hash, expires_at).await?;
 
-    // Send email — log warning on failure but still return success
-    if let Err(e) = email_service
+    // Send email — log warning on failure, return same generic response to prevent enumeration
+    match email_service
         .send_password_reset(&body.email, &user.username, &raw_token)
         .await
     {
-        tracing::warn!(
-            error = %e,
-            user_id = %user.id,
-            "Failed to send password reset email"
-        );
-        // Return error so user knows to retry
-        return Err(AuthError::Internal(
-            "Failed to send reset email. Please try again later.".to_string(),
-        ));
+        Ok(()) => {
+            tracing::info!(user_id = %user.id, "Password reset email sent");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                user_id = %user.id,
+                "Failed to send password reset email"
+            );
+        }
     }
 
-    tracing::info!(user_id = %user.id, "Password reset email sent");
-
+    // Always return generic message to prevent user enumeration
     Ok(Json(serde_json::json!({
         "message": "If an account with that email exists, a reset code has been sent."
     })))
