@@ -73,7 +73,7 @@ impl Vp9Encoder {
 impl VideoEncoder for Vp9Encoder {
     fn encode(&mut self, frame: &I420Frame) -> Result<Vec<EncodedPacket>, VideoError> {
         // 90kHz clock timestamp
-        let pts_90khz = self.frame_count * 90000 / self.fps as u64;
+        let pts_90khz = self.frame_count * 90000 / u64::from(self.fps);
 
         // vpx-encode expects a single contiguous I420 buffer: Y + U + V
         // Reuse pre-allocated buffer to avoid per-frame allocation
@@ -97,14 +97,14 @@ impl VideoEncoder for Vp9Encoder {
             })
             .collect();
 
-        if result.is_empty() && self.frame_count % (self.fps as u64) == 0 {
+        if result.is_empty() && self.frame_count % u64::from(self.fps) == 0 {
             warn!("No encoded packets for frame {}", self.frame_count);
         }
 
         Ok(result)
     }
 
-    fn codec_mime(&self) -> &str {
+    fn codec_mime(&self) -> &'static str {
         "video/VP9"
     }
 

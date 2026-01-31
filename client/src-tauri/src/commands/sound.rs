@@ -51,14 +51,14 @@ pub fn play_sound(sound_id: String) -> Result<(), String> {
 fn play_sound_blocking(sound_data: &'static [u8]) -> Result<(), String> {
     // Create audio output
     let stream = OutputStreamBuilder::open_default_stream()
-        .map_err(|e| format!("Failed to open audio output: {}", e))?;
+        .map_err(|e| format!("Failed to open audio output: {e}"))?;
 
     // Create sink
     let sink = Sink::connect_new(stream.mixer());
 
     // Decode and play
     let cursor = Cursor::new(sound_data);
-    let source = Decoder::new(cursor).map_err(|e| format!("Failed to decode sound: {}", e))?;
+    let source = Decoder::new(cursor).map_err(|e| format!("Failed to decode sound: {e}"))?;
 
     sink.append(source);
     sink.sleep_until_end();

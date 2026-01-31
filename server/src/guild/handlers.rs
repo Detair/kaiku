@@ -485,7 +485,9 @@ pub async fn list_channels(
 
     // Batch query: get unread counts for all text channels in a single query
     // Uses LEFT JOIN to handle both cases (with and without read state)
-    let unread_counts: std::collections::HashMap<Uuid, i64> = if !text_channel_ids.is_empty() {
+    let unread_counts: std::collections::HashMap<Uuid, i64> = if text_channel_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
         sqlx::query!(
             r#"
             SELECT
@@ -508,8 +510,6 @@ pub async fn list_channels(
         .into_iter()
         .map(|row| (row.channel_id, row.unread_count))
         .collect()
-    } else {
-        std::collections::HashMap::new()
     };
 
     // Build result with unread counts from the HashMap

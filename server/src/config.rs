@@ -87,7 +87,7 @@ pub struct Config {
     pub require_e2ee_setup: bool,
 
     /// Allowed CORS origins (comma-separated, default: "*" for dev)
-    /// Set to specific origins in production (e.g., "https://app.example.com")
+    /// Set to specific origins in production (e.g., "<https://app.example.com>")
     pub cors_allowed_origins: Vec<String>,
 
     /// SMTP server hostname (optional, enables password reset emails)

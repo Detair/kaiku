@@ -92,7 +92,7 @@ pub async fn start_screen_share(
     }
 
     // Resolve quality params
-    let params = QualityParams::from_tier(&quality).map_err(|e| e.to_string())?;
+    let params = QualityParams::from_tier(&quality).map_err(|e| e)?;
 
     // Verify source exists
     let target =
@@ -169,12 +169,11 @@ pub async fn start_screen_share(
                 match frame_rx.try_recv() {
                     Ok(i420) => match encoder.encode(&i420) {
                         Ok(packets) => {
-                            if !packets.is_empty() {
-                                if pkt_tx.blocking_send(packets).is_err() {
+                            if !packets.is_empty()
+                                && pkt_tx.blocking_send(packets).is_err() {
                                     info!("Packet channel closed, stopping encoder");
                                     break;
                                 }
-                            }
                         }
                         Err(e) => {
                             warn!("Encode error: {e}");

@@ -122,7 +122,7 @@ impl LocalKeyStore {
     ///
     /// Returns an error if serialization or database write fails.
     pub fn save_account(&self, account: &OlmAccount) -> Result<()> {
-        let serialized = account.serialize(&*self.encryption_key)?;
+        let serialized = account.serialize(&self.encryption_key)?;
 
         self.conn.execute(
             "INSERT OR REPLACE INTO account (id, serialized) VALUES (1, ?1)",
@@ -144,7 +144,7 @@ impl LocalKeyStore {
                     row.get(0)
                 })?;
 
-        let account = OlmAccount::deserialize(&serialized, &*self.encryption_key)?;
+        let account = OlmAccount::deserialize(&serialized, &self.encryption_key)?;
         Ok(account)
     }
 
@@ -154,7 +154,7 @@ impl LocalKeyStore {
     ///
     /// Returns an error if serialization or database write fails.
     pub fn save_session(&self, key: &SessionKey, session: &OlmSession) -> Result<()> {
-        let serialized = session.serialize(&*self.encryption_key)?;
+        let serialized = session.serialize(&self.encryption_key)?;
         let now = chrono::Utc::now().timestamp();
 
         self.conn.execute(
@@ -188,7 +188,7 @@ impl LocalKeyStore {
 
         match result {
             Ok(serialized) => {
-                let session = OlmSession::deserialize(&serialized, &*self.encryption_key)?;
+                let session = OlmSession::deserialize(&serialized, &self.encryption_key)?;
                 Ok(Some(session))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

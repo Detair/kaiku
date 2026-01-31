@@ -104,7 +104,7 @@ pub async fn create_platform_page(
     if at_limit {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Maximum {} pages reached", MAX_PAGES_PER_SCOPE),
+            format!("Maximum {MAX_PAGES_PER_SCOPE} pages reached"),
         ));
     }
 
@@ -362,7 +362,7 @@ pub async fn create_guild_page(
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Maximum {} pages reached", MAX_PAGES_PER_SCOPE),
+            format!("Maximum {MAX_PAGES_PER_SCOPE} pages reached"),
         ));
     }
 
@@ -553,7 +553,7 @@ fn validate_create_request(req: &CreatePageRequest) -> PageResult<()> {
     if req.title.len() > MAX_TITLE_LENGTH {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Title exceeds {} characters", MAX_TITLE_LENGTH),
+            format!("Title exceeds {MAX_TITLE_LENGTH} characters"),
         ));
     }
     if req.content.is_empty() {
@@ -562,7 +562,7 @@ fn validate_create_request(req: &CreatePageRequest) -> PageResult<()> {
     if req.content.len() > MAX_CONTENT_SIZE {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Content exceeds {} bytes", MAX_CONTENT_SIZE),
+            format!("Content exceeds {MAX_CONTENT_SIZE} bytes"),
         ));
     }
     Ok(())
@@ -576,7 +576,7 @@ fn validate_update_request(req: &UpdatePageRequest) -> PageResult<()> {
         if title.len() > MAX_TITLE_LENGTH {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Title exceeds {} characters", MAX_TITLE_LENGTH),
+                format!("Title exceeds {MAX_TITLE_LENGTH} characters"),
             ));
         }
     }
@@ -590,7 +590,7 @@ fn validate_update_request(req: &UpdatePageRequest) -> PageResult<()> {
         if content.len() > MAX_CONTENT_SIZE {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Content exceeds {} bytes", MAX_CONTENT_SIZE),
+                format!("Content exceeds {MAX_CONTENT_SIZE} bytes"),
             ));
         }
     }
@@ -604,13 +604,13 @@ fn validate_slug(slug: &str) -> PageResult<()> {
     if slug.len() > MAX_SLUG_LENGTH {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Slug exceeds {} characters", MAX_SLUG_LENGTH),
+            format!("Slug exceeds {MAX_SLUG_LENGTH} characters"),
         ));
     }
     if queries::is_reserved_slug(slug) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("'{}' is a reserved slug", slug),
+            format!("'{slug}' is a reserved slug"),
         ));
     }
     // Validate slug format (lowercase alphanumeric with dashes)

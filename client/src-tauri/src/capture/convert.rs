@@ -67,9 +67,9 @@ impl BgraToI420Converter {
                         }
 
                         let px = (y_row * w + x_col) * 4;
-                        let b = bgra[px] as i32;
-                        let g = bgra[px + 1] as i32;
-                        let r = bgra[px + 2] as i32;
+                        let b = i32::from(bgra[px]);
+                        let g = i32::from(bgra[px + 1]);
+                        let r = i32::from(bgra[px + 2]);
 
                         let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
                         self.y[y_row * w + x_col] = y_val.clamp(0, 255) as u8;

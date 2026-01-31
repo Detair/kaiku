@@ -13,7 +13,7 @@
 /// ```
 pub fn format_file_size(bytes: usize) -> String {
     if bytes < 1024 {
-        format!("{} bytes", bytes)
+        format!("{bytes} bytes")
     } else if bytes < 1024 * 1024 {
         format!("{}KB", bytes / 1024)
     } else {

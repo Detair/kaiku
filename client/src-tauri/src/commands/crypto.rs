@@ -529,7 +529,7 @@ pub async fn encrypt_message(
         // Add to result map
         let user_devices = result_recipients
             .entry(recipient.user_id)
-            .or_insert_with(HashMap::new);
+            .or_default();
         user_devices.insert(recipient.device_id, ciphertext.into());
     }
 

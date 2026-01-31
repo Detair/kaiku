@@ -511,7 +511,7 @@ async fn handle_screen_share_start(
         return Err(VoiceError::Signaling(match e {
             ScreenShareError::LimitReached => "Screen share limit reached".to_string(),
             ScreenShareError::InternalError => "Internal error".to_string(),
-            _ => format!("{:?}", e),
+            _ => format!("{e:?}"),
         }));
     }
 

@@ -24,7 +24,7 @@ const MAX_PAYLOAD_SIZE: usize = 1200;
 /// - Bit 5 (E): End of frame (1 if last packet)
 /// - Bit 6 (V): Scalability structure present (0)
 /// - Bit 7 (Z): Not a reference frame for upper layers (0)
-fn build_vp9_payload_descriptor(is_keyframe: bool, is_first: bool, is_last: bool) -> u8 {
+const fn build_vp9_payload_descriptor(is_keyframe: bool, is_first: bool, is_last: bool) -> u8 {
     let mut desc: u8 = 0;
 
     if !is_keyframe {
@@ -47,7 +47,7 @@ pub struct VideoRtpSender {
 
 impl VideoRtpSender {
     /// Create a new RTP sender for the given video track.
-    pub fn new(track: Arc<TrackLocalStaticRTP>) -> Self {
+    pub const fn new(track: Arc<TrackLocalStaticRTP>) -> Self {
         Self { track }
     }
 

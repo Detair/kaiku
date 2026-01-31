@@ -59,7 +59,7 @@ pub enum UserStatus {
 }
 
 /// Default value for `max_screen_shares` field.
-fn default_max_screen_shares() -> i32 {
+const fn default_max_screen_shares() -> i32 {
     1
 }
 

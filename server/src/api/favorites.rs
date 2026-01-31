@@ -45,7 +45,7 @@ pub struct FavoriteChannel {
 
 impl From<FavoriteChannelRow> for FavoriteChannel {
     fn from(row: FavoriteChannelRow) -> Self {
-        FavoriteChannel {
+        Self {
             channel_id: row.channel_id.to_string(),
             channel_name: row.channel_name,
             channel_type: row.channel_type,
@@ -124,40 +124,40 @@ pub enum FavoritesError {
 impl IntoResponse for FavoritesError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, message) = match &self {
-            FavoritesError::ChannelNotFound => {
+            Self::ChannelNotFound => {
                 (StatusCode::NOT_FOUND, "channel_not_found", "Channel not found")
             }
-            FavoritesError::InvalidChannel => (
+            Self::InvalidChannel => (
                 StatusCode::BAD_REQUEST,
                 "invalid_channel",
                 "DM channels cannot be favorited",
             ),
-            FavoritesError::LimitExceeded => (
+            Self::LimitExceeded => (
                 StatusCode::BAD_REQUEST,
                 "limit_exceeded",
                 "Maximum 25 favorites allowed",
             ),
-            FavoritesError::AlreadyFavorited => (
+            Self::AlreadyFavorited => (
                 StatusCode::CONFLICT,
                 "already_favorited",
                 "Channel already in favorites",
             ),
-            FavoritesError::NotFavorited => (
+            Self::NotFavorited => (
                 StatusCode::NOT_FOUND,
                 "favorite_not_found",
                 "Channel is not favorited",
             ),
-            FavoritesError::InvalidChannels => (
+            Self::InvalidChannels => (
                 StatusCode::BAD_REQUEST,
                 "invalid_channels",
                 "Reorder contains invalid channel IDs",
             ),
-            FavoritesError::InvalidGuilds => (
+            Self::InvalidGuilds => (
                 StatusCode::BAD_REQUEST,
                 "invalid_guilds",
                 "Reorder contains invalid guild IDs",
             ),
-            FavoritesError::Database(err) => {
+            Self::Database(err) => {
                 tracing::error!("Database error in favorites: {}", err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

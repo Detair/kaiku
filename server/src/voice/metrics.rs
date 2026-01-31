@@ -36,7 +36,7 @@ pub async fn store_metrics(
     .bind(stats.latency)
     .bind(stats.packet_loss)
     .bind(stats.jitter)
-    .bind(stats.quality as i16)
+    .bind(i16::from(stats.quality))
     .execute(&pool)
     .await;
 
@@ -83,24 +83,7 @@ pub async fn finalize_session(
     .fetch_one(pool)
     .await?;
 
-    if !has_metrics {
-        // Insert session with NULL aggregates (very short call)
-        sqlx::query(
-            r"
-            INSERT INTO connection_sessions
-            (id, user_id, channel_id, guild_id, started_at, ended_at,
-             avg_latency, avg_loss, avg_jitter, worst_quality)
-            VALUES ($1, $2, $3, $4, $5, NOW(), NULL, NULL, NULL, NULL)
-            ",
-        )
-        .bind(session_id)
-        .bind(user_id)
-        .bind(channel_id)
-        .bind(guild_id)
-        .bind(started_at)
-        .execute(pool)
-        .await?;
-    } else {
+    if has_metrics {
         // Insert session with aggregated metrics
         sqlx::query(
             r"
@@ -115,6 +98,23 @@ pub async fn finalize_session(
                 MIN(quality)::SMALLINT
             FROM connection_metrics
             WHERE session_id = $1
+            ",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(channel_id)
+        .bind(guild_id)
+        .bind(started_at)
+        .execute(pool)
+        .await?;
+    } else {
+        // Insert session with NULL aggregates (very short call)
+        sqlx::query(
+            r"
+            INSERT INTO connection_sessions
+            (id, user_id, channel_id, guild_id, started_at, ended_at,
+             avg_latency, avg_loss, avg_jitter, worst_quality)
+            VALUES ($1, $2, $3, $4, $5, NOW(), NULL, NULL, NULL, NULL)
             ",
         )
         .bind(session_id)

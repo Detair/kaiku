@@ -1561,7 +1561,7 @@ pub async fn bulk_ban_users(
             Err(e) => {
                 failed.push(BulkActionFailure {
                     id: *user_id,
-                    reason: format!("Database error: {}", e),
+                    reason: format!("Database error: {e}"),
                 });
             }
         }
@@ -1654,7 +1654,7 @@ pub async fn bulk_suspend_guilds(
                     Err(e) => {
                         failed.push(BulkActionFailure {
                             id: *guild_id,
-                            reason: format!("Database error: {}", e),
+                            reason: format!("Database error: {e}"),
                         });
                     }
                 }

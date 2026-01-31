@@ -174,7 +174,7 @@ pub async fn try_start_screen_share(
     let current: i64 = redis.get(&key).await.unwrap_or(0);
 
     // Check if we would exceed limit
-    if current >= max_shares as i64 {
+    if current >= i64::from(max_shares) {
         return Err(ScreenShareError::LimitReached);
     }
 
@@ -189,7 +189,7 @@ pub async fn try_start_screen_share(
     })?;
 
     // Double-check after increment (handles race condition)
-    if new_count > max_shares as i64 {
+    if new_count > i64::from(max_shares) {
         // We exceeded the limit, decrement back
         if let Err(e) = redis.decr::<i64, _>(&key).await {
             warn!(

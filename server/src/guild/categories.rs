@@ -429,8 +429,7 @@ pub async fn reorder_categories(
             match parent_check {
                 None => {
                     return Err(CategoryError::Validation(format!(
-                        "Parent category {} not found",
-                        parent_id
+                        "Parent category {parent_id} not found"
                     )))
                 }
                 Some((Some(_),)) => {

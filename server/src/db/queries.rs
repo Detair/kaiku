@@ -1017,15 +1017,12 @@ pub async fn is_setup_complete(pool: &PgPool) -> sqlx::Result<bool> {
             e
         })?;
 
-    match value.as_bool() {
-        Some(b) => Ok(b),
-        None => {
-            tracing::warn!(
-                actual_value = ?value,
-                "setup_complete config value is not a boolean, defaulting to false"
-            );
-            Ok(false)
-        }
+    if let Some(b) = value.as_bool() { Ok(b) } else {
+        tracing::warn!(
+            actual_value = ?value,
+            "setup_complete config value is not a boolean, defaulting to false"
+        );
+        Ok(false)
     }
 }
 

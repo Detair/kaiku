@@ -53,52 +53,49 @@ pub enum EmojiError {
 
 impl IntoResponse for EmojiError {
     fn into_response(self) -> axum::response::Response {
-        match self {
-            EmojiError::FileTooLarge { max_size } => {
-                let message = format!("File too large (max {} for emojis)", crate::util::format_file_size(max_size));
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(json!({
-                        "error": "FILE_TOO_LARGE",
-                        "message": message,
-                        "max_size_bytes": max_size
-                    }))
-                ).into_response()
-            }
-            _ => {
-                let (status, code, message) = match &self {
-                    EmojiError::GuildNotFound => (StatusCode::NOT_FOUND, "GUILD_NOT_FOUND", "Guild not found"),
-                    EmojiError::EmojiNotFound => (StatusCode::NOT_FOUND, "EMOJI_NOT_FOUND", "Emoji not found"),
-                    EmojiError::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Insufficient permissions"),
-                    EmojiError::InvalidFilename => (
-                        StatusCode::BAD_REQUEST,
-                        "INVALID_FILENAME",
-                        "Invalid filename",
-                    ),
-                    EmojiError::InvalidFileType => (
-                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                        "INVALID_FILE_TYPE",
-                        "Invalid file type",
-                    ),
-                    EmojiError::NoFile => (StatusCode::BAD_REQUEST, "NO_FILE", "No file provided"),
-                    EmojiError::Storage(msg) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "STORAGE_ERROR",
-                        msg.as_str(),
-                    ),
-                    EmojiError::Validation(msg) => (
-                        StatusCode::BAD_REQUEST,
-                        "VALIDATION_ERROR",
-                        msg.as_str(),
-                    ),
-                    EmojiError::Database(err) => {
-                        tracing::error!("Database error: {}", err);
-                        (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error")
-                    }
-                    EmojiError::FileTooLarge { .. } => unreachable!("Handled above"),
-                };
-                (status, Json(json!({ "error": code, "message": message }))).into_response()
-            }
+        if let Self::FileTooLarge { max_size } = self {
+            let message = format!("File too large (max {} for emojis)", crate::util::format_file_size(max_size));
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({
+                    "error": "FILE_TOO_LARGE",
+                    "message": message,
+                    "max_size_bytes": max_size
+                }))
+            ).into_response()
+        } else {
+            let (status, code, message) = match &self {
+                Self::GuildNotFound => (StatusCode::NOT_FOUND, "GUILD_NOT_FOUND", "Guild not found"),
+                Self::EmojiNotFound => (StatusCode::NOT_FOUND, "EMOJI_NOT_FOUND", "Emoji not found"),
+                Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Insufficient permissions"),
+                Self::InvalidFilename => (
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_FILENAME",
+                    "Invalid filename",
+                ),
+                Self::InvalidFileType => (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "INVALID_FILE_TYPE",
+                    "Invalid file type",
+                ),
+                Self::NoFile => (StatusCode::BAD_REQUEST, "NO_FILE", "No file provided"),
+                Self::Storage(msg) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "STORAGE_ERROR",
+                    msg.as_str(),
+                ),
+                Self::Validation(msg) => (
+                    StatusCode::BAD_REQUEST,
+                    "VALIDATION_ERROR",
+                    msg.as_str(),
+                ),
+                Self::Database(err) => {
+                    tracing::error!("Database error: {}", err);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error")
+                }
+                Self::FileTooLarge { .. } => unreachable!("Handled above"),
+            };
+            (status, Json(json!({ "error": code, "message": message }))).into_response()
         }
     }
 }
@@ -257,14 +254,14 @@ pub async fn create_emoji(
     let animated = content_type == "image/gif";
     let emoji_id = Uuid::now_v7();
 
-    let s3_key = format!("emojis/{}/{}.{}", guild_id, emoji_id, extension);
+    let s3_key = format!("emojis/{guild_id}/{emoji_id}.{extension}");
     
     // Upload to S3
-    s3.upload(&s3_key, file_data, &content_type)
+    s3.upload(&s3_key, file_data, content_type)
         .await
         .map_err(|e| EmojiError::Storage(e.to_string()))?;
 
-    let image_url = format!("/api/guilds/{}/emojis/{}/image", guild_id, emoji_id);
+    let image_url = format!("/api/guilds/{guild_id}/emojis/{emoji_id}/image");
 
     // Insert into DB
     let emoji = sqlx::query_as::<_, GuildEmoji>(
@@ -434,7 +431,7 @@ pub async fn delete_emoji(
     if let Some(s3) = &state.s3 {
         let extensions = ["png", "jpg", "gif", "webp"];
         for ext in extensions {
-             let key = format!("emojis/{}/{}.{}", guild_id, emoji_id, ext);
+             let key = format!("emojis/{guild_id}/{emoji_id}.{ext}");
              let _ = s3.delete(&key).await;
         }
     }
