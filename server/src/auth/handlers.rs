@@ -1123,6 +1123,16 @@ pub async fn forgot_password(
                 user_id = %user.id,
                 "Failed to send password reset email"
             );
+            // Clean up the orphaned token since the user never received it
+            if let Err(cleanup_err) =
+                invalidate_user_reset_tokens(&state.db, user.id).await
+            {
+                tracing::warn!(
+                    error = %cleanup_err,
+                    user_id = %user.id,
+                    "Failed to clean up orphaned password reset token"
+                );
+            }
         }
     }
 
