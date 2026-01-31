@@ -211,7 +211,7 @@ pub async fn list_favorites(
     Ok(Json(FavoritesResponse { favorites }))
 }
 
-/// POST /api/me/favorites/:channel_id - Add channel to favorites
+/// POST `/api/me/favorites/:channel_id` - Add channel to favorites
 pub async fn add_favorite(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -309,7 +309,7 @@ pub async fn add_favorite(
     }))
 }
 
-/// DELETE /api/me/favorites/:channel_id - Remove channel from favorites
+/// DELETE `/api/me/favorites/:channel_id` - Remove channel from favorites
 pub async fn remove_favorite(
     State(state): State<AppState>,
     auth_user: AuthUser,

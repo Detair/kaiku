@@ -1,6 +1,6 @@
 //! Guild Message Search Handler
 //!
-//! Full-text search for messages within a guild using PostgreSQL tsvector.
+//! Full-text search for messages within a guild using `PostgreSQL`.tsvector.
 
 use axum::{
     extract::{Path, Query, State},
@@ -111,7 +111,7 @@ pub struct SearchResponse {
 // ============================================================================
 
 /// Search messages within a guild.
-/// GET /api/guilds/:guild_id/search?q=...
+/// GET `/api/guilds/:guild_id/search?q=...`
 #[tracing::instrument(skip(state))]
 pub async fn search_messages(
     State(state): State<AppState>,

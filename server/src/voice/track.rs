@@ -1,7 +1,7 @@
 //! Track Routing and RTP Forwarding
 //!
 //! Manages RTP packet forwarding between participants in a voice room.
-//! Uses DashMap for lock-free concurrent access in the RTP hot path.
+//! Uses `DashMap` for lock-free concurrent access in the RTP hot path.
 
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ struct Subscription {
 /// RTP hot path that processes ~50 packets/second per participant.
 pub struct TrackRouter {
     /// Map: `(source_user_id, source_type)` -> list of subscriptions
-    /// Using DashMap to avoid lock contention in the RTP forwarding hot path.
+    /// Using `DashMap` to avoid lock contention in the RTP forwarding hot path.
     subscriptions: DashMap<(Uuid, TrackSource), Vec<Subscription>>,
 }
 
@@ -94,7 +94,7 @@ impl TrackRouter {
     /// Forward an RTP packet from source to all subscribers.
     ///
     /// This is the hot path called ~50 times/second per participant.
-    /// Uses DashMap for lock-free concurrent reads to avoid contention.
+    /// Uses `DashMap` for lock-free concurrent reads to avoid contention.
     pub async fn forward_rtp(
         &self,
         source_user_id: Uuid,

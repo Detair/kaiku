@@ -332,6 +332,71 @@ export async function initWebSocket(): Promise<void> {
         console.error("Voice error:", event.payload.code, event.payload.message);
       })
     );
+
+    // Reaction events (Tauri → frontend parity with browser mode)
+    unlisteners.push(
+      await listen<{ channel_id: string; message_id: string; user_id: string; emoji: string }>(
+        "ws:reaction_add",
+        (event) => {
+          handleReactionAdd(
+            event.payload.channel_id,
+            event.payload.message_id,
+            event.payload.user_id,
+            event.payload.emoji
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; message_id: string; user_id: string; emoji: string }>(
+        "ws:reaction_remove",
+        (event) => {
+          handleReactionRemove(
+            event.payload.channel_id,
+            event.payload.message_id,
+            event.payload.user_id,
+            event.payload.emoji
+          );
+        }
+      )
+    );
+
+    // Read sync events (Tauri → frontend parity with browser mode)
+    unlisteners.push(
+      await listen<{ channel_id: string }>("ws:channel_read", (event) => {
+        handleChannelReadEvent(event.payload.channel_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string }>("ws:dm_read", (event) => {
+        handleDMReadEvent(event.payload.channel_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; name: string }>("ws:dm_name_updated", (event) => {
+        handleDMNameUpdated(event.payload.channel_id, event.payload.name);
+      })
+    );
+
+    // Call events (Tauri → complete call support)
+    // Note: These were partially implemented in earlier commits
+    // This completes the full call event coverage
+    unlisteners.push(
+      await listen<{ channel_id: string }>("ws:call_started", (event) => {
+        console.log("[WebSocket] Call started in channel:", event.payload.channel_id);
+        // Call started means the initiator is now connected
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>("ws:call_declined", (event) => {
+        console.log("[WebSocket] Call declined by:", event.payload.user_id);
+        // The call store will handle this through the API response
+      })
+    );
   } else {
     // Browser mode - use browser WebSocket events
     const attachMessageHandler = () => {

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::Quality;
 
-/// Maximum length for source_label field
+/// Maximum length for `source_label` field
 const MAX_SOURCE_LABEL_LENGTH: usize = 255;
 
 /// Validate a source label string.

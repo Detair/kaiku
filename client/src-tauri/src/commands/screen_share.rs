@@ -25,7 +25,7 @@ pub struct ScreenShareStatus {
     pub with_audio: bool,
 }
 
-/// Active screen share pipeline (stored in VoiceState).
+/// Active screen share pipeline (stored in `VoiceState`).
 pub struct ScreenSharePipeline {
     pub source_name: String,
     pub quality: String,

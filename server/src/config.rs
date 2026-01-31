@@ -52,20 +52,20 @@ pub struct Config {
 
     /// Maximum file upload size in bytes (default: 50MB)
     ///
-    /// Used by DefaultBodyLimit middleware as final safety net for all uploads.
+    /// Used by `DefaultBodyLimit` middleware as final safety net for all uploads.
     /// Should be ≥ all specific upload limits (avatar, emoji).
     pub max_upload_size: usize,
 
     /// Maximum avatar size in bytes (user profiles and DM groups, default: 5MB)
     ///
     /// Validated by upload handlers before processing.
-    /// Must be ≤ max_upload_size to avoid middleware rejection.
+    /// Must be ≤ `max_upload_size` to avoid middleware rejection.
     pub max_avatar_size: usize,
 
     /// Maximum emoji size in bytes (guild custom emojis, default: 256KB)
     ///
     /// Validated by upload handlers before processing.
-    /// Must be ≤ max_upload_size to avoid middleware rejection.
+    /// Must be ≤ `max_upload_size` to avoid middleware rejection.
     pub max_emoji_size: usize,
 
     /// WebRTC STUN server

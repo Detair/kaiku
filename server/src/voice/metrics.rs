@@ -1,7 +1,7 @@
 //! Voice metrics storage.
 //!
 //! This module provides functions for storing voice connection metrics
-//! in TimescaleDB for historical analysis.
+//! in `TimescaleDB` for historical analysis.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::stats::VoiceStats;
 
-/// Store connection metrics in TimescaleDB (fire-and-forget).
+/// Store connection metrics in `TimescaleDB` (fire-and-forget).
 ///
 /// This function is designed to be spawned as a background task.
 /// Errors are logged but not propagated to avoid impacting the
@@ -50,7 +50,7 @@ pub async fn store_metrics(
     }
 }
 
-/// Get guild_id from channel_id.
+/// Get `guild_id` from `channel_id`.
 ///
 /// Returns `None` if the channel doesn't exist or doesn't belong to a guild.
 pub async fn get_guild_id(pool: &PgPool, channel_id: Uuid) -> Option<Uuid> {

@@ -267,7 +267,7 @@ pub async fn delete_guild_role(
 // ============================================================================
 
 /// Get all member role assignments for a guild.
-/// Returns a map of user_id -> list of role_ids.
+/// Returns a map of `user_id` -> list of `role_ids`.
 #[command]
 pub async fn get_guild_member_roles(
     state: State<'_, AppState>,

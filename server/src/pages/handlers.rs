@@ -272,7 +272,7 @@ pub async fn reorder_platform_pages(
 // Guild Pages
 // ============================================================================
 
-/// Convert PermissionError to HTTP response.
+/// Convert `PermissionError` to HTTP response.
 fn permission_error_to_response(err: PermissionError) -> (StatusCode, String) {
     match err {
         PermissionError::NotGuildMember => (StatusCode::FORBIDDEN, "Not a member of this guild".to_string()),
@@ -282,7 +282,7 @@ fn permission_error_to_response(err: PermissionError) -> (StatusCode, String) {
     }
 }
 
-/// Check MANAGE_PAGES permission for guild.
+/// Check `MANAGE_PAGES` permission for guild.
 async fn check_manage_pages_permission(
     state: &AppState,
     guild_id: Uuid,

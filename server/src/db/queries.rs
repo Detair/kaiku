@@ -140,7 +140,7 @@ pub async fn update_user_avatar(
     .await
 }
 
-/// Update user's profile (display_name, email).
+/// Update user's profile (`display_name`, email).
 ///
 /// Only non-None values are updated.
 pub async fn update_user_profile(
@@ -726,7 +726,7 @@ pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool>
     Ok(result.rows_affected() > 0)
 }
 
-/// Search messages within a guild using PostgreSQL full-text search.
+/// Search messages within a guild using `PostgreSQL` full-text search.
 /// Uses `websearch_to_tsquery` for user-friendly query syntax (supports AND, OR, quotes).
 pub async fn search_messages(
     pool: &PgPool,

@@ -259,7 +259,7 @@ pub struct AppState {
     /// Voice state.
     pub voice: Arc<RwLock<Option<VoiceState>>>,
     /// E2EE crypto manager.
-    /// Uses Mutex instead of RwLock because rusqlite::Connection is Send but not Sync.
+    /// Uses `Mutex` instead of `RwLock` because `rusqlite::Connection` is `Send` but not `Sync`.
     pub crypto: Arc<Mutex<Option<crypto::CryptoManager>>>,
 }
 

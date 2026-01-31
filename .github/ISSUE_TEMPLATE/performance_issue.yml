@@ -1,0 +1,110 @@
+name: Performance Issue
+description: Report performance degradation or optimization opportunities
+title: "[Performance]: "
+labels: ["performance", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template is for reporting performance issues or suggesting optimizations.
+
+        **Performance Targets:**
+        - Voice latency: <50ms end-to-end (10ms ideal, 20ms acceptable)
+        - Client RAM (idle): <80MB
+        - Client CPU (idle): <1%
+        - Startup time: <3s
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the performance issue
+      placeholder: What performance problem did you observe?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which component is affected?
+      options:
+        - Voice/Audio (latency, quality)
+        - Client (RAM, CPU, startup)
+        - Server (API response time)
+        - WebSocket (message latency)
+        - Database (query performance)
+        - Network (bandwidth, throughput)
+        - UI Rendering
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Performance Metrics
+      description: Provide measurements (latency, CPU%, RAM usage, etc.)
+      placeholder: |
+        - Observed: 150ms voice latency
+        - Expected: <50ms
+        - CPU: 15% idle
+        - RAM: 250MB
+      value: |
+        - Observed:
+        - Expected:
+        - Environment:
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to Reproduce
+      description: Steps to reproduce the performance issue
+      placeholder: |
+        1. Join voice channel with N users
+        2. Observe latency with...
+        3. Measure with...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How severe is the performance impact?
+      options:
+        - Critical - Violates core performance targets
+        - High - Significantly impacts user experience
+        - Medium - Noticeable degradation
+        - Low - Minor optimization opportunity
+    validations:
+      required: true
+
+  - type: textarea
+    id: profiling
+    attributes:
+      label: Profiling Data
+      description: Attach profiling results, flamegraphs, or metrics if available
+      placeholder: Paste profiling output or attach screenshots
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: System details
+      value: |
+        - OS: [e.g., Ubuntu 24.04]
+        - Client Version:
+        - Server Version:
+        - Hardware: [CPU, RAM]
+        - Load: [number of users/channels]
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Optimization Suggestions
+      description: Do you have ideas for improving performance?

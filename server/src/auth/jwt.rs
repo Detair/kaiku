@@ -1,7 +1,7 @@
 //! JWT Token Generation and Validation
 //!
-//! Uses EdDSA (Ed25519) for asymmetric token signing/verification.
-//! EdDSA offers better security, smaller keys, and faster operations than RSA.
+//! Uses `EdDSA` (Ed25519) for asymmetric token signing/verification.
+//! `EdDSA` offers better security, smaller keys, and faster operations than RSA.
 //! This allows separate signing (private key) and verification (public key),
 //! supporting distributed architectures securely.
 

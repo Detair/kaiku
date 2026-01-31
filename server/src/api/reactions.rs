@@ -76,7 +76,7 @@ impl IntoResponse for ReactionsError {
 // ============================================================================
 
 /// Add a reaction to a message.
-/// PUT /api/channels/:channel_id/messages/:message_id/reactions
+/// PUT `/api/channels/:channel_id/messages/:message_id/reactions`
 pub async fn add_reaction(
     State(state): State<AppState>,
     Path((channel_id, message_id)): Path<(Uuid, Uuid)>,
@@ -155,7 +155,7 @@ pub async fn add_reaction(
 }
 
 /// Remove a reaction from a message.
-/// DELETE /api/channels/:channel_id/messages/:message_id/reactions/:emoji
+/// DELETE `/api/channels/:channel_id/messages/:message_id/reactions/:emoji`
 pub async fn remove_reaction(
     State(state): State<AppState>,
     Path((channel_id, message_id, emoji)): Path<(Uuid, Uuid, String)>,
@@ -207,7 +207,7 @@ pub async fn remove_reaction(
 }
 
 /// Get reactions for a message.
-/// GET /api/channels/:channel_id/messages/:message_id/reactions
+/// GET `/api/channels/:channel_id/messages/:message_id/reactions`
 pub async fn get_reactions(
     State(state): State<AppState>,
     Path((channel_id, message_id)): Path<(Uuid, Uuid)>,

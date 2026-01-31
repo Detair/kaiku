@@ -317,7 +317,7 @@ pub async fn get_sessions(
     }))
 }
 
-/// GET /api/me/connection/sessions/:session_id
+/// GET `/api/me/connection/sessions/:session_id`
 ///
 /// Returns session detail with metrics (downsampled if >200 points).
 #[tracing::instrument(skip(state))]

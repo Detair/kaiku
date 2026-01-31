@@ -293,8 +293,8 @@ pub async fn delete_guild(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Initialize channel_read_state for all text channels in a guild.
-/// Sets last_read_at to NOW() so pre-existing messages don't appear as unread.
+/// Initialize `channel_read_state` for all text channels in a guild.
+/// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear as unread.
 pub(super) async fn initialize_channel_read_state(
     db: &sqlx::PgPool,
     guild_id: Uuid,

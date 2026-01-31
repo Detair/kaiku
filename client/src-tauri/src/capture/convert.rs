@@ -29,7 +29,7 @@ impl BgraToI420Converter {
         }
     }
 
-    /// Convert a BGRA frame to an owned I420Frame.
+    /// Convert a BGRA frame to an owned `I420Frame`.
     ///
     /// This clones the internal buffers. For the capture pipeline, this is called once per frame
     /// and the clone is cheaper than re-allocation since the Vec capacity is reused.

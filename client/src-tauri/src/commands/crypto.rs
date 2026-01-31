@@ -152,7 +152,7 @@ impl From<EncryptedMessage> for EncryptedMessageOutput {
 pub struct E2EEContentOutput {
     /// Sender's Curve25519 public key (base64).
     pub sender_key: String,
-    /// Encrypted content for each recipient: user_id -> device_id -> ciphertext.
+    /// Encrypted content for each recipient: `user_id` -> `device_id` -> ciphertext.
     pub recipients: HashMap<String, HashMap<String, EncryptedMessageOutput>>,
 }
 
@@ -237,7 +237,7 @@ pub async fn get_backup_status(state: State<'_, AppState>) -> Result<BackupStatu
 /// Generate a new recovery key and return it for display.
 ///
 /// The key is NOT stored - the UI must prompt user to save it,
-/// then call create_backup to actually store the encrypted backup.
+/// then call `create_backup` to actually store the encrypted backup.
 #[command]
 pub async fn generate_recovery_key() -> Result<RecoveryKeyDisplay, String> {
     let key = RecoveryKey::generate();

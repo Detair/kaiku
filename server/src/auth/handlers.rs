@@ -182,8 +182,8 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
 ///
 /// **First User Behavior:** The first user to register is automatically granted
 /// system admin permissions within the registration transaction. This is serialized
-/// by a FOR UPDATE lock on the server_config.setup_complete row to prevent race
-/// conditions where multiple concurrent registrations both see user_count=0.
+/// by a FOR UPDATE lock on the `server_config.setup_complete` row to prevent race
+/// conditions where multiple concurrent registrations both see `user_count=0`.
 ///
 /// After the first user is created, subsequent registrations will not receive admin
 /// permissions unless explicitly granted by an existing admin.
@@ -770,7 +770,7 @@ pub async fn upload_avatar(
 ///
 /// POST /auth/me
 ///
-/// Updates display_name and/or email, then broadcasts a patch event
+/// Updates `display_name` and/or email, then broadcasts a patch event
 /// to all subscribers so they see the changes in real-time.
 pub async fn update_profile(
     State(state): State<AppState>,
