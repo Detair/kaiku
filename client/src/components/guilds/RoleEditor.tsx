@@ -23,6 +23,7 @@ import {
   removePermission,
 } from "@/lib/permissionConstants";
 import type { GuildRole } from "@/lib/types";
+import { showToast } from "@/components/ui/Toast";
 
 interface RoleEditorProps {
   guildId: string;
@@ -106,16 +107,33 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
           color: color() || undefined,
           permissions: permissions(),
         });
+        showToast({
+          type: "success",
+          title: "Role Created",
+          message: `Role "${name()}" has been created successfully.`,
+          duration: 3000,
+        });
       } else if (props.role) {
         await updateRole(props.guildId, props.role.id, {
           name: isEveryoneRole() ? undefined : name(),
           color: color() || undefined,
           permissions: permissions(),
         });
+        showToast({
+          type: "success",
+          title: "Role Updated",
+          message: "Role permissions have been saved.",
+          duration: 3000,
+        });
       }
       props.onSave();
     } catch (err) {
       console.error("Failed to save role:", err);
+      showToast({
+        type: "error",
+        title: "Failed to Save Role",
+        message: "Could not save role changes. Please try again.",
+      });
     } finally {
       setIsSaving(false);
     }

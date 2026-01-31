@@ -103,7 +103,7 @@ impl AttachmentInfo {
 }
 
 /// Mention type for notification sounds.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MentionType {
     /// Direct @username mention

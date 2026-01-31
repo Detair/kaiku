@@ -58,7 +58,7 @@ impl Sensitivity {
 }
 
 /// Classify copy context into sensitivity level.
-fn classify_context(context: &CopyContext) -> Sensitivity {
+const fn classify_context(context: &CopyContext) -> Sensitivity {
     match context {
         CopyContext::RecoveryPhrase => Sensitivity::Critical,
         CopyContext::InviteLink => Sensitivity::Sensitive,
@@ -271,7 +271,7 @@ impl ClipboardGuard {
 
     /// Start background task to clear clipboard after timeout.
     fn start_clear_task(&self, app: AppHandle, secs: u32) {
-        let guard = app.state::<Arc<ClipboardGuard>>().inner().clone();
+        let guard = app.state::<Arc<Self>>().inner().clone();
 
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(u64::from(secs))).await;
@@ -395,7 +395,7 @@ impl ClipboardGuard {
 
         let clear = pending
             .as_mut()
-            .ok_or(ClipboardError::SystemError("No pending clear".to_string()))?;
+            .ok_or_else(|| ClipboardError::SystemError("No pending clear".to_string()))?;
 
         // Max 2 extensions
         if clear.extensions_used >= 2 {

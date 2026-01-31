@@ -8,6 +8,7 @@ import { createStore } from "solid-js/store";
 import type { DMListItem, Message } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { subscribeChannel } from "@/stores/websocket";
+import { showToast } from "@/components/ui/Toast";
 
 interface DMsStoreState {
   dms: DMListItem[];
@@ -139,6 +140,11 @@ export async function markDMAsRead(channelId: string): Promise<void> {
     }
   } catch (err) {
     console.error("Failed to mark DM as read:", err);
+    showToast({
+      type: "error",
+      title: "Failed to Mark DM as Read",
+      message: "Could not update read status. Will retry on next message.",
+    });
   }
 }
 

@@ -22,7 +22,7 @@ impl ProcessScanner {
 
     /// Refresh process list and find matching game.
     /// Returns the first matching game found.
-    /// Uses match_args filtering for games that require command line argument checking.
+    /// Uses `match_args` filtering for games that require command line argument checking.
     pub fn scan(&mut self) -> Option<GameEntry> {
         self.system
             .refresh_processes(ProcessesToUpdate::All, true);
@@ -45,7 +45,7 @@ impl ProcessScanner {
     }
 
     /// Scan and return all detected games (not just first).
-    /// Uses match_args filtering for games that require command line argument checking.
+    /// Uses `match_args` filtering for games that require command line argument checking.
     pub fn scan_all(&mut self) -> Vec<GameEntry> {
         self.system
             .refresh_processes(ProcessesToUpdate::All, true);

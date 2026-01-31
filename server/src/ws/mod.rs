@@ -42,6 +42,7 @@ use crate::{api::AppState, auth::jwt, db, voice::ScreenShareInfo, voice::Quality
 const ACTIVITY_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// State for activity rate limiting and deduplication.
+#[derive(Default)]
 struct ActivityState {
     /// Last activity update timestamp.
     last_update: Option<Instant>,
@@ -49,14 +50,6 @@ struct ActivityState {
     last_activity: Option<crate::presence::Activity>,
 }
 
-impl Default for ActivityState {
-    fn default() -> Self {
-        Self {
-            last_update: None,
-            last_activity: None,
-        }
-    }
-}
 
 /// WebSocket protocol header name for authentication.
 const WS_PROTOCOL_PREFIX: &str = "access_token.";
@@ -692,7 +685,7 @@ async fn broadcast_presence_update(state: &AppState, user_id: Uuid, event: &Serv
     };
 
     // Broadcast on presence channel
-    let channel = format!("presence:{}", user_id);
+    let channel = format!("presence:{user_id}");
     let result: Result<(), Error> = state.redis.publish(&channel, &json).await;
     if let Err(e) = result {
         error!("Failed to broadcast presence update: {}", e);
@@ -722,7 +715,7 @@ pub async fn broadcast_user_patch(
         .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     // Broadcast on presence channel so friends/guild members see it
-    let channel = format!("presence:{}", user_id);
+    let channel = format!("presence:{user_id}");
     redis.publish::<(), _, _>(channel, payload).await?;
 
     Ok(())
@@ -1063,7 +1056,7 @@ async fn handle_client_message(
         ClientEvent::SetActivity { activity } => {
             // Validate activity data if present
             if let Some(ref act) = activity {
-                act.validate().map_err(|e| format!("Invalid activity: {}", e))?;
+                act.validate().map_err(|e| format!("Invalid activity: {e}"))?;
             }
 
             // Rate limiting: enforce minimum interval between updates
@@ -1071,7 +1064,7 @@ async fn handle_client_message(
             if let Some(last_update) = activity_state.last_update {
                 let elapsed = now.duration_since(last_update);
                 if elapsed < ACTIVITY_UPDATE_INTERVAL {
-                    let remaining = ACTIVITY_UPDATE_INTERVAL - elapsed;
+                    let remaining = ACTIVITY_UPDATE_INTERVAL.checked_sub(elapsed).unwrap();
                     return Err(format!(
                         "Rate limited: wait {} seconds before next activity update",
                         remaining.as_secs() + 1
@@ -1091,7 +1084,7 @@ async fn handle_client_message(
                 .bind(user_id)
                 .execute(&state.db)
                 .await
-                .map_err(|e| format!("Failed to update activity: {}", e))?;
+                .map_err(|e| format!("Failed to update activity: {e}"))?;
 
             // Update state for rate limiting and deduplication
             activity_state.last_update = Some(now);

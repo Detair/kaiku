@@ -150,6 +150,19 @@ export async function initWebSocket(): Promise<void> {
       await listen<{ channel_id: string; message: Message }>("ws:message_new", async (event) => {
         await addMessage(event.payload.message);
         handleMessageNotification(event.payload.message);
+        // Increment unread count if message is not in the selected channel
+        if (event.payload.channel_id !== channelsState.selectedChannelId) {
+          const channel = getChannel(event.payload.channel_id);
+          if (channel && channel.guild_id && channel.channel_type === "text") {
+            incrementUnreadCount(event.payload.channel_id);
+          }
+          const guildId = getGuildIdForChannel(event.payload.channel_id);
+          if (guildId && guildId !== guildsState.activeGuildId) {
+            incrementGuildUnread(guildId);
+          }
+          // Notify unread module of new message
+          window.dispatchEvent(new CustomEvent("unread-update"));
+        }
       })
     );
 
@@ -254,6 +267,135 @@ export async function initWebSocket(): Promise<void> {
           participantLeft(event.payload.channel_id, event.payload.user_id);
         }
       )
+    );
+
+    // Voice events (Tauri → frontend parity with browser mode)
+    unlisteners.push(
+      await listen<{ channel_id: string; sdp: string }>("ws:voice_offer", async (event) => {
+        await handleVoiceOffer(event.payload.channel_id, event.payload.sdp);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; candidate: string }>("ws:voice_ice_candidate", async (event) => {
+        await handleVoiceIceCandidate(event.payload.channel_id, event.payload.candidate);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string; username: string; display_name: string }>(
+        "ws:voice_user_joined",
+        async (event) => {
+          await handleVoiceUserJoined(
+            event.payload.channel_id,
+            event.payload.user_id,
+            event.payload.username,
+            event.payload.display_name,
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>("ws:voice_user_left", async (event) => {
+        await handleVoiceUserLeft(event.payload.channel_id, event.payload.user_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>("ws:voice_user_muted", async (event) => {
+        await handleVoiceUserMuted(event.payload.channel_id, event.payload.user_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>("ws:voice_user_unmuted", async (event) => {
+        await handleVoiceUserUnmuted(event.payload.channel_id, event.payload.user_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; participants: any[]; screen_shares: any[] }>(
+        "ws:voice_room_state",
+        async (event) => {
+          await handleVoiceRoomState(
+            event.payload.channel_id,
+            event.payload.participants,
+            event.payload.screen_shares,
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ code: string; message: string }>("ws:voice_error", (event) => {
+        console.error("Voice error:", event.payload.code, event.payload.message);
+      })
+    );
+
+    // Reaction events (Tauri → frontend parity with browser mode)
+    unlisteners.push(
+      await listen<{ channel_id: string; message_id: string; user_id: string; emoji: string }>(
+        "ws:reaction_add",
+        (event) => {
+          handleReactionAdd(
+            event.payload.channel_id,
+            event.payload.message_id,
+            event.payload.user_id,
+            event.payload.emoji
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; message_id: string; user_id: string; emoji: string }>(
+        "ws:reaction_remove",
+        (event) => {
+          handleReactionRemove(
+            event.payload.channel_id,
+            event.payload.message_id,
+            event.payload.user_id,
+            event.payload.emoji
+          );
+        }
+      )
+    );
+
+    // Read sync events (Tauri → frontend parity with browser mode)
+    unlisteners.push(
+      await listen<{ channel_id: string }>("ws:channel_read", (event) => {
+        handleChannelReadEvent(event.payload.channel_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string }>("ws:dm_read", (event) => {
+        handleDMReadEvent(event.payload.channel_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; name: string }>("ws:dm_name_updated", (event) => {
+        handleDMNameUpdated(event.payload.channel_id, event.payload.name);
+      })
+    );
+
+    // Call events (Tauri → complete call support)
+    // Note: These were partially implemented in earlier commits
+    // This completes the full call event coverage
+    unlisteners.push(
+      await listen<{ channel_id: string }>("ws:call_started", (event) => {
+        console.log("[WebSocket] Call started in channel:", event.payload.channel_id);
+        // Call started means the initiator is now connected
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>("ws:call_declined", (event) => {
+        console.log("[WebSocket] Call declined by:", event.payload.user_id);
+        // The call store will handle this through the API response
+      })
     );
   } else {
     // Browser mode - use browser WebSocket events

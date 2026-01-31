@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Component testing infrastructure for Solid.js
+  - Vitest configuration with vite-plugin-solid
+  - Test setup with automatic cleanup between tests
+  - Initial tests for Skeleton and UnreadModule components
+- Tauri WebSocket event parity improvements
+  - Unread count tracking in Tauri mode (matches browser mode)
+  - Voice event listeners for full voice chat support in Tauri
+  - GitHub issue #132 filed to track 22 missing ServerEvent variants for full parity
+- Global toast notifications for user feedback
+  - Max 5 visible toasts with auto-dismiss of oldest
+  - Error toasts for failed operations (message send, mark as read, etc.)
+  - Success toasts for completed actions (avatar upload, settings saved, role/channel created)
+
+### Fixed
+- Clippy warnings in crypto and server modules
+  - Suppress false-positive `missing_const_for_fn` lint in vc-crypto
+  - Fix `many_single_char_names` in BGRA→I420 color conversion
+  - Remove unnecessary raw string hashes in SQL queries
+
+### Changed
+- Upgraded vite-plugin-solid to 2.11.10 for vitest 4 compatibility
+- Upgraded vite to 7.3.1 for better tooling compatibility
 - Native screen capture for Tauri desktop client
   - Source picker modal to select monitors or windows
   - VP9 software encoding with quality tiers (480p15 to 1080p60)

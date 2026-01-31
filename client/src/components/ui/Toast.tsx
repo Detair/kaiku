@@ -39,6 +39,9 @@ const [toasts, setToasts] = createSignal<ToastInstance[]>([]);
 // Active timeouts for auto-dismiss
 const dismissTimeouts = new Map<string, number>();
 
+// Maximum number of visible toasts
+const MAX_TOASTS = 5;
+
 /**
  * Show a toast notification.
  * If a toast with the same ID already exists, it will be replaced.
@@ -62,7 +65,23 @@ export function showToast(options: ToastOptions): string {
   // Remove existing toast with same ID and add new one
   setToasts((prev) => {
     const filtered = prev.filter((t) => t.id !== id);
-    return [...filtered, toast];
+    const updated = [...filtered, toast];
+
+    // If exceeding max toasts, remove oldest ones
+    if (updated.length > MAX_TOASTS) {
+      const toRemove = updated.slice(0, updated.length - MAX_TOASTS);
+      // Auto-dismiss oldest toasts
+      toRemove.forEach((t) => {
+        const timeout = dismissTimeouts.get(t.id);
+        if (timeout) {
+          clearTimeout(timeout);
+          dismissTimeouts.delete(t.id);
+        }
+      });
+      return updated.slice(-MAX_TOASTS);
+    }
+
+    return updated;
   });
 
   // Set auto-dismiss if duration > 0
@@ -183,7 +202,7 @@ export const ToastContainer: Component = () => {
         aria-live="polite"
         aria-label="Notifications"
       >
-        <For each={toasts()}>
+        <For each={toasts().slice(-MAX_TOASTS)}>
           {(toast) => <ToastItem toast={toast} />}
         </For>
       </div>

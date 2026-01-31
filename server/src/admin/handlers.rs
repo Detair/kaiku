@@ -15,6 +15,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt::Write;
 use tracing::warn;
 use std::net::SocketAddr;
 use uuid::Uuid;
@@ -1383,15 +1384,17 @@ pub async fn export_users_csv(
     // Build CSV content
     let mut csv = String::from("id,username,display_name,email,created_at,is_banned\n");
     for user in users {
-        csv.push_str(&format!(
-            "{},{},{},{},{},{}\n",
+        writeln!(
+            csv,
+            "{},{},{},{},{},{}",
             user.id,
             escape_csv(&user.username),
             escape_csv(&user.display_name),
             escape_csv(&user.email.unwrap_or_default()),
             user.created_at.format("%Y-%m-%d %H:%M:%S"),
             user.is_banned
-        ));
+        )
+        .unwrap();
     }
 
     Ok((
@@ -1445,8 +1448,9 @@ pub async fn export_guilds_csv(
             .suspended_at
             .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_default();
-        csv.push_str(&format!(
-            "{},{},{},{},{},{},{}\n",
+        writeln!(
+            csv,
+            "{},{},{},{},{},{},{}",
             guild.id,
             escape_csv(&guild.name),
             guild.owner_id,
@@ -1454,7 +1458,8 @@ pub async fn export_guilds_csv(
             guild.created_at.format("%Y-%m-%d %H:%M:%S"),
             guild.suspended_at.is_some(),
             suspended_at_str
-        ));
+        )
+        .unwrap();
     }
 
     Ok((
@@ -1561,7 +1566,7 @@ pub async fn bulk_ban_users(
             Err(e) => {
                 failed.push(BulkActionFailure {
                     id: *user_id,
-                    reason: format!("Database error: {}", e),
+                    reason: format!("Database error: {e}"),
                 });
             }
         }
@@ -1654,7 +1659,7 @@ pub async fn bulk_suspend_guilds(
                     Err(e) => {
                         failed.push(BulkActionFailure {
                             id: *guild_id,
-                            reason: format!("Database error: {}", e),
+                            reason: format!("Database error: {e}"),
                         });
                     }
                 }

@@ -10,7 +10,7 @@ pub const MAX_ACTIVITY_NAME_LEN: usize = 128;
 pub const MAX_ACTIVITY_DETAILS_LEN: usize = 256;
 
 /// Type of activity the user is engaged in.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityType {
     Game,
@@ -21,7 +21,7 @@ pub enum ActivityType {
 }
 
 /// Rich presence activity data.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Activity {
     /// Type of activity.
     #[serde(rename = "type")]

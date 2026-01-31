@@ -317,7 +317,7 @@ pub async fn get_sessions(
     }))
 }
 
-/// GET /api/me/connection/sessions/:session_id
+/// GET `/api/me/connection/sessions/:session_id`
 ///
 /// Returns session detail with metrics (downsampled if >200 points).
 #[tracing::instrument(skip(state))]
@@ -369,7 +369,7 @@ pub async fn get_session_detail(
     let metrics = if downsampled {
         // Calculate bucket size to get ~200 points
         let bucket_seconds = ((metric_count as f64 / MAX_POINTS as f64).ceil() as i64).max(1);
-        let bucket_interval = format!("{} seconds", bucket_seconds);
+        let bucket_interval = format!("{bucket_seconds} seconds");
 
         sqlx::query_as::<_, MetricPoint>(
             r"

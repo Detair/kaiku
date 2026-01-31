@@ -133,6 +133,57 @@ pub enum ServerEvent {
         code: String,
         message: String,
     },
+    // Call events
+    IncomingCall {
+        channel_id: String,
+        initiator: String,
+        initiator_name: String,
+    },
+    CallStarted {
+        channel_id: String,
+    },
+    CallEnded {
+        channel_id: String,
+        reason: String,
+        duration_secs: Option<u64>,
+    },
+    CallParticipantJoined {
+        channel_id: String,
+        user_id: String,
+        username: String,
+    },
+    CallParticipantLeft {
+        channel_id: String,
+        user_id: String,
+    },
+    CallDeclined {
+        channel_id: String,
+        user_id: String,
+    },
+    // Read sync events
+    ChannelRead {
+        channel_id: String,
+    },
+    DmRead {
+        channel_id: String,
+    },
+    DmNameUpdated {
+        channel_id: String,
+        name: String,
+    },
+    // Reaction events
+    ReactionAdd {
+        channel_id: String,
+        message_id: String,
+        user_id: String,
+        emoji: String,
+    },
+    ReactionRemove {
+        channel_id: String,
+        message_id: String,
+        user_id: String,
+        emoji: String,
+    },
 }
 
 /// Connection status.
@@ -363,6 +414,20 @@ fn handle_server_message(app: &AppHandle, text: &str) {
                 ServerEvent::VoiceRoomState { .. } => "ws:voice_room_state",
                 ServerEvent::VoiceError { .. } => "ws:voice_error",
                 ServerEvent::Error { .. } => "ws:error",
+                // Call events
+                ServerEvent::IncomingCall { .. } => "ws:incoming_call",
+                ServerEvent::CallStarted { .. } => "ws:call_started",
+                ServerEvent::CallEnded { .. } => "ws:call_ended",
+                ServerEvent::CallParticipantJoined { .. } => "ws:call_participant_joined",
+                ServerEvent::CallParticipantLeft { .. } => "ws:call_participant_left",
+                ServerEvent::CallDeclined { .. } => "ws:call_declined",
+                // Read sync events
+                ServerEvent::ChannelRead { .. } => "ws:channel_read",
+                ServerEvent::DmRead { .. } => "ws:dm_read",
+                ServerEvent::DmNameUpdated { .. } => "ws:dm_name_updated",
+                // Reaction events
+                ServerEvent::ReactionAdd { .. } => "ws:reaction_add",
+                ServerEvent::ReactionRemove { .. } => "ws:reaction_remove",
             };
 
             if let Err(e) = app.emit(event_name, &event) {

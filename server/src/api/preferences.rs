@@ -64,7 +64,7 @@ pub struct UpdatePreferencesRequest {
     pub preferences: serde_json::Value,
 }
 
-/// Database row for user_preferences
+/// Database row for `user_preferences`
 #[derive(Debug, sqlx::FromRow)]
 pub struct UserPreferencesRow {
     pub user_id: Uuid,

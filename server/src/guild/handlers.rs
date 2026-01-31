@@ -293,8 +293,8 @@ pub async fn delete_guild(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Initialize channel_read_state for all text channels in a guild.
-/// Sets last_read_at to NOW() so pre-existing messages don't appear as unread.
+/// Initialize `channel_read_state` for all text channels in a guild.
+/// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear as unread.
 pub(super) async fn initialize_channel_read_state(
     db: &sqlx::PgPool,
     guild_id: Uuid,
@@ -485,7 +485,9 @@ pub async fn list_channels(
 
     // Batch query: get unread counts for all text channels in a single query
     // Uses LEFT JOIN to handle both cases (with and without read state)
-    let unread_counts: std::collections::HashMap<Uuid, i64> = if !text_channel_ids.is_empty() {
+    let unread_counts: std::collections::HashMap<Uuid, i64> = if text_channel_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
         sqlx::query!(
             r#"
             SELECT
@@ -508,8 +510,6 @@ pub async fn list_channels(
         .into_iter()
         .map(|row| (row.channel_id, row.unread_count))
         .collect()
-    } else {
-        std::collections::HashMap::new()
     };
 
     // Build result with unread counts from the HashMap

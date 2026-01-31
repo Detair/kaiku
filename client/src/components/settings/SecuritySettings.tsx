@@ -13,6 +13,7 @@ import {
   type ClipboardSettings,
   type ProtectionLevel,
 } from "@/lib/clipboard";
+import { showToast } from "@/components/ui/Toast";
 
 // Type for backup status (matches Tauri command response)
 interface BackupStatus {
@@ -57,8 +58,19 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
       const updated = { ...current, protection_level: level };
       await updateClipboardSettings(updated);
       setClipboardSettings(updated);
+      showToast({
+        type: "success",
+        title: "Clipboard Settings Updated",
+        message: `Protection level set to ${level}.`,
+        duration: 3000,
+      });
     } catch (err) {
       console.error("Failed to update clipboard settings:", err);
+      showToast({
+        type: "error",
+        title: "Update Failed",
+        message: "Could not update clipboard settings. Please try again.",
+      });
     } finally {
       setIsSavingClipboard(false);
     }
@@ -73,8 +85,19 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
       const updated = { ...current, paranoid_mode_enabled: enabled };
       await updateClipboardSettings(updated);
       setClipboardSettings(updated);
+      showToast({
+        type: "success",
+        title: "Paranoid Mode Updated",
+        message: `Paranoid mode ${enabled ? "enabled" : "disabled"}.`,
+        duration: 3000,
+      });
     } catch (err) {
       console.error("Failed to update clipboard settings:", err);
+      showToast({
+        type: "error",
+        title: "Update Failed",
+        message: "Could not update paranoid mode. Please try again.",
+      });
     } finally {
       setIsSavingClipboard(false);
     }

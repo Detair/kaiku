@@ -29,10 +29,11 @@ impl BgraToI420Converter {
         }
     }
 
-    /// Convert a BGRA frame to an owned I420Frame.
+    /// Convert a BGRA frame to an owned `I420Frame`.
     ///
     /// This clones the internal buffers. For the capture pipeline, this is called once per frame
     /// and the clone is cheaper than re-allocation since the Vec capacity is reused.
+    #[allow(clippy::many_single_char_names)]
     pub fn convert_owned(&mut self, bgra: &[u8]) -> I420Frame {
         let w = self.width as usize;
         let h = self.height as usize;
@@ -66,9 +67,9 @@ impl BgraToI420Converter {
                         }
 
                         let px = (y_row * w + x_col) * 4;
-                        let b = bgra[px] as i32;
-                        let g = bgra[px + 1] as i32;
-                        let r = bgra[px + 2] as i32;
+                        let b = i32::from(bgra[px]);
+                        let g = i32::from(bgra[px + 1]);
+                        let r = i32::from(bgra[px + 2]);
 
                         let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
                         self.y[y_row * w + x_col] = y_val.clamp(0, 255) as u8;

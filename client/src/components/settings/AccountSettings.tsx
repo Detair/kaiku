@@ -4,6 +4,7 @@ import { authState, updateUser } from "@/stores/auth";
 import Avatar from "@/components/ui/Avatar";
 import * as tauri from "@/lib/tauri";
 import { validateFileSize, getUploadLimitText } from "@/lib/tauri";
+import { showToast } from "@/components/ui/Toast";
 
 const AccountSettings: Component = () => {
   const user = () => authState.user;
@@ -36,9 +37,21 @@ const AccountSettings: Component = () => {
     try {
       const updatedUser = await tauri.uploadAvatar(file);
       updateUser(updatedUser);
+      showToast({
+        type: "success",
+        title: "Avatar Updated",
+        message: "Your profile picture has been updated successfully.",
+        duration: 3000,
+      });
     } catch (err) {
       console.error("Failed to upload avatar:", err);
-      setError(err instanceof Error ? err.message : "Failed to upload avatar");
+      const errorMsg = err instanceof Error ? err.message : "Failed to upload avatar";
+      setError(errorMsg);
+      showToast({
+        type: "error",
+        title: "Upload Failed",
+        message: errorMsg,
+      });
     } finally {
       setIsUploading(false);
       // Reset input

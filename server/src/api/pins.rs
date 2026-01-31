@@ -19,7 +19,7 @@ use crate::auth::AuthUser;
 // Types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PinType {
     Note,
@@ -28,19 +28,19 @@ pub enum PinType {
 }
 
 impl PinType {
-    fn as_str(&self) -> &'static str {
+    const fn as_str(&self) -> &'static str {
         match self {
-            PinType::Note => "note",
-            PinType::Link => "link",
-            PinType::Message => "message",
+            Self::Note => "note",
+            Self::Link => "link",
+            Self::Message => "message",
         }
     }
 
     fn from_str(s: &str) -> Option<Self> {
         match s {
-            "note" => Some(PinType::Note),
-            "link" => Some(PinType::Link),
-            "message" => Some(PinType::Message),
+            "note" => Some(Self::Note),
+            "link" => Some(Self::Link),
+            "message" => Some(Self::Message),
             _ => None,
         }
     }
@@ -71,7 +71,7 @@ pub struct Pin {
 
 impl From<PinRow> for Pin {
     fn from(row: PinRow) -> Self {
-        Pin {
+        Self {
             id: row.id,
             pin_type: PinType::from_str(&row.pin_type).unwrap_or(PinType::Note),
             content: row.content,
@@ -133,11 +133,11 @@ pub enum PinsError {
 impl IntoResponse for PinsError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, message) = match &self {
-            PinsError::NotFound => (StatusCode::NOT_FOUND, "PIN_NOT_FOUND", "Pin not found"),
-            PinsError::LimitExceeded => (StatusCode::BAD_REQUEST, "LIMIT_EXCEEDED", "Maximum pins limit reached (50)"),
-            PinsError::ContentTooLong => (StatusCode::BAD_REQUEST, "CONTENT_TOO_LONG", "Content exceeds maximum length"),
-            PinsError::TitleTooLong => (StatusCode::BAD_REQUEST, "TITLE_TOO_LONG", "Title exceeds maximum length"),
-            PinsError::Database(err) => {
+            Self::NotFound => (StatusCode::NOT_FOUND, "PIN_NOT_FOUND", "Pin not found"),
+            Self::LimitExceeded => (StatusCode::BAD_REQUEST, "LIMIT_EXCEEDED", "Maximum pins limit reached (50)"),
+            Self::ContentTooLong => (StatusCode::BAD_REQUEST, "CONTENT_TOO_LONG", "Content exceeds maximum length"),
+            Self::TitleTooLong => (StatusCode::BAD_REQUEST, "TITLE_TOO_LONG", "Title exceeds maximum length"),
+            Self::Database(err) => {
                 tracing::error!("Database error: {}", err);
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error")
             }

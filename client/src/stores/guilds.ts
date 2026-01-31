@@ -7,6 +7,7 @@
 import { createStore } from "solid-js/store";
 import type { Guild, GuildMember, GuildInvite, Channel } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
+import { showToast } from "@/components/ui/Toast";
 
 /**
  * Guild store state
@@ -315,6 +316,11 @@ export async function joinViaInviteCode(code: string): Promise<void> {
     await selectGuild(response.guild_id);
   } catch (err) {
     console.error("Post-join UI setup failed (join succeeded):", err);
+    showToast({
+      type: "warning",
+      title: "Joined Guild",
+      message: "Guild joined successfully. Refresh the page if it doesn't appear.",
+    });
     // Don't rethrow — the join worked, guild will appear on next load
   }
 }

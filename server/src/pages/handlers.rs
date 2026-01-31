@@ -42,7 +42,7 @@ pub async fn get_platform_page(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(Json)
-        .ok_or((StatusCode::NOT_FOUND, "Page not found".to_string()))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))
 }
 
 /// Create a new platform page (system admin only).
@@ -104,7 +104,7 @@ pub async fn create_platform_page(
     if at_limit {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Maximum {} pages reached", MAX_PAGES_PER_SCOPE),
+            format!("Maximum {MAX_PAGES_PER_SCOPE} pages reached"),
         ));
     }
 
@@ -149,7 +149,7 @@ pub async fn update_platform_page(
     let old_page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify it's a platform page
     if old_page.guild_id.is_some() {
@@ -218,7 +218,7 @@ pub async fn delete_platform_page(
     let page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify it's a platform page
     if page.guild_id.is_some() {
@@ -272,7 +272,7 @@ pub async fn reorder_platform_pages(
 // Guild Pages
 // ============================================================================
 
-/// Convert PermissionError to HTTP response.
+/// Convert `PermissionError` to HTTP response.
 fn permission_error_to_response(err: PermissionError) -> (StatusCode, String) {
     match err {
         PermissionError::NotGuildMember => (StatusCode::FORBIDDEN, "Not a member of this guild".to_string()),
@@ -282,7 +282,7 @@ fn permission_error_to_response(err: PermissionError) -> (StatusCode, String) {
     }
 }
 
-/// Check MANAGE_PAGES permission for guild.
+/// Check `MANAGE_PAGES` permission for guild.
 async fn check_manage_pages_permission(
     state: &AppState,
     guild_id: Uuid,
@@ -314,7 +314,7 @@ pub async fn get_guild_page(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(Json)
-        .ok_or((StatusCode::NOT_FOUND, "Page not found".to_string()))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))
 }
 
 /// Create a new guild page.
@@ -362,7 +362,7 @@ pub async fn create_guild_page(
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Maximum {} pages reached", MAX_PAGES_PER_SCOPE),
+            format!("Maximum {MAX_PAGES_PER_SCOPE} pages reached"),
         ));
     }
 
@@ -401,7 +401,7 @@ pub async fn update_guild_page(
     let old_page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify page belongs to this guild
     if old_page.guild_id != Some(guild_id) {
@@ -464,7 +464,7 @@ pub async fn delete_guild_page(
     let page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify page belongs to this guild
     if page.guild_id != Some(guild_id) {
@@ -522,7 +522,7 @@ pub async fn accept_page(
     let page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     queries::accept_page(&state.db, user.id, id, &page.content_hash)
         .await
@@ -553,7 +553,7 @@ fn validate_create_request(req: &CreatePageRequest) -> PageResult<()> {
     if req.title.len() > MAX_TITLE_LENGTH {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Title exceeds {} characters", MAX_TITLE_LENGTH),
+            format!("Title exceeds {MAX_TITLE_LENGTH} characters"),
         ));
     }
     if req.content.is_empty() {
@@ -562,7 +562,7 @@ fn validate_create_request(req: &CreatePageRequest) -> PageResult<()> {
     if req.content.len() > MAX_CONTENT_SIZE {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Content exceeds {} bytes", MAX_CONTENT_SIZE),
+            format!("Content exceeds {MAX_CONTENT_SIZE} bytes"),
         ));
     }
     Ok(())
@@ -576,7 +576,7 @@ fn validate_update_request(req: &UpdatePageRequest) -> PageResult<()> {
         if title.len() > MAX_TITLE_LENGTH {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Title exceeds {} characters", MAX_TITLE_LENGTH),
+                format!("Title exceeds {MAX_TITLE_LENGTH} characters"),
             ));
         }
     }
@@ -590,7 +590,7 @@ fn validate_update_request(req: &UpdatePageRequest) -> PageResult<()> {
         if content.len() > MAX_CONTENT_SIZE {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Content exceeds {} bytes", MAX_CONTENT_SIZE),
+                format!("Content exceeds {MAX_CONTENT_SIZE} bytes"),
             ));
         }
     }
@@ -604,13 +604,13 @@ fn validate_slug(slug: &str) -> PageResult<()> {
     if slug.len() > MAX_SLUG_LENGTH {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Slug exceeds {} characters", MAX_SLUG_LENGTH),
+            format!("Slug exceeds {MAX_SLUG_LENGTH} characters"),
         ));
     }
     if queries::is_reserved_slug(slug) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("'{}' is a reserved slug", slug),
+            format!("'{slug}' is a reserved slug"),
         ));
     }
     // Validate slug format (lowercase alphanumeric with dashes)

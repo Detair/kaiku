@@ -41,7 +41,7 @@ pub fn start_presence_service(app: AppHandle) {
                 continue;
             }
 
-            let current = scanner.scan().map(|g| g.name.clone());
+            let current = scanner.scan().map(|g| g.name);
 
             // Only emit if activity changed
             if current != last_activity {

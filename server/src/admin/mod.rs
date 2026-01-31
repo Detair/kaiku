@@ -29,7 +29,7 @@ use uuid::Uuid;
 /// Security: Always falls back to database on cache miss to ensure fail-secure behavior.
 pub async fn is_elevated_admin(redis: &Client, db: &PgPool, user_id: Uuid) -> bool {
     // Check cache first (fast path)
-    let cache_key = format!("admin:elevated:{}", user_id);
+    let cache_key = format!("admin:elevated:{user_id}");
     let cached: Option<String> = redis.get(&cache_key).await.ok().flatten();
 
     if let Some(value) = cached {
@@ -63,7 +63,7 @@ async fn check_elevated_in_db(db: &PgPool, user_id: Uuid) -> bool {
 
 /// Cache elevated admin status in Redis (called after elevation).
 pub async fn cache_elevated_status(redis: &Client, user_id: Uuid, is_elevated: bool, ttl_secs: i64) {
-    let cache_key = format!("admin:elevated:{}", user_id);
+    let cache_key = format!("admin:elevated:{user_id}");
     let value = if is_elevated { "1" } else { "0" };
 
     let _: Result<(), _> = redis

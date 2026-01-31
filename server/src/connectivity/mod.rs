@@ -13,7 +13,7 @@ use crate::api::AppState;
 /// Routes:
 /// - GET /summary - 30-day aggregate stats and daily breakdown
 /// - GET /sessions - Paginated list of session summaries
-/// - GET /sessions/{session_id} - Session detail with metrics
+/// - GET `/sessions/{session_id`} - Session detail with metrics
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/summary", get(handlers::get_summary))

@@ -182,8 +182,8 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
 ///
 /// **First User Behavior:** The first user to register is automatically granted
 /// system admin permissions within the registration transaction. This is serialized
-/// by a FOR UPDATE lock on the server_config.setup_complete row to prevent race
-/// conditions where multiple concurrent registrations both see user_count=0.
+/// by a FOR UPDATE lock on the `server_config.setup_complete` row to prevent race
+/// conditions where multiple concurrent registrations both see `user_count=0`.
 ///
 /// After the first user is created, subsequent registrations will not receive admin
 /// permissions unless explicitly granted by an existing admin.
@@ -699,8 +699,7 @@ pub async fn upload_avatar(
         image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP => {}
         _ => {
             return Err(AuthError::Validation(format!(
-                "Unsupported image format: {:?}. Only PNG, JPEG, GIF, and WebP are allowed.",
-                detected_format
+                "Unsupported image format: {detected_format:?}. Only PNG, JPEG, GIF, and WebP are allowed."
             )));
         }
     }
@@ -723,19 +722,19 @@ pub async fn upload_avatar(
     let endpoint = &state.config.s3_endpoint;
     
     // Handle localhost vs cloud endpoint formatting
-    let url = if endpoint.as_deref().map_or(false, |s| s.contains("localhost") || s.contains("127.0.0.1")) {
+    let url = if endpoint.as_deref().is_some_and(|s| s.contains("localhost") || s.contains("127.0.0.1")) {
         // For MinIO/Local: endpoint/bucket/key
         // endpoint is Option, so unwrap safe because of check
         format!("{}/{}/{}", endpoint.as_ref().unwrap(), bucket, key)
     } else if let Some(ep) = endpoint {
         // Custom endpoint (R2, etc): endpoint/bucket/key or bucket.endpoint/key
         // We'll stick to path style for safety if custom endpoint is used
-        format!("{}/{}/{}", ep, bucket, key)
+        format!("{ep}/{bucket}/{key}")
     } else {
         // AWS S3 standard: https://bucket.s3.region.amazonaws.com/key
         // We assume standard path style for simplicity if no endpoint logic matches
         // or just construct a relative path if proxied
-        format!("/{}/{}", bucket, key)
+        format!("/{bucket}/{key}")
     };
 
     // Update user in DB
@@ -770,7 +769,7 @@ pub async fn upload_avatar(
 ///
 /// POST /auth/me
 ///
-/// Updates display_name and/or email, then broadcasts a patch event
+/// Updates `display_name` and/or email, then broadcasts a patch event
 /// to all subscribers so they see the changes in real-time.
 pub async fn update_profile(
     State(state): State<AppState>,

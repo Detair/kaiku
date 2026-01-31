@@ -31,15 +31,15 @@ pub fn platform_pages_router() -> Router<AppState> {
         .route("/{id}/accept", post(handlers::accept_page))
 }
 
-/// Router for guild pages (mounted at /api/guilds/{guild_id}/pages).
+/// Router for guild pages (mounted at `/api/guilds/{guild_id}/pages`).
 ///
 /// Routes:
 /// - GET  /               - List guild pages
-/// - POST /               - Create guild page (MANAGE_PAGES)
+/// - POST /               - Create guild page (`MANAGE_PAGES`)
 /// - GET  /by-slug/{slug}  - Get guild page by slug
-/// - PATCH /{id}           - Update guild page (MANAGE_PAGES)
-/// - DELETE /{id}          - Delete guild page (MANAGE_PAGES)
-/// - POST /reorder        - Reorder guild pages (MANAGE_PAGES)
+/// - PATCH /{id}           - Update guild page (`MANAGE_PAGES`)
+/// - DELETE /{id}          - Delete guild page (`MANAGE_PAGES`)
+/// - POST /reorder        - Reorder guild pages (`MANAGE_PAGES`)
 pub fn guild_pages_router() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::list_guild_pages))

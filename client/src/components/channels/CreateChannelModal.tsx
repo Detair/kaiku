@@ -8,6 +8,7 @@ import { Component, createSignal, Show } from "solid-js";
 import { X, Hash, Mic } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
 import { Portal } from "solid-js/web";
+import { showToast } from "@/components/ui/Toast";
 
 interface CreateChannelModalProps {
   guildId: string;
@@ -49,6 +50,12 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
         undefined, // topic
         props.categoryId ?? undefined
       );
+      showToast({
+        type: "success",
+        title: "Channel Created",
+        message: `#${channelName} has been created successfully.`,
+        duration: 3000,
+      });
       props.onCreated?.(channel.id);
       props.onClose();
     } catch (err) {

@@ -8,6 +8,7 @@ import { createStore } from "solid-js/store";
 import type { ChannelWithUnread } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { subscribeChannel } from "@/stores/websocket";
+import { showToast } from "@/components/ui/Toast";
 
 // Channels state interface
 interface ChannelsState {
@@ -240,6 +241,11 @@ export async function markChannelAsRead(channelId: string): Promise<void> {
       await tauri.markChannelAsRead(channelId);
     } catch (err) {
       console.error("[Channels] Failed to mark channel as read:", err);
+      showToast({
+        type: "error",
+        title: "Failed to Mark as Read",
+        message: "Could not mark channel as read. Will retry on next message.",
+      });
       // Could revert here, but the server state is source of truth
     }
   }

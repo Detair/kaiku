@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussion Forum
+    url: https://github.com/Wolftown-io/canis/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: Security Policy
+    url: https://github.com/Wolftown-io/canis/security/policy
+    about: Report security vulnerabilities privately

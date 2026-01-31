@@ -104,12 +104,9 @@ pub fn create_router(state: AppState) -> Router {
             .cors_allowed_origins
             .iter()
             .filter_map(|o| {
-                match o.parse() {
-                    Ok(origin) => Some(origin),
-                    Err(_) => {
-                        tracing::warn!(origin = %o, "Invalid CORS origin in configuration, skipping");
-                        None
-                    }
+                if let Ok(origin) = o.parse() { Some(origin) } else {
+                    tracing::warn!(origin = %o, "Invalid CORS origin in configuration, skipping");
+                    None
                 }
             })
             .collect();

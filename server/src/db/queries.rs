@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
+use std::fmt::Write;
 use tracing::error;
 use uuid::Uuid;
 
@@ -140,7 +141,7 @@ pub async fn update_user_avatar(
     .await
 }
 
-/// Update user's profile (display_name, email).
+/// Update user's profile (`display_name`, email).
 ///
 /// Only non-None values are updated.
 pub async fn update_user_profile(
@@ -152,8 +153,6 @@ pub async fn update_user_profile(
     // Build dynamic update query based on what's provided
     let mut query = String::from("UPDATE users SET updated_at = NOW()");
     let mut param_idx = 1;
-
-    use std::fmt::Write;
 
     if display_name.is_some() {
         write!(query, ", display_name = ${param_idx}").unwrap();
@@ -726,7 +725,7 @@ pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool>
     Ok(result.rows_affected() > 0)
 }
 
-/// Search messages within a guild using PostgreSQL full-text search.
+/// Search messages within a guild using `PostgreSQL` full-text search.
 /// Uses `websearch_to_tsquery` for user-friendly query syntax (supports AND, OR, quotes).
 pub async fn search_messages(
     pool: &PgPool,
@@ -1017,15 +1016,12 @@ pub async fn is_setup_complete(pool: &PgPool) -> sqlx::Result<bool> {
             e
         })?;
 
-    match value.as_bool() {
-        Some(b) => Ok(b),
-        None => {
-            tracing::warn!(
-                actual_value = ?value,
-                "setup_complete config value is not a boolean, defaulting to false"
-            );
-            Ok(false)
-        }
+    if let Some(b) = value.as_bool() { Ok(b) } else {
+        tracing::warn!(
+            actual_value = ?value,
+            "setup_complete config value is not a boolean, defaulting to false"
+        );
+        Ok(false)
     }
 }
 

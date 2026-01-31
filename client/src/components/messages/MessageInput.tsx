@@ -3,6 +3,7 @@ import { PlusCircle, Send, UploadCloud, X, File as FileIcon } from "lucide-solid
 import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
 import { uploadMessageWithFile, validateFileSize, getUploadLimitText } from "@/lib/tauri";
+import { showToast } from "@/components/ui/Toast";
 
 interface MessageInputProps {
   channelId: string;
@@ -118,6 +119,11 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       setContent("");
     } catch (err) {
       console.error("Send failed:", err);
+      showToast({
+        type: "error",
+        title: "Failed to Send Message",
+        message: "Could not send your message. Please try again.",
+      });
     } finally {
       setIsSending(false);
       inputRef?.focus();

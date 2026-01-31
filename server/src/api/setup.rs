@@ -317,9 +317,9 @@ pub async fn complete(
 
     // Update server configuration within transaction
     sqlx::query(
-        r#"UPDATE server_config
+        r"UPDATE server_config
            SET value = $2, updated_by = $3, updated_at = NOW()
-           WHERE key = $1"#,
+           WHERE key = $1",
     )
     .bind("server_name")
     .bind(serde_json::json!(body.server_name))
@@ -332,9 +332,9 @@ pub async fn complete(
     })?;
 
     sqlx::query(
-        r#"UPDATE server_config
+        r"UPDATE server_config
            SET value = $2, updated_by = $3, updated_at = NOW()
-           WHERE key = $1"#,
+           WHERE key = $1",
     )
     .bind("registration_policy")
     .bind(serde_json::json!(body.registration_policy))
@@ -347,9 +347,9 @@ pub async fn complete(
     })?;
 
     sqlx::query(
-        r#"UPDATE server_config
+        r"UPDATE server_config
            SET value = $2, updated_by = $3, updated_at = NOW()
-           WHERE key = $1"#,
+           WHERE key = $1",
     )
     .bind("terms_url")
     .bind(
@@ -367,9 +367,9 @@ pub async fn complete(
     })?;
 
     sqlx::query(
-        r#"UPDATE server_config
+        r"UPDATE server_config
            SET value = $2, updated_by = $3, updated_at = NOW()
-           WHERE key = $1"#,
+           WHERE key = $1",
     )
     .bind("privacy_url")
     .bind(

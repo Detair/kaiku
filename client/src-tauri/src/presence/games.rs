@@ -31,7 +31,7 @@ impl GamesDatabase {
     }
 
     /// Find a game by process name (case-insensitive).
-    /// Note: This ignores match_args filtering. Use `find_by_process_and_args` for full matching.
+    /// Note: This ignores `match_args` filtering. Use `find_by_process_and_args` for full matching.
     #[allow(dead_code)]
     pub fn find_by_process(&self, process_name: &str) -> Option<&GameEntry> {
         let lower = process_name.to_lowercase();
@@ -56,7 +56,7 @@ impl GamesDatabase {
 
     /// Find a game by process name and command line arguments.
     /// If the game entry has `match_args` AND the process is a generic launcher,
-    /// the command line must contain at least one of the match_args.
+    /// the command line must contain at least one of the `match_args`.
     /// This prevents false positives for generic launchers like javaw.exe.
     pub fn find_by_process_and_args(
         &self,

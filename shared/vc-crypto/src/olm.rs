@@ -126,6 +126,7 @@ impl OlmAccount {
 
     /// Get the Curve25519 public key for session creation.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn curve25519_key(&self) -> Curve25519PublicKey {
         self.inner.curve25519_key()
     }
