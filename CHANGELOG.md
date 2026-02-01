@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Admin actions: claim, resolve (dismiss/warn/ban/escalate)
   - Real-time admin notifications via WebSocket when new reports are created
   - Report statistics dashboard with counts by status
+- Integration tests for blocking and reporting (25 tests)
+  - 8 blocking tests: block/unblock, auth, self-block, prevents friend request/DM/message
+  - 6 report tests: create, auth, self-report, invalid target/category, duplicate
+  - 11 admin report tests: access control, list/filter, get, claim, resolve, stats
+  - Shared test helpers: `create_friendship`, `create_dm_channel`, `create_elevated_session`, `create_test_report`
 - Fixed friend list query bug where wrong column names prevented friends from loading
 - SSO/OIDC authentication integration
   - Admin-configurable identity providers (GitHub, Google, custom OIDC/OAuth2)

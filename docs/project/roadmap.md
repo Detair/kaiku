@@ -14,7 +14,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
 | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
-| **Phase 4** | 🔄 In Progress | 96% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC |
+| **Phase 4** | 🔄 In Progress | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
 | **Phase 5** | 📋 Planned | 0% | - |
 
 **Production Ready Features:**
@@ -35,6 +35,8 @@ This roadmap outlines the development path from the current prototype to a produ
 - ✅ First-user setup wizard with automatic admin bootstrap
 - ✅ Right-click context menus for messages, channels, and users
 - ✅ Smart emoji picker with viewport-aware positioning and auto-flip
+- ✅ User blocking with Redis-backed enforcement across DMs, friend requests, and voice
+- ✅ User reporting system with admin claim/resolve workflow and real-time notifications
 
 ---
 
@@ -326,6 +328,21 @@ This roadmap outlines the development path from the current prototype to a produ
     - ✅ Added click-outside, Escape key, and scroll-to-close behaviors
     - ✅ Portal-based rendering prevents parent container clipping
     - ✅ Smooth fade-in + scale animation (150ms ease-out)
+- [x] **[Safety] Absolute User Blocking** ✅
+  - Block/unblock via context menu with confirmation modal.
+  - Redis SET-based block cache (`blocks:{user_id}`, `blocked_by:{user_id}`) for O(1) lookups.
+  - Blocked users cannot send DMs, friend requests, or initiate voice calls.
+  - Messages from blocked users filtered in DM channel message lists.
+  - WebSocket events (typing, presence, messages) filtered in real-time.
+  - Block/unblock WebSocket events for instant client-side sync.
+  - 8 HTTP integration tests covering block, unblock, self-block, auth, and enforcement.
+- [x] **[Safety] User Reporting & Admin Workflow** ✅
+  - Report users or messages with categories (harassment, spam, inappropriate content, impersonation, other).
+  - Rate-limited (5 reports/hour) with duplicate prevention via unique index.
+  - Admin report queue with claim, resolve (dismiss/warn/ban/escalate), and stats endpoints.
+  - Real-time admin notifications via WebSocket when reports are created or resolved.
+  - Admin reports panel in dashboard with status/category filters and pagination.
+  - 17 HTTP integration tests covering user reports (6) and admin report management (11).
 ---
 
 ## Phase 5: Ecosystem & SaaS Readiness
@@ -364,32 +381,6 @@ This roadmap outlines the development path from the current prototype to a produ
       - Allow guild admins to toggle filter categories
       - Configure action policies per filter type
       - View moderation logs with context
-- [ ] **[Safety] User Reporting & Workflow**
-  - **Context:** Empower users to flag inappropriate content.
-  - **Implementation:**
-    - **Backend:**
-      - Create `reports` table with message/user references and report categories
-      - Store reporter info and timestamp
-      - Add API endpoints for creating and managing reports
-    - **Frontend:**
-      - Add "Report" action to Context Menu on messages and profiles
-      - Create report modal with category selection and description
-      - Implement `AdminQueue.tsx` UI for system admins
-      - Show historical context for reported messages (surrounding messages)
-      - Support bulk actions (dismiss, ban, warn)
-- [ ] **[Safety] Absolute User Blocking**
-  - **Context:** Ensure users can completely sever communication with malicious actors.
-  - **Implementation:**
-    - **Backend:**
-      - Update `db/queries.rs` to include block-aware message fetching
-      - Implement interceptors that drop message delivery between blocked users
-      - Filter WebSocket events (typing, presence, voice state) based on `blocked` status
-      - Block direct voice calls between blocked users
-    - **Frontend:**
-      - Implement message hiding in `MessageList.tsx` for blocked users
-      - Show "Blocked User" placeholder with option to reveal
-      - Hide blocked user profiles in shared guild channels
-      - Filter blocked users from autocomplete and search results
 - [ ] **[Ecosystem] Webhooks & Bot Gateway**
   - **Context:** Expand the platform's utility with third-party integrations.
   - **Implementation:**
@@ -578,8 +569,9 @@ This roadmap outlines the development path from the current prototype to a produ
   - items_after_statements: 1 fix (moved imports to module level)
 
 ### 2026-02-01
+- **User Blocking & Reports** (PR #141) - Absolute user blocking with Redis block cache, user report system with admin management, client UI (block/report modals, admin reports panel). 25 HTTP integration tests: blocking (8), reports (6), admin reports (11). Phase 4 now 100% complete.
 - **First User Setup HTTP Integration Tests** - Created reusable `TestApp` infrastructure in `server/tests/helpers/mod.rs` (first HTTP-level test infrastructure in the project). Added 8 HTTP integration tests for setup endpoints covering: status endpoint, config access control, auth requirement, admin requirement, successful completion with DB verification, validation errors, and idempotency. Filed follow-up issues for test architecture improvements: cleanup guards (#137), shared DB pool (#138), stateful middleware testing (#139), concurrent HTTP completion test (#140).
-- Marked **SSO / OIDC Integration** complete (PR #135) - Admin-configurable OIDC providers with dynamic discovery and automatic account linking. Phase 4 completion increased to 92% (22 of 24 features complete).
+- Marked **SSO / OIDC Integration** complete (PR #135) - Admin-configurable OIDC providers with dynamic discovery and automatic account linking.
 - Completed **Screen Share Tauri Parity, Tests & Viewer Shortcuts** (PR #134) - Added ScreenShareStarted/Stopped/QualityChanged to Tauri WebSocket client, keyboard shortcuts (Escape/V/M/F) for ScreenShareViewer, exported screen share handlers for testability, server event serialization tests, and client handler tests.
 
 ### 2026-01-30
