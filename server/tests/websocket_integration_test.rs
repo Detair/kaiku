@@ -15,7 +15,7 @@ async fn test_websocket_broadcast_flow() {
     let db_pool: PgPool = db::create_pool(&config.database_url)
         .await
         .expect("Failed to connect to DB");
-    let redis: RedisClient = db::create_redis_client(&config.redis_url)
+    let redis = db::create_redis_client(&config.redis_url)
         .await
         .expect("Failed to connect to Redis");
 
@@ -29,6 +29,8 @@ async fn test_websocket_broadcast_flow() {
         config.clone(),
         None,
         sfu,
+        None,
+        None,
         None,
     );
 

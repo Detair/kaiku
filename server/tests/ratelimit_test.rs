@@ -3,24 +3,25 @@
 //! These tests require a running Redis instance at `redis://localhost:6379`.
 //! Run with: `cargo test ratelimit --ignored -- --nocapture`
 
-use fred::prelude::*;
 use std::collections::HashSet;
+use vc_server::config::Config;
+use vc_server::db;
 use vc_server::ratelimit::{
     FailedAuthConfig, LimitConfig, RateLimitCategory, RateLimitConfig, RateLimiter, RateLimits,
 };
 
 /// Helper to create a test Redis client connected to localhost.
-async fn create_test_redis() -> RedisClient {
-    let config = RedisConfig::from_url("redis://localhost:6379").expect("Invalid Redis URL");
-    let client = RedisClient::new(config, None, None, None);
-    client.init().await.expect("Failed to connect to Redis");
-    client
+async fn create_test_redis() -> fred::clients::Client {
+    let config = Config::default_for_test();
+    db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Failed to connect to Redis")
 }
 
 /// Helper to create a rate limiter with test-specific configuration.
 ///
 /// Uses a unique key prefix to avoid conflicts between test runs.
-async fn create_test_limiter(redis: RedisClient) -> RateLimiter {
+async fn create_test_limiter(redis: fred::clients::Client) -> RateLimiter {
     let config = RateLimitConfig {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),

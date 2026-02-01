@@ -593,8 +593,20 @@ pub async fn delete(
 mod tests {
     use super::*;
     use crate::api::AppState;
+    use crate::auth::AuthUser;
     use crate::config::Config;
     use sqlx::PgPool;
+
+    fn test_auth_user(user: &db::User) -> AuthUser {
+        AuthUser {
+            id: user.id,
+            username: user.username.clone(),
+            display_name: user.display_name.clone(),
+            email: user.email.clone(),
+            avatar_url: user.avatar_url.clone(),
+            mfa_enabled: false,
+        }
+    }
 
     /// Helper to create test app state
     async fn create_test_state(pool: PgPool) -> AppState {
@@ -611,6 +623,7 @@ mod tests {
             crate::voice::SfuServer::new(std::sync::Arc::new(Config::default_for_test()), None).unwrap(),
             None, // No rate limiter in tests
             None, // No email service in tests
+            None, // No OIDC in tests
         )
     }
 
@@ -668,7 +681,7 @@ mod tests {
             limit: 50,
         };
 
-        let result = list(State(state), Path(channel.id), Query(query))
+        let result = list(State(state), test_auth_user(&user1), Path(channel.id), Query(query))
             .await
             .expect("Handler failed");
 
@@ -764,7 +777,7 @@ mod tests {
             limit: 50,
         };
 
-        let result = list(State(state), Path(channel.id), Query(query))
+        let result = list(State(state), test_auth_user(&user), Path(channel.id), Query(query))
             .await
             .expect("Handler should not fail");
 
@@ -821,7 +834,8 @@ mod tests {
             limit: 3,
         };
 
-        let result1 = list(State(state.clone()), Path(channel.id), Query(query1))
+        let auth = test_auth_user(&user);
+        let result1 = list(State(state.clone()), auth.clone(), Path(channel.id), Query(query1))
             .await
             .expect("First page failed");
 
@@ -843,7 +857,7 @@ mod tests {
             limit: 3,
         };
 
-        let result2 = list(State(state.clone()), Path(channel.id), Query(query2))
+        let result2 = list(State(state.clone()), auth.clone(), Path(channel.id), Query(query2))
             .await
             .expect("Second page failed");
 
@@ -866,7 +880,7 @@ mod tests {
             limit: 100,
         };
 
-        let result_all = list(State(state), Path(channel.id), Query(query_all))
+        let result_all = list(State(state), auth, Path(channel.id), Query(query_all))
             .await
             .expect("Fetch all failed");
 
@@ -878,6 +892,10 @@ mod tests {
     #[sqlx::test]
     async fn test_list_messages_empty_channel(pool: PgPool) {
         let state = create_test_state(pool.clone()).await;
+
+        let user = db::create_user(&pool, "emptyuser", "Empty User", None, "hash")
+            .await
+            .expect("Failed to create user");
 
         // Create channel with no messages
         let channel = db::create_channel(
@@ -898,7 +916,7 @@ mod tests {
             limit: 50,
         };
 
-        let result = list(State(state), Path(channel.id), Query(query))
+        let result = list(State(state), test_auth_user(&user), Path(channel.id), Query(query))
             .await
             .expect("Handler failed");
 
@@ -980,7 +998,8 @@ mod tests {
             limit: 0,
         };
 
-        let result_zero = list(State(state.clone()), Path(channel.id), Query(query_zero))
+        let auth = test_auth_user(&user);
+        let result_zero = list(State(state.clone()), auth.clone(), Path(channel.id), Query(query_zero))
             .await
             .expect("Handler failed");
 
@@ -992,7 +1011,7 @@ mod tests {
             limit: 200,
         };
 
-        let result_large = list(State(state), Path(channel.id), Query(query_large))
+        let result_large = list(State(state), auth, Path(channel.id), Query(query_large))
             .await
             .expect("Handler failed");
 
