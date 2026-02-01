@@ -1425,6 +1425,106 @@ export async function blockUser(userId: string): Promise<Friendship> {
   return httpRequest<Friendship>("POST", `/api/friends/${userId}/block`);
 }
 
+export async function unblockUser(userId: string): Promise<void> {
+  await httpRequest<void>("DELETE", `/api/friends/${userId}/block`);
+}
+
+// Report Commands
+
+export interface CreateReportRequest {
+  target_type: "user" | "message";
+  target_user_id: string;
+  target_message_id?: string;
+  category: "harassment" | "spam" | "inappropriate_content" | "impersonation" | "other";
+  description?: string;
+}
+
+export interface ReportResponse {
+  id: string;
+  reporter_id: string;
+  target_type: string;
+  target_user_id: string;
+  target_message_id: string | null;
+  category: string;
+  description: string | null;
+  status: string;
+  created_at: string;
+}
+
+export async function createReport(request: CreateReportRequest): Promise<ReportResponse> {
+  return httpRequest<ReportResponse>("POST", "/api/reports", request);
+}
+
+// Admin Report Commands
+
+export interface AdminReportResponse {
+  id: string;
+  reporter_id: string;
+  target_type: string;
+  target_user_id: string;
+  target_message_id: string | null;
+  category: string;
+  description: string | null;
+  status: string;
+  assigned_admin_id: string | null;
+  resolution_action: string | null;
+  resolution_note: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedReports {
+  items: AdminReportResponse[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ReportStatsResponse {
+  pending: number;
+  reviewing: number;
+  resolved: number;
+  dismissed: number;
+}
+
+export async function adminListReports(
+  limit: number,
+  offset: number,
+  status?: string,
+  category?: string,
+): Promise<PaginatedReports> {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  if (status) params.set("status", status);
+  if (category) params.set("category", category);
+  return httpRequest<PaginatedReports>("GET", `/api/admin/reports?${params.toString()}`);
+}
+
+export async function adminGetReport(reportId: string): Promise<AdminReportResponse> {
+  return httpRequest<AdminReportResponse>("GET", `/api/admin/reports/${reportId}`);
+}
+
+export async function adminClaimReport(reportId: string): Promise<AdminReportResponse> {
+  return httpRequest<AdminReportResponse>("POST", `/api/admin/reports/${reportId}/claim`);
+}
+
+export async function adminResolveReport(
+  reportId: string,
+  resolution_action: string,
+  resolution_note?: string,
+): Promise<AdminReportResponse> {
+  return httpRequest<AdminReportResponse>("POST", `/api/admin/reports/${reportId}/resolve`, {
+    resolution_action,
+    resolution_note,
+  });
+}
+
+export async function adminGetReportStats(): Promise<ReportStatsResponse> {
+  return httpRequest<ReportStatsResponse>("GET", "/api/admin/reports/stats");
+}
+
 // DM Commands
 
 export interface DMIconResponse {

@@ -1087,6 +1087,25 @@ export function handleGuildUnsuspendedEvent(guildId: string, guildName: string):
 }
 
 // ============================================================================
+// Report Event Handlers
+// ============================================================================
+
+/**
+ * Handle new report created event from WebSocket
+ */
+export function handleReportCreatedEvent(reportId: string, category: string, targetType: string): void {
+  console.log(`[Admin] Report created: ${reportId} (${category}, ${targetType})`);
+  // The admin dashboard will reload reports when the panel is active
+}
+
+/**
+ * Handle report resolved event from WebSocket
+ */
+export function handleReportResolvedEvent(reportId: string): void {
+  console.log(`[Admin] Report resolved: ${reportId}`);
+}
+
+// ============================================================================
 // Undo Functionality
 // ============================================================================
 

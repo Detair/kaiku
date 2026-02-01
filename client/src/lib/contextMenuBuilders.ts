@@ -4,14 +4,39 @@
  * Reusable context menu item builders for common entities (users, etc.).
  */
 
-import { User, MessageSquare, UserPlus, Ban, Copy } from "lucide-solid";
+import { User, MessageSquare, UserPlus, Ban, Copy, Flag } from "lucide-solid";
 import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
-
 interface UserMenuTarget {
   id: string;
   username: string;
   display_name?: string;
+}
+
+// Block confirm state (used by BlockConfirmModal)
+let pendingBlockTarget: UserMenuTarget | null = null;
+let showBlockConfirmCallback: ((target: UserMenuTarget) => void) | null = null;
+let showReportCallback: ((target: { userId: string; username: string; messageId?: string }) => void) | null = null;
+
+/**
+ * Register callback to show the block confirmation modal.
+ */
+export function onShowBlockConfirm(callback: (target: UserMenuTarget) => void): void {
+  showBlockConfirmCallback = callback;
+}
+
+/**
+ * Register callback to show the report modal.
+ */
+export function onShowReport(callback: (target: { userId: string; username: string; messageId?: string }) => void): void {
+  showReportCallback = callback;
+}
+
+/**
+ * Get the pending block target (for modal use).
+ */
+export function getPendingBlockTarget(): UserMenuTarget | null {
+  return pendingBlockTarget;
 }
 
 /**
@@ -53,12 +78,24 @@ export function showUserContextMenu(event: MouseEvent, user: UserMenuTarget): vo
       },
       { separator: true },
       {
+        label: "Report",
+        icon: Flag,
+        danger: true,
+        action: () => {
+          if (showReportCallback) {
+            showReportCallback({ userId: user.id, username: user.username });
+          }
+        },
+      },
+      {
         label: "Block",
         icon: Ban,
         danger: true,
         action: () => {
-          // TODO: block user
-          console.log("Block:", user.id);
+          pendingBlockTarget = user;
+          if (showBlockConfirmCallback) {
+            showBlockConfirmCallback(user);
+          }
         },
       },
     );

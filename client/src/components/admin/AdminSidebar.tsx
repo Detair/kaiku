@@ -10,9 +10,9 @@
  */
 
 import { Component, For } from "solid-js";
-import { LayoutDashboard, Users, Building2, ScrollText, Settings } from "lucide-solid";
+import { LayoutDashboard, Users, Building2, ScrollText, Settings, Flag } from "lucide-solid";
 
-export type AdminPanel = "overview" | "users" | "guilds" | "audit-log" | "settings";
+export type AdminPanel = "overview" | "users" | "guilds" | "reports" | "audit-log" | "settings";
 
 interface AdminSidebarProps {
   activePanel: AdminPanel;
@@ -24,6 +24,7 @@ const AdminSidebar: Component<AdminSidebarProps> = (props) => {
     { id: "overview", label: "Overview", icon: LayoutDashboard },
     { id: "users", label: "Users", icon: Users },
     { id: "guilds", label: "Guilds", icon: Building2 },
+    { id: "reports", label: "Reports", icon: Flag },
     { id: "audit-log", label: "Audit Log", icon: ScrollText },
     { id: "settings", label: "Settings", icon: Settings },
   ];

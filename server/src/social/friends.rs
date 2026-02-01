@@ -5,6 +5,7 @@ use axum::{
 use uuid::Uuid;
 use validator::Validate;
 
+use super::block_cache;
 use super::types::{Friend, Friendship, FriendshipStatus, SendFriendRequestBody, SocialError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -31,6 +32,11 @@ pub async fn send_friend_request(
     // Cannot friend yourself
     if target_id == auth.id {
         return Err(SocialError::SelfFriendRequest);
+    }
+
+    // Check block in either direction via Redis cache
+    if let Ok(true) = block_cache::is_blocked_either_direction(&state.redis, auth.id, target_id).await {
+        return Err(SocialError::Blocked);
     }
 
     // Check if friendship already exists (in either direction)
@@ -322,10 +328,10 @@ pub async fn block_user(
     .fetch_optional(&state.db)
     .await?;
 
-    if let Some(friendship) = existing {
+    let result = if let Some(friendship) = existing {
         // If we're the requester, update status to blocked
         if friendship.requester_id == auth.id {
-            let updated = sqlx::query_as::<_, Friendship>(
+            sqlx::query_as::<_, Friendship>(
                 r"UPDATE friendships
                    SET status = 'blocked', updated_at = NOW()
                    WHERE id = $1
@@ -333,30 +339,93 @@ pub async fn block_user(
             )
             .bind(friendship.id)
             .fetch_one(&state.db)
-            .await?;
+            .await?
+        } else {
+            // If they're the requester, delete and create new blocked entry
+            sqlx::query!("DELETE FROM friendships WHERE id = $1", friendship.id)
+                .execute(&state.db)
+                .await?;
 
-            return Ok(Json(updated));
+            let friendship_id = Uuid::now_v7();
+            sqlx::query_as::<_, Friendship>(
+                r"INSERT INTO friendships (id, requester_id, addressee_id, status)
+                   VALUES ($1, $2, $3, 'blocked')
+                   RETURNING id, requester_id, addressee_id, status, created_at, updated_at",
+            )
+            .bind(friendship_id)
+            .bind(auth.id)
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await?
         }
-        // If they're the requester, delete and create new blocked entry
-        sqlx::query!("DELETE FROM friendships WHERE id = $1", friendship.id)
-            .execute(&state.db)
-            .await?;
+    } else {
+        // Create new blocked friendship
+        let friendship_id = Uuid::now_v7();
+        sqlx::query_as::<_, Friendship>(
+            r"INSERT INTO friendships (id, requester_id, addressee_id, status)
+               VALUES ($1, $2, $3, 'blocked')
+               RETURNING id, requester_id, addressee_id, status, created_at, updated_at",
+        )
+        .bind(friendship_id)
+        .bind(auth.id)
+        .bind(user_id)
+        .fetch_one(&state.db)
+        .await?
+    };
+
+    // Update Redis block cache
+    if let Err(e) = block_cache::add_block(&state.redis, auth.id, user_id).await {
+        tracing::warn!("Failed to update block cache: {}", e);
     }
 
-    // Create new blocked friendship
-    let friendship_id = Uuid::now_v7();
-    let blocked = sqlx::query_as::<_, Friendship>(
-        r"INSERT INTO friendships (id, requester_id, addressee_id, status)
-           VALUES ($1, $2, $3, 'blocked')
-           RETURNING id, requester_id, addressee_id, status, created_at, updated_at",
+    // Broadcast UserBlocked to all of the blocker's sessions
+    let event = ServerEvent::UserBlocked {
+        user_id,
+    };
+    if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
+        tracing::warn!("Failed to broadcast UserBlocked event: {}", e);
+    }
+
+    Ok(Json(result))
+}
+
+/// DELETE /api/friends/:id/block
+/// Unblock a user
+pub async fn unblock_user(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<()>, SocialError> {
+    // Find the blocked friendship where we are the blocker
+    let friendship = sqlx::query_as::<_, Friendship>(
+        r"SELECT * FROM friendships
+           WHERE requester_id = $1 AND addressee_id = $2 AND status = 'blocked'"
     )
-    .bind(friendship_id)
     .bind(auth.id)
     .bind(user_id)
-    .fetch_one(&state.db)
-    .await?;
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(SocialError::FriendshipNotFound)?;
 
-    Ok(Json(blocked))
+    // Delete the blocked friendship row
+    sqlx::query!("DELETE FROM friendships WHERE id = $1", friendship.id)
+        .execute(&state.db)
+        .await?;
+
+    // Update Redis block cache
+    if let Err(e) = block_cache::remove_block(&state.redis, auth.id, user_id).await {
+        tracing::warn!("Failed to update block cache: {}", e);
+    }
+
+    // Broadcast UserUnblocked to all of the blocker's sessions
+    let event = ServerEvent::UserUnblocked {
+        user_id,
+    };
+    if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
+        tracing::warn!("Failed to broadcast UserUnblocked event: {}", e);
+    }
+
+    Ok(Json(()))
 }
 
 /// DELETE /api/friends/:id

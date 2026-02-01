@@ -9175,6 +9175,7 @@ dependencies = [
  "fred",
  "futures",
  "hex",
+ "http-body-util",
  "image",
  "jsonwebtoken",
  "lazy_static",

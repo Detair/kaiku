@@ -18,7 +18,7 @@ import {
   participantLeft,
   type EndReason,
 } from "./call";
-import { loadFriends, loadPendingRequests } from "./friends";
+import { loadFriends, loadPendingRequests, handleUserBlocked, handleUserUnblocked } from "./friends";
 import { playNotification } from "@/lib/sound";
 import { getChannel, channelsState, handleChannelReadEvent, incrementUnreadCount } from "./channels";
 import { currentUser } from "./auth";
@@ -657,6 +657,24 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       Promise.all([loadFriends(), loadPendingRequests()]);
       break;
 
+    // Block events
+    case "user_blocked":
+      handleUserBlocked(event.user_id);
+      break;
+
+    case "user_unblocked":
+      handleUserUnblocked(event.user_id);
+      break;
+
+    // Admin report events
+    case "admin_report_created":
+      await handleAdminReportCreated(event.report_id, event.category, event.target_type);
+      break;
+
+    case "admin_report_resolved":
+      await handleAdminReportResolved(event.report_id);
+      break;
+
     // State sync events
     case "patch":
       await handlePatchEvent(event.entity_type, event.entity_id, event.diff);
@@ -1219,6 +1237,18 @@ async function handlePatchEvent(entityType: string, entityId: string, diff: Reco
     default:
       console.warn(`[WebSocket] Unknown patch entity type: ${entityType}`);
   }
+}
+
+// Admin report event handlers
+
+async function handleAdminReportCreated(reportId: string, category: string, targetType: string): Promise<void> {
+  const { handleReportCreatedEvent } = await import("@/stores/admin");
+  handleReportCreatedEvent(reportId, category, targetType);
+}
+
+async function handleAdminReportResolved(reportId: string): Promise<void> {
+  const { handleReportResolvedEvent } = await import("@/stores/admin");
+  handleReportResolvedEvent(reportId);
 }
 
 // Export stores for reading

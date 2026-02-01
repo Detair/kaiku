@@ -16,6 +16,7 @@ use crate::{
     chat::uploads::UploadError,
     auth::AuthUser,
     db::{self, Channel, ChannelType},
+    social::block_cache,
     ws::{broadcast_to_user, ServerEvent},
 };
 
@@ -299,6 +300,18 @@ pub async fn create_dm(
             .ok_or_else(|| {
                 ChannelError::Validation("One or more participants not found".to_string())
             })?;
+    }
+
+    // For 1:1 DMs, check if either user has blocked the other
+    if body.participant_ids.len() == 1 {
+        if block_cache::is_blocked_either_direction(&state.redis, auth.id, body.participant_ids[0])
+            .await
+            .unwrap_or(false)
+        {
+            return Err(ChannelError::Validation(
+                "Cannot create DM with this user".to_string(),
+            ));
+        }
     }
 
     let channel = if body.participant_ids.len() == 1 {

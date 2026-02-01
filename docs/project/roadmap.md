@@ -14,7 +14,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Phase 1** | ✅ Complete | 100% | Voice state sync, audio device selection |
 | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
-| **Phase 4** | 🔄 In Progress | 88% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password |
+| **Phase 4** | 🔄 In Progress | 96% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC |
 | **Phase 5** | 📋 Planned | 0% | - |
 
 **Production Ready Features:**
@@ -267,22 +267,19 @@ This roadmap outlines the development path from the current prototype to a produ
   - PostgreSQL row-level locking to prevent race conditions.
   - Setup wizard with server configuration (name, registration policy, legal URLs).
   - Compare-and-swap pattern for atomic setup completion.
+  - HTTP integration tests with reusable `TestApp` infrastructure (8 tests covering auth, admin, validation, idempotency).
   - **Tech Debt:**
-    - [ ] Add HTTP integration tests for authorization bypass scenarios
-      - Verify non-admin cannot complete setup (403 error)
-      - Verify unauthenticated requests return 401
-      - Test concurrent setup attempts from different admins
-      - *Note:* Requires test server infrastructure (axum test utils or similar)
-    - [ ] Additional error handling improvements
-      - Review remaining error response parsing patterns
-      - Consider retry mechanisms for transient failures
-      - *Note:* Lower priority - critical issues already addressed
+    - [x] Add HTTP integration tests for authorization bypass scenarios ✅
+    - [ ] Add HTTP-level concurrent setup completion test (Issue #140)
+    - [ ] Test infrastructure improvements: cleanup guards (Issue #137), shared DB pool (Issue #138), stateful middleware testing (Issue #139)
 - [x] **[Auth] Forgot Password Workflow** ✅
   - Email-based password reset with secure token generation.
   - Rate-limited reset requests to prevent abuse.
   - Token expiration (e.g., 1 hour) with single-use enforcement.
-- [ ] **[Auth] SSO / OIDC Integration**
-  - Enable "Login with Google/Microsoft" via `openidconnect`.
+- [x] **[Auth] SSO / OIDC Integration** ✅ (PR #135)
+  - Admin-configurable OIDC providers (Google, Microsoft, etc.) via `openidconnect`.
+  - Dynamic provider discovery and registration through admin dashboard.
+  - Seamless login flow with automatic account linking.
 - [x] **[Voice] Screen Sharing** ✅
   - SFU handles multiple video tracks per room with per-channel limits.
   - Spotlight/PiP/Theater viewer modes with keyboard shortcuts (Escape/V/M/F).
@@ -329,9 +326,6 @@ This roadmap outlines the development path from the current prototype to a produ
     - ✅ Added click-outside, Escape key, and scroll-to-close behaviors
     - ✅ Portal-based rendering prevents parent container clipping
     - ✅ Smooth fade-in + scale animation (150ms ease-out)
-- [ ] **[Client] Mobile Support**
-  - Adapt Tauri frontend for mobile or begin Flutter/Native implementation.
-
 ---
 
 ## Phase 5: Ecosystem & SaaS Readiness
@@ -530,6 +524,8 @@ This roadmap outlines the development path from the current prototype to a produ
 ## Phase 6: Competitive Differentiators & Mastery
 *Goal: Surpass industry leaders with unique utility and sovereignty features.*
 
+- [ ] **[Client] Mobile Support**
+  - Adapt Tauri frontend for mobile or begin Flutter/Native implementation.
 - [ ] **[UX] Personal Workspaces (Favorites v2)**
   - **Context:** Solve "Discord Bloat" by letting users aggregate channels from disparate guilds.
   - **Strategy:** Allow users to create custom "Workspaces" that act as virtual folders. Users can drag-and-drop channels from any guild into these workspaces for a unified Mission Control view.
@@ -582,12 +578,14 @@ This roadmap outlines the development path from the current prototype to a produ
   - items_after_statements: 1 fix (moved imports to module level)
 
 ### 2026-02-01
+- **First User Setup HTTP Integration Tests** - Created reusable `TestApp` infrastructure in `server/tests/helpers/mod.rs` (first HTTP-level test infrastructure in the project). Added 8 HTTP integration tests for setup endpoints covering: status endpoint, config access control, auth requirement, admin requirement, successful completion with DB verification, validation errors, and idempotency. Filed follow-up issues for test architecture improvements: cleanup guards (#137), shared DB pool (#138), stateful middleware testing (#139), concurrent HTTP completion test (#140).
+- Marked **SSO / OIDC Integration** complete (PR #135) - Admin-configurable OIDC providers with dynamic discovery and automatic account linking. Phase 4 completion increased to 92% (22 of 24 features complete).
 - Completed **Screen Share Tauri Parity, Tests & Viewer Shortcuts** (PR #134) - Added ScreenShareStarted/Stopped/QualityChanged to Tauri WebSocket client, keyboard shortcuts (Escape/V/M/F) for ScreenShareViewer, exported screen share handlers for testability, server event serialization tests, and client handler tests.
 
 ### 2026-01-30
 - Completed **Content Spoilers & Enhanced Mentions** (PR #128) - Content spoilers with `||text||` syntax for hiding sensitive information, MENTION_EVERYONE permission (bit 23) for controlling @everyone/@here mentions, server-side permission validation, ReDoS protection (500 char limit), XSS prevention via DOMPurify, 3 integration tests and 9 unit tests.
 - Completed **Home Page Unread Aggregator** (PR #127) - Centralized view of unread messages across all guilds and DMs in modular sidebar with optimized database queries, direct navigation, comprehensive error handling with toast notifications, and automatic refresh on window focus.
-- Phase 4 completion increased to 88% (21 of 24 features complete).
+- Phase 4 completion increased to 88% (21 of 24 features complete at the time).
 
 ### 2026-01-29
 - Completed **First User Setup (Admin Bootstrap)** (PR #110) - First user automatically receives system admin permissions with PostgreSQL row-level locking to prevent race conditions, setup wizard for server configuration, and atomic setup completion using compare-and-swap pattern.

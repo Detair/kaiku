@@ -393,6 +393,12 @@ export type ServerEvent =
   | { type: "friend_request_accepted"; friendship_id: string; user_id: string; username: string; display_name: string; avatar_url: string | null }
   // DM metadata events
   | { type: "dm_name_updated"; channel_id: string; name: string; updated_by: string }
+  // Block events
+  | { type: "user_blocked"; user_id: string }
+  | { type: "user_unblocked"; user_id: string }
+  // Admin report events
+  | { type: "admin_report_created"; report_id: string; category: string; target_type: string }
+  | { type: "admin_report_resolved"; report_id: string }
   // State sync events
   | { type: "patch"; entity_type: string; entity_id: string; diff: Record<string, unknown> };
 

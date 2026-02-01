@@ -158,6 +158,45 @@ export async function blockUser(userId: string): Promise<void> {
 }
 
 /**
+ * Unblock a user
+ */
+export async function unblockUser(userId: string): Promise<void> {
+  try {
+    await tauri.unblockUser(userId);
+    // Remove from blocked list
+    setFriendsState({
+      blocked: friendsState.blocked.filter((f) => f.user_id !== userId),
+    });
+  } catch (err) {
+    console.error("Failed to unblock user:", err);
+    throw err;
+  }
+}
+
+/**
+ * Handle UserBlocked event from WebSocket
+ */
+export function handleUserBlocked(userId: string): void {
+  // Remove from friends list if present
+  setFriendsState({
+    friends: friendsState.friends.filter((f) => f.user_id !== userId),
+    pendingRequests: friendsState.pendingRequests.filter((f) => f.user_id !== userId),
+  });
+  // Reload blocked list to show new entry
+  loadBlocked();
+}
+
+/**
+ * Handle UserUnblocked event from WebSocket
+ */
+export function handleUserUnblocked(userId: string): void {
+  // Remove from blocked list
+  setFriendsState({
+    blocked: friendsState.blocked.filter((f) => f.user_id !== userId),
+  });
+}
+
+/**
  * Get online friends
  */
 export function getOnlineFriends(): Friend[] {

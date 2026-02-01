@@ -31,7 +31,7 @@ use crate::{
     chat::S3Client,
     config::Config,
     email::EmailService,
-    guild, pages,
+    guild, moderation, pages,
     ratelimit::{rate_limit_by_user, with_category, RateLimitCategory, RateLimiter},
     social, voice,
     voice::SfuServer,
@@ -188,6 +188,7 @@ pub fn create_router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .merge(api_routes)
         .nest("/api", social_routes)
+        .route("/api/reports", post(moderation::handlers::create_report))
         .nest("/api/admin", admin_routes)
         .layer(from_fn_with_state(state.clone(), auth::require_auth));
 

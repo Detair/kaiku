@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed stale scripts (resume-session.sh, update-deps.sh)
 
 ### Added
+- Absolute user blocking with server-side enforcement
+  - Block/unblock via context menu with confirmation modal
+  - Blocked users cannot send DMs, friend requests, or initiate calls
+  - Messages from blocked users are filtered in channel message lists
+  - WebSocket events (typing, presence, messages) from blocked users are filtered in real-time
+  - Redis SET-based block cache for low-latency enforcement
+  - Block/unblock WebSocket events for instant client-side sync
+- User reporting system
+  - Users can report other users or specific messages (harassment, spam, inappropriate content, impersonation, other)
+  - Rate-limited to 5 reports per hour, with duplicate prevention for active reports
+  - Admin report queue with status/category filters and pagination
+  - Admin actions: claim, resolve (dismiss/warn/ban/escalate)
+  - Real-time admin notifications via WebSocket when new reports are created
+  - Report statistics dashboard with counts by status
+- Fixed friend list query bug where wrong column names prevented friends from loading
 - SSO/OIDC authentication integration
   - Admin-configurable identity providers (GitHub, Google, custom OIDC/OAuth2)
   - PKCE S256 + state + nonce security for all flows

@@ -17,6 +17,7 @@ use crate::{
     auth::AuthUser,
     db,
     permissions::{get_member_permission_context, GuildPermissions},
+    social::block_cache,
     ws::{broadcast_to_channel, ServerEvent},
 };
 
@@ -30,6 +31,7 @@ pub enum MessageError {
     NotFound,
     ChannelNotFound,
     Forbidden,
+    Blocked,
     Validation(String),
     Database(sqlx::Error),
 }
@@ -40,6 +42,7 @@ impl IntoResponse for MessageError {
             Self::NotFound => (StatusCode::NOT_FOUND, "MESSAGE_NOT_FOUND", "Message not found".to_string()),
             Self::ChannelNotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", "Channel not found".to_string()),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Access denied".to_string()),
+            Self::Blocked => (StatusCode::FORBIDDEN, "BLOCKED", "Cannot send messages to this user".to_string()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error".to_string()),
         };
@@ -223,6 +226,7 @@ pub struct UpdateMessageRequest {
 /// Use the `next_cursor` value as `before` parameter to fetch the next page.
 pub async fn list(
     State(state): State<AppState>,
+    auth_user: AuthUser,
     Path(channel_id): Path<Uuid>,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Json<CursorPaginatedResponse<MessageResponse>>, MessageError> {
@@ -231,11 +235,26 @@ pub async fn list(
         .await?
         .ok_or(MessageError::ChannelNotFound)?;
 
+    // Load combined block set for filtering
+    let blocked_ids = block_cache::load_blocked_users(&state.db, &state.redis, auth_user.id)
+        .await
+        .unwrap_or_default();
+    let blocked_by_ids = block_cache::load_blocked_by(&state.db, &state.redis, auth_user.id)
+        .await
+        .unwrap_or_default();
+    let combined_block_set: std::collections::HashSet<Uuid> =
+        blocked_ids.union(&blocked_by_ids).copied().collect();
+
     // Limit between 1 and 100
     let limit = query.limit.clamp(1, 100);
 
     // Fetch one extra message to determine if there are more
     let mut messages = db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
+
+    // Filter out messages from blocked users (application-layer filtering)
+    if !combined_block_set.is_empty() {
+        messages.retain(|m| !combined_block_set.contains(&m.user_id));
+    }
 
     // Check if there are more messages beyond the requested limit
     let has_more = messages.len() as i64 > limit;
@@ -334,6 +353,28 @@ pub async fn create(
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(MessageError::ChannelNotFound)?;
+
+    // For DM channels, check if any participant has blocked the other
+    if channel.channel_type == db::ChannelType::Dm {
+        let participants: Vec<Uuid> = sqlx::query_scalar!(
+            "SELECT user_id FROM dm_participants WHERE channel_id = $1",
+            channel_id
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(MessageError::Database)?;
+
+        for &participant_id in &participants {
+            if participant_id != auth_user.id {
+                if block_cache::is_blocked_either_direction(&state.redis, auth_user.id, participant_id)
+                    .await
+                    .unwrap_or(false)
+                {
+                    return Err(MessageError::Blocked);
+                }
+            }
+        }
+    }
 
     // Check for @everyone/@here mentions in guild channels
     if let Some(guild_id) = channel.guild_id {

@@ -36,7 +36,7 @@ use chrono::{DateTime, Utc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{api::AppState, auth::jwt, db, voice::ScreenShareInfo, voice::Quality};
+use crate::{api::AppState, auth::jwt, db, social::block_cache, voice::ScreenShareInfo, voice::Quality};
 
 /// Minimum interval between activity updates (10 seconds).
 const ACTIVITY_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
@@ -548,6 +548,18 @@ pub enum ServerEvent {
         avatar_url: Option<String>,
     },
 
+    // Block events (broadcast to blocker's sessions)
+    /// A user was blocked (sent to blocker's sessions to update local state)
+    UserBlocked {
+        /// Blocked user ID.
+        user_id: Uuid,
+    },
+    /// A user was unblocked (sent to blocker's sessions to update local state)
+    UserUnblocked {
+        /// Unblocked user ID.
+        user_id: Uuid,
+    },
+
     // DM metadata events
     /// DM channel name was updated (broadcast to all participants)
     DmNameUpdated {
@@ -587,6 +599,22 @@ pub enum ServerEvent {
         guild_id: Uuid,
         /// Guild name for display.
         guild_name: String,
+    },
+
+    // Report events (broadcast to admin subscribers)
+    /// New report created
+    AdminReportCreated {
+        /// Report ID.
+        report_id: Uuid,
+        /// Report category.
+        category: String,
+        /// Target type (user or message).
+        target_type: String,
+    },
+    /// Report resolved
+    AdminReportResolved {
+        /// Report ID.
+        report_id: Uuid,
     },
 }
 
@@ -885,13 +913,39 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         }
     };
 
+    // Load block sets for event filtering
+    let blocked_ids = match block_cache::load_blocked_users(&state.db, &state.redis, user_id).await {
+        Ok(ids) => {
+            debug!("User {} has blocked {} users", user_id, ids.len());
+            ids
+        }
+        Err(e) => {
+            warn!("Failed to load blocked users for {}: {}", user_id, e);
+            HashSet::new()
+        }
+    };
+    let blocked_by_ids = match block_cache::load_blocked_by(&state.db, &state.redis, user_id).await {
+        Ok(ids) => {
+            debug!("User {} is blocked by {} users", user_id, ids.len());
+            ids
+        }
+        Err(e) => {
+            warn!("Failed to load blocked-by for {}: {}", user_id, e);
+            HashSet::new()
+        }
+    };
+
+    let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
+        Arc::new(tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()));
+
     // Spawn task to handle Redis pub/sub
     let redis_client = state.redis.clone();
     let tx_clone = tx.clone();
     let subscribed_clone = subscribed_channels.clone();
     let admin_subscribed_clone = admin_subscribed.clone();
+    let blocked_clone = blocked_users.clone();
     let pubsub_handle = tokio::spawn(async move {
-        handle_pubsub(redis_client, tx_clone, subscribed_clone, admin_subscribed_clone, user_id, friend_ids, guild_ids).await;
+        handle_pubsub(redis_client, tx_clone, subscribed_clone, admin_subscribed_clone, blocked_clone, user_id, friend_ids, guild_ids).await;
     });
 
     // Spawn task to forward events to WebSocket
@@ -1126,6 +1180,7 @@ async fn handle_pubsub(
     tx: mpsc::Sender<ServerEvent>,
     subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
+    blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     user_id: Uuid,
     friend_ids: Vec<Uuid>,
     guild_ids: Vec<Uuid>,
@@ -1199,11 +1254,40 @@ async fn handle_pubsub(
             if let Ok(channel_id) = Uuid::parse_str(uuid_str) {
                 // Check if we're subscribed to this channel
                 if subscribed_channels.read().await.contains(&channel_id) {
-                    // Parse and forward the event
+                    // Parse and forward the event (with block filtering)
                     if let Some(payload) = message.value.as_str() {
                         if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                            if tx.send(event).await.is_err() {
-                                break;
+                            // Filter events from blocked users
+                            let should_filter = match &event {
+                                ServerEvent::MessageNew { message, .. } => {
+                                    message.get("author")
+                                        .and_then(|a| a.get("id"))
+                                        .and_then(|id| id.as_str())
+                                        .and_then(|id| Uuid::parse_str(id).ok())
+                                        .is_some_and(|author_id| {
+                                            // Use try_read to avoid deadlocks in hot path
+                                            blocked_users.try_read()
+                                                .map(|set| set.contains(&author_id))
+                                                .unwrap_or(false)
+                                        })
+                                }
+                                ServerEvent::TypingStart { user_id: uid, .. }
+                                | ServerEvent::TypingStop { user_id: uid, .. }
+                                | ServerEvent::VoiceUserJoined { user_id: uid, .. }
+                                | ServerEvent::VoiceUserLeft { user_id: uid, .. }
+                                | ServerEvent::CallParticipantJoined { user_id: uid, .. }
+                                | ServerEvent::CallParticipantLeft { user_id: uid, .. } => {
+                                    blocked_users.try_read()
+                                        .map(|set| set.contains(uid))
+                                        .unwrap_or(false)
+                                }
+                                _ => false,
+                            };
+
+                            if !should_filter {
+                                if tx.send(event).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1214,6 +1298,17 @@ async fn handle_pubsub(
         else if channel_name == user_channel {
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
+                    // Handle block/unblock events to update in-memory set
+                    match &event {
+                        ServerEvent::UserBlocked { user_id: blocked_id } => {
+                            blocked_users.write().await.insert(*blocked_id);
+                        }
+                        ServerEvent::UserUnblocked { user_id: unblocked_id } => {
+                            blocked_users.write().await.remove(unblocked_id);
+                        }
+                        _ => {}
+                    }
+
                     if tx.send(event).await.is_err() {
                         break;
                     }
@@ -1235,11 +1330,23 @@ async fn handle_pubsub(
         }
         // Handle presence events (presence:{uuid})
         else if channel_name.starts_with("presence:") {
-            // Forward presence updates from friends directly
+            // Forward presence updates from friends (filter blocked users)
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    if tx.send(event).await.is_err() {
-                        break;
+                    let should_filter = match &event {
+                        ServerEvent::PresenceUpdate { user_id: uid, .. }
+                        | ServerEvent::RichPresenceUpdate { user_id: uid, .. } => {
+                            blocked_users.try_read()
+                                .map(|set| set.contains(uid))
+                                .unwrap_or(false)
+                        }
+                        _ => false,
+                    };
+
+                    if !should_filter {
+                        if tx.send(event).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -1285,11 +1392,11 @@ async fn get_user_friends(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Uuid>,
     let friends: Vec<(Uuid,)> = sqlx::query_as(
         r"
         SELECT CASE
-            WHEN user1_id = $1 THEN user2_id
-            ELSE user1_id
+            WHEN requester_id = $1 THEN addressee_id
+            ELSE requester_id
         END as friend_id
         FROM friendships
-        WHERE (user1_id = $1 OR user2_id = $1)
+        WHERE (requester_id = $1 OR addressee_id = $1)
         AND status = 'accepted'
         "
     )

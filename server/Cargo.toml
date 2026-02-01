@@ -101,6 +101,7 @@ tokio-util = { version = "0.7.18", features = ["io", "compat"] }
 [dev-dependencies]
 tokio-test = "0.4"
 serial_test = "3.2"
+http-body-util = "0.1"
 
 [features]
 # Enable test utilities for integration tests

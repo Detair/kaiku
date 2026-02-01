@@ -14,6 +14,7 @@ use crate::{
     api::AppState,
     auth::AuthUser,
     db::{self, ChannelType},
+    social::block_cache,
     voice::call::CallState,
     voice::call_service::{CallError, CallService},
     ws::{broadcast_to_channel, ServerEvent},
@@ -60,6 +61,7 @@ pub enum CallHandlerError {
     Call(CallError),
     NotFound,
     Forbidden,
+    Blocked,
     Database(String),
 }
 
@@ -80,6 +82,14 @@ impl IntoResponse for CallHandlerError {
                 Json(CallApiError {
                     error: "Not a participant of this DM".to_string(),
                     code: "forbidden".to_string(),
+                }),
+            )
+                .into_response(),
+            Self::Blocked => (
+                StatusCode::FORBIDDEN,
+                Json(CallApiError {
+                    error: "Cannot call this user".to_string(),
+                    code: "blocked".to_string(),
                 }),
             )
                 .into_response(),
@@ -184,6 +194,16 @@ pub async fn start_call(
         return Err(CallError::InvalidEvent("No other participants in DM".into()).into());
     }
 
+    // Check if any participant has blocked the other
+    for &target_id in &target_users {
+        if block_cache::is_blocked_either_direction(&state.redis, auth.id, target_id)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(CallHandlerError::Blocked);
+        }
+    }
+
     let call_service = CallService::new(state.redis.clone());
     let call_state = call_service
         .start_call(channel_id, auth.id, target_users)
@@ -226,7 +246,19 @@ pub async fn join_call(
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
     // Verify membership
-    verify_dm_participant(&state, channel_id, auth.id).await?;
+    let participants = verify_dm_participant(&state, channel_id, auth.id).await?;
+
+    // Check block status with other participants
+    for &participant_id in &participants {
+        if participant_id != auth.id {
+            if block_cache::is_blocked_either_direction(&state.redis, auth.id, participant_id)
+                .await
+                .unwrap_or(false)
+            {
+                return Err(CallHandlerError::Blocked);
+            }
+        }
+    }
 
     let call_service = CallService::new(state.redis.clone());
     let call_state = call_service.join_call(channel_id, auth.id).await?;

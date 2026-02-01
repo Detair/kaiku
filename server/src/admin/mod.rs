@@ -79,6 +79,13 @@ pub async fn cache_elevated_status(redis: &Client, user_id: Uuid, is_elevated: b
 pub fn router(state: AppState) -> Router<AppState> {
     // Elevated routes (require both system admin and elevated session)
     let elevated_routes = Router::new()
+        // Report management
+        .route("/reports", get(crate::moderation::admin_handlers::list_reports))
+        .route("/reports/stats", get(crate::moderation::admin_handlers::report_stats))
+        .route("/reports/{id}", get(crate::moderation::admin_handlers::get_report))
+        .route("/reports/{id}/claim", post(crate::moderation::admin_handlers::claim_report))
+        .route("/reports/{id}/resolve", post(crate::moderation::admin_handlers::resolve_report))
+        // User management
         .route(
             "/users/{id}/ban",
             post(handlers::ban_user).delete(handlers::unban_user),

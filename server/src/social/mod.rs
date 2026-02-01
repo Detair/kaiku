@@ -1,3 +1,4 @@
+pub mod block_cache;
 pub mod friends;
 pub mod types;
 
@@ -19,6 +20,6 @@ pub fn router() -> Router<AppState> {
         // Friend actions
         .route("/friends/{id}/accept", post(friends::accept_friend_request))
         .route("/friends/{id}/reject", post(friends::reject_friend_request))
-        .route("/friends/{id}/block", post(friends::block_user))
+        .route("/friends/{id}/block", post(friends::block_user).delete(friends::unblock_user))
         .route("/friends/{id}", delete(friends::remove_friend))
 }
