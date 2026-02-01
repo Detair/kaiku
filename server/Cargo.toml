@@ -91,13 +91,15 @@ dashmap.workspace = true
 # Bitflags
 bitflags.workspace = true
 
+# HTTP client (matching openidconnect's reqwest version)
+reqwest = { version = "0.11", features = ["json"] }
+
 # Config
 dotenvy = "0.15"
 tokio-util = { version = "0.7.18", features = ["io", "compat"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
-reqwest = { version = "0.13", features = ["json"] }
 serial_test = "3.2"
 
 [features]

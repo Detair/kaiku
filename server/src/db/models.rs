@@ -216,6 +216,74 @@ pub struct PasswordResetToken {
     pub created_at: DateTime<Utc>,
 }
 
+/// OIDC/OAuth2 provider configuration stored in the database.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OidcProviderRow {
+    /// Unique provider ID.
+    pub id: Uuid,
+    /// URL-safe slug for routing (e.g., "github", "google", "my-keycloak").
+    pub slug: String,
+    /// Human-readable display name.
+    pub display_name: String,
+    /// Lucide icon hint (e.g., "github", "chrome", "key").
+    pub icon_hint: Option<String>,
+    /// Provider type: "preset" or "custom".
+    pub provider_type: String,
+    /// OIDC discovery URL (None for manual config like GitHub).
+    pub issuer_url: Option<String>,
+    /// Manual authorization endpoint.
+    pub authorization_url: Option<String>,
+    /// Manual token endpoint.
+    pub token_url: Option<String>,
+    /// Manual userinfo endpoint.
+    pub userinfo_url: Option<String>,
+    /// OAuth2 client ID.
+    pub client_id: String,
+    /// Encrypted client secret (AES-256-GCM).
+    pub client_secret_encrypted: String,
+    /// OAuth2 scopes (space or comma separated).
+    pub scopes: String,
+    /// Whether this provider is enabled.
+    pub enabled: bool,
+    /// Display position.
+    pub position: i32,
+    /// When the provider was created.
+    pub created_at: DateTime<Utc>,
+    /// When the provider was last updated.
+    pub updated_at: DateTime<Utc>,
+    /// User who created the provider.
+    pub created_by: Option<Uuid>,
+}
+
+/// Public-facing OIDC provider info (no secrets).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicOidcProvider {
+    /// URL-safe slug.
+    pub slug: String,
+    /// Human-readable display name.
+    pub display_name: String,
+    /// Lucide icon hint.
+    pub icon_hint: Option<String>,
+}
+
+/// Auth methods configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthMethodsConfig {
+    /// Whether local (password) auth is allowed.
+    pub local: bool,
+    /// Whether OIDC/SSO auth is allowed.
+    pub oidc: bool,
+}
+
+impl Default for AuthMethodsConfig {
+    fn default() -> Self {
+        Self {
+            local: true,
+            oidc: false,
+        }
+    }
+}
+
 /// Channel unread count for a specific channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelUnread {

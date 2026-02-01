@@ -6,6 +6,7 @@ use axum::{extract::State, Json};
 use serde::Serialize;
 
 use crate::api::AppState;
+use crate::db::{get_auth_methods_allowed, AuthMethodsConfig, PublicOidcProvider};
 
 /// Public server settings response.
 #[derive(Debug, Serialize)]
@@ -14,15 +15,44 @@ pub struct ServerSettingsResponse {
     pub require_e2ee_setup: bool,
     /// Whether OIDC login is available.
     pub oidc_enabled: bool,
+    /// List of available OIDC providers (public info only).
+    pub oidc_providers: Vec<PublicOidcProvider>,
+    /// Which auth methods are enabled.
+    pub auth_methods: AuthMethodsConfig,
+    /// Registration policy: "open", "invite_only", or "closed".
+    pub registration_policy: String,
 }
 
 /// Get server settings (public endpoint).
 ///
 /// GET /api/settings
 pub async fn get_server_settings(State(state): State<AppState>) -> Json<ServerSettingsResponse> {
+    let auth_methods = get_auth_methods_allowed(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let oidc_providers = if auth_methods.oidc {
+        if let Some(ref manager) = state.oidc_manager {
+            manager.list_public().await
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+
+    let registration_policy = crate::db::get_config_value(&state.db, "registration_policy")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "open".to_string());
+
     Json(ServerSettingsResponse {
         require_e2ee_setup: state.config.require_e2ee_setup,
-        oidc_enabled: state.config.has_oidc(),
+        oidc_enabled: auth_methods.oidc && !oidc_providers.is_empty(),
+        oidc_providers,
+        auth_methods,
+        registration_policy,
     })
 }
 

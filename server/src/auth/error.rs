@@ -75,6 +75,30 @@ pub enum AuthError {
     #[error("Token error")]
     Jwt(#[from] jsonwebtoken::errors::Error),
 
+    /// OIDC provider not found.
+    #[error("OIDC provider not found")]
+    OidcProviderNotFound,
+
+    /// OIDC is not configured on this server.
+    #[error("OIDC is not configured")]
+    OidcNotConfigured,
+
+    /// OIDC state parameter mismatch (CSRF protection).
+    #[error("Invalid OIDC state parameter")]
+    OidcStateMismatch,
+
+    /// OIDC code exchange failed.
+    #[error("OIDC code exchange failed: {0}")]
+    OidcCodeExchangeFailed(String),
+
+    /// Registration is disabled by server policy.
+    #[error("Registration is disabled")]
+    RegistrationDisabled,
+
+    /// This authentication method is disabled.
+    #[error("This authentication method is disabled")]
+    AuthMethodDisabled,
+
     /// Internal server error.
     #[error("Internal server error")]
     Internal(String),
@@ -108,6 +132,12 @@ impl IntoResponse for AuthError {
             Self::PasswordHash => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
             Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
             Self::Jwt(_) => (StatusCode::UNAUTHORIZED, "TOKEN_ERROR"),
+            Self::OidcProviderNotFound => (StatusCode::NOT_FOUND, "OIDC_PROVIDER_NOT_FOUND"),
+            Self::OidcNotConfigured => (StatusCode::SERVICE_UNAVAILABLE, "OIDC_NOT_CONFIGURED"),
+            Self::OidcStateMismatch => (StatusCode::BAD_REQUEST, "OIDC_STATE_MISMATCH"),
+            Self::OidcCodeExchangeFailed(_) => (StatusCode::BAD_GATEWAY, "OIDC_EXCHANGE_FAILED"),
+            Self::RegistrationDisabled => (StatusCode::FORBIDDEN, "REGISTRATION_DISABLED"),
+            Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };
 

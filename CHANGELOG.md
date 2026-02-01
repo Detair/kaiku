@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed stale scripts (resume-session.sh, update-deps.sh)
 
 ### Added
+- SSO/OIDC authentication integration
+  - Admin-configurable identity providers (GitHub, Google, custom OIDC/OAuth2)
+  - PKCE S256 + state + nonce security for all flows
+  - Client secrets encrypted at rest (AES-256-GCM)
+  - Preset support for GitHub and Google with auto-filled endpoints
+  - Admin settings panel for auth methods, registration policy, and provider CRUD
+  - Login/Register views show SSO buttons when providers are configured
+  - Registration policy enforcement (open, invite-only, closed)
+  - Browser popup flow with postMessage token delivery
+  - Username generation from OIDC claims with collision handling
+- Screen share Tauri WebSocket event parity
+  - ScreenShareStarted, ScreenShareStopped, ScreenShareQualityChanged variants in Tauri ServerEvent
+  - Event forwarding to frontend via ws:screen_share_* events
+- Screen share viewer keyboard shortcuts
+  - Escape to close viewer, V to cycle view mode, M to toggle mute, F for spotlight/fullscreen
+  - Input element guard to avoid conflicts when typing
+- Screen share test coverage
+  - Server event serialization tests (screenshare_test.rs)
+  - Client WebSocket handler tests calling actual exported handlers (websocketScreenShare.test.ts)
 - Component testing infrastructure for Solid.js
   - Vitest configuration with vite-plugin-solid
   - Test setup with automatic cleanup between tests

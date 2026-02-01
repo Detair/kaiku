@@ -27,6 +27,7 @@ use tower_http::{
 
 use crate::{
     admin, auth, chat, connectivity, crypto,
+    auth::oidc::OidcProviderManager,
     chat::S3Client,
     config::Config,
     email::EmailService,
@@ -54,6 +55,8 @@ pub struct AppState {
     pub rate_limiter: Option<RateLimiter>,
     /// Email service (optional, requires SMTP configuration)
     pub email: Option<Arc<EmailService>>,
+    /// OIDC provider manager (optional, requires MFA encryption key)
+    pub oidc_manager: Option<Arc<OidcProviderManager>>,
 }
 
 impl AppState {
@@ -67,6 +70,7 @@ impl AppState {
         sfu: SfuServer,
         rate_limiter: Option<RateLimiter>,
         email: Option<EmailService>,
+        oidc_manager: Option<OidcProviderManager>,
     ) -> Self {
         Self {
             db,
@@ -76,6 +80,7 @@ impl AppState {
             sfu: Arc::new(sfu),
             rate_limiter,
             email: email.map(Arc::new),
+            oidc_manager: oidc_manager.map(Arc::new),
         }
     }
 

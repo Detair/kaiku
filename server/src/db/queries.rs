@@ -11,8 +11,9 @@ use tracing::error;
 use uuid::Uuid;
 
 use super::models::{
-    Channel, ChannelMember, ChannelType, ChannelUnread, FileAttachment, GuildUnreadSummary,
-    Message, PasswordResetToken, Session, UnreadAggregate, User,
+    AuthMethodsConfig, Channel, ChannelMember, ChannelType, ChannelUnread, FileAttachment,
+    GuildUnreadSummary, Message, OidcProviderRow, PasswordResetToken, Session, UnreadAggregate,
+    User,
 };
 
 /// Log and return a database error with context.
@@ -1163,4 +1164,219 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
         + dms.iter().map(|d| d.unread_count).sum::<i64>();
 
     Ok(UnreadAggregate { guilds, dms, total })
+}
+
+// ── OIDC Provider Queries ──────────────────────────────────────────────
+
+/// List all enabled OIDC providers ordered by position.
+pub async fn list_oidc_providers(pool: &PgPool) -> sqlx::Result<Vec<OidcProviderRow>> {
+    sqlx::query_as::<_, OidcProviderRow>(
+        "SELECT * FROM oidc_providers WHERE enabled = true ORDER BY position, slug",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        error!(error = %e, "Failed to list OIDC providers");
+        e
+    })
+}
+
+/// List all OIDC providers (including disabled) for admin.
+pub async fn list_all_oidc_providers(pool: &PgPool) -> sqlx::Result<Vec<OidcProviderRow>> {
+    sqlx::query_as::<_, OidcProviderRow>(
+        "SELECT * FROM oidc_providers ORDER BY position, slug",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        error!(error = %e, "Failed to list all OIDC providers");
+        e
+    })
+}
+
+/// Get an OIDC provider by slug.
+pub async fn get_oidc_provider_by_slug(
+    pool: &PgPool,
+    slug: &str,
+) -> sqlx::Result<OidcProviderRow> {
+    sqlx::query_as::<_, OidcProviderRow>(
+        "SELECT * FROM oidc_providers WHERE slug = $1",
+    )
+    .bind(slug)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| {
+        error!(error = %e, slug = %slug, "Failed to get OIDC provider by slug");
+        e
+    })
+}
+
+/// Get an OIDC provider by ID.
+pub async fn get_oidc_provider_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> sqlx::Result<OidcProviderRow> {
+    sqlx::query_as::<_, OidcProviderRow>(
+        "SELECT * FROM oidc_providers WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| {
+        error!(error = %e, id = %id, "Failed to get OIDC provider by ID");
+        e
+    })
+}
+
+/// Create a new OIDC provider.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_oidc_provider(
+    pool: &PgPool,
+    slug: &str,
+    display_name: &str,
+    icon_hint: Option<&str>,
+    provider_type: &str,
+    issuer_url: Option<&str>,
+    authorization_url: Option<&str>,
+    token_url: Option<&str>,
+    userinfo_url: Option<&str>,
+    client_id: &str,
+    client_secret_encrypted: &str,
+    scopes: &str,
+    created_by: Uuid,
+) -> sqlx::Result<OidcProviderRow> {
+    sqlx::query_as::<_, OidcProviderRow>(
+        "INSERT INTO oidc_providers (
+            slug, display_name, icon_hint, provider_type,
+            issuer_url, authorization_url, token_url, userinfo_url,
+            client_id, client_secret_encrypted, scopes,
+            position, created_by
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+            COALESCE((SELECT MAX(position) + 1 FROM oidc_providers), 0),
+            $12
+        ) RETURNING *",
+    )
+    .bind(slug)
+    .bind(display_name)
+    .bind(icon_hint)
+    .bind(provider_type)
+    .bind(issuer_url)
+    .bind(authorization_url)
+    .bind(token_url)
+    .bind(userinfo_url)
+    .bind(client_id)
+    .bind(client_secret_encrypted)
+    .bind(scopes)
+    .bind(created_by)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| {
+        error!(error = %e, slug = %slug, "Failed to create OIDC provider");
+        e
+    })
+}
+
+/// Update an OIDC provider.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_oidc_provider(
+    pool: &PgPool,
+    id: Uuid,
+    display_name: &str,
+    icon_hint: Option<&str>,
+    issuer_url: Option<&str>,
+    authorization_url: Option<&str>,
+    token_url: Option<&str>,
+    userinfo_url: Option<&str>,
+    client_id: &str,
+    client_secret_encrypted: Option<&str>,
+    scopes: &str,
+    enabled: bool,
+) -> sqlx::Result<OidcProviderRow> {
+    // If client_secret_encrypted is provided, update it; otherwise keep existing
+    if let Some(secret) = client_secret_encrypted {
+        sqlx::query_as::<_, OidcProviderRow>(
+            "UPDATE oidc_providers SET
+                display_name = $2, icon_hint = $3,
+                issuer_url = $4, authorization_url = $5, token_url = $6, userinfo_url = $7,
+                client_id = $8, client_secret_encrypted = $9, scopes = $10,
+                enabled = $11, updated_at = NOW()
+            WHERE id = $1 RETURNING *",
+        )
+        .bind(id)
+        .bind(display_name)
+        .bind(icon_hint)
+        .bind(issuer_url)
+        .bind(authorization_url)
+        .bind(token_url)
+        .bind(userinfo_url)
+        .bind(client_id)
+        .bind(secret)
+        .bind(scopes)
+        .bind(enabled)
+        .fetch_one(pool)
+        .await
+    } else {
+        sqlx::query_as::<_, OidcProviderRow>(
+            "UPDATE oidc_providers SET
+                display_name = $2, icon_hint = $3,
+                issuer_url = $4, authorization_url = $5, token_url = $6, userinfo_url = $7,
+                client_id = $8, scopes = $9,
+                enabled = $10, updated_at = NOW()
+            WHERE id = $1 RETURNING *",
+        )
+        .bind(id)
+        .bind(display_name)
+        .bind(icon_hint)
+        .bind(issuer_url)
+        .bind(authorization_url)
+        .bind(token_url)
+        .bind(userinfo_url)
+        .bind(client_id)
+        .bind(scopes)
+        .bind(enabled)
+        .fetch_one(pool)
+        .await
+    }
+    .map_err(|e| {
+        error!(error = %e, id = %id, "Failed to update OIDC provider");
+        e
+    })
+}
+
+/// Delete an OIDC provider.
+pub async fn delete_oidc_provider(pool: &PgPool, id: Uuid) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM oidc_providers WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            error!(error = %e, id = %id, "Failed to delete OIDC provider");
+            e
+        })?;
+    Ok(())
+}
+
+/// Get auth methods configuration.
+pub async fn get_auth_methods_allowed(pool: &PgPool) -> sqlx::Result<AuthMethodsConfig> {
+    match get_config_value(pool, "auth_methods_allowed").await {
+        Ok(value) => Ok(serde_json::from_value(value).unwrap_or_default()),
+        Err(sqlx::Error::RowNotFound) => Ok(AuthMethodsConfig::default()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Set auth methods configuration.
+pub async fn set_auth_methods_allowed(
+    pool: &PgPool,
+    config: &AuthMethodsConfig,
+    updated_by: Uuid,
+) -> sqlx::Result<()> {
+    set_config_value(
+        pool,
+        "auth_methods_allowed",
+        serde_json::to_value(config).unwrap_or_default(),
+        updated_by,
+    )
+    .await
 }

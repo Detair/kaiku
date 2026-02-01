@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT g.id as guild_id, g.name as guild_name, g.icon_url as guild_icon_url,\n               gm.joined_at, g.owner_id = $1 as \"is_owner!\"\n        FROM guild_members gm\n        JOIN guilds g ON gm.guild_id = g.id\n        WHERE gm.user_id = $1\n        ORDER BY gm.joined_at DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "guild_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "guild_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "guild_icon_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "joined_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_owner!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "c94e14732840af5cb89795aec7b09e00c6fe8eb0bfb0e4dfbd4804e02e1acd51"
+}

@@ -6,12 +6,13 @@
  * - Users: User management
  * - Guilds: Guild management
  * - Audit Log: Activity history
+ * - Settings: Auth methods, OIDC providers, registration policy
  */
 
 import { Component, For } from "solid-js";
-import { LayoutDashboard, Users, Building2, ScrollText } from "lucide-solid";
+import { LayoutDashboard, Users, Building2, ScrollText, Settings } from "lucide-solid";
 
-export type AdminPanel = "overview" | "users" | "guilds" | "audit-log";
+export type AdminPanel = "overview" | "users" | "guilds" | "audit-log" | "settings";
 
 interface AdminSidebarProps {
   activePanel: AdminPanel;
@@ -24,6 +25,7 @@ const AdminSidebar: Component<AdminSidebarProps> = (props) => {
     { id: "users", label: "Users", icon: Users },
     { id: "guilds", label: "Guilds", icon: Building2 },
     { id: "audit-log", label: "Audit Log", icon: ScrollText },
+    { id: "settings", label: "Settings", icon: Settings },
   ];
 
   return (

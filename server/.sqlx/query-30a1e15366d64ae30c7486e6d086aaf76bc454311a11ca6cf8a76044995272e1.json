@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "30a1e15366d64ae30c7486e6d086aaf76bc454311a11ca6cf8a76044995272e1"
+}

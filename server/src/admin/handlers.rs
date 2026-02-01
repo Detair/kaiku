@@ -1691,3 +1691,315 @@ pub async fn bulk_suspend_guilds(
         failed,
     }))
 }
+
+// ============================================================================
+// Auth Settings & OIDC Provider Management (Elevated)
+// ============================================================================
+
+/// Auth settings response.
+#[derive(Debug, Serialize)]
+pub struct AuthSettingsResponse {
+    pub auth_methods: crate::db::AuthMethodsConfig,
+    pub registration_policy: String,
+}
+
+/// Auth settings update request.
+#[derive(Debug, Deserialize)]
+pub struct UpdateAuthSettingsRequest {
+    pub auth_methods: Option<crate::db::AuthMethodsConfig>,
+    pub registration_policy: Option<String>,
+}
+
+/// Get auth settings.
+///
+/// GET /api/admin/auth-settings
+pub async fn get_auth_settings(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+) -> Result<Json<AuthSettingsResponse>, AdminError> {
+    let auth_methods = crate::db::get_auth_methods_allowed(&state.db).await?;
+    let registration_policy = crate::db::get_config_value(&state.db, "registration_policy")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "open".to_string());
+
+    Ok(Json(AuthSettingsResponse {
+        auth_methods,
+        registration_policy,
+    }))
+}
+
+/// Update auth settings.
+///
+/// PUT /api/admin/auth-settings
+pub async fn update_auth_settings(
+    State(state): State<AppState>,
+    Extension(admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+    Json(body): Json<UpdateAuthSettingsRequest>,
+) -> Result<Json<AuthSettingsResponse>, AdminError> {
+    if let Some(ref methods) = body.auth_methods {
+        crate::db::set_auth_methods_allowed(&state.db, methods, admin.user_id).await?;
+    }
+
+    if let Some(ref policy) = body.registration_policy {
+        let valid = matches!(policy.as_str(), "open" | "invite_only" | "closed");
+        if !valid {
+            return Err(AdminError::Validation(
+                "registration_policy must be 'open', 'invite_only', or 'closed'".into(),
+            ));
+        }
+        crate::db::set_config_value(
+            &state.db,
+            "registration_policy",
+            serde_json::json!(policy),
+            admin.user_id,
+        )
+        .await?;
+    }
+
+    // Re-read current state
+    let auth_methods = crate::db::get_auth_methods_allowed(&state.db).await?;
+    let registration_policy = crate::db::get_config_value(&state.db, "registration_policy")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "open".to_string());
+
+    Ok(Json(AuthSettingsResponse {
+        auth_methods,
+        registration_policy,
+    }))
+}
+
+/// OIDC provider response (secrets masked).
+#[derive(Debug, Serialize)]
+pub struct OidcProviderResponse {
+    pub id: Uuid,
+    pub slug: String,
+    pub display_name: String,
+    pub icon_hint: Option<String>,
+    pub provider_type: String,
+    pub issuer_url: Option<String>,
+    pub authorization_url: Option<String>,
+    pub token_url: Option<String>,
+    pub userinfo_url: Option<String>,
+    pub client_id: String,
+    pub scopes: String,
+    pub enabled: bool,
+    pub position: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<crate::db::OidcProviderRow> for OidcProviderResponse {
+    fn from(row: crate::db::OidcProviderRow) -> Self {
+        Self {
+            id: row.id,
+            slug: row.slug,
+            display_name: row.display_name,
+            icon_hint: row.icon_hint,
+            provider_type: row.provider_type,
+            issuer_url: row.issuer_url,
+            authorization_url: row.authorization_url,
+            token_url: row.token_url,
+            userinfo_url: row.userinfo_url,
+            client_id: row.client_id,
+            scopes: row.scopes,
+            enabled: row.enabled,
+            position: row.position,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// List all OIDC providers (admin view with secrets masked).
+///
+/// GET /api/admin/oidc-providers
+pub async fn list_oidc_providers(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+) -> Result<Json<Vec<OidcProviderResponse>>, AdminError> {
+    let providers = crate::db::list_all_oidc_providers(&state.db).await?;
+    Ok(Json(providers.into_iter().map(Into::into).collect()))
+}
+
+/// Create OIDC provider request.
+#[derive(Debug, Deserialize)]
+pub struct CreateOidcProviderRequest {
+    pub slug: String,
+    pub display_name: String,
+    pub icon_hint: Option<String>,
+    pub provider_type: Option<String>,
+    pub issuer_url: Option<String>,
+    pub authorization_url: Option<String>,
+    pub token_url: Option<String>,
+    pub userinfo_url: Option<String>,
+    pub client_id: String,
+    pub client_secret: String,
+    pub scopes: Option<String>,
+}
+
+/// Create a new OIDC provider.
+///
+/// POST /api/admin/oidc-providers
+pub async fn create_oidc_provider(
+    State(state): State<AppState>,
+    Extension(admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+    Json(body): Json<CreateOidcProviderRequest>,
+) -> Result<Json<OidcProviderResponse>, AdminError> {
+    let oidc_manager = state
+        .oidc_manager
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal("OIDC manager not configured (requires MFA_ENCRYPTION_KEY)".into()))?;
+
+    // Apply preset defaults
+    let (provider_type, issuer_url, authorization_url, token_url, userinfo_url, scopes) =
+        match body.slug.as_str() {
+            "github" => (
+                "preset".to_string(),
+                None,
+                Some(crate::auth::oidc::GitHubPreset::AUTHORIZATION_URL.to_string()),
+                Some(crate::auth::oidc::GitHubPreset::TOKEN_URL.to_string()),
+                Some(crate::auth::oidc::GitHubPreset::USERINFO_URL.to_string()),
+                body.scopes.unwrap_or_else(|| crate::auth::oidc::GitHubPreset::SCOPES.to_string()),
+            ),
+            "google" => (
+                "preset".to_string(),
+                Some(crate::auth::oidc::GooglePreset::ISSUER_URL.to_string()),
+                body.authorization_url,
+                body.token_url,
+                body.userinfo_url,
+                body.scopes.unwrap_or_else(|| crate::auth::oidc::GooglePreset::SCOPES.to_string()),
+            ),
+            _ => (
+                body.provider_type.unwrap_or_else(|| "custom".to_string()),
+                body.issuer_url,
+                body.authorization_url,
+                body.token_url,
+                body.userinfo_url,
+                body.scopes.unwrap_or_else(|| "openid profile email".to_string()),
+            ),
+        };
+
+    // Encrypt client secret
+    let encrypted_secret = oidc_manager
+        .encrypt_secret(&body.client_secret)
+        .map_err(|e| AdminError::Internal(format!("Failed to encrypt secret: {e}")))?;
+
+    let row = crate::db::create_oidc_provider(
+        &state.db,
+        &body.slug,
+        &body.display_name,
+        body.icon_hint.as_deref(),
+        &provider_type,
+        issuer_url.as_deref(),
+        authorization_url.as_deref(),
+        token_url.as_deref(),
+        userinfo_url.as_deref(),
+        &body.client_id,
+        &encrypted_secret,
+        &scopes,
+        admin.user_id,
+    )
+    .await?;
+
+    // Reload providers in the manager
+    if let Err(e) = oidc_manager.load_providers(&state.db).await {
+        warn!(error = %e, "Failed to reload OIDC providers after creation");
+    }
+
+    Ok(Json(row.into()))
+}
+
+/// Update OIDC provider request.
+#[derive(Debug, Deserialize)]
+pub struct UpdateOidcProviderRequest {
+    pub display_name: String,
+    pub icon_hint: Option<String>,
+    pub issuer_url: Option<String>,
+    pub authorization_url: Option<String>,
+    pub token_url: Option<String>,
+    pub userinfo_url: Option<String>,
+    pub client_id: String,
+    /// If omitted, the existing secret is kept.
+    pub client_secret: Option<String>,
+    pub scopes: String,
+    pub enabled: bool,
+}
+
+/// Update an OIDC provider.
+///
+/// PUT /api/admin/oidc-providers/:id
+pub async fn update_oidc_provider(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateOidcProviderRequest>,
+) -> Result<Json<OidcProviderResponse>, AdminError> {
+    let oidc_manager = state
+        .oidc_manager
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal("OIDC manager not configured".into()))?;
+
+    let encrypted_secret = if let Some(ref secret) = body.client_secret {
+        Some(
+            oidc_manager
+                .encrypt_secret(secret)
+                .map_err(|e| AdminError::Internal(format!("Failed to encrypt secret: {e}")))?,
+        )
+    } else {
+        None
+    };
+
+    let row = crate::db::update_oidc_provider(
+        &state.db,
+        id,
+        &body.display_name,
+        body.icon_hint.as_deref(),
+        body.issuer_url.as_deref(),
+        body.authorization_url.as_deref(),
+        body.token_url.as_deref(),
+        body.userinfo_url.as_deref(),
+        &body.client_id,
+        encrypted_secret.as_deref(),
+        &body.scopes,
+        body.enabled,
+    )
+    .await?;
+
+    // Reload providers
+    if let Err(e) = oidc_manager.load_providers(&state.db).await {
+        warn!(error = %e, "Failed to reload OIDC providers after update");
+    }
+
+    Ok(Json(row.into()))
+}
+
+/// Delete an OIDC provider.
+///
+/// DELETE /api/admin/oidc-providers/:id
+pub async fn delete_oidc_provider(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AdminError> {
+    let oidc_manager = state
+        .oidc_manager
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal("OIDC manager not configured".into()))?;
+
+    crate::db::delete_oidc_provider(&state.db, id).await?;
+
+    // Reload providers
+    if let Err(e) = oidc_manager.load_providers(&state.db).await {
+        warn!(error = %e, "Failed to reload OIDC providers after deletion");
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}

@@ -63,6 +63,10 @@ pub enum AdminError {
     /// Permission error.
     #[error("Permission denied: {0}")]
     Permission(#[from] PermissionError),
+
+    /// Internal server error.
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 impl IntoResponse for AdminError {
@@ -76,6 +80,7 @@ impl IntoResponse for AdminError {
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, serde_json::json!({"error": "validation", "message": msg})),
             Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "database", "message": "Database error"})),
             Self::Permission(e) => (StatusCode::FORBIDDEN, serde_json::json!({"error": "permission", "message": e.to_string()})),
+            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "internal", "message": msg})),
         };
         (status, Json(body)).into_response()
     }

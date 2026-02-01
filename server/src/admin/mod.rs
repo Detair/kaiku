@@ -10,7 +10,7 @@ pub mod types;
 
 use axum::{
     middleware::from_fn_with_state,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 
@@ -92,6 +92,19 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/guilds/{id}/unsuspend", post(handlers::unsuspend_guild))
         .route("/guilds/bulk-suspend", post(handlers::bulk_suspend_guilds))
         .route("/announcements", post(handlers::create_announcement))
+        // Auth settings (OIDC provider management)
+        .route(
+            "/auth-settings",
+            get(handlers::get_auth_settings).put(handlers::update_auth_settings),
+        )
+        .route(
+            "/oidc-providers",
+            get(handlers::list_oidc_providers).post(handlers::create_oidc_provider),
+        )
+        .route(
+            "/oidc-providers/{id}",
+            put(handlers::update_oidc_provider).delete(handlers::delete_oidc_provider),
+        )
         .layer(from_fn_with_state(state.clone(), require_elevated));
 
     // Non-elevated admin routes (require system admin)

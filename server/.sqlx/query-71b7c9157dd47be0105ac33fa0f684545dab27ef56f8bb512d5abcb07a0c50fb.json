@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)\n           VALUES ($1, $2, $3, $4)\n           ON CONFLICT (user_id, channel_id)\n           DO UPDATE SET last_read_at = $3, last_read_message_id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "71b7c9157dd47be0105ac33fa0f684545dab27ef56f8bb512d5abcb07a0c50fb"
+}

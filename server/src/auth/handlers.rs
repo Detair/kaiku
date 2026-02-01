@@ -12,12 +12,18 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 use validator::Validate;
 
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Redirect, Response};
+use fred::prelude::*;
+use sha2::{Digest, Sha256};
+
 use crate::api::AppState;
 use crate::db::{
-    create_password_reset_token, create_session, delete_session_by_token_hash, email_exists,
-    find_session_by_token_hash, find_user_by_email, find_user_by_id, find_user_by_username,
-    find_valid_reset_token, invalidate_user_reset_tokens, is_setup_complete, set_mfa_secret,
-    update_user_avatar, update_user_profile, username_exists,
+    self, create_password_reset_token, create_session, delete_session_by_token_hash, email_exists,
+    find_session_by_token_hash, find_user_by_email, find_user_by_external_id, find_user_by_id,
+    find_user_by_username, find_valid_reset_token, get_auth_methods_allowed,
+    invalidate_user_reset_tokens, is_setup_complete, set_mfa_secret, update_user_avatar,
+    update_user_profile, username_exists,
 };
 use crate::ws::broadcast_user_patch;
 use crate::ratelimit::NormalizedIp;
@@ -27,6 +33,7 @@ use super::error::{AuthError, AuthResult};
 use super::jwt::{generate_token_pair, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
+use super::oidc::{generate_username_from_claims, append_collision_suffix, OidcFlowState};
 use super::password::{hash_password, verify_password};
 
 // ============================================================================
@@ -199,6 +206,23 @@ pub async fn register(
     // Validate input first
     body.validate()
         .map_err(|e| AuthError::Validation(e.to_string()))?;
+
+    // Check if local auth is allowed
+    let auth_methods = get_auth_methods_allowed(&state.db).await?;
+    if !auth_methods.local {
+        return Err(AuthError::AuthMethodDisabled);
+    }
+
+    // Check registration policy
+    let reg_policy = db::get_config_value(&state.db, "registration_policy")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "open".to_string());
+    if reg_policy != "open" {
+        // Both "closed" and "invite_only" reject direct registration
+        return Err(AuthError::RegistrationDisabled);
+    }
 
     // Check username uniqueness (outside transaction - UNIQUE constraint will catch races)
     if username_exists(&state.db, &body.username).await? {
@@ -997,28 +1021,391 @@ pub async fn mfa_disable(
     })))
 }
 
+/// OIDC callback query parameters.
+#[derive(Debug, Deserialize)]
+pub struct OidcCallbackQuery {
+    pub code: String,
+    pub state: String,
+}
+
+/// OIDC authorize query parameters.
+#[derive(Debug, Deserialize)]
+pub struct OidcAuthorizeQuery {
+    /// Optional redirect URI override (for Tauri localhost callback).
+    pub redirect_uri: Option<String>,
+}
+
 /// Get available OIDC providers.
 ///
 /// GET /auth/oidc/providers
-pub async fn oidc_providers(State(_state): State<AppState>) -> AuthResult<()> {
-    Err(AuthError::Internal("Not implemented".to_string()))
+pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<serde_json::Value>> {
+    let auth_methods = get_auth_methods_allowed(&state.db).await?;
+
+    if !auth_methods.oidc {
+        return Ok(Json(serde_json::json!({ "providers": [] })));
+    }
+
+    let oidc_manager = state
+        .oidc_manager
+        .as_ref()
+        .ok_or(AuthError::OidcNotConfigured)?;
+
+    let providers = oidc_manager.list_public().await;
+
+    Ok(Json(serde_json::json!({ "providers": providers })))
 }
 
 /// Initiate OIDC authorization.
 ///
 /// GET /auth/oidc/authorize/:provider
 pub async fn oidc_authorize(
-    State(_state): State<AppState>,
-    Path(_provider): Path<String>,
-) -> AuthResult<()> {
-    Err(AuthError::Internal("Not implemented".to_string()))
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
+) -> Result<Response, AuthError> {
+    let auth_methods = get_auth_methods_allowed(&state.db).await?;
+    if !auth_methods.oidc {
+        return Err(AuthError::AuthMethodDisabled);
+    }
+
+    let oidc_manager = state
+        .oidc_manager
+        .as_ref()
+        .ok_or(AuthError::OidcNotConfigured)?;
+
+    // Verify provider exists
+    if oidc_manager.get_provider_row(&provider).await.is_none() {
+        return Err(AuthError::OidcProviderNotFound);
+    }
+
+    // Determine callback URL
+    let callback_base = if let Some(ref redirect_uri) = query.redirect_uri {
+        // Tauri flow: validate the redirect URI is a localhost callback
+        let parsed = openidconnect::url::Url::parse(redirect_uri).map_err(|_| {
+            AuthError::Validation("Invalid redirect_uri".to_string())
+        })?;
+        if matches!(
+            (parsed.scheme(), parsed.host_str()),
+            ("http", Some("localhost" | "127.0.0.1"))
+        ) {
+            redirect_uri.clone()
+        } else {
+            tracing::warn!(redirect_uri = %redirect_uri, "Rejected non-localhost redirect_uri");
+            return Err(AuthError::Validation(
+                "redirect_uri must be http://localhost or http://127.0.0.1".to_string(),
+            ));
+        }
+    } else {
+        // Browser flow: use the server's own callback endpoint
+        format!(
+            "{}/auth/oidc/callback",
+            std::env::var("PUBLIC_URL").unwrap_or_else(|_| String::new())
+        )
+    };
+
+    let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
+        .generate_auth_url(&provider, &callback_base)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
+            AuthError::Internal(format!("Failed to generate auth URL: {e}"))
+        })?;
+
+    // Store OIDC state in Redis with 600s TTL
+    let state_hash = hex::encode(Sha256::digest(csrf_state.as_bytes()));
+    let redis_key = format!("oidc:state:{state_hash}");
+    let flow_state = OidcFlowState {
+        slug: provider.clone(),
+        pkce_verifier,
+        nonce,
+        redirect_uri: callback_base,
+        created_at: Utc::now().timestamp(),
+    };
+
+    let flow_json =
+        serde_json::to_string(&flow_state).map_err(|e| AuthError::Internal(e.to_string()))?;
+
+    // Encrypt the flow state before storing (protects PKCE verifier at rest)
+    let enc_key = state
+        .config
+        .mfa_encryption_key
+        .as_ref()
+        .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
+    let enc_key_bytes = hex::decode(enc_key)
+        .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
+    let encrypted_flow = encrypt_mfa_secret(&flow_json, &enc_key_bytes)
+        .map_err(|e| AuthError::Internal(format!("Failed to encrypt OIDC state: {e}")))?;
+
+    state
+        .redis
+        .set::<(), _, _>(
+            &redis_key,
+            encrypted_flow.as_str(),
+            Some(Expiration::EX(600)),
+            None,
+            false,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to store OIDC state in Redis");
+            AuthError::Internal("Failed to store OIDC state".to_string())
+        })?;
+
+    tracing::info!(provider = %provider, "Redirecting to OIDC provider");
+    Ok(Redirect::temporary(&auth_url).into_response())
 }
 
 /// Handle OIDC callback.
 ///
 /// GET /auth/oidc/callback
-pub async fn oidc_callback(State(_state): State<AppState>) -> AuthResult<()> {
-    Err(AuthError::Internal("Not implemented".to_string()))
+pub async fn oidc_callback(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<OidcCallbackQuery>,
+) -> Result<Response, AuthError> {
+    let oidc_manager = state
+        .oidc_manager
+        .as_ref()
+        .ok_or(AuthError::OidcNotConfigured)?;
+
+    // Lookup and delete OIDC state from Redis (one-time use)
+    let state_hash = hex::encode(Sha256::digest(query.state.as_bytes()));
+    let redis_key = format!("oidc:state:{state_hash}");
+
+    // Atomically get and delete the state (one-time use, prevents replay)
+    let encrypted_flow: Option<String> = state
+        .redis
+        .getdel(&redis_key)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to read OIDC state from Redis");
+            AuthError::Internal("Failed to read OIDC state".to_string())
+        })?;
+
+    let encrypted_flow = encrypted_flow.ok_or(AuthError::OidcStateMismatch)?;
+
+    // Decrypt the flow state (PKCE verifier protected at rest)
+    let enc_key = state
+        .config
+        .mfa_encryption_key
+        .as_ref()
+        .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
+    let enc_key_bytes = hex::decode(enc_key)
+        .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
+    let flow_json = decrypt_mfa_secret(&encrypted_flow, &enc_key_bytes)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to decrypt OIDC state");
+            AuthError::OidcStateMismatch
+        })?;
+
+    let flow_state: OidcFlowState =
+        serde_json::from_str(&flow_json).map_err(|e| AuthError::Internal(e.to_string()))?;
+
+    // Exchange code for tokens (also verifies ID token nonce for OIDC providers)
+    let (access_token, _id_token) = oidc_manager
+        .exchange_code(
+            &flow_state.slug,
+            &query.code,
+            &flow_state.pkce_verifier,
+            &flow_state.redirect_uri,
+            &flow_state.nonce,
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, provider = %flow_state.slug, "OIDC code exchange failed");
+            AuthError::OidcCodeExchangeFailed(e.to_string())
+        })?;
+
+    // Extract user info
+    let user_info = oidc_manager
+        .extract_user_info(
+            &flow_state.slug,
+            &access_token,
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, provider = %flow_state.slug, "Failed to extract OIDC user info");
+            AuthError::OidcCodeExchangeFailed(format!("Failed to extract user info: {e}"))
+        })?;
+
+    // Composite external_id: "{provider_slug}:{subject}"
+    let external_id = format!("{}:{}", flow_state.slug, user_info.subject);
+
+    // User resolution
+    let user = if let Some(existing) =
+        find_user_by_external_id(&state.db, &external_id).await?
+    {
+        // Existing user — login
+        existing
+    } else {
+        // New user — check registration policy
+        let reg_policy = db::get_config_value(&state.db, "registration_policy")
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "open".to_string());
+        if reg_policy != "open" {
+            // Both "closed" and "invite_only" reject OIDC registration
+            // (no mechanism to carry invite tokens through OIDC flow)
+            return Err(AuthError::RegistrationDisabled);
+        }
+
+        // Generate username from claims
+        let base_username = generate_username_from_claims(&user_info);
+
+        let display_name = user_info
+            .name
+            .clone()
+            .unwrap_or_else(|| base_username.clone());
+
+        // Use a transaction for atomic first-user detection + user creation.
+        // Retry on username collision (UNIQUE constraint violation).
+        let mut username = base_username;
+        let mut new_user = None;
+        for attempt in 0..5u8 {
+            if attempt > 0 {
+                username = append_collision_suffix(&username);
+            }
+
+            let mut tx = state.db.begin().await.map_err(|e| {
+                tracing::error!(error = %e, "Failed to start OIDC registration transaction");
+                AuthError::Database(e)
+            })?;
+
+            // Lock setup_complete to serialize first-user detection (same pattern as local register)
+            let _ = sqlx::query_scalar::<_, serde_json::Value>(
+                "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to lock setup_complete during OIDC registration");
+                AuthError::Database(e)
+            })?;
+
+            let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(AuthError::Database)?;
+            let is_first_user = user_count == 0;
+
+            let insert_result = sqlx::query_as!(
+                crate::db::User,
+                r#"INSERT INTO users (username, display_name, email, auth_method, external_id, avatar_url)
+                   VALUES ($1, $2, $3, 'oidc', $4, $5)
+                   RETURNING id, username, display_name, email, password_hash,
+                             auth_method as "auth_method: _", external_id, avatar_url,
+                             status as "status: _", mfa_secret, created_at, updated_at"#,
+                username,
+                display_name,
+                user_info.email,
+                external_id,
+                user_info.avatar_url,
+            )
+            .fetch_one(&mut *tx)
+            .await;
+
+            match insert_result {
+                Ok(user) => {
+                    // Grant admin to first user
+                    if is_first_user {
+                        sqlx::query!(
+                            "INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $1)",
+                            user.id
+                        )
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(error = %e, user_id = %user.id, "Failed to grant admin to first OIDC user");
+                            AuthError::Database(e)
+                        })?;
+                        tracing::info!(user_id = %user.id, "First user registered via OIDC and granted system admin");
+                    }
+
+                    tx.commit().await.map_err(AuthError::Database)?;
+
+                    tracing::info!(
+                        user_id = %user.id,
+                        username = %user.username,
+                        provider = %flow_state.slug,
+                        "New user registered via OIDC"
+                    );
+                    new_user = Some(user);
+                    break;
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                    // Username collision — tx dropped (implicit rollback), retry with suffix
+                    tracing::debug!(username = %username, "Username collision during OIDC registration, retrying");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, external_id = %external_id, "Failed to create OIDC user");
+                    return Err(AuthError::Database(e));
+                }
+            }
+        }
+
+        new_user.ok_or_else(|| {
+            tracing::error!(external_id = %external_id, "Failed to create OIDC user after 5 collision retries");
+            AuthError::Internal("Username generation failed after retries".to_string())
+        })?
+    };
+
+    // Generate JWT token pair
+    let tokens = generate_token_pair(
+        user.id,
+        &state.config.jwt_private_key,
+        state.config.jwt_access_expiry,
+        state.config.jwt_refresh_expiry,
+    )?;
+
+    // Store session
+    let token_hash = hash_token(&tokens.refresh_token);
+    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
+    create_session(&state.db, user.id, &token_hash, expires_at, None, None).await?;
+
+    let setup_complete = is_setup_complete(&state.db).await?;
+
+    tracing::info!(user_id = %user.id, provider = %flow_state.slug, "User logged in via OIDC");
+
+    // Check if redirect_uri is a localhost callback (Tauri flow)
+    let parsed_redirect = openidconnect::url::Url::parse(&flow_state.redirect_uri)
+        .map_err(|e| AuthError::Internal(format!("Invalid redirect URI: {e}")))?;
+    let is_localhost = matches!(
+        (parsed_redirect.scheme(), parsed_redirect.host_str()),
+        ("http", Some("localhost" | "127.0.0.1"))
+    );
+
+    if is_localhost {
+        // Tauri flow: redirect with tokens in query params
+        let mut redirect_url = parsed_redirect;
+        redirect_url.query_pairs_mut()
+            .append_pair("access_token", &tokens.access_token)
+            .append_pair("refresh_token", &tokens.refresh_token)
+            .append_pair("expires_in", &tokens.access_expires_in.to_string())
+            .append_pair("setup_required", &(!setup_complete).to_string());
+        Ok(Redirect::temporary(redirect_url.as_str()).into_response())
+    } else {
+        // Browser flow: return HTML with postMessage to opener
+        // JSON-encode tokens to prevent any injection via token values
+        let payload = serde_json::json!({
+            "type": "oidc-callback",
+            "access_token": tokens.access_token,
+            "refresh_token": tokens.refresh_token,
+            "expires_in": tokens.access_expires_in,
+            "setup_required": !setup_complete,
+        });
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html><body><script>
+if (window.opener) {{
+    window.opener.postMessage({payload}, window.location.origin);
+    window.close();
+}} else {{
+    document.body.innerText = "Login successful. You can close this window.";
+}}
+</script></body></html>"#,
+        );
+        Ok((StatusCode::OK, axum::response::Html(html)).into_response())
+    }
 }
 
 // ============================================================================

@@ -228,6 +228,62 @@ export async function register(
 }
 
 /**
+ * Complete OIDC login after receiving tokens from the callback.
+ * This is called after the OIDC provider redirects back with tokens.
+ */
+export async function loginWithOidc(
+  serverUrl: string,
+  accessToken: string,
+  refreshToken: string,
+  expiresIn: number
+): Promise<void> {
+  setAuthState({ isLoading: true, error: null });
+
+  try {
+    // Store tokens
+    await tauri.oidcCompleteLogin(serverUrl, accessToken, refreshToken, expiresIn);
+
+    // Fetch the current user with the new token
+    const user = await tauri.getCurrentUser();
+    if (!user) {
+      throw new Error("Failed to fetch user after OIDC login");
+    }
+
+    setAuthState({
+      user,
+      serverUrl,
+      isLoading: false,
+      error: null,
+      setupRequired: false,
+    });
+
+    // Initialize WebSocket and presence after OIDC login
+    await initWebSocket();
+    await initPresence();
+    registerWebSocketReconnectListener();
+
+    try {
+      await wsConnect();
+    } catch (wsErr) {
+      console.error("WebSocket connection failed:", wsErr);
+      setAuthState({ error: "Real-time messaging temporarily unavailable. Reconnecting..." });
+    }
+
+    try {
+      await initPreferences();
+    } catch (prefErr) {
+      console.error("[Auth] Preferences initialization failed:", prefErr);
+    }
+
+    initIdleDetection();
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    setAuthState({ isLoading: false, error });
+    throw new Error(error);
+  }
+}
+
+/**
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {

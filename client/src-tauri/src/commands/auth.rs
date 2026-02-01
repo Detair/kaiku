@@ -1,6 +1,8 @@
 //! Authentication Commands
 
-use serde::Deserialize;
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
 use tauri::{command, State};
 use tracing::{debug, error, info};
 
@@ -289,6 +291,238 @@ pub async fn get_current_user(state: State<'_, AppState>) -> Result<Option<User>
     // Try to restore session from stored credentials
     // For now, return None - session restoration will be implemented with keyring
     Ok(None)
+}
+
+/// OIDC login response returned to the frontend.
+#[derive(Debug, Serialize)]
+pub struct OidcLoginResult {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: u64,
+}
+
+/// Start OIDC login flow for Tauri desktop.
+///
+/// 1. Binds a temporary TCP listener on localhost
+/// 2. Requests the authorize URL from the server (with localhost redirect_uri)
+/// 3. Opens the authorize URL in the default browser
+/// 4. Waits for the OIDC callback on the localhost listener
+/// 5. Extracts tokens from the callback query params and returns them
+#[command]
+pub async fn oidc_authorize(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    server_url: String,
+    provider_slug: String,
+) -> Result<OidcLoginResult, String> {
+    use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use url::Url;
+
+    info!("Starting OIDC flow for provider: {}", provider_slug);
+
+    let server_url = server_url.trim_end_matches('/');
+
+    // 1. Bind a temporary TCP listener on localhost
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Failed to bind localhost listener: {e}"))?;
+
+    let local_addr = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {e}"))?;
+
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", local_addr.port());
+    debug!("OIDC redirect URI: {}", redirect_uri);
+
+    // 2. Get the authorize URL from the server
+    let mut authorize_parsed = Url::parse(server_url)
+        .map_err(|e| format!("Invalid server URL: {e}"))?;
+    // Use Url path segment mutation to safely encode the provider slug
+    authorize_parsed
+        .path_segments_mut()
+        .map_err(|_| "Invalid server URL: cannot be a base")?
+        .extend(&["auth", "oidc", "authorize", &provider_slug]);
+    authorize_parsed
+        .query_pairs_mut()
+        .append_pair("redirect_uri", &redirect_uri);
+    let authorize_url = authorize_parsed.to_string();
+
+    // The server returns a 302 redirect to the OIDC provider.
+    // Use a no-redirect client to capture the Location header.
+    let no_redirect_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    let redirect_response = no_redirect_client
+        .get(&authorize_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get authorize URL: {e}"))?;
+
+    let auth_url = if redirect_response.status().is_redirection() {
+        redirect_response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .ok_or("Server did not return a redirect URL")?
+            .to_string()
+    } else if redirect_response.status().is_success() {
+        // Some implementations return the URL in JSON body
+        let body: serde_json::Value = redirect_response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse authorize response: {e}"))?;
+        body["url"]
+            .as_str()
+            .ok_or("No authorize URL in response")?
+            .to_string()
+    } else {
+        let status = redirect_response.status();
+        let body = redirect_response.text().await.unwrap_or_default();
+        return Err(format!("OIDC authorize failed ({status}): {body}"));
+    };
+
+    // 3. Open the authorize URL in the default browser
+    #[allow(deprecated)] // tauri-plugin-shell::open is deprecated in favor of tauri-plugin-opener
+    {
+        use tauri_plugin_shell::ShellExt;
+        app_handle
+            .shell()
+            .open(&auth_url, None)
+            .map_err(|e| format!("Failed to open browser: {e}"))?;
+    }
+
+    info!("Opened browser for OIDC login, waiting for callback...");
+
+    // 4. Wait for the OIDC callback (with timeout)
+    // Accept in a loop to handle favicon requests and other non-callback connections
+    let accept_future = async {
+        loop {
+            let (mut stream, _addr) = listener.accept().await?;
+
+            // Read the HTTP request
+            let mut buf = vec![0u8; 8192];
+            let n = stream.read(&mut buf).await?;
+            let request = String::from_utf8_lossy(&buf[..n]);
+
+            // Extract the request path from the first line (GET /callback?... HTTP/1.1)
+            let first_line = request.lines().next().unwrap_or("");
+            let path = first_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/");
+
+            // Check if this is the actual callback (not favicon, preflight, etc.)
+            if !path.starts_with("/callback") {
+                let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.flush().await;
+                continue;
+            }
+
+            // Parse query parameters
+            let full_url = format!("http://localhost{path}");
+            let parsed = Url::parse(&full_url).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+            })?;
+
+            let params: HashMap<String, String> = parsed
+                .query_pairs()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+
+            // Send a response to the browser
+            let html = if params.contains_key("access_token") {
+                "<html><body><h2>Login successful!</h2><p>You can close this window and return to the app.</p><script>window.close()</script></body></html>"
+            } else if params.contains_key("error") {
+                "<html><body><h2>Login failed</h2><p>An error occurred. Please try again.</p></body></html>"
+            } else {
+                "<html><body><h2>Processing...</h2></body></html>"
+            };
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                html.len(),
+                html
+            );
+            stream.write_all(response.as_bytes()).await?;
+            stream.flush().await?;
+
+            return Ok::<HashMap<String, String>, std::io::Error>(params);
+        }
+    };
+
+    // 60 second timeout for the user to complete the OIDC flow
+    let params = tokio::time::timeout(std::time::Duration::from_secs(60), accept_future)
+        .await
+        .map_err(|_| "OIDC login timed out (60s). Please try again.".to_string())?
+        .map_err(|e| format!("Failed to receive OIDC callback: {e}"))?;
+
+    // 5. Extract tokens from callback params
+    if let Some(error) = params.get("error") {
+        let desc = params
+            .get("error_description")
+            .map(|s| s.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("OIDC login failed: {error} — {desc}"));
+    }
+
+    let access_token = params
+        .get("access_token")
+        .ok_or("No access_token in OIDC callback")?
+        .clone();
+    let refresh_token = params
+        .get("refresh_token")
+        .ok_or("No refresh_token in OIDC callback")?
+        .clone();
+    let expires_in: u64 = params
+        .get("expires_in")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(900);
+
+    // Fetch user info with the new token
+    let user_response = state
+        .http
+        .get(format!("{server_url}/auth/me"))
+        .header("Authorization", format!("Bearer {access_token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch user info: {e}"))?;
+
+    if !user_response.status().is_success() {
+        return Err("Failed to fetch user info after OIDC login".to_string());
+    }
+
+    let user_data: UserResponse = user_response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid user response: {e}"))?;
+
+    let user: User = user_data.into();
+
+    // Store auth state
+    {
+        let mut auth = state.auth.write().await;
+        auth.access_token = Some(access_token.clone());
+        auth.refresh_token = Some(refresh_token.clone());
+        auth.server_url = Some(server_url.to_string());
+        auth.user = Some(user.clone());
+    }
+
+    // Store refresh token securely
+    if let Err(e) = store_refresh_token(server_url, &refresh_token) {
+        error!("Failed to store OIDC refresh token: {}", e);
+    }
+
+    info!("OIDC login successful for user: {}", user.username);
+    Ok(OidcLoginResult {
+        access_token,
+        refresh_token,
+        expires_in,
+    })
 }
 
 // Keyring helpers

@@ -10,3 +10,4 @@ export type { AdminPanel } from "./AdminSidebar";
 export { default as UsersPanel } from "./UsersPanel";
 export { default as GuildsPanel } from "./GuildsPanel";
 export { default as AuditLogPanel } from "./AuditLogPanel";
+export { default as AdminSettings } from "./AdminSettings";

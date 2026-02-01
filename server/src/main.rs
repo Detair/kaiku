@@ -171,8 +171,44 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Initialize OIDC provider manager (requires MFA encryption key)
+    let oidc_manager = if let Some(ref key_hex) = config.mfa_encryption_key {
+        match hex::decode(key_hex) {
+            Ok(key) if key.len() == 32 => {
+                let manager = vc_server::auth::oidc::OidcProviderManager::new(key);
+
+                // Seed legacy OIDC config from environment variables
+                if let Err(e) = manager.seed_from_env(&config, &db_pool).await {
+                    tracing::warn!(error = %e, "Failed to seed OIDC from env vars");
+                }
+
+                // Load providers from database
+                if let Err(e) = manager.load_providers(&db_pool).await {
+                    tracing::warn!(error = %e, "Failed to load OIDC providers");
+                }
+
+                info!("OIDC provider manager initialized");
+                Some(manager)
+            }
+            Ok(key) => {
+                tracing::warn!(
+                    len = key.len(),
+                    "MFA_ENCRYPTION_KEY has wrong length (expected 32 bytes). OIDC disabled."
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Invalid MFA_ENCRYPTION_KEY hex. OIDC disabled.");
+                None
+            }
+        }
+    } else {
+        info!("MFA_ENCRYPTION_KEY not set. OIDC provider management disabled.");
+        None
+    };
+
     // Build application state
-    let state = api::AppState::new(db_pool.clone(), redis.clone(), config.clone(), s3, sfu, rate_limiter, email_service);
+    let state = api::AppState::new(db_pool.clone(), redis.clone(), config.clone(), s3, sfu, rate_limiter, email_service, oidc_manager);
 
     // Build router
     let app = api::create_router(state);

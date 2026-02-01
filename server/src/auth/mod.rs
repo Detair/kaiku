@@ -7,7 +7,7 @@ mod handlers;
 pub mod jwt;
 pub mod mfa_crypto;
 mod middleware;
-mod oidc;
+pub mod oidc;
 mod password;
 
 use axum::{

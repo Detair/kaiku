@@ -55,6 +55,7 @@ pub fn run() {
             commands::auth::logout,
             commands::auth::get_current_user,
             commands::auth::register,
+            commands::auth::oidc_authorize,
             // Chat commands
             commands::chat::get_channels,
             commands::chat::get_messages,

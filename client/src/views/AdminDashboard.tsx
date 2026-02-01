@@ -25,6 +25,7 @@ import {
   UsersPanel,
   GuildsPanel,
   AuditLogPanel,
+  AdminSettings,
   type AdminPanel,
 } from "@/components/admin";
 
@@ -274,6 +275,11 @@ const AdminDashboard: Component = () => {
             {/* Audit Log Panel */}
             <Show when={activePanel() === "audit-log"}>
               <AuditLogPanel />
+            </Show>
+
+            {/* Settings Panel */}
+            <Show when={activePanel() === "settings"}>
+              <AdminSettings />
             </Show>
           </div>
         </Show>

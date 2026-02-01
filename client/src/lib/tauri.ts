@@ -56,10 +56,16 @@ import type {
   Pin,
   CreatePinRequest,
   UpdatePinRequest,
+  ServerSettings,
+  OidcProvider,
+  OidcLoginResult,
+  AuthSettingsResponse,
+  AuthMethodsConfig,
+  AdminOidcProvider,
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, ChannelCategory, ChannelWithUnread, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, GuildEmoji, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse, Pin, CreatePinRequest, UpdatePinRequest };
+export type { User, Channel, ChannelCategory, ChannelWithUnread, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, GuildEmoji, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse, Pin, CreatePinRequest, UpdatePinRequest, ServerSettings, OidcProvider, OidcLoginResult, AuthSettingsResponse, AuthMethodsConfig, AdminOidcProvider };
 
 /**
  * Unread aggregation types
@@ -2953,4 +2959,181 @@ export async function removeReaction(
  */
 export async function getUnreadAggregate(): Promise<UnreadAggregate> {
   return fetchApi<UnreadAggregate>("/api/me/unread");
+}
+
+// ============================================================================
+// OIDC / SSO
+// ============================================================================
+
+/**
+ * Fetch server settings (public, no auth required).
+ * Used pre-login to determine available auth methods and OIDC providers.
+ */
+export async function fetchServerSettings(serverUrl: string): Promise<ServerSettings> {
+  const baseUrl = serverUrl.replace(/\/+$/, "");
+  const resp = await fetch(`${baseUrl}/api/settings`);
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch server settings: ${resp.status}`);
+  }
+  return resp.json();
+}
+
+/**
+ * Initiate OIDC login flow.
+ *
+ * In Tauri mode: handles the entire flow (opens browser, waits for callback,
+ * returns tokens). Returns { mode: "tauri", tokens }.
+ *
+ * In browser mode: returns the authorize URL for popup flow.
+ * Returns { mode: "browser", authUrl }.
+ */
+export async function oidcAuthorize(
+  serverUrl: string,
+  providerSlug: string
+): Promise<
+  | { mode: "tauri"; tokens: OidcLoginResult }
+  | { mode: "browser"; authUrl: string }
+> {
+  const baseUrl = serverUrl.replace(/\/+$/, "");
+
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const tokens = await invoke<OidcLoginResult>("oidc_authorize", {
+      serverUrl: baseUrl,
+      providerSlug,
+    });
+    return { mode: "tauri", tokens };
+  }
+
+  // Browser: return the authorize endpoint URL for popup flow
+  const authUrl = `${baseUrl}/auth/oidc/authorize/${encodeURIComponent(providerSlug)}`;
+  return { mode: "browser", authUrl };
+}
+
+/**
+ * Complete OIDC login after callback.
+ * In browser mode, tokens are delivered via postMessage from the callback page.
+ */
+export async function oidcCompleteLogin(
+  serverUrl: string,
+  accessToken: string,
+  refreshToken: string,
+  expiresIn: number
+): Promise<void> {
+  const baseUrl = serverUrl.replace(/\/+$/, "");
+
+  // Store tokens (browser mode)
+  browserState.serverUrl = baseUrl;
+  browserState.accessToken = accessToken;
+  browserState.refreshToken = refreshToken;
+  browserState.tokenExpiresAt = Date.now() + expiresIn * 1000;
+
+  localStorage.setItem("serverUrl", baseUrl);
+  localStorage.setItem("accessToken", accessToken);
+  localStorage.setItem("refreshToken", refreshToken);
+  localStorage.setItem(
+    "tokenExpiresAt",
+    String(browserState.tokenExpiresAt)
+  );
+
+  scheduleTokenRefresh();
+}
+
+// ============================================================================
+// Admin Auth Settings & OIDC Provider Management
+// ============================================================================
+
+/**
+ * Get admin auth settings (requires elevation).
+ */
+export async function adminGetAuthSettings(): Promise<AuthSettingsResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AuthSettingsResponse>("admin_get_auth_settings");
+  }
+  return httpRequest<AuthSettingsResponse>("GET", "/api/admin/auth-settings");
+}
+
+/**
+ * Update admin auth settings (requires elevation).
+ */
+export async function adminUpdateAuthSettings(body: {
+  auth_methods?: AuthMethodsConfig;
+  registration_policy?: string;
+}): Promise<AuthSettingsResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AuthSettingsResponse>("admin_update_auth_settings", { body });
+  }
+  return httpRequest<AuthSettingsResponse>("PUT", "/api/admin/auth-settings", body);
+}
+
+/**
+ * List all OIDC providers (admin, requires elevation).
+ */
+export async function adminListOidcProviders(): Promise<AdminOidcProvider[]> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AdminOidcProvider[]>("admin_list_oidc_providers");
+  }
+  return httpRequest<AdminOidcProvider[]>("GET", "/api/admin/oidc-providers");
+}
+
+/**
+ * Create an OIDC provider (admin, requires elevation).
+ */
+export async function adminCreateOidcProvider(body: {
+  slug: string;
+  display_name: string;
+  icon_hint?: string;
+  provider_type?: string;
+  issuer_url?: string;
+  authorization_url?: string;
+  token_url?: string;
+  userinfo_url?: string;
+  client_id: string;
+  client_secret: string;
+  scopes?: string;
+}): Promise<AdminOidcProvider> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AdminOidcProvider>("admin_create_oidc_provider", { body });
+  }
+  return httpRequest<AdminOidcProvider>("POST", "/api/admin/oidc-providers", body);
+}
+
+/**
+ * Update an OIDC provider (admin, requires elevation).
+ */
+export async function adminUpdateOidcProvider(
+  id: string,
+  body: {
+    display_name: string;
+    icon_hint?: string;
+    issuer_url?: string;
+    authorization_url?: string;
+    token_url?: string;
+    userinfo_url?: string;
+    client_id: string;
+    client_secret?: string;
+    scopes: string;
+    enabled: boolean;
+  }
+): Promise<AdminOidcProvider> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<AdminOidcProvider>("admin_update_oidc_provider", { id, body });
+  }
+  return httpRequest<AdminOidcProvider>("PUT", `/api/admin/oidc-providers/${id}`, body);
+}
+
+/**
+ * Delete an OIDC provider (admin, requires elevation).
+ */
+export async function adminDeleteOidcProvider(id: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<void>("admin_delete_oidc_provider", { id });
+  }
+  await httpRequest<{ success: boolean }>("DELETE", `/api/admin/oidc-providers/${id}`);
 }
