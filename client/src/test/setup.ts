@@ -4,8 +4,8 @@ import { cleanup } from "@solidjs/testing-library";
 
 // Ensure window is available in test environment (for jsdom)
 if (typeof window === "undefined") {
-  // @ts-ignore - global window setup for tests
-  global.window = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (global as any).window = {
     setTimeout: (fn: () => void, delay: number) => setTimeout(fn, delay),
     clearTimeout: (id: number) => clearTimeout(id),
     dispatchEvent: () => true,
