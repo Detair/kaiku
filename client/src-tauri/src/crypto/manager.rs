@@ -127,7 +127,9 @@ impl CryptoManager {
         // Check if we have an existing account
         let device_id = if store.has_account()? {
             // Load existing metadata to get device_id
-            let metadata = store.load_metadata()?.ok_or(CryptoManagerError::NotInitialized)?;
+            let metadata = store
+                .load_metadata()?
+                .ok_or(CryptoManagerError::NotInitialized)?;
             metadata.device_id
         } else {
             // Create new account
@@ -466,7 +468,8 @@ mod tests {
         let user_id = Uuid::now_v7();
 
         // First init should create new account
-        let manager = CryptoManager::init(dir.path().to_path_buf(), user_id, encryption_key).unwrap();
+        let manager =
+            CryptoManager::init(dir.path().to_path_buf(), user_id, encryption_key).unwrap();
         let device_id = manager.device_id();
 
         // Should have identity keys
@@ -480,7 +483,8 @@ mod tests {
         // Drop and re-open - should load existing account
         drop(manager);
 
-        let manager2 = CryptoManager::init(dir.path().to_path_buf(), user_id, encryption_key).unwrap();
+        let manager2 =
+            CryptoManager::init(dir.path().to_path_buf(), user_id, encryption_key).unwrap();
 
         // Should have same device ID
         assert_eq!(manager2.device_id(), device_id);
@@ -496,7 +500,8 @@ mod tests {
         let encryption_key = [0u8; 32];
         let user_id = Uuid::now_v7();
 
-        let manager = CryptoManager::init(dir.path().to_path_buf(), user_id, encryption_key).unwrap();
+        let manager =
+            CryptoManager::init(dir.path().to_path_buf(), user_id, encryption_key).unwrap();
 
         // Get initial unpublished keys (50 from init)
         let initial_keys = manager.get_unpublished_keys().unwrap();
@@ -555,14 +560,18 @@ mod tests {
         };
 
         let plaintext = "Hello, Bob!";
-        let ciphertext = alice.encrypt_for_device(bob_user_id, &claimed, plaintext).unwrap();
+        let ciphertext = alice
+            .encrypt_for_device(bob_user_id, &claimed, plaintext)
+            .unwrap();
 
         // Should be a prekey message (first message)
         assert!(ciphertext.is_prekey());
 
         // Bob decrypts
         let alice_curve25519 = alice.our_curve25519_key().unwrap();
-        let decrypted = bob.decrypt_message(alice_user_id, &alice_curve25519, &ciphertext).unwrap();
+        let decrypted = bob
+            .decrypt_message(alice_user_id, &alice_curve25519, &ciphertext)
+            .unwrap();
         assert_eq!(decrypted, plaintext);
 
         // Bob replies
@@ -575,7 +584,9 @@ mod tests {
         };
 
         let reply = "Hello, Alice!";
-        let reply_ciphertext = bob.encrypt_for_device(alice_user_id, &bob_claimed, reply).unwrap();
+        let reply_ciphertext = bob
+            .encrypt_for_device(alice_user_id, &bob_claimed, reply)
+            .unwrap();
 
         // Olm sessions are UNIDIRECTIONAL:
         // - Bob's inbound session from Alice can ONLY decrypt messages from Alice
@@ -586,7 +597,9 @@ mod tests {
 
         // Alice decrypts Bob's reply
         let bob_curve25519 = bob.our_curve25519_key().unwrap();
-        let decrypted_reply = alice.decrypt_message(bob_user_id, &bob_curve25519, &reply_ciphertext).unwrap();
+        let decrypted_reply = alice
+            .decrypt_message(bob_user_id, &bob_curve25519, &reply_ciphertext)
+            .unwrap();
         assert_eq!(decrypted_reply, reply);
     }
 
@@ -615,7 +628,8 @@ mod tests {
         let first_ciphertext;
         let alice_key;
         {
-            let alice = CryptoManager::init(alice_dir.clone(), alice_user_id, encryption_key).unwrap();
+            let alice =
+                CryptoManager::init(alice_dir.clone(), alice_user_id, encryption_key).unwrap();
             alice_key = alice.our_curve25519_key().unwrap();
 
             // Alice encrypts to Bob
@@ -629,11 +643,15 @@ mod tests {
                 }),
             };
 
-            first_ciphertext = alice.encrypt_for_device(bob_user_id, &claimed, "First message").unwrap();
+            first_ciphertext = alice
+                .encrypt_for_device(bob_user_id, &claimed, "First message")
+                .unwrap();
             assert!(first_ciphertext.is_prekey());
 
             // Verify session exists
-            assert!(alice.has_session(bob_user_id, &bob_identity.curve25519).unwrap());
+            assert!(alice
+                .has_session(bob_user_id, &bob_identity.curve25519)
+                .unwrap());
         }
 
         // Reopen Alice's manager
@@ -641,7 +659,9 @@ mod tests {
             let alice = CryptoManager::init(alice_dir, alice_user_id, encryption_key).unwrap();
 
             // Session should still exist after reopen
-            assert!(alice.has_session(bob_user_id, &bob_identity.curve25519).unwrap());
+            assert!(alice
+                .has_session(bob_user_id, &bob_identity.curve25519)
+                .unwrap());
 
             // Can encrypt again using existing session
             // Note: In Olm, messages stay as prekey messages until a response is received.
@@ -654,7 +674,9 @@ mod tests {
                 one_time_prekey: None, // Don't need prekey - we have existing session
             };
 
-            let second_ciphertext = alice.encrypt_for_device(bob_user_id, &claimed, "Second message").unwrap();
+            let second_ciphertext = alice
+                .encrypt_for_device(bob_user_id, &claimed, "Second message")
+                .unwrap();
 
             // Both messages should still be prekey messages (Olm behavior until response received)
             assert!(second_ciphertext.is_prekey());
@@ -664,7 +686,9 @@ mod tests {
         }
 
         // Verify Bob can decrypt the first message
-        let decrypted = bob.decrypt_message(alice_user_id, &alice_key, &first_ciphertext).unwrap();
+        let decrypted = bob
+            .decrypt_message(alice_user_id, &alice_key, &first_ciphertext)
+            .unwrap();
         assert_eq!(decrypted, "First message");
     }
 
@@ -714,7 +738,9 @@ mod tests {
         let plaintext = "Hello via fallback!";
 
         // Encryption succeeds (Alice can create an outbound session)
-        let ciphertext = alice.encrypt_for_device(bob_user_id, &claimed, plaintext).unwrap();
+        let ciphertext = alice
+            .encrypt_for_device(bob_user_id, &claimed, plaintext)
+            .unwrap();
         assert!(ciphertext.is_prekey());
 
         // Decryption fails because the identity key isn't a valid one-time key.
@@ -773,15 +799,21 @@ mod tests {
         };
 
         let plaintext = "Secret message";
-        let ciphertext = alice.encrypt_for_device(bob_user_id, &claimed, plaintext).unwrap();
+        let ciphertext = alice
+            .encrypt_for_device(bob_user_id, &claimed, plaintext)
+            .unwrap();
 
         // First, verify Bob CAN decrypt with correct sender key
         let alice_curve25519 = alice.our_curve25519_key().unwrap();
-        let decrypted = bob.decrypt_message(alice_user_id, &alice_curve25519, &ciphertext).unwrap();
+        let decrypted = bob
+            .decrypt_message(alice_user_id, &alice_curve25519, &ciphertext)
+            .unwrap();
         assert_eq!(decrypted, plaintext);
 
         // Now Alice sends another message
-        let ciphertext2 = alice.encrypt_for_device(bob_user_id, &claimed, "Second message").unwrap();
+        let ciphertext2 = alice
+            .encrypt_for_device(bob_user_id, &claimed, "Second message")
+            .unwrap();
 
         // Try to decrypt with wrong sender key (Charlie's key)
         // This should fail because no session exists for that sender key

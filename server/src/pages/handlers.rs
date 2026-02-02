@@ -26,7 +26,9 @@ type PageResult<T> = Result<T, (StatusCode, String)>;
 // ============================================================================
 
 /// List all platform pages.
-pub async fn list_platform_pages(State(state): State<AppState>) -> PageResult<Json<Vec<PageListItem>>> {
+pub async fn list_platform_pages(
+    State(state): State<AppState>,
+) -> PageResult<Json<Vec<PageListItem>>> {
     let pages = queries::list_pages(&state.db, None)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -54,7 +56,10 @@ pub async fn create_platform_page(
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Permission check failed".to_string())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Permission check failed".to_string(),
+        )
     })?;
     if !is_admin {
         return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
@@ -122,7 +127,9 @@ pub async fn create_platform_page(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Log audit (non-blocking, log errors instead of failing)
-    if let Err(e) = queries::log_audit(&state.db, page.id, "create", user.id, None, None, None).await {
+    if let Err(e) =
+        queries::log_audit(&state.db, page.id, "create", user.id, None, None, None).await
+    {
         error!("Failed to log audit for page {}: {}", page.id, e);
     }
 
@@ -139,7 +146,10 @@ pub async fn update_platform_page(
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Permission check failed".to_string())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Permission check failed".to_string(),
+        )
     })?;
     if !is_admin {
         return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
@@ -208,7 +218,10 @@ pub async fn delete_platform_page(
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Permission check failed".to_string())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Permission check failed".to_string(),
+        )
     })?;
     if !is_admin {
         return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
@@ -255,7 +268,10 @@ pub async fn reorder_platform_pages(
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Permission check failed".to_string())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Permission check failed".to_string(),
+        )
     })?;
     if !is_admin {
         return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
@@ -275,8 +291,13 @@ pub async fn reorder_platform_pages(
 /// Convert `PermissionError` to HTTP response.
 fn permission_error_to_response(err: PermissionError) -> (StatusCode, String) {
     match err {
-        PermissionError::NotGuildMember => (StatusCode::FORBIDDEN, "Not a member of this guild".to_string()),
-        PermissionError::MissingPermission(p) => (StatusCode::FORBIDDEN, format!("Missing permission: {p:?}")),
+        PermissionError::NotGuildMember => (
+            StatusCode::FORBIDDEN,
+            "Not a member of this guild".to_string(),
+        ),
+        PermissionError::MissingPermission(p) => {
+            (StatusCode::FORBIDDEN, format!("Missing permission: {p:?}"))
+        }
         PermissionError::DatabaseError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         _ => (StatusCode::FORBIDDEN, err.to_string()),
     }
@@ -380,7 +401,9 @@ pub async fn create_guild_page(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Log audit (non-blocking, log errors instead of failing)
-    if let Err(e) = queries::log_audit(&state.db, page.id, "create", user.id, None, None, None).await {
+    if let Err(e) =
+        queries::log_audit(&state.db, page.id, "create", user.id, None, None, None).await
+    {
         error!("Failed to log audit for page {}: {}", page.id, e);
     }
 

@@ -2,8 +2,6 @@
 //!
 //! Unit tests for config parsing and response structures.
 
-
-
 /// Test that REQUIRE_E2EE_SETUP parses correctly from environment.
 #[test]
 fn test_require_e2ee_setup_parsing_true() {

@@ -24,7 +24,9 @@ impl std::fmt::Display for RateLimitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RedisUnavailable => write!(f, "Redis service unavailable"),
-            Self::LimitExceeded(res) => write!(f, "Rate limit exceeded. Retry after {}s", res.retry_after),
+            Self::LimitExceeded(res) => {
+                write!(f, "Rate limit exceeded. Retry after {}s", res.retry_after)
+            }
             Self::IpBlocked { retry_after } => write!(f, "IP blocked. Retry after {retry_after}s"),
         }
     }

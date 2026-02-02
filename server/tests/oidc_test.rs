@@ -18,9 +18,9 @@ use vc_server::auth::oidc::{
 /// Generate a valid 32-byte encryption key for testing.
 fn test_encryption_key() -> Vec<u8> {
     vec![
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-        0x1d, 0x1e, 0x1f, 0x20,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
+        0x1f, 0x20,
     ]
 }
 
@@ -30,7 +30,9 @@ fn test_encrypt_decrypt_roundtrip() {
     let manager = OidcProviderManager::new(key);
 
     let secret = "my-super-secret-client-secret-12345";
-    let encrypted = manager.encrypt_secret(secret).expect("Encryption should succeed");
+    let encrypted = manager
+        .encrypt_secret(secret)
+        .expect("Encryption should succeed");
 
     // Encrypted should be different from original
     assert_ne!(encrypted, secret);
@@ -179,7 +181,9 @@ fn test_username_from_name_with_special_chars() {
     // Non-ASCII chars are filtered out; spaces become underscores
     let username = generate_username_from_claims(&info);
     assert!(
-        username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        username
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_'),
         "Username should only contain [a-z0-9_], got: {username}"
     );
 }
@@ -239,7 +243,10 @@ fn test_username_too_short_preferred_falls_through() {
     };
     // Should fall through to email
     let username = generate_username_from_claims(&info);
-    assert_ne!(username, "ab", "Too short preferred_username should be rejected");
+    assert_ne!(
+        username, "ab",
+        "Too short preferred_username should be rejected"
+    );
 }
 
 #[test]
@@ -252,10 +259,7 @@ fn test_username_too_long_preferred_falls_through() {
         avatar_url: None,
     };
     let username = generate_username_from_claims(&info);
-    assert!(
-        username.len() <= 32,
-        "Username should be at most 32 chars"
-    );
+    assert!(username.len() <= 32, "Username should be at most 32 chars");
 }
 
 // ============================================================================
@@ -424,12 +428,10 @@ async fn test_manager_generate_auth_url_unknown_provider() {
         .generate_auth_url("nonexistent", "http://localhost/callback")
         .await;
     assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Provider not found"),
-    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Provider not found"),);
 }
 
 #[tokio::test]
@@ -438,7 +440,13 @@ async fn test_manager_exchange_code_unknown_provider() {
     let manager = OidcProviderManager::new(key);
 
     let result = manager
-        .exchange_code("nonexistent", "code", "verifier", "http://localhost/callback", "nonce")
+        .exchange_code(
+            "nonexistent",
+            "code",
+            "verifier",
+            "http://localhost/callback",
+            "nonce",
+        )
         .await;
     assert!(result.is_err());
 }
@@ -667,8 +675,14 @@ fn test_redirect_uri_rejected_patterns() {
     // These should be rejected by the server's validation
     let invalid: Vec<(&str, &str)> = vec![
         // Prefix-based bypass attempts (host_str != "localhost")
-        ("http://localhost.evil.com/callback", "host is localhost.evil.com"),
-        ("http://localhost.attacker.com:8080/steal", "host is subdomain"),
+        (
+            "http://localhost.evil.com/callback",
+            "host is localhost.evil.com",
+        ),
+        (
+            "http://localhost.attacker.com:8080/steal",
+            "host is subdomain",
+        ),
         ("http://127.0.0.1.evil.com/callback", "host is subdomain"),
         // Credential injection (url crate treats pre-@ as userinfo)
         ("http://localhost@evil.com/callback", "host is evil.com"),
@@ -703,7 +717,10 @@ fn test_redirect_uri_unparseable_rejected() {
                 (parsed.scheme(), parsed.host_str()),
                 ("http", Some("localhost" | "127.0.0.1"))
             );
-            assert!(!is_valid, "{uri} parsed but should be rejected by scheme/host check");
+            assert!(
+                !is_valid,
+                "{uri} parsed but should be rejected by scheme/host check"
+            );
         }
         // If parsing fails, the server also rejects it — that's fine
     }
@@ -718,12 +735,20 @@ fn test_collision_suffix_always_has_full_suffix() {
     // Even with a very long base, the _XXXX suffix should always be 5 chars
     let long_base = "a".repeat(50);
     let result = append_collision_suffix(&long_base);
-    assert!(result.len() <= 32, "Should be at most 32 chars, got {}", result.len());
+    assert!(
+        result.len() <= 32,
+        "Should be at most 32 chars, got {}",
+        result.len()
+    );
 
     // The suffix should always be _XXXX (5 chars)
     let underscore_pos = result.rfind('_').expect("Should contain underscore");
     let suffix = &result[underscore_pos + 1..];
-    assert_eq!(suffix.len(), 4, "Suffix should always be 4 digits, got: {suffix}");
+    assert_eq!(
+        suffix.len(),
+        4,
+        "Suffix should always be 4 digits, got: {suffix}"
+    );
     assert!(
         suffix.chars().all(|c| c.is_ascii_digit()),
         "Suffix should be all digits, got: {suffix}"
@@ -806,14 +831,20 @@ async fn test_first_user_detection() {
     // (This test verifies the query works; the transaction + FOR UPDATE
     // serialization is tested by the actual registration flow)
     if user_count > 0 {
-        assert!(user_count > 0, "Existing users should prevent first-user grant");
+        assert!(
+            user_count > 0,
+            "Existing users should prevent first-user grant"
+        );
     }
 
     // Verify setup_complete row exists (needed for FOR UPDATE lock)
     let setup_val = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete'"
+        "SELECT value FROM server_config WHERE key = 'setup_complete'",
     )
     .fetch_one(&pool)
     .await;
-    assert!(setup_val.is_ok(), "setup_complete config row must exist for registration locking");
+    assert!(
+        setup_val.is_ok(),
+        "setup_complete config row must exist for registration locking"
+    );
 }

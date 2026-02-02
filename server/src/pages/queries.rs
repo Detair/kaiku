@@ -187,27 +187,26 @@ pub async fn get_page_by_slug(
     guild_id: Option<Uuid>,
     slug: &str,
 ) -> Result<Option<Page>, sqlx::Error> {
-    let page: Option<Page> = match guild_id {
-        Some(gid) => {
-            sqlx::query_as!(
-                Page,
-                r"SELECT * FROM pages WHERE guild_id = $1 AND slug = $2 AND deleted_at IS NULL",
-                gid,
-                slug
-            )
-            .fetch_optional(pool)
-            .await?
-        }
-        None => {
-            sqlx::query_as!(
+    let page: Option<Page> =
+        match guild_id {
+            Some(gid) => {
+                sqlx::query_as!(
+                    Page,
+                    r"SELECT * FROM pages WHERE guild_id = $1 AND slug = $2 AND deleted_at IS NULL",
+                    gid,
+                    slug
+                )
+                .fetch_optional(pool)
+                .await?
+            }
+            None => sqlx::query_as!(
                 Page,
                 r"SELECT * FROM pages WHERE guild_id IS NULL AND slug = $1 AND deleted_at IS NULL",
                 slug
             )
             .fetch_optional(pool)
-            .await?
-        }
-    };
+            .await?,
+        };
     Ok(page)
 }
 
@@ -249,7 +248,7 @@ pub async fn create_page(
     )
     .fetch_one(pool)
     .await?;
-    
+
     Ok(page)
 }
 
@@ -294,18 +293,15 @@ pub async fn update_page(
     )
     .fetch_one(pool)
     .await?;
-    
+
     Ok(updated_page)
 }
 
 /// Soft delete a page.
 pub async fn soft_delete_page(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        r"UPDATE pages SET deleted_at = NOW() WHERE id = $1",
-        id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!(r"UPDATE pages SET deleted_at = NOW() WHERE id = $1", id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -318,7 +314,7 @@ pub async fn restore_page(pool: &PgPool, id: Uuid) -> Result<Page, sqlx::Error> 
     )
     .fetch_one(pool)
     .await?;
-    
+
     Ok(page)
 }
 
@@ -440,7 +436,7 @@ pub async fn get_acceptance(
     )
     .fetch_optional(pool)
     .await?;
-    
+
     Ok(acceptance)
 }
 
@@ -463,7 +459,7 @@ pub async fn get_pending_acceptance(
     )
     .fetch_all(pool)
     .await?;
-    
+
     Ok(pages)
 }
 

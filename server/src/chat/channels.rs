@@ -33,12 +33,28 @@ pub enum ChannelError {
 impl IntoResponse for ChannelError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            Self::NotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", "Channel not found".to_string()),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Access denied".to_string()),
+            Self::NotFound => (
+                StatusCode::NOT_FOUND,
+                "CHANNEL_NOT_FOUND",
+                "Channel not found".to_string(),
+            ),
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "Access denied".to_string(),
+            ),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error".to_string()),
+            Self::Database(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Database error".to_string(),
+            ),
         };
-        (status, Json(serde_json::json!({ "error": code, "message": message }))).into_response()
+        (
+            status,
+            Json(serde_json::json!({ "error": code, "message": message })),
+        )
+            .into_response()
     }
 }
 

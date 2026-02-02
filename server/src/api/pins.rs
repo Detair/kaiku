@@ -134,15 +134,35 @@ impl IntoResponse for PinsError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, message) = match &self {
             Self::NotFound => (StatusCode::NOT_FOUND, "PIN_NOT_FOUND", "Pin not found"),
-            Self::LimitExceeded => (StatusCode::BAD_REQUEST, "LIMIT_EXCEEDED", "Maximum pins limit reached (50)"),
-            Self::ContentTooLong => (StatusCode::BAD_REQUEST, "CONTENT_TOO_LONG", "Content exceeds maximum length"),
-            Self::TitleTooLong => (StatusCode::BAD_REQUEST, "TITLE_TOO_LONG", "Title exceeds maximum length"),
+            Self::LimitExceeded => (
+                StatusCode::BAD_REQUEST,
+                "LIMIT_EXCEEDED",
+                "Maximum pins limit reached (50)",
+            ),
+            Self::ContentTooLong => (
+                StatusCode::BAD_REQUEST,
+                "CONTENT_TOO_LONG",
+                "Content exceeds maximum length",
+            ),
+            Self::TitleTooLong => (
+                StatusCode::BAD_REQUEST,
+                "TITLE_TOO_LONG",
+                "Title exceeds maximum length",
+            ),
             Self::Database(err) => {
                 tracing::error!("Database error: {}", err);
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error")
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Database error",
+                )
             }
         };
-        (status, Json(serde_json::json!({ "error": code, "message": message }))).into_response()
+        (
+            status,
+            Json(serde_json::json!({ "error": code, "message": message })),
+        )
+            .into_response()
     }
 }
 
@@ -250,13 +270,12 @@ pub async fn update_pin(
     }
 
     // Check pin exists and belongs to user
-    let existing = sqlx::query_as::<_, PinRow>(
-        "SELECT * FROM user_pins WHERE id = $1 AND user_id = $2",
-    )
-    .bind(pin_id)
-    .bind(auth_user.id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing =
+        sqlx::query_as::<_, PinRow>("SELECT * FROM user_pins WHERE id = $1 AND user_id = $2")
+            .bind(pin_id)
+            .bind(auth_user.id)
+            .fetch_optional(&state.db)
+            .await?;
 
     if existing.is_none() {
         return Err(PinsError::NotFound);
@@ -315,13 +334,14 @@ pub async fn reorder_pins(
     // Update positions based on order in request
     for (position, pin_id) in request.pin_ids.iter().enumerate() {
         // Verify pin belongs to user and update position
-        let _result = sqlx::query("UPDATE user_pins SET position = $3 WHERE id = $1 AND user_id = $2")
-            .bind(pin_id)
-            .bind(auth_user.id)
-            .bind(position as i32)
-            .execute(&mut *tx)
-            .await?;
-        
+        let _result =
+            sqlx::query("UPDATE user_pins SET position = $3 WHERE id = $1 AND user_id = $2")
+                .bind(pin_id)
+                .bind(auth_user.id)
+                .bind(position as i32)
+                .execute(&mut *tx)
+                .await?;
+
         // Optional: fail if any pin is not found/owned?
         // Current behavior allows partial updates if we don't check, but transaction ensures all or nothing for the DB.
         // If a pin ID is invalid/not owned, rows_affected will be 0.

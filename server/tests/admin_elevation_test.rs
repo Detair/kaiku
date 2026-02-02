@@ -245,7 +245,10 @@ async fn test_system_admin_check() {
     let regular_status = get_system_admin(&pool, regular_user.id)
         .await
         .expect("Query should succeed");
-    assert!(regular_status.is_none(), "User should NOT be a system admin");
+    assert!(
+        regular_status.is_none(),
+        "User should NOT be a system admin"
+    );
 
     // Cleanup
     cleanup_test_user(&pool, admin_user.id).await;
@@ -280,7 +283,10 @@ async fn test_elevation_session_creation() {
     .expect("Elevation should succeed");
 
     assert_eq!(elevated.user_id, admin_user.id);
-    assert!(elevated.expires_at > Utc::now(), "Should expire in the future");
+    assert!(
+        elevated.expires_at > Utc::now(),
+        "Should expire in the future"
+    );
     assert_eq!(elevated.reason.as_deref(), Some("Testing elevation"));
 
     // Verify expiry is approximately 15 minutes
@@ -408,12 +414,11 @@ async fn test_de_elevation_removes_sessions() {
         .expect("Elevation should succeed");
 
     // Verify elevated
-    let count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM elevated_sessions WHERE user_id = $1")
-            .bind(admin_user.id)
-            .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM elevated_sessions WHERE user_id = $1")
+        .bind(admin_user.id)
+        .fetch_one(&pool)
+        .await
+        .expect("Query should succeed");
     assert_eq!(count.0, 1, "Should have one elevated session");
 
     // De-elevate (delete all elevated sessions)
@@ -430,7 +435,10 @@ async fn test_de_elevation_removes_sessions() {
             .fetch_one(&pool)
             .await
             .expect("Query should succeed");
-    assert_eq!(count_after.0, 0, "Should have no elevated sessions after de-elevation");
+    assert_eq!(
+        count_after.0, 0,
+        "Should have no elevated sessions after de-elevation"
+    );
 
     // Cleanup
     cleanup_test_user(&pool, admin_user.id).await;
@@ -485,13 +493,15 @@ async fn test_elevation_upsert_updates_expiry() {
     );
 
     // Should still only have one elevated session
-    let count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM elevated_sessions WHERE user_id = $1")
-            .bind(admin_user.id)
-            .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
-    assert_eq!(count.0, 1, "Should have exactly one elevated session after upsert");
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM elevated_sessions WHERE user_id = $1")
+        .bind(admin_user.id)
+        .fetch_one(&pool)
+        .await
+        .expect("Query should succeed");
+    assert_eq!(
+        count.0, 1,
+        "Should have exactly one elevated session after upsert"
+    );
 
     // Cleanup
     cleanup_test_user(&pool, admin_user.id).await;

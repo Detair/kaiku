@@ -26,9 +26,9 @@ use webrtc::{
 use super::error::VoiceError;
 use super::peer::Peer;
 use super::rate_limit::VoiceStatsLimiter;
+use super::screen_share::ScreenShareInfo;
 use super::track::{spawn_rtp_forwarder, TrackRouter};
 use super::track_types::TrackSource;
-use super::screen_share::ScreenShareInfo;
 use crate::config::Config;
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
 use crate::ws::ServerEvent;
@@ -338,7 +338,9 @@ impl SfuServer {
                         mime_type: "video/H264".to_string(),
                         clock_rate: 90000,
                         channels: 0,
-                        sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_string(),
+                        sdp_fmtp_line:
+                            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                                .to_string(),
                         rtcp_feedback: vec![
                             RTCPFeedback {
                                 typ: "goog-remb".to_string(),
@@ -549,7 +551,12 @@ impl SfuServer {
                         peer.set_incoming_track(source_type, track.clone()).await;
 
                         // Start RTP forwarder
-                        spawn_rtp_forwarder(uid, source_type, track.clone(), room.track_router.clone());
+                        spawn_rtp_forwarder(
+                            uid,
+                            source_type,
+                            track.clone(),
+                            room.track_router.clone(),
+                        );
 
                         // Create subscriber tracks for all existing peers
                         let other_peers = room.get_other_peers(uid).await;
@@ -559,8 +566,9 @@ impl SfuServer {
                                 .create_subscriber_track(uid, source_type, &other_peer, &track)
                                 .await
                             {
-                                if let Err(e) =
-                                    other_peer.add_outgoing_track(uid, source_type, local_track).await
+                                if let Err(e) = other_peer
+                                    .add_outgoing_track(uid, source_type, local_track)
+                                    .await
                                 {
                                     warn!(
                                         source = %uid,
@@ -656,7 +664,7 @@ impl SfuServer {
                 .check(RateLimitCategory::VoiceJoin, &user_id.to_string())
                 .await
                 .map_err(|e| VoiceError::Internal(e.to_string()))?;
-            
+
             if !result.allowed {
                 return Err(VoiceError::RateLimited);
             }

@@ -38,7 +38,7 @@ async fn create_test_user(pool: &PgPool) -> uuid::Uuid {
     let password_hash = vc_server::auth::hash_password("password123").expect("Hash password");
 
     sqlx::query(
-        "INSERT INTO users (id, username, display_name, password_hash) VALUES ($1, $2, $3, $4)"
+        "INSERT INTO users (id, username, display_name, password_hash) VALUES ($1, $2, $3, $4)",
     )
     .bind(user_id)
     .bind(&username)
@@ -54,7 +54,7 @@ async fn create_test_user(pool: &PgPool) -> uuid::Uuid {
 /// Helper to create a test guild and return its ID
 async fn create_test_guild(pool: &PgPool, owner_id: uuid::Uuid) -> uuid::Uuid {
     sqlx::query_scalar::<_, uuid::Uuid>(
-        "INSERT INTO guilds (name, owner_id) VALUES ($1, $2) RETURNING id"
+        "INSERT INTO guilds (name, owner_id) VALUES ($1, $2) RETURNING id",
     )
     .bind("Test Guild")
     .bind(owner_id)

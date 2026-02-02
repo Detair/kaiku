@@ -14,12 +14,12 @@ pub mod call_handlers;
 pub mod call_service;
 pub mod error;
 mod handlers;
+mod metrics;
 mod peer;
 mod quality;
 mod rate_limit;
 pub mod screen_share;
 pub mod sfu;
-mod metrics;
 mod signaling;
 mod stats;
 mod track;
@@ -37,8 +37,8 @@ pub use screen_share::{
     ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareStartRequest,
 };
 pub use sfu::{ParticipantInfo, Room, SfuServer};
-pub use track_types::{TrackInfo, TrackKind, TrackSource};
 pub use stats::{UserStats, VoiceStats};
+pub use track_types::{TrackInfo, TrackKind, TrackSource};
 
 /// Create voice router.
 ///

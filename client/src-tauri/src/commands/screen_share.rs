@@ -135,7 +135,13 @@ pub async fn start_screen_share(
     let (frame_tx, mut frame_rx) = mpsc::channel(2);
 
     // Start capturer on blocking thread
-    let capturer = FrameCapturer::new(target, source_id.clone(), params.fps, params.width, params.height);
+    let capturer = FrameCapturer::new(
+        target,
+        source_id.clone(),
+        params.fps,
+        params.width,
+        params.height,
+    );
 
     let capturer_handle = capturer
         .start(frame_tx, shutdown_rx)
@@ -169,11 +175,10 @@ pub async fn start_screen_share(
                 match frame_rx.try_recv() {
                     Ok(i420) => match encoder.encode(&i420) {
                         Ok(packets) => {
-                            if !packets.is_empty()
-                                && pkt_tx.blocking_send(packets).is_err() {
-                                    info!("Packet channel closed, stopping encoder");
-                                    break;
-                                }
+                            if !packets.is_empty() && pkt_tx.blocking_send(packets).is_err() {
+                                info!("Packet channel closed, stopping encoder");
+                                break;
+                            }
                         }
                         Err(e) => {
                             warn!("Encode error: {e}");

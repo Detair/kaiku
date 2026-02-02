@@ -58,7 +58,10 @@ impl IntoResponse for RoleError {
                         "required": format!("{:?}", p),
                         "message": e.to_string()
                     }),
-                    PermissionError::RoleHierarchy { actor_position, target_position } => serde_json::json!({
+                    PermissionError::RoleHierarchy {
+                        actor_position,
+                        target_position,
+                    } => serde_json::json!({
                         "error": "ROLE_HIERARCHY",
                         "your_position": actor_position,
                         "target_position": target_position,
@@ -107,19 +110,26 @@ pub async fn list_roles(
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<Vec<RoleResponse>>, RoleError> {
     // Just need to be a member to view roles
-    let _ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::empty(),
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => RoleError::NotMember,
-        other => RoleError::Permission(other),
-    })?;
+    let _ctx = require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::empty())
+        .await
+        .map_err(|e| match e {
+            PermissionError::NotGuildMember => RoleError::NotMember,
+            other => RoleError::Permission(other),
+        })?;
 
-    let roles = sqlx::query_as::<_, (Uuid, Uuid, String, Option<String>, i64, i32, bool, chrono::DateTime<chrono::Utc>)>(
+    let roles = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            Option<String>,
+            i64,
+            i32,
+            bool,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
         r"
         SELECT id, guild_id, name, color, permissions, position, is_default, created_at
         FROM guild_roles
@@ -133,18 +143,20 @@ pub async fn list_roles(
 
     let response: Vec<RoleResponse> = roles
         .into_iter()
-        .map(|(id, guild_id, name, color, permissions, position, is_default, created_at)| {
-            RoleResponse {
-                id,
-                guild_id,
-                name,
-                color,
-                permissions: permissions as u64,
-                position,
-                is_default,
-                created_at,
-            }
-        })
+        .map(
+            |(id, guild_id, name, color, permissions, position, is_default, created_at)| {
+                RoleResponse {
+                    id,
+                    guild_id,
+                    name,
+                    color,
+                    permissions: permissions as u64,
+                    position,
+                    is_default,
+                    created_at,
+                }
+            },
+        )
         .collect();
 
     Ok(Json(response))
@@ -163,17 +175,13 @@ pub async fn create_role(
     body.validate()
         .map_err(|e| RoleError::Validation(e.to_string()))?;
 
-    let ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_ROLES,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => RoleError::NotMember,
-        other => RoleError::Permission(other),
-    })?;
+    let ctx =
+        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_ROLES)
+            .await
+            .map_err(|e| match e {
+                PermissionError::NotGuildMember => RoleError::NotMember,
+                other => RoleError::Permission(other),
+            })?;
 
     // Check if trying to grant permissions we don't have
     let new_perms = GuildPermissions::from_bits_truncate(body.permissions.unwrap_or(0));
@@ -194,7 +202,19 @@ pub async fn create_role(
     let role_id = Uuid::now_v7();
     let position = max_position.0 as i32 + 1;
 
-    let role = sqlx::query_as::<_, (Uuid, Uuid, String, Option<String>, i64, i32, bool, chrono::DateTime<chrono::Utc>)>(
+    let role = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            Option<String>,
+            i64,
+            i32,
+            bool,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
         r"
         INSERT INTO guild_roles (id, guild_id, name, color, permissions, position)
         VALUES ($1, $2, $3, $4, $5, $6)
@@ -232,17 +252,13 @@ pub async fn update_role(
     Path((guild_id, role_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<UpdateRoleRequest>,
 ) -> Result<Json<RoleResponse>, RoleError> {
-    let ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_ROLES,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => RoleError::NotMember,
-        other => RoleError::Permission(other),
-    })?;
+    let ctx =
+        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_ROLES)
+            .await
+            .map_err(|e| match e {
+                PermissionError::NotGuildMember => RoleError::NotMember,
+                other => RoleError::Permission(other),
+            })?;
 
     // Get current role
     let current_role: Option<(i32, i64, bool)> = sqlx::query_as(
@@ -295,7 +311,19 @@ pub async fn update_role(
         }
     }
 
-    let role = sqlx::query_as::<_, (Uuid, Uuid, String, Option<String>, i64, i32, bool, chrono::DateTime<chrono::Utc>)>(
+    let role = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            Option<String>,
+            i64,
+            i32,
+            bool,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
         r"
         UPDATE guild_roles SET
             name = COALESCE($3, name),
@@ -336,17 +364,13 @@ pub async fn delete_role(
     auth: AuthUser,
     Path((guild_id, role_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, RoleError> {
-    let ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_ROLES,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => RoleError::NotMember,
-        other => RoleError::Permission(other),
-    })?;
+    let ctx =
+        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_ROLES)
+            .await
+            .map_err(|e| match e {
+                PermissionError::NotGuildMember => RoleError::NotMember,
+                other => RoleError::Permission(other),
+            })?;
 
     // Get role to check position and if it's default
     let role: Option<(i32, bool)> = sqlx::query_as(
@@ -392,17 +416,13 @@ pub async fn assign_role(
     auth: AuthUser,
     Path((guild_id, user_id, role_id)): Path<(Uuid, Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, RoleError> {
-    let ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_ROLES,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => RoleError::NotMember,
-        other => RoleError::Permission(other),
-    })?;
+    let ctx =
+        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_ROLES)
+            .await
+            .map_err(|e| match e {
+                PermissionError::NotGuildMember => RoleError::NotMember,
+                other => RoleError::Permission(other),
+            })?;
 
     // Get role to check position
     let role: Option<(i32, bool)> = sqlx::query_as(
@@ -472,26 +492,21 @@ pub async fn remove_role(
     auth: AuthUser,
     Path((guild_id, user_id, role_id)): Path<(Uuid, Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, RoleError> {
-    let ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_ROLES,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => RoleError::NotMember,
-        other => RoleError::Permission(other),
-    })?;
+    let ctx =
+        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_ROLES)
+            .await
+            .map_err(|e| match e {
+                PermissionError::NotGuildMember => RoleError::NotMember,
+                other => RoleError::Permission(other),
+            })?;
 
     // Get role to check position
-    let role: Option<(i32,)> = sqlx::query_as(
-        "SELECT position FROM guild_roles WHERE id = $1 AND guild_id = $2",
-    )
-    .bind(role_id)
-    .bind(guild_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let role: Option<(i32,)> =
+        sqlx::query_as("SELECT position FROM guild_roles WHERE id = $1 AND guild_id = $2")
+            .bind(role_id)
+            .bind(guild_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     let role = role.ok_or(RoleError::NotFound)?;
 

@@ -62,12 +62,23 @@ async fn check_elevated_in_db(db: &PgPool, user_id: Uuid) -> bool {
 }
 
 /// Cache elevated admin status in Redis (called after elevation).
-pub async fn cache_elevated_status(redis: &Client, user_id: Uuid, is_elevated: bool, ttl_secs: i64) {
+pub async fn cache_elevated_status(
+    redis: &Client,
+    user_id: Uuid,
+    is_elevated: bool,
+    ttl_secs: i64,
+) {
     let cache_key = format!("admin:elevated:{user_id}");
     let value = if is_elevated { "1" } else { "0" };
 
     let _: Result<(), _> = redis
-        .set(&cache_key, value, Some(Expiration::EX(ttl_secs)), None, false)
+        .set(
+            &cache_key,
+            value,
+            Some(Expiration::EX(ttl_secs)),
+            None,
+            false,
+        )
         .await;
 }
 
@@ -80,11 +91,26 @@ pub fn router(state: AppState) -> Router<AppState> {
     // Elevated routes (require both system admin and elevated session)
     let elevated_routes = Router::new()
         // Report management
-        .route("/reports", get(crate::moderation::admin_handlers::list_reports))
-        .route("/reports/stats", get(crate::moderation::admin_handlers::report_stats))
-        .route("/reports/{id}", get(crate::moderation::admin_handlers::get_report))
-        .route("/reports/{id}/claim", post(crate::moderation::admin_handlers::claim_report))
-        .route("/reports/{id}/resolve", post(crate::moderation::admin_handlers::resolve_report))
+        .route(
+            "/reports",
+            get(crate::moderation::admin_handlers::list_reports),
+        )
+        .route(
+            "/reports/stats",
+            get(crate::moderation::admin_handlers::report_stats),
+        )
+        .route(
+            "/reports/{id}",
+            get(crate::moderation::admin_handlers::get_report),
+        )
+        .route(
+            "/reports/{id}/claim",
+            post(crate::moderation::admin_handlers::claim_report),
+        )
+        .route(
+            "/reports/{id}/resolve",
+            post(crate::moderation::admin_handlers::resolve_report),
+        )
         // User management
         .route(
             "/users/{id}/ban",

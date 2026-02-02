@@ -39,14 +39,38 @@ pub enum MessageError {
 impl IntoResponse for MessageError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            Self::NotFound => (StatusCode::NOT_FOUND, "MESSAGE_NOT_FOUND", "Message not found".to_string()),
-            Self::ChannelNotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", "Channel not found".to_string()),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Access denied".to_string()),
-            Self::Blocked => (StatusCode::FORBIDDEN, "BLOCKED", "Cannot send messages to this user".to_string()),
+            Self::NotFound => (
+                StatusCode::NOT_FOUND,
+                "MESSAGE_NOT_FOUND",
+                "Message not found".to_string(),
+            ),
+            Self::ChannelNotFound => (
+                StatusCode::NOT_FOUND,
+                "CHANNEL_NOT_FOUND",
+                "Channel not found".to_string(),
+            ),
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "Access denied".to_string(),
+            ),
+            Self::Blocked => (
+                StatusCode::FORBIDDEN,
+                "BLOCKED",
+                "Cannot send messages to this user".to_string(),
+            ),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error".to_string()),
+            Self::Database(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Database error".to_string(),
+            ),
         };
-        (status, Json(serde_json::json!({ "error": code, "message": message }))).into_response()
+        (
+            status,
+            Json(serde_json::json!({ "error": code, "message": message })),
+        )
+            .into_response()
     }
 }
 
@@ -366,9 +390,13 @@ pub async fn create(
 
         for &participant_id in &participants {
             if participant_id != auth_user.id {
-                if block_cache::is_blocked_either_direction(&state.redis, auth_user.id, participant_id)
-                    .await
-                    .unwrap_or(false)
+                if block_cache::is_blocked_either_direction(
+                    &state.redis,
+                    auth_user.id,
+                    participant_id,
+                )
+                .await
+                .unwrap_or(false)
                 {
                     return Err(MessageError::Blocked);
                 }
@@ -380,7 +408,9 @@ pub async fn create(
     if let Some(guild_id) = channel.guild_id {
         if body.content.contains("@everyone") || body.content.contains("@here") {
             // Load user's permissions in this guild
-            if let Ok(Some(ctx)) = get_member_permission_context(&state.db, guild_id, auth_user.id).await {
+            if let Ok(Some(ctx)) =
+                get_member_permission_context(&state.db, guild_id, auth_user.id).await
+            {
                 if !ctx.has_permission(GuildPermissions::MENTION_EVERYONE) {
                     return Err(MessageError::Validation(
                         "You do not have permission to mention @everyone or @here".to_string(),
@@ -620,7 +650,8 @@ mod tests {
             redis,
             config,
             None,
-            crate::voice::SfuServer::new(std::sync::Arc::new(Config::default_for_test()), None).unwrap(),
+            crate::voice::SfuServer::new(std::sync::Arc::new(Config::default_for_test()), None)
+                .unwrap(),
             None, // No rate limiter in tests
             None, // No email service in tests
             None, // No OIDC in tests
@@ -681,9 +712,14 @@ mod tests {
             limit: 50,
         };
 
-        let result = list(State(state), test_auth_user(&user1), Path(channel.id), Query(query))
-            .await
-            .expect("Handler failed");
+        let result = list(
+            State(state),
+            test_auth_user(&user1),
+            Path(channel.id),
+            Query(query),
+        )
+        .await
+        .expect("Handler failed");
 
         let messages = &result.0.items;
 
@@ -777,9 +813,14 @@ mod tests {
             limit: 50,
         };
 
-        let result = list(State(state), test_auth_user(&user), Path(channel.id), Query(query))
-            .await
-            .expect("Handler should not fail");
+        let result = list(
+            State(state),
+            test_auth_user(&user),
+            Path(channel.id),
+            Query(query),
+        )
+        .await
+        .expect("Handler should not fail");
 
         let messages = &result.0.items;
 
@@ -835,14 +876,22 @@ mod tests {
         };
 
         let auth = test_auth_user(&user);
-        let result1 = list(State(state.clone()), auth.clone(), Path(channel.id), Query(query1))
-            .await
-            .expect("First page failed");
+        let result1 = list(
+            State(state.clone()),
+            auth.clone(),
+            Path(channel.id),
+            Query(query1),
+        )
+        .await
+        .expect("First page failed");
 
         let page1 = &result1.0.items;
         assert_eq!(page1.len(), 3, "First page should have 3 messages");
         assert!(result1.0.has_more, "Should indicate more messages exist");
-        assert!(result1.0.next_cursor.is_some(), "Should provide next cursor");
+        assert!(
+            result1.0.next_cursor.is_some(),
+            "Should provide next cursor"
+        );
 
         // Fetch second page using cursor
         let oldest_from_page1 = page1.last().unwrap().id;
@@ -857,9 +906,14 @@ mod tests {
             limit: 3,
         };
 
-        let result2 = list(State(state.clone()), auth.clone(), Path(channel.id), Query(query2))
-            .await
-            .expect("Second page failed");
+        let result2 = list(
+            State(state.clone()),
+            auth.clone(),
+            Path(channel.id),
+            Query(query2),
+        )
+        .await
+        .expect("Second page failed");
 
         let page2 = &result2.0.items;
 
@@ -884,9 +938,19 @@ mod tests {
             .await
             .expect("Fetch all failed");
 
-        assert_eq!(result_all.0.items.len(), 10, "Should have 10 total messages");
-        assert!(!result_all.0.has_more, "All messages fetched, should have no more");
-        assert!(result_all.0.next_cursor.is_none(), "No more pages, cursor should be None");
+        assert_eq!(
+            result_all.0.items.len(),
+            10,
+            "Should have 10 total messages"
+        );
+        assert!(
+            !result_all.0.has_more,
+            "All messages fetched, should have no more"
+        );
+        assert!(
+            result_all.0.next_cursor.is_none(),
+            "No more pages, cursor should be None"
+        );
     }
 
     #[sqlx::test]
@@ -916,9 +980,14 @@ mod tests {
             limit: 50,
         };
 
-        let result = list(State(state), test_auth_user(&user), Path(channel.id), Query(query))
-            .await
-            .expect("Handler failed");
+        let result = list(
+            State(state),
+            test_auth_user(&user),
+            Path(channel.id),
+            Query(query),
+        )
+        .await
+        .expect("Handler failed");
 
         let messages = &result.0.items;
         assert_eq!(messages.len(), 0, "Empty channel should return 0 messages");
@@ -999,9 +1068,14 @@ mod tests {
         };
 
         let auth = test_auth_user(&user);
-        let result_zero = list(State(state.clone()), auth.clone(), Path(channel.id), Query(query_zero))
-            .await
-            .expect("Handler failed");
+        let result_zero = list(
+            State(state.clone()),
+            auth.clone(),
+            Path(channel.id),
+            Query(query_zero),
+        )
+        .await
+        .expect("Handler failed");
 
         assert_eq!(result_zero.0.items.len(), 1, "Limit 0 should clamp to 1");
 

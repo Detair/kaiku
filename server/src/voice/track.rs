@@ -149,7 +149,8 @@ impl TrackRouter {
     /// Remove all subscriptions for a source user (all tracks).
     pub async fn remove_source(&self, source_user_id: Uuid) {
         // Remove all keys where the tuple starts with source_user_id
-        self.subscriptions.retain(|(uid, _), _| *uid != source_user_id);
+        self.subscriptions
+            .retain(|(uid, _), _| *uid != source_user_id);
 
         debug!(source = %source_user_id, "Removed source and all subscriptions");
     }
@@ -212,10 +213,28 @@ mod tests {
         let user_id = Uuid::new_v4();
 
         // All track sources should have 0 subscribers on empty router
-        assert_eq!(router.subscriber_count(user_id, TrackSource::Microphone).await, 0);
-        assert_eq!(router.subscriber_count(user_id, TrackSource::ScreenVideo).await, 0);
-        assert_eq!(router.subscriber_count(user_id, TrackSource::ScreenAudio).await, 0);
-        assert_eq!(router.subscriber_count(user_id, TrackSource::Webcam).await, 0);
+        assert_eq!(
+            router
+                .subscriber_count(user_id, TrackSource::Microphone)
+                .await,
+            0
+        );
+        assert_eq!(
+            router
+                .subscriber_count(user_id, TrackSource::ScreenVideo)
+                .await,
+            0
+        );
+        assert_eq!(
+            router
+                .subscriber_count(user_id, TrackSource::ScreenAudio)
+                .await,
+            0
+        );
+        assert_eq!(
+            router.subscriber_count(user_id, TrackSource::Webcam).await,
+            0
+        );
     }
 
     #[tokio::test]
@@ -378,13 +397,13 @@ pub fn spawn_rtp_forwarder(
 
         // Clean up this specific track when it ends
         // We can't use remove_source because that removes ALL tracks for the user
-        // We need a way to remove just this track from subscriptions? 
+        // We need a way to remove just this track from subscriptions?
         // Actually, remove_source is fine if the user disconnects, but if they just stop screen sharing?
         // We should probably just let the subscriptions stick around or clean them up specifically.
         // For now, let's just log. The Peer cleanup handles the main removal.
         debug!(
-             source = %source_user_id, 
-             source_type = ?source_type, 
+             source = %source_user_id,
+             source_type = ?source_type,
              "RTP forwarder stopped"
         );
     });

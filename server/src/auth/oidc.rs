@@ -124,8 +124,7 @@ impl OidcProviderManager {
         issuer_url: &str,
     ) -> anyhow::Result<CoreClient> {
         let issuer = IssuerUrl::new(issuer_url.to_string())?;
-        let metadata =
-            CoreProviderMetadata::discover_async(issuer, async_http_client).await?;
+        let metadata = CoreProviderMetadata::discover_async(issuer, async_http_client).await?;
 
         let client_secret = self.decrypt_secret(&row.client_secret_encrypted)?;
 
@@ -140,11 +139,7 @@ impl OidcProviderManager {
 
     /// Get a provider's row by slug.
     pub async fn get_provider_row(&self, slug: &str) -> Option<OidcProviderRow> {
-        self.providers
-            .read()
-            .await
-            .get(slug)
-            .map(|p| p.row.clone())
+        self.providers.read().await.get(slug).map(|p| p.row.clone())
     }
 
     /// List public info for all enabled providers.

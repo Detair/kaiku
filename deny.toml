@@ -9,11 +9,9 @@ all-features = true
 # Advisories - Check for known vulnerabilities
 # =============================================================================
 [advisories]
-db-path = "~/.cargo/advisory-db"
-vulnerability = "deny"
-unmaintained = "warn"
 yanked = "deny"
-notice = "warn"
+unmaintained = "workspace"
+ignore = []
 
 # =============================================================================
 # Licenses - Only allow permissive licenses

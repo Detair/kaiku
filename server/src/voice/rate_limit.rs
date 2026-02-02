@@ -78,7 +78,7 @@ impl VoiceStatsLimiter {
     /// Cleanup old entries (call periodically to prevent memory leak).
     pub async fn cleanup(&self) {
         let now = Instant::now();
-        
+
         // Cleanup stats
         let stats_threshold = self.min_stats_interval * 10;
         let mut stats_map = self.last_stats.write().await;

@@ -393,7 +393,7 @@ mod postgres_tests {
             Some("New topic"),
             None,
             None,
-            None // position
+            None, // position
         )
         .await
         .expect("Failed to update channel")

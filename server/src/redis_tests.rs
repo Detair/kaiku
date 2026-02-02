@@ -451,7 +451,10 @@ mod redis_tests {
             .expect("Failed to HSET ip");
 
         // Set session expiry (15 minutes)
-        let _: i64 = client.expire(&key, 900, None).await.expect("Failed to EXPIRE");
+        let _: i64 = client
+            .expire(&key, 900, None)
+            .await
+            .expect("Failed to EXPIRE");
 
         // Retrieve session
         let user_id: String = client
@@ -480,7 +483,10 @@ mod redis_tests {
 
             // Set expiry on first request
             if i == 1 {
-                let _: i64 = client.expire(&key, 10, None).await.expect("Failed to EXPIRE");
+                let _: i64 = client
+                    .expire(&key, 10, None)
+                    .await
+                    .expect("Failed to EXPIRE");
             }
         }
 

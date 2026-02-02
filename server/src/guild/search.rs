@@ -133,11 +133,10 @@ pub async fn search_messages(
     }
 
     // Check guild exists
-    let guild_exists: (bool,) =
-        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
-            .bind(guild_id)
-            .fetch_one(&state.db)
-            .await?;
+    let guild_exists: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
+        .bind(guild_id)
+        .fetch_one(&state.db)
+        .await?;
     if !guild_exists.0 {
         return Err(SearchError::GuildNotFound);
     }
@@ -168,14 +167,12 @@ pub async fn search_messages(
         users.into_iter().map(|u| (u.id, u)).collect();
 
     // Bulk fetch channel names
-    let channels: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, name FROM channels WHERE id = ANY($1)",
-    )
-    .bind(&channel_ids)
-    .fetch_all(&state.db)
-    .await?;
-    let channel_map: std::collections::HashMap<Uuid, String> =
-        channels.into_iter().collect();
+    let channels: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, name FROM channels WHERE id = ANY($1)")
+            .bind(&channel_ids)
+            .fetch_all(&state.db)
+            .await?;
+    let channel_map: std::collections::HashMap<Uuid, String> = channels.into_iter().collect();
 
     // Build results
     let results: Vec<SearchResult> = messages

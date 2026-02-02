@@ -12,7 +12,10 @@ use validator::Validate;
 
 use serde::Serialize;
 
-use super::types::{CreateGuildRequest, Guild, GuildMember, GuildWithMemberCount, JoinGuildRequest, UpdateGuildRequest};
+use super::types::{
+    CreateGuildRequest, Guild, GuildMember, GuildWithMemberCount, JoinGuildRequest,
+    UpdateGuildRequest,
+};
 use crate::{
     api::AppState,
     auth::AuthUser,
@@ -68,13 +71,29 @@ pub enum GuildError {
 impl IntoResponse for GuildError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            Self::NotFound => (StatusCode::NOT_FOUND, "GUILD_NOT_FOUND", "Guild not found".to_string()),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Access denied".to_string()),
+            Self::NotFound => (
+                StatusCode::NOT_FOUND,
+                "GUILD_NOT_FOUND",
+                "Guild not found".to_string(),
+            ),
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "Access denied".to_string(),
+            ),
             Self::Permission(e) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", e.to_string()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error".to_string()),
+            Self::Database(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Database error".to_string(),
+            ),
         };
-        (status, Json(serde_json::json!({ "error": code, "message": message }))).into_response()
+        (
+            status,
+            Json(serde_json::json!({ "error": code, "message": message })),
+        )
+            .into_response()
     }
 }
 
@@ -139,7 +158,15 @@ pub async fn list_guilds(
     auth: AuthUser,
 ) -> Result<Json<Vec<GuildWithMemberCount>>, GuildError> {
     // Query guilds with member count in a single query
-    let rows: Vec<(Uuid, String, Uuid, Option<String>, Option<String>, chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(
+    let rows: Vec<(
+        Uuid,
+        String,
+        Uuid,
+        Option<String>,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+        i64,
+    )> = sqlx::query_as(
         r"SELECT
             g.id, g.name, g.owner_id, g.icon_url, g.description, g.created_at,
             COUNT(gm2.user_id) as member_count
@@ -156,19 +183,21 @@ pub async fn list_guilds(
 
     let guilds = rows
         .into_iter()
-        .map(|(id, name, owner_id, icon_url, description, created_at, member_count)| {
-            GuildWithMemberCount {
-                guild: Guild {
-                    id,
-                    name,
-                    owner_id,
-                    icon_url,
-                    description,
-                    created_at,
-                },
-                member_count,
-            }
-        })
+        .map(
+            |(id, name, owner_id, icon_url, description, created_at, member_count)| {
+                GuildWithMemberCount {
+                    guild: Guild {
+                        id,
+                        name,
+                        owner_id,
+                        icon_url,
+                        description,
+                        created_at,
+                    },
+                    member_count,
+                }
+            },
+        )
         .collect();
 
     Ok(Json(guilds))
@@ -521,7 +550,10 @@ pub async fn list_channels(
             } else {
                 0
             };
-            ChannelWithUnread { channel, unread_count }
+            ChannelWithUnread {
+                channel,
+                unread_count,
+            }
         })
         .collect();
 

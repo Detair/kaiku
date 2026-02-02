@@ -34,19 +34,14 @@ pub async fn create_report(
             .is_some();
 
     if !target_exists {
-        return Err(ReportError::Validation(
-            "Target user not found".to_string(),
-        ));
+        return Err(ReportError::Validation("Target user not found".to_string()));
     }
 
     // If reporting a message, verify it exists and belongs to the target user
     if let Some(message_id) = body.target_message_id {
-        let msg = sqlx::query!(
-            "SELECT user_id FROM messages WHERE id = $1",
-            message_id
-        )
-        .fetch_optional(&state.db)
-        .await?;
+        let msg = sqlx::query!("SELECT user_id FROM messages WHERE id = $1", message_id)
+            .fetch_optional(&state.db)
+            .await?;
 
         match msg {
             Some(m) if m.user_id != body.target_user_id => {
@@ -69,10 +64,7 @@ pub async fn create_report(
     let count: i64 = state.redis.incr(&rate_key).await.unwrap_or(1);
     if count == 1 {
         // Set expiry on first increment
-        let _: Result<(), _> = state
-            .redis
-            .expire(&rate_key, 3600, None)
-            .await;
+        let _: Result<(), _> = state.redis.expire(&rate_key, 3600, None).await;
     }
     if count > 5 {
         return Err(ReportError::RateLimited);

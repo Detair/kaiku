@@ -129,7 +129,7 @@ impl Default for RateLimits {
                 window_secs: 60,
             },
             voice_join: LimitConfig {
-                requests: 5,  // 5 joins per minute should be plenty for normal use
+                requests: 5, // 5 joins per minute should be plenty for normal use
                 window_secs: 60,
             },
             failed_auth_as_limit: LimitConfig {

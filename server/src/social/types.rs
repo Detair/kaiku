@@ -89,10 +89,18 @@ impl axum::response::IntoResponse for SocialError {
                 )
             }
             Self::UserNotFound => (StatusCode::NOT_FOUND, "USER_NOT_FOUND", self.to_string()),
-            Self::SelfFriendRequest => (StatusCode::BAD_REQUEST, "SELF_FRIEND_REQUEST", self.to_string()),
+            Self::SelfFriendRequest => (
+                StatusCode::BAD_REQUEST,
+                "SELF_FRIEND_REQUEST",
+                self.to_string(),
+            ),
             Self::AlreadyExists => (StatusCode::CONFLICT, "ALREADY_EXISTS", self.to_string()),
             Self::Blocked => (StatusCode::FORBIDDEN, "BLOCKED", self.to_string()),
-            Self::FriendshipNotFound => (StatusCode::NOT_FOUND, "FRIENDSHIP_NOT_FOUND", self.to_string()),
+            Self::FriendshipNotFound => (
+                StatusCode::NOT_FOUND,
+                "FRIENDSHIP_NOT_FOUND",
+                self.to_string(),
+            ),
             Self::Unauthorized => (StatusCode::FORBIDDEN, "UNAUTHORIZED", self.to_string()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
         };

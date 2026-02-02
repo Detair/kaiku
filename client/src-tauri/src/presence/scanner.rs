@@ -24,8 +24,7 @@ impl ProcessScanner {
     /// Returns the first matching game found.
     /// Uses `match_args` filtering for games that require command line argument checking.
     pub fn scan(&mut self) -> Option<GameEntry> {
-        self.system
-            .refresh_processes(ProcessesToUpdate::All, true);
+        self.system.refresh_processes(ProcessesToUpdate::All, true);
 
         for process in self.system.processes().values() {
             let Some(name) = process.name().to_str() else {
@@ -47,8 +46,7 @@ impl ProcessScanner {
     /// Scan and return all detected games (not just first).
     /// Uses `match_args` filtering for games that require command line argument checking.
     pub fn scan_all(&mut self) -> Vec<GameEntry> {
-        self.system
-            .refresh_processes(ProcessesToUpdate::All, true);
+        self.system.refresh_processes(ProcessesToUpdate::All, true);
 
         let mut found = Vec::new();
         let mut seen_names = std::collections::HashSet::new();

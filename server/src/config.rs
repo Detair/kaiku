@@ -116,8 +116,10 @@ impl Config {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             redis_url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into()),
-            jwt_private_key: env::var("JWT_PRIVATE_KEY").context("JWT_PRIVATE_KEY must be set (base64-encoded PEM)")?,
-            jwt_public_key: env::var("JWT_PUBLIC_KEY").context("JWT_PUBLIC_KEY must be set (base64-encoded PEM)")?,
+            jwt_private_key: env::var("JWT_PRIVATE_KEY")
+                .context("JWT_PRIVATE_KEY must be set (base64-encoded PEM)")?,
+            jwt_public_key: env::var("JWT_PUBLIC_KEY")
+                .context("JWT_PUBLIC_KEY must be set (base64-encoded PEM)")?,
             jwt_access_expiry: env::var("JWT_ACCESS_EXPIRY")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -213,10 +215,11 @@ impl Config {
     /// falling back to local dev defaults.
     #[must_use]
     pub fn default_for_test() -> Self {
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgresql://voicechat:voicechat_dev@localhost:5433/voicechat".into());
-        let redis_url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://localhost:6379".into());
+        let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgresql://voicechat:voicechat_dev@localhost:5433/voicechat".into()
+        });
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
 
         Self {
             bind_address: "127.0.0.1:8080".into(),

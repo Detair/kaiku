@@ -24,7 +24,13 @@ impl FrameCapturer {
     ///
     /// `target` must be a previously resolved `scap::Target`.
     /// `source_id` is used for logging only.
-    pub const fn new(target: scap::Target, source_id: String, fps: u32, width: u32, height: u32) -> Self {
+    pub const fn new(
+        target: scap::Target,
+        source_id: String,
+        fps: u32,
+        width: u32,
+        height: u32,
+    ) -> Self {
         Self {
             target,
             source_id,
@@ -74,7 +80,9 @@ impl FrameCapturer {
 
                 match capturer.get_next_frame() {
                     Ok(frame) => {
-                        let bgra_data = if let scap::frame::Frame::BGRA(bgra) = frame { bgra.data } else {
+                        let bgra_data = if let scap::frame::Frame::BGRA(bgra) = frame {
+                            bgra.data
+                        } else {
                             warn!("Unexpected frame format, skipping");
                             continue;
                         };

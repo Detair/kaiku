@@ -91,9 +91,7 @@ pub async fn is_blocked_either_direction(
 
 /// Add a block relationship to cache.
 pub async fn add_block(redis: &Client, blocker: Uuid, target: Uuid) -> Result<(), anyhow::Error> {
-    let _: () = redis
-        .sadd(blocked_key(blocker), target.to_string())
-        .await?;
+    let _: () = redis.sadd(blocked_key(blocker), target.to_string()).await?;
     let _: () = redis
         .sadd(format!("blocked_by:{target}"), blocker.to_string())
         .await?;
@@ -106,9 +104,7 @@ pub async fn remove_block(
     blocker: Uuid,
     target: Uuid,
 ) -> Result<(), anyhow::Error> {
-    let _: () = redis
-        .srem(blocked_key(blocker), target.to_string())
-        .await?;
+    let _: () = redis.srem(blocked_key(blocker), target.to_string()).await?;
     let _: () = redis
         .srem(format!("blocked_by:{target}"), blocker.to_string())
         .await?;

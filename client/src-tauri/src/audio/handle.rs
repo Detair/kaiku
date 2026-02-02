@@ -141,7 +141,11 @@ impl AudioHandle {
                 .map_err(|e| AudioError::ConfigError(e.to_string()))?;
 
                 devices
-                    .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
+                    .find(|d| {
+                        d.description()
+                            .map(|desc| desc.name() == name)
+                            .unwrap_or(false)
+                    })
                     .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
             }
             None => {

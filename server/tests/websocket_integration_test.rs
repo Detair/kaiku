@@ -20,8 +20,8 @@ async fn test_websocket_broadcast_flow() {
         .expect("Failed to connect to Redis");
 
     // Create dummy SFU server (not used for text chat test)
-    let sfu =
-        vc_server::voice::SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SFU");
+    let sfu = vc_server::voice::SfuServer::new(Arc::new(config.clone()), None)
+        .expect("Failed to create SFU");
 
     let state = AppState::new(
         db_pool.clone(),
@@ -54,7 +54,7 @@ async fn test_websocket_broadcast_flow() {
         None,
         None,
         None,
-        None,  // user_limit
+        None, // user_limit
     )
     .await
     .expect("Create channel failed");

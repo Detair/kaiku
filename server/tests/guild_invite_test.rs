@@ -57,7 +57,11 @@ fn test_invite_code_uniqueness() {
     // Check for uniqueness (very unlikely to have collisions with 62^8 possibilities)
     let mut seen = std::collections::HashSet::new();
     for code in &codes {
-        assert!(seen.insert(code.clone()), "Code collision detected: {}", code);
+        assert!(
+            seen.insert(code.clone()),
+            "Code collision detected: {}",
+            code
+        );
     }
 }
 
@@ -112,7 +116,10 @@ fn test_expiry_parsing_7_days() {
 #[test]
 fn test_expiry_parsing_never() {
     let duration = parse_expiry("never");
-    assert!(duration.is_none(), "never should result in None (no expiry)");
+    assert!(
+        duration.is_none(),
+        "never should result in None (no expiry)"
+    );
 }
 
 #[test]
@@ -161,7 +168,10 @@ fn test_invite_struct_never_expires() {
         created_at: Utc::now(),
     };
 
-    assert!(invite.expires_at.is_none(), "Never-expiring invite should have None expires_at");
+    assert!(
+        invite.expires_at.is_none(),
+        "Never-expiring invite should have None expires_at"
+    );
 }
 
 #[test]
@@ -226,7 +236,10 @@ fn test_invite_is_expired() {
     assert!(is_expired(Some(past_time)), "Past time should be expired");
 
     // Valid invite
-    assert!(!is_expired(Some(future_time)), "Future time should not be expired");
+    assert!(
+        !is_expired(Some(future_time)),
+        "Future time should not be expired"
+    );
 
     // Never expires
     assert!(!is_expired(None), "None should mean never expires");

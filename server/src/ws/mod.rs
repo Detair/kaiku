@@ -28,15 +28,17 @@ use axum::{
     http::HeaderMap,
     response::Response,
 };
+use chrono::{DateTime, Utc};
 use fred::prelude::*;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use chrono::{DateTime, Utc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{api::AppState, auth::jwt, db, social::block_cache, voice::ScreenShareInfo, voice::Quality};
+use crate::{
+    api::AppState, auth::jwt, db, social::block_cache, voice::Quality, voice::ScreenShareInfo,
+};
 
 /// Minimum interval between activity updates (10 seconds).
 const ACTIVITY_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
@@ -49,7 +51,6 @@ struct ActivityState {
     /// Last activity data for deduplication.
     last_activity: Option<crate::presence::Activity>,
 }
-
 
 /// WebSocket protocol header name for authentication.
 const WS_PROTOCOL_PREFIX: &str = "access_token.";
@@ -672,10 +673,7 @@ pub async fn broadcast_to_channel(
 }
 
 /// Broadcast an admin event to all admin subscribers via Redis.
-pub async fn broadcast_admin_event(
-    redis: &Client,
-    event: &ServerEvent,
-) -> Result<(), Error> {
+pub async fn broadcast_admin_event(redis: &Client, event: &ServerEvent) -> Result<(), Error> {
     let payload = serde_json::to_string(event)
         .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
@@ -769,7 +767,9 @@ pub async fn broadcast_guild_patch(
         .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     // Broadcast to guild channel
-    redis.publish::<(), _, _>(channels::guild_events(guild_id), payload).await?;
+    redis
+        .publish::<(), _, _>(channels::guild_events(guild_id), payload)
+        .await?;
 
     Ok(())
 }
@@ -798,7 +798,9 @@ pub async fn broadcast_member_patch(
         .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
 
     // Broadcast to guild channel
-    redis.publish::<(), _, _>(channels::guild_events(guild_id), payload).await?;
+    redis
+        .publish::<(), _, _>(channels::guild_events(guild_id), payload)
+        .await?;
 
     Ok(())
 }
@@ -914,7 +916,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     };
 
     // Load block sets for event filtering
-    let blocked_ids = match block_cache::load_blocked_users(&state.db, &state.redis, user_id).await {
+    let blocked_ids = match block_cache::load_blocked_users(&state.db, &state.redis, user_id).await
+    {
         Ok(ids) => {
             debug!("User {} has blocked {} users", user_id, ids.len());
             ids
@@ -924,7 +927,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
             HashSet::new()
         }
     };
-    let blocked_by_ids = match block_cache::load_blocked_by(&state.db, &state.redis, user_id).await {
+    let blocked_by_ids = match block_cache::load_blocked_by(&state.db, &state.redis, user_id).await
+    {
         Ok(ids) => {
             debug!("User {} is blocked by {} users", user_id, ids.len());
             ids
@@ -935,8 +939,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         }
     };
 
-    let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
-        Arc::new(tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()));
+    let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> = Arc::new(
+        tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()),
+    );
 
     // Spawn task to handle Redis pub/sub
     let redis_client = state.redis.clone();
@@ -945,7 +950,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     let admin_subscribed_clone = admin_subscribed.clone();
     let blocked_clone = blocked_users.clone();
     let pubsub_handle = tokio::spawn(async move {
-        handle_pubsub(redis_client, tx_clone, subscribed_clone, admin_subscribed_clone, blocked_clone, user_id, friend_ids, guild_ids).await;
+        handle_pubsub(
+            redis_client,
+            tx_clone,
+            subscribed_clone,
+            admin_subscribed_clone,
+            blocked_clone,
+            user_id,
+            friend_ids,
+            guild_ids,
+        )
+        .await;
     });
 
     // Spawn task to forward events to WebSocket
@@ -959,7 +974,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                 }
             };
 
-            let send_result: Result<(), axum::Error> = ws_sender.send(Message::Text(msg.into())).await;
+            let send_result: Result<(), axum::Error> =
+                ws_sender.send(Message::Text(msg.into())).await;
             if send_result.is_err() {
                 break;
             }
@@ -973,8 +989,16 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     while let Some(msg) = ws_receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
-                if let Err(e) =
-                    handle_client_message(&text, user_id, &state, &tx, &subscribed_channels, &admin_subscribed, &mut activity_state).await
+                if let Err(e) = handle_client_message(
+                    &text,
+                    user_id,
+                    &state,
+                    &tx,
+                    &subscribed_channels,
+                    &admin_subscribed,
+                    &mut activity_state,
+                )
+                .await
                 {
                     warn!("Error handling message: {}", e);
                     let _ = tx
@@ -1094,7 +1118,12 @@ async fn handle_client_message(
         | ClientEvent::VoiceScreenShareStart { .. }
         | ClientEvent::VoiceScreenShareStop { .. } => {
             if let Err(e) = crate::voice::ws_handler::handle_voice_event(
-                &state.sfu, &state.db, &state.redis, user_id, event, tx,
+                &state.sfu,
+                &state.db,
+                &state.redis,
+                user_id,
+                event,
+                tx,
             )
             .await
             {
@@ -1110,7 +1139,8 @@ async fn handle_client_message(
         ClientEvent::SetActivity { activity } => {
             // Validate activity data if present
             if let Some(ref act) = activity {
-                act.validate().map_err(|e| format!("Invalid activity: {e}"))?;
+                act.validate()
+                    .map_err(|e| format!("Invalid activity: {e}"))?;
             }
 
             // Rate limiting: enforce minimum interval between updates
@@ -1122,7 +1152,8 @@ async fn handle_client_message(
                     return Err(format!(
                         "Rate limited: wait {} seconds before next activity update",
                         remaining.as_secs() + 1
-                    ).into());
+                    )
+                    .into());
                 }
             }
 
@@ -1151,7 +1182,8 @@ async fn handle_client_message(
 
         ClientEvent::AdminSubscribe => {
             // Check if user is an elevated admin
-            let is_elevated = crate::admin::is_elevated_admin(&state.redis, &state.db, user_id).await;
+            let is_elevated =
+                crate::admin::is_elevated_admin(&state.redis, &state.db, user_id).await;
             if !is_elevated {
                 tx.send(ServerEvent::Error {
                     code: "admin_not_elevated".to_string(),
@@ -1260,13 +1292,15 @@ async fn handle_pubsub(
                             // Filter events from blocked users
                             let should_filter = match &event {
                                 ServerEvent::MessageNew { message, .. } => {
-                                    message.get("author")
+                                    message
+                                        .get("author")
                                         .and_then(|a| a.get("id"))
                                         .and_then(|id| id.as_str())
                                         .and_then(|id| Uuid::parse_str(id).ok())
                                         .is_some_and(|author_id| {
                                             // Use try_read to avoid deadlocks in hot path
-                                            blocked_users.try_read()
+                                            blocked_users
+                                                .try_read()
                                                 .map(|set| set.contains(&author_id))
                                                 .unwrap_or(false)
                                         })
@@ -1277,7 +1311,8 @@ async fn handle_pubsub(
                                 | ServerEvent::VoiceUserLeft { user_id: uid, .. }
                                 | ServerEvent::CallParticipantJoined { user_id: uid, .. }
                                 | ServerEvent::CallParticipantLeft { user_id: uid, .. } => {
-                                    blocked_users.try_read()
+                                    blocked_users
+                                        .try_read()
                                         .map(|set| set.contains(uid))
                                         .unwrap_or(false)
                                 }
@@ -1300,10 +1335,14 @@ async fn handle_pubsub(
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                     // Handle block/unblock events to update in-memory set
                     match &event {
-                        ServerEvent::UserBlocked { user_id: blocked_id } => {
+                        ServerEvent::UserBlocked {
+                            user_id: blocked_id,
+                        } => {
                             blocked_users.write().await.insert(*blocked_id);
                         }
-                        ServerEvent::UserUnblocked { user_id: unblocked_id } => {
+                        ServerEvent::UserUnblocked {
+                            user_id: unblocked_id,
+                        } => {
                             blocked_users.write().await.remove(unblocked_id);
                         }
                         _ => {}
@@ -1335,11 +1374,10 @@ async fn handle_pubsub(
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                     let should_filter = match &event {
                         ServerEvent::PresenceUpdate { user_id: uid, .. }
-                        | ServerEvent::RichPresenceUpdate { user_id: uid, .. } => {
-                            blocked_users.try_read()
-                                .map(|set| set.contains(uid))
-                                .unwrap_or(false)
-                        }
+                        | ServerEvent::RichPresenceUpdate { user_id: uid, .. } => blocked_users
+                            .try_read()
+                            .map(|set| set.contains(uid))
+                            .unwrap_or(false),
                         _ => false,
                     };
 
@@ -1398,7 +1436,7 @@ async fn get_user_friends(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Uuid>,
         FROM friendships
         WHERE (requester_id = $1 OR addressee_id = $1)
         AND status = 'accepted'
-        "
+        ",
     )
     .bind(user_id)
     .fetch_all(db)

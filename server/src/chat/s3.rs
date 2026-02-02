@@ -119,7 +119,8 @@ impl S3Client {
         data: Vec<u8>,
         content_type: &str,
     ) -> Result<(), S3Error> {
-        let upload_future = self.client
+        let upload_future = self
+            .client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
@@ -164,7 +165,8 @@ impl S3Client {
     ///
     /// Protected by a 30-second timeout.
     pub async fn delete(&self, key: &str) -> Result<(), S3Error> {
-        let delete_future = self.client
+        let delete_future = self
+            .client
             .delete_object()
             .bucket(&self.bucket)
             .key(key)
@@ -182,10 +184,7 @@ impl S3Client {
     ///
     /// Protected by a 10-second timeout.
     pub async fn health_check(&self) -> Result<(), S3Error> {
-        let health_future = self.client
-            .head_bucket()
-            .bucket(&self.bucket)
-            .send();
+        let health_future = self.client.head_bucket().bucket(&self.bucket).send();
 
         tokio::time::timeout(Duration::from_secs(10), health_future)
             .await
@@ -200,7 +199,8 @@ impl S3Client {
     /// Protected by a 30-second timeout for initial response.
     /// Note: Streaming the body itself may take longer for large files.
     pub async fn get_object_stream(&self, key: &str) -> Result<ByteStream, S3Error> {
-        let get_future = self.client
+        let get_future = self
+            .client
             .get_object()
             .bucket(&self.bucket)
             .key(key)

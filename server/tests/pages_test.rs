@@ -7,8 +7,8 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::pages::{
-    count_pages, hash_content, is_reserved_slug, slug_exists, slugify,
-    CreatePageRequest, PageListItem, UpdatePageRequest,
+    count_pages, hash_content, is_reserved_slug, slug_exists, slugify, CreatePageRequest,
+    PageListItem, UpdatePageRequest,
 };
 
 /// Helper to create a test database pool.
@@ -43,7 +43,10 @@ fn test_hash_content_differs_for_different_content() {
     let hash1 = hash_content("Content A");
     let hash2 = hash_content("Content B");
 
-    assert_ne!(hash1, hash2, "Different content should produce different hashes");
+    assert_ne!(
+        hash1, hash2,
+        "Different content should produce different hashes"
+    );
 }
 
 /// Test slugify produces valid URL-safe slugs.
@@ -77,8 +80,14 @@ fn test_is_reserved_slug() {
     assert!(is_reserved_slug("new"), "new should be reserved");
 
     // Non-reserved slugs
-    assert!(!is_reserved_slug("my-page"), "my-page should not be reserved");
-    assert!(!is_reserved_slug("welcome"), "welcome should not be reserved");
+    assert!(
+        !is_reserved_slug("my-page"),
+        "my-page should not be reserved"
+    );
+    assert!(
+        !is_reserved_slug("welcome"),
+        "welcome should not be reserved"
+    );
     assert!(!is_reserved_slug("rules"), "rules should not be reserved");
 }
 
@@ -170,7 +179,10 @@ fn test_page_list_item_structure() {
         updated_at: now,
     };
 
-    assert!(item.guild_id.is_none(), "Platform page should have no guild_id");
+    assert!(
+        item.guild_id.is_none(),
+        "Platform page should have no guild_id"
+    );
     assert!(item.requires_acceptance);
     assert_eq!(item.position, 0);
 }
@@ -199,8 +211,7 @@ fn test_empty_content_hash() {
     let hash = hash_content("");
     // SHA-256 of empty string is a known value
     assert_eq!(
-        hash,
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "Empty string should produce known SHA-256 hash"
     );
 }
@@ -227,7 +238,10 @@ fn test_slugify_no_leading_trailing_dashes() {
 fn test_max_pages_constant() {
     use vc_server::pages::MAX_PAGES_PER_SCOPE;
     assert!(MAX_PAGES_PER_SCOPE >= 10, "Should allow at least 10 pages");
-    assert!(MAX_PAGES_PER_SCOPE <= 1000, "Should not allow more than 1000 pages");
+    assert!(
+        MAX_PAGES_PER_SCOPE <= 1000,
+        "Should not allow more than 1000 pages"
+    );
 }
 
 /// Test that max content size constant is reasonable.
@@ -235,7 +249,10 @@ fn test_max_pages_constant() {
 fn test_max_content_size_constant() {
     use vc_server::pages::MAX_CONTENT_SIZE;
     assert!(MAX_CONTENT_SIZE >= 1024, "Should allow at least 1KB");
-    assert!(MAX_CONTENT_SIZE <= 1024 * 1024, "Should not allow more than 1MB");
+    assert!(
+        MAX_CONTENT_SIZE <= 1024 * 1024,
+        "Should not allow more than 1MB"
+    );
 }
 
 /// Test reserved slugs constant contains expected values.

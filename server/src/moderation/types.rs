@@ -186,11 +186,7 @@ impl IntoResponse for ReportError {
                     "Database error".to_string(),
                 )
             }
-            Self::NotFound => (
-                StatusCode::NOT_FOUND,
-                "REPORT_NOT_FOUND",
-                self.to_string(),
-            ),
+            Self::NotFound => (StatusCode::NOT_FOUND, "REPORT_NOT_FOUND", self.to_string()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,

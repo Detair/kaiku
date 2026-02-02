@@ -2,7 +2,7 @@
 //!
 //! Handles creation and management of DM channels (1:1 and group DMs).
 use axum::{
-    extract::{Path, State, Multipart},
+    extract::{Multipart, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -13,8 +13,8 @@ use validator::Validate;
 
 use crate::{
     api::AppState,
-    chat::uploads::UploadError,
     auth::AuthUser,
+    chat::uploads::UploadError,
     db::{self, Channel, ChannelType},
     social::block_cache,
     ws::{broadcast_to_user, ServerEvent},
@@ -473,7 +473,7 @@ pub async fn leave_dm(
     )
     .execute(&state.db)
     .await?;
-    
+
     let removed = result.rows_affected();
 
     if removed == 0 {
@@ -640,20 +640,25 @@ pub async fn upload_dm_icon(
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("file") {
             let _filename = field.file_name().map(String::from); // Consumed for validation
-            
-            let data = field.bytes().await.map_err(|e| UploadError::Validation(e.to_string()))?;
-            
+
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| UploadError::Validation(e.to_string()))?;
+
             if data.len() > state.config.max_avatar_size {
-                return Err(UploadError::TooLarge { max_size: state.config.max_avatar_size });
+                return Err(UploadError::TooLarge {
+                    max_size: state.config.max_avatar_size,
+                });
             }
-            
+
             file_data = Some(data.to_vec());
             break; // Only need one file
         }
     }
 
     let file_data = file_data.ok_or(UploadError::NoFile)?;
-    
+
     // Validate actual file content using magic bytes (don't trust client-provided MIME type)
     let format = image::guess_format(&file_data)
         .map_err(|_| UploadError::Validation("Unable to detect image format".to_string()))?;
@@ -663,9 +668,13 @@ pub async fn upload_dm_icon(
         image::ImageFormat::Jpeg => ("image/jpeg", "jpg"),
         image::ImageFormat::Gif => ("image/gif", "gif"),
         image::ImageFormat::WebP => ("image/webp", "webp"),
-        _ => return Err(UploadError::Validation("Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string())),
+        _ => {
+            return Err(UploadError::Validation(
+                "Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string(),
+            ))
+        }
     };
-    
+
     let file_id = Uuid::now_v7();
     let s3_key = format!("avatars/channels/{channel_id}/{file_id}.{extension}");
 
@@ -719,7 +728,9 @@ pub async fn get_dm_icon(
     }
 
     // Get S3 key from DB
-    let s3_key = channel.icon_url.ok_or(UploadError::Validation("No icon set".to_string()))?;
+    let s3_key = channel
+        .icon_url
+        .ok_or(UploadError::Validation("No icon set".to_string()))?;
 
     // Generate presigned URL
     let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;

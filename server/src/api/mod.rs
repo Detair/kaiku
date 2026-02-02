@@ -6,13 +6,17 @@ pub mod favorites;
 pub mod pins;
 pub mod preferences;
 pub mod reactions;
-pub mod unread;
 mod settings;
 mod setup;
+pub mod unread;
 
 use axum::{
-    extract::DefaultBodyLimit, extract::State, middleware::from_fn, middleware::from_fn_with_state,
-    routing::{delete, get, post, put}, Json, Router,
+    extract::DefaultBodyLimit,
+    extract::State,
+    middleware::from_fn,
+    middleware::from_fn_with_state,
+    routing::{delete, get, post, put},
+    Json, Router,
 };
 use fred::interfaces::ClientLike;
 use serde::Serialize;
@@ -26,10 +30,12 @@ use tower_http::{
 };
 
 use crate::{
-    admin, auth, chat, connectivity, crypto,
+    admin, auth,
     auth::oidc::OidcProviderManager,
+    chat,
     chat::S3Client,
     config::Config,
+    connectivity, crypto,
     email::EmailService,
     guild, moderation, pages,
     ratelimit::{rate_limit_by_user, with_category, RateLimitCategory, RateLimiter},
@@ -95,16 +101,17 @@ impl AppState {
 pub fn create_router(state: AppState) -> Router {
     // Configure CORS based on allowed origins
     // In production, set CORS_ALLOWED_ORIGINS to specific origins
-    let cors = if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
-        // Development mode: allow any origin
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any)
-    } else {
-        // Production mode: restrict to configured origins
-        use axum::http::{header, HeaderName, Method};
-        let origins: Vec<_> = state
+    let cors =
+        if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
+            // Development mode: allow any origin
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
+        } else {
+            // Production mode: restrict to configured origins
+            use axum::http::{header, HeaderName, Method};
+            let origins: Vec<_> = state
             .config
             .cors_allowed_origins
             .iter()
@@ -116,27 +123,29 @@ pub fn create_router(state: AppState) -> Router {
             })
             .collect();
 
-        if origins.is_empty() {
-            tracing::error!("No valid CORS origins configured! All cross-origin requests will fail.");
-        }
+            if origins.is_empty() {
+                tracing::error!(
+                    "No valid CORS origins configured! All cross-origin requests will fail."
+                );
+            }
 
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::PATCH,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-            .allow_headers([
-                header::CONTENT_TYPE,
-                header::AUTHORIZATION,
-                HeaderName::from_static("x-request-id"),
-            ])
-            .allow_credentials(true)
-    };
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::PATCH,
+                    Method::DELETE,
+                    Method::OPTIONS,
+                ])
+                .allow_headers([
+                    header::CONTENT_TYPE,
+                    header::AUTHORIZATION,
+                    HeaderName::from_static("x-request-id"),
+                ])
+                .allow_credentials(true)
+        };
 
     // Get max upload size from config (default 50MB)
     let max_upload_size = state.config.max_upload_size;
@@ -160,11 +169,23 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/me/preferences", preferences::router())
         .route("/api/me/pins", get(pins::list_pins).post(pins::create_pin))
         .route("/api/me/pins/reorder", put(pins::reorder_pins))
-        .route("/api/me/pins/{id}", put(pins::update_pin).delete(pins::delete_pin))
+        .route(
+            "/api/me/pins/{id}",
+            put(pins::update_pin).delete(pins::delete_pin),
+        )
         .route("/api/me/favorites", get(favorites::list_favorites))
-        .route("/api/me/favorites/reorder", put(favorites::reorder_channels))
-        .route("/api/me/favorites/reorder-guilds", put(favorites::reorder_guilds))
-        .route("/api/me/favorites/{channel_id}", post(favorites::add_favorite).delete(favorites::remove_favorite))
+        .route(
+            "/api/me/favorites/reorder",
+            put(favorites::reorder_channels),
+        )
+        .route(
+            "/api/me/favorites/reorder-guilds",
+            put(favorites::reorder_guilds),
+        )
+        .route(
+            "/api/me/favorites/{channel_id}",
+            post(favorites::add_favorite).delete(favorites::remove_favorite),
+        )
         .route("/api/me/unread", get(unread::get_unread_aggregate))
         .nest("/api/keys", crypto::router())
         .nest("/api/users/{user_id}/keys", crypto::user_keys_router())
@@ -197,12 +218,18 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         // Public server settings
         .route("/api/settings", get(settings::get_server_settings))
-        .route("/api/config/upload-limits", get(settings::get_upload_limits))
+        .route(
+            "/api/config/upload-limits",
+            get(settings::get_upload_limits),
+        )
         // Setup routes (status and config are public, complete requires auth)
         .route("/api/setup/status", get(setup::status))
         .route("/api/setup/config", get(setup::get_config))
-        .route("/api/setup/complete", post(setup::complete)
-            .route_layer(from_fn_with_state(state.clone(), auth::require_auth)))
+        .route(
+            "/api/setup/complete",
+            post(setup::complete)
+                .route_layer(from_fn_with_state(state.clone(), auth::require_auth)),
+        )
         // Auth routes (pass state for middleware)
         .nest("/auth", auth::router(state.clone()))
         // Protected chat and voice routes
@@ -245,17 +272,10 @@ struct HealthResponse {
 /// Returns "degraded" status if any dependency is unavailable.
 async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
     // Check database connectivity
-    let db_ok = sqlx::query("SELECT 1")
-        .fetch_one(&state.db)
-        .await
-        .is_ok();
+    let db_ok = sqlx::query("SELECT 1").fetch_one(&state.db).await.is_ok();
 
     // Check Redis connectivity
-    let redis_ok = state
-        .redis
-        .ping::<String>(None)
-        .await
-        .is_ok();
+    let redis_ok = state.redis.ping::<String>(None).await.is_ok();
 
     // Determine overall status
     let status = if db_ok && redis_ok { "ok" } else { "degraded" };

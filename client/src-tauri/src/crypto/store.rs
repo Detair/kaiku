@@ -418,7 +418,10 @@ mod tests {
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM sessions WHERE user_id = ?1 AND device_key = ?2",
-                params![session_key.user_id.to_string(), session_key.device_curve25519],
+                params![
+                    session_key.user_id.to_string(),
+                    session_key.device_curve25519
+                ],
                 |row| row.get(0),
             )
             .unwrap();

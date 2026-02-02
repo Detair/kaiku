@@ -49,7 +49,7 @@ async fn test_first_user_receives_admin_sequential() {
 
     // Lock setup_complete (as production does)
     let _lock = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
+        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE",
     )
     .fetch_one(&mut *tx1)
     .await
@@ -89,13 +89,12 @@ async fn test_first_user_receives_admin_sequential() {
     tx1.commit().await.expect("Failed to commit tx1");
 
     // Verify first user is admin
-    let is_admin1: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM system_admins WHERE user_id = $1)"
-    )
-    .bind(user1.id)
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to check admin status");
+    let is_admin1: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_admins WHERE user_id = $1)")
+            .bind(user1.id)
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to check admin status");
 
     assert!(is_admin1, "First user should be granted admin permissions");
 
@@ -107,7 +106,7 @@ async fn test_first_user_receives_admin_sequential() {
 
     // Lock setup_complete again
     let _lock2 = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
+        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE",
     )
     .fetch_one(&mut *tx2)
     .await
@@ -119,7 +118,10 @@ async fn test_first_user_receives_admin_sequential() {
         .await
         .expect("Failed to count users");
 
-    assert_eq!(user_count2, 1, "Should have 1 user before second registration");
+    assert_eq!(
+        user_count2, 1,
+        "Should have 1 user before second registration"
+    );
 
     // Create second user (NO admin grant since user_count > 0)
     let user2 = sqlx::query_as!(
@@ -140,15 +142,17 @@ async fn test_first_user_receives_admin_sequential() {
     tx2.commit().await.expect("Failed to commit tx2");
 
     // Verify second user is NOT admin
-    let is_admin2: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM system_admins WHERE user_id = $1)"
-    )
-    .bind(user2.id)
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to check admin status");
+    let is_admin2: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_admins WHERE user_id = $1)")
+            .bind(user2.id)
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to check admin status");
 
-    assert!(!is_admin2, "Second user should NOT be granted admin permissions");
+    assert!(
+        !is_admin2,
+        "Second user should NOT be granted admin permissions"
+    );
 
     // Cleanup
     sqlx::query("DELETE FROM users")
@@ -170,7 +174,7 @@ async fn test_concurrent_registrations_only_one_gets_admin() {
     let pool: Arc<PgPool> = Arc::new(
         db::create_pool(&config.database_url)
             .await
-            .expect("Failed to connect to DB")
+            .expect("Failed to connect to DB"),
     );
 
     // Clean slate
@@ -195,11 +199,14 @@ async fn test_concurrent_registrations_only_one_gets_admin() {
             let username = format!("concurrent_user_{}_{}", i, test_id);
 
             // Simulate the registration flow with FOR UPDATE lock
-            let mut tx = pool_clone.begin().await.expect("Failed to start transaction");
+            let mut tx = pool_clone
+                .begin()
+                .await
+                .expect("Failed to start transaction");
 
             // Acquire lock (this serializes the concurrent attempts)
             let _lock = sqlx::query_scalar::<_, serde_json::Value>(
-                "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
+                "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE",
             )
             .fetch_one(&mut *tx)
             .await
@@ -299,7 +306,10 @@ async fn test_concurrent_registrations_only_one_gets_admin() {
         .expect("Failed to cleanup");
 
     println!("✅ Concurrent registration test passed");
-    println!("    {} concurrent registrations, exactly 1 received admin", num_concurrent);
+    println!(
+        "    {} concurrent registrations, exactly 1 received admin",
+        num_concurrent
+    );
 }
 
 /// Test that concurrent setup completion attempts only succeed once.
@@ -311,7 +321,7 @@ async fn test_concurrent_setup_completion_only_one_succeeds() {
     let pool: Arc<PgPool> = Arc::new(
         db::create_pool(&config.database_url)
             .await
-            .expect("Failed to connect to DB")
+            .expect("Failed to connect to DB"),
     );
 
     // Setup: Ensure setup is NOT complete
@@ -328,14 +338,17 @@ async fn test_concurrent_setup_completion_only_one_succeeds() {
         let pool_clone = Arc::clone(&pool);
         let handle = tokio::spawn(async move {
             // Simulate the setup completion flow
-            let mut tx = pool_clone.begin().await.expect("Failed to start transaction");
+            let mut tx = pool_clone
+                .begin()
+                .await
+                .expect("Failed to start transaction");
 
             // Attempt compare-and-swap (as production does)
             let updated = sqlx::query_scalar::<_, Option<i32>>(
                 "UPDATE server_config
                  SET value = 'true'
                  WHERE key = 'setup_complete' AND value = 'false'
-                 RETURNING 1"
+                 RETURNING 1",
             )
             .fetch_optional(&mut *tx)
             .await
@@ -349,7 +362,7 @@ async fn test_concurrent_setup_completion_only_one_succeeds() {
                 sqlx::query(
                     "INSERT INTO server_config (key, value)
                      VALUES ('server_name', $1)
-                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
                 )
                 .bind(server_name_json)
                 .execute(&mut *tx)
@@ -396,12 +409,11 @@ async fn test_concurrent_setup_completion_only_one_succeeds() {
     println!("    Winner was task: {:?}", successful_task);
 
     // Verify setup is now marked complete
-    let setup_complete: serde_json::Value = sqlx::query_scalar(
-        "SELECT value FROM server_config WHERE key = 'setup_complete'"
-    )
-    .fetch_one(pool.as_ref())
-    .await
-    .expect("Failed to read setup_complete");
+    let setup_complete: serde_json::Value =
+        sqlx::query_scalar("SELECT value FROM server_config WHERE key = 'setup_complete'")
+            .fetch_one(pool.as_ref())
+            .await
+            .expect("Failed to read setup_complete");
 
     assert_eq!(
         setup_complete.as_bool(),
@@ -421,5 +433,8 @@ async fn test_concurrent_setup_completion_only_one_succeeds() {
         .expect("Failed to reset server_name");
 
     println!("✅ Concurrent setup completion test passed");
-    println!("    {} concurrent attempts, exactly 1 succeeded", num_concurrent);
+    println!(
+        "    {} concurrent attempts, exactly 1 succeeded",
+        num_concurrent
+    );
 }

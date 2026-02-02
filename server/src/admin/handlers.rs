@@ -16,8 +16,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Write;
-use tracing::warn;
 use std::net::SocketAddr;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -32,8 +32,8 @@ use axum::response::IntoResponse;
 
 use super::types::{
     AdminError, BulkActionFailure, BulkBanRequest, BulkBanResponse, BulkSuspendRequest,
-    BulkSuspendResponse, CreateAnnouncementRequest, ElevateRequest, ElevateResponse,
-    ElevatedAdmin, GlobalBanRequest, SuspendGuildRequest, SystemAdminUser,
+    BulkSuspendResponse, CreateAnnouncementRequest, ElevateRequest, ElevateResponse, ElevatedAdmin,
+    GlobalBanRequest, SuspendGuildRequest, SystemAdminUser,
 };
 use crate::ws::{broadcast_admin_event, ServerEvent};
 
@@ -267,9 +267,11 @@ pub async fn get_admin_stats(
         .await?;
 
     // Get banned count
-    let banned_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM global_bans WHERE expires_at IS NULL OR expires_at > NOW()")
-        .fetch_one(&state.db)
-        .await?;
+    let banned_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM global_bans WHERE expires_at IS NULL OR expires_at > NOW()",
+    )
+    .fetch_one(&state.db)
+    .await?;
 
     Ok(Json(super::types::AdminStatsResponse {
         user_count: user_count.0,
@@ -292,7 +294,10 @@ pub async fn list_users(
     let offset = params.offset.max(0);
 
     // Prepare search pattern if provided
-    let search_pattern = params.search.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
+    let search_pattern = params
+        .search
+        .as_ref()
+        .map(|s| format!("%{}%", s.to_lowercase()));
 
     // Get total count (with or without search filter)
     let total: (i64,) = if let Some(ref pattern) = search_pattern {
@@ -300,7 +305,7 @@ pub async fn list_users(
             r"SELECT COUNT(*) FROM users u
               WHERE LOWER(u.username) LIKE $1
                  OR LOWER(u.display_name) LIKE $1
-                 OR LOWER(COALESCE(u.email, '')) LIKE $1"
+                 OR LOWER(COALESCE(u.email, '')) LIKE $1",
         )
         .bind(pattern)
         .fetch_one(&state.db)
@@ -360,15 +365,17 @@ pub async fn list_users(
 
     let items: Vec<UserSummary> = users
         .into_iter()
-        .map(|(id, username, display_name, email, avatar_url, created_at, is_banned)| UserSummary {
-            id,
-            username,
-            display_name,
-            email,
-            avatar_url,
-            created_at,
-            is_banned,
-        })
+        .map(
+            |(id, username, display_name, email, avatar_url, created_at, is_banned)| UserSummary {
+                id,
+                username,
+                display_name,
+                email,
+                avatar_url,
+                created_at,
+                is_banned,
+            },
+        )
         .collect();
 
     Ok(Json(PaginatedResponse {
@@ -393,7 +400,10 @@ pub async fn list_guilds(
     let offset = params.offset.max(0);
 
     // Prepare search pattern if provided
-    let search_pattern = params.search.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
+    let search_pattern = params
+        .search
+        .as_ref()
+        .map(|s| format!("%{}%", s.to_lowercase()));
 
     // Get total count (with or without search filter)
     let total: (i64,) = if let Some(ref pattern) = search_pattern {
@@ -454,15 +464,17 @@ pub async fn list_guilds(
 
     let items: Vec<GuildSummary> = guilds
         .into_iter()
-        .map(|(id, name, owner_id, icon_url, member_count, created_at, suspended_at)| GuildSummary {
-            id,
-            name,
-            owner_id,
-            icon_url,
-            member_count,
-            created_at,
-            suspended_at,
-        })
+        .map(
+            |(id, name, owner_id, icon_url, member_count, created_at, suspended_at)| GuildSummary {
+                id,
+                name,
+                owner_id,
+                icon_url,
+                member_count,
+                created_at,
+                suspended_at,
+            },
+        )
         .collect();
 
     Ok(Json(PaginatedResponse {
@@ -685,11 +697,10 @@ pub async fn elevate_session(
         }
 
         // Get and validate encryption key
-        let encryption_key = state
-            .config
-            .mfa_encryption_key
-            .as_ref()
-            .ok_or_else(|| AdminError::Validation("MFA encryption not configured".to_string()))?;
+        let encryption_key =
+            state.config.mfa_encryption_key.as_ref().ok_or_else(|| {
+                AdminError::Validation("MFA encryption not configured".to_string())
+            })?;
 
         let key_bytes = hex::decode(encryption_key)
             .map_err(|_| AdminError::Validation("Invalid MFA encryption key".to_string()))?;
@@ -970,7 +981,10 @@ pub async fn unban_user(
     // Broadcast admin event
     if let Err(e) = broadcast_admin_event(
         &state.redis,
-        &ServerEvent::AdminUserUnbanned { user_id, username: username.clone() },
+        &ServerEvent::AdminUserUnbanned {
+            user_id,
+            username: username.clone(),
+        },
     )
     .await
     {
@@ -1502,7 +1516,9 @@ pub async fn bulk_ban_users(
         return Err(AdminError::Validation("No user IDs provided".to_string()));
     }
     if body.user_ids.len() > 100 {
-        return Err(AdminError::Validation("Cannot ban more than 100 users at once".to_string()));
+        return Err(AdminError::Validation(
+            "Cannot ban more than 100 users at once".to_string(),
+        ));
     }
     if body.reason.trim().is_empty() {
         return Err(AdminError::Validation("Reason is required".to_string()));
@@ -1515,13 +1531,11 @@ pub async fn bulk_ban_users(
 
     for user_id in &body.user_ids {
         // Check if user exists
-        let user_exists = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
-            user_id
-        )
-        .fetch_one(&state.db)
-        .await?
-        .unwrap_or(false);
+        let user_exists =
+            sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", user_id)
+                .fetch_one(&state.db)
+                .await?
+                .unwrap_or(false);
 
         if !user_exists {
             failed.push(BulkActionFailure {
@@ -1612,7 +1626,9 @@ pub async fn bulk_suspend_guilds(
         return Err(AdminError::Validation("No guild IDs provided".to_string()));
     }
     if body.guild_ids.len() > 100 {
-        return Err(AdminError::Validation("Cannot suspend more than 100 guilds at once".to_string()));
+        return Err(AdminError::Validation(
+            "Cannot suspend more than 100 guilds at once".to_string(),
+        ));
     }
     if body.reason.trim().is_empty() {
         return Err(AdminError::Validation("Reason is required".to_string()));
@@ -1645,7 +1661,7 @@ pub async fn bulk_suspend_guilds(
             Some(_) => {
                 // Suspend the guild
                 let suspend_result = sqlx::query(
-                    "UPDATE guilds SET suspended_at = NOW(), suspension_reason = $1 WHERE id = $2"
+                    "UPDATE guilds SET suspended_at = NOW(), suspension_reason = $1 WHERE id = $2",
                 )
                 .bind(&body.reason)
                 .bind(guild_id)
@@ -1851,10 +1867,9 @@ pub async fn create_oidc_provider(
     Extension(_elevated): Extension<ElevatedAdmin>,
     Json(body): Json<CreateOidcProviderRequest>,
 ) -> Result<Json<OidcProviderResponse>, AdminError> {
-    let oidc_manager = state
-        .oidc_manager
-        .as_ref()
-        .ok_or_else(|| AdminError::Internal("OIDC manager not configured (requires MFA_ENCRYPTION_KEY)".into()))?;
+    let oidc_manager = state.oidc_manager.as_ref().ok_or_else(|| {
+        AdminError::Internal("OIDC manager not configured (requires MFA_ENCRYPTION_KEY)".into())
+    })?;
 
     // Apply preset defaults
     let (provider_type, issuer_url, authorization_url, token_url, userinfo_url, scopes) =
@@ -1865,7 +1880,8 @@ pub async fn create_oidc_provider(
                 Some(crate::auth::oidc::GitHubPreset::AUTHORIZATION_URL.to_string()),
                 Some(crate::auth::oidc::GitHubPreset::TOKEN_URL.to_string()),
                 Some(crate::auth::oidc::GitHubPreset::USERINFO_URL.to_string()),
-                body.scopes.unwrap_or_else(|| crate::auth::oidc::GitHubPreset::SCOPES.to_string()),
+                body.scopes
+                    .unwrap_or_else(|| crate::auth::oidc::GitHubPreset::SCOPES.to_string()),
             ),
             "google" => (
                 "preset".to_string(),
@@ -1873,7 +1889,8 @@ pub async fn create_oidc_provider(
                 body.authorization_url,
                 body.token_url,
                 body.userinfo_url,
-                body.scopes.unwrap_or_else(|| crate::auth::oidc::GooglePreset::SCOPES.to_string()),
+                body.scopes
+                    .unwrap_or_else(|| crate::auth::oidc::GooglePreset::SCOPES.to_string()),
             ),
             _ => (
                 body.provider_type.unwrap_or_else(|| "custom".to_string()),
@@ -1881,7 +1898,8 @@ pub async fn create_oidc_provider(
                 body.authorization_url,
                 body.token_url,
                 body.userinfo_url,
-                body.scopes.unwrap_or_else(|| "openid profile email".to_string()),
+                body.scopes
+                    .unwrap_or_else(|| "openid profile email".to_string()),
             ),
         };
 

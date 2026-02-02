@@ -9,8 +9,8 @@ mod helpers;
 
 use axum::{body::Body, http::Method};
 use helpers::{
-    TestApp, body_to_json, create_elevated_session, create_test_report, create_test_user,
-    delete_user, generate_access_token, make_admin,
+    body_to_json, create_elevated_session, create_test_report, create_test_user, delete_user,
+    generate_access_token, make_admin, TestApp,
 };
 use serial_test::serial;
 
@@ -210,10 +210,13 @@ async fn test_claim_report_success() {
     let (target, _) = create_test_user(&app.pool).await;
     let report_id = create_test_report(&app.pool, reporter, target).await;
 
-    let req = TestApp::request(Method::POST, &format!("/api/admin/reports/{report_id}/claim"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/admin/reports/{report_id}/claim"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap();
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 200);
@@ -242,18 +245,24 @@ async fn test_claim_already_reviewing_fails() {
     let report_id = create_test_report(&app.pool, reporter, target).await;
 
     // Claim once (succeeds)
-    let req = TestApp::request(Method::POST, &format!("/api/admin/reports/{report_id}/claim"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/admin/reports/{report_id}/claim"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 200);
 
     // Claim again (should fail — status is now 'reviewing', not 'pending')
-    let req = TestApp::request(Method::POST, &format!("/api/admin/reports/{report_id}/claim"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/admin/reports/{report_id}/claim"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404);
 
@@ -373,9 +382,15 @@ async fn test_report_stats_success() {
 
     let json = body_to_json(resp).await;
     assert!(json["pending"].is_number(), "pending should be a number");
-    assert!(json["reviewing"].is_number(), "reviewing should be a number");
+    assert!(
+        json["reviewing"].is_number(),
+        "reviewing should be a number"
+    );
     assert!(json["resolved"].is_number(), "resolved should be a number");
-    assert!(json["dismissed"].is_number(), "dismissed should be a number");
+    assert!(
+        json["dismissed"].is_number(),
+        "dismissed should be a number"
+    );
 
     // Cleanup
     delete_user(&app.pool, admin).await;

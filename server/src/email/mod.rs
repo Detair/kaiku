@@ -4,9 +4,8 @@
 
 use anyhow::{Context, Result};
 use lettre::{
-    message::Mailbox,
-    transport::smtp::authentication::Credentials,
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::Mailbox, transport::smtp::authentication::Credentials, AsyncSmtpTransport,
+    AsyncTransport, Message, Tokio1Executor,
 };
 
 use crate::config::Config;
@@ -23,10 +22,7 @@ impl EmailService {
     ///
     /// Requires SMTP to be fully configured (`config.has_smtp()` must be true).
     pub fn new(config: &Config) -> Result<Self> {
-        let host = config
-            .smtp_host
-            .as_ref()
-            .context("SMTP_HOST is required")?;
+        let host = config.smtp_host.as_ref().context("SMTP_HOST is required")?;
         let username = config
             .smtp_username
             .as_ref()
@@ -35,10 +31,7 @@ impl EmailService {
             .smtp_password
             .as_ref()
             .context("SMTP_PASSWORD is required")?;
-        let from = config
-            .smtp_from
-            .as_ref()
-            .context("SMTP_FROM is required")?;
+        let from = config.smtp_from.as_ref().context("SMTP_FROM is required")?;
 
         let from_address: Mailbox = from
             .parse()

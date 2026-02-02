@@ -160,13 +160,17 @@ pub async fn set_override(
     let guild_id = channel.0.ok_or(OverrideError::ChannelNotFound)?;
 
     // Check permission
-    let ctx =
-        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_CHANNELS)
-            .await
-            .map_err(|e| match e {
-                PermissionError::NotGuildMember => OverrideError::NotMember,
-                other => OverrideError::Permission(other),
-            })?;
+    let ctx = require_guild_permission(
+        &state.db,
+        guild_id,
+        auth.id,
+        GuildPermissions::MANAGE_CHANNELS,
+    )
+    .await
+    .map_err(|e| match e {
+        PermissionError::NotGuildMember => OverrideError::NotMember,
+        other => OverrideError::Permission(other),
+    })?;
 
     // Verify role belongs to this guild
     let role_exists: Option<(i32,)> =
@@ -239,19 +243,24 @@ pub async fn delete_override(
     let guild_id = channel.0.ok_or(OverrideError::ChannelNotFound)?;
 
     // Check permission
-    let _ctx =
-        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_CHANNELS)
-            .await
-            .map_err(|e| match e {
-                PermissionError::NotGuildMember => OverrideError::NotMember,
-                other => OverrideError::Permission(other),
-            })?;
+    let _ctx = require_guild_permission(
+        &state.db,
+        guild_id,
+        auth.id,
+        GuildPermissions::MANAGE_CHANNELS,
+    )
+    .await
+    .map_err(|e| match e {
+        PermissionError::NotGuildMember => OverrideError::NotMember,
+        other => OverrideError::Permission(other),
+    })?;
 
-    let result = sqlx::query("DELETE FROM channel_overrides WHERE channel_id = $1 AND role_id = $2")
-        .bind(channel_id)
-        .bind(role_id)
-        .execute(&state.db)
-        .await?;
+    let result =
+        sqlx::query("DELETE FROM channel_overrides WHERE channel_id = $1 AND role_id = $2")
+            .bind(channel_id)
+            .bind(role_id)
+            .execute(&state.db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(OverrideError::RoleNotFound);

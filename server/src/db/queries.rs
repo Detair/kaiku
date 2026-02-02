@@ -182,12 +182,11 @@ pub async fn update_user_profile(
 
 /// Get list of guild IDs the user is a member of.
 pub async fn get_user_guild_ids(pool: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
-    let guild_ids = sqlx::query_scalar::<_, Uuid>(
-        "SELECT guild_id FROM guild_members WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
+    let guild_ids =
+        sqlx::query_scalar::<_, Uuid>("SELECT guild_id FROM guild_members WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
 
     Ok(guild_ids)
 }
@@ -1017,7 +1016,9 @@ pub async fn is_setup_complete(pool: &PgPool) -> sqlx::Result<bool> {
             e
         })?;
 
-    if let Some(b) = value.as_bool() { Ok(b) } else {
+    if let Some(b) = value.as_bool() {
+        Ok(b)
+    } else {
         tracing::warn!(
             actual_value = ?value,
             "setup_complete config value is not a boolean, defaulting to false"
@@ -1131,12 +1132,14 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
         let channel_name: String = row.get("channel_name");
         let unread_count: i64 = row.get("unread_count");
 
-        let guild_summary = guilds_map.entry(guild_id).or_insert_with(|| GuildUnreadSummary {
-            guild_id,
-            guild_name: guild_name.clone(),
-            channels: Vec::new(),
-            total_unread: 0,
-        });
+        let guild_summary = guilds_map
+            .entry(guild_id)
+            .or_insert_with(|| GuildUnreadSummary {
+                guild_id,
+                guild_name: guild_name.clone(),
+                channels: Vec::new(),
+                total_unread: 0,
+            });
 
         guild_summary.channels.push(ChannelUnread {
             channel_id,
@@ -1183,49 +1186,37 @@ pub async fn list_oidc_providers(pool: &PgPool) -> sqlx::Result<Vec<OidcProvider
 
 /// List all OIDC providers (including disabled) for admin.
 pub async fn list_all_oidc_providers(pool: &PgPool) -> sqlx::Result<Vec<OidcProviderRow>> {
-    sqlx::query_as::<_, OidcProviderRow>(
-        "SELECT * FROM oidc_providers ORDER BY position, slug",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| {
-        error!(error = %e, "Failed to list all OIDC providers");
-        e
-    })
+    sqlx::query_as::<_, OidcProviderRow>("SELECT * FROM oidc_providers ORDER BY position, slug")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| {
+            error!(error = %e, "Failed to list all OIDC providers");
+            e
+        })
 }
 
 /// Get an OIDC provider by slug.
-pub async fn get_oidc_provider_by_slug(
-    pool: &PgPool,
-    slug: &str,
-) -> sqlx::Result<OidcProviderRow> {
-    sqlx::query_as::<_, OidcProviderRow>(
-        "SELECT * FROM oidc_providers WHERE slug = $1",
-    )
-    .bind(slug)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| {
-        error!(error = %e, slug = %slug, "Failed to get OIDC provider by slug");
-        e
-    })
+pub async fn get_oidc_provider_by_slug(pool: &PgPool, slug: &str) -> sqlx::Result<OidcProviderRow> {
+    sqlx::query_as::<_, OidcProviderRow>("SELECT * FROM oidc_providers WHERE slug = $1")
+        .bind(slug)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| {
+            error!(error = %e, slug = %slug, "Failed to get OIDC provider by slug");
+            e
+        })
 }
 
 /// Get an OIDC provider by ID.
-pub async fn get_oidc_provider_by_id(
-    pool: &PgPool,
-    id: Uuid,
-) -> sqlx::Result<OidcProviderRow> {
-    sqlx::query_as::<_, OidcProviderRow>(
-        "SELECT * FROM oidc_providers WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| {
-        error!(error = %e, id = %id, "Failed to get OIDC provider by ID");
-        e
-    })
+pub async fn get_oidc_provider_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<OidcProviderRow> {
+    sqlx::query_as::<_, OidcProviderRow>("SELECT * FROM oidc_providers WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| {
+            error!(error = %e, id = %id, "Failed to get OIDC provider by ID");
+            e
+        })
 }
 
 /// Create a new OIDC provider.

@@ -457,7 +457,10 @@ mod tests {
             user_id: Uuid::new_v4(),
         });
 
-        assert!(matches!(result, Err(CallStateError::InvalidTransition { .. })));
+        assert!(matches!(
+            result,
+            Err(CallStateError::InvalidTransition { .. })
+        ));
     }
 
     #[test]
@@ -471,7 +474,10 @@ mod tests {
             initiator: Uuid::new_v4(),
         });
 
-        assert!(matches!(result, Err(CallStateError::InvalidTransition { .. })));
+        assert!(matches!(
+            result,
+            Err(CallStateError::InvalidTransition { .. })
+        ));
     }
 
     // ============================================================
@@ -515,7 +521,9 @@ mod tests {
             started_at: Utc::now(),
             participants,
         };
-        let new_state = state.apply(&CallEventType::Left { user_id: user1 }).unwrap();
+        let new_state = state
+            .apply(&CallEventType::Left { user_id: user1 })
+            .unwrap();
 
         assert!(matches!(new_state, CallState::Active { .. }));
         if let CallState::Active { participants, .. } = new_state {
@@ -585,7 +593,10 @@ mod tests {
             user_id: Uuid::new_v4(),
         });
 
-        assert!(matches!(result, Err(CallStateError::InvalidTransition { .. })));
+        assert!(matches!(
+            result,
+            Err(CallStateError::InvalidTransition { .. })
+        ));
     }
 
     #[test]
@@ -601,7 +612,10 @@ mod tests {
             initiator: Uuid::new_v4(),
         });
 
-        assert!(matches!(result, Err(CallStateError::InvalidTransition { .. })));
+        assert!(matches!(
+            result,
+            Err(CallStateError::InvalidTransition { .. })
+        ));
     }
 
     // ============================================================

@@ -76,12 +76,11 @@ pub async fn finalize_session(
     started_at: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
     // Check if any metrics exist for this session
-    let has_metrics: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM connection_metrics WHERE session_id = $1)",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await?;
+    let has_metrics: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connection_metrics WHERE session_id = $1)")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
 
     if has_metrics {
         // Insert session with aggregated metrics

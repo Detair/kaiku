@@ -119,10 +119,7 @@ pub async fn add_favorite(
 
 /// Remove a channel from favorites.
 #[command]
-pub async fn remove_favorite(
-    state: State<'_, AppState>,
-    channel_id: String,
-) -> Result<(), String> {
+pub async fn remove_favorite(state: State<'_, AppState>, channel_id: String) -> Result<(), String> {
     let (server_url, token) = {
         let auth = state.auth.read().await;
         (auth.server_url.clone(), auth.access_token.clone())

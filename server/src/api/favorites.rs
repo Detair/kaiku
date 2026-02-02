@@ -124,9 +124,11 @@ pub enum FavoritesError {
 impl IntoResponse for FavoritesError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, message) = match &self {
-            Self::ChannelNotFound => {
-                (StatusCode::NOT_FOUND, "channel_not_found", "Channel not found")
-            }
+            Self::ChannelNotFound => (
+                StatusCode::NOT_FOUND,
+                "channel_not_found",
+                "Channel not found",
+            ),
             Self::InvalidChannel => (
                 StatusCode::BAD_REQUEST,
                 "invalid_channel",
@@ -229,23 +231,23 @@ pub async fn add_favorite(
     }
 
     // 2. Verify channel exists and get guild_id
-    let channel =
-        sqlx::query_as::<_, (Uuid, Option<Uuid>)>("SELECT id, guild_id FROM channels WHERE id = $1")
-            .bind(channel_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(FavoritesError::ChannelNotFound)?;
+    let channel = sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
+        "SELECT id, guild_id FROM channels WHERE id = $1",
+    )
+    .bind(channel_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(FavoritesError::ChannelNotFound)?;
 
     let guild_id = channel.1.ok_or(FavoritesError::InvalidChannel)?;
 
     // 3. Verify user has access to guild
-    let is_member =
-        sqlx::query("SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2")
-            .bind(guild_id)
-            .bind(auth_user.id)
-            .fetch_optional(&state.db)
-            .await?
-            .is_some();
+    let is_member = sqlx::query("SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(auth_user.id)
+        .fetch_optional(&state.db)
+        .await?
+        .is_some();
 
     if !is_member {
         return Err(FavoritesError::ChannelNotFound); // Don't leak existence
@@ -315,13 +317,12 @@ pub async fn remove_favorite(
     auth_user: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<StatusCode, FavoritesError> {
-    let result = sqlx::query(
-        "DELETE FROM user_favorite_channels WHERE user_id = $1 AND channel_id = $2",
-    )
-    .bind(auth_user.id)
-    .bind(channel_id)
-    .execute(&state.db)
-    .await?;
+    let result =
+        sqlx::query("DELETE FROM user_favorite_channels WHERE user_id = $1 AND channel_id = $2")
+            .bind(auth_user.id)
+            .bind(channel_id)
+            .execute(&state.db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(FavoritesError::NotFavorited);
@@ -337,8 +338,7 @@ pub async fn reorder_channels(
     auth_user: AuthUser,
     Json(request): Json<ReorderChannelsRequest>,
 ) -> Result<StatusCode, FavoritesError> {
-    let guild_id =
-        Uuid::parse_str(&request.guild_id).map_err(|_| FavoritesError::InvalidGuilds)?;
+    let guild_id = Uuid::parse_str(&request.guild_id).map_err(|_| FavoritesError::InvalidGuilds)?;
 
     // Start transaction for atomic reorder
     let mut tx = state.db.begin().await?;
@@ -409,8 +409,7 @@ pub async fn reorder_guilds(
 
     // Update positions within transaction
     for (position, guild_id_str) in request.guild_ids.iter().enumerate() {
-        let guild_id =
-            Uuid::parse_str(guild_id_str).map_err(|_| FavoritesError::InvalidGuilds)?;
+        let guild_id = Uuid::parse_str(guild_id_str).map_err(|_| FavoritesError::InvalidGuilds)?;
 
         sqlx::query(
             "UPDATE user_favorite_guilds SET position = $3 WHERE user_id = $1 AND guild_id = $2",
@@ -453,7 +452,10 @@ mod tests {
         assert_eq!(channel.channel_type, "text");
         assert_eq!(channel.guild_id, guild_id.to_string());
         assert_eq!(channel.guild_name, "My Server");
-        assert_eq!(channel.guild_icon, Some("https://example.com/icon.png".to_string()));
+        assert_eq!(
+            channel.guild_icon,
+            Some("https://example.com/icon.png".to_string())
+        );
         assert_eq!(channel.guild_position, 0);
         assert_eq!(channel.channel_position, 1);
     }

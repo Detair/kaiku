@@ -62,7 +62,10 @@ pub fn router() -> Router<AppState> {
             "/{id}/categories/{category_id}",
             patch(categories::update_category).delete(categories::delete_category),
         )
-        .route("/{id}/categories/reorder", post(categories::reorder_categories))
+        .route(
+            "/{id}/categories/reorder",
+            post(categories::reorder_categories),
+        )
         // Search route
         .route("/{id}/search", get(search::search_messages))
         // Pages routes (nested)

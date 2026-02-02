@@ -527,9 +527,7 @@ pub async fn encrypt_message(
             .map_err(|e| format!("Encryption failed for {}: {e}", recipient.user_id))?;
 
         // Add to result map
-        let user_devices = result_recipients
-            .entry(recipient.user_id)
-            .or_default();
+        let user_devices = result_recipients.entry(recipient.user_id).or_default();
         user_devices.insert(recipient.device_id, ciphertext.into());
     }
 

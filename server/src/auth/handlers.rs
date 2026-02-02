@@ -25,15 +25,15 @@ use crate::db::{
     invalidate_user_reset_tokens, is_setup_complete, set_mfa_secret, update_user_avatar,
     update_user_profile, username_exists,
 };
-use crate::ws::broadcast_user_patch;
 use crate::ratelimit::NormalizedIp;
 use crate::util::format_file_size;
+use crate::ws::broadcast_user_patch;
 
 use super::error::{AuthError, AuthResult};
 use super::jwt::{generate_token_pair, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
-use super::oidc::{generate_username_from_claims, append_collision_suffix, OidcFlowState};
+use super::oidc::{append_collision_suffix, generate_username_from_claims, OidcFlowState};
 use super::password::{hash_password, verify_password};
 
 // ============================================================================
@@ -258,7 +258,7 @@ pub async fn register(
     // The lock is held for the entire transaction duration, preventing the race condition
     // where two concurrent registrations both see user_count=0 and both grant admin.
     let _lock = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
+        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE",
     )
     .fetch_one(&mut *tx)
     .await
@@ -358,7 +358,7 @@ pub async fn register(
     let ip_str = Some(addr.ip().to_string());
     sqlx::query(
         r"INSERT INTO sessions (user_id, token_hash, expires_at, ip_address, user_agent)
-          VALUES ($1, $2, $3, $4::inet, $5)"
+          VALUES ($1, $2, $3, $4::inet, $5)",
     )
     .bind(user.id)
     .bind(&token_hash)
@@ -679,12 +679,12 @@ pub async fn upload_avatar(
         if field.name() == Some("avatar") {
             filename = field.file_name().map(ToString::to_string);
             content_type = field.content_type().map(ToString::to_string);
-            
+
             let data = field
                 .bytes()
                 .await
                 .map_err(|e| AuthError::Internal(format!("Upload error: {e}")))?;
-            
+
             file_data = Some(data);
             break; // Only process the first file
         }
@@ -702,8 +702,7 @@ pub async fn upload_avatar(
     }
 
     // Validate mime type from header
-    let mime = content_type
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
 
     if !mime.starts_with("image/") {
         return Err(AuthError::Validation("File must be an image".to_string()));
@@ -711,16 +710,25 @@ pub async fn upload_avatar(
 
     // Reject SVG files (potential XSS vector via embedded JavaScript)
     if mime.contains("svg") {
-        return Err(AuthError::Validation("SVG files are not allowed for avatars".to_string()));
+        return Err(AuthError::Validation(
+            "SVG files are not allowed for avatars".to_string(),
+        ));
     }
 
     // Validate actual file content using magic bytes (don't trust client-provided MIME type)
-    let detected_format = image::guess_format(&data)
-        .map_err(|_| AuthError::Validation("Unable to detect image format. File may be corrupted or not a valid image.".to_string()))?;
+    let detected_format = image::guess_format(&data).map_err(|_| {
+        AuthError::Validation(
+            "Unable to detect image format. File may be corrupted or not a valid image."
+                .to_string(),
+        )
+    })?;
 
     // Only allow safe raster formats
     match detected_format {
-        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP => {}
+        image::ImageFormat::Png
+        | image::ImageFormat::Jpeg
+        | image::ImageFormat::Gif
+        | image::ImageFormat::WebP => {}
         _ => {
             return Err(AuthError::Validation(format!(
                 "Unsupported image format: {detected_format:?}. Only PNG, JPEG, GIF, and WebP are allowed."
@@ -733,7 +741,7 @@ pub async fn upload_avatar(
     let safe_filename = filename
         .unwrap_or_else(|| "avatar.png".to_string())
         .replace(|c: char| !c.is_alphanumeric() && c != '.', "_");
-    
+
     let key = format!("avatars/{}/{}_{}", auth_user.id, timestamp, safe_filename);
 
     // Upload to S3
@@ -744,9 +752,12 @@ pub async fn upload_avatar(
     // Construct public URL (assuming bucket is public or proxied)
     let bucket = &state.config.s3_bucket;
     let endpoint = &state.config.s3_endpoint;
-    
+
     // Handle localhost vs cloud endpoint formatting
-    let url = if endpoint.as_deref().is_some_and(|s| s.contains("localhost") || s.contains("127.0.0.1")) {
+    let url = if endpoint
+        .as_deref()
+        .is_some_and(|s| s.contains("localhost") || s.contains("127.0.0.1"))
+    {
         // For MinIO/Local: endpoint/bucket/key
         // endpoint is Option, so unwrap safe because of check
         format!("{}/{}/{}", endpoint.as_ref().unwrap(), bucket, key)
@@ -801,7 +812,8 @@ pub async fn update_profile(
     Json(body): Json<UpdateProfileRequest>,
 ) -> AuthResult<Json<UpdateProfileResponse>> {
     // Validate request
-    body.validate().map_err(|e| AuthError::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| AuthError::Validation(e.to_string()))?;
 
     // Check if there's anything to update
     if body.display_name.is_none() && body.email.is_none() {
@@ -810,7 +822,10 @@ pub async fn update_profile(
 
     // Check email uniqueness if changing email
     if let Some(ref email) = body.email {
-        if email_exists(&state.db, email).await.map_err(AuthError::Database)? {
+        if email_exists(&state.db, email)
+            .await
+            .map_err(AuthError::Database)?
+        {
             // Check if it's the same user's email
             let current_user = find_user_by_id(&state.db, auth_user.id)
                 .await
@@ -1081,9 +1096,8 @@ pub async fn oidc_authorize(
     // Determine callback URL
     let callback_base = if let Some(ref redirect_uri) = query.redirect_uri {
         // Tauri flow: validate the redirect URI is a localhost callback
-        let parsed = openidconnect::url::Url::parse(redirect_uri).map_err(|_| {
-            AuthError::Validation("Invalid redirect_uri".to_string())
-        })?;
+        let parsed = openidconnect::url::Url::parse(redirect_uri)
+            .map_err(|_| AuthError::Validation("Invalid redirect_uri".to_string()))?;
         if matches!(
             (parsed.scheme(), parsed.host_str()),
             ("http", Some("localhost" | "127.0.0.1"))
@@ -1172,14 +1186,10 @@ pub async fn oidc_callback(
     let redis_key = format!("oidc:state:{state_hash}");
 
     // Atomically get and delete the state (one-time use, prevents replay)
-    let encrypted_flow: Option<String> = state
-        .redis
-        .getdel(&redis_key)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to read OIDC state from Redis");
-            AuthError::Internal("Failed to read OIDC state".to_string())
-        })?;
+    let encrypted_flow: Option<String> = state.redis.getdel(&redis_key).await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to read OIDC state from Redis");
+        AuthError::Internal("Failed to read OIDC state".to_string())
+    })?;
 
     let encrypted_flow = encrypted_flow.ok_or(AuthError::OidcStateMismatch)?;
 
@@ -1191,11 +1201,10 @@ pub async fn oidc_callback(
         .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
     let enc_key_bytes = hex::decode(enc_key)
         .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
-    let flow_json = decrypt_mfa_secret(&encrypted_flow, &enc_key_bytes)
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to decrypt OIDC state");
-            AuthError::OidcStateMismatch
-        })?;
+    let flow_json = decrypt_mfa_secret(&encrypted_flow, &enc_key_bytes).map_err(|e| {
+        tracing::error!(error = %e, "Failed to decrypt OIDC state");
+        AuthError::OidcStateMismatch
+    })?;
 
     let flow_state: OidcFlowState =
         serde_json::from_str(&flow_json).map_err(|e| AuthError::Internal(e.to_string()))?;
@@ -1231,9 +1240,7 @@ pub async fn oidc_callback(
     let external_id = format!("{}:{}", flow_state.slug, user_info.subject);
 
     // User resolution
-    let user = if let Some(existing) =
-        find_user_by_external_id(&state.db, &external_id).await?
-    {
+    let user = if let Some(existing) = find_user_by_external_id(&state.db, &external_id).await? {
         // Existing user — login
         existing
     } else {
@@ -1377,7 +1384,8 @@ pub async fn oidc_callback(
     if is_localhost {
         // Tauri flow: redirect with tokens in query params
         let mut redirect_url = parsed_redirect;
-        redirect_url.query_pairs_mut()
+        redirect_url
+            .query_pairs_mut()
             .append_pair("access_token", &tokens.access_token)
             .append_pair("refresh_token", &tokens.refresh_token)
             .append_pair("expires_in", &tokens.access_expires_in.to_string())
@@ -1440,10 +1448,7 @@ pub async fn forgot_password(
     Json(body): Json<ForgotPasswordRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
     // Check if email service is configured
-    let email_service = state
-        .email
-        .as_ref()
-        .ok_or(AuthError::EmailNotConfigured)?;
+    let email_service = state.email.as_ref().ok_or(AuthError::EmailNotConfigured)?;
 
     // Basic email format validation
     if !body.email.contains('@') || body.email.len() < 5 {
@@ -1510,9 +1515,7 @@ pub async fn forgot_password(
                 "Failed to send password reset email"
             );
             // Clean up the orphaned token since the user never received it
-            if let Err(cleanup_err) =
-                invalidate_user_reset_tokens(&state.db, user.id).await
-            {
+            if let Err(cleanup_err) = invalidate_user_reset_tokens(&state.db, user.id).await {
                 tracing::warn!(
                     error = %cleanup_err,
                     user_id = %user.id,

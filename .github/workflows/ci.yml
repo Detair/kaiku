@@ -106,7 +106,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
 
       - name: Check licenses
         run: cargo deny check licenses
@@ -146,7 +148,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.1"
+          bun-version: "latest"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile || (sleep 5 && bun install --frozen-lockfile)
@@ -211,7 +213,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.1"
+          bun-version: "latest"
 
       - name: Install frontend dependencies
         working-directory: client

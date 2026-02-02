@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 use vc_server::{
-    api::{AppState, create_router},
+    api::{create_router, AppState},
     auth::jwt,
     config::Config,
     db,
@@ -38,14 +38,27 @@ impl TestApp {
         let redis = db::create_redis_client(&config.redis_url)
             .await
             .expect("Failed to connect to test Redis");
-        let sfu = SfuServer::new(Arc::new(config.clone()), None)
-            .expect("Failed to create SfuServer");
+        let sfu =
+            SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
 
-        let state = AppState::new(pool.clone(), redis, config.clone(), None, sfu, None, None, None);
+        let state = AppState::new(
+            pool.clone(),
+            redis,
+            config.clone(),
+            None,
+            sfu,
+            None,
+            None,
+            None,
+        );
         let router = create_router(state);
         let config = Arc::new(config);
 
-        Self { router, pool, config }
+        Self {
+            router,
+            pool,
+            config,
+        }
     }
 
     /// Build an HTTP request with the given method and URI.
@@ -121,13 +134,11 @@ pub async fn create_friendship(pool: &PgPool, user_a: Uuid, user_b: Uuid) -> Uui
 /// Create a DM channel between two users and return the channel ID.
 pub async fn create_dm_channel(pool: &PgPool, user_a: Uuid, user_b: Uuid) -> Uuid {
     let channel_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO channels (id, name, channel_type) VALUES ($1, 'DM', 'dm')",
-    )
-    .bind(channel_id)
-    .execute(pool)
-    .await
-    .expect("Failed to create DM channel");
+    sqlx::query("INSERT INTO channels (id, name, channel_type) VALUES ($1, 'DM', 'dm')")
+        .bind(channel_id)
+        .execute(pool)
+        .await
+        .expect("Failed to create DM channel");
 
     sqlx::query("INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2), ($1, $3)")
         .bind(channel_id)

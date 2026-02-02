@@ -73,7 +73,12 @@ async fn create_test_guild(pool: &PgPool, owner_id: Uuid) -> Uuid {
 }
 
 /// Helper to create a test channel and return its ID.
-async fn create_test_channel(pool: &PgPool, guild_id: Uuid, name: &str, channel_type: &str) -> Uuid {
+async fn create_test_channel(
+    pool: &PgPool,
+    guild_id: Uuid,
+    name: &str,
+    channel_type: &str,
+) -> Uuid {
     let channel_id = Uuid::new_v4();
 
     sqlx::query(
@@ -126,21 +131,23 @@ async fn add_favorite(pool: &PgPool, user_id: Uuid, guild_id: Uuid, channel_id: 
 
 /// Helper to count favorites for a user.
 async fn count_favorites(pool: &PgPool, user_id: Uuid) -> i64 {
-    let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_favorite_channels WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .expect("Failed to count favorites");
+    let result: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM user_favorite_channels WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("Failed to count favorites");
     result.0
 }
 
 /// Helper to count favorite guilds for a user.
 async fn count_favorite_guilds(pool: &PgPool, user_id: Uuid) -> i64 {
-    let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_favorite_guilds WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .expect("Failed to count favorite guilds");
+    let result: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM user_favorite_guilds WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("Failed to count favorite guilds");
     result.0
 }
 
@@ -238,8 +245,16 @@ async fn test_multiple_channels_same_guild() {
     add_favorite(&pool, user_id, guild_id, channel1_id).await;
     add_favorite(&pool, user_id, guild_id, channel2_id).await;
 
-    assert_eq!(count_favorites(&pool, user_id).await, 2, "Should have 2 favorites");
-    assert_eq!(count_favorite_guilds(&pool, user_id).await, 1, "Should have only 1 guild entry");
+    assert_eq!(
+        count_favorites(&pool, user_id).await,
+        2,
+        "Should have 2 favorites"
+    );
+    assert_eq!(
+        count_favorite_guilds(&pool, user_id).await,
+        1,
+        "Should have only 1 guild entry"
+    );
 
     cleanup_test_data(&pool, user_id).await;
 }

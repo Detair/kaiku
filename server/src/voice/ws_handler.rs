@@ -4,19 +4,22 @@
 
 use std::sync::Arc;
 
+use fred::clients::Client;
 use sqlx::{PgPool, Row};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
-use fred::clients::Client;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
+use super::screen_share::{
+    stop_screen_share, try_start_screen_share, validate_source_label, ScreenShareError,
+    ScreenShareInfo,
+};
 use super::sfu::SfuServer;
-use super::track_types::TrackSource;
-use super::screen_share::{stop_screen_share, try_start_screen_share, validate_source_label, ScreenShareInfo, ScreenShareError};
 use super::stats::VoiceStats;
+use super::track_types::TrackSource;
 use super::Quality;
 use crate::ws::{ClientEvent, ServerEvent, VoiceParticipant};
 
@@ -71,7 +74,19 @@ pub async fn handle_voice_event(
             quality,
             has_audio,
             source_label,
-        } => handle_screen_share_start(sfu, pool, redis, user_id, channel_id, quality, has_audio, &source_label).await,
+        } => {
+            handle_screen_share_start(
+                sfu,
+                pool,
+                redis,
+                user_id,
+                channel_id,
+                quality,
+                has_audio,
+                &source_label,
+            )
+            .await
+        }
         ClientEvent::VoiceScreenShareStop { channel_id } => {
             handle_screen_share_stop(sfu, redis, user_id, channel_id).await
         }
@@ -107,7 +122,13 @@ async fn handle_join(
     let room = sfu.get_or_create_room(channel_id).await;
 
     let peer = sfu
-        .create_peer(user_id, username.clone(), display_name.clone(), channel_id, tx.clone())
+        .create_peer(
+            user_id,
+            username.clone(),
+            display_name.clone(),
+            channel_id,
+            tx.clone(),
+        )
         .await?;
 
     sfu.setup_ice_handler(&peer);
@@ -119,13 +140,15 @@ async fn handle_join(
     for other_peer in other_peers {
         let incoming_tracks = other_peer.incoming_tracks.read().await;
         for (source_type, track) in incoming_tracks.iter() {
-            if let Ok(local_track) = room.track_router.create_subscriber_track(
-                other_peer.user_id,
-                *source_type,
-                &peer,
-                track
-            ).await {
-                if let Err(e) = peer.add_outgoing_track(other_peer.user_id, *source_type, local_track).await {
+            if let Ok(local_track) = room
+                .track_router
+                .create_subscriber_track(other_peer.user_id, *source_type, &peer, track)
+                .await
+            {
+                if let Err(e) = peer
+                    .add_outgoing_track(other_peer.user_id, *source_type, local_track)
+                    .await
+                {
                     warn!("Failed to add outgoing track: {}", e);
                 } else if *source_type == TrackSource::ScreenVideo {
                     // Send PLI to request keyframe for late joiners
@@ -133,7 +156,11 @@ async fn handle_join(
                         sender_ssrc: 0,
                         media_ssrc: track.ssrc(),
                     };
-                    if let Err(e) = other_peer.peer_connection.write_rtcp(&[Box::new(pli)]).await {
+                    if let Err(e) = other_peer
+                        .peer_connection
+                        .write_rtcp(&[Box::new(pli)])
+                        .await
+                    {
                         warn!("Failed to send PLI: {}", e);
                     } else {
                         debug!("Sent PLI to source {}", other_peer.user_id);
@@ -163,7 +190,7 @@ async fn handle_join(
             screen_sharing: p.screen_sharing,
         })
         .collect();
-        
+
     let screen_shares = room.get_screen_shares().await;
 
     tx.send(ServerEvent::VoiceRoomState {
@@ -212,7 +239,7 @@ async fn handle_leave(
     // Check if sharing screen and stop it
     if room.remove_screen_share(user_id).await.is_some() {
         stop_screen_share(redis, channel_id).await;
-        
+
         room.broadcast_except(
             user_id,
             ServerEvent::ScreenShareStopped {
@@ -220,7 +247,8 @@ async fn handle_leave(
                 user_id,
                 reason: "disconnected".to_string(),
             },
-        ).await;
+        )
+        .await;
     }
 
     // Remove peer from room
@@ -466,7 +494,7 @@ const DEFAULT_MAX_SCREEN_SHARES: u32 = 2;
 /// Handle starting a screen share.
 async fn handle_screen_share_start(
     sfu: &Arc<SfuServer>,
-    _pool: &PgPool,  // Will be used for channel settings lookup
+    _pool: &PgPool, // Will be used for channel settings lookup
     redis: &Client,
     user_id: Uuid,
     channel_id: Uuid,

@@ -20,7 +20,7 @@ use crate::{
     ws::ServerEvent,
 };
 use fred::interfaces::PubsubInterface;
-// Use direct Redis publish for now as broadcast_guild_emoji_update isn't in mod.rs yet 
+// Use direct Redis publish for now as broadcast_guild_emoji_update isn't in mod.rs yet
 // but we added GuildEmojiUpdated to ServerEvent.
 
 // ============================================================================
@@ -54,20 +54,32 @@ pub enum EmojiError {
 impl IntoResponse for EmojiError {
     fn into_response(self) -> axum::response::Response {
         if let Self::FileTooLarge { max_size } = self {
-            let message = format!("File too large (max {} for emojis)", crate::util::format_file_size(max_size));
+            let message = format!(
+                "File too large (max {} for emojis)",
+                crate::util::format_file_size(max_size)
+            );
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(json!({
                     "error": "FILE_TOO_LARGE",
                     "message": message,
                     "max_size_bytes": max_size
-                }))
-            ).into_response()
+                })),
+            )
+                .into_response()
         } else {
             let (status, code, message) = match &self {
-                Self::GuildNotFound => (StatusCode::NOT_FOUND, "GUILD_NOT_FOUND", "Guild not found"),
-                Self::EmojiNotFound => (StatusCode::NOT_FOUND, "EMOJI_NOT_FOUND", "Emoji not found"),
-                Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Insufficient permissions"),
+                Self::GuildNotFound => {
+                    (StatusCode::NOT_FOUND, "GUILD_NOT_FOUND", "Guild not found")
+                }
+                Self::EmojiNotFound => {
+                    (StatusCode::NOT_FOUND, "EMOJI_NOT_FOUND", "Emoji not found")
+                }
+                Self::Forbidden => (
+                    StatusCode::FORBIDDEN,
+                    "FORBIDDEN",
+                    "Insufficient permissions",
+                ),
                 Self::InvalidFilename => (
                     StatusCode::BAD_REQUEST,
                     "INVALID_FILENAME",
@@ -84,14 +96,16 @@ impl IntoResponse for EmojiError {
                     "STORAGE_ERROR",
                     msg.as_str(),
                 ),
-                Self::Validation(msg) => (
-                    StatusCode::BAD_REQUEST,
-                    "VALIDATION_ERROR",
-                    msg.as_str(),
-                ),
+                Self::Validation(msg) => {
+                    (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.as_str())
+                }
                 Self::Database(err) => {
                     tracing::error!("Database error: {}", err);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Database error")
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        "Database error",
+                    )
                 }
                 Self::FileTooLarge { .. } => unreachable!("Handled above"),
             };
@@ -127,7 +141,10 @@ async fn check_guild_membership(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_emojis).post(create_emoji))
-        .route("/{emoji_id}", get(get_emoji).patch(update_emoji).delete(delete_emoji))
+        .route(
+            "/{emoji_id}",
+            get(get_emoji).patch(update_emoji).delete(delete_emoji),
+        )
 }
 
 // ============================================================================
@@ -204,7 +221,10 @@ pub async fn create_emoji(
         return Err(EmojiError::GuildNotFound);
     }
 
-    let s3 = state.s3.as_ref().ok_or(EmojiError::Storage("S3 not configured".into()))?;
+    let s3 = state
+        .s3
+        .as_ref()
+        .ok_or(EmojiError::Storage("S3 not configured".into()))?;
 
     let mut name: Option<String> = None;
     let mut file_data: Option<Vec<u8>> = None;
@@ -214,14 +234,20 @@ pub async fn create_emoji(
         let field_name = field.name().unwrap_or_default().to_string();
         match field_name.as_str() {
             "name" => {
-                let text = field.text().await.map_err(|e| EmojiError::Validation(e.to_string()))?;
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| EmojiError::Validation(e.to_string()))?;
                 name = Some(text);
             }
             "file" => {
-                let data = field.bytes().await.map_err(|e| EmojiError::Validation(e.to_string()))?;
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| EmojiError::Validation(e.to_string()))?;
                 if data.len() > state.config.max_emoji_size {
                     return Err(EmojiError::FileTooLarge {
-                        max_size: state.config.max_emoji_size
+                        max_size: state.config.max_emoji_size,
                     });
                 }
                 file_data = Some(data.to_vec());
@@ -234,7 +260,9 @@ pub async fn create_emoji(
     let name_str = name.ok_or(EmojiError::Validation("Name required".into()))?;
 
     // Validate request manually since we parsed multipart
-    let req = CreateEmojiRequest { name: name_str.clone() };
+    let req = CreateEmojiRequest {
+        name: name_str.clone(),
+    };
     if let Err(e) = req.validate() {
         return Err(EmojiError::Validation(e.to_string()));
     }
@@ -248,14 +276,18 @@ pub async fn create_emoji(
         image::ImageFormat::Jpeg => ("image/jpeg", "jpg"),
         image::ImageFormat::Gif => ("image/gif", "gif"),
         image::ImageFormat::WebP => ("image/webp", "webp"),
-        _ => return Err(EmojiError::Validation("Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string())),
+        _ => {
+            return Err(EmojiError::Validation(
+                "Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string(),
+            ))
+        }
     };
 
     let animated = content_type == "image/gif";
     let emoji_id = Uuid::now_v7();
 
     let s3_key = format!("emojis/{guild_id}/{emoji_id}.{extension}");
-    
+
     // Upload to S3
     s3.upload(&s3_key, file_data, content_type)
         .await
@@ -285,7 +317,7 @@ pub async fn create_emoji(
 
     // Re-query full list for broadcast
     let all_emojis = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC"
+        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC",
     )
     .bind(guild_id)
     .fetch_all(&state.db)
@@ -336,7 +368,7 @@ pub async fn update_emoji(
 
     // Check ownership/permissions
     let emoji = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE id = $1 AND guild_id = $2"
+        "SELECT * FROM guild_emojis WHERE id = $1 AND guild_id = $2",
     )
     .bind(emoji_id)
     .bind(guild_id)
@@ -345,7 +377,7 @@ pub async fn update_emoji(
     .ok_or(EmojiError::EmojiNotFound)?;
 
     if emoji.uploaded_by != auth_user.id {
-         return Err(EmojiError::Forbidden);
+        return Err(EmojiError::Forbidden);
     }
 
     let updated = sqlx::query_as::<_, GuildEmoji>(
@@ -362,9 +394,9 @@ pub async fn update_emoji(
     .fetch_one(&state.db)
     .await?;
 
-     // Broadcast update (full list)
+    // Broadcast update (full list)
     let all_emojis = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC"
+        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC",
     )
     .bind(guild_id)
     .fetch_all(&state.db)
@@ -409,7 +441,7 @@ pub async fn delete_emoji(
 ) -> Result<StatusCode, EmojiError> {
     // Check existence and fetch details for S3 deletion
     let emoji = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE id = $1 AND guild_id = $2"
+        "SELECT * FROM guild_emojis WHERE id = $1 AND guild_id = $2",
     )
     .bind(emoji_id)
     .bind(guild_id)
@@ -418,7 +450,7 @@ pub async fn delete_emoji(
     .ok_or(EmojiError::EmojiNotFound)?;
 
     if emoji.uploaded_by != auth_user.id {
-         return Err(EmojiError::Forbidden);
+        return Err(EmojiError::Forbidden);
     }
 
     // Delete from DB
@@ -431,14 +463,14 @@ pub async fn delete_emoji(
     if let Some(s3) = &state.s3 {
         let extensions = ["png", "jpg", "gif", "webp"];
         for ext in extensions {
-             let key = format!("emojis/{guild_id}/{emoji_id}.{ext}");
-             let _ = s3.delete(&key).await;
+            let key = format!("emojis/{guild_id}/{emoji_id}.{ext}");
+            let _ = s3.delete(&key).await;
         }
     }
 
     // Broadcast update (full list)
     let all_emojis = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC"
+        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC",
     )
     .bind(guild_id)
     .fetch_all(&state.db)

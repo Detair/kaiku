@@ -123,14 +123,10 @@ impl Peer {
     }
 
     /// Remove an outgoing track.
-    pub async fn remove_outgoing_track(
-        &self,
-        source_user_id: Uuid,
-        source_type: TrackSource,
-    ) {
+    pub async fn remove_outgoing_track(&self, source_user_id: Uuid, source_type: TrackSource) {
         let mut tracks = self.outgoing_tracks.write().await;
         tracks.remove(&(source_user_id, source_type));
-        // Note: Track removal from PeerConnection requires renegotiation, 
+        // Note: Track removal from PeerConnection requires renegotiation,
         // which usually happens via the SFU logic.
     }
 

@@ -143,17 +143,12 @@ pub async fn list_categories(
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<Vec<Category>>, CategoryError> {
     // Verify user is member of guild (no specific permission required to view)
-    let _ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::empty(),
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => CategoryError::NotMember,
-        other => CategoryError::Permission(other),
-    })?;
+    let _ctx = require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::empty())
+        .await
+        .map_err(|e| match e {
+            PermissionError::NotGuildMember => CategoryError::NotMember,
+            other => CategoryError::Permission(other),
+        })?;
 
     let categories = sqlx::query_as::<_, Category>(
         r"

@@ -162,7 +162,10 @@ async fn main() -> Result<()> {
                 Some(service)
             }
             Err(e) => {
-                tracing::warn!("Email service initialization failed: {}. Password reset disabled.", e);
+                tracing::warn!(
+                    "Email service initialization failed: {}. Password reset disabled.",
+                    e
+                );
                 None
             }
         }
@@ -208,7 +211,16 @@ async fn main() -> Result<()> {
     };
 
     // Build application state
-    let state = api::AppState::new(db_pool.clone(), redis.clone(), config.clone(), s3, sfu, rate_limiter, email_service, oidc_manager);
+    let state = api::AppState::new(
+        db_pool.clone(),
+        redis.clone(),
+        config.clone(),
+        s3,
+        sfu,
+        rate_limiter,
+        email_service,
+        oidc_manager,
+    );
 
     // Build router
     let app = api::create_router(state);

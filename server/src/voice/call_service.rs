@@ -384,7 +384,10 @@ mod tests {
     #[test]
     fn test_error_display_state_transition() {
         let err = CallError::StateTransition("invalid transition".to_string());
-        assert_eq!(err.to_string(), "State transition error: invalid transition");
+        assert_eq!(
+            err.to_string(),
+            "State transition error: invalid transition"
+        );
     }
 
     #[test]

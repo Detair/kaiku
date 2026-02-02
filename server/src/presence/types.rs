@@ -54,7 +54,10 @@ impl Activity {
             return Err("Activity name contains invalid characters");
         }
         if let Some(ref details) = self.details {
-            if details.chars().any(|c| c.is_control() && c != ' ' && c != '\n') {
+            if details
+                .chars()
+                .any(|c| c.is_control() && c != ' ' && c != '\n')
+            {
                 return Err("Activity details contains invalid characters");
             }
         }

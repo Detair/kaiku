@@ -7,8 +7,8 @@ use axum::{
 use uuid::Uuid;
 
 use super::types::{
-    ListReportsQuery, PaginatedReports, Report, ReportError, ReportResponse,
-    ReportStatsResponse, ResolveReportRequest,
+    ListReportsQuery, PaginatedReports, Report, ReportError, ReportResponse, ReportStatsResponse,
+    ResolveReportRequest,
 };
 use crate::admin::ElevatedAdmin;
 use crate::api::AppState;
@@ -142,25 +142,33 @@ pub async fn resolve_report(
 pub async fn report_stats(
     State(state): State<AppState>,
 ) -> Result<Json<ReportStatsResponse>, ReportError> {
-    let pending: i64 = sqlx::query_scalar::<_, Option<i64>>("SELECT COUNT(*) FROM user_reports WHERE status ='pending'")
-        .fetch_one(&state.db)
-        .await?
-        .unwrap_or(0);
+    let pending: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT COUNT(*) FROM user_reports WHERE status ='pending'",
+    )
+    .fetch_one(&state.db)
+    .await?
+    .unwrap_or(0);
 
-    let reviewing: i64 = sqlx::query_scalar::<_, Option<i64>>("SELECT COUNT(*) FROM user_reports WHERE status ='reviewing'")
-        .fetch_one(&state.db)
-        .await?
-        .unwrap_or(0);
+    let reviewing: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT COUNT(*) FROM user_reports WHERE status ='reviewing'",
+    )
+    .fetch_one(&state.db)
+    .await?
+    .unwrap_or(0);
 
-    let resolved: i64 = sqlx::query_scalar::<_, Option<i64>>("SELECT COUNT(*) FROM user_reports WHERE status ='resolved'")
-        .fetch_one(&state.db)
-        .await?
-        .unwrap_or(0);
+    let resolved: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT COUNT(*) FROM user_reports WHERE status ='resolved'",
+    )
+    .fetch_one(&state.db)
+    .await?
+    .unwrap_or(0);
 
-    let dismissed: i64 = sqlx::query_scalar::<_, Option<i64>>("SELECT COUNT(*) FROM user_reports WHERE status ='dismissed'")
-        .fetch_one(&state.db)
-        .await?
-        .unwrap_or(0);
+    let dismissed: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT COUNT(*) FROM user_reports WHERE status ='dismissed'",
+    )
+    .fetch_one(&state.db)
+    .await?
+    .unwrap_or(0);
 
     Ok(Json(ReportStatsResponse {
         pending,

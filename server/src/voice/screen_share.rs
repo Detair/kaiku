@@ -19,10 +19,7 @@ pub fn validate_source_label(label: &str) -> Result<(), ScreenShareError> {
 
     // Allow alphanumeric, whitespace, and common punctuation
     for ch in label.chars() {
-        if !ch.is_alphanumeric()
-            && !ch.is_whitespace()
-            && !"()-_.,:;'\"!?#@&+".contains(ch)
-        {
+        if !ch.is_alphanumeric() && !ch.is_whitespace() && !"()-_.,:;'\"!?#@&+".contains(ch) {
             return Err(ScreenShareError::InvalidSourceLabel);
         }
     }
@@ -328,7 +325,12 @@ mod tests {
 
     #[test]
     fn test_check_response_all_quality_tiers() {
-        for quality in [Quality::Low, Quality::Medium, Quality::High, Quality::Premium] {
+        for quality in [
+            Quality::Low,
+            Quality::Medium,
+            Quality::High,
+            Quality::Premium,
+        ] {
             let resp = ScreenShareCheckResponse::allowed(quality);
             assert!(resp.allowed);
             assert_eq!(resp.granted_quality, Some(quality));
@@ -464,7 +466,10 @@ mod tests {
             (ScreenShareError::LimitReached, "limit_reached"),
             (ScreenShareError::NotInChannel, "not_in_channel"),
             (ScreenShareError::QualityNotAllowed, "quality_not_allowed"),
-            (ScreenShareError::RenegotiationFailed, "renegotiation_failed"),
+            (
+                ScreenShareError::RenegotiationFailed,
+                "renegotiation_failed",
+            ),
             (ScreenShareError::InternalError, "internal_error"),
             (ScreenShareError::InvalidSourceLabel, "invalid_source_label"),
             (ScreenShareError::AlreadySharing, "already_sharing"),
@@ -487,8 +492,14 @@ mod tests {
 
     #[test]
     fn test_screen_share_error_equality() {
-        assert_eq!(ScreenShareError::NoPermission, ScreenShareError::NoPermission);
-        assert_ne!(ScreenShareError::NoPermission, ScreenShareError::LimitReached);
+        assert_eq!(
+            ScreenShareError::NoPermission,
+            ScreenShareError::NoPermission
+        );
+        assert_ne!(
+            ScreenShareError::NoPermission,
+            ScreenShareError::LimitReached
+        );
     }
 
     // =========================================================================
@@ -508,7 +519,12 @@ mod tests {
     #[test]
     fn test_start_request_deserialization_all_qualities() {
         let qualities = ["low", "medium", "high", "premium"];
-        let expected = [Quality::Low, Quality::Medium, Quality::High, Quality::Premium];
+        let expected = [
+            Quality::Low,
+            Quality::Medium,
+            Quality::High,
+            Quality::Premium,
+        ];
 
         for (quality_str, expected_quality) in qualities.iter().zip(expected.iter()) {
             let json = format!(

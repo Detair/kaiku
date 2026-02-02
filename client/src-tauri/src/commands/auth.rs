@@ -315,8 +315,8 @@ pub async fn oidc_authorize(
     server_url: String,
     provider_slug: String,
 ) -> Result<OidcLoginResult, String> {
-    use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use url::Url;
 
     info!("Starting OIDC flow for provider: {}", provider_slug);
@@ -336,8 +336,8 @@ pub async fn oidc_authorize(
     debug!("OIDC redirect URI: {}", redirect_uri);
 
     // 2. Get the authorize URL from the server
-    let mut authorize_parsed = Url::parse(server_url)
-        .map_err(|e| format!("Invalid server URL: {e}"))?;
+    let mut authorize_parsed =
+        Url::parse(server_url).map_err(|e| format!("Invalid server URL: {e}"))?;
     // Use Url path segment mutation to safely encode the provider slug
     authorize_parsed
         .path_segments_mut()
@@ -410,10 +410,7 @@ pub async fn oidc_authorize(
 
             // Extract the request path from the first line (GET /callback?... HTTP/1.1)
             let first_line = request.lines().next().unwrap_or("");
-            let path = first_line
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("/");
+            let path = first_line.split_whitespace().nth(1).unwrap_or("/");
 
             // Check if this is the actual callback (not favicon, preflight, etc.)
             if !path.starts_with("/callback") {
@@ -425,9 +422,8 @@ pub async fn oidc_authorize(
 
             // Parse query parameters
             let full_url = format!("http://localhost{path}");
-            let parsed = Url::parse(&full_url).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-            })?;
+            let parsed = Url::parse(&full_url)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
             let params: HashMap<String, String> = parsed
                 .query_pairs()

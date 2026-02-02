@@ -317,13 +317,7 @@ async fn test_search_messages_count() {
 
     // Create messages
     for i in 0..15 {
-        create_test_message(
-            &pool,
-            channel_id,
-            user_id,
-            &format!("Test message {}", i),
-        )
-        .await;
+        create_test_message(&pool, channel_id, user_id, &format!("Test message {}", i)).await;
     }
     // Create some non-matching messages
     create_test_message(&pool, channel_id, user_id, "Hello world").await;
@@ -389,8 +383,15 @@ async fn test_search_excludes_deleted_messages() {
     .await
     .expect("Search query failed");
 
-    assert_eq!(results.len(), 1, "Expected 1 result (deleted message excluded)");
-    assert_ne!(results[0].0, msg_id, "Deleted message should not be in results");
+    assert_eq!(
+        results.len(),
+        1,
+        "Expected 1 result (deleted message excluded)"
+    );
+    assert_ne!(
+        results[0].0, msg_id,
+        "Deleted message should not be in results"
+    );
 
     cleanup_test_data(&pool, user_id, guild_id).await;
 }
@@ -444,7 +445,11 @@ async fn test_search_websearch_syntax() {
     .await
     .expect("Search query failed");
 
-    assert_eq!(or_results.len(), 3, "Expected 3 results for 'quick OR lazy'");
+    assert_eq!(
+        or_results.len(),
+        3,
+        "Expected 3 results for 'quick OR lazy'"
+    );
 
     cleanup_test_data(&pool, user_id, guild_id).await;
 }

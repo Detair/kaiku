@@ -9,8 +9,7 @@ mod helpers;
 
 use axum::{body::Body, http::Method};
 use helpers::{
-    TestApp, body_to_json, create_dm_channel, create_test_user, delete_user,
-    generate_access_token,
+    body_to_json, create_dm_channel, create_test_user, delete_user, generate_access_token, TestApp,
 };
 use serial_test::serial;
 
@@ -177,12 +176,11 @@ async fn test_block_prevents_friend_request() {
     assert_eq!(resp.status(), 200);
 
     // B tries to send friend request to A — need A's username
-    let username_a: String =
-        sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
-            .bind(user_a)
-            .fetch_one(&app.pool)
-            .await
-            .expect("User should exist");
+    let username_a: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(user_a)
+        .fetch_one(&app.pool)
+        .await
+        .expect("User should exist");
 
     let req = TestApp::request(Method::POST, "/api/friends/request")
         .header("Content-Type", "application/json")
@@ -267,16 +265,13 @@ async fn test_block_prevents_message_in_dm() {
     assert_eq!(resp.status(), 200);
 
     // B tries to send a message in the DM
-    let req = TestApp::request(
-        Method::POST,
-        &format!("/api/messages/channel/{channel_id}"),
-    )
-    .header("Content-Type", "application/json")
-    .header("Authorization", format!("Bearer {token_b}"))
-    .body(Body::from(
-        serde_json::json!({ "content": "Hello!" }).to_string(),
-    ))
-    .unwrap();
+    let req = TestApp::request(Method::POST, &format!("/api/messages/channel/{channel_id}"))
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token_b}"))
+        .body(Body::from(
+            serde_json::json!({ "content": "Hello!" }).to_string(),
+        ))
+        .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 403);
 

@@ -22,10 +22,11 @@ pub async fn send_friend_request(
         .map_err(|e| SocialError::Validation(e.to_string()))?;
 
     // Find the target user by username
-    let target_user: Uuid = sqlx::query_scalar!("SELECT id FROM users WHERE username = $1", body.username)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(SocialError::UserNotFound)?;
+    let target_user: Uuid =
+        sqlx::query_scalar!("SELECT id FROM users WHERE username = $1", body.username)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(SocialError::UserNotFound)?;
 
     let target_id = target_user;
 
@@ -35,7 +36,9 @@ pub async fn send_friend_request(
     }
 
     // Check block in either direction via Redis cache
-    if let Ok(true) = block_cache::is_blocked_either_direction(&state.redis, auth.id, target_id).await {
+    if let Ok(true) =
+        block_cache::is_blocked_either_direction(&state.redis, auth.id, target_id).await
+    {
         return Err(SocialError::Blocked);
     }
 
@@ -43,7 +46,7 @@ pub async fn send_friend_request(
     let existing = sqlx::query_as::<_, Friendship>(
         r"SELECT * FROM friendships
            WHERE (requester_id = $1 AND addressee_id = $2)
-              OR (requester_id = $2 AND addressee_id = $1)"
+              OR (requester_id = $2 AND addressee_id = $1)",
     )
     .bind(auth.id)
     .bind(target_id)
@@ -269,13 +272,11 @@ pub async fn reject_friend_request(
     Path(friendship_id): Path<Uuid>,
 ) -> Result<Json<()>, SocialError> {
     // Verify that auth.id is the addressee of this friendship
-    let friendship = sqlx::query_as::<_, Friendship>(
-        "SELECT * FROM friendships WHERE id = $1"
-    )
-    .bind(friendship_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(SocialError::FriendshipNotFound)?;
+    let friendship = sqlx::query_as::<_, Friendship>("SELECT * FROM friendships WHERE id = $1")
+        .bind(friendship_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(SocialError::FriendshipNotFound)?;
 
     // Only addressee can reject
     if friendship.addressee_id != auth.id {
@@ -321,7 +322,7 @@ pub async fn block_user(
     let existing = sqlx::query_as::<_, Friendship>(
         r"SELECT * FROM friendships
            WHERE (requester_id = $1 AND addressee_id = $2)
-              OR (requester_id = $2 AND addressee_id = $1)"
+              OR (requester_id = $2 AND addressee_id = $1)",
     )
     .bind(auth.id)
     .bind(user_id)
@@ -379,9 +380,7 @@ pub async fn block_user(
     }
 
     // Broadcast UserBlocked to all of the blocker's sessions
-    let event = ServerEvent::UserBlocked {
-        user_id,
-    };
+    let event = ServerEvent::UserBlocked { user_id };
     if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
         tracing::warn!("Failed to broadcast UserBlocked event: {}", e);
     }
@@ -399,7 +398,7 @@ pub async fn unblock_user(
     // Find the blocked friendship where we are the blocker
     let friendship = sqlx::query_as::<_, Friendship>(
         r"SELECT * FROM friendships
-           WHERE requester_id = $1 AND addressee_id = $2 AND status = 'blocked'"
+           WHERE requester_id = $1 AND addressee_id = $2 AND status = 'blocked'",
     )
     .bind(auth.id)
     .bind(user_id)
@@ -418,9 +417,7 @@ pub async fn unblock_user(
     }
 
     // Broadcast UserUnblocked to all of the blocker's sessions
-    let event = ServerEvent::UserUnblocked {
-        user_id,
-    };
+    let event = ServerEvent::UserUnblocked { user_id };
     if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
         tracing::warn!("Failed to broadcast UserUnblocked event: {}", e);
     }
@@ -436,13 +433,11 @@ pub async fn remove_friend(
     Path(friendship_id): Path<Uuid>,
 ) -> Result<Json<()>, SocialError> {
     // Verify that auth.id is part of this friendship
-    let friendship = sqlx::query_as::<_, Friendship>(
-        "SELECT * FROM friendships WHERE id = $1"
-    )
-    .bind(friendship_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(SocialError::FriendshipNotFound)?;
+    let friendship = sqlx::query_as::<_, Friendship>("SELECT * FROM friendships WHERE id = $1")
+        .bind(friendship_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(SocialError::FriendshipNotFound)?;
 
     // Only participants can remove
     if friendship.requester_id != auth.id && friendship.addressee_id != auth.id {

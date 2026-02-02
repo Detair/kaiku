@@ -4,10 +4,7 @@
 
 use axum::{extract::State, http::StatusCode, Json};
 
-use crate::{
-    auth::AuthUser,
-    db,
-};
+use crate::{auth::AuthUser, db};
 
 use super::AppState;
 

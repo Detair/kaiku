@@ -4,7 +4,9 @@ use argon2::{
 };
 
 fn main() {
-    let password = std::env::args().nth(1).expect("Usage: hash_password <password>");
+    let password = std::env::args()
+        .nth(1)
+        .expect("Usage: hash_password <password>");
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     let hash = argon2

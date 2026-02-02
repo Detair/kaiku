@@ -275,12 +275,11 @@ pub async fn get_sessions(
     set_rls_context(&state.db, auth.id).await?;
 
     // Get total count
-    let total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM connection_sessions WHERE user_id = $1",
-    )
-    .bind(auth.id)
-    .fetch_one(&state.db)
-    .await?;
+    let total: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM connection_sessions WHERE user_id = $1")
+            .bind(auth.id)
+            .fetch_one(&state.db)
+            .await?;
 
     // Get sessions with channel and guild names
     let sessions = sqlx::query_as::<_, SessionSummary>(
@@ -355,12 +354,11 @@ pub async fn get_session_detail(
     .ok_or(ConnectivityError::SessionNotFound)?;
 
     // Count metrics for this session
-    let metric_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM connection_metrics WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_one(&state.db)
-    .await?;
+    let metric_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM connection_metrics WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(&state.db)
+            .await?;
 
     const MAX_POINTS: i64 = 200;
     let downsampled = metric_count > MAX_POINTS;

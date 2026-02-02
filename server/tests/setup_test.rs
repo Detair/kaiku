@@ -63,13 +63,12 @@ async fn test_first_user_detection_works() {
         .expect("Failed to grant admin");
 
     // Verify user is system admin
-    let is_admin: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM system_admins WHERE user_id = $1)"
-    )
-    .bind(user.id)
-    .fetch_one(&mut *tx)
-    .await
-    .expect("Failed to check admin status");
+    let is_admin: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_admins WHERE user_id = $1)")
+            .bind(user.id)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("Failed to check admin status");
 
     assert!(is_admin, "First user should be granted admin permissions");
 
@@ -99,7 +98,9 @@ async fn test_setup_initially_incomplete() {
     // which is a valid state for a fresh install where users were added after the migration.
     // The migration only marks setup_complete=true if users existed AT THE TIME the migration ran.
     // Therefore, we can't assert setup_complete==true just because users exist now.
-    println!("✅ Setup status check passed (users: {user_count}, setup_complete: {setup_complete})");
+    println!(
+        "✅ Setup status check passed (users: {user_count}, setup_complete: {setup_complete})"
+    );
 }
 
 /// Test server config CRUD operations.
@@ -175,7 +176,7 @@ async fn test_mark_setup_complete() {
 
     // Get current setup status within transaction
     let initial_status_value = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete'"
+        "SELECT value FROM server_config WHERE key = 'setup_complete'",
     )
     .fetch_one(&mut *tx)
     .await
@@ -210,7 +211,7 @@ async fn test_mark_setup_complete() {
     sqlx::query(
         "UPDATE server_config
          SET value = 'true'::jsonb, updated_by = $1, updated_at = NOW()
-         WHERE key = 'setup_complete'"
+         WHERE key = 'setup_complete'",
     )
     .bind(test_user.id)
     .execute(&mut *tx)
@@ -219,7 +220,7 @@ async fn test_mark_setup_complete() {
 
     // Verify setup is now complete within transaction
     let final_status_value = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete'"
+        "SELECT value FROM server_config WHERE key = 'setup_complete'",
     )
     .fetch_one(&mut *tx)
     .await
@@ -253,7 +254,7 @@ async fn test_setup_complete_lock_serialization() {
     // Test the actual locking pattern used in production (handlers.rs:225-237)
     // This acquires a row-level lock on the setup_complete config row
     let _lock = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
+        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE",
     )
     .fetch_one(&mut *tx)
     .await
@@ -271,7 +272,7 @@ async fn test_setup_complete_lock_serialization() {
 
     // Verify we can still do other operations while holding the lock
     let setup_value = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete'"
+        "SELECT value FROM server_config WHERE key = 'setup_complete'",
     )
     .fetch_one(&mut *tx)
     .await
@@ -325,7 +326,7 @@ async fn test_config_validation() {
     let empty_name_result = sqlx::query(
         "UPDATE server_config
          SET value = $1, updated_by = $2
-         WHERE key = 'server_name'"
+         WHERE key = 'server_name'",
     )
     .bind(serde_json::json!(""))
     .bind(test_user.id)
@@ -342,7 +343,7 @@ async fn test_config_validation() {
     let long_name_result = sqlx::query(
         "UPDATE server_config
          SET value = $1, updated_by = $2
-         WHERE key = 'server_name'"
+         WHERE key = 'server_name'",
     )
     .bind(serde_json::json!(long_name))
     .bind(test_user.id)
@@ -358,7 +359,7 @@ async fn test_config_validation() {
     let invalid_policy_result = sqlx::query(
         "UPDATE server_config
          SET value = $1, updated_by = $2
-         WHERE key = 'registration_policy'"
+         WHERE key = 'registration_policy'",
     )
     .bind(serde_json::json!("invalid_policy"))
     .bind(test_user.id)
@@ -374,7 +375,7 @@ async fn test_config_validation() {
     let invalid_url_result = sqlx::query(
         "UPDATE server_config
          SET value = $1, updated_by = $2
-         WHERE key = 'terms_url'"
+         WHERE key = 'terms_url'",
     )
     .bind(serde_json::json!("not-a-valid-url"))
     .bind(test_user.id)
@@ -418,7 +419,7 @@ async fn test_second_user_not_admin() {
     // Create first user
     sqlx::query(
         "INSERT INTO users (username, display_name, password_hash, auth_method)
-         VALUES ($1, 'User 1', 'hash', 'local')"
+         VALUES ($1, 'User 1', 'hash', 'local')",
     )
     .bind(&first_username)
     .execute(&mut *tx)

@@ -184,10 +184,12 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str) -> TestUser {
 #[allow(dead_code)]
 async fn cleanup_test_user(pool: &sqlx::PgPool, user_id: Uuid) {
     // Delete in correct order due to foreign key constraints
-    let _ = sqlx::query("DELETE FROM prekeys WHERE device_id IN (SELECT id FROM user_devices WHERE user_id = $1)")
-        .bind(user_id)
-        .execute(pool)
-        .await;
+    let _ = sqlx::query(
+        "DELETE FROM prekeys WHERE device_id IN (SELECT id FROM user_devices WHERE user_id = $1)",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await;
     let _ = sqlx::query("DELETE FROM user_devices WHERE user_id = $1")
         .bind(user_id)
         .execute(pool)
@@ -223,7 +225,10 @@ fn generate_mock_identity_keys() -> (String, String) {
         *byte = ((seed >> ((i + 1) % 8)) & 0xFF) as u8;
     }
 
-    (STANDARD.encode(ed25519_bytes), STANDARD.encode(curve25519_bytes))
+    (
+        STANDARD.encode(ed25519_bytes),
+        STANDARD.encode(curve25519_bytes),
+    )
 }
 
 /// Helper to generate mock prekeys.
@@ -324,7 +329,10 @@ async fn test_device_upsert_on_same_identity_key() {
     .expect("Second insert should succeed (upsert)");
 
     // Should return the same device ID
-    assert_eq!(device_id1, device_id2, "Upsert should return same device ID");
+    assert_eq!(
+        device_id1, device_id2,
+        "Upsert should return same device ID"
+    );
 
     // Should only have one device
     let device_count: (i64,) =
@@ -334,7 +342,10 @@ async fn test_device_upsert_on_same_identity_key() {
             .await
             .expect("Query should succeed");
 
-    assert_eq!(device_count.0, 1, "Should only have one device after upsert");
+    assert_eq!(
+        device_count.0, 1,
+        "Should only have one device after upsert"
+    );
 
     // Cleanup
     cleanup_test_user(&pool, user.id).await;
@@ -430,15 +441,13 @@ async fn test_prekey_claim_single() {
     // Upload prekeys
     let prekeys = generate_mock_prekeys(5);
     for (key_id, public_key) in &prekeys {
-        sqlx::query(
-            "INSERT INTO prekeys (device_id, key_id, public_key) VALUES ($1, $2, $3)",
-        )
-        .bind(device_id)
-        .bind(key_id)
-        .bind(public_key)
-        .execute(&pool)
-        .await
-        .expect("Prekey insert should succeed");
+        sqlx::query("INSERT INTO prekeys (device_id, key_id, public_key) VALUES ($1, $2, $3)")
+            .bind(device_id)
+            .bind(key_id)
+            .bind(public_key)
+            .execute(&pool)
+            .await
+            .expect("Prekey insert should succeed");
     }
 
     // Claim a prekey
@@ -463,16 +472,18 @@ async fn test_prekey_claim_single() {
     assert!(claimed.is_some(), "Should claim a prekey");
 
     let (key_id, _public_key) = claimed.unwrap();
-    assert_eq!(key_id, "prekey_0", "Should claim first prekey (ordered by created_at)");
+    assert_eq!(
+        key_id, "prekey_0",
+        "Should claim first prekey (ordered by created_at)"
+    );
 
     // Verify prekey is now claimed
-    let unclaimed_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM prekeys WHERE device_id = $1 AND claimed_at IS NULL",
-    )
-    .bind(device_id)
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let unclaimed_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM prekeys WHERE device_id = $1 AND claimed_at IS NULL")
+            .bind(device_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(unclaimed_count.0, 4, "Should have 4 unclaimed prekeys left");
 
@@ -573,7 +584,11 @@ async fn test_prekey_duplicate_upload_ignored() {
     .await
     .expect("First insert should succeed");
 
-    assert_eq!(result1.rows_affected(), 1, "First insert should affect 1 row");
+    assert_eq!(
+        result1.rows_affected(),
+        1,
+        "First insert should affect 1 row"
+    );
 
     // Upload same prekey again (should be ignored)
     let result2 = sqlx::query(
@@ -642,12 +657,13 @@ async fn test_key_backup_upload_and_retrieve() {
     .expect("Backup insert should succeed");
 
     // Retrieve backup
-    let backup: Option<(Vec<u8>, Vec<u8>, Vec<u8>, i32)> =
-        sqlx::query_as("SELECT salt, nonce, ciphertext, version FROM key_backups WHERE user_id = $1")
-            .bind(user.id)
-            .fetch_optional(&pool)
-            .await
-            .expect("Query should succeed");
+    let backup: Option<(Vec<u8>, Vec<u8>, Vec<u8>, i32)> = sqlx::query_as(
+        "SELECT salt, nonce, ciphertext, version FROM key_backups WHERE user_id = $1",
+    )
+    .bind(user.id)
+    .fetch_optional(&pool)
+    .await
+    .expect("Query should succeed");
 
     assert!(backup.is_some(), "Backup should exist");
 
@@ -899,13 +915,12 @@ async fn test_concurrent_prekey_claims_unique() {
     );
 
     // No unclaimed prekeys should remain
-    let unclaimed_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM prekeys WHERE device_id = $1 AND claimed_at IS NULL",
-    )
-    .bind(device_id)
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let unclaimed_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM prekeys WHERE device_id = $1 AND claimed_at IS NULL")
+            .bind(device_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(unclaimed_count.0, 0, "All prekeys should be claimed");
 

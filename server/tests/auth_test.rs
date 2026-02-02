@@ -48,7 +48,10 @@ fn test_password_hash_produces_unique_hashes() {
     let hash2 = hash_password(password).expect("Hashing should succeed");
 
     // Same password should produce different hashes (due to salt)
-    assert_ne!(hash1, hash2, "Argon2 should produce unique hashes with different salts");
+    assert_ne!(
+        hash1, hash2,
+        "Argon2 should produce unique hashes with different salts"
+    );
 
     // Both should verify correctly
     assert!(verify_password(password, &hash1).unwrap());
@@ -309,15 +312,13 @@ async fn test_expired_session_not_found() {
     let expires_at = chrono::Utc::now() - chrono::Duration::hours(1); // Expired 1 hour ago
 
     // Directly insert expired session (bypassing normal creation)
-    sqlx::query(
-        "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
-    )
-    .bind(user.id)
-    .bind(&token_hash)
-    .bind(expires_at)
-    .execute(&pool)
-    .await
-    .expect("Session insert should succeed");
+    sqlx::query("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
+        .bind(user.id)
+        .bind(&token_hash)
+        .bind(expires_at)
+        .execute(&pool)
+        .await
+        .expect("Session insert should succeed");
 
     // Lookup should NOT find expired session
     let found = vc_server::db::find_session_by_token_hash(&pool, &token_hash)

@@ -23,7 +23,10 @@ use crate::api::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/upload", post(handlers::upload_keys))
-        .route("/backup", get(handlers::get_backup).post(handlers::upload_backup))
+        .route(
+            "/backup",
+            get(handlers::get_backup).post(handlers::upload_backup),
+        )
         .route("/backup/status", get(handlers::get_backup_status))
         .route("/devices", get(handlers::get_own_devices))
 }

@@ -12,11 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use validator::Validate;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    db,
-};
+use crate::{api::AppState, auth::AuthUser, db};
 
 // ============================================================================
 // Error Types
@@ -49,22 +45,10 @@ impl IntoResponse for SetupError {
         }
 
         let (status, code) = match &self {
-            Self::SetupAlreadyComplete => (
-                StatusCode::FORBIDDEN,
-                "SETUP_ALREADY_COMPLETE",
-            ),
-            Self::Unauthorized => (
-                StatusCode::FORBIDDEN,
-                "FORBIDDEN",
-            ),
-            Self::Validation(_) => (
-                StatusCode::BAD_REQUEST,
-                "VALIDATION_ERROR",
-            ),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-            ),
+            Self::SetupAlreadyComplete => (StatusCode::FORBIDDEN, "SETUP_ALREADY_COMPLETE"),
+            Self::Unauthorized => (StatusCode::FORBIDDEN, "FORBIDDEN"),
+            Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
+            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };
 
         let message = self.to_string();
@@ -151,15 +135,17 @@ pub async fn get_config(
     }
 
     // Get server_name (must be string)
-    let server_name_value = db::get_config_value(&state.db, "server_name").await.map_err(|e| {
-        tracing::error!(
-            error = %e,
-            operation = "get_config_value",
-            key = "server_name",
-            "Database query failed in get_config handler"
-        );
-        SetupError::Database(e)
-    })?;
+    let server_name_value = db::get_config_value(&state.db, "server_name")
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                operation = "get_config_value",
+                key = "server_name",
+                "Database query failed in get_config handler"
+            );
+            SetupError::Database(e)
+        })?;
     let server_name = server_name_value
         .as_str()
         .ok_or_else(|| {
@@ -173,15 +159,17 @@ pub async fn get_config(
         .to_string();
 
     // Get registration_policy (must be string)
-    let policy_value = db::get_config_value(&state.db, "registration_policy").await.map_err(|e| {
-        tracing::error!(
-            error = %e,
-            operation = "get_config_value",
-            key = "registration_policy",
-            "Database query failed in get_config handler"
-        );
-        SetupError::Database(e)
-    })?;
+    let policy_value = db::get_config_value(&state.db, "registration_policy")
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                operation = "get_config_value",
+                key = "registration_policy",
+                "Database query failed in get_config handler"
+            );
+            SetupError::Database(e)
+        })?;
     let registration_policy = policy_value
         .as_str()
         .ok_or_else(|| {
@@ -195,49 +183,63 @@ pub async fn get_config(
         .to_string();
 
     // Get terms_url (optional string or null)
-    let terms_value = db::get_config_value(&state.db, "terms_url").await.map_err(|e| {
-        tracing::error!(
-            error = %e,
-            operation = "get_config_value",
-            key = "terms_url",
-            "Database query failed in get_config handler"
-        );
-        SetupError::Database(e)
-    })?;
+    let terms_value = db::get_config_value(&state.db, "terms_url")
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                operation = "get_config_value",
+                key = "terms_url",
+                "Database query failed in get_config handler"
+            );
+            SetupError::Database(e)
+        })?;
     let terms_url = if terms_value.is_null() {
         None
     } else {
-        Some(terms_value.as_str().ok_or_else(|| {
-            tracing::error!(
-                key = "terms_url",
-                actual_value = ?terms_value,
-                "Config value has wrong type (expected string or null)"
-            );
-            SetupError::Validation("Invalid terms_url type in database".to_string())
-        })?.to_string())
+        Some(
+            terms_value
+                .as_str()
+                .ok_or_else(|| {
+                    tracing::error!(
+                        key = "terms_url",
+                        actual_value = ?terms_value,
+                        "Config value has wrong type (expected string or null)"
+                    );
+                    SetupError::Validation("Invalid terms_url type in database".to_string())
+                })?
+                .to_string(),
+        )
     };
 
     // Get privacy_url (optional string or null)
-    let privacy_value = db::get_config_value(&state.db, "privacy_url").await.map_err(|e| {
-        tracing::error!(
-            error = %e,
-            operation = "get_config_value",
-            key = "privacy_url",
-            "Database query failed in get_config handler"
-        );
-        SetupError::Database(e)
-    })?;
+    let privacy_value = db::get_config_value(&state.db, "privacy_url")
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                operation = "get_config_value",
+                key = "privacy_url",
+                "Database query failed in get_config handler"
+            );
+            SetupError::Database(e)
+        })?;
     let privacy_url = if privacy_value.is_null() {
         None
     } else {
-        Some(privacy_value.as_str().ok_or_else(|| {
-            tracing::error!(
-                key = "privacy_url",
-                actual_value = ?privacy_value,
-                "Config value has wrong type (expected string or null)"
-            );
-            SetupError::Validation("Invalid privacy_url type in database".to_string())
-        })?.to_string())
+        Some(
+            privacy_value
+                .as_str()
+                .ok_or_else(|| {
+                    tracing::error!(
+                        key = "privacy_url",
+                        actual_value = ?privacy_value,
+                        "Config value has wrong type (expected string or null)"
+                    );
+                    SetupError::Validation("Invalid privacy_url type in database".to_string())
+                })?
+                .to_string(),
+        )
     };
 
     Ok(Json(SetupConfigResponse {

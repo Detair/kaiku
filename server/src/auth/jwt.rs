@@ -131,11 +131,11 @@ pub fn validate_access_token(token: &str, public_key: &str) -> AuthResult<Claims
     let decoding_key = DecodingKey::from_ed_pem(&key_bytes)
         .map_err(|e| AuthError::Internal(format!("Invalid Ed25519 public key: {e}")))?;
 
-    let token_data = decode::<Claims>(token, &decoding_key, &validation).map_err(|e| match e.kind()
-    {
-        jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
-        _ => AuthError::InvalidToken,
-    })?;
+    let token_data =
+        decode::<Claims>(token, &decoding_key, &validation).map_err(|e| match e.kind() {
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
+            _ => AuthError::InvalidToken,
+        })?;
 
     // Ensure it's an access token
     if token_data.claims.typ != TokenType::Access {
@@ -158,11 +158,11 @@ pub fn validate_refresh_token(token: &str, public_key: &str) -> AuthResult<Claim
     let decoding_key = DecodingKey::from_ed_pem(&key_bytes)
         .map_err(|e| AuthError::Internal(format!("Invalid Ed25519 public key: {e}")))?;
 
-    let token_data = decode::<Claims>(token, &decoding_key, &validation).map_err(|e| match e.kind()
-    {
-        jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
-        _ => AuthError::InvalidToken,
-    })?;
+    let token_data =
+        decode::<Claims>(token, &decoding_key, &validation).map_err(|e| match e.kind() {
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
+            _ => AuthError::InvalidToken,
+        })?;
 
     // Ensure it's a refresh token
     if token_data.claims.typ != TokenType::Refresh {
