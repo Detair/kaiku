@@ -17,10 +17,6 @@ ignore = []
 # Licenses - Only allow permissive licenses
 # =============================================================================
 [licenses]
-unlicensed = "deny"
-copyleft = "deny"
-allow-osi-fsf-free = "neither"
-default = "deny"
 confidence-threshold = 0.93
 
 allow = [
@@ -36,21 +32,7 @@ allow = [
     "Zlib",
     "Unicode-DFS-2016",
     "MPL-2.0",
-]
-
-deny = [
-    "GPL-2.0",
-    "GPL-2.0-only",
-    "GPL-2.0-or-later",
-    "GPL-3.0",
-    "GPL-3.0-only",
-    "GPL-3.0-or-later",
-    "AGPL-3.0",
-    "AGPL-3.0-only",
-    "AGPL-3.0-or-later",
-    "LGPL-2.0",
-    "LGPL-2.1",
-    "LGPL-3.0",
+    "OpenSSL",
 ]
 
 [[licenses.clarify]]
