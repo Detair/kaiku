@@ -316,16 +316,20 @@ pub async fn reset_bot_token(
     Path(app_id): Path<Uuid>,
     claims: Claims,
 ) -> Result<Json<BotTokenResponse>, (StatusCode, String)> {
-    // Check if application exists and user owns it
+    // Start transaction to prevent race conditions
+    let mut tx = pool.begin().await.map_err(BotError::Database)?;
+
+    // Check if application exists and user owns it (with lock to prevent TOCTOU)
     let app = sqlx::query!(
         r#"
         SELECT id, bot_user_id, owner_id
         FROM bot_applications
         WHERE id = $1
+        FOR UPDATE
         "#,
         app_id
     )
-    .fetch_optional(&pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(BotError::Database)?
     .ok_or_else(|| BotError::NotFound)?;
@@ -363,7 +367,7 @@ pub async fn reset_bot_token(
         })?
         .to_string();
 
-    // Update token_hash
+    // Update token_hash within transaction
     sqlx::query!(
         r#"
         UPDATE bot_applications
@@ -373,9 +377,11 @@ pub async fn reset_bot_token(
         token_hash,
         app_id
     )
-    .execute(&pool)
+    .execute(&mut *tx)
     .await
     .map_err(BotError::Database)?;
+
+    tx.commit().await.map_err(BotError::Database)?;
 
     Ok(Json(BotTokenResponse { token, bot_user_id }))
 }

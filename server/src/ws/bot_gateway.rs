@@ -115,6 +115,7 @@ struct BotConnection {
 /// Authenticate bot token and return bot user ID and application ID.
 ///
 /// Token format: "bot_user_id.secret" to enable indexed lookup
+#[instrument(skip(pool, token))]
 async fn authenticate_bot_token(
     pool: &PgPool,
     token: &str,
@@ -314,6 +315,7 @@ async fn handle_bot_socket(
 }
 
 /// Handle events from bot.
+#[instrument(skip(state))]
 async fn handle_bot_event(
     event: BotClientEvent,
     state: &AppState,
@@ -335,6 +337,32 @@ async fn handle_bot_event(
                 channel_id = %channel_id,
                 "Bot sending message"
             );
+
+            // Check if bot has access to the channel (is a member)
+            let has_access = sqlx::query!(
+                r#"
+                SELECT 1 as "exists"
+                FROM channel_members
+                WHERE channel_id = $1 AND user_id = $2
+                "#,
+                channel_id,
+                bot_user_id
+            )
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| {
+                error!("Failed to check channel membership: {}", e);
+                format!("Failed to verify channel access: {}", e)
+            })?;
+
+            if has_access.is_none() {
+                warn!(
+                    bot_user_id = %bot_user_id,
+                    channel_id = %channel_id,
+                    "Bot attempted to send message to unauthorized channel"
+                );
+                return Err("Bot is not a member of this channel".to_string());
+            }
 
             // Create message as bot user
             let message = crate::db::create_message(
@@ -380,6 +408,11 @@ async fn handle_bot_event(
             content,
             ephemeral,
         } => {
+            // Validate content length
+            if content.is_empty() || content.len() > 4000 {
+                return Err("Response content must be 1-4000 characters".to_string());
+            }
+
             info!(
                 interaction_id = %interaction_id,
                 ephemeral = ephemeral,

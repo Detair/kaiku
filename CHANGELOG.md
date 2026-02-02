@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - API client library for bot operations (applications, commands, tokens)
   - Token display modal with copy functionality and security warnings
   - Application CRUD interface with validation
+  - Bot message sending with channel membership authorization
+  - Command response handling with Redis storage and 5-minute TTL
+  - Input validation for bot messages and command responses (1-4000 characters)
+
+### Changed
+- Bot token format changed to "bot_user_id.secret" for indexed authentication (breaking change for existing bots)
+
+### Security
+- Fixed O(n) authentication DoS vulnerability in bot token verification (now uses indexed lookup)
+- Fixed TOCTOU race condition in bot user creation (moved check inside transaction with FOR UPDATE lock)
+- Fixed TOCTOU race condition in bot token reset (added transaction with FOR UPDATE lock)
+- Replaced weak UUID salt with proper CSPRNG (SaltString + OsRng) for Argon2 password hashing
+- Added channel membership authorization for bot message creation
+- Added content length validation for command responses to prevent Redis exhaustion
 
 ### Changed
 - Documentation audit and cleanup
