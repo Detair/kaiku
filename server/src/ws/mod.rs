@@ -1068,6 +1068,19 @@ async fn handle_client_message(
                 return Ok(());
             }
 
+            // Check if user has VIEW_CHANNEL permission
+            if crate::permissions::require_channel_access(&state.db, user_id, channel_id)
+                .await
+                .is_err()
+            {
+                tx.send(ServerEvent::Error {
+                    code: "forbidden".to_string(),
+                    message: "You don't have permission to view this channel".to_string(),
+                })
+                .await?;
+                return Ok(());
+            }
+
             // Add to subscribed channels
             subscribed_channels.write().await.insert(channel_id);
 
