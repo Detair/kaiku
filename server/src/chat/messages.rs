@@ -254,10 +254,15 @@ pub async fn list(
     Path(channel_id): Path<Uuid>,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Json<CursorPaginatedResponse<MessageResponse>>, MessageError> {
-    // Check channel exists
+    // Check channel exists and user has VIEW_CHANNEL permission
     let _ = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(MessageError::ChannelNotFound)?;
+
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| MessageError::Forbidden)?;
 
     // Load combined block set for filtering
     let blocked_ids = block_cache::load_blocked_users(&state.db, &state.redis, auth_user.id)
@@ -377,6 +382,16 @@ pub async fn create(
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(MessageError::ChannelNotFound)?;
+
+    // Check if user has VIEW_CHANNEL permission
+    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| MessageError::Forbidden)?;
+
+    // For guild channels, also check SEND_MESSAGES permission
+    if channel.guild_id.is_some() && !ctx.has_permission(GuildPermissions::SEND_MESSAGES) {
+        return Err(MessageError::Forbidden);
+    }
 
     // For DM channels, check if any participant has blocked the other
     if channel.channel_type == db::ChannelType::Dm {
@@ -512,6 +527,20 @@ pub async fn update(
     body.validate()
         .map_err(|e| MessageError::Validation(e.to_string()))?;
 
+    // Load message to check permissions
+    let existing_message = db::find_message_by_id(&state.db, id)
+        .await?
+        .ok_or(MessageError::NotFound)?;
+
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(
+        &state.db,
+        auth_user.id,
+        existing_message.channel_id,
+    )
+    .await
+    .map_err(|_| MessageError::Forbidden)?;
+
     // Update message (only owner can edit)
     let message = db::update_message(&state.db, id, auth_user.id, &body.content)
         .await?
@@ -582,6 +611,11 @@ pub async fn delete(
     let message = db::find_message_by_id(&state.db, id)
         .await?
         .ok_or(MessageError::NotFound)?;
+
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(&state.db, auth_user.id, message.channel_id)
+        .await
+        .map_err(|_| MessageError::Forbidden)?;
 
     // Check ownership
     if message.user_id != auth_user.id {

@@ -193,8 +193,14 @@ pub async fn create(
 /// GET /api/channels/:id
 pub async fn get(
     State(state): State<AppState>,
+    auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ChannelResponse>, ChannelError> {
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(&state.db, auth.id, id)
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
+
     let channel = db::find_channel_by_id(&state.db, id)
         .await?
         .ok_or(ChannelError::NotFound)?;
@@ -206,7 +212,7 @@ pub async fn get(
 /// PATCH /api/channels/:id
 pub async fn update(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateChannelRequest>,
 ) -> Result<Json<ChannelResponse>, ChannelError> {
@@ -218,6 +224,15 @@ pub async fn update(
     let _ = db::find_channel_by_id(&state.db, id)
         .await?
         .ok_or(ChannelError::NotFound)?;
+
+    // Check if user has VIEW_CHANNEL and MANAGE_CHANNELS permissions
+    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
+
+    if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
+        return Err(ChannelError::Forbidden);
+    }
 
     let channel = db::update_channel(
         &state.db,
@@ -238,9 +253,18 @@ pub async fn update(
 /// DELETE /api/channels/:id
 pub async fn delete(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ChannelError> {
+    // Check if user has VIEW_CHANNEL and MANAGE_CHANNELS permissions
+    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
+
+    if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
+        return Err(ChannelError::Forbidden);
+    }
+
     let deleted = db::delete_channel(&state.db, id).await?;
 
     if deleted {

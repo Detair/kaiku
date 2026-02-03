@@ -143,6 +143,15 @@ pub enum PermissionError {
 
     /// Database error occurred.
     DatabaseError(String),
+
+    /// Channel not found.
+    NotFound,
+
+    /// Invalid channel (e.g., missing `guild_id` for guild channel).
+    InvalidChannel,
+
+    /// User lacks permission (generic forbidden).
+    Forbidden,
 }
 
 impl std::fmt::Display for PermissionError {
@@ -166,6 +175,9 @@ impl std::fmt::Display for PermissionError {
             }
             Self::NotSystemAdmin => write!(f, "User is not a system admin"),
             Self::DatabaseError(msg) => write!(f, "Database error: {msg}"),
+            Self::NotFound => write!(f, "Channel not found"),
+            Self::InvalidChannel => write!(f, "Invalid channel"),
+            Self::Forbidden => write!(f, "Access forbidden"),
         }
     }
 }
@@ -388,6 +400,15 @@ mod tests {
         let db_error = PermissionError::DatabaseError("connection refused".to_string());
         assert!(db_error.to_string().contains("Database error"));
         assert!(db_error.to_string().contains("connection refused"));
+
+        let not_found = PermissionError::NotFound;
+        assert!(not_found.to_string().contains("not found"));
+
+        let invalid = PermissionError::InvalidChannel;
+        assert!(invalid.to_string().contains("Invalid channel"));
+
+        let forbidden = PermissionError::Forbidden;
+        assert!(forbidden.to_string().contains("forbidden"));
     }
 
     #[test]

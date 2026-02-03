@@ -104,6 +104,15 @@ async fn handle_join(
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
 
+    // Check if user has VIEW_CHANNEL and VOICE_CONNECT permissions
+    let ctx = crate::permissions::require_channel_access(pool, user_id, channel_id)
+        .await
+        .map_err(|_e: crate::permissions::PermissionError| VoiceError::Unauthorized)?;
+
+    if !ctx.has_permission(crate::permissions::GuildPermissions::VOICE_CONNECT) {
+        return Err(VoiceError::Unauthorized);
+    }
+
     sfu.check_rate_limit(user_id).await?;
 
     let user = sqlx::query("SELECT username, display_name FROM users WHERE id = $1")
@@ -230,6 +239,11 @@ async fn handle_leave(
     channel_id: Uuid,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User leaving voice channel");
+
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(pool, user_id, channel_id)
+        .await
+        .map_err(|_e: crate::permissions::PermissionError| VoiceError::Unauthorized)?;
 
     let room = sfu
         .get_room(channel_id)
@@ -495,7 +509,7 @@ const DEFAULT_MAX_SCREEN_SHARES: u32 = 2;
 #[allow(clippy::too_many_arguments)]
 async fn handle_screen_share_start(
     sfu: &Arc<SfuServer>,
-    _pool: &PgPool, // Will be used for channel settings lookup
+    pool: &PgPool,
     redis: &Client,
     user_id: Uuid,
     channel_id: Uuid,
@@ -504,6 +518,15 @@ async fn handle_screen_share_start(
     source_label: &str,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, quality = ?quality, "User starting screen share");
+
+    // Check if user has VIEW_CHANNEL and SCREEN_SHARE permissions
+    let ctx = crate::permissions::require_channel_access(pool, user_id, channel_id)
+        .await
+        .map_err(|_e: crate::permissions::PermissionError| VoiceError::Unauthorized)?;
+
+    if !ctx.has_permission(crate::permissions::GuildPermissions::SCREEN_SHARE) {
+        return Err(VoiceError::Unauthorized);
+    }
 
     // Validate source label
     if let Err(e) = validate_source_label(source_label) {

@@ -477,6 +477,7 @@ This roadmap outlines the development path from the current prototype to a produ
     - [ ] **Frontend:** Create global search UI with multi-guild/DM scope
     - [ ] **Frontend:** Add search syntax help tooltip (AND, OR, quotes, negation)
     - **Tech Debt:**
+      - [ ] Implement channel-level permission filtering (currently all guild members see all channels)
       - [ ] Add rate limiting to search endpoint (expensive queries need protection)
       - [ ] Add integration tests for search edge cases:
         - Empty queries, special characters (`@#$%^&*()`), very long queries (>1000 chars)
@@ -485,6 +486,7 @@ This roadmap outlines the development path from the current prototype to a produ
       - [ ] Add security tests:
         - Non-member search attempts, SQL injection via search query
         - XSS via malicious search result content
+        - Channel permission bypass attempts (when private channels are implemented)
       - [ ] Add search query analytics logging for UX insights
       - [ ] Monitor and optimize search performance at scale
   - **Bulk Read Management:**

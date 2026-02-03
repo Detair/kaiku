@@ -52,6 +52,8 @@ pub enum ReactionsError {
     ChannelNotFound,
     #[error("Invalid emoji")]
     InvalidEmoji,
+    #[error("Forbidden")]
+    Forbidden,
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -70,6 +72,7 @@ impl IntoResponse for ReactionsError {
                 "Channel not found",
             ),
             Self::InvalidEmoji => (StatusCode::BAD_REQUEST, "INVALID_EMOJI", "Invalid emoji"),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Forbidden"),
             Self::Database(err) => {
                 tracing::error!("Database error: {}", err);
                 (
@@ -108,6 +111,11 @@ pub async fn add_reaction(
     let _ = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ReactionsError::ChannelNotFound)?;
+
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| ReactionsError::Forbidden)?;
 
     // Check message exists and belongs to channel
     let message = db::find_message_by_id(&state.db, message_id)
@@ -182,6 +190,11 @@ pub async fn remove_reaction(
         .await?
         .ok_or(ReactionsError::ChannelNotFound)?;
 
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| ReactionsError::Forbidden)?;
+
     // Check message exists and belongs to channel
     let message = db::find_message_by_id(&state.db, message_id)
         .await?
@@ -233,6 +246,11 @@ pub async fn get_reactions(
     let _ = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ReactionsError::ChannelNotFound)?;
+
+    // Check if user has VIEW_CHANNEL permission
+    crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| ReactionsError::Forbidden)?;
 
     // Check message exists and belongs to channel
     let message = db::find_message_by_id(&state.db, message_id)

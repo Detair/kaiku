@@ -503,7 +503,18 @@ pub async fn list_channels(
         return Err(GuildError::Forbidden);
     }
 
-    let channels = db::get_guild_channels(&state.db, guild_id).await?;
+    let all_channels = db::get_guild_channels(&state.db, guild_id).await?;
+
+    // Filter channels by VIEW_CHANNEL permission
+    let mut channels = Vec::new();
+    for channel in all_channels {
+        if crate::permissions::require_channel_access(&state.db, auth.id, channel.id)
+            .await
+            .is_ok()
+        {
+            channels.push(channel);
+        }
+    }
 
     // Collect text channel IDs for batched unread count query
     let text_channel_ids: Vec<Uuid> = channels

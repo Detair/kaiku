@@ -147,15 +147,49 @@ pub async fn search_messages(
         return Err(SearchError::NotMember);
     }
 
+    // Get all channel IDs in this guild and filter by VIEW_CHANNEL permission
+    let guild_channels = db::get_guild_channels(&state.db, guild_id).await?;
+
+    // Filter channels by VIEW_CHANNEL permission
+    let mut accessible_channel_ids: Vec<Uuid> = Vec::new();
+    for channel in guild_channels {
+        // Check if user has VIEW_CHANNEL permission for this channel
+        if crate::permissions::require_channel_access(&state.db, auth.id, channel.id)
+            .await
+            .is_ok()
+        {
+            accessible_channel_ids.push(channel.id);
+        }
+    }
+
+    // If no channels, return empty results
+    if accessible_channel_ids.is_empty() {
+        return Ok(Json(SearchResponse {
+            results: vec![],
+            total: 0,
+            limit: query.limit,
+            offset: query.offset,
+        }));
+    }
+
     // Clamp limit
     let limit = query.limit.clamp(1, 100);
     let offset = query.offset.max(0);
 
-    // Get total count
-    let total = db::count_search_messages(&state.db, guild_id, search_term).await?;
+    // Get total count (filtered by accessible channels)
+    let total =
+        db::count_search_messages_in_channels(&state.db, &accessible_channel_ids, search_term)
+            .await?;
 
-    // Search messages
-    let messages = db::search_messages(&state.db, guild_id, search_term, limit, offset).await?;
+    // Search messages (filtered by accessible channels)
+    let messages = db::search_messages_in_channels(
+        &state.db,
+        &accessible_channel_ids,
+        search_term,
+        limit,
+        offset,
+    )
+    .await?;
 
     // Get user IDs and channel IDs for bulk lookup
     let user_ids: Vec<Uuid> = messages.iter().map(|m| m.user_id).collect();

@@ -81,6 +81,10 @@ bitflags! {
         // === Mentions (bit 23) ===
         /// Permission to mention @everyone and @here
         const MENTION_EVERYONE   = 1 << 23;
+
+        // === Channel Visibility (bit 24) ===
+        /// Permission to view a channel and read its message history
+        const VIEW_CHANNEL       = 1 << 24;
     }
 }
 
@@ -270,6 +274,11 @@ mod tests {
     #[test]
     fn test_mention_everyone_permission_bits() {
         assert_eq!(GuildPermissions::MENTION_EVERYONE.bits(), 1 << 23);
+    }
+
+    #[test]
+    fn test_view_channel_permission_bits() {
+        assert_eq!(GuildPermissions::VIEW_CHANNEL.bits(), 1 << 24);
     }
 
     // === Preset Tests ===
@@ -595,6 +604,7 @@ mod tests {
             GuildPermissions::MANAGE_PAGES,
             GuildPermissions::SCREEN_SHARE,
             GuildPermissions::MENTION_EVERYONE,
+            GuildPermissions::VIEW_CHANNEL,
         ];
 
         // Check that combining all equals the sum of individual bits

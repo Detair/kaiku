@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Channel-level permission system (VIEW_CHANNEL)
+  - New VIEW_CHANNEL permission bit (bit 24) controls channel visibility and access
+  - Users must have VIEW_CHANNEL to see channels in lists, read messages, or interact with channels
+  - Permission checks integrated across all major endpoints (22+ endpoints):
+    - Search: Filters channels by VIEW_CHANNEL before searching messages
+    - Channel retrieval: GET /api/channels/:id requires VIEW_CHANNEL
+    - Message operations: List, create, edit, delete messages all require VIEW_CHANNEL
+    - Reactions: Add, remove, and list reactions require VIEW_CHANNEL
+    - Typing indicators: Both start and stop typing require VIEW_CHANNEL
+    - Voice operations: Join requires VOICE_CONNECT, leave/mute require VIEW_CHANNEL
+    - Screen sharing: Start requires SCREEN_SHARE permission
+    - Favorites: Add/remove favorites requires VIEW_CHANNEL
+  - Message sending also validates SEND_MESSAGES permission for guild channels
+  - Voice channel join validates both VIEW_CHANNEL and VOICE_CONNECT permissions
+  - Database migration adds VIEW_CHANNEL to all existing roles for backward compatibility
+  - Channel permission overrides (allow/deny) fully supported for granular access control
+  - DM channels remain accessible only to participants (no guild permissions apply)
+  - Guild owners bypass all channel-level restrictions
+  - Comprehensive integration tests (18 tests covering all permission scenarios)
+  - Detailed documentation with mermaid diagrams (docs/features/channel-permissions.md)
+
 ### Changed
 - Documentation audit and cleanup
   - Updated all version numbers in standards.md to match actual dependencies
@@ -85,6 +107,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Suppress false-positive `missing_const_for_fn` lint in vc-crypto
   - Fix `many_single_char_names` in BGRA→I420 color conversion
   - Remove unnecessary raw string hashes in SQL queries
+
+### Security
+- Fixed channel permission bypass in favorites endpoint
+  - Add favorite (POST /api/me/favorites/:channel_id) now validates VIEW_CHANNEL permission
+  - Previously only checked guild membership, allowing users to favorite channels they couldn't view
+  - Fixes potential information disclosure where channel existence could be inferred without proper access
 
 ### Changed
 - Upgraded vite-plugin-solid to 2.11.10 for vitest 4 compatibility

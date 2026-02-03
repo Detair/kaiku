@@ -253,10 +253,15 @@ pub async fn add_favorite(
         return Err(FavoritesError::ChannelNotFound); // Don't leak existence
     }
 
-    // 4. Transaction for atomic insert
+    // 4. Verify user has VIEW_CHANNEL permission for the channel
+    crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| FavoritesError::ChannelNotFound)?; // Generic error to avoid leaking permission details
+
+    // 5. Transaction for atomic insert
     let mut tx = state.db.begin().await?;
 
-    // 5. Insert guild entry (ON CONFLICT for race condition)
+    // 6. Insert guild entry (ON CONFLICT for race condition)
     sqlx::query(
         r"
         INSERT INTO user_favorite_guilds (user_id, guild_id, position)
@@ -269,7 +274,7 @@ pub async fn add_favorite(
     .execute(&mut *tx)
     .await?;
 
-    // 6. Insert channel entry
+    // 7. Insert channel entry
     let result = sqlx::query_as::<_, FavoriteRow>(
         r"
         INSERT INTO user_favorite_channels (user_id, channel_id, guild_id, position)

@@ -500,6 +500,53 @@ pub async fn delete_channel(pool: &PgPool, id: Uuid) -> sqlx::Result<bool> {
     Ok(result.rows_affected() > 0)
 }
 
+/// Get a channel by ID (alias for `find_channel_by_id`).
+///
+/// This is a convenience wrapper for use in permission checks.
+pub async fn get_channel_by_id(pool: &PgPool, channel_id: Uuid) -> sqlx::Result<Option<Channel>> {
+    find_channel_by_id(pool, channel_id).await
+}
+
+/// Check if a user is a participant in a DM channel.
+pub async fn is_dm_participant(
+    pool: &PgPool,
+    channel_id: Uuid,
+    user_id: Uuid,
+) -> sqlx::Result<bool> {
+    let result: Option<(bool,)> = sqlx::query_as(
+        r"
+        SELECT EXISTS(
+            SELECT 1
+            FROM dm_participants
+            WHERE channel_id = $1 AND user_id = $2
+        )
+        ",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(result.map(|(exists,)| exists).unwrap_or(false))
+}
+
+/// Get all permission overrides for a channel.
+pub async fn get_channel_overrides(
+    pool: &PgPool,
+    channel_id: Uuid,
+) -> sqlx::Result<Vec<crate::permissions::models::ChannelOverride>> {
+    sqlx::query_as::<_, crate::permissions::models::ChannelOverride>(
+        r"
+        SELECT id, channel_id, role_id, allow_permissions, deny_permissions
+        FROM channel_overrides
+        WHERE channel_id = $1
+        ",
+    )
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await
+}
+
 // ============================================================================
 // Channel Member Queries
 // ============================================================================
@@ -726,28 +773,33 @@ pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool>
     Ok(result.rows_affected() > 0)
 }
 
-/// Search messages within a guild using `PostgreSQL` full-text search.
+/// Search messages within specific channels using `PostgreSQL` full-text search.
 /// Uses `websearch_to_tsquery` for user-friendly query syntax (supports AND, OR, quotes).
-pub async fn search_messages(
+///
+/// **Security:** Only searches in channels the user has access to (provided as `channel_ids`).
+pub async fn search_messages_in_channels(
     pool: &PgPool,
-    guild_id: Uuid,
+    channel_ids: &[Uuid],
     query: &str,
     limit: i64,
     offset: i64,
 ) -> sqlx::Result<Vec<Message>> {
+    if channel_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
     sqlx::query_as::<_, Message>(
         r"
         SELECT m.*
         FROM messages m
-        JOIN channels c ON m.channel_id = c.id
-        WHERE c.guild_id = $1
+        WHERE m.channel_id = ANY($1)
           AND m.deleted_at IS NULL
           AND m.content_search @@ websearch_to_tsquery('english', $2)
         ORDER BY m.created_at DESC
         LIMIT $3 OFFSET $4
         ",
     )
-    .bind(guild_id)
+    .bind(channel_ids)
     .bind(query)
     .bind(limit)
     .bind(offset)
@@ -755,23 +807,28 @@ pub async fn search_messages(
     .await
 }
 
-/// Count total search results for pagination.
-pub async fn count_search_messages(
+/// Count total search results in specific channels for pagination.
+///
+/// **Security:** Only counts messages in channels the user has access to (provided as `channel_ids`).
+pub async fn count_search_messages_in_channels(
     pool: &PgPool,
-    guild_id: Uuid,
+    channel_ids: &[Uuid],
     query: &str,
 ) -> sqlx::Result<i64> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+
     let result: (i64,) = sqlx::query_as(
         r"
         SELECT COUNT(*)
         FROM messages m
-        JOIN channels c ON m.channel_id = c.id
-        WHERE c.guild_id = $1
+        WHERE m.channel_id = ANY($1)
           AND m.deleted_at IS NULL
           AND m.content_search @@ websearch_to_tsquery('english', $2)
         ",
     )
-    .bind(guild_id)
+    .bind(channel_ids)
     .bind(query)
     .fetch_one(pool)
     .await?;

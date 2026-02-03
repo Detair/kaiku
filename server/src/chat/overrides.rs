@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
+use crate::permissions::{GuildPermissions, PermissionError};
 
 // ============================================================================
 // Error Type
@@ -96,23 +96,20 @@ pub async fn list_overrides(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<Vec<OverrideResponse>>, OverrideError> {
-    // Get channel and its guild
-    let channel: Option<(Option<Uuid>,)> =
-        sqlx::query_as("SELECT guild_id FROM channels WHERE id = $1")
-            .bind(channel_id)
-            .fetch_optional(&state.db)
-            .await?;
-
-    let channel = channel.ok_or(OverrideError::ChannelNotFound)?;
-    let guild_id = channel.0.ok_or(OverrideError::ChannelNotFound)?;
-
-    // Check membership
-    let _ctx = require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::empty())
+    // Check if user has VIEW_CHANNEL and MANAGE_CHANNELS permissions
+    let ctx = crate::permissions::require_channel_access(&state.db, auth.id, channel_id)
         .await
         .map_err(|e| match e {
             PermissionError::NotGuildMember => OverrideError::NotMember,
+            PermissionError::NotFound => OverrideError::ChannelNotFound,
             other => OverrideError::Permission(other),
         })?;
+
+    if !ctx.has_permission(GuildPermissions::MANAGE_CHANNELS) {
+        return Err(OverrideError::Permission(
+            PermissionError::MissingPermission(GuildPermissions::MANAGE_CHANNELS),
+        ));
+    }
 
     let overrides = sqlx::query_as::<_, (Uuid, Uuid, Uuid, i64, i64)>(
         r"
@@ -149,7 +146,7 @@ pub async fn set_override(
     Path((channel_id, role_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<SetOverrideRequest>,
 ) -> Result<Json<OverrideResponse>, OverrideError> {
-    // Get channel and its guild
+    // Get channel to check guild_id
     let channel: Option<(Option<Uuid>,)> =
         sqlx::query_as("SELECT guild_id FROM channels WHERE id = $1")
             .bind(channel_id)
@@ -159,18 +156,20 @@ pub async fn set_override(
     let channel = channel.ok_or(OverrideError::ChannelNotFound)?;
     let guild_id = channel.0.ok_or(OverrideError::ChannelNotFound)?;
 
-    // Check permission
-    let ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_CHANNELS,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => OverrideError::NotMember,
-        other => OverrideError::Permission(other),
-    })?;
+    // Check if user has VIEW_CHANNEL and MANAGE_CHANNELS permissions
+    let ctx = crate::permissions::require_channel_access(&state.db, auth.id, channel_id)
+        .await
+        .map_err(|e| match e {
+            PermissionError::NotGuildMember => OverrideError::NotMember,
+            PermissionError::NotFound => OverrideError::ChannelNotFound,
+            other => OverrideError::Permission(other),
+        })?;
+
+    if !ctx.has_permission(GuildPermissions::MANAGE_CHANNELS) {
+        return Err(OverrideError::Permission(
+            PermissionError::MissingPermission(GuildPermissions::MANAGE_CHANNELS),
+        ));
+    }
 
     // Verify role belongs to this guild
     let role_exists: Option<(i32,)> =
@@ -232,28 +231,20 @@ pub async fn delete_override(
     auth: AuthUser,
     Path((channel_id, role_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, OverrideError> {
-    // Get channel and its guild
-    let channel: Option<(Option<Uuid>,)> =
-        sqlx::query_as("SELECT guild_id FROM channels WHERE id = $1")
-            .bind(channel_id)
-            .fetch_optional(&state.db)
-            .await?;
+    // Check if user has VIEW_CHANNEL and MANAGE_CHANNELS permissions
+    let ctx = crate::permissions::require_channel_access(&state.db, auth.id, channel_id)
+        .await
+        .map_err(|e| match e {
+            PermissionError::NotGuildMember => OverrideError::NotMember,
+            PermissionError::NotFound => OverrideError::ChannelNotFound,
+            other => OverrideError::Permission(other),
+        })?;
 
-    let channel = channel.ok_or(OverrideError::ChannelNotFound)?;
-    let guild_id = channel.0.ok_or(OverrideError::ChannelNotFound)?;
-
-    // Check permission
-    let _ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_CHANNELS,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => OverrideError::NotMember,
-        other => OverrideError::Permission(other),
-    })?;
+    if !ctx.has_permission(GuildPermissions::MANAGE_CHANNELS) {
+        return Err(OverrideError::Permission(
+            PermissionError::MissingPermission(GuildPermissions::MANAGE_CHANNELS),
+        ));
+    }
 
     let result =
         sqlx::query("DELETE FROM channel_overrides WHERE channel_id = $1 AND role_id = $2")

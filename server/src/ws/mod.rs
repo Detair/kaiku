@@ -1082,6 +1082,18 @@ async fn handle_client_message(
         }
 
         ClientEvent::Typing { channel_id } => {
+            // Check if user has VIEW_CHANNEL permission
+            let permission_result: Result<_, crate::permissions::PermissionError> =
+                crate::permissions::require_channel_access(&state.db, user_id, channel_id).await;
+
+            if permission_result.is_err() {
+                warn!(
+                    "User {} attempted to send typing indicator for channel {} without permission",
+                    user_id, channel_id
+                );
+                return Ok(()); // Silently ignore unauthorized typing indicator
+            }
+
             // Broadcast typing indicator
             broadcast_to_channel(
                 &state.redis,
@@ -1095,6 +1107,15 @@ async fn handle_client_message(
         }
 
         ClientEvent::StopTyping { channel_id } => {
+            // Check if user has VIEW_CHANNEL permission
+            let permission_result: Result<_, crate::permissions::PermissionError> =
+                crate::permissions::require_channel_access(&state.db, user_id, channel_id).await;
+
+            if permission_result.is_err() {
+                warn!("User {} attempted to send stop typing indicator for channel {} without permission", user_id, channel_id);
+                return Ok(()); // Silently ignore unauthorized stop typing indicator
+            }
+
             // Broadcast stop typing
             broadcast_to_channel(
                 &state.redis,

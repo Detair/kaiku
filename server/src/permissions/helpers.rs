@@ -185,6 +185,97 @@ pub async fn require_guild_permission(
     Ok(ctx)
 }
 
+/// Check if member can view a specific channel.
+/// Returns the member's permission context if authorized, or error if forbidden.
+///
+/// **Resolution order:**
+/// 1. Guild owner → full access
+/// 2. DM channels → always accessible to participants
+/// 3. Guild channels → `VIEW_CHANNEL` permission required
+///
+/// # Errors
+///
+/// Returns:
+/// - `PermissionError::NotFound` if channel doesn't exist
+/// - `PermissionError::InvalidChannel` if guild channel missing `guild_id`
+/// - `PermissionError::Forbidden` if user is not DM participant
+/// - `PermissionError::NotGuildMember` if user not in guild
+/// - `PermissionError::MissingPermission` if user lacks `VIEW_CHANNEL`
+/// - `PermissionError::DatabaseError` on database errors
+#[tracing::instrument(skip(pool))]
+pub async fn require_channel_access(
+    pool: &PgPool,
+    user_id: Uuid,
+    channel_id: Uuid,
+) -> Result<MemberPermissionContext, PermissionError> {
+    // Get channel info
+    let channel = crate::db::get_channel_by_id(pool, channel_id)
+        .await
+        .map_err(|e| PermissionError::DatabaseError(e.to_string()))?
+        .ok_or(PermissionError::NotFound)?;
+
+    // DM channels: check participation
+    if channel.channel_type == crate::db::ChannelType::Dm {
+        let is_participant = crate::db::is_dm_participant(pool, channel_id, user_id)
+            .await
+            .map_err(|e| PermissionError::DatabaseError(e.to_string()))?;
+
+        if !is_participant {
+            return Err(PermissionError::Forbidden);
+        }
+
+        // DM participants always have access
+        // Return a minimal context for DMs (no guild, no roles)
+        return Ok(MemberPermissionContext {
+            guild_owner_id: Uuid::nil(), // No owner for DMs
+            everyone_permissions: GuildPermissions::empty(),
+            member_roles: vec![],
+            computed_permissions: GuildPermissions::all(), // Full access to participant
+            highest_role_position: None,
+            is_owner: false,
+        });
+    }
+
+    // Guild channels: check VIEW_CHANNEL permission
+    let guild_id = channel.guild_id.ok_or(PermissionError::InvalidChannel)?;
+
+    let ctx = get_member_permission_context(pool, guild_id, user_id)
+        .await
+        .map_err(|e| PermissionError::DatabaseError(e.to_string()))?
+        .ok_or(PermissionError::NotGuildMember)?;
+
+    // Owner bypass
+    if ctx.is_owner {
+        return Ok(ctx);
+    }
+
+    // Get channel overrides
+    let overrides = crate::db::get_channel_overrides(pool, channel_id)
+        .await
+        .map_err(|e| PermissionError::DatabaseError(e.to_string()))?;
+
+    // Compute channel-specific permissions
+    let perms = compute_guild_permissions(
+        user_id,
+        ctx.guild_owner_id,
+        ctx.everyone_permissions,
+        &ctx.member_roles,
+        Some(&overrides),
+    );
+
+    if !perms.has(GuildPermissions::VIEW_CHANNEL) {
+        return Err(PermissionError::MissingPermission(
+            GuildPermissions::VIEW_CHANNEL,
+        ));
+    }
+
+    // Return context with updated permissions that include channel overrides
+    Ok(MemberPermissionContext {
+        computed_permissions: perms,
+        ..ctx
+    })
+}
+
 /// Internal struct for guild membership query.
 #[derive(Debug, sqlx::FromRow)]
 struct GuildInfo {
@@ -286,4 +377,44 @@ mod tests {
         };
         assert_eq!(ctx_with_roles.highest_role_position, Some(50));
     }
+
+    // === Tests for require_channel_access ===
+    // Note: These are integration tests that require a database connection.
+    // They should be run in server/tests/ with a test database.
+    //
+    // Test scenarios to implement:
+    //
+    // 1. test_require_channel_access_owner()
+    //    - Guild owner can view any channel
+    //
+    // 2. test_require_channel_access_allowed()
+    //    - User with VIEW_CHANNEL permission can access
+    //
+    // 3. test_require_channel_access_denied()
+    //    - User without VIEW_CHANNEL gets PermissionError::MissingPermission
+    //
+    // 4. test_require_channel_access_dm_participant()
+    //    - DM participant can access DM channel
+    //    - Returns context with full permissions
+    //
+    // 5. test_require_channel_access_dm_non_participant()
+    //    - Non-participant cannot access DM
+    //    - Gets PermissionError::Forbidden
+    //
+    // 6. test_require_channel_access_channel_override_deny()
+    //    - User with role permission but channel deny → Forbidden
+    //    - Channel overrides take precedence
+    //
+    // 7. test_require_channel_access_channel_override_allow()
+    //    - User without role permission but channel allow → Success
+    //    - Channel overrides grant access
+    //
+    // 8. test_require_channel_access_not_found()
+    //    - Non-existent channel returns PermissionError::NotFound
+    //
+    // 9. test_require_channel_access_invalid_channel()
+    //    - Guild channel without guild_id returns PermissionError::InvalidChannel
+    //
+    // 10. test_require_channel_access_not_guild_member()
+    //    - User not in guild gets PermissionError::NotGuildMember
 }
