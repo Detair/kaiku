@@ -150,3 +150,374 @@ async fn test_websocket_broadcast_flow() {
 
     println!("✅ WebSocket robustness test passed: Redis PubSub broadcast verified.");
 }
+
+/// Helper struct for WebSocket permission tests
+struct PermissionTestContext {
+    state: AppState,
+    db_pool: PgPool,
+    guild_id: uuid::Uuid,
+    channel: db::Channel,
+    owner: db::User,
+    user_no_perm: db::User,
+    user_with_perm: db::User,
+}
+
+impl PermissionTestContext {
+    /// Setup test environment with guild, roles, and users
+    async fn setup() -> Self {
+        use vc_server::permissions::GuildPermissions;
+
+        let config = Config::default_for_test();
+        let db_pool: PgPool = db::create_pool(&config.database_url)
+            .await
+            .expect("Failed to connect to DB");
+        let redis = db::create_redis_client(&config.redis_url)
+            .await
+            .expect("Failed to connect to Redis");
+
+        let sfu = vc_server::voice::SfuServer::new(Arc::new(config.clone()), None)
+            .expect("Failed to create SFU");
+
+        let state = AppState::new(
+            db_pool.clone(),
+            redis.clone(),
+            config.clone(),
+            None,
+            sfu,
+            None,
+            None,
+            None,
+        );
+
+        // Create test data with unique identifiers
+        let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+
+        // Create guild owner
+        let owner = db::create_user(
+            &db_pool,
+            &format!("owner_{test_id}"),
+            "Owner User",
+            None,
+            "hash",
+        )
+        .await
+        .expect("Create owner failed");
+
+        // Create test user WITHOUT VIEW_CHANNEL permission
+        let user_no_perm = db::create_user(
+            &db_pool,
+            &format!("user_no_perm_{test_id}"),
+            "No Perm User",
+            None,
+            "hash",
+        )
+        .await
+        .expect("Create user_no_perm failed");
+
+        // Create test user WITH VIEW_CHANNEL permission
+        let user_with_perm = db::create_user(
+            &db_pool,
+            &format!("user_with_perm_{test_id}"),
+            "With Perm User",
+            None,
+            "hash",
+        )
+        .await
+        .expect("Create user_with_perm failed");
+
+        // Create guild
+        let guild_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+            .bind(guild_id)
+            .bind(format!("Test Guild {test_id}"))
+            .bind(owner.id)
+            .execute(&db_pool)
+            .await
+            .expect("Create guild failed");
+
+        // Add users as guild members
+        for user_id in [owner.id, user_no_perm.id, user_with_perm.id] {
+            sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+                .bind(guild_id)
+                .bind(user_id)
+                .execute(&db_pool)
+                .await
+                .expect("Add guild member failed");
+        }
+
+        // Create @everyone role WITHOUT VIEW_CHANNEL permission
+        let everyone_role_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, '@everyone', 0, 0, true)",
+        )
+        .bind(everyone_role_id)
+        .bind(guild_id)
+        .execute(&db_pool)
+        .await
+        .expect("Create @everyone role failed");
+
+        // Assign @everyone role to all members
+        for user_id in [owner.id, user_no_perm.id, user_with_perm.id] {
+            sqlx::query(
+                "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)",
+            )
+            .bind(guild_id)
+            .bind(user_id)
+            .bind(everyone_role_id)
+            .execute(&db_pool)
+            .await
+            .expect("Assign @everyone role failed");
+        }
+
+        // Create special role WITH VIEW_CHANNEL permission
+        let special_role_id = uuid::Uuid::new_v4();
+        let view_channel_bit = GuildPermissions::VIEW_CHANNEL.bits() as i64;
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, 'Special', $3, 1, false)",
+        )
+        .bind(special_role_id)
+        .bind(guild_id)
+        .bind(view_channel_bit)
+        .execute(&db_pool)
+        .await
+        .expect("Create special role failed");
+
+        // Assign special role only to user_with_perm
+        sqlx::query(
+            "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)",
+        )
+        .bind(guild_id)
+        .bind(user_with_perm.id)
+        .bind(special_role_id)
+        .execute(&db_pool)
+        .await
+        .expect("Assign special role failed");
+
+        // Create channel in the guild
+        let channel = db::create_channel(
+            &db_pool,
+            &format!("test-channel-{test_id}"),
+            &db::ChannelType::Text,
+            None,
+            Some(guild_id),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Create channel failed");
+
+        Self {
+            state,
+            db_pool,
+            guild_id,
+            channel,
+            owner,
+            user_no_perm,
+            user_with_perm,
+        }
+    }
+
+    /// Cleanup test resources
+    async fn cleanup(self) {
+        // Cleanup in reverse dependency order
+        let _ = sqlx::query("DELETE FROM channels WHERE id = $1")
+            .bind(self.channel.id)
+            .execute(&self.db_pool)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM guild_member_roles WHERE guild_id = $1")
+            .bind(self.guild_id)
+            .execute(&self.db_pool)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM guild_roles WHERE guild_id = $1")
+            .bind(self.guild_id)
+            .execute(&self.db_pool)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM guild_members WHERE guild_id = $1")
+            .bind(self.guild_id)
+            .execute(&self.db_pool)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM guilds WHERE id = $1")
+            .bind(self.guild_id)
+            .execute(&self.db_pool)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(&[self.owner.id, self.user_no_perm.id, self.user_with_perm.id])
+            .execute(&self.db_pool)
+            .await;
+    }
+}
+
+/// Test that WebSocket Subscribe is denied without VIEW_CHANNEL permission
+#[tokio::test]
+async fn test_websocket_subscribe_denied_without_permission() {
+    use tokio::sync::mpsc;
+
+    let ctx = PermissionTestContext::setup().await;
+
+    let (tx, mut rx) = mpsc::channel(10);
+    let subscribed_channels =
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let mut activity_state = vc_server::ws::ActivityState::default();
+
+    let subscribe_event = serde_json::json!({
+        "type": "subscribe",
+        "channel_id": ctx.channel.id.to_string()
+    });
+
+    // Call handle_client_message
+    let result = vc_server::ws::handle_client_message(
+        &subscribe_event.to_string(),
+        ctx.user_no_perm.id,
+        &ctx.state,
+        &tx,
+        &subscribed_channels,
+        &admin_subscribed,
+        &mut activity_state,
+    )
+    .await;
+
+    assert!(result.is_ok(), "Handler should not crash");
+
+    // Check that user was NOT added to subscribed channels
+    let subscribed = subscribed_channels.read().await;
+    assert!(
+        !subscribed.contains(&ctx.channel.id),
+        "User without VIEW_CHANNEL should NOT be subscribed"
+    );
+
+    // Check that an error event was sent (1000ms timeout for CI robustness)
+    let event = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+        .await
+        .expect("Should receive error event")
+        .expect("Channel should not be closed");
+
+    match event {
+        ServerEvent::Error { code, message } => {
+            assert_eq!(code, "forbidden");
+            assert!(message.contains("permission"));
+        }
+        _ => panic!("Expected Error event, got {:?}", event),
+    }
+
+    ctx.cleanup().await;
+    println!("✅ WebSocket Subscribe denied without permission test passed.");
+}
+
+/// Test that WebSocket Subscribe is allowed with VIEW_CHANNEL permission
+#[tokio::test]
+async fn test_websocket_subscribe_allowed_with_permission() {
+    use tokio::sync::mpsc;
+
+    let ctx = PermissionTestContext::setup().await;
+
+    let (tx, mut rx) = mpsc::channel(10);
+    let subscribed_channels =
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let mut activity_state = vc_server::ws::ActivityState::default();
+
+    let subscribe_event = serde_json::json!({
+        "type": "subscribe",
+        "channel_id": ctx.channel.id.to_string()
+    });
+
+    let result = vc_server::ws::handle_client_message(
+        &subscribe_event.to_string(),
+        ctx.user_with_perm.id,
+        &ctx.state,
+        &tx,
+        &subscribed_channels,
+        &admin_subscribed,
+        &mut activity_state,
+    )
+    .await;
+
+    assert!(result.is_ok(), "Handler should succeed");
+
+    // Check that user WAS added to subscribed channels
+    let subscribed = subscribed_channels.read().await;
+    assert!(
+        subscribed.contains(&ctx.channel.id),
+        "User with VIEW_CHANNEL should be subscribed"
+    );
+
+    // Check that a success event was sent (1000ms timeout for CI robustness)
+    let event = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+        .await
+        .expect("Should receive subscribed event")
+        .expect("Channel should not be closed");
+
+    match event {
+        ServerEvent::Subscribed { channel_id } => {
+            assert_eq!(channel_id, ctx.channel.id);
+        }
+        _ => panic!("Expected Subscribed event, got {:?}", event),
+    }
+
+    ctx.cleanup().await;
+    println!("✅ WebSocket Subscribe allowed with permission test passed.");
+}
+
+/// Test that guild owner can subscribe (owner bypass)
+#[tokio::test]
+async fn test_websocket_subscribe_owner_bypass() {
+    use tokio::sync::mpsc;
+
+    let ctx = PermissionTestContext::setup().await;
+
+    let (tx, mut rx) = mpsc::channel(10);
+    let subscribed_channels =
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let mut activity_state = vc_server::ws::ActivityState::default();
+
+    let subscribe_event = serde_json::json!({
+        "type": "subscribe",
+        "channel_id": ctx.channel.id.to_string()
+    });
+
+    let result = vc_server::ws::handle_client_message(
+        &subscribe_event.to_string(),
+        ctx.owner.id,
+        &ctx.state,
+        &tx,
+        &subscribed_channels,
+        &admin_subscribed,
+        &mut activity_state,
+    )
+    .await;
+
+    assert!(result.is_ok(), "Handler should succeed for owner");
+
+    // Check that owner WAS added to subscribed channels
+    let subscribed = subscribed_channels.read().await;
+    assert!(
+        subscribed.contains(&ctx.channel.id),
+        "Guild owner should be able to subscribe"
+    );
+
+    // Check that a success event was sent (1000ms timeout for CI robustness)
+    let event = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+        .await
+        .expect("Should receive subscribed event")
+        .expect("Channel should not be closed");
+
+    match event {
+        ServerEvent::Subscribed { channel_id } => {
+            assert_eq!(channel_id, ctx.channel.id);
+        }
+        _ => panic!("Expected Subscribed event, got {:?}", event),
+    }
+
+    ctx.cleanup().await;
+    println!("✅ WebSocket Subscribe owner bypass test passed.");
+}

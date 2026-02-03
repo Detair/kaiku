@@ -45,7 +45,7 @@ const ACTIVITY_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// State for activity rate limiting and deduplication.
 #[derive(Default)]
-struct ActivityState {
+pub(crate) struct ActivityState {
     /// Last activity update timestamp.
     last_update: Option<Instant>,
     /// Last activity data for deduplication.
@@ -1038,7 +1038,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 }
 
 /// Handle a client message.
-async fn handle_client_message(
+pub(crate) async fn handle_client_message(
     text: &str,
     user_id: Uuid,
     state: &AppState,
