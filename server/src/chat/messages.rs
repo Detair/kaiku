@@ -691,8 +691,98 @@ mod tests {
         )
     }
 
+    /// Helper to create a guild with proper permissions for testing
+    async fn create_test_guild_with_permissions(
+        pool: &PgPool,
+        owner_id: Uuid,
+        permissions: i64,
+    ) -> Uuid {
+
+        // Create guild
+        let guild_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)"
+        )
+        .bind(guild_id)
+        .bind("Test Guild")
+        .bind(owner_id)
+        .execute(pool)
+        .await
+        .expect("Failed to create test guild");
+
+        // Add owner as member
+        sqlx::query(
+            "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)"
+        )
+        .bind(guild_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await
+        .expect("Failed to add guild member");
+
+        // Create @everyone role with specified permissions
+        let everyone_role_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, '@everyone', $3, 0, true)"
+        )
+        .bind(everyone_role_id)
+        .bind(guild_id)
+        .bind(permissions)
+        .execute(pool)
+        .await
+        .expect("Failed to create @everyone role");
+
+        // Assign @everyone role to owner
+        sqlx::query(
+            "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)"
+        )
+        .bind(guild_id)
+        .bind(owner_id)
+        .bind(everyone_role_id)
+        .execute(pool)
+        .await
+        .expect("Failed to assign role to member");
+
+        guild_id
+    }
+
+    /// Helper to add a user to an existing guild
+    async fn add_user_to_guild(pool: &PgPool, guild_id: Uuid, user_id: Uuid) {
+        // Add as guild member
+        sqlx::query(
+            "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)"
+        )
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("Failed to add guild member");
+
+        // Get @everyone role
+        let everyone_role: (Uuid,) = sqlx::query_as(
+            "SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true"
+        )
+        .bind(guild_id)
+        .fetch_one(pool)
+        .await
+        .expect("Failed to get @everyone role");
+
+        // Assign @everyone role
+        sqlx::query(
+            "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)"
+        )
+        .bind(guild_id)
+        .bind(user_id)
+        .bind(everyone_role.0)
+        .execute(pool)
+        .await
+        .expect("Failed to assign role to member");
+    }
+
     #[sqlx::test]
     async fn test_list_messages_with_multiple_users(pool: PgPool) {
+        use crate::permissions::GuildPermissions;
         let state = create_test_state(pool.clone()).await;
 
         // Create two users
@@ -704,13 +794,24 @@ mod tests {
             .await
             .expect("Failed to create user2");
 
+        // Create guild with VIEW_CHANNEL permission (user1 as owner)
+        let guild_id = create_test_guild_with_permissions(
+            &pool,
+            user1.id,
+            GuildPermissions::VIEW_CHANNEL.bits() as i64,
+        )
+        .await;
+
+        // Add user2 to the guild
+        add_user_to_guild(&pool, guild_id, user2.id).await;
+
         // Create a channel
         let channel = db::create_channel(
             &pool,
             "test-channel",
             &db::ChannelType::Text,
             None,
-            None,
+            Some(guild_id),
             None,
             None,
             None,
@@ -799,6 +900,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_list_messages_with_deleted_user(pool: PgPool) {
+        use crate::permissions::GuildPermissions;
         let state = create_test_state(pool.clone()).await;
 
         // Create user
@@ -806,13 +908,21 @@ mod tests {
             .await
             .expect("Failed to create user");
 
+        // Create guild with VIEW_CHANNEL permission
+        let guild_id = create_test_guild_with_permissions(
+            &pool,
+            user.id,
+            GuildPermissions::VIEW_CHANNEL.bits() as i64,
+        )
+        .await;
+
         // Create channel
         let channel = db::create_channel(
             &pool,
             "test-channel",
             &db::ChannelType::Text,
             None,
-            None,
+            Some(guild_id),
             None,
             None,
             None,
@@ -865,6 +975,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_list_messages_pagination(pool: PgPool) {
+        use crate::permissions::GuildPermissions;
         let state = create_test_state(pool.clone()).await;
 
         // Create user
@@ -872,13 +983,21 @@ mod tests {
             .await
             .expect("Failed to create user");
 
+        // Create guild with VIEW_CHANNEL permission
+        let guild_id = create_test_guild_with_permissions(
+            &pool,
+            user.id,
+            GuildPermissions::VIEW_CHANNEL.bits() as i64,
+        )
+        .await;
+
         // Create channel
         let channel = db::create_channel(
             &pool,
             "test-channel",
             &db::ChannelType::Text,
             None,
-            None,
+            Some(guild_id),
             None,
             None,
             None,
@@ -988,11 +1107,20 @@ mod tests {
 
     #[sqlx::test]
     async fn test_list_messages_empty_channel(pool: PgPool) {
+        use crate::permissions::GuildPermissions;
         let state = create_test_state(pool.clone()).await;
 
         let user = db::create_user(&pool, "emptyuser", "Empty User", None, "hash")
             .await
             .expect("Failed to create user");
+
+        // Create guild with VIEW_CHANNEL permission
+        let guild_id = create_test_guild_with_permissions(
+            &pool,
+            user.id,
+            GuildPermissions::VIEW_CHANNEL.bits() as i64,
+        )
+        .await;
 
         // Create channel with no messages
         let channel = db::create_channel(
@@ -1000,7 +1128,7 @@ mod tests {
             "empty-channel",
             &db::ChannelType::Text,
             None,
-            None,
+            Some(guild_id),
             None,
             None,
             None,
@@ -1060,18 +1188,27 @@ mod tests {
 
     #[sqlx::test]
     async fn test_list_messages_limit_clamping(pool: PgPool) {
+        use crate::permissions::GuildPermissions;
         let state = create_test_state(pool.clone()).await;
 
         let user = db::create_user(&pool, "clampuser", "Clamp User", None, "hash")
             .await
             .expect("Failed to create user");
 
+        // Create guild with VIEW_CHANNEL permission
+        let guild_id = create_test_guild_with_permissions(
+            &pool,
+            user.id,
+            GuildPermissions::VIEW_CHANNEL.bits() as i64,
+        )
+        .await;
+
         let channel = db::create_channel(
             &pool,
             "test-channel",
             &db::ChannelType::Text,
             None,
-            None,
+            Some(guild_id),
             None,
             None,
             None,

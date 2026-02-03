@@ -43,16 +43,102 @@ mod tests {
         row.try_get("id")
     }
 
-    /// Helper to create test channel in database.
-    async fn create_test_channel(pool: &PgPool, name: &str) -> Result<Uuid, sqlx::Error> {
+    /// Helper to create test channel in database with guild permissions.
+    async fn create_test_channel(pool: &PgPool, name: &str, guild_id: Uuid) -> Result<Uuid, sqlx::Error> {
         let row = sqlx::query(
-            "INSERT INTO channels (name, channel_type, position) VALUES ($1, 'voice', 0) RETURNING id"
+            "INSERT INTO channels (name, channel_type, position, guild_id) VALUES ($1, 'voice', 0, $2) RETURNING id"
         )
         .bind(name)
+        .bind(guild_id)
         .fetch_one(pool)
         .await?;
 
         row.try_get("id")
+    }
+
+    /// Helper to create a guild with proper permissions for voice testing
+    async fn create_test_guild_with_voice_permissions(
+        pool: &PgPool,
+        owner_id: Uuid,
+    ) -> Result<Uuid, sqlx::Error> {
+        // VIEW_CHANNEL = 1 << 24, VOICE_CONNECT = 1 << 20
+        let permissions = (1i64 << 24) | (1i64 << 20);
+
+        // Create guild
+        let guild_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)"
+        )
+        .bind(guild_id)
+        .bind("Test Voice Guild")
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+
+        // Add owner as member
+        sqlx::query(
+            "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)"
+        )
+        .bind(guild_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+
+        // Create @everyone role with VIEW_CHANNEL + VOICE_CONNECT
+        let everyone_role_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, '@everyone', $3, 0, true)"
+        )
+        .bind(everyone_role_id)
+        .bind(guild_id)
+        .bind(permissions)
+        .execute(pool)
+        .await?;
+
+        // Assign @everyone role to owner
+        sqlx::query(
+            "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)"
+        )
+        .bind(guild_id)
+        .bind(owner_id)
+        .bind(everyone_role_id)
+        .execute(pool)
+        .await?;
+
+        Ok(guild_id)
+    }
+
+    /// Helper to add a user to an existing guild
+    async fn add_user_to_guild(pool: &PgPool, guild_id: Uuid, user_id: Uuid) -> Result<(), sqlx::Error> {
+        // Add as guild member
+        sqlx::query(
+            "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)"
+        )
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+
+        // Get @everyone role
+        let everyone_role: (Uuid,) = sqlx::query_as(
+            "SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true"
+        )
+        .bind(guild_id)
+        .fetch_one(pool)
+        .await?;
+
+        // Assign @everyone role
+        sqlx::query(
+            "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)"
+        )
+        .bind(guild_id)
+        .bind(user_id)
+        .bind(everyone_role.0)
+        .execute(pool)
+        .await?;
+
+        Ok(())
     }
 
     #[sqlx::test]
@@ -62,8 +148,11 @@ mod tests {
         // Create test user
         let user_id = create_test_user(&pool, "testuser", "Test User").await?;
 
+        // Create guild with voice permissions
+        let guild_id = create_test_guild_with_voice_permissions(&pool, user_id).await?;
+
         // Create test channel
-        let channel_id = create_test_channel(&pool, "Test Voice Channel").await?;
+        let channel_id = create_test_channel(&pool, "Test Voice Channel", guild_id).await?;
 
         // Create SFU server
         let config = Arc::new(Config::default_for_test());
@@ -112,8 +201,11 @@ mod tests {
         // Create test user
         let user_id = create_test_user(&pool, "ratelimituser", "Rate Limit User").await?;
 
+        // Create guild with voice permissions
+        let guild_id = create_test_guild_with_voice_permissions(&pool, user_id).await?;
+
         // Create test channel
-        let channel_id = create_test_channel(&pool, "Rate Limit Test").await?;
+        let channel_id = create_test_channel(&pool, "Rate Limit Test", guild_id).await?;
 
         // Create SFU server
         let config = Arc::new(Config::default_for_test());
@@ -166,8 +258,14 @@ mod tests {
         let user1_id = create_test_user(&pool, "user1", "User One").await?;
         let user2_id = create_test_user(&pool, "user2", "User Two").await?;
 
+        // Create guild with voice permissions (user1 as owner)
+        let guild_id = create_test_guild_with_voice_permissions(&pool, user1_id).await?;
+
+        // Add user2 to the guild
+        add_user_to_guild(&pool, guild_id, user2_id).await?;
+
         // Create test channel
-        let channel_id = create_test_channel(&pool, "Multi User Test").await?;
+        let channel_id = create_test_channel(&pool, "Multi User Test", guild_id).await?;
 
         // Create SFU server
         let config = Arc::new(Config::default_for_test());
