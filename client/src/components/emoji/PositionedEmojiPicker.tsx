@@ -25,17 +25,16 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (props) => 
   let pickerRef: HTMLDivElement | undefined;
   const [position, setPosition] = createSignal({ x: 0, y: 0 });
   const [maxHeight, setMaxHeight] = createSignal<number | undefined>(undefined);
-  const [isVisible, setIsVisible] = createSignal(false);
 
   const updatePosition = async () => {
     if (!pickerRef || !props.anchorEl) return;
 
     const { x, y } = await computePosition(props.anchorEl, pickerRef, {
-      placement: "top-start",
+      placement: "bottom-start",
       middleware: [
-        offset(8), // 8px gap from trigger button
+        offset(4), // Smaller gap for closer positioning
         flip({
-          fallbackPlacements: ["bottom-start", "top-end", "bottom-end"],
+          fallbackPlacements: ["top-start", "bottom-end", "top-end"],
           padding: 8,
         }),
         shift({
@@ -78,16 +77,10 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (props) => 
   };
 
   onMount(() => {
-    // Calculate position and show picker
-    updatePosition()
-      .then(() => {
-        setIsVisible(true);
-      })
-      .catch((err) => {
-        console.error("[PositionedEmojiPicker] Failed to calculate position:", err);
-        // Show picker anyway at default position rather than leaving it invisible
-        setIsVisible(true);
-      });
+    // Calculate initial position
+    updatePosition().catch((err) => {
+      console.error("[PositionedEmojiPicker] Failed to calculate position:", err);
+    });
 
     // Add event listeners after a small delay to avoid immediate close
     const timeoutId = setTimeout(() => {
@@ -117,9 +110,6 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (props) => 
           top: `${pos.y}px`,
           "z-index": "9999",
           ...(height ? { "max-height": `${height}px` } : {}),
-          opacity: isVisible() ? "1" : "0",
-          transform: isVisible() ? "scale(1)" : "scale(0.95)",
-          transition: "opacity 150ms ease-out, transform 150ms ease-out",
         }}
       >
         <EmojiPicker

@@ -156,6 +156,16 @@ pub struct MessageResponse {
     /// Type of mention in this message (for notification sounds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mention_type: Option<MentionType>,
+    /// Reactions on this message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reactions: Option<Vec<ReactionInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactionInfo {
+    pub emoji: String,
+    pub count: i64,
+    pub me: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,7 +323,40 @@ pub async fn list(
             .push(AttachmentInfo::from_db(&attachment));
     }
 
-    // Build response with author info and attachments
+    // Bulk fetch all reactions to avoid N+1 query
+    let reactions_data = sqlx::query!(
+        r#"
+        SELECT
+            message_id,
+            emoji,
+            COUNT(*) as "count!",
+            BOOL_OR(user_id = $1) as "me!"
+        FROM message_reactions
+        WHERE message_id = ANY($2)
+        GROUP BY message_id, emoji
+        ORDER BY MIN(created_at)
+        "#,
+        auth_user.id,
+        &message_ids
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    // Create lookup map for reactions by message_id
+    let mut reactions_map: std::collections::HashMap<Uuid, Vec<ReactionInfo>> =
+        std::collections::HashMap::new();
+    for row in reactions_data {
+        reactions_map
+            .entry(row.message_id)
+            .or_default()
+            .push(ReactionInfo {
+                emoji: row.emoji,
+                count: row.count,
+                me: row.me,
+            });
+    }
+
+    // Build response with author info, attachments, and reactions
     let response: Vec<MessageResponse> = messages
         .into_iter()
         .map(|msg| {
@@ -329,6 +372,7 @@ pub async fn list(
                 });
 
             let attachments = attachment_map.remove(&msg.id).unwrap_or_default();
+            let reactions = reactions_map.remove(&msg.id);
 
             // Detect mentions (skip for encrypted messages as content is not readable)
             let mention_type = if msg.encrypted {
@@ -348,6 +392,7 @@ pub async fn list(
                 edited_at: msg.edited_at,
                 created_at: msg.created_at,
                 mention_type,
+                reactions,
             }
         })
         .collect();
@@ -495,6 +540,7 @@ pub async fn create(
         edited_at: message.edited_at,
         created_at: message.created_at,
         mention_type,
+        reactions: None,
     };
 
     // Broadcast new message via Redis pub-sub
@@ -576,6 +622,7 @@ pub async fn update(
         edited_at: message.edited_at,
         created_at: message.created_at,
         mention_type: None, // Edits don't trigger new notifications
+        reactions: None,
     };
 
     // Broadcast edit via Redis pub-sub

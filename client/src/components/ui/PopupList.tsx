@@ -38,17 +38,16 @@ const PopupList: Component<PopupListProps> = (props) => {
   let selectedItemRef: HTMLDivElement | undefined;
   const [position, setPosition] = createSignal({ x: 0, y: 0 });
   const [maxHeight, setMaxHeight] = createSignal<number | undefined>(undefined);
-  const [isVisible, setIsVisible] = createSignal(false);
 
   const updatePosition = async () => {
     if (!listRef || !props.anchorEl) return;
 
     const { x, y } = await computePosition(props.anchorEl, listRef, {
-      placement: "top-start",
+      placement: "bottom-start",
       middleware: [
-        offset(8),
+        offset(4),
         flip({
-          fallbackPlacements: ["bottom-start", "top-end", "bottom-end"],
+          fallbackPlacements: ["top-start", "bottom-end", "top-end"],
           padding: 8,
         }),
         shift({
@@ -118,15 +117,10 @@ const PopupList: Component<PopupListProps> = (props) => {
   };
 
   onMount(() => {
-    // Calculate position and show popup
-    updatePosition()
-      .then(() => {
-        setIsVisible(true);
-      })
-      .catch((err) => {
-        console.error("[PopupList] Failed to calculate position:", err);
-        setIsVisible(true);
-      });
+    // Calculate initial position
+    updatePosition().catch((err) => {
+      console.error("[PopupList] Failed to calculate position:", err);
+    });
 
     // Set up autoUpdate to continuously track anchor element position
     let cleanup: (() => void) | undefined;
@@ -166,9 +160,7 @@ const PopupList: Component<PopupListProps> = (props) => {
           top: `${pos.y}px`,
           "z-index": "9999",
           ...(height ? { "max-height": `${height}px` } : {}),
-          opacity: isVisible() ? "1" : "0",
-          transform: isVisible() ? "scale(1)" : "scale(0.95)",
-          transition: "opacity 150ms ease-out, transform 150ms ease-out",
+          "background-color": "var(--color-surface-layer2, #2A2A3C)", // Fallback to focused-hybrid color
         }}
         class="bg-surface-layer2 border border-white/10 rounded-lg shadow-xl overflow-y-auto"
       >

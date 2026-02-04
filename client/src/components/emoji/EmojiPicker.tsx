@@ -34,7 +34,10 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
   return (
     <div
       class="bg-surface-layer2 rounded-lg shadow-xl w-80 overflow-hidden flex flex-col border border-white/10"
-      style={props.maxHeight ? { "max-height": `${props.maxHeight}px` } : { "max-height": "384px" }}
+      style={{
+        ...(props.maxHeight ? { "max-height": `${props.maxHeight}px` } : { "max-height": "384px" }),
+        "background-color": "var(--color-surface-layer2, #2A2A3C)", // Fallback to focused-hybrid color
+      }}
     >
       {/* Search */}
       <div class="p-2 border-b border-white/10">

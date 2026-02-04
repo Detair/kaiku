@@ -553,6 +553,7 @@ pub async fn upload_message_with_file(
         edited_at: message.edited_at,
         created_at: message.created_at,
         mention_type,
+        reactions: None,
     };
 
     // Broadcast new message via Redis pub-sub

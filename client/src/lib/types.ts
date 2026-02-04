@@ -188,7 +188,7 @@ export interface Attachment {
 export interface Reaction {
   emoji: string;
   count: number;
-  users: string[];  // User IDs (for tooltip)
+  users?: string[];  // User IDs (for tooltip, optional)
   me: boolean;      // Did current user react
 }
 
