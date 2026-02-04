@@ -62,7 +62,8 @@ impl S3Client {
         let mut s3_config_builder = aws_sdk_s3::Config::builder()
             .region(region)
             .stalled_stream_protection(StalledStreamProtectionConfig::disabled())
-            .identity_cache(IdentityCache::no_cache());
+            .identity_cache(IdentityCache::no_cache())
+            .behavior_version_latest();
 
         // Configure credentials from environment
         if let (Ok(access_key), Ok(secret_key)) = (

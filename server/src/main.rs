@@ -41,7 +41,9 @@ async fn main() -> Result<()> {
     let redis = db::create_redis_client(&config.redis_url).await?;
 
     // Initialize S3 client (optional - file uploads will be disabled if not configured)
-    let s3 = match chat::S3Client::new(&config).await {
+    // Skip initialization if AWS credentials aren't set (e.g., in development)
+    let s3 = if std::env::var("AWS_ACCESS_KEY_ID").is_ok() && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok() {
+        match chat::S3Client::new(&config).await {
         Ok(client) => {
             // Verify bucket access
             match client.health_check().await {
@@ -62,6 +64,10 @@ async fn main() -> Result<()> {
             );
             None
         }
+        }
+    } else {
+        info!("AWS credentials not configured. File uploads disabled.");
+        None
     };
 
     // Initialize rate limiter (optional)
