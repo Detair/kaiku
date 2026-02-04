@@ -30,6 +30,7 @@ import { onShowBlockConfirm, onShowReport } from "./lib/contextMenuBuilders";
 // Theme
 import { initTheme } from "./stores/theme";
 import { fetchUploadLimits } from "./lib/tauri";
+import { initDrafts } from "./stores/drafts";
 
 // Global modal state
 const [blockTarget, setBlockTarget] = createSignal<{ id: string; username: string; display_name?: string } | null>(null);
@@ -43,6 +44,7 @@ onShowReport((target) => setReportTarget({ userId: target.userId, username: targ
 const Layout: Component<ParentProps> = (props) => {
   onMount(async () => {
     await initTheme();
+    initDrafts();
     // Fetch upload size limits from server (non-blocking)
     fetchUploadLimits().catch(err =>
       console.warn('[App] Failed to fetch upload limits:', err)

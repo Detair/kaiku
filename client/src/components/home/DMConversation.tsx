@@ -318,7 +318,17 @@ const DMConversation: Component = () => {
         <TypingIndicator channelId={dm()!.id} />
 
         {/* Message Input */}
-        <MessageInput channelId={dm()!.id} channelName={displayName()} />
+        <MessageInput
+          channelId={dm()!.id}
+          channelName={displayName()}
+          isE2EE={isEncrypted()}
+          dmParticipants={dm()!.participants.map(p => ({
+            user_id: p.user_id,
+            username: p.username,
+            display_name: p.display_name,
+            avatar_url: p.avatar_url,
+          }))}
+        />
       </div>
     </Show>
   );

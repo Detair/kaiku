@@ -10,6 +10,7 @@ import * as tauri from "@/lib/tauri";
 import { initWebSocket, connect as wsConnect, disconnect as wsDisconnect, cleanupWebSocket } from "./websocket";
 import { initPresence, cleanupPresence, initIdleDetection, stopIdleDetectionCleanup } from "./presence";
 import { initPreferences } from "./preferences";
+import { clearAllDrafts, cleanupDrafts } from "./drafts";
 
 // Auth state interface
 interface AuthState {
@@ -295,6 +296,8 @@ export async function logout(): Promise<void> {
     await cleanupWebSocket();
     stopIdleDetectionCleanup();
     cleanupPresence();
+    clearAllDrafts();
+    cleanupDrafts();
   } catch (err) {
     console.error("Error during cleanup:", err);
   }

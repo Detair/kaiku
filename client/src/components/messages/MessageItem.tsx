@@ -1,13 +1,13 @@
-import { Component, Show, createMemo, For, createSignal, onMount, onCleanup } from "solid-js";
+import { Component, Show, createMemo, For, onMount, onCleanup } from "solid-js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { File, Download, SmilePlus, Copy, Link, Hash, Trash2, Flag } from "lucide-solid";
+import { File, Download, Copy, Link, Hash, Trash2, Flag } from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
 import CodeBlock from "@/components/ui/CodeBlock";
 import ReactionBar from "./ReactionBar";
-import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
+import MessageActions from "./MessageActions";
 import { getServerUrl, getAccessToken, addReaction, removeReaction } from "@/lib/tauri";
 import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
@@ -56,9 +56,7 @@ interface TextBlock {
 type ContentBlock = CodeBlockData | TextBlock;
 
 const MessageItem: Component<MessageItemProps> = (props) => {
-  const [showReactionPicker, setShowReactionPicker] = createSignal(false);
   let contentRef: HTMLDivElement | undefined;
-  let reactionButtonRef: HTMLButtonElement | undefined;
 
   const author = () => props.message.author;
   const isEdited = () => !!props.message.edited_at;
@@ -92,7 +90,6 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     } catch (err) {
       console.error("Failed to add reaction:", err);
     }
-    setShowReactionPicker(false);
   };
 
   const handleRemoveReaction = async (emoji: string) => {
@@ -224,7 +221,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
   return (
     <div
       onContextMenu={handleContextMenu}
-      class={`group flex gap-4 px-4 py-0.5 hover:bg-white/3 transition-colors ${
+      class={`group relative flex gap-4 px-4 py-0.5 hover:bg-white/3 transition-colors ${
         props.compact ? "mt-0" : "mt-4"
       }`}
     >
@@ -255,6 +252,13 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           </span>
         </Show>
       </div>
+
+      {/* Message Actions Toolbar (shown on hover) */}
+      <MessageActions
+        onAddReaction={handleAddReaction}
+        onShowContextMenu={handleContextMenu}
+        guildId={props.guildId}
+      />
 
       {/* Content column */}
       <div class="flex-1 min-w-0">
@@ -355,29 +359,6 @@ const MessageItem: Component<MessageItemProps> = (props) => {
             onRemoveReaction={handleRemoveReaction}
             guildId={props.guildId}
           />
-        </Show>
-
-        {/* Add reaction button (shown on hover when no reactions exist) */}
-        <Show when={!hasReactions()}>
-          <div class="mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
-              ref={reactionButtonRef}
-              class="w-6 h-6 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
-              onClick={() => setShowReactionPicker(!showReactionPicker())}
-              title="Add reaction"
-            >
-              <SmilePlus class="w-4 h-4" />
-            </button>
-
-            <Show when={showReactionPicker() && reactionButtonRef}>
-              <PositionedEmojiPicker
-                anchorEl={reactionButtonRef!}
-                onSelect={handleAddReaction}
-                onClose={() => setShowReactionPicker(false)}
-                guildId={props.guildId}
-              />
-            </Show>
-          </div>
         </Show>
       </div>
     </div>

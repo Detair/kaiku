@@ -78,7 +78,11 @@ const Main: Component = () => {
           <TypingIndicator channelId={channel()!.id} />
 
           {/* Message Input */}
-          <MessageInput channelId={channel()!.id} channelName={channel()!.name} />
+          <MessageInput
+            channelId={channel()!.id}
+            channelName={channel()!.name}
+            guildId={guildsState.activeGuildId ?? undefined}
+          />
             </Show>
           }
         >

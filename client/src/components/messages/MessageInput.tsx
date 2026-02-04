@@ -1,13 +1,22 @@
-import { Component, createSignal, Show, For, onCleanup } from "solid-js";
+import { Component, createSignal, Show, For, onCleanup, createEffect } from "solid-js";
 import { PlusCircle, Send, UploadCloud, X, File as FileIcon } from "lucide-solid";
 import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
 import { uploadMessageWithFile, validateFileSize, getUploadLimitText } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
+import { getDraft, saveDraft, clearDraft } from "@/stores/drafts";
+import AutocompletePopup from "./AutocompletePopup";
+import { guildsState } from "@/stores/guilds";
 
 interface MessageInputProps {
   channelId: string;
   channelName: string;
+  /** Guild ID - used to determine if channel is E2EE (undefined = DM) */
+  guildId?: string;
+  /** Is E2EE enabled for this channel (DMs only) */
+  isE2EE?: boolean;
+  /** DM participants (for @user autocomplete in DMs) */
+  dmParticipants?: Array<{ user_id: string; username: string; display_name: string; avatar_url: string | null }>;
 }
 
 interface PendingFile {
@@ -21,14 +30,51 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const [isDragging, setIsDragging] = createSignal(false);
   const [uploadError, setUploadError] = createSignal<string | null>(null);
   const [pendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
+  const [isComposing, setIsComposing] = createSignal(false);
+  // Autocomplete state
+  const [autocompleteType, setAutocompleteType] = createSignal<"user" | "emoji" | null>(null);
+  const [autocompleteQuery, setAutocompleteQuery] = createSignal("");
+  const [autocompleteIndex, setAutocompleteIndex] = createSignal(0);
+  const [autocompleteStart, setAutocompleteStart] = createSignal(0);
   let typingTimeout: NodeJS.Timeout | undefined;
-  let inputRef: HTMLInputElement | undefined;
+  let textareaRef: HTMLTextAreaElement | undefined;
+  let resizeFrame: number | undefined;
+
+  // Load draft when channel changes (handles both initial mount and channel switches)
+  createEffect(() => {
+    const channelId = props.channelId;
+    const draft = getDraft(channelId);
+    setContent(draft);
+    // Resize after setting content
+    setTimeout(() => resizeTextarea(), 0);
+  });
+
+  // Auto-resize textarea with RAF batching
+  const resizeTextarea = () => {
+    if (!textareaRef) return;
+
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+
+    resizeFrame = requestAnimationFrame(() => {
+      if (!textareaRef) return;
+
+      // Reset height to auto to get correct scrollHeight
+      textareaRef.style.height = 'auto';
+
+      // Calculate new height (min 24px = 1 line, max 192px = 8 lines)
+      const newHeight = Math.min(Math.max(textareaRef.scrollHeight, 24), 192);
+      textareaRef.style.height = `${newHeight}px`;
+    });
+  };
 
   // Cleanup on unmount
   onCleanup(() => {
     if (typingTimeout) {
       clearTimeout(typingTimeout);
       stopTyping(props.channelId);
+    }
+    if (resizeFrame) {
+      cancelAnimationFrame(resizeFrame);
     }
     // Revoke object URLs to prevent memory leaks
     pendingFiles().forEach((pf) => {
@@ -71,6 +117,14 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
   const handleInput = (value: string) => {
     setContent(value);
+    resizeTextarea();
+
+    // Detect autocomplete triggers
+    detectAutocomplete(value);
+
+    // Save draft (debounced, skips E2EE channels)
+    const isE2EE = props.isE2EE ?? false;
+    saveDraft(props.channelId, value, isE2EE);
 
     // Send typing indicator
     if (value.trim()) {
@@ -86,6 +140,49 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         stopTyping(props.channelId);
       }, 3000);
     }
+  };
+
+  // Detect @user or :emoji: triggers
+  const detectAutocomplete = (value: string) => {
+    if (!textareaRef) return;
+
+    const cursorPos = textareaRef.selectionStart;
+    const textBeforeCursor = value.substring(0, cursorPos);
+
+    // Check for @user mentions
+    const userMatch = textBeforeCursor.match(/@(\w*)$/);
+    if (userMatch) {
+      // Prevent false positives like email addresses or URLs
+      const beforeAt = textBeforeCursor.substring(0, textBeforeCursor.length - userMatch[0].length);
+      if (beforeAt.match(/[a-zA-Z0-9]$/)) {
+        setAutocompleteType(null);
+        return;
+      }
+      setAutocompleteType("user");
+      setAutocompleteQuery(userMatch[1]);
+      setAutocompleteStart(cursorPos - userMatch[0].length);
+      setAutocompleteIndex(0);
+      return;
+    }
+
+    // Check for :emoji: triggers (min 2 chars to avoid false positives)
+    const emojiMatch = textBeforeCursor.match(/:(\w{2,})$/);
+    if (emojiMatch) {
+      // Prevent false positives like times (12:30) or URLs
+      const beforeColon = textBeforeCursor.substring(0, textBeforeCursor.length - emojiMatch[0].length);
+      if (beforeColon.match(/[0-9]$/)) {
+        setAutocompleteType(null);
+        return;
+      }
+      setAutocompleteType("emoji");
+      setAutocompleteQuery(emojiMatch[1]);
+      setAutocompleteStart(cursorPos - emojiMatch[0].length);
+      setAutocompleteIndex(0);
+      return;
+    }
+
+    // No match, close autocomplete
+    setAutocompleteType(null);
   };
 
   const handleSubmit = async (e: Event) => {
@@ -117,6 +214,12 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         await sendMessage(props.channelId, text);
       }
       setContent("");
+      // Clear draft after successful send
+      clearDraft(props.channelId);
+      // Reset textarea height after successful send
+      if (textareaRef) {
+        textareaRef.style.height = 'auto';
+      }
     } catch (err) {
       console.error("Send failed:", err);
       showToast({
@@ -126,16 +229,65 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       });
     } finally {
       setIsSending(false);
-      inputRef?.focus();
+      textareaRef?.focus();
     }
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    // Send on Enter (without Shift)
+    // Don't send during IME composition (CJK input)
+    if (isComposing()) return;
+
+    // Handle autocomplete keyboard navigation
+    if (autocompleteType()) {
+      // Let AutocompletePopup handle these keys
+      if (["ArrowDown", "ArrowUp", "Escape"].includes(e.key)) {
+        return; // Handled by PopupList
+      }
+
+      // Enter or Tab to accept suggestion (handled by PopupList via onSelect)
+      if (e.key === "Enter" || e.key === "Tab") {
+        return; // Handled by PopupList
+      }
+    }
+
+    // Send on Enter (without Shift), allow Shift+Enter for newlines
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
     }
+  };
+
+  // Handle textarea click - close autocomplete if cursor moved away from trigger
+  const handleTextareaClick = () => {
+    // Re-detect autocomplete at current cursor position
+    // This will close autocomplete if user clicked away from trigger
+    detectAutocomplete(content());
+  };
+
+  // Insert autocomplete selection at cursor
+  const handleAutocompleteSelect = (value: string) => {
+    if (!textareaRef) return;
+
+    const currentContent = content();
+    const start = autocompleteStart();
+    const cursorPos = textareaRef.selectionStart;
+
+    // Replace the trigger and query with the selected value
+    const before = currentContent.substring(0, start);
+    const after = currentContent.substring(cursorPos);
+    const newContent = before + value + after;
+
+    setContent(newContent);
+    setAutocompleteType(null);
+
+    // Set cursor position after insertion
+    const newCursorPos = start + value.length;
+    setTimeout(() => {
+      if (textareaRef) {
+        textareaRef.focus();
+        textareaRef.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 0);
   };
 
   // Drag & Drop Handlers
@@ -262,15 +414,19 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         </button>
 
         {/* Text input */}
-        <input
-          ref={inputRef}
-          type="text"
+        <textarea
+          ref={textareaRef}
           value={content()}
           onInput={(e) => handleInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
-          class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none"
+          onClick={handleTextareaClick}
+          onCompositionStart={() => setIsComposing(true)}
+          onCompositionEnd={() => setIsComposing(false)}
+          class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none resize-none overflow-y-auto"
+          style={{ "min-height": "24px", "max-height": "192px" }}
           placeholder={`Message #${props.channelName}`}
           disabled={isSending()}
+          rows={1}
         />
 
         {/* Send button - show when there's content OR pending files */}
@@ -291,6 +447,22 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         <div class="mt-2 text-sm" style="color: var(--color-error-text)">
           Failed to send: {messagesState.error}
         </div>
+      </Show>
+
+      {/* Autocomplete Popup */}
+      <Show when={autocompleteType() && textareaRef}>
+        <AutocompletePopup
+          anchorEl={textareaRef!}
+          type={autocompleteType()!}
+          query={autocompleteQuery()}
+          selectedIndex={autocompleteIndex()}
+          guildMembers={props.guildId ? guildsState.members[props.guildId] : undefined}
+          dmParticipants={props.dmParticipants}
+          guildId={props.guildId}
+          onSelect={handleAutocompleteSelect}
+          onClose={() => setAutocompleteType(null)}
+          onSelectionChange={setAutocompleteIndex}
+        />
       </Show>
     </form>
   );

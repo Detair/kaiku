@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Message input enhancements for improved UX
+  - Multi-line textarea with auto-resize (min 1 line, max 8 lines)
+  - Shift+Enter for newlines, Enter to send
+  - IME composition support for CJK input (Chinese, Japanese, Korean)
+  - Persistent drafts with localStorage (auto-saves every 300ms, max 50 drafts with LRU eviction)
+  - Drafts skip E2EE channels to prevent plaintext leaks
+  - Proper cleanup of draft event listeners on logout to prevent memory leaks
+  - Graceful localStorage quota exceeded handling (auto-reduces to 25 drafts and retries)
+  - Quick message actions toolbar (hover to reveal: 4 quick emojis + emoji picker + context menu)
+  - @user autocomplete with arrow key navigation (works in both guild channels and DMs)
+  - Prefix matches prioritized in autocomplete results for better relevance
+  - :emoji: autocomplete with support for both standard and custom guild emojis
+  - False positive prevention for autocomplete (ignores email addresses, times, URLs)
+  - Smart positioning for autocomplete popup using floating-ui with autoUpdate
+  - Autocomplete closes when clicking away from trigger in textarea
+  - Full ARIA support for autocomplete popup (role="listbox", aria-activedescendant, aria-selected)
+  - ARIA labels for all message action buttons (emoji reactions, picker, context menu)
+
+### Added
 - Channel-level permission system (VIEW_CHANNEL)
   - New VIEW_CHANNEL permission bit (bit 24) controls channel visibility and access
   - Users must have VIEW_CHANNEL to see channels in lists, read messages, or interact with channels
