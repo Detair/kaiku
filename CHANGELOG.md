@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Slack-style message threads for organized side-discussions
+  - Thread replies appear in a sidebar panel, keeping the main channel feed clean
+  - Thread indicators show reply count and last reply time on parent messages
+  - "Reply in Thread" action in message context menu and hover toolbar
+  - Per-thread read tracking with real-time WebSocket updates
 - Full WebSocket event parity for Tauri desktop client (#132)
   - Admin events (ban/unban, suspend/unsuspend, reports) now received in desktop app
   - Friend request and block events now received in desktop app

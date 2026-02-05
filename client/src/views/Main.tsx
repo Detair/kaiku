@@ -16,10 +16,12 @@ import CommandPalette from "@/components/layout/CommandPalette";
 import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
+import ThreadSidebar from "@/components/messages/ThreadSidebar";
 import { HomeView } from "@/components/home";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import { selectedChannel } from "@/stores/channels";
 import { loadGuilds, guildsState } from "@/stores/guilds";
+import { threadsState } from "@/stores/threads";
 
 const Main: Component = () => {
   const channel = selectedChannel;
@@ -55,34 +57,46 @@ const Main: Component = () => {
                 </div>
               }
             >
-          {/* Channel Header */}
-          <header class="h-12 px-4 flex items-center border-b border-white/5 bg-surface-layer1 shadow-sm">
-            <Show
-              when={channel()?.channel_type === "voice"}
-              fallback={<Hash class="w-5 h-5 text-text-secondary mr-2" />}
-            >
-              <Volume2 class="w-5 h-5 text-text-secondary mr-2" />
+          <div class="flex flex-1 min-w-0">
+            <div class="flex-1 flex flex-col min-w-0">
+              {/* Channel Header */}
+              <header class="h-12 px-4 flex items-center border-b border-white/5 bg-surface-layer1 shadow-sm">
+                <Show
+                  when={channel()?.channel_type === "voice"}
+                  fallback={<Hash class="w-5 h-5 text-text-secondary mr-2" />}
+                >
+                  <Volume2 class="w-5 h-5 text-text-secondary mr-2" />
+                </Show>
+                <span class="font-semibold text-text-primary">{channel()?.name}</span>
+                <Show when={channel()?.topic}>
+                  <div class="ml-4 pl-4 border-l border-white/10 text-text-secondary text-sm truncate">
+                    {channel()?.topic}
+                  </div>
+                </Show>
+              </header>
+
+              {/* Messages */}
+              <MessageList channelId={channel()!.id} />
+
+              {/* Typing Indicator */}
+              <TypingIndicator channelId={channel()!.id} />
+
+              {/* Message Input */}
+              <MessageInput
+                channelId={channel()!.id}
+                channelName={channel()!.name}
+                guildId={guildsState.activeGuildId ?? undefined}
+              />
+            </div>
+
+            {/* Thread Sidebar */}
+            <Show when={threadsState.activeThreadId}>
+              <ThreadSidebar
+                channelId={channel()!.id}
+                guildId={guildsState.activeGuildId ?? undefined}
+              />
             </Show>
-            <span class="font-semibold text-text-primary">{channel()?.name}</span>
-            <Show when={channel()?.topic}>
-              <div class="ml-4 pl-4 border-l border-white/10 text-text-secondary text-sm truncate">
-                {channel()?.topic}
-              </div>
-            </Show>
-          </header>
-
-          {/* Messages */}
-          <MessageList channelId={channel()!.id} />
-
-          {/* Typing Indicator */}
-          <TypingIndicator channelId={channel()!.id} />
-
-          {/* Message Input */}
-          <MessageInput
-            channelId={channel()!.id}
-            channelName={channel()!.name}
-            guildId={guildsState.activeGuildId ?? undefined}
-          />
+          </div>
             </Show>
           }
         >

@@ -210,10 +210,20 @@ export interface Message {
   encrypted: boolean;
   attachments: Attachment[];
   reply_to: string | null;
+  parent_id: string | null;
+  thread_reply_count: number;
+  thread_last_reply_at: string | null;
   edited_at: string | null;
   created_at: string;
   mention_type: "direct" | "everyone" | "here" | null;
   reactions?: Reaction[];
+}
+
+export interface ThreadInfo {
+  reply_count: number;
+  last_reply_at: string | null;
+  participant_ids: string[];
+  participant_avatars: Array<string | null>;
 }
 
 // Paginated Response Types
@@ -399,6 +409,10 @@ export type ServerEvent =
   // Admin report events
   | { type: "admin_report_created"; report_id: string; category: string; target_type: string }
   | { type: "admin_report_resolved"; report_id: string }
+  // Thread events
+  | { type: "thread_reply_new"; channel_id: string; parent_id: string; message: Message; thread_info: ThreadInfo }
+  | { type: "thread_reply_delete"; channel_id: string; parent_id: string; message_id: string; thread_info: ThreadInfo }
+  | { type: "thread_read"; thread_parent_id: string; last_read_message_id: string | null }
   // State sync events
   | { type: "patch"; entity_type: string; entity_id: string; diff: Record<string, unknown> };
 

@@ -655,6 +655,7 @@ pub async fn list_messages(
             SELECT m.* FROM messages m
             WHERE m.channel_id = $1
               AND m.deleted_at IS NULL
+              AND m.parent_id IS NULL
               AND (m.created_at, m.id) < (
                 SELECT created_at, id FROM messages WHERE id = $2
               )
@@ -673,6 +674,7 @@ pub async fn list_messages(
             SELECT * FROM messages
             WHERE channel_id = $1
               AND deleted_at IS NULL
+              AND parent_id IS NULL
             ORDER BY created_at DESC, id DESC
             LIMIT $2
             ",
@@ -759,7 +761,17 @@ pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> sqlx::Res
 }
 
 /// Admin delete a message (ignores `user_id` check).
+/// If the message is a thread reply, also decrements the parent's thread counters.
 pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool> {
+    // Fetch parent_id before deletion so we can update thread counters
+    let parent_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT parent_id FROM messages WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+
     let result = sqlx::query(
         r"
         UPDATE messages
@@ -770,7 +782,175 @@ pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool>
     .bind(id)
     .execute(pool)
     .await?;
-    Ok(result.rows_affected() > 0)
+
+    let deleted = result.rows_affected() > 0;
+
+    // Decrement parent thread counters if this was a thread reply
+    if deleted {
+        if let Some(parent_id) = parent_id {
+            let _ = decrement_thread_counters(pool, parent_id).await;
+        }
+    }
+
+    Ok(deleted)
+}
+
+// ============================================================================
+// Thread Queries
+// ============================================================================
+
+/// List thread replies for a parent message (chronological, oldest first).
+pub async fn list_thread_replies(
+    pool: &PgPool,
+    parent_id: Uuid,
+    after: Option<Uuid>,
+    limit: i64,
+) -> sqlx::Result<Vec<Message>> {
+    if let Some(after_id) = after {
+        sqlx::query_as::<_, Message>(
+            r"
+            SELECT m.* FROM messages m
+            WHERE m.parent_id = $1
+              AND m.deleted_at IS NULL
+              AND (m.created_at, m.id) > (
+                SELECT created_at, id FROM messages WHERE id = $2
+              )
+            ORDER BY m.created_at ASC, m.id ASC
+            LIMIT $3
+            ",
+        )
+        .bind(parent_id)
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+    } else {
+        sqlx::query_as::<_, Message>(
+            r"
+            SELECT * FROM messages
+            WHERE parent_id = $1
+              AND deleted_at IS NULL
+            ORDER BY created_at ASC, id ASC
+            LIMIT $2
+            ",
+        )
+        .bind(parent_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+    }
+}
+
+/// Create a thread reply atomically: insert reply + update parent counters.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_thread_reply(
+    pool: &PgPool,
+    parent_id: Uuid,
+    channel_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+    encrypted: bool,
+    nonce: Option<&str>,
+    reply_to: Option<Uuid>,
+) -> sqlx::Result<Message> {
+    let mut tx = pool.begin().await?;
+
+    let message = sqlx::query_as::<_, Message>(
+        r"
+        INSERT INTO messages (channel_id, user_id, content, encrypted, nonce, reply_to, parent_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+        ",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(content)
+    .bind(encrypted)
+    .bind(nonce)
+    .bind(reply_to)
+    .bind(parent_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    // Update parent message counters
+    sqlx::query(
+        r"
+        UPDATE messages
+        SET thread_reply_count = thread_reply_count + 1,
+            thread_last_reply_at = $2
+        WHERE id = $1
+        ",
+    )
+    .bind(parent_id)
+    .bind(message.created_at)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(message)
+}
+
+/// Decrement thread counters on parent after a reply is deleted.
+pub async fn decrement_thread_counters(pool: &PgPool, parent_id: Uuid) -> sqlx::Result<()> {
+    // Decrement count and recalculate last_reply_at from remaining replies
+    sqlx::query(
+        r"
+        UPDATE messages
+        SET thread_reply_count = GREATEST(thread_reply_count - 1, 0),
+            thread_last_reply_at = (
+                SELECT MAX(created_at) FROM messages
+                WHERE parent_id = $1 AND deleted_at IS NULL
+            )
+        WHERE id = $1
+        ",
+    )
+    .bind(parent_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Get distinct participant `user_ids` for a thread.
+pub async fn get_thread_participants(
+    pool: &PgPool,
+    parent_id: Uuid,
+    limit: i64,
+) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT DISTINCT user_id FROM messages
+        WHERE parent_id = $1 AND deleted_at IS NULL
+        ORDER BY user_id
+        LIMIT $2
+        ",
+    )
+    .bind(parent_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+/// Upsert thread read position for a user.
+pub async fn update_thread_read_state(
+    pool: &PgPool,
+    user_id: Uuid,
+    thread_parent_id: Uuid,
+    last_read_message_id: Option<Uuid>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        r"
+        INSERT INTO thread_read_state (user_id, thread_parent_id, last_read_at, last_read_message_id)
+        VALUES ($1, $2, NOW(), $3)
+        ON CONFLICT (user_id, thread_parent_id)
+        DO UPDATE SET last_read_at = NOW(), last_read_message_id = $3
+        ",
+    )
+    .bind(user_id)
+    .bind(thread_parent_id)
+    .bind(last_read_message_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Search messages within specific channels using `PostgreSQL` full-text search.

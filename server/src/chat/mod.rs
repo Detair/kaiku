@@ -55,6 +55,8 @@ pub fn messages_router() -> Router<AppState> {
             post(uploads::upload_message_with_file),
         )
         .route("/{id}", patch(messages::update).delete(messages::delete))
+        .route("/{parent_id}/thread", get(messages::list_thread_replies))
+        .route("/{parent_id}/thread/read", post(messages::mark_thread_read))
         .route("/upload", post(uploads::upload_file))
         .route("/attachments/{id}", get(uploads::get_attachment))
 }

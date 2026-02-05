@@ -14,6 +14,7 @@ export type SoundEventType =
   | "message_dm"      // Direct message received
   | "message_mention" // Message with @mention
   | "message_channel" // Regular channel message (when enabled)
+  | "message_thread"  // Thread reply received
   | "call_incoming"   // Incoming call (future)
   | "user_join"       // User joined voice (future)
   | "user_leave";     // User left voice (future)

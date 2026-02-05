@@ -807,6 +807,65 @@ export async function sendMessage(
   });
 }
 
+// ============================================================================
+// Thread API Functions
+// ============================================================================
+
+export async function getThreadReplies(
+  parentId: string,
+  after?: string,
+  limit?: number,
+): Promise<PaginatedMessages> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_thread_replies", { parentId, after, limit });
+  }
+
+  const params = new URLSearchParams();
+  if (after) params.set("after", after);
+  if (limit) params.set("limit", limit.toString());
+  const query = params.toString();
+
+  return httpRequest<PaginatedMessages>(
+    "GET",
+    `/api/messages/${parentId}/thread${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function sendThreadReply(
+  parentId: string,
+  channelId: string,
+  content: string,
+  options?: { encrypted?: boolean; nonce?: string },
+): Promise<Message> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("send_thread_reply", {
+      parentId,
+      channelId,
+      content,
+      encrypted: options?.encrypted,
+      nonce: options?.nonce,
+    });
+  }
+
+  return httpRequest<Message>("POST", `/api/messages/channel/${channelId}`, {
+    content,
+    encrypted: options?.encrypted ?? false,
+    nonce: options?.nonce,
+    parent_id: parentId,
+  });
+}
+
+export async function markThreadRead(parentId: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("mark_thread_read", { parentId });
+  }
+
+  return httpRequest<void>("POST", `/api/messages/${parentId}/thread/read`);
+}
+
 export async function uploadFile(
   messageId: string,
   file: File

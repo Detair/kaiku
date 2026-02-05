@@ -18,7 +18,7 @@ use crate::{
     db,
     permissions::{get_member_permission_context, GuildPermissions},
     social::block_cache,
-    ws::{broadcast_to_channel, ServerEvent},
+    ws::{broadcast_to_channel, broadcast_to_user, ServerEvent},
 };
 
 // ============================================================================
@@ -141,6 +141,15 @@ pub enum MentionType {
     Here,
 }
 
+/// Thread info for parent messages (returned alongside message responses).
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadInfoResponse {
+    pub reply_count: i32,
+    pub last_reply_at: Option<DateTime<Utc>>,
+    pub participant_ids: Vec<Uuid>,
+    pub participant_avatars: Vec<Option<String>>,
+}
+
 /// Full message response with author info (matches client Message type).
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
@@ -151,6 +160,10 @@ pub struct MessageResponse {
     pub encrypted: bool,
     pub attachments: Vec<AttachmentInfo>,
     pub reply_to: Option<Uuid>,
+    pub parent_id: Option<Uuid>,
+    #[serde(default)]
+    pub thread_reply_count: i32,
+    pub thread_last_reply_at: Option<DateTime<Utc>>,
     pub edited_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     /// Type of mention in this message (for notification sounds).
@@ -159,6 +172,9 @@ pub struct MessageResponse {
     /// Reactions on this message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reactions: Option<Vec<ReactionInfo>>,
+    /// Thread info (only present for messages with thread replies).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_info: Option<ThreadInfoResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +257,14 @@ pub struct CreateMessageRequest {
     pub encrypted: bool,
     pub nonce: Option<String>,
     pub reply_to: Option<Uuid>,
+    pub parent_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListThreadRepliesQuery {
+    pub after: Option<Uuid>,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -301,101 +325,8 @@ pub async fn list(
         messages.pop(); // Remove the extra message
     }
 
-    // Bulk fetch all user IDs to avoid N+1 query
-    let user_ids: Vec<Uuid> = messages.iter().map(|m| m.user_id).collect();
-    let users = db::find_users_by_ids(&state.db, &user_ids).await?;
-
-    // Create lookup map for O(1) access
-    let user_map: std::collections::HashMap<Uuid, db::User> =
-        users.into_iter().map(|u| (u.id, u)).collect();
-
-    // Bulk fetch all attachments to avoid N+1 query
-    let message_ids: Vec<Uuid> = messages.iter().map(|m| m.id).collect();
-    let all_attachments = db::list_file_attachments_by_messages(&state.db, &message_ids).await?;
-
-    // Create lookup map for attachments by message_id
-    let mut attachment_map: std::collections::HashMap<Uuid, Vec<AttachmentInfo>> =
-        std::collections::HashMap::new();
-    for attachment in all_attachments {
-        attachment_map
-            .entry(attachment.message_id)
-            .or_default()
-            .push(AttachmentInfo::from_db(&attachment));
-    }
-
-    // Bulk fetch all reactions to avoid N+1 query
-    let reactions_data = sqlx::query!(
-        r#"
-        SELECT
-            message_id,
-            emoji,
-            COUNT(*) as "count!",
-            BOOL_OR(user_id = $1) as "me!"
-        FROM message_reactions
-        WHERE message_id = ANY($2)
-        GROUP BY message_id, emoji
-        ORDER BY MIN(created_at)
-        "#,
-        auth_user.id,
-        &message_ids
-    )
-    .fetch_all(&state.db)
-    .await?;
-
-    // Create lookup map for reactions by message_id
-    let mut reactions_map: std::collections::HashMap<Uuid, Vec<ReactionInfo>> =
-        std::collections::HashMap::new();
-    for row in reactions_data {
-        reactions_map
-            .entry(row.message_id)
-            .or_default()
-            .push(ReactionInfo {
-                emoji: row.emoji,
-                count: row.count,
-                me: row.me,
-            });
-    }
-
     // Build response with author info, attachments, and reactions
-    let response: Vec<MessageResponse> = messages
-        .into_iter()
-        .map(|msg| {
-            let author = user_map
-                .get(&msg.user_id)
-                .map(|u| AuthorProfile::from(u.clone()))
-                .unwrap_or_else(|| AuthorProfile {
-                    id: msg.user_id,
-                    username: "deleted".to_string(),
-                    display_name: "Deleted User".to_string(),
-                    avatar_url: None,
-                    status: "offline".to_string(),
-                });
-
-            let attachments = attachment_map.remove(&msg.id).unwrap_or_default();
-            let reactions = reactions_map.remove(&msg.id);
-
-            // Detect mentions (skip for encrypted messages as content is not readable)
-            let mention_type = if msg.encrypted {
-                None
-            } else {
-                detect_mention_type(&msg.content, Some(&author.username))
-            };
-
-            MessageResponse {
-                id: msg.id,
-                channel_id: msg.channel_id,
-                author,
-                content: msg.content,
-                encrypted: msg.encrypted,
-                attachments,
-                reply_to: msg.reply_to,
-                edited_at: msg.edited_at,
-                created_at: msg.created_at,
-                mention_type,
-                reactions,
-            }
-        })
-        .collect();
+    let response = build_message_responses(&state.db, auth_user.id, messages).await?;
 
     // Get the cursor for the next page (oldest message ID)
     let next_cursor = if has_more {
@@ -499,16 +430,52 @@ pub async fn create(
         }
     }
 
-    let message = db::create_message(
-        &state.db,
-        channel_id,
-        auth_user.id,
-        &body.content,
-        body.encrypted,
-        body.nonce.as_deref(),
-        body.reply_to,
-    )
-    .await?;
+    // Validate parent_id if provided (thread reply)
+    if let Some(parent_id) = body.parent_id {
+        let parent_msg = db::find_message_by_id(&state.db, parent_id)
+            .await?
+            .ok_or_else(|| MessageError::Validation("Thread parent not found".to_string()))?;
+
+        // Ensure parent is a top-level message (no nested threads)
+        if parent_msg.parent_id.is_some() {
+            return Err(MessageError::Validation(
+                "Cannot reply to a thread reply (no nested threads)".to_string(),
+            ));
+        }
+
+        // Ensure parent is in the same channel
+        if parent_msg.channel_id != channel_id {
+            return Err(MessageError::Validation(
+                "Thread parent must be in the same channel".to_string(),
+            ));
+        }
+    }
+
+    // Create message (either regular or thread reply)
+    let message = if let Some(parent_id) = body.parent_id {
+        db::create_thread_reply(
+            &state.db,
+            parent_id,
+            channel_id,
+            auth_user.id,
+            &body.content,
+            body.encrypted,
+            body.nonce.as_deref(),
+            body.reply_to,
+        )
+        .await?
+    } else {
+        db::create_message(
+            &state.db,
+            channel_id,
+            auth_user.id,
+            &body.content,
+            body.encrypted,
+            body.nonce.as_deref(),
+            body.reply_to,
+        )
+        .await?
+    };
 
     // Get author profile for response
     let author = db::find_user_by_id(&state.db, auth_user.id)
@@ -537,25 +504,53 @@ pub async fn create(
         encrypted: message.encrypted,
         attachments: vec![],
         reply_to: message.reply_to,
+        parent_id: message.parent_id,
+        thread_reply_count: message.thread_reply_count,
+        thread_last_reply_at: message.thread_last_reply_at,
         edited_at: message.edited_at,
         created_at: message.created_at,
         mention_type,
         reactions: None,
+        thread_info: None,
     };
 
-    // Broadcast new message via Redis pub-sub
+    // Broadcast via Redis pub-sub
     let message_json = serde_json::to_value(&response).unwrap_or_default();
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::MessageNew {
+
+    if body.parent_id.is_some() {
+        // Thread reply: broadcast ThreadReplyNew with updated thread info
+        let parent_id = body.parent_id.unwrap();
+        let thread_info = build_thread_info(&state.db, parent_id).await;
+        let thread_info_json = serde_json::to_value(&thread_info).unwrap_or_default();
+
+        if let Err(e) = broadcast_to_channel(
+            &state.redis,
             channel_id,
-            message: message_json,
-        },
-    )
-    .await
-    {
-        warn!(channel_id = %channel_id, error = %e, "Failed to broadcast new message event");
+            &ServerEvent::ThreadReplyNew {
+                channel_id,
+                parent_id,
+                message: message_json,
+                thread_info: thread_info_json,
+            },
+        )
+        .await
+        {
+            warn!(channel_id = %channel_id, parent_id = %parent_id, error = %e, "Failed to broadcast thread reply event");
+        }
+    } else {
+        // Regular message: broadcast MessageNew
+        if let Err(e) = broadcast_to_channel(
+            &state.redis,
+            channel_id,
+            &ServerEvent::MessageNew {
+                channel_id,
+                message: message_json,
+            },
+        )
+        .await
+        {
+            warn!(channel_id = %channel_id, error = %e, "Failed to broadcast new message event");
+        }
     }
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -619,10 +614,14 @@ pub async fn update(
         encrypted: message.encrypted,
         attachments,
         reply_to: message.reply_to,
+        parent_id: message.parent_id,
+        thread_reply_count: message.thread_reply_count,
+        thread_last_reply_at: message.thread_last_reply_at,
         edited_at: message.edited_at,
         created_at: message.created_at,
         mention_type: None, // Edits don't trigger new notifications
         reactions: None,
+        thread_info: None,
     };
 
     // Broadcast edit via Redis pub-sub
@@ -670,29 +669,308 @@ pub async fn delete(
     }
 
     let channel_id = message.channel_id;
+    let parent_id = message.parent_id;
 
     // Delete message
     let deleted = db::delete_message(&state.db, id, auth_user.id).await?;
 
     if deleted {
-        // Broadcast delete via Redis pub-sub
-        if let Err(e) = broadcast_to_channel(
-            &state.redis,
-            channel_id,
-            &ServerEvent::MessageDelete {
+        if let Some(parent_id) = parent_id {
+            // Thread reply deleted: decrement parent counters and broadcast ThreadReplyDelete
+            if let Err(e) = db::decrement_thread_counters(&state.db, parent_id).await {
+                warn!(parent_id = %parent_id, error = %e, "Failed to decrement thread counters");
+            }
+
+            let thread_info = build_thread_info(&state.db, parent_id).await;
+            let thread_info_json = serde_json::to_value(&thread_info).unwrap_or_default();
+
+            if let Err(e) = broadcast_to_channel(
+                &state.redis,
                 channel_id,
-                message_id: id,
-            },
-        )
-        .await
-        {
-            warn!(channel_id = %channel_id, message_id = %id, error = %e, "Failed to broadcast message delete event");
+                &ServerEvent::ThreadReplyDelete {
+                    channel_id,
+                    parent_id,
+                    message_id: id,
+                    thread_info: thread_info_json,
+                },
+            )
+            .await
+            {
+                warn!(channel_id = %channel_id, message_id = %id, error = %e, "Failed to broadcast thread reply delete event");
+            }
+        } else {
+            // Regular message deleted: broadcast MessageDelete
+            if let Err(e) = broadcast_to_channel(
+                &state.redis,
+                channel_id,
+                &ServerEvent::MessageDelete {
+                    channel_id,
+                    message_id: id,
+                },
+            )
+            .await
+            {
+                warn!(channel_id = %channel_id, message_id = %id, error = %e, "Failed to broadcast message delete event");
+            }
         }
 
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(MessageError::NotFound)
     }
+}
+
+// ============================================================================
+// Shared Helpers
+// ============================================================================
+
+/// Bulk-fetch users, attachments, and reactions for a set of messages, then
+/// map them into `MessageResponse` objects. Used by both `list` and
+/// `list_thread_replies` to avoid duplicating the N+1 avoidance logic.
+async fn build_message_responses(
+    pool: &sqlx::PgPool,
+    requesting_user_id: Uuid,
+    messages: Vec<db::Message>,
+) -> Result<Vec<MessageResponse>, MessageError> {
+    if messages.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Bulk fetch users
+    let user_ids: Vec<Uuid> = messages.iter().map(|m| m.user_id).collect();
+    let users = db::find_users_by_ids(pool, &user_ids).await?;
+    let user_map: std::collections::HashMap<Uuid, db::User> =
+        users.into_iter().map(|u| (u.id, u)).collect();
+
+    // Bulk fetch attachments
+    let message_ids: Vec<Uuid> = messages.iter().map(|m| m.id).collect();
+    let all_attachments = db::list_file_attachments_by_messages(pool, &message_ids).await?;
+    let mut attachment_map: std::collections::HashMap<Uuid, Vec<AttachmentInfo>> =
+        std::collections::HashMap::new();
+    for attachment in all_attachments {
+        attachment_map
+            .entry(attachment.message_id)
+            .or_default()
+            .push(AttachmentInfo::from_db(&attachment));
+    }
+
+    // Bulk fetch reactions
+    let reactions_data = sqlx::query!(
+        r#"
+        SELECT
+            message_id,
+            emoji,
+            COUNT(*) as "count!",
+            BOOL_OR(user_id = $1) as "me!"
+        FROM message_reactions
+        WHERE message_id = ANY($2)
+        GROUP BY message_id, emoji
+        ORDER BY MIN(created_at)
+        "#,
+        requesting_user_id,
+        &message_ids
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut reactions_map: std::collections::HashMap<Uuid, Vec<ReactionInfo>> =
+        std::collections::HashMap::new();
+    for row in reactions_data {
+        reactions_map
+            .entry(row.message_id)
+            .or_default()
+            .push(ReactionInfo {
+                emoji: row.emoji,
+                count: row.count,
+                me: row.me,
+            });
+    }
+
+    // Build response objects
+    let response = messages
+        .into_iter()
+        .map(|msg| {
+            let author = user_map
+                .get(&msg.user_id)
+                .map(|u| AuthorProfile::from(u.clone()))
+                .unwrap_or_else(|| AuthorProfile {
+                    id: msg.user_id,
+                    username: "deleted".to_string(),
+                    display_name: "Deleted User".to_string(),
+                    avatar_url: None,
+                    status: "offline".to_string(),
+                });
+
+            let attachments = attachment_map.remove(&msg.id).unwrap_or_default();
+            let reactions = reactions_map.remove(&msg.id);
+            let mention_type = if msg.encrypted {
+                None
+            } else {
+                detect_mention_type(&msg.content, Some(&author.username))
+            };
+
+            MessageResponse {
+                id: msg.id,
+                channel_id: msg.channel_id,
+                author,
+                content: msg.content,
+                encrypted: msg.encrypted,
+                attachments,
+                reply_to: msg.reply_to,
+                parent_id: msg.parent_id,
+                thread_reply_count: msg.thread_reply_count,
+                thread_last_reply_at: msg.thread_last_reply_at,
+                edited_at: msg.edited_at,
+                created_at: msg.created_at,
+                mention_type,
+                reactions,
+                thread_info: None,
+            }
+        })
+        .collect();
+
+    Ok(response)
+}
+
+// ============================================================================
+// Thread Handlers
+// ============================================================================
+
+/// Build thread info for a parent message (participants + counters).
+async fn build_thread_info(pool: &sqlx::PgPool, parent_id: Uuid) -> ThreadInfoResponse {
+    let participant_ids = db::get_thread_participants(pool, parent_id, 5)
+        .await
+        .unwrap_or_default();
+
+    // Fetch avatar URLs for participants
+    let participants = if participant_ids.is_empty() {
+        vec![]
+    } else {
+        db::find_users_by_ids(pool, &participant_ids)
+            .await
+            .unwrap_or_default()
+    };
+
+    let participant_avatars: Vec<Option<String>> = participant_ids
+        .iter()
+        .map(|uid| {
+            participants
+                .iter()
+                .find(|u| u.id == *uid)
+                .and_then(|u| u.avatar_url.clone())
+        })
+        .collect();
+
+    // Re-fetch parent to get updated counters
+    let parent = db::find_message_by_id(pool, parent_id).await.ok().flatten();
+
+    ThreadInfoResponse {
+        reply_count: parent.as_ref().map_or(0, |p| p.thread_reply_count),
+        last_reply_at: parent.and_then(|p| p.thread_last_reply_at),
+        participant_ids,
+        participant_avatars,
+    }
+}
+
+/// List thread replies for a parent message.
+/// `GET /api/messages/{parent_id}/thread`
+pub async fn list_thread_replies(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(parent_id): Path<Uuid>,
+    Query(query): Query<ListThreadRepliesQuery>,
+) -> Result<Json<CursorPaginatedResponse<MessageResponse>>, MessageError> {
+    // Verify parent message exists
+    let parent = db::find_message_by_id(&state.db, parent_id)
+        .await?
+        .ok_or(MessageError::NotFound)?;
+
+    // Check channel access
+    crate::permissions::require_channel_access(&state.db, auth_user.id, parent.channel_id)
+        .await
+        .map_err(|_| MessageError::Forbidden)?;
+
+    // Load block set for filtering
+    let blocked_ids = block_cache::load_blocked_users(&state.db, &state.redis, auth_user.id)
+        .await
+        .unwrap_or_default();
+    let blocked_by_ids = block_cache::load_blocked_by(&state.db, &state.redis, auth_user.id)
+        .await
+        .unwrap_or_default();
+    let combined_block_set: std::collections::HashSet<Uuid> =
+        blocked_ids.union(&blocked_by_ids).copied().collect();
+
+    let limit = query.limit.clamp(1, 100);
+    let mut messages = db::list_thread_replies(&state.db, parent_id, query.after, limit + 1).await?;
+
+    if !combined_block_set.is_empty() {
+        messages.retain(|m| !combined_block_set.contains(&m.user_id));
+    }
+
+    let has_more = messages.len() as i64 > limit;
+    if has_more {
+        messages.pop();
+    }
+
+    let response = build_message_responses(&state.db, auth_user.id, messages).await?;
+
+    // For thread replies, cursor is the newest message (ascending order)
+    let next_cursor = if has_more {
+        response.last().map(|m| m.id)
+    } else {
+        None
+    };
+
+    Ok(Json(CursorPaginatedResponse {
+        items: response,
+        has_more,
+        next_cursor,
+    }))
+}
+
+/// Mark a thread as read.
+/// `POST /api/messages/{parent_id}/thread/read`
+pub async fn mark_thread_read(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(parent_id): Path<Uuid>,
+) -> Result<StatusCode, MessageError> {
+    // Verify parent exists
+    let parent = db::find_message_by_id(&state.db, parent_id)
+        .await?
+        .ok_or(MessageError::NotFound)?;
+
+    // Check channel access
+    crate::permissions::require_channel_access(&state.db, auth_user.id, parent.channel_id)
+        .await
+        .map_err(|_| MessageError::Forbidden)?;
+
+    // Get the latest reply to use as last_read_message_id
+    let last_reply_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM messages WHERE parent_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(parent_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(MessageError::Database)?;
+
+    db::update_thread_read_state(&state.db, auth_user.id, parent_id, last_reply_id).await?;
+
+    // Broadcast to user's other sessions
+    if let Err(e) = broadcast_to_user(
+        &state.redis,
+        auth_user.id,
+        &ServerEvent::ThreadRead {
+            thread_parent_id: parent_id,
+            last_read_message_id: last_reply_id,
+        },
+    )
+    .await
+    {
+        warn!(user_id = %auth_user.id, error = %e, "Failed to broadcast thread read event");
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ============================================================================

@@ -1,18 +1,20 @@
 import { Component, Show, createMemo, For, onMount, onCleanup } from "solid-js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { File, Download, Copy, Link, Hash, Trash2, Flag } from "lucide-solid";
+import { File, Download, Copy, Link, Hash, Trash2, Flag, MessageSquareMore } from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
 import CodeBlock from "@/components/ui/CodeBlock";
 import ReactionBar from "./ReactionBar";
+import ThreadIndicator from "./ThreadIndicator";
 import MessageActions from "./MessageActions";
 import { getServerUrl, getAccessToken, addReaction, removeReaction } from "@/lib/tauri";
 import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
 import { showUserContextMenu, triggerReport } from "@/lib/contextMenuBuilders";
 import { spoilerExtension } from "@/lib/markdown/spoilerExtension";
+import { openThread } from "@/stores/threads";
 
 interface MessageItemProps {
   message: Message;
@@ -20,6 +22,8 @@ interface MessageItemProps {
   compact?: boolean;
   /** Guild ID for custom emoji support in reactions */
   guildId?: string;
+  /** If true, suppresses thread indicator and "Reply in Thread" actions (when rendered inside ThreadSidebar) */
+  isInsideThread?: boolean;
 }
 
 // Configure marked for GitHub Flavored Markdown
@@ -182,6 +186,18 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       },
     ];
 
+    // Only show "Reply in Thread" for top-level messages, not inside ThreadSidebar
+    if (!msg.parent_id && !props.isInsideThread) {
+      items.push(
+        { separator: true },
+        {
+          label: "Reply in Thread",
+          icon: MessageSquareMore,
+          action: () => openThread(msg),
+        },
+      );
+    }
+
     if (!isOwn) {
       items.push(
         { separator: true },
@@ -258,6 +274,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         onAddReaction={handleAddReaction}
         onShowContextMenu={handleContextMenu}
         guildId={props.guildId}
+        isThreadReply={!!props.message.parent_id || !!props.isInsideThread}
+        onReplyInThread={props.isInsideThread ? undefined : () => openThread(props.message)}
       />
 
       {/* Content column */}
@@ -359,6 +377,11 @@ const MessageItem: Component<MessageItemProps> = (props) => {
             onRemoveReaction={handleRemoveReaction}
             guildId={props.guildId}
           />
+        </Show>
+
+        {/* Thread indicator (only on top-level messages with replies, not inside ThreadSidebar) */}
+        <Show when={!props.isInsideThread && !props.message.parent_id && props.message.thread_reply_count > 0}>
+          <ThreadIndicator message={props.message} />
         </Show>
       </div>
     </div>

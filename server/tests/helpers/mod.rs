@@ -28,6 +28,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
@@ -144,11 +145,12 @@ impl CleanupGuard {
     /// Register cleanup to restore `setup_complete` to a previous value.
     pub fn restore_setup_complete(&mut self, value: bool) {
         self.add(move |pool| async move {
-            let _ =
-                sqlx::query("UPDATE server_config SET value = $1::jsonb WHERE key = 'setup_complete'")
-                    .bind(serde_json::json!(value))
-                    .execute(&pool)
-                    .await;
+            let _ = sqlx::query(
+                "UPDATE server_config SET value = $1::jsonb WHERE key = 'setup_complete'",
+            )
+            .bind(serde_json::json!(value))
+            .execute(&pool)
+            .await;
         });
     }
 
@@ -161,12 +163,13 @@ impl CleanupGuard {
                 ("terms_url", serde_json::Value::Null),
                 ("privacy_url", serde_json::Value::Null),
             ] {
-                let _ =
-                    sqlx::query("UPDATE server_config SET value = $1, updated_by = NULL WHERE key = $2")
-                        .bind(val)
-                        .bind(key)
-                        .execute(&pool)
-                        .await;
+                let _ = sqlx::query(
+                    "UPDATE server_config SET value = $1, updated_by = NULL WHERE key = $2",
+                )
+                .bind(val)
+                .bind(key)
+                .execute(&pool)
+                .await;
             }
         });
     }
@@ -313,10 +316,24 @@ pub async fn spawn_test_server(router: Router) -> TestServer {
 pub async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
     let test_id = Uuid::new_v4().to_string()[..8].to_string();
     let username = format!("httptest_{test_id}");
-    let user = db::create_user(pool, &username, "HTTP Test User", None, "hash")
-        .await
-        .expect("Failed to create test user");
-    (user.id, username)
+
+    const MAX_ATTEMPTS: usize = 6;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match db::create_user(pool, &username, "HTTP Test User", None, "hash").await {
+            Ok(user) => return (user.id, username),
+            Err(sqlx::Error::PoolTimedOut) if attempt < MAX_ATTEMPTS => {
+                tracing::warn!(
+                    attempt,
+                    max_attempts = MAX_ATTEMPTS,
+                    "Pool timed out creating test user; retrying"
+                );
+                tokio::time::sleep(Duration::from_millis((attempt as u64) * 200)).await;
+            }
+            Err(err) => panic!("Failed to create test user: {err:?}"),
+        }
+    }
+
+    unreachable!("create_test_user retry loop must return or panic")
 }
 
 /// Grant system admin to a user.

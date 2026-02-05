@@ -6,9 +6,16 @@
 
 import { createStore } from "solid-js/store";
 import * as tauri from "@/lib/tauri";
-import type { Activity, Message, ServerEvent, UserStatus } from "@/lib/types";
+import type { Activity, Message, ServerEvent, ThreadInfo, UserStatus } from "@/lib/types";
 import { updateUserActivity } from "./presence";
 import { addMessage, removeMessage, messagesState, setMessagesState } from "./messages";
+import {
+  addThreadReply,
+  removeThreadReply,
+  setThreadReadState,
+  updateThreadInfo,
+  updateParentThreadIndicator,
+} from "./threads";
 import { handlePreferencesUpdated } from "./preferences";
 import {
   receiveIncomingCall,
@@ -502,6 +509,44 @@ export async function initWebSocket(): Promise<void> {
       })
     );
 
+    // Thread events
+    unlisteners.push(
+      await listen<{ channel_id: string; parent_id: string; message: Message; thread_info: ThreadInfo }>(
+        "ws:thread_reply_new",
+        (event) => {
+          handleThreadReplyNew(
+            event.payload.channel_id,
+            event.payload.parent_id,
+            event.payload.message,
+            event.payload.thread_info,
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; parent_id: string; message_id: string; thread_info: ThreadInfo }>(
+        "ws:thread_reply_delete",
+        (event) => {
+          handleThreadReplyDelete(
+            event.payload.channel_id,
+            event.payload.parent_id,
+            event.payload.message_id,
+            event.payload.thread_info,
+          );
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ thread_parent_id: string; last_read_message_id: string | null }>(
+        "ws:thread_read",
+        (event) => {
+          handleThreadRead(event.payload.thread_parent_id, event.payload.last_read_message_id);
+        }
+      )
+    );
+
     // Preferences sync
     unlisteners.push(
       await listen<any>("ws:preferences_updated", (event) => {
@@ -802,6 +847,19 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "admin_report_resolved":
       await handleAdminReportResolved(event.report_id);
+      break;
+
+    // Thread events
+    case "thread_reply_new":
+      handleThreadReplyNew(event.channel_id, event.parent_id, event.message, event.thread_info);
+      break;
+
+    case "thread_reply_delete":
+      handleThreadReplyDelete(event.channel_id, event.parent_id, event.message_id, event.thread_info);
+      break;
+
+    case "thread_read":
+      handleThreadRead(event.thread_parent_id, event.last_read_message_id);
       break;
 
     // State sync events
@@ -1261,6 +1319,63 @@ async function handleAdminUserDeleted(userId: string, username: string): Promise
 async function handleAdminGuildDeleted(guildId: string, guildName: string): Promise<void> {
   const { handleGuildDeletedEvent } = await import("@/stores/admin");
   handleGuildDeletedEvent(guildId, guildName);
+}
+
+// Thread event handlers
+
+function handleThreadReplyNew(
+  channelId: string,
+  parentId: string,
+  message: Message,
+  threadInfo: ThreadInfo,
+): void {
+  // Add reply to thread store
+  addThreadReply(parentId, message);
+
+  // Update thread info cache
+  updateThreadInfo(parentId, threadInfo);
+
+  // Update parent message's thread indicator in main messages store
+  updateParentThreadIndicator(channelId, parentId, threadInfo);
+
+  // Play notification for thread reply
+  handleThreadNotification(message);
+}
+
+function handleThreadReplyDelete(
+  channelId: string,
+  parentId: string,
+  messageId: string,
+  threadInfo: ThreadInfo,
+): void {
+  // Remove reply from thread store
+  removeThreadReply(parentId, messageId);
+
+  // Update thread info cache
+  updateThreadInfo(parentId, threadInfo);
+
+  // Update parent message's thread indicator in main messages store
+  updateParentThreadIndicator(channelId, parentId, threadInfo);
+}
+
+function handleThreadRead(parentId: string, lastReadMessageId: string | null): void {
+  setThreadReadState(parentId, lastReadMessageId);
+}
+
+function handleThreadNotification(message: Message): void {
+  const user = currentUser();
+  if (user && message.author.id === user.id) return;
+
+  const channel = getChannel(message.channel_id);
+  const isDm = channel?.channel_type === "dm" || channel?.guild_id === null;
+
+  playNotification({
+    type: "message_thread",
+    channelId: message.channel_id,
+    isDm,
+    mentionType: message.mention_type as MentionType,
+    authorId: message.author.id,
+  });
 }
 
 // Reaction event handlers

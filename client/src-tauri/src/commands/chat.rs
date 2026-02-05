@@ -58,6 +58,10 @@ pub struct Message {
     pub encrypted: bool,
     pub attachments: Vec<Attachment>,
     pub reply_to: Option<String>,
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub thread_reply_count: i32,
+    pub thread_last_reply_at: Option<String>,
     pub edited_at: Option<String>,
     pub created_at: String,
 }
@@ -205,4 +209,156 @@ pub async fn send_message(
 
     debug!("Message sent: {}", message.id);
     Ok(message)
+}
+
+/// Get thread replies for a parent message.
+#[command]
+pub async fn get_thread_replies(
+    state: State<'_, AppState>,
+    parent_id: String,
+    after: Option<String>,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = {
+        let auth = state.auth.read().await;
+        (auth.server_url.clone(), auth.access_token.clone())
+    };
+
+    let server_url = server_url.ok_or("Not authenticated")?;
+    let token = token.ok_or("Not authenticated")?;
+
+    debug!("Fetching thread replies for parent {}", parent_id);
+
+    let mut url = format!("{server_url}/api/messages/{parent_id}/thread");
+
+    let mut params = vec![];
+    if let Some(after_id) = after {
+        params.push(format!("after={after_id}"));
+    }
+    if let Some(lim) = limit {
+        params.push(format!("limit={lim}"));
+    }
+    if !params.is_empty() {
+        url = format!("{}?{}", url, params.join("&"));
+    }
+
+    let response = state
+        .http
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to fetch thread replies: {}", e);
+            format!("Connection failed: {e}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        error!("Failed to fetch thread replies: {}", status);
+        return Err(format!("Failed to fetch thread replies: {status}"));
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))?;
+
+    debug!("Fetched thread replies for parent {}", parent_id);
+    Ok(body)
+}
+
+/// Send a reply in a thread.
+#[command]
+pub async fn send_thread_reply(
+    state: State<'_, AppState>,
+    parent_id: String,
+    channel_id: String,
+    content: String,
+    encrypted: Option<bool>,
+    nonce: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = {
+        let auth = state.auth.read().await;
+        (auth.server_url.clone(), auth.access_token.clone())
+    };
+
+    let server_url = server_url.ok_or("Not authenticated")?;
+    let token = token.ok_or("Not authenticated")?;
+
+    debug!("Sending thread reply to parent {} in channel {}", parent_id, channel_id);
+
+    let mut body = serde_json::json!({
+        "content": content,
+        "encrypted": encrypted.unwrap_or(false),
+        "parent_id": parent_id,
+    });
+
+    if let Some(n) = nonce {
+        body["nonce"] = serde_json::Value::String(n);
+    }
+
+    let response = state
+        .http
+        .post(format!("{server_url}/api/messages/channel/{channel_id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to send thread reply: {}", e);
+            format!("Connection failed: {e}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_body = response.text().await.unwrap_or_default();
+        error!("Failed to send thread reply: {} - {}", status, err_body);
+        return Err(format!("Failed to send thread reply: {status}"));
+    }
+
+    let message: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))?;
+
+    debug!("Thread reply sent to parent {}", parent_id);
+    Ok(message)
+}
+
+/// Mark a thread as read.
+#[command]
+pub async fn mark_thread_read(
+    state: State<'_, AppState>,
+    parent_id: String,
+) -> Result<(), String> {
+    let (server_url, token) = {
+        let auth = state.auth.read().await;
+        (auth.server_url.clone(), auth.access_token.clone())
+    };
+
+    let server_url = server_url.ok_or("Not authenticated")?;
+    let token = token.ok_or("Not authenticated")?;
+
+    debug!("Marking thread {} as read", parent_id);
+
+    let response = state
+        .http
+        .post(format!("{server_url}/api/messages/{parent_id}/thread/read"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to mark thread read: {}", e);
+            format!("Connection failed: {e}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        error!("Failed to mark thread read: {}", status);
+        return Err(format!("Failed to mark thread read: {status}"));
+    }
+
+    debug!("Thread {} marked as read", parent_id);
+    Ok(())
 }

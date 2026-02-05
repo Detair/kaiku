@@ -6,7 +6,7 @@
  */
 
 import { Component, createSignal, Show } from "solid-js";
-import { SmilePlus, MoreHorizontal } from "lucide-solid";
+import { SmilePlus, MoreHorizontal, MessageSquareMore } from "lucide-solid";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 
 interface MessageActionsProps {
@@ -16,6 +16,10 @@ interface MessageActionsProps {
   onShowContextMenu: (e: MouseEvent) => void;
   /** Optional guild ID for custom emojis */
   guildId?: string;
+  /** Whether this message is a thread reply (hides thread button) */
+  isThreadReply?: boolean;
+  /** Callback to open thread for this message */
+  onReplyInThread?: () => void;
 }
 
 // Quick reaction emojis
@@ -67,6 +71,18 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
           onClose={() => setShowEmojiPicker(false)}
           guildId={props.guildId}
         />
+      </Show>
+
+      {/* Reply in thread button (hidden for thread replies) */}
+      <Show when={!props.isThreadReply && props.onReplyInThread}>
+        <button
+          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+          onClick={() => props.onReplyInThread?.()}
+          title="Reply in Thread"
+          aria-label="Reply in Thread"
+        >
+          <MessageSquareMore class="w-4 h-4" />
+        </button>
       </Show>
 
       {/* Divider */}

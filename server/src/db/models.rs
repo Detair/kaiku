@@ -123,6 +123,13 @@ pub struct Message {
     pub nonce: Option<String>,
     /// Message ID this is replying to.
     pub reply_to: Option<Uuid>,
+    /// Thread parent message ID (NULL for top-level messages).
+    pub parent_id: Option<Uuid>,
+    /// Number of replies in this thread (only meaningful for parent messages).
+    #[serde(default)]
+    pub thread_reply_count: i32,
+    /// Timestamp of the last reply in this thread.
+    pub thread_last_reply_at: Option<DateTime<Utc>>,
     /// When the message was edited.
     pub edited_at: Option<DateTime<Utc>>,
     /// When the message was deleted (soft delete).

@@ -260,6 +260,23 @@ pub enum ServerEvent {
     UserUnblocked {
         user_id: String,
     },
+    // Thread events
+    ThreadReplyNew {
+        channel_id: String,
+        parent_id: String,
+        message: serde_json::Value,
+        thread_info: serde_json::Value,
+    },
+    ThreadReplyDelete {
+        channel_id: String,
+        parent_id: String,
+        message_id: String,
+        thread_info: serde_json::Value,
+    },
+    ThreadRead {
+        thread_parent_id: String,
+        last_read_message_id: Option<String>,
+    },
     // Preferences sync
     PreferencesUpdated {
         preferences: serde_json::Value,
@@ -534,6 +551,10 @@ fn handle_server_message(app: &AppHandle, text: &str) {
                 // Block events
                 ServerEvent::UserBlocked { .. } => "ws:user_blocked",
                 ServerEvent::UserUnblocked { .. } => "ws:user_unblocked",
+                // Thread events
+                ServerEvent::ThreadReplyNew { .. } => "ws:thread_reply_new",
+                ServerEvent::ThreadReplyDelete { .. } => "ws:thread_reply_delete",
+                ServerEvent::ThreadRead { .. } => "ws:thread_read",
                 // Preferences sync
                 ServerEvent::PreferencesUpdated { .. } => "ws:preferences_updated",
                 // State sync

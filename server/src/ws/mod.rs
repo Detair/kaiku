@@ -563,6 +563,37 @@ pub enum ServerEvent {
         user_id: Uuid,
     },
 
+    // Thread events
+    /// New reply in a thread (broadcast to channel for indicator updates)
+    ThreadReplyNew {
+        /// Channel containing the thread.
+        channel_id: Uuid,
+        /// Thread parent message ID.
+        parent_id: Uuid,
+        /// Full reply message object.
+        message: serde_json::Value,
+        /// Updated thread info for the parent.
+        thread_info: serde_json::Value,
+    },
+    /// Thread reply deleted (broadcast to channel for indicator updates)
+    ThreadReplyDelete {
+        /// Channel containing the thread.
+        channel_id: Uuid,
+        /// Thread parent message ID.
+        parent_id: Uuid,
+        /// Deleted reply message ID.
+        message_id: Uuid,
+        /// Updated thread info for the parent.
+        thread_info: serde_json::Value,
+    },
+    /// Thread read position updated (sent to user's sessions only)
+    ThreadRead {
+        /// Thread parent message ID.
+        thread_parent_id: Uuid,
+        /// Last read message ID in the thread.
+        last_read_message_id: Option<Uuid>,
+    },
+
     // DM metadata events
     /// DM channel name was updated (broadcast to all participants)
     DmNameUpdated {

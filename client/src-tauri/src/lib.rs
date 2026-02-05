@@ -61,6 +61,9 @@ pub fn run() {
             commands::chat::get_channels,
             commands::chat::get_messages,
             commands::chat::send_message,
+            commands::chat::get_thread_replies,
+            commands::chat::send_thread_reply,
+            commands::chat::mark_thread_read,
             // Voice commands
             commands::voice::join_voice,
             commands::voice::leave_voice,
