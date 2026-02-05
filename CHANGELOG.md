@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Full WebSocket event parity for Tauri desktop client (#132)
+  - Admin events (ban/unban, suspend/unsuspend, reports) now received in desktop app
+  - Friend request and block events now received in desktop app
+  - Voice stats, preferences sync, and state patch events now received in desktop app
+  - Screen share events now have Tauri listeners (Rust enum already existed)
 - Delete user option in admin panel with confirmation dialog (#147)
 - Delete guild option in admin panel with confirmation dialog (#148)
 - Virtual scrolling for message lists using `@tanstack/solid-virtual`

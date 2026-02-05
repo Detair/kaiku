@@ -397,6 +397,127 @@ export async function initWebSocket(): Promise<void> {
         // The call store will handle this through the API response
       })
     );
+
+    // Screen share events (Tauri → frontend parity with browser mode)
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string; username: string; source_label: string; has_audio: boolean; quality: string; started_at?: string }>(
+        "ws:screen_share_started",
+        async (event) => {
+          await handleScreenShareStarted(event.payload);
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string; reason: string }>(
+        "ws:screen_share_stopped",
+        async (event) => {
+          await handleScreenShareStopped(event.payload);
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string; new_quality: string; reason: string }>(
+        "ws:screen_share_quality_changed",
+        async (event) => {
+          await handleScreenShareQualityChanged(event.payload);
+        }
+      )
+    );
+
+    // Voice stats events
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string; latency: number; packet_loss: number; jitter: number; quality: number }>(
+        "ws:voice_user_stats",
+        async (event) => {
+          await handleVoiceUserStatsEvent(event.payload);
+        }
+      )
+    );
+
+    // Admin events
+    unlisteners.push(
+      await listen<{ user_id: string; username: string }>("ws:admin_user_banned", async (event) => {
+        await handleAdminUserBanned(event.payload.user_id, event.payload.username);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ user_id: string; username: string }>("ws:admin_user_unbanned", async (event) => {
+        await handleAdminUserUnbanned(event.payload.user_id, event.payload.username);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_suspended", async (event) => {
+        await handleAdminGuildSuspended(event.payload.guild_id, event.payload.guild_name);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_unsuspended", async (event) => {
+        await handleAdminGuildUnsuspended(event.payload.guild_id, event.payload.guild_name);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ report_id: string; category: string; target_type: string }>(
+        "ws:admin_report_created",
+        async (event) => {
+          await handleAdminReportCreated(event.payload.report_id, event.payload.category, event.payload.target_type);
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ report_id: string }>("ws:admin_report_resolved", async (event) => {
+        await handleAdminReportResolved(event.payload.report_id);
+      })
+    );
+
+    // Friend events
+    unlisteners.push(
+      await listen("ws:friend_request_received", () => {
+        loadPendingRequests();
+      })
+    );
+
+    unlisteners.push(
+      await listen("ws:friend_request_accepted", () => {
+        Promise.all([loadFriends(), loadPendingRequests()]);
+      })
+    );
+
+    // Block events
+    unlisteners.push(
+      await listen<{ user_id: string }>("ws:user_blocked", (event) => {
+        handleUserBlocked(event.payload.user_id);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ user_id: string }>("ws:user_unblocked", (event) => {
+        handleUserUnblocked(event.payload.user_id);
+      })
+    );
+
+    // Preferences sync
+    unlisteners.push(
+      await listen<any>("ws:preferences_updated", (event) => {
+        handlePreferencesUpdated(event.payload);
+      })
+    );
+
+    // State sync (patch)
+    unlisteners.push(
+      await listen<{ entity_type: string; entity_id: string; diff: Record<string, unknown> }>(
+        "ws:patch",
+        async (event) => {
+          await handlePatchEvent(event.payload.entity_type, event.payload.entity_id, event.payload.diff);
+        }
+      )
+    );
   } else {
     // Browser mode - use browser WebSocket events
     const attachMessageHandler = () => {

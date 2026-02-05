@@ -204,6 +204,73 @@ pub enum ServerEvent {
         user_id: String,
         emoji: String,
     },
+    // Voice stats
+    VoiceUserStats {
+        channel_id: String,
+        user_id: String,
+        latency: f64,
+        packet_loss: f64,
+        jitter: f64,
+        quality: f64,
+    },
+    // Admin events
+    AdminUserBanned {
+        user_id: String,
+        username: String,
+    },
+    AdminUserUnbanned {
+        user_id: String,
+        username: String,
+    },
+    AdminGuildSuspended {
+        guild_id: String,
+        guild_name: String,
+    },
+    AdminGuildUnsuspended {
+        guild_id: String,
+        guild_name: String,
+    },
+    AdminReportCreated {
+        report_id: String,
+        category: String,
+        target_type: String,
+    },
+    AdminReportResolved {
+        report_id: String,
+    },
+    // Friend events
+    FriendRequestReceived {
+        friendship_id: String,
+        from_user_id: String,
+        from_username: String,
+        from_display_name: String,
+        from_avatar_url: Option<String>,
+    },
+    FriendRequestAccepted {
+        friendship_id: String,
+        user_id: String,
+        username: String,
+        display_name: String,
+        avatar_url: Option<String>,
+    },
+    // Block events
+    UserBlocked {
+        user_id: String,
+    },
+    UserUnblocked {
+        user_id: String,
+    },
+    // Preferences sync
+    PreferencesUpdated {
+        preferences: serde_json::Value,
+        updated_at: String,
+    },
+    // State sync
+    Patch {
+        entity_type: String,
+        entity_id: String,
+        diff: serde_json::Value,
+    },
 }
 
 /// Connection status.
@@ -452,6 +519,25 @@ fn handle_server_message(app: &AppHandle, text: &str) {
                 // Reaction events
                 ServerEvent::ReactionAdd { .. } => "ws:reaction_add",
                 ServerEvent::ReactionRemove { .. } => "ws:reaction_remove",
+                // Voice stats
+                ServerEvent::VoiceUserStats { .. } => "ws:voice_user_stats",
+                // Admin events
+                ServerEvent::AdminUserBanned { .. } => "ws:admin_user_banned",
+                ServerEvent::AdminUserUnbanned { .. } => "ws:admin_user_unbanned",
+                ServerEvent::AdminGuildSuspended { .. } => "ws:admin_guild_suspended",
+                ServerEvent::AdminGuildUnsuspended { .. } => "ws:admin_guild_unsuspended",
+                ServerEvent::AdminReportCreated { .. } => "ws:admin_report_created",
+                ServerEvent::AdminReportResolved { .. } => "ws:admin_report_resolved",
+                // Friend events
+                ServerEvent::FriendRequestReceived { .. } => "ws:friend_request_received",
+                ServerEvent::FriendRequestAccepted { .. } => "ws:friend_request_accepted",
+                // Block events
+                ServerEvent::UserBlocked { .. } => "ws:user_blocked",
+                ServerEvent::UserUnblocked { .. } => "ws:user_unblocked",
+                // Preferences sync
+                ServerEvent::PreferencesUpdated { .. } => "ws:preferences_updated",
+                // State sync
+                ServerEvent::Patch { .. } => "ws:patch",
             };
 
             if let Err(e) = app.emit(event_name, &event) {
