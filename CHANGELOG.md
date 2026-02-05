@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Drops messages far from viewport, re-fetches on scroll back
 
 ### Fixed
+- Volume slider now controls notification sound volume in Tauri desktop app (#146)
+  - Tauri `play_sound` command now accepts and applies volume setting
+  - Both notification playback and test sound respect the volume slider
+- Screen share volume slider thumb now visible and interactive (#146)
+  - Added proper CSS pseudo-selectors for the range input thumb
 - Potential message loss when WebSocket message arrives during pagination load
   - `addMessage` now re-reads store state after async decryption to avoid overwriting concurrent prepends
 - File attachment uploads in text chat (#149)

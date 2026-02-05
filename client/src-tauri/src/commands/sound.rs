@@ -23,8 +23,9 @@ static BELL_SOUND: &[u8] = include_bytes!("../../resources/sounds/bell.wav");
 /// Play a notification sound by ID.
 ///
 /// Creates a new audio output stream per playback to avoid thread safety issues.
+/// Volume is 0–100; defaults to 100 if not provided.
 #[command]
-pub fn play_sound(sound_id: String) -> Result<(), String> {
+pub fn play_sound(sound_id: String, volume: Option<u8>) -> Result<(), String> {
     let sound_data: &'static [u8] = match sound_id.as_str() {
         "default" => DEFAULT_SOUND,
         "subtle" => SUBTLE_SOUND,
@@ -37,9 +38,11 @@ pub fn play_sound(sound_id: String) -> Result<(), String> {
         }
     };
 
+    let vol = volume.unwrap_or(100).min(100) as f32 / 100.0;
+
     // Spawn thread for audio playback (OutputStream is not Send)
     thread::spawn(move || {
-        if let Err(e) = play_sound_blocking(sound_data) {
+        if let Err(e) = play_sound_blocking(sound_data, vol) {
             tracing::warn!("Failed to play sound: {}", e);
         }
     });
@@ -48,13 +51,14 @@ pub fn play_sound(sound_id: String) -> Result<(), String> {
 }
 
 /// Blocking sound playback (runs in dedicated thread).
-fn play_sound_blocking(sound_data: &'static [u8]) -> Result<(), String> {
+fn play_sound_blocking(sound_data: &'static [u8], volume: f32) -> Result<(), String> {
     // Create audio output
     let stream = OutputStreamBuilder::open_default_stream()
         .map_err(|e| format!("Failed to open audio output: {e}"))?;
 
     // Create sink
     let sink = Sink::connect_new(stream.mixer());
+    sink.set_volume(volume);
 
     // Decode and play
     let cursor = Cursor::new(sound_data);

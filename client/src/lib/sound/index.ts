@@ -11,6 +11,7 @@ import { initTabLeader, isTabLeader, cleanup as cleanupTabLeader } from "./tab-l
 import { preloadRingSound, stopRinging } from "./ring";
 import {
   getSoundEnabled,
+  getSoundVolume,
   getSelectedSound,
   getChannelNotificationLevel,
   isChannelMuted,
@@ -180,7 +181,7 @@ async function playSoundInternal(_event: SoundEvent): Promise<void> {
     // Use Tauri native audio
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("play_sound", { soundId });
+      await invoke("play_sound", { soundId, volume: getSoundVolume() });
     } catch (error) {
       console.warn("Failed to play sound via Tauri:", error);
     }
@@ -203,7 +204,7 @@ export async function testSound(soundId?: SoundOption): Promise<void> {
   if (isTauri()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("play_sound", { soundId: id });
+      await invoke("play_sound", { soundId: id, volume: getSoundVolume() });
     } catch (error) {
       console.warn("Failed to test sound via Tauri:", error);
     }

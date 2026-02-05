@@ -350,7 +350,13 @@ const VolumeControl: Component = () => {
         max="100"
         value={viewerState.screenVolume}
         onInput={(e) => setScreenVolume(parseInt(e.currentTarget.value))}
-        class="w-20 h-1 bg-white/30 rounded-full appearance-none cursor-pointer"
+        class="w-20 h-1 bg-white/30 rounded-full appearance-none cursor-pointer
+               [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
+               [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
+               [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:transition-transform
+               [&::-webkit-slider-thumb]:hover:scale-125
+               [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full
+               [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-0"
       />
     </div>
   );
