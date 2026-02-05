@@ -52,6 +52,7 @@ const GuildsPanel: Component = () => {
   const [showBulkSuspendDialog, setShowBulkSuspendDialog] = createSignal(false);
   const [bulkSuspendReason, setBulkSuspendReason] = createSignal("");
   const [showDeleteDialog, setShowDeleteDialog] = createSignal(false);
+  const [deleteConfirmText, setDeleteConfirmText] = createSignal("");
   const [actionLoading, setActionLoading] = createSignal(false);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
@@ -203,6 +204,7 @@ const GuildsPanel: Component = () => {
       const success = await deleteGuild(guild.id);
       if (success) {
         setShowDeleteDialog(false);
+        setDeleteConfirmText("");
         showToast({
           type: "success",
           title: "Guild deleted",
@@ -867,7 +869,7 @@ const GuildsPanel: Component = () => {
           {/* Backdrop */}
           <div
             class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setShowDeleteDialog(false)}
+            onClick={() => { setShowDeleteDialog(false); setDeleteConfirmText(""); }}
           />
 
           {/* Dialog */}
@@ -888,16 +890,29 @@ const GuildsPanel: Component = () => {
                 ? This action is <span class="font-bold text-status-error">irreversible</span> and will remove all channels, messages, roles, and member data.
               </p>
 
+              <div class="space-y-2">
+                <label class="text-sm font-medium text-text-secondary">
+                  Type <span class="font-mono text-text-primary">{selectedGuild()?.name}</span> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmText()}
+                  onInput={(e) => setDeleteConfirmText(e.currentTarget.value)}
+                  placeholder={selectedGuild()?.name}
+                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-status-error text-sm"
+                />
+              </div>
+
               <div class="flex gap-3 pt-2">
                 <button
-                  onClick={() => setShowDeleteDialog(false)}
+                  onClick={() => { setShowDeleteDialog(false); setDeleteConfirmText(""); }}
                   class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleDelete}
-                  disabled={actionLoading()}
+                  disabled={deleteConfirmText() !== selectedGuild()?.name || actionLoading()}
                   class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading() ? "Deleting..." : "Delete Permanently"}
