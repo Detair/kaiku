@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Both notification playback and test sound respect the volume slider
 - Screen share volume slider thumb now visible and interactive (#146)
   - Added proper CSS pseudo-selectors for the range input thumb
+- Sound notification testing now plays audio in browser/webview mode (#145)
+  - Added missing sound .wav files to `public/sounds/` for static serving
+  - Previously only embedded in Tauri binary, causing 404 for browser fetch
 - Potential message loss when WebSocket message arrives during pagination load
   - `addMessage` now re-reads store state after async decryption to avoid overwriting concurrent prepends
 - File attachment uploads in text chat (#149)
