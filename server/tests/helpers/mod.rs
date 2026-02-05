@@ -2,6 +2,19 @@
 //!
 //! Provides `TestApp` for building and sending requests through the full axum router,
 //! plus utilities for user creation, admin grants, and JWT generation.
+//!
+//! ## Shared Resources
+//!
+//! Use [`shared_pool()`] and [`shared_redis()`] to avoid creating new connections per test.
+//!
+//! ## Cleanup Guards
+//!
+//! Use [`CleanupGuard`] for RAII-based cleanup that runs even if a test panics.
+//!
+//! ## Test Servers
+//!
+//! Use [`spawn_test_server()`] when you need stateful middleware testing
+//! (rate limiting, request IDs, etc.) instead of `tower::ServiceExt::oneshot`.
 #![allow(dead_code)]
 
 use axum::{
@@ -11,7 +24,12 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use sqlx::PgPool;
+use std::future::Future;
+use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::OnceCell;
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 use uuid::Uuid;
 use vc_server::{
@@ -22,6 +40,166 @@ use vc_server::{
     voice::sfu::SfuServer,
 };
 
+// ============================================================================
+// Shared resources (Issue #138)
+// ============================================================================
+
+/// Shared database pool across all tests in the same binary.
+static SHARED_POOL: OnceCell<PgPool> = OnceCell::const_new();
+
+/// Shared Redis client across all tests in the same binary.
+static SHARED_REDIS: OnceCell<fred::clients::Client> = OnceCell::const_new();
+
+/// Shared config across all tests in the same binary.
+static SHARED_CONFIG: OnceCell<Config> = OnceCell::const_new();
+
+/// Get or create a shared database pool.
+///
+/// Reuses a single pool across all test cases in the same binary,
+/// avoiding connection exhaustion from creating pools per-test.
+pub async fn shared_pool() -> &'static PgPool {
+    SHARED_POOL
+        .get_or_init(|| async {
+            let config = shared_config().await;
+            db::create_pool(&config.database_url)
+                .await
+                .expect("Failed to connect to test DB")
+        })
+        .await
+}
+
+/// Get or create a shared Redis client.
+pub async fn shared_redis() -> &'static fred::clients::Client {
+    SHARED_REDIS
+        .get_or_init(|| async {
+            let config = shared_config().await;
+            db::create_redis_client(&config.redis_url)
+                .await
+                .expect("Failed to connect to test Redis")
+        })
+        .await
+}
+
+/// Get or create a shared config.
+pub async fn shared_config() -> &'static Config {
+    SHARED_CONFIG
+        .get_or_init(|| async { Config::default_for_test() })
+        .await
+}
+
+// ============================================================================
+// Cleanup Guard (Issue #137)
+// ============================================================================
+
+/// Async cleanup action type.
+type CleanupAction = Box<dyn FnOnce(PgPool) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// RAII guard that runs cleanup actions on drop, even if the test panics.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut guard = CleanupGuard::new(app.pool.clone());
+/// guard.delete_user(user_id);
+/// guard.restore_setup_complete(prev);
+///
+/// // Test assertions here — cleanup runs even if these panic
+/// assert_eq!(resp.status(), 200);
+/// // guard dropped here → cleanup runs
+/// ```
+pub struct CleanupGuard {
+    pool: PgPool,
+    actions: Vec<CleanupAction>,
+}
+
+impl CleanupGuard {
+    /// Create a new cleanup guard for the given pool.
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            actions: Vec::new(),
+        }
+    }
+
+    /// Register a generic async cleanup action.
+    pub fn add<F, Fut>(&mut self, action: F)
+    where
+        F: FnOnce(PgPool) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.actions
+            .push(Box::new(move |pool| Box::pin(action(pool))));
+    }
+
+    /// Register cleanup to delete a user by ID.
+    pub fn delete_user(&mut self, user_id: Uuid) {
+        self.add(move |pool| async move {
+            let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(user_id)
+                .execute(&pool)
+                .await;
+        });
+    }
+
+    /// Register cleanup to restore `setup_complete` to a previous value.
+    pub fn restore_setup_complete(&mut self, value: bool) {
+        self.add(move |pool| async move {
+            let _ =
+                sqlx::query("UPDATE server_config SET value = $1::jsonb WHERE key = 'setup_complete'")
+                    .bind(serde_json::json!(value))
+                    .execute(&pool)
+                    .await;
+        });
+    }
+
+    /// Register cleanup to restore default config values.
+    pub fn restore_config_defaults(&mut self) {
+        self.add(|pool| async move {
+            for (key, val) in [
+                ("server_name", serde_json::json!("Canis Server")),
+                ("registration_policy", serde_json::json!("open")),
+                ("terms_url", serde_json::Value::Null),
+                ("privacy_url", serde_json::Value::Null),
+            ] {
+                let _ =
+                    sqlx::query("UPDATE server_config SET value = $1, updated_by = NULL WHERE key = $2")
+                        .bind(val)
+                        .bind(key)
+                        .execute(&pool)
+                        .await;
+            }
+        });
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        let actions = std::mem::take(&mut self.actions);
+        if actions.is_empty() {
+            return;
+        }
+
+        let pool = self.pool.clone();
+        let handle = tokio::runtime::Handle::current();
+
+        // Spawn a blocking thread to run async cleanup.
+        // This works regardless of tokio runtime flavor.
+        std::thread::spawn(move || {
+            handle.block_on(async move {
+                for action in actions {
+                    action(pool.clone()).await;
+                }
+            });
+        })
+        .join()
+        .expect("Cleanup thread panicked");
+    }
+}
+
+// ============================================================================
+// Test App
+// ============================================================================
+
 /// A test application wrapping the full axum router.
 pub struct TestApp {
     pub router: Router,
@@ -30,15 +208,11 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Create a new test app with real DB and Redis connections.
+    /// Create a new test app using shared DB and Redis connections.
     pub async fn new() -> Self {
-        let config = Config::default_for_test();
-        let pool = db::create_pool(&config.database_url)
-            .await
-            .expect("Failed to connect to test DB");
-        let redis = db::create_redis_client(&config.redis_url)
-            .await
-            .expect("Failed to connect to test Redis");
+        let pool = shared_pool().await.clone();
+        let redis = shared_redis().await.clone();
+        let config = shared_config().await.clone();
         let sfu =
             SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
 
@@ -75,7 +249,65 @@ impl TestApp {
             .await
             .expect("oneshot request failed")
     }
+
+    /// Create a [`CleanupGuard`] for this app's pool.
+    pub fn cleanup_guard(&self) -> CleanupGuard {
+        CleanupGuard::new(self.pool.clone())
+    }
 }
+
+// ============================================================================
+// Test Server (Issue #139)
+// ============================================================================
+
+/// A running test server bound to a random port.
+pub struct TestServer {
+    /// Server address (127.0.0.1:PORT).
+    pub addr: SocketAddr,
+    /// Base URL for HTTP requests (e.g., `http://127.0.0.1:12345`).
+    pub url: String,
+    /// Handle to the server task for cleanup.
+    _handle: JoinHandle<()>,
+}
+
+/// Spawn a real HTTP server on a random port.
+///
+/// Use this instead of `oneshot` when testing stateful middleware behavior
+/// (rate limiting, request IDs, CORS preflight caching, etc.) since `oneshot`
+/// resets middleware state between requests.
+///
+/// # Example
+///
+/// ```ignore
+/// let app = TestApp::new().await;
+/// let server = spawn_test_server(app.router.clone()).await;
+///
+/// let client = reqwest::Client::new();
+/// let resp = client.get(format!("{}/api/health", server.url)).send().await?;
+/// ```
+pub async fn spawn_test_server(router: Router) -> TestServer {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind test server");
+    let addr = listener.local_addr().expect("Failed to get local addr");
+    let url = format!("http://{addr}");
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("Test server failed");
+    });
+
+    TestServer {
+        addr,
+        url,
+        _handle: handle,
+    }
+}
+
+// ============================================================================
+// User & Auth helpers
+// ============================================================================
 
 /// Create a test user and return `(user_id, username)`.
 pub async fn create_test_user(pool: &PgPool) -> (Uuid, String) {

@@ -2,7 +2,8 @@
 //!
 //! Tests the setup API at the HTTP layer using `tower::ServiceExt::oneshot`.
 //! Each test that modifies shared state (`setup_complete`, `system_admins`)
-//! uses `#[serial]` and restores the original state on completion.
+//! uses `#[serial]` and a [`CleanupGuard`] to guarantee state restoration
+//! even if assertions fail.
 //!
 //! Run with: `cargo test --test setup_http_test -- --nocapture`
 
@@ -35,32 +36,6 @@ async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
     })
 }
 
-/// Delete a user by ID (cascades to `system_admins`).
-async fn delete_user(pool: &sqlx::PgPool, user_id: uuid::Uuid) {
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .expect("Failed to delete test user");
-}
-
-/// Restore default config values that `complete` may have changed.
-async fn restore_config_defaults(pool: &sqlx::PgPool) {
-    for (key, val) in [
-        ("server_name", serde_json::json!("Canis Server")),
-        ("registration_policy", serde_json::json!("open")),
-        ("terms_url", serde_json::Value::Null),
-        ("privacy_url", serde_json::Value::Null),
-    ] {
-        sqlx::query("UPDATE server_config SET value = $1, updated_by = NULL WHERE key = $2")
-            .bind(val)
-            .bind(key)
-            .execute(pool)
-            .await
-            .expect("Failed to restore config default");
-    }
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -91,6 +66,10 @@ async fn test_config_returns_values_when_setup_incomplete() {
     let app = TestApp::new().await;
     let prev = set_setup_complete(&app.pool, false).await;
 
+    // Guard restores setup_complete even if assertions below panic
+    let mut guard = app.cleanup_guard();
+    guard.restore_setup_complete(prev);
+
     let req = TestApp::request(Method::GET, "/api/setup/config")
         .body(Body::empty())
         .unwrap();
@@ -107,7 +86,6 @@ async fn test_config_returns_values_when_setup_incomplete() {
         json["registration_policy"].is_string(),
         "Expected registration_policy string"
     );
-    // terms_url and privacy_url may be null or string
     assert!(
         json["terms_url"].is_null() || json["terms_url"].is_string(),
         "Expected terms_url to be null or string"
@@ -116,9 +94,6 @@ async fn test_config_returns_values_when_setup_incomplete() {
         json["privacy_url"].is_null() || json["privacy_url"].is_string(),
         "Expected privacy_url to be null or string"
     );
-
-    // Restore
-    set_setup_complete(&app.pool, prev).await;
 }
 
 #[tokio::test]
@@ -126,6 +101,9 @@ async fn test_config_returns_values_when_setup_incomplete() {
 async fn test_config_returns_403_when_setup_complete() {
     let app = TestApp::new().await;
     let prev = set_setup_complete(&app.pool, true).await;
+
+    let mut guard = app.cleanup_guard();
+    guard.restore_setup_complete(prev);
 
     let req = TestApp::request(Method::GET, "/api/setup/config")
         .body(Body::empty())
@@ -136,9 +114,6 @@ async fn test_config_returns_403_when_setup_complete() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "SETUP_ALREADY_COMPLETE");
-
-    // Restore
-    set_setup_complete(&app.pool, prev).await;
 }
 
 #[tokio::test]
@@ -169,10 +144,13 @@ async fn test_complete_requires_auth() {
 async fn test_complete_requires_admin() {
     let app = TestApp::new().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
-    // NOT making this user an admin
     let token = generate_access_token(&app.config, user_id);
 
     let prev = set_setup_complete(&app.pool, false).await;
+
+    let mut guard = app.cleanup_guard();
+    guard.restore_setup_complete(prev);
+    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -191,10 +169,6 @@ async fn test_complete_requires_admin() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "FORBIDDEN");
-
-    // Cleanup
-    set_setup_complete(&app.pool, prev).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 #[tokio::test]
@@ -206,6 +180,11 @@ async fn test_complete_succeeds_for_admin() {
     let token = generate_access_token(&app.config, user_id);
 
     let prev = set_setup_complete(&app.pool, false).await;
+
+    let mut guard = app.cleanup_guard();
+    guard.restore_config_defaults();
+    guard.restore_setup_complete(prev);
+    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -235,11 +214,6 @@ async fn test_complete_succeeds_for_admin() {
         Some(true),
         "setup_complete should be true after completion"
     );
-
-    // Cleanup — restore config defaults and original setup_complete
-    restore_config_defaults(&app.pool).await;
-    set_setup_complete(&app.pool, prev).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 #[tokio::test]
@@ -251,6 +225,10 @@ async fn test_complete_rejects_invalid_body() {
     let token = generate_access_token(&app.config, user_id);
 
     let prev = set_setup_complete(&app.pool, false).await;
+
+    let mut guard = app.cleanup_guard();
+    guard.restore_setup_complete(prev);
+    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -269,10 +247,6 @@ async fn test_complete_rejects_invalid_body() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-
-    // Cleanup
-    set_setup_complete(&app.pool, prev).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 #[tokio::test]
@@ -284,6 +258,10 @@ async fn test_complete_already_done() {
     let token = generate_access_token(&app.config, user_id);
 
     let prev = set_setup_complete(&app.pool, true).await;
+
+    let mut guard = app.cleanup_guard();
+    guard.restore_setup_complete(prev);
+    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -302,8 +280,4 @@ async fn test_complete_already_done() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "SETUP_ALREADY_COMPLETE");
-
-    // Cleanup
-    set_setup_complete(&app.pool, prev).await;
-    delete_user(&app.pool, user_id).await;
 }
