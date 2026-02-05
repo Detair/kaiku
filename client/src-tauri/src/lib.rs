@@ -130,8 +130,10 @@ pub fn run() {
             commands::admin::admin_de_elevate,
             commands::admin::admin_ban_user,
             commands::admin::admin_unban_user,
+            commands::admin::admin_delete_user,
             commands::admin::admin_suspend_guild,
             commands::admin::admin_unsuspend_guild,
+            commands::admin::admin_delete_guild,
             // Crypto commands
             commands::crypto::get_server_settings,
             commands::crypto::get_backup_status,

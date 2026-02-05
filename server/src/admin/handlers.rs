@@ -851,6 +851,13 @@ pub struct SuspendResponse {
     pub guild_id: Uuid,
 }
 
+/// Delete response.
+#[derive(Debug, Serialize)]
+pub struct DeleteResponse {
+    pub deleted: bool,
+    pub id: Uuid,
+}
+
 /// Announcement response.
 #[derive(Debug, Serialize)]
 pub struct AnnouncementResponse {
@@ -2020,4 +2027,143 @@ pub async fn delete_oidc_provider(
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Delete User / Guild (Elevated)
+// ============================================================================
+
+/// Permanently delete a user and all associated data.
+///
+/// `DELETE /api/admin/users/:id`
+#[tracing::instrument(skip(state))]
+pub async fn delete_user(
+    State(state): State<AppState>,
+    Extension(admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<DeleteResponse>, AdminError> {
+    // Check user exists and get username
+    let user = sqlx::query_as::<_, (Uuid, String)>("SELECT id, username FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let username = match user {
+        Some((_, name)) => name,
+        None => return Err(AdminError::NotFound("User".to_string())),
+    };
+
+    // Cannot delete yourself
+    if user_id == admin.user_id {
+        return Err(AdminError::Validation(
+            "Cannot delete yourself".to_string(),
+        ));
+    }
+
+    // Delete user (cascades to guild_members, messages, sessions, global_bans, etc.)
+    let result = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AdminError::NotFound("User".to_string()));
+    }
+
+    // Log the action
+    let ip_address = addr.ip().to_string();
+    write_audit_log(
+        &state.db,
+        admin.user_id,
+        "admin.users.delete",
+        Some("user"),
+        Some(user_id),
+        Some(serde_json::json!({"username": username})),
+        Some(&ip_address),
+    )
+    .await?;
+
+    // Broadcast admin event
+    if let Err(e) = broadcast_admin_event(
+        &state.redis,
+        &ServerEvent::AdminUserDeleted {
+            user_id,
+            username: username.clone(),
+        },
+    )
+    .await
+    {
+        warn!(user_id = %user_id, error = %e, "Failed to broadcast user delete event");
+    }
+
+    Ok(Json(DeleteResponse {
+        deleted: true,
+        id: user_id,
+    }))
+}
+
+/// Permanently delete a guild and all associated data.
+///
+/// `DELETE /api/admin/guilds/:id`
+#[tracing::instrument(skip(state))]
+pub async fn delete_guild(
+    State(state): State<AppState>,
+    Extension(admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(guild_id): Path<Uuid>,
+) -> Result<Json<DeleteResponse>, AdminError> {
+    // Check guild exists and get name
+    let guild = sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let guild_name = match guild {
+        Some((_, name)) => name,
+        None => return Err(AdminError::NotFound("Guild".to_string())),
+    };
+
+    // Delete guild (cascades to channels, messages, roles, members, invites, etc.)
+    let result = sqlx::query("DELETE FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AdminError::NotFound("Guild".to_string()));
+    }
+
+    // Log the action
+    let ip_address = addr.ip().to_string();
+    write_audit_log(
+        &state.db,
+        admin.user_id,
+        "admin.guilds.delete",
+        Some("guild"),
+        Some(guild_id),
+        Some(serde_json::json!({"guild_name": guild_name})),
+        Some(&ip_address),
+    )
+    .await?;
+
+    // Broadcast admin event
+    if let Err(e) = broadcast_admin_event(
+        &state.redis,
+        &ServerEvent::AdminGuildDeleted {
+            guild_id,
+            guild_name: guild_name.clone(),
+        },
+    )
+    .await
+    {
+        warn!(guild_id = %guild_id, error = %e, "Failed to broadcast guild delete event");
+    }
+
+    Ok(Json(DeleteResponse {
+        deleted: true,
+        id: guild_id,
+    }))
 }

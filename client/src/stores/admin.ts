@@ -409,6 +409,41 @@ export async function banUser(userId: string, reason: string): Promise<boolean> 
 }
 
 /**
+ * Permanently delete a user
+ */
+export async function deleteUser(userId: string): Promise<boolean> {
+  try {
+    const result = await tauri.adminDeleteUser(userId);
+
+    if (result.deleted) {
+      // Remove user from local state
+      setAdminState("users", (users) => users.filter((u) => u.id !== userId));
+
+      // Update stats
+      if (adminState.stats) {
+        setAdminState("stats", {
+          ...adminState.stats,
+          user_count: adminState.stats.user_count - 1,
+        });
+      }
+
+      // Clear selection if this user was selected
+      if (adminState.selectedUserId === userId) {
+        setAdminState({ selectedUserId: null, selectedUserDetails: null });
+      }
+    }
+
+    return result.deleted;
+  } catch (err) {
+    console.error("[Admin] Failed to delete user:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to delete user",
+    });
+    return false;
+  }
+}
+
+/**
  * Unban a user
  */
 export async function unbanUser(userId: string): Promise<boolean> {
@@ -695,6 +730,41 @@ export async function unsuspendGuild(guildId: string): Promise<boolean> {
     console.error("[Admin] Failed to unsuspend guild:", err);
     setAdminState({
       error: err instanceof Error ? err.message : "Failed to unsuspend guild",
+    });
+    return false;
+  }
+}
+
+/**
+ * Permanently delete a guild
+ */
+export async function deleteGuild(guildId: string): Promise<boolean> {
+  try {
+    const result = await tauri.adminDeleteGuild(guildId);
+
+    if (result.deleted) {
+      // Remove guild from local state
+      setAdminState("guilds", (guilds) => guilds.filter((g) => g.id !== guildId));
+
+      // Update stats
+      if (adminState.stats) {
+        setAdminState("stats", {
+          ...adminState.stats,
+          guild_count: adminState.stats.guild_count - 1,
+        });
+      }
+
+      // Clear selection if this guild was selected
+      if (adminState.selectedGuildId === guildId) {
+        setAdminState({ selectedGuildId: null, selectedGuildDetails: null });
+      }
+    }
+
+    return result.deleted;
+  } catch (err) {
+    console.error("[Admin] Failed to delete guild:", err);
+    setAdminState({
+      error: err instanceof Error ? err.message : "Failed to delete guild",
     });
     return false;
   }
@@ -1084,6 +1154,52 @@ export function handleGuildUnsuspendedEvent(guildId: string, guildName: string):
   setAdminState("guilds", (guilds) =>
     guilds.map((g) => (g.id === guildId ? { ...g, suspended_at: null } : g))
   );
+}
+
+/**
+ * Handle user deleted event from WebSocket
+ */
+export function handleUserDeletedEvent(userId: string, username: string): void {
+  console.log(`[Admin] User deleted event: ${username} (${userId})`);
+
+  // Remove user from local state
+  setAdminState("users", (users) => users.filter((u) => u.id !== userId));
+
+  // Update stats
+  if (adminState.stats) {
+    setAdminState("stats", {
+      ...adminState.stats,
+      user_count: adminState.stats.user_count - 1,
+    });
+  }
+
+  // Clear selection if this user was selected
+  if (adminState.selectedUserId === userId) {
+    setAdminState({ selectedUserId: null, selectedUserDetails: null });
+  }
+}
+
+/**
+ * Handle guild deleted event from WebSocket
+ */
+export function handleGuildDeletedEvent(guildId: string, guildName: string): void {
+  console.log(`[Admin] Guild deleted event: ${guildName} (${guildId})`);
+
+  // Remove guild from local state
+  setAdminState("guilds", (guilds) => guilds.filter((g) => g.id !== guildId));
+
+  // Update stats
+  if (adminState.stats) {
+    setAdminState("stats", {
+      ...adminState.stats,
+      guild_count: adminState.stats.guild_count - 1,
+    });
+  }
+
+  // Clear selection if this guild was selected
+  if (adminState.selectedGuildId === guildId) {
+    setAdminState({ selectedGuildId: null, selectedGuildDetails: null });
+  }
 }
 
 // ============================================================================

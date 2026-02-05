@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Friend request and block events now received in desktop app
   - Voice stats, preferences sync, and state patch events now received in desktop app
   - Screen share events now have Tauri listeners (Rust enum already existed)
+- Delete user option in admin panel with confirmation dialog (#147)
+- Delete guild option in admin panel with confirmation dialog (#148)
 - Virtual scrolling for message lists using `@tanstack/solid-virtual`
   - Only ~30 DOM nodes rendered regardless of message count (previously all messages in DOM)
   - Smart height estimation based on message content (images, code blocks, reactions)

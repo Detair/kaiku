@@ -2714,6 +2714,40 @@ export async function adminUnsuspendGuild(
 }
 
 /**
+ * Permanently delete a user (requires elevation).
+ */
+export async function adminDeleteUser(
+  userId: string
+): Promise<{ deleted: boolean; id: string }> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_delete_user", { user_id: userId });
+  }
+
+  return httpRequest<{ deleted: boolean; id: string }>(
+    "DELETE",
+    `/api/admin/users/${userId}`
+  );
+}
+
+/**
+ * Permanently delete a guild (requires elevation).
+ */
+export async function adminDeleteGuild(
+  guildId: string
+): Promise<{ deleted: boolean; id: string }> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("admin_delete_guild", { guild_id: guildId });
+  }
+
+  return httpRequest<{ deleted: boolean; id: string }>(
+    "DELETE",
+    `/api/admin/guilds/${guildId}`
+  );
+}
+
+/**
  * Export users to CSV (admin only).
  * Returns CSV content as a blob for download.
  */

@@ -10,7 +10,7 @@ pub mod types;
 
 use axum::{
     middleware::from_fn_with_state,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 
@@ -118,12 +118,14 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/users/{id}/unban", post(handlers::unban_user))
         .route("/users/bulk-ban", post(handlers::bulk_ban_users))
+        .route("/users/{id}", delete(handlers::delete_user))
         .route(
             "/guilds/{id}/suspend",
             post(handlers::suspend_guild).delete(handlers::unsuspend_guild),
         )
         .route("/guilds/{id}/unsuspend", post(handlers::unsuspend_guild))
         .route("/guilds/bulk-suspend", post(handlers::bulk_suspend_guilds))
+        .route("/guilds/{id}", delete(handlers::delete_guild))
         .route("/announcements", post(handlers::create_announcement))
         // Auth settings (OIDC provider management)
         .route(

@@ -603,6 +603,20 @@ pub enum ServerEvent {
         /// Guild name for display.
         guild_name: String,
     },
+    /// User was permanently deleted
+    AdminUserDeleted {
+        /// User ID that was deleted.
+        user_id: Uuid,
+        /// Username for display.
+        username: String,
+    },
+    /// Guild was permanently deleted
+    AdminGuildDeleted {
+        /// Guild ID that was deleted.
+        guild_id: Uuid,
+        /// Guild name for display.
+        guild_name: String,
+    },
 
     // Report events (broadcast to admin subscribers)
     /// New report created

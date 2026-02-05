@@ -738,6 +738,14 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       await handleAdminGuildUnsuspended(event.guild_id, event.guild_name);
       break;
 
+    case "admin_user_deleted":
+      await handleAdminUserDeleted(event.user_id, event.username);
+      break;
+
+    case "admin_guild_deleted":
+      await handleAdminGuildDeleted(event.guild_id, event.guild_name);
+      break;
+
     // DM read sync event
     case "dm_read":
       handleDMReadEvent(event.channel_id);
@@ -1243,6 +1251,16 @@ async function handleAdminGuildSuspended(guildId: string, guildName: string): Pr
 async function handleAdminGuildUnsuspended(guildId: string, guildName: string): Promise<void> {
   const { handleGuildUnsuspendedEvent } = await import("@/stores/admin");
   handleGuildUnsuspendedEvent(guildId, guildName);
+}
+
+async function handleAdminUserDeleted(userId: string, username: string): Promise<void> {
+  const { handleUserDeletedEvent } = await import("@/stores/admin");
+  handleUserDeletedEvent(userId, username);
+}
+
+async function handleAdminGuildDeleted(guildId: string, guildName: string): Promise<void> {
+  const { handleGuildDeletedEvent } = await import("@/stores/admin");
+  handleGuildDeletedEvent(guildId, guildName);
 }
 
 // Reaction event handlers

@@ -103,6 +103,13 @@ pub struct SuspendResponse {
     pub guild_id: String,
 }
 
+/// Delete response (user or guild).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteResponse {
+    pub deleted: bool,
+    pub id: String,
+}
+
 // ============================================================================
 // Admin Status Commands
 // ============================================================================
@@ -526,6 +533,96 @@ pub async fn admin_unsuspend_guild(
         .map_err(|e| format!("Invalid response: {e}"))?;
 
     debug!("Unsuspended guild {}", guild_id);
+    Ok(result)
+}
+
+// ============================================================================
+// Delete User / Guild Commands
+// ============================================================================
+
+/// Permanently delete a user.
+#[command]
+pub async fn admin_delete_user(
+    state: State<'_, AppState>,
+    user_id: String,
+) -> Result<DeleteResponse, String> {
+    let (server_url, token) = {
+        let auth = state.auth.read().await;
+        (auth.server_url.clone(), auth.access_token.clone())
+    };
+
+    let server_url = server_url.ok_or("Not authenticated")?;
+    let token = token.ok_or("Not authenticated")?;
+
+    debug!("Deleting user {}", user_id);
+
+    let response = state
+        .http
+        .delete(format!("{server_url}/api/admin/users/{user_id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to delete user: {}", e);
+            format!("Connection failed: {e}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to delete user: {} - {}", status, body);
+        return Err(format!("Failed to delete user: {status}"));
+    }
+
+    let result: DeleteResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))?;
+
+    debug!("Deleted user {}", user_id);
+    Ok(result)
+}
+
+/// Permanently delete a guild.
+#[command]
+pub async fn admin_delete_guild(
+    state: State<'_, AppState>,
+    guild_id: String,
+) -> Result<DeleteResponse, String> {
+    let (server_url, token) = {
+        let auth = state.auth.read().await;
+        (auth.server_url.clone(), auth.access_token.clone())
+    };
+
+    let server_url = server_url.ok_or("Not authenticated")?;
+    let token = token.ok_or("Not authenticated")?;
+
+    debug!("Deleting guild {}", guild_id);
+
+    let response = state
+        .http
+        .delete(format!("{server_url}/api/admin/guilds/{guild_id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to delete guild: {}", e);
+            format!("Connection failed: {e}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to delete guild: {} - {}", status, body);
+        return Err(format!("Failed to delete guild: {status}"));
+    }
+
+    let result: DeleteResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))?;
+
+    debug!("Deleted guild {}", guild_id);
     Ok(result)
 }
 
