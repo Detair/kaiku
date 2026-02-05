@@ -1,6 +1,6 @@
 import { Component, For, Show, createEffect, on, createMemo, createSignal, onCleanup } from "solid-js";
 import { createVirtualizer } from "@tanstack/solid-virtual";
-import { Loader2, ChevronDown, AlertCircle, MessageSquare } from "lucide-solid";
+import { Loader2, ChevronDown, AlertCircle, MessageSquare, RefreshCw } from "lucide-solid";
 import MessageItem from "./MessageItem";
 import {
   messagesState,
@@ -32,6 +32,7 @@ const MessageList: Component<MessageListProps> = (props) => {
   const [isAtBottom, setIsAtBottom] = createSignal(true);
   const [hasNewMessages, setHasNewMessages] = createSignal(false);
   const [newMessageCount, setNewMessageCount] = createSignal(0);
+  const [paginationError, setPaginationError] = createSignal<string | null>(null);
 
   // Use createMemo for proper reactive tracking of store values
   const messages = createMemo(() => {
@@ -69,8 +70,8 @@ const MessageList: Component<MessageListProps> = (props) => {
       let estimate = item.isCompact ? 48 : 96;
 
       // Images are tall (~320px from max-h-80)
-      const hasImage = msg.attachments?.some((a: { content_type?: string }) =>
-        a.content_type?.startsWith("image/")
+      const hasImage = msg.attachments?.some((a) =>
+        a.mime_type?.startsWith("image/")
       );
       if (hasImage) estimate = 400;
 
@@ -118,6 +119,7 @@ const MessageList: Component<MessageListProps> = (props) => {
   // --- Infinite scroll: load older messages ---
   async function triggerLoadMore() {
     isLoadingMore = true;
+    setPaginationError(null);
 
     try {
       // Remember what the user is looking at
@@ -133,21 +135,27 @@ const MessageList: Component<MessageListProps> = (props) => {
       if (addedCount > 0) {
         virtualizer.scrollToIndex(topIndex + addedCount, { align: "start" });
 
-        // Fine-adjust by pixel offset
+        // Fine-adjust by pixel offset, then evict, then release guard
         requestAnimationFrame(() => {
           if (containerRef) {
             containerRef.scrollTop += topOffset;
           }
 
-          // Run eviction after scroll restore settles
           requestAnimationFrame(() => {
             evictIfNeeded();
+            isLoadingMore = false;
           });
         });
+        // Early return — isLoadingMore is cleared inside the rAF chain
+        return;
       }
-    } finally {
-      isLoadingMore = false;
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      console.error("[MessageList] Pagination failed:", error);
+      setPaginationError(error);
     }
+
+    isLoadingMore = false;
   }
 
   // --- Memory eviction ---
@@ -164,6 +172,12 @@ const MessageList: Component<MessageListProps> = (props) => {
     const keepEnd = Math.min(msgs.length, centerIndex + halfWindow);
 
     const kept = msgs.slice(keepStart, keepEnd);
+
+    // Guard against evicting everything
+    if (kept.length === 0) {
+      console.warn("[MessageList] Eviction would remove all messages, skipping");
+      return;
+    }
 
     setMessagesState("byChannel", props.channelId, kept);
     // Re-enable hasMore for evicted directions
@@ -186,7 +200,9 @@ const MessageList: Component<MessageListProps> = (props) => {
             !loading() &&
             !isLoadingMore
           ) {
-            triggerLoadMore();
+            triggerLoadMore().catch((err) =>
+              console.error("[MessageList] Unhandled pagination error:", err)
+            );
           }
         },
         { root: containerRef, rootMargin: "200px 0px 0px 0px" }
@@ -204,6 +220,8 @@ const MessageList: Component<MessageListProps> = (props) => {
         setIsAtBottom(true);
         setHasNewMessages(false);
         setNewMessageCount(0);
+        setPaginationError(null);
+        prevMessageCount = 0;
         loadInitialMessages(channelId);
       }
     },
@@ -253,6 +271,21 @@ const MessageList: Component<MessageListProps> = (props) => {
           <p class="text-sm text-text-secondary">
             This is the start of the message history.
           </p>
+        </div>
+      </Show>
+
+      {/* Pagination error indicator */}
+      <Show when={paginationError() && messages().length > 0}>
+        <div class="flex items-center justify-center gap-2 py-3 px-4 text-sm text-accent-danger">
+          <AlertCircle class="w-4 h-4 flex-shrink-0" />
+          <span>Failed to load older messages</span>
+          <button
+            onClick={() => triggerLoadMore().catch(() => {})}
+            class="ml-1 text-text-link hover:underline inline-flex items-center gap-1"
+          >
+            <RefreshCw class="w-3 h-3" />
+            Retry
+          </button>
         </div>
       </Show>
 
@@ -324,13 +357,16 @@ const MessageList: Component<MessageListProps> = (props) => {
                     width: "100%",
                   }}
                 >
-                  <Show when={item()}>
-                    <MessageItem
-                      message={item()!.message}
-                      compact={item()!.isCompact}
-                      guildId={props.guildId}
-                    />
-                  </Show>
+                  {(() => {
+                    const data = item();
+                    return data ? (
+                      <MessageItem
+                        message={data.message}
+                        compact={data.isCompact}
+                        guildId={props.guildId}
+                      />
+                    ) : null;
+                  })()}
                 </div>
               );
             }}
