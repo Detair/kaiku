@@ -16,6 +16,7 @@
   "dependencies": {
     "@floating-ui/dom": "^1.7.5",
     "@solidjs/router": "^0.10.0",
+    "@tanstack/solid-virtual": "^3.13.18",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "dompurify": "^3.3.1",

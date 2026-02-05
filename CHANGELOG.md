@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Virtual scrolling for message lists using `@tanstack/solid-virtual`
+  - Only ~30 DOM nodes rendered regardless of message count (previously all messages in DOM)
+  - Smart height estimation based on message content (images, code blocks, reactions)
+  - Handles 10,000+ message histories efficiently
+- Infinite scroll pagination: scroll to top to load older messages automatically
+  - IntersectionObserver-based sentinel with scroll position preservation
+  - "Beginning of conversation" marker when full history is loaded
+- Configurable memory eviction for message history (default: 2000 messages per channel)
+  - Drops messages far from viewport, re-fetches on scroll back
+
 ### Fixed
+- Potential message loss when WebSocket message arrives during pagination load
+  - `addMessage` now re-reads store state after async decryption to avoid overwriting concurrent prepends
 - File attachment uploads in text chat (#149)
   - Fixed AWS SDK panic when initializing S3 client (missing tokio sleep implementation)
   - MinIO bucket now automatically initialized in development environment

@@ -233,15 +233,21 @@ export async function sendMessage(
  */
 export async function addMessage(message: Message): Promise<void> {
   const channelId = message.channel_id;
-  const existing = messagesState.byChannel[channelId] || [];
 
-  // Avoid duplicates
-  if (existing.some((m) => m.id === message.id)) {
+  // Early duplicate check (best-effort before async work)
+  const earlyExisting = messagesState.byChannel[channelId] || [];
+  if (earlyExisting.some((m) => m.id === message.id)) {
     return;
   }
 
-  // Decrypt if needed
+  // Decrypt if needed (async — store may change during this await)
   const processedMessage = await decryptMessageIfNeeded(message);
+
+  // Re-read store after await to avoid losing concurrent prepends from loadMessages
+  const existing = messagesState.byChannel[channelId] || [];
+  if (existing.some((m) => m.id === processedMessage.id)) {
+    return;
+  }
   setMessagesState("byChannel", channelId, [...existing, processedMessage]);
 }
 
