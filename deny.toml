@@ -16,6 +16,9 @@ ignore = [
     "RUSTSEC-2025-0008",
     # rsa crate Marvin Attack - no safe upgrade available, used by openidconnect
     "RUSTSEC-2023-0071",
+    # lru IterMut Stacked Borrows violation - transitive dep from aws-sdk-s3, we don't use IterMut
+    # TODO(2026-Q2): Re-check if aws-sdk-s3 has updated lru to >= 0.16.3
+    "RUSTSEC-2026-0002",
 ]
 
 # =============================================================================
