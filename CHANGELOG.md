@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - File attachment uploads in text chat (#149)
+  - Fixed AWS SDK panic when initializing S3 client (missing tokio sleep implementation)
   - MinIO bucket now automatically initialized in development environment
   - Added comprehensive file uploads documentation (docs/development/file-uploads.md)
   - Added MinIO initialization script (scripts/init-minio.sh)

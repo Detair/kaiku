@@ -9165,6 +9165,7 @@ dependencies = [
  "argon2",
  "aws-config",
  "aws-sdk-s3",
+ "aws-smithy-async",
  "axum",
  "base64 0.22.1",
  "bitflags 2.10.0",

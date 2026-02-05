@@ -81,6 +81,7 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 # S3
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-smithy-async = { version = "1", features = ["rt-tokio"] }
 
 # API Docs
 utoipa = { version = "5", features = ["axum_extras"] }
