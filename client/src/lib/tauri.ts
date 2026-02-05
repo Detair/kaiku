@@ -656,6 +656,29 @@ export async function getCurrentUser(): Promise<User | null> {
   }
 }
 
+/**
+ * Get auth credentials for fetch-based uploads.
+ * In Tauri mode, retrieves from Rust backend state.
+ * In browser mode, reads from browserState/localStorage.
+ */
+async function getUploadAuth(): Promise<{ token: string | null; baseUrl: string }> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const authInfo = await invoke<[string, string] | null>("get_auth_info");
+    if (!authInfo) {
+      throw new Error("Not authenticated");
+    }
+    return {
+      baseUrl: authInfo[0].replace(/\/+$/, ""),
+      token: authInfo[1],
+    };
+  }
+  return {
+    token: browserState.accessToken || localStorage.getItem("accessToken"),
+    baseUrl: (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, ""),
+  };
+}
+
 export async function uploadAvatar(file: File): Promise<User> {
   // Frontend validation
   const error = validateFileSize(file, 'avatar');
@@ -664,25 +687,9 @@ export async function uploadAvatar(file: File): Promise<User> {
     throw new Error(error);
   }
 
-  let token: string | null = null;
-  let baseUrl: string;
-
-  if (isTauri) {
-    // In Tauri mode, get auth info from the Rust backend
-    const { invoke } = await import("@tauri-apps/api/core");
-    const authInfo = await invoke<[string, string] | null>("get_auth_info");
-    if (!authInfo) {
-      throw new Error("Not authenticated");
-    }
-    baseUrl = authInfo[0].replace(/\/+$/, "");
-    token = authInfo[1];
-  } else {
-    token = browserState.accessToken || localStorage.getItem("accessToken");
-    baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
-  }
+  const { token, baseUrl } = await getUploadAuth();
 
   const headers: Record<string, string> = {};
-
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
@@ -811,24 +818,9 @@ export async function uploadFile(
     throw new Error(error);
   }
 
-  let token: string | null = null;
-  let baseUrl: string;
-
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const authInfo = await invoke<[string, string] | null>("get_auth_info");
-    if (!authInfo) {
-      throw new Error("Not authenticated");
-    }
-    baseUrl = authInfo[0].replace(/\/+$/, "");
-    token = authInfo[1];
-  } else {
-    token = browserState.accessToken || localStorage.getItem("accessToken");
-    baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
-  }
+  const { token, baseUrl } = await getUploadAuth();
 
   const headers: Record<string, string> = {};
-
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
@@ -889,24 +881,9 @@ export async function uploadMessageWithFile(
     throw new Error(error);
   }
 
-  let token: string | null = null;
-  let baseUrl: string;
-
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const authInfo = await invoke<[string, string] | null>("get_auth_info");
-    if (!authInfo) {
-      throw new Error("Not authenticated");
-    }
-    baseUrl = authInfo[0].replace(/\/+$/, "");
-    token = authInfo[1];
-  } else {
-    token = browserState.accessToken || localStorage.getItem("accessToken");
-    baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
-  }
+  const { token, baseUrl } = await getUploadAuth();
 
   const headers: Record<string, string> = {};
-
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
@@ -1238,24 +1215,9 @@ export async function uploadGuildEmoji(
     throw new Error(validationError);
   }
 
-  let token: string | null = null;
-  let baseUrl: string;
-
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const authInfo = await invoke<[string, string] | null>("get_auth_info");
-    if (!authInfo) {
-      throw new Error("Not authenticated");
-    }
-    baseUrl = authInfo[0].replace(/\/+$/, "");
-    token = authInfo[1];
-  } else {
-    token = browserState.accessToken || localStorage.getItem("accessToken");
-    baseUrl = (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, "");
-  }
+  const { token, baseUrl } = await getUploadAuth();
 
   const headers: Record<string, string> = {};
-
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
