@@ -6,6 +6,7 @@
 .PHONY: help setup dev server client test check lint fmt clean \
         docker-up docker-down docker-logs docker-clean \
         db-migrate db-reset db-seed \
+        test-everyone-security \
         build release
 
 # Default target
@@ -103,6 +104,9 @@ test-server: ## Run server tests only
 
 test-watch: ## Run tests in watch mode
 	cargo watch -x 'nextest run' 2>/dev/null || cargo watch -x test
+
+test-everyone-security: ## Run ignored @everyone security integration test in Docker
+	@./scripts/test-everyone-security.sh
 
 check: ## Run cargo check and clippy
 	@echo "$(CYAN)Running cargo check...$(RESET)"
