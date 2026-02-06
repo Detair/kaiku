@@ -71,6 +71,16 @@ pub struct SearchQuery {
     /// Offset for pagination (default 0)
     #[serde(default)]
     pub offset: i64,
+    /// Filter: only messages after this date (ISO 8601)
+    pub date_from: Option<DateTime<Utc>>,
+    /// Filter: only messages before this date (ISO 8601)
+    pub date_to: Option<DateTime<Utc>>,
+    /// Filter: only messages in this channel
+    pub channel_id: Option<Uuid>,
+    /// Filter: only messages by this author
+    pub author_id: Option<Uuid>,
+    /// Filter: "link" or "file"
+    pub has: Option<String>,
 }
 
 const fn default_limit() -> i64 {
@@ -132,6 +142,24 @@ pub async fn search_messages(
         ));
     }
 
+    // Validate date range
+    if let (Some(from), Some(to)) = (query.date_from, query.date_to) {
+        if from > to {
+            return Err(SearchError::InvalidQuery(
+                "date_from must be before date_to".to_string(),
+            ));
+        }
+    }
+
+    // Validate has filter
+    if let Some(ref has) = query.has {
+        if has != "link" && has != "file" {
+            return Err(SearchError::InvalidQuery(
+                "has must be \"link\" or \"file\"".to_string(),
+            ));
+        }
+    }
+
     // Check guild exists
     let guild_exists: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
         .bind(guild_id)
@@ -152,14 +180,23 @@ pub async fn search_messages(
 
     // Filter channels by VIEW_CHANNEL permission
     let mut accessible_channel_ids: Vec<Uuid> = Vec::new();
-    for channel in guild_channels {
-        // Check if user has VIEW_CHANNEL permission for this channel
+    for channel in &guild_channels {
         if crate::permissions::require_channel_access(&state.db, auth.id, channel.id)
             .await
             .is_ok()
         {
             accessible_channel_ids.push(channel.id);
         }
+    }
+
+    // If channel_id filter is provided, validate it's in accessible set
+    if let Some(filter_channel_id) = query.channel_id {
+        if !accessible_channel_ids.contains(&filter_channel_id) {
+            return Err(SearchError::InvalidQuery(
+                "Channel not found or not accessible".to_string(),
+            ));
+        }
+        accessible_channel_ids = vec![filter_channel_id];
     }
 
     // If no channels, return empty results
@@ -172,20 +209,34 @@ pub async fn search_messages(
         }));
     }
 
+    // Build search filters
+    let filters = db::SearchFilters {
+        date_from: query.date_from,
+        date_to: query.date_to,
+        author_id: query.author_id,
+        has_link: query.has.as_deref() == Some("link"),
+        has_file: query.has.as_deref() == Some("file"),
+    };
+
     // Clamp limit
     let limit = query.limit.clamp(1, 100);
     let offset = query.offset.max(0);
 
     // Get total count (filtered by accessible channels)
-    let total =
-        db::count_search_messages_in_channels(&state.db, &accessible_channel_ids, search_term)
-            .await?;
-
-    // Search messages (filtered by accessible channels)
-    let messages = db::search_messages_in_channels(
+    let total = db::count_search_messages_filtered(
         &state.db,
         &accessible_channel_ids,
         search_term,
+        &filters,
+    )
+    .await?;
+
+    // Search messages (filtered by accessible channels)
+    let messages = db::search_messages_filtered(
+        &state.db,
+        &accessible_channel_ids,
+        search_term,
+        &filters,
         limit,
         offset,
     )

@@ -1019,6 +1019,152 @@ pub async fn count_search_messages_in_channels(
 }
 
 // ============================================================================
+// Advanced Search Queries
+// ============================================================================
+
+/// Advanced search filters for message search.
+#[derive(Debug, Default)]
+pub struct SearchFilters {
+    /// Only messages created at or after this time.
+    pub date_from: Option<DateTime<Utc>>,
+    /// Only messages created at or before this time.
+    pub date_to: Option<DateTime<Utc>>,
+    /// Only messages by this author.
+    pub author_id: Option<Uuid>,
+    /// Only messages containing a URL.
+    pub has_link: bool,
+    /// Only messages with file attachments.
+    pub has_file: bool,
+}
+
+/// Search messages with advanced filters using dynamic SQL.
+///
+/// Builds a query dynamically based on which filters are provided.
+/// Always excludes encrypted and soft-deleted messages.
+pub async fn search_messages_filtered(
+    pool: &PgPool,
+    channel_ids: &[Uuid],
+    query: &str,
+    filters: &SearchFilters,
+    limit: i64,
+    offset: i64,
+) -> sqlx::Result<Vec<Message>> {
+    if channel_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut sql = String::from("SELECT m.* FROM messages m");
+
+    if filters.has_file {
+        sql.push_str(" INNER JOIN file_attachments fa ON fa.message_id = m.id");
+    }
+
+    sql.push_str(
+        " WHERE m.channel_id = ANY($1) AND m.deleted_at IS NULL AND m.encrypted = false AND m.content_search @@ websearch_to_tsquery('english', $2)",
+    );
+
+    let mut param_idx = 3u32;
+
+    if filters.date_from.is_some() {
+        write!(sql, " AND m.created_at >= ${param_idx}").unwrap();
+        param_idx += 1;
+    }
+    if filters.date_to.is_some() {
+        write!(sql, " AND m.created_at <= ${param_idx}").unwrap();
+        param_idx += 1;
+    }
+    if filters.author_id.is_some() {
+        write!(sql, " AND m.user_id = ${param_idx}").unwrap();
+        param_idx += 1;
+    }
+    if filters.has_link {
+        sql.push_str(" AND m.content ~* 'https?://'");
+    }
+    // has_file is handled via the JOIN (ensures at least one attachment exists)
+
+    let _ = param_idx; // suppress unused warning
+    sql.push_str(" ORDER BY m.created_at DESC");
+    write!(sql, " LIMIT {limit} OFFSET {offset}").unwrap();
+
+    let mut q = sqlx::query_as::<_, Message>(&sql)
+        .bind(channel_ids)
+        .bind(query);
+
+    if let Some(date_from) = filters.date_from {
+        q = q.bind(date_from);
+    }
+    if let Some(date_to) = filters.date_to {
+        q = q.bind(date_to);
+    }
+    if let Some(author_id) = filters.author_id {
+        q = q.bind(author_id);
+    }
+
+    q.fetch_all(pool).await
+}
+
+/// Count search results with advanced filters using dynamic SQL.
+pub async fn count_search_messages_filtered(
+    pool: &PgPool,
+    channel_ids: &[Uuid],
+    query: &str,
+    filters: &SearchFilters,
+) -> sqlx::Result<i64> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut sql = String::from("SELECT COUNT(*)");
+
+    if filters.has_file {
+        sql.push_str(" FROM messages m INNER JOIN file_attachments fa ON fa.message_id = m.id");
+    } else {
+        sql.push_str(" FROM messages m");
+    }
+
+    sql.push_str(
+        " WHERE m.channel_id = ANY($1) AND m.deleted_at IS NULL AND m.encrypted = false AND m.content_search @@ websearch_to_tsquery('english', $2)",
+    );
+
+    let mut param_idx = 3u32;
+
+    if filters.date_from.is_some() {
+        write!(sql, " AND m.created_at >= ${param_idx}").unwrap();
+        param_idx += 1;
+    }
+    if filters.date_to.is_some() {
+        write!(sql, " AND m.created_at <= ${param_idx}").unwrap();
+        param_idx += 1;
+    }
+    if filters.author_id.is_some() {
+        write!(sql, " AND m.user_id = ${param_idx}").unwrap();
+        param_idx += 1;
+    }
+    if filters.has_link {
+        sql.push_str(" AND m.content ~* 'https?://'");
+    }
+
+    let _ = param_idx;
+
+    let mut q = sqlx::query_as::<_, (i64,)>(&sql)
+        .bind(channel_ids)
+        .bind(query);
+
+    if let Some(date_from) = filters.date_from {
+        q = q.bind(date_from);
+    }
+    if let Some(date_to) = filters.date_to {
+        q = q.bind(date_to);
+    }
+    if let Some(author_id) = filters.author_id {
+        q = q.bind(author_id);
+    }
+
+    let result = q.fetch_one(pool).await?;
+    Ok(result.0)
+}
+
+// ============================================================================
 // File Attachment Queries
 // ============================================================================
 
