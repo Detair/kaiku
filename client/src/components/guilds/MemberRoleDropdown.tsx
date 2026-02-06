@@ -11,7 +11,7 @@ import {
   removeMemberRole,
   canManageRole,
   memberHasPermission,
-  getUserHighestRolePosition,
+  canModerateMember,
 } from "@/stores/permissions";
 import { authState } from "@/stores/auth";
 import { isGuildOwner, kickMember } from "@/stores/guilds";
@@ -90,14 +90,13 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
     );
     if (!hasKickPermission) return false;
 
-    const currentUserHighest = getUserHighestRolePosition(
+    return canModerateMember(
       props.guildId,
-      currentUserId()
+      currentUserId(),
+      props.userId,
+      isOwner(),
+      PermissionBits.KICK_MEMBERS
     );
-    const targetUserHighest = getUserHighestRolePosition(props.guildId, props.userId);
-
-    // Can only moderate members below your highest role.
-    return targetUserHighest > currentUserHighest;
   };
 
   return (

@@ -448,5 +448,28 @@ export function getUserHighestRolePosition(
   return Math.min(...userRoles.map((r) => r.position));
 }
 
+/**
+ * Check whether a member can moderate another member using a specific permission
+ * and role hierarchy checks.
+ */
+export function canModerateMember(
+  guildId: string,
+  actorUserId: string,
+  targetUserId: string,
+  actorIsOwner: boolean,
+  requiredPermission: number
+): boolean {
+  if (!actorUserId || actorUserId === targetUserId) return false;
+  if (actorIsOwner) return true;
+
+  if (!memberHasPermission(guildId, actorUserId, actorIsOwner, requiredPermission)) {
+    return false;
+  }
+
+  const actorHighest = getUserHighestRolePosition(guildId, actorUserId);
+  const targetHighest = getUserHighestRolePosition(guildId, targetUserId);
+  return targetHighest > actorHighest;
+}
+
 // Export the store for reading
 export { permissionsState };

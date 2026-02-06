@@ -10,7 +10,7 @@ import {
   loadMemberRoles,
   getMemberRoles,
   memberHasPermission,
-  getUserHighestRolePosition,
+  canModerateMember,
 } from "@/stores/permissions";
 import { getUserActivity } from "@/stores/presence";
 import { PermissionBits } from "@/lib/permissionConstants";
@@ -44,24 +44,17 @@ const MembersTab: Component<MembersTabProps> = (props) => {
       PermissionBits.MANAGE_ROLES
     );
 
-  const canKickMembers = () =>
-    props.isOwner ||
-    memberHasPermission(
+  const canModerate = (memberUserId: string): boolean => {
+    const currentUserId = authState.user?.id;
+    if (!currentUserId) return false;
+
+    return canModerateMember(
       props.guildId,
-      authState.user?.id || "",
+      currentUserId,
+      memberUserId,
       props.isOwner,
       PermissionBits.KICK_MEMBERS
     );
-
-  const canModerateMember = (memberUserId: string): boolean => {
-    const currentUserId = authState.user?.id;
-    if (!currentUserId || memberUserId === currentUserId) return false;
-    if (props.isOwner) return true;
-    if (!canKickMembers()) return false;
-
-    const currentUserHighest = getUserHighestRolePosition(props.guildId, currentUserId);
-    const targetUserHighest = getUserHighestRolePosition(props.guildId, memberUserId);
-    return targetUserHighest > currentUserHighest;
   };
 
   const guild = () => guildsState.guilds.find((g) => g.id === props.guildId);
@@ -230,7 +223,7 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                   </div>
 
                   {/* Manage dropdown - replaces kick button */}
-                  <Show when={!isMemberOwner() && (canManageRoles() || canModerateMember(member.user_id))}>
+                  <Show when={!isMemberOwner() && (canManageRoles() || canModerate(member.user_id))}>
                     <MemberRoleDropdown
                       guildId={props.guildId}
                       userId={member.user_id}
