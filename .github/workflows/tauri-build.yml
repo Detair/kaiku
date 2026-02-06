@@ -89,8 +89,10 @@ jobs:
       - name: Configure pkg-config (Windows)
         if: runner.os == 'Windows'
         run: |
-          echo "PKG_CONFIG=C:/msys64/mingw64/bin/pkg-config.exe" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig" >> "$GITHUB_ENV"
+          "PKG_CONFIG=C:/msys64/mingw64/bin/pkg-config.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "C:/msys64/mingw64/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:/msys64/usr/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Set CMake policy floor for macOS
         if: runner.os == 'macOS'
@@ -107,7 +109,7 @@ jobs:
       - name: Build Tauri app (targeted)
         if: matrix.target != ''
         working-directory: client
-        run: bun run tauri build -- --target ${{ matrix.target }}
+        run: bun run tauri build --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
