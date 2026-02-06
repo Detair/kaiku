@@ -229,6 +229,7 @@ pub fn create_router(state: AppState) -> Router {
             "/api/guilds/{id}/search",
             get(guild::search::search_messages),
         )
+        .route("/api/dm/search", get(chat::dm_search::search_dm_messages))
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Search)));
 

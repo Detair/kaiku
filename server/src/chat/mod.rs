@@ -3,7 +3,8 @@
 //! Handles channels, messages, and file uploads.
 
 mod channels;
-mod dm;
+pub mod dm;
+pub mod dm_search;
 mod messages;
 pub mod overrides;
 pub mod s3;
