@@ -117,12 +117,11 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           <X class="w-4 h-4" />
         </button>
       </div>
-        <Show when={searchState.total > 0}>
-          <span class="ml-3 text-xs text-text-secondary">
-            {searchState.total} result{searchState.total !== 1 ? "s" : ""}
-          </span>
-        </Show>
-      </div>
+      <Show when={searchState.total > 0}>
+        <span class="ml-3 text-xs text-text-secondary">
+          {searchState.total} result{searchState.total !== 1 ? "s" : ""}
+        </span>
+      </Show>
 
       {/* Results */}
       <div class="flex-1 overflow-y-auto">

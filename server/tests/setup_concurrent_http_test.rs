@@ -15,6 +15,7 @@ mod helpers;
 use axum::{body::Body, http::Method};
 use helpers::{create_test_user, generate_access_token, make_admin, TestApp};
 use serial_test::serial;
+use tokio::time::{timeout, Duration};
 use tower::ServiceExt;
 
 /// Set `setup_complete` to the given value and return the previous value.
@@ -41,7 +42,7 @@ async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
 /// Two admin users simultaneously POST to `/api/setup/complete`.
 /// The compare-and-swap pattern ensures exactly one succeeds (204),
 /// while the other gets 403 (SETUP_ALREADY_COMPLETE).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_concurrent_http_setup_completion() {
     let app = TestApp::new().await;
@@ -93,7 +94,11 @@ async fn test_concurrent_http_setup_completion() {
     // Send both requests concurrently through the full HTTP stack
     let router1 = app.router.clone();
     let router2 = app.router.clone();
-    let (resp1, resp2) = tokio::join!(router1.oneshot(req1), router2.oneshot(req2),);
+    let (resp1, resp2) = timeout(Duration::from_secs(30), async {
+        tokio::join!(router1.oneshot(req1), router2.oneshot(req2),)
+    })
+    .await
+    .expect("Concurrent setup completion requests timed out");
 
     let s1 = resp1.expect("Request 1 failed").status();
     let s2 = resp2.expect("Request 2 failed").status();
@@ -118,7 +123,7 @@ async fn test_concurrent_http_setup_completion() {
 }
 
 /// Test that concurrent completion with 5 admins still results in exactly one success.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_concurrent_http_setup_five_admins() {
     let app = TestApp::new().await;
@@ -169,7 +174,10 @@ async fn test_concurrent_http_setup_five_admins() {
     let mut forbidden_count = 0;
 
     for handle in handles {
-        let status = handle.await.expect("Task panicked");
+        let status = timeout(Duration::from_secs(30), handle)
+            .await
+            .expect("Concurrent setup completion task timed out")
+            .expect("Task panicked");
         match status.as_u16() {
             204 => success_count += 1,
             403 => forbidden_count += 1,

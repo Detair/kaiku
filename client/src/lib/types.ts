@@ -389,6 +389,8 @@ export type ServerEvent =
   | { type: "admin_user_unbanned"; user_id: string; username: string }
   | { type: "admin_guild_suspended"; guild_id: string; guild_name: string }
   | { type: "admin_guild_unsuspended"; guild_id: string; guild_name: string }
+  | { type: "admin_user_deleted"; user_id: string; username: string }
+  | { type: "admin_guild_deleted"; guild_id: string; guild_name: string }
   // DM read sync event
   | { type: "dm_read"; channel_id: string }
   // Guild channel read sync event

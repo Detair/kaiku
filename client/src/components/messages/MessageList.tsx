@@ -1,5 +1,5 @@
 import { Component, For, Show, createEffect, on, createMemo, createSignal, onCleanup } from "solid-js";
-import { createVirtualizer } from "@tanstack/solid-virtual";
+import { createVirtualizer } from "@/lib/virtualizer";
 import { Loader2, ChevronDown, AlertCircle, MessageSquare, RefreshCw } from "lucide-solid";
 import MessageItem from "./MessageItem";
 import {
@@ -62,7 +62,7 @@ const MessageList: Component<MessageListProps> = (props) => {
   const virtualizer = createVirtualizer({
     get count() { return messagesWithCompact().length; },
     getScrollElement: () => containerRef ?? null,
-    estimateSize: (index) => {
+    estimateSize: (index: number) => {
       const item = messagesWithCompact()[index];
       if (!item) return 96;
       const msg = item.message;

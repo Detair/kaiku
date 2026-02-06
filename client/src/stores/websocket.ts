@@ -1396,8 +1396,9 @@ function handleReactionAdd(channelId: string, messageId: string, userId: string,
   if (reactionIndex !== -1) {
     // Update existing reaction
     const reaction = { ...reactions[reactionIndex] };
-    if (!reaction.users.includes(userId)) {
-      reaction.users = [...reaction.users, userId];
+    const users = reaction.users ?? [];
+    if (!users.includes(userId)) {
+      reaction.users = [...users, userId];
       reaction.count = reaction.users.length;
       // Check if it's the current user
       const user = currentUser();
@@ -1437,10 +1438,11 @@ function handleReactionRemove(channelId: string, messageId: string, userId: stri
   if (reactionIndex === -1) return;
 
   const reaction = { ...reactions[reactionIndex] };
-  const userIndex = reaction.users.indexOf(userId);
+  const users = reaction.users ?? [];
+  const userIndex = users.indexOf(userId);
 
   if (userIndex !== -1) {
-    reaction.users = reaction.users.filter((id) => id !== userId);
+    reaction.users = users.filter((id) => id !== userId);
     reaction.count = reaction.users.length;
 
     // Check if it's the current user

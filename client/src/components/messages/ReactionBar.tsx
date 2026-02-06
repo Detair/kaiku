@@ -37,7 +37,7 @@ const ReactionBar: Component<ReactionBarProps> = (props) => {
                 : "bg-surface-layer2 border border-transparent hover:bg-white/10"
             }`}
             onClick={() => handleReactionClick(reaction)}
-            title={reaction.users.length > 0 ? reaction.users.join(", ") : undefined}
+            title={(reaction.users ?? []).length > 0 ? (reaction.users ?? []).join(", ") : undefined}
           >
             <span class="text-base">{reaction.emoji}</span>
             <span class="text-xs text-text-secondary">{reaction.count}</span>

@@ -6,7 +6,7 @@
  */
 
 import { createStore } from "solid-js/store";
-import type { Message, ThreadInfo, PaginatedMessages } from "@/lib/types";
+import type { Message, ThreadInfo } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { messagesState, setMessagesState } from "./messages";
 

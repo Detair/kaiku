@@ -27,8 +27,7 @@ async fn create_rate_limited_app(limits: RateLimits) -> (helpers::TestServer, Co
     let config = Config::default_for_test();
     let pool = helpers::shared_pool().await.clone();
     let redis = helpers::shared_redis().await.clone();
-    let sfu =
-        SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
+    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
 
     let rl_config = RateLimitConfig {
         enabled: true,

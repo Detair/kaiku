@@ -8,9 +8,7 @@
 mod helpers;
 
 use axum::{body::Body, http::Method};
-use helpers::{
-    body_to_json, create_test_user, delete_user, generate_access_token, TestApp,
-};
+use helpers::{body_to_json, create_test_user, delete_user, generate_access_token, TestApp};
 use serial_test::serial;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -104,11 +102,7 @@ async fn send_message(
 }
 
 /// List messages in a channel via the API.
-async fn list_channel_messages(
-    app: &TestApp,
-    channel_id: Uuid,
-    token: &str,
-) -> serde_json::Value {
+async fn list_channel_messages(app: &TestApp, channel_id: Uuid, token: &str) -> serde_json::Value {
     let req = TestApp::request(Method::GET, &format!("/api/messages/channel/{channel_id}"))
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
@@ -223,7 +217,11 @@ async fn test_thread_replies_not_in_channel_feed() {
     // List channel messages — should only show the parent, not the reply
     let channel_msgs = list_channel_messages(&app, channel_id, &token).await;
     let items = channel_msgs["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "Channel feed should only have the parent message");
+    assert_eq!(
+        items.len(),
+        1,
+        "Channel feed should only have the parent message"
+    );
     assert_eq!(items[0]["id"], parent_id);
 
     // Cleanup
@@ -246,7 +244,14 @@ async fn test_list_thread_replies() {
     let parent_id = Uuid::parse_str(parent_id_str).unwrap();
 
     for i in 1..=3 {
-        send_message(&app, channel_id, &token, &format!("Reply {i}"), Some(parent_id)).await;
+        send_message(
+            &app,
+            channel_id,
+            &token,
+            &format!("Reply {i}"),
+            Some(parent_id),
+        )
+        .await;
     }
 
     // List thread replies
@@ -284,7 +289,14 @@ async fn test_thread_replies_pagination() {
     let parent_id = Uuid::parse_str(parent_id_str).unwrap();
 
     for i in 1..=5 {
-        send_message(&app, channel_id, &token, &format!("Reply {i}"), Some(parent_id)).await;
+        send_message(
+            &app,
+            channel_id,
+            &token,
+            &format!("Reply {i}"),
+            Some(parent_id),
+        )
+        .await;
     }
 
     // Fetch first page (limit=2)
@@ -301,7 +313,10 @@ async fn test_thread_replies_pagination() {
     assert_eq!(items1.len(), 2);
     assert_eq!(items1[0]["content"], "Reply 1");
     assert_eq!(items1[1]["content"], "Reply 2");
-    assert!(page1["has_more"].as_bool().unwrap(), "Should have more pages");
+    assert!(
+        page1["has_more"].as_bool().unwrap(),
+        "Should have more pages"
+    );
 
     // Fetch second page using cursor
     let cursor = page1["next_cursor"].as_str().unwrap();
@@ -373,11 +388,7 @@ async fn test_cannot_nest_threads() {
         .unwrap();
 
     let resp = app.oneshot(req).await;
-    assert_ne!(
-        resp.status(),
-        201,
-        "Nested threads should be rejected"
-    );
+    assert_ne!(resp.status(), 201, "Nested threads should be rejected");
 
     // Cleanup
     cleanup_guild(&app.pool, guild_id).await;
@@ -432,7 +443,10 @@ async fn test_delete_thread_reply_decrements_counter() {
             .fetch_one(&app.pool)
             .await
             .unwrap();
-    assert_eq!(count_after, 1, "Counter should decrement after reply deletion");
+    assert_eq!(
+        count_after, 1,
+        "Counter should decrement after reply deletion"
+    );
 
     // Cleanup
     cleanup_guild(&app.pool, guild_id).await;
@@ -461,12 +475,19 @@ async fn test_mark_thread_read() {
     let reply_id = Uuid::parse_str(reply["id"].as_str().unwrap()).unwrap();
 
     // Mark thread as read
-    let req = TestApp::request(Method::POST, &format!("/api/messages/{parent_id_str}/thread/read"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/{parent_id_str}/thread/read"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap();
     let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 204, "Mark thread read should return 204 No Content");
+    assert_eq!(
+        resp.status(),
+        204,
+        "Mark thread read should return 204 No Content"
+    );
 
     // Verify read state in DB
     let last_read: Option<Uuid> = sqlx::query_scalar(
@@ -479,7 +500,11 @@ async fn test_mark_thread_read() {
     .expect("Query should succeed")
     .flatten();
 
-    assert_eq!(last_read, Some(reply_id), "last_read_message_id should point to the latest reply");
+    assert_eq!(
+        last_read,
+        Some(reply_id),
+        "last_read_message_id should point to the latest reply"
+    );
 
     // Cleanup
     cleanup_guild(&app.pool, guild_id).await;

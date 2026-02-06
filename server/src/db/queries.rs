@@ -764,13 +764,12 @@ pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> sqlx::Res
 /// If the message is a thread reply, also decrements the parent's thread counters.
 pub async fn admin_delete_message(pool: &PgPool, id: Uuid) -> sqlx::Result<bool> {
     // Fetch parent_id before deletion so we can update thread counters
-    let parent_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT parent_id FROM messages WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .flatten();
+    let parent_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT parent_id FROM messages WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
 
     let result = sqlx::query(
         r"

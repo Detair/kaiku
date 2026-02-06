@@ -2057,9 +2057,7 @@ pub async fn delete_user(
 
     // Cannot delete yourself
     if user_id == admin.user_id {
-        return Err(AdminError::Validation(
-            "Cannot delete yourself".to_string(),
-        ));
+        return Err(AdminError::Validation("Cannot delete yourself".to_string()));
     }
 
     // Delete user (cascades to guild_members, messages, sessions, global_bans, etc.)
