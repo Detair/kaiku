@@ -6,11 +6,9 @@
 //! Run ignored (integration) tests: `cargo test --test screenshare_test -- --ignored`
 
 use uuid::Uuid;
-
 // ============================================================================
 // Unit Tests (no database/Redis required)
 // ============================================================================
-
 use vc_server::voice::{
     Quality, ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareStartRequest,
 };

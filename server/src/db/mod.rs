@@ -12,11 +12,11 @@ mod tests;
 use std::time::Duration;
 
 use anyhow::Result;
-use sqlx::{postgres::PgPoolOptions, PgPool};
-use tracing::info;
-
 pub use models::*;
 pub use queries::*;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
+use tracing::info;
 pub use user_features::UserFeatures;
 
 /// Create `PostgreSQL` connection pool with health configuration.

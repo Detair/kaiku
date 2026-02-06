@@ -2,8 +2,9 @@
 //!
 //! Loads configuration from environment variables.
 
-use anyhow::{Context, Result};
 use std::env;
+
+use anyhow::{Context, Result};
 
 /// Server configuration loaded from environment variables.
 #[derive(Debug, Clone)]
@@ -88,8 +89,9 @@ pub struct Config {
 
     /// Whether to fail open (allow actions) when Redis block checks fail (default: false)
     ///
-    /// When false (recommended): Block checks fail-closed, rejecting DMs/calls if Redis is unavailable.
-    /// When true: Block checks fail-open, allowing actions if Redis is unavailable (prioritizes availability).
+    /// When false (recommended): Block checks fail-closed, rejecting DMs/calls if Redis is
+    /// unavailable. When true: Block checks fail-open, allowing actions if Redis is
+    /// unavailable (prioritizes availability).
     pub block_check_fail_open: bool,
 
     /// Allowed CORS origins (comma-separated, default: "*" for dev)

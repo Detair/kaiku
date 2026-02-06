@@ -1,7 +1,8 @@
 //! Tauri commands for rich presence (game detection).
 
-use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
 use tauri::command;
 
 use crate::presence::{self, ProcessScanner};

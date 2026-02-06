@@ -1,13 +1,12 @@
 //! Rate limiting error types for HTTP responses.
 
-use crate::ratelimit::RateLimitResult;
 use axum::http::header::HeaderValue;
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::Serialize;
+
+use crate::ratelimit::RateLimitResult;
 
 /// Errors that can occur during rate limit checks.
 #[derive(Debug)]

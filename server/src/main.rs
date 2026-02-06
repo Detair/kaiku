@@ -2,10 +2,10 @@
 //!
 //! Self-hosted voice and text chat platform backend.
 
-use anyhow::Result;
 use std::net::SocketAddr;
-use tracing::info;
 
+use anyhow::Result;
+use tracing::info;
 use vc_server::{api, chat, config, db, email, voice};
 
 #[tokio::main]

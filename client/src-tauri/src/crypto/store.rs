@@ -239,9 +239,10 @@ impl LocalKeyStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
     use vc_crypto::types::Curve25519PublicKey;
+
+    use super::*;
 
     #[test]
     fn test_store_account_roundtrip() {

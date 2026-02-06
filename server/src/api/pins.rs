@@ -2,12 +2,10 @@
 //!
 //! CRUD operations for user's global pins (notes, links, pinned messages).
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -343,9 +341,10 @@ pub async fn reorder_pins(
                 .await?;
 
         // Optional: fail if any pin is not found/owned?
-        // Current behavior allows partial updates if we don't check, but transaction ensures all or nothing for the DB.
-        // If a pin ID is invalid/not owned, rows_affected will be 0.
-        // We might want to ensure we are reordering what we expect, but loose reorder is often acceptable.
+        // Current behavior allows partial updates if we don't check, but transaction ensures all or
+        // nothing for the DB. If a pin ID is invalid/not owned, rows_affected will be 0.
+        // We might want to ensure we are reordering what we expect, but loose reorder is often
+        // acceptable.
     }
 
     tx.commit().await?;

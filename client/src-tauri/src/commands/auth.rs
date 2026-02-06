@@ -298,9 +298,7 @@ pub async fn get_current_user(state: State<'_, AppState>) -> Result<Option<User>
 /// Returns the server URL and access token so the webview can make
 /// authenticated fetch requests directly (needed for multipart uploads).
 #[command]
-pub async fn get_auth_info(
-    state: State<'_, AppState>,
-) -> Result<Option<(String, String)>, String> {
+pub async fn get_auth_info(state: State<'_, AppState>) -> Result<Option<(String, String)>, String> {
     let auth = state.auth.read().await;
     match (&auth.server_url, &auth.access_token) {
         (Some(url), Some(token)) => Ok(Some((url.clone(), token.clone()))),

@@ -2,11 +2,9 @@
 //!
 //! Handlers for registering and managing slash commands.
 
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    Json,
-};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use thiserror::Error;

@@ -17,29 +17,26 @@
 //! (rate limiting, request IDs, etc.) instead of `tower::ServiceExt::oneshot`.
 #![allow(dead_code)]
 
-use axum::{
-    body::Body,
-    http::{self, Method, Request, Response},
-    Router,
-};
-use http_body_util::BodyExt;
-use sqlx::PgPool;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{self, Method, Request, Response};
+use axum::Router;
+use http_body_util::BodyExt;
+use sqlx::PgPool;
 use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 use uuid::Uuid;
-use vc_server::{
-    api::{create_router, AppState},
-    auth::jwt,
-    config::Config,
-    db,
-    voice::sfu::SfuServer,
-};
+use vc_server::api::{create_router, AppState};
+use vc_server::auth::jwt;
+use vc_server::config::Config;
+use vc_server::db;
+use vc_server::voice::sfu::SfuServer;
 
 // ============================================================================
 // Shared resources (Issue #138)

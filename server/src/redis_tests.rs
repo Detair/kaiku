@@ -4,8 +4,9 @@
 
 #[cfg(test)]
 mod redis_tests {
-    use fred::prelude::*;
     use std::time::Duration;
+
+    use fred::prelude::*;
     use tokio::time::sleep;
     use uuid::Uuid;
 

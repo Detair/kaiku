@@ -5,10 +5,8 @@
 
 pub mod handlers;
 
-use axum::{
-    routing::{get, post},
-    Router,
-};
+use axum::routing::{get, post};
+use axum::Router;
 
 use crate::api::AppState;
 

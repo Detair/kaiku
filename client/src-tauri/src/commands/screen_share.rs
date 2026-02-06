@@ -2,6 +2,11 @@
 //!
 //! Tauri commands for native screen capture and sharing via WebRTC.
 
+use serde::{Deserialize, Serialize};
+use tauri::{command, State};
+use tokio::sync::{mpsc, watch};
+use tracing::{error, info, warn};
+
 use crate::capture::capturer::FrameCapturer;
 use crate::capture::source::{enumerate_sources, find_target_by_id};
 use crate::capture::{CaptureSource, CaptureSourceType};
@@ -9,12 +14,6 @@ use crate::video::encoder::{VideoEncoder, Vp9Encoder};
 use crate::video::rtp::VideoRtpSender;
 use crate::video::{EncodedPacket, QualityParams};
 use crate::AppState;
-
-use serde::{Deserialize, Serialize};
-use tauri::command;
-use tauri::State;
-use tokio::sync::{mpsc, watch};
-use tracing::{error, info, warn};
 
 /// Status of an active screen share.
 #[derive(Debug, Clone, Serialize, Deserialize)]

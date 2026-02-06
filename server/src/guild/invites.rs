@@ -1,17 +1,17 @@
 //! Guild Invite Handlers
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::Json;
 use chrono::{Duration, Utc};
 use rand::Rng;
 use uuid::Uuid;
 
 use super::handlers::GuildError;
 use super::types::{CreateInviteRequest, GuildInvite, InviteResponse};
-use crate::{api::AppState, auth::AuthUser, db};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::db;
 
 /// Generate a cryptographically random 8-character invite code
 fn generate_invite_code() -> String {

@@ -1,9 +1,11 @@
 //! Redis Streams-backed call service for DM voice calls.
 
-use crate::voice::call::{CallEventType, CallState, EndReason};
-use fred::prelude::*;
 use std::collections::{HashMap, HashSet};
+
+use fred::prelude::*;
 use uuid::Uuid;
+
+use crate::voice::call::{CallEventType, CallState, EndReason};
 
 /// Ring timeout - call ends after this many seconds if no one answers
 const RING_TIMEOUT_SECS: i64 = 90;

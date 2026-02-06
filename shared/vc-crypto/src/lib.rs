@@ -15,8 +15,5 @@ pub use recovery::{EncryptedBackup, RecoveryKey};
 
 /// Re-export vodozemac types that are commonly needed.
 pub mod types {
-    pub use vodozemac::Curve25519PublicKey;
-    pub use vodozemac::Ed25519PublicKey;
-    pub use vodozemac::Ed25519Signature;
-    pub use vodozemac::KeyId;
+    pub use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature, KeyId};
 }

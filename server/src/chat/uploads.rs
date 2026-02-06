@@ -2,24 +2,20 @@
 //!
 //! Handles file uploads to S3-compatible storage and metadata management.
 
-use axum::extract::Multipart;
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use super::messages::{detect_mention_type, AttachmentInfo, AuthorProfile, MessageResponse};
-use crate::{
-    api::AppState,
-    auth::{jwt::validate_access_token, AuthUser},
-    db,
-    ws::{broadcast_to_channel, ServerEvent},
-};
+use crate::api::AppState;
+use crate::auth::jwt::validate_access_token;
+use crate::auth::AuthUser;
+use crate::db;
+use crate::ws::{broadcast_to_channel, ServerEvent};
 
 // ============================================================================
 // Error Types

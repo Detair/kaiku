@@ -1,6 +1,7 @@
 //! User-facing report handlers.
 
-use axum::{extract::State, Json};
+use axum::extract::State;
+use axum::Json;
 use fred::prelude::*;
 use validator::Validate;
 

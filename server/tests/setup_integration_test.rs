@@ -13,9 +13,10 @@
 //!
 //! Run with: `cargo test --test setup_integration_test`
 
+use std::sync::Arc;
+
 use serial_test::serial;
 use sqlx::PgPool;
-use std::sync::Arc;
 use vc_server::config::Config;
 use vc_server::db;
 

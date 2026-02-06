@@ -1,8 +1,9 @@
 //! IP extraction and normalization for rate limiting.
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 use axum::extract::ConnectInfo;
 use axum::http::HeaderMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use crate::ratelimit::constants::IPV6_PREFIX_SEGMENTS;
 
@@ -58,8 +59,9 @@ pub fn normalize_ip(ip: IpAddr) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::Ipv6Addr;
+
+    use super::*;
 
     #[test]
     fn test_normalize_ipv4() {

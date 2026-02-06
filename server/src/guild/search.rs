@@ -2,17 +2,17 @@
 //!
 //! Full-text search for messages within a guild using `PostgreSQL`.tsvector.
 
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{api::AppState, auth::AuthUser, db};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::db;
 
 // ============================================================================
 // Error Types

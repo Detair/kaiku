@@ -4,10 +4,8 @@
 //! The recovery key is a 256-bit random value displayed as Base58 for easy
 //! user storage and entry.
 
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
-};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::{Argon2, Params};
 use serde::{Deserialize, Serialize};
 use zeroize::{ZeroizeOnDrop, Zeroizing};

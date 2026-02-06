@@ -3,17 +3,17 @@
 //! Handles S3-compatible storage for file uploads.
 //! Supports any S3-compatible backend: AWS S3, `MinIO`, Backblaze B2, Cloudflare R2.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use aws_config::Region;
-use aws_sdk_s3::{
-    config::{
-        Credentials, IdentityCache, SharedCredentialsProvider, StalledStreamProtectionConfig,
-    },
-    presigning::PresigningConfig,
-    primitives::ByteStream,
-    Client,
+use aws_sdk_s3::config::{
+    Credentials, IdentityCache, SharedCredentialsProvider, StalledStreamProtectionConfig,
 };
+use aws_sdk_s3::presigning::PresigningConfig;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client;
 use aws_smithy_async::rt::sleep::TokioSleep;
-use std::{sync::Arc, time::Duration};
 use thiserror::Error;
 use tracing::info;
 

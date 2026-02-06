@@ -1,11 +1,9 @@
 //! Message Handlers
 
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::{DateTime, Utc};
 use fred::interfaces::{KeysInterface, PubsubInterface};
 use serde::{Deserialize, Serialize};
@@ -13,14 +11,12 @@ use tracing::warn;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    db,
-    permissions::{get_member_permission_context, GuildPermissions},
-    social::block_cache,
-    ws::{broadcast_to_channel, broadcast_to_user, ServerEvent},
-};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::db;
+use crate::permissions::{get_member_permission_context, GuildPermissions};
+use crate::social::block_cache;
+use crate::ws::{broadcast_to_channel, broadcast_to_user, ServerEvent};
 
 // ============================================================================
 // Error Types
@@ -1130,11 +1126,12 @@ pub async fn mark_thread_read(
 
 #[cfg(test)]
 mod tests {
+    use sqlx::PgPool;
+
     use super::*;
     use crate::api::AppState;
     use crate::auth::AuthUser;
     use crate::config::Config;
-    use sqlx::PgPool;
 
     fn test_auth_user(user: &db::User) -> AuthUser {
         AuthUser {

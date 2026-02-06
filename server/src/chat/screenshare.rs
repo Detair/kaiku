@@ -1,30 +1,24 @@
 //! Screen Share Handlers
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use sqlx::Row;
+use tracing::{error, warn};
 use uuid::Uuid;
 
-use tracing::{error, warn};
-
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    db::user_features::UserFeatures,
-    permissions::{require_guild_permission, GuildPermissions},
-    voice::{
-        screen_share::{
-            check_limit, stop_screen_share, try_start_screen_share, validate_source_label,
-        },
-        Quality, ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo,
-        ScreenShareStartRequest,
-    },
-    ws::{broadcast_to_channel, ServerEvent},
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::db::user_features::UserFeatures;
+use crate::permissions::{require_guild_permission, GuildPermissions};
+use crate::voice::screen_share::{
+    check_limit, stop_screen_share, try_start_screen_share, validate_source_label,
 };
+use crate::voice::{
+    Quality, ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareStartRequest,
+};
+use crate::ws::{broadcast_to_channel, ServerEvent};
 
 impl IntoResponse for ScreenShareError {
     fn into_response(self) -> Response {

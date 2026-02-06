@@ -8,33 +8,30 @@
 
 #![allow(clippy::used_underscore_binding)]
 
-use axum::{
-    extract::{ConnectInfo, Path, Query, State},
-    Extension, Json,
-};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::net::SocketAddr;
-use tracing::warn;
-use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::auth::mfa_crypto::decrypt_mfa_secret;
-use crate::db::find_user_by_id;
-use crate::permissions::models::AuditLogEntry;
-use crate::permissions::queries::{create_elevated_session, write_audit_log};
-use sqlx::PgPool;
-
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::header;
 use axum::response::IntoResponse;
+use axum::{Extension, Json};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use tracing::warn;
+use uuid::Uuid;
 
 use super::types::{
     AdminError, BulkActionFailure, BulkBanRequest, BulkBanResponse, BulkSuspendRequest,
     BulkSuspendResponse, CreateAnnouncementRequest, ElevateRequest, ElevateResponse, ElevatedAdmin,
     GlobalBanRequest, SuspendGuildRequest, SystemAdminUser,
 };
+use crate::api::AppState;
+use crate::auth::mfa_crypto::decrypt_mfa_secret;
+use crate::db::find_user_by_id;
+use crate::permissions::models::AuditLogEntry;
+use crate::permissions::queries::{create_elevated_session, write_audit_log};
 use crate::ws::{broadcast_admin_event, ServerEvent};
 
 // ============================================================================

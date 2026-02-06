@@ -4,6 +4,7 @@
 //! Run with: `cargo test ratelimit --ignored -- --nocapture`
 
 use std::collections::HashSet;
+
 use vc_server::config::Config;
 use vc_server::db;
 use vc_server::ratelimit::{

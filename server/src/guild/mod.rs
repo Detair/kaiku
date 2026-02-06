@@ -10,10 +10,8 @@ pub mod roles;
 pub mod search;
 pub mod types;
 
-use axum::{
-    routing::{delete, get, patch, post},
-    Router,
-};
+use axum::routing::{delete, get, patch, post};
+use axum::Router;
 
 use crate::api::AppState;
 use crate::pages;

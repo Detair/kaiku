@@ -8,12 +8,11 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tracing::{debug, warn};
 use uuid::Uuid;
-use webrtc::{
-    rtp::packet::Packet as RtpPacket,
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
-    track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter},
-    track::track_remote::TrackRemote,
-};
+use webrtc::rtp::packet::Packet as RtpPacket;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::track::track_remote::TrackRemote;
 
 use super::error::VoiceError;
 use super::peer::Peer;
@@ -215,9 +214,10 @@ pub fn spawn_rtp_forwarder(
         // Clean up this specific track when it ends
         // We can't use remove_source because that removes ALL tracks for the user
         // We need a way to remove just this track from subscriptions?
-        // Actually, remove_source is fine if the user disconnects, but if they just stop screen sharing?
-        // We should probably just let the subscriptions stick around or clean them up specifically.
-        // For now, let's just log. The Peer cleanup handles the main removal.
+        // Actually, remove_source is fine if the user disconnects, but if they just stop screen
+        // sharing? We should probably just let the subscriptions stick around or clean them
+        // up specifically. For now, let's just log. The Peer cleanup handles the main
+        // removal.
         debug!(
              source = %source_user_id,
              source_type = ?source_type,

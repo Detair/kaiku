@@ -2,24 +2,20 @@
 //!
 //! Handlers for managing custom guild emojis.
 
-use axum::{
-    extract::{Multipart, Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::extract::{Multipart, Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
+use fred::interfaces::PubsubInterface;
 use serde_json::json;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    guild::types::{CreateEmojiRequest, GuildEmoji, UpdateEmojiRequest},
-    ws::ServerEvent,
-};
-use fred::interfaces::PubsubInterface;
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::guild::types::{CreateEmojiRequest, GuildEmoji, UpdateEmojiRequest};
+use crate::ws::ServerEvent;
 // Use direct Redis publish for now as broadcast_guild_emoji_update isn't in mod.rs yet
 // but we added GuildEmojiUpdated to ServerEvent.
 

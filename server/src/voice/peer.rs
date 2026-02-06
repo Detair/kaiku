@@ -8,17 +8,15 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
-use webrtc::{
-    api::API,
-    ice_transport::ice_connection_state::RTCIceConnectionState,
-    peer_connection::{configuration::RTCConfiguration, RTCPeerConnection},
-    rtp_transceiver::{
-        rtp_codec::RTPCodecType, rtp_transceiver_direction::RTCRtpTransceiverDirection,
-        RTCRtpTransceiverInit,
-    },
-    track::track_local::track_local_static_rtp::TrackLocalStaticRTP,
-    track::track_remote::TrackRemote,
-};
+use webrtc::api::API;
+use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_remote::TrackRemote;
 
 use super::error::VoiceError;
 use super::track_types::TrackSource;

@@ -2,12 +2,14 @@
 
 mod helpers;
 
-use axum::{body::Body, http::Method};
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::Method;
 use fred::interfaces::{ClientLike, EventInterface, KeysInterface, PubsubInterface};
 use helpers::{create_test_user, delete_user, generate_access_token, TestApp};
 use http_body_util::BodyExt;
 use serde_json::json;
-use std::time::Duration;
 use vc_server::db;
 
 /// Test creating a bot application.

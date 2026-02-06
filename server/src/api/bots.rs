@@ -2,15 +2,12 @@
 //!
 //! Handlers for creating and managing bot applications.
 
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
-    Argon2,
-};
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    Json,
-};
+use argon2::password_hash::rand_core::OsRng;
+use argon2::password_hash::{PasswordHasher, SaltString};
+use argon2::Argon2;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use thiserror::Error;

@@ -1,8 +1,9 @@
 //! Sound playback commands for notification sounds.
 
-use rodio::{Decoder, OutputStreamBuilder, Sink};
 use std::io::Cursor;
 use std::thread;
+
+use rodio::{Decoder, OutputStreamBuilder, Sink};
 use tauri::command;
 
 // ============================================================================

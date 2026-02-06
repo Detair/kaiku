@@ -2,13 +2,15 @@
 //!
 //! Manages real-time connection to the server with automatic reconnection.
 
-use futures::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 /// Client events sent to the server.

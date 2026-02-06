@@ -2,11 +2,13 @@
 //!
 //! Provides endpoints for querying unread message counts across guilds and DMs.
 
-use axum::{extract::State, http::StatusCode, Json};
-
-use crate::{auth::AuthUser, db};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::Json;
 
 use super::AppState;
+use crate::auth::AuthUser;
+use crate::db;
 
 /// Get aggregate unread counts for the authenticated user.
 ///

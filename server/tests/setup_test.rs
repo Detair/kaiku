@@ -95,10 +95,11 @@ async fn test_setup_initially_incomplete() {
     let user_count = db::count_users(&pool).await.expect("Failed to count users");
 
     // Note: In test environments, the migration might run on a fresh database (no users),
-    // setting setup_complete=false. If tests then add users, we have users but setup_complete=false,
-    // which is a valid state for a fresh install where users were added after the migration.
-    // The migration only marks setup_complete=true if users existed AT THE TIME the migration ran.
-    // Therefore, we can't assert setup_complete==true just because users exist now.
+    // setting setup_complete=false. If tests then add users, we have users but
+    // setup_complete=false, which is a valid state for a fresh install where users were added
+    // after the migration. The migration only marks setup_complete=true if users existed AT THE
+    // TIME the migration ran. Therefore, we can't assert setup_complete==true just because
+    // users exist now.
     println!(
         "✅ Setup status check passed (users: {user_count}, setup_complete: {setup_complete})"
     );

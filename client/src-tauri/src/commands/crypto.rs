@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{command, Manager, State};

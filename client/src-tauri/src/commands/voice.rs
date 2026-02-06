@@ -2,19 +2,20 @@
 //!
 //! Tauri commands for voice chat functionality.
 
+use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use std::sync::Arc;
+
+use tauri::{command, AppHandle, Emitter, State};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
+use webrtc::rtp::packet::Packet as RtpPacket;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocalWriter;
+
 use crate::audio::{AudioDeviceList, FRAME_SIZE_MS, SAMPLE_RATE};
 use crate::network::ClientEvent;
 use crate::webrtc::IceServerConfig;
 use crate::AppState;
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
-use std::sync::Arc;
-use tauri::{command, AppHandle, Emitter, State};
-use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
-use webrtc::{
-    rtp::packet::Packet as RtpPacket,
-    track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter},
-};
 
 /// Join a voice channel.
 ///

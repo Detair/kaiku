@@ -26,10 +26,8 @@ mod track;
 mod track_types;
 pub mod ws_handler;
 
-use axum::{routing::get, Router};
-
-use crate::api::AppState;
-
+use axum::routing::get;
+use axum::Router;
 // Re-exports
 pub use error::VoiceError;
 pub use quality::Quality;
@@ -39,6 +37,8 @@ pub use screen_share::{
 pub use sfu::{ParticipantInfo, Room, SfuServer};
 pub use stats::{UserStats, VoiceStats};
 pub use track_types::{TrackInfo, TrackKind, TrackSource};
+
+use crate::api::AppState;
 
 /// Create voice router.
 ///

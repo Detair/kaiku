@@ -339,6 +339,7 @@ async fn create_test_pool() -> sqlx::PgPool {
 #[ignore] // Requires PostgreSQL and WebRTC
 async fn test_sfu_server_creation() {
     use std::sync::Arc;
+
     use vc_server::config::Config;
     use vc_server::voice::sfu::SfuServer;
 
@@ -352,6 +353,7 @@ async fn test_sfu_server_creation() {
 #[ignore] // Requires PostgreSQL and WebRTC
 async fn test_sfu_get_or_create_room() {
     use std::sync::Arc;
+
     use vc_server::config::Config;
     use vc_server::voice::sfu::SfuServer;
 
@@ -373,6 +375,7 @@ async fn test_sfu_get_or_create_room() {
 #[ignore] // Requires PostgreSQL and WebRTC
 async fn test_sfu_multiple_rooms() {
     use std::sync::Arc;
+
     use vc_server::config::Config;
     use vc_server::voice::sfu::SfuServer;
 

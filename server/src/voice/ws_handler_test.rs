@@ -2,14 +2,16 @@
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use fred::prelude::*;
+    use sqlx::{PgPool, Row};
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
     use crate::config::Config;
     use crate::voice::{error, sfu, ws_handler};
     use crate::ws::{ClientEvent, ServerEvent};
-    use fred::prelude::*;
-    use sqlx::{PgPool, Row};
-    use std::sync::Arc;
-    use tokio::sync::mpsc;
-    use uuid::Uuid;
 
     /// Helper to create a test Redis client.
     async fn create_test_redis() -> Client {

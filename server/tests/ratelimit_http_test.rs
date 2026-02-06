@@ -12,15 +12,14 @@
 
 mod helpers;
 
-use helpers::spawn_test_server;
 use std::collections::HashSet;
 use std::sync::Arc;
-use vc_server::{
-    api::{create_router, AppState},
-    config::Config,
-    ratelimit::{LimitConfig, RateLimitConfig, RateLimiter, RateLimits},
-    voice::sfu::SfuServer,
-};
+
+use helpers::spawn_test_server;
+use vc_server::api::{create_router, AppState};
+use vc_server::config::Config;
+use vc_server::ratelimit::{LimitConfig, RateLimitConfig, RateLimiter, RateLimits};
+use vc_server::voice::sfu::SfuServer;
 
 /// Create a test app with rate limiting enabled using a real server.
 async fn create_rate_limited_app(limits: RateLimits) -> (helpers::TestServer, Config) {

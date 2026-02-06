@@ -1,10 +1,8 @@
 //! Voice Service Errors
 
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use thiserror::Error;
 use uuid::Uuid;
 

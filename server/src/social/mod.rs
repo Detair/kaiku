@@ -2,10 +2,8 @@ pub mod block_cache;
 pub mod friends;
 pub mod types;
 
-use axum::{
-    routing::{delete, get, post},
-    Router,
-};
+use axum::routing::{delete, get, post};
+use axum::Router;
 
 use crate::api::AppState;
 

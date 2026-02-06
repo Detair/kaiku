@@ -9,7 +9,8 @@
 
 mod helpers;
 
-use axum::{body::Body, http::Method};
+use axum::body::Body;
+use axum::http::Method;
 use helpers::{body_to_json, create_test_user, generate_access_token, make_admin, TestApp};
 use serial_test::serial;
 

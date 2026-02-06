@@ -7,9 +7,10 @@
 //! - Call state machine with transitions
 //! - Call capabilities for future extensibility (video, screen share)
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use uuid::Uuid;
 
 /// Capabilities for a voice call

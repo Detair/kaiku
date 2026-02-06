@@ -4,8 +4,9 @@
 
 #[cfg(test)]
 mod postgres_tests {
-    use super::super::*;
     use sqlx::PgPool;
+
+    use super::super::*;
 
     // ========================================================================
     // User Tests

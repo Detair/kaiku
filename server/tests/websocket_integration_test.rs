@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use fred::prelude::*;
 use sqlx::PgPool;
-use std::sync::Arc;
 use vc_server::api::AppState;
 use vc_server::config::Config;
 use vc_server::db;
@@ -60,8 +61,9 @@ async fn test_websocket_broadcast_flow() {
     .expect("Create channel failed");
 
     // 3. Simulate User 1 Subscription (Receiver)
-    // We can't easily spawn the full Axum WebSocket handler in a unit test without a running server,
-    // but we can test the `handle_pubsub` and `broadcast_to_channel` logic which is the core of the sync robustness.
+    // We can't easily spawn the full Axum WebSocket handler in a unit test without a running
+    // server, but we can test the `handle_pubsub` and `broadcast_to_channel` logic which is the
+    // core of the sync robustness.
 
     // Verify Redis PubSub works
     let subscriber = state.redis.clone_new();

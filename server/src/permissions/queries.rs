@@ -578,7 +578,8 @@ pub async fn write_audit_log(
 
 /// Get audit log entries with pagination and optional action filter.
 ///
-/// If `action_filter` is provided, only entries with actions starting with that prefix are returned.
+/// If `action_filter` is provided, only entries with actions starting with that prefix are
+/// returned.
 pub async fn get_audit_log(
     pool: &PgPool,
     limit: i64,

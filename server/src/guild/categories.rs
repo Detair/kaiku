@@ -2,22 +2,18 @@
 //!
 //! CRUD operations for guild channel categories with support for 2-level nesting.
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    permissions::{require_guild_permission, GuildPermissions, PermissionError},
-};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
 
 // ============================================================================
 // Types

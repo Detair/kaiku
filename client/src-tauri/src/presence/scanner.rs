@@ -1,7 +1,8 @@
 //! Process scanner for detecting running games/applications.
 
-use super::{GameEntry, GamesDatabase};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+
+use super::{GameEntry, GamesDatabase};
 
 /// Scanner for detecting running games.
 pub struct ProcessScanner {

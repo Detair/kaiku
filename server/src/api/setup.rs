@@ -2,17 +2,17 @@
 //!
 //! Endpoints for the first-time setup wizard that configures the server.
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use validator::Validate;
 
-use crate::{api::AppState, auth::AuthUser, db};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::db;
 
 // ============================================================================
 // Error Types

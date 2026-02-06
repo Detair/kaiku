@@ -58,6 +58,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            pkg-config \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             libsoup-3.0-dev \
@@ -65,7 +66,16 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libasound2-dev \
+            libpipewire-0.3-dev \
             libssl-dev
+
+      - name: Install Windows build dependencies
+        if: runner.os == 'Windows'
+        run: choco install -y pkgconfiglite
+
+      - name: Set CMake policy floor for macOS
+        if: runner.os == 'macOS'
+        run: echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> "$GITHUB_ENV"
 
       # macOS - install target for universal builds
       - name: Install macOS ARM target

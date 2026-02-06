@@ -6,14 +6,13 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use rand::Rng;
-
+use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType};
+use openidconnect::reqwest::async_http_client;
 use openidconnect::{
-    core::{CoreClient, CoreProviderMetadata, CoreResponseType},
-    reqwest::async_http_client,
     AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
     OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
 };
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tokio::sync::RwLock;

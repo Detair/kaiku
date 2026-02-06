@@ -22,8 +22,8 @@ async fn test_cannot_grant_dangerous_permissions_to_everyone() {
 
     // 1. Setup: Create a guild and get the @everyone role
     // This part requires recreating some of the app state and handler logic
-    // For this test to be truly effective as a regression test, it should use the actual API handler
-    // or simulate the database state that the handler interacts with.
+    // For this test to be truly effective as a regression test, it should use the actual API
+    // handler or simulate the database state that the handler interacts with.
 
     // Since we can't easily spin up the full Axum app here without more scaffolding,
     // we will simulate the Logic check by verifying the GuildPermissions method returns false

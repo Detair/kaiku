@@ -3,10 +3,9 @@
 //! SMTP-based email delivery for transactional emails (password resets, etc.).
 
 use anyhow::{Context, Result};
-use lettre::{
-    message::Mailbox, transport::smtp::authentication::Credentials, AsyncSmtpTransport,
-    AsyncTransport, Message, Tokio1Executor,
-};
+use lettre::message::Mailbox;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
 use crate::config::Config;
 

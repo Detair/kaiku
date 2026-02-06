@@ -1,26 +1,21 @@
 //! Direct Message Channel Management
 //!
 //! Handles creation and management of DM channels (1:1 and group DMs).
-use axum::{
-    extract::{Multipart, Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::extract::{Multipart, Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    chat::uploads::UploadError,
-    db::{self, Channel, ChannelType},
-    social::block_cache,
-    ws::{broadcast_to_user, ServerEvent},
-};
-
 use super::channels::{ChannelError, ChannelResponse};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::chat::uploads::UploadError;
+use crate::db::{self, Channel, ChannelType};
+use crate::social::block_cache;
+use crate::ws::{broadcast_to_user, ServerEvent};
 
 struct UsernameRecord {
     username: String,

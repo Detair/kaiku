@@ -4,13 +4,12 @@
 //! Supports rate limiting by IP address (for unauthenticated endpoints) and
 //! by user ID (for authenticated endpoints).
 
-use axum::{
-    extract::{ConnectInfo, Request, State},
-    http::header::HeaderValue,
-    middleware::Next,
-    response::Response,
-};
 use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::header::HeaderValue;
+use axum::middleware::Next;
+use axum::response::Response;
 use tracing::{debug, warn};
 
 use crate::api::AppState;

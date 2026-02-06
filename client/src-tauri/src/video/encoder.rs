@@ -5,9 +5,8 @@
 use tracing::{debug, warn};
 use vpx_encode::{Config, Encoder as VpxEncoder, VideoCodecId};
 
-use crate::capture::I420Frame;
-
 use super::{EncodedPacket, QualityParams, VideoError};
+use crate::capture::I420Frame;
 
 /// Trait for video encoders (allows future H.264 fallback).
 ///

@@ -8,20 +8,16 @@ pub mod handlers;
 pub mod middleware;
 pub mod types;
 
-use axum::{
-    middleware::from_fn_with_state,
-    routing::{delete, get, post, put},
-    Router,
-};
+use axum::middleware::from_fn_with_state;
+use axum::routing::{delete, get, post, put};
+use axum::Router;
+use fred::prelude::*;
+pub use middleware::{require_elevated, require_system_admin};
+use sqlx::PgPool;
+pub use types::{AdminError, ElevatedAdmin, SystemAdminUser};
+use uuid::Uuid;
 
 use crate::api::AppState;
-
-pub use middleware::{require_elevated, require_system_admin};
-pub use types::{AdminError, ElevatedAdmin, SystemAdminUser};
-
-use fred::prelude::*;
-use sqlx::PgPool;
-use uuid::Uuid;
 
 /// Check if a user is an elevated admin (for WebSocket subscription check).
 /// This checks both system admin status and elevated session validity.

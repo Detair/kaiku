@@ -286,7 +286,10 @@ pub async fn send_thread_reply(
     let server_url = server_url.ok_or("Not authenticated")?;
     let token = token.ok_or("Not authenticated")?;
 
-    debug!("Sending thread reply to parent {} in channel {}", parent_id, channel_id);
+    debug!(
+        "Sending thread reply to parent {} in channel {}",
+        parent_id, channel_id
+    );
 
     let mut body = serde_json::json!({
         "content": content,
@@ -328,10 +331,7 @@ pub async fn send_thread_reply(
 
 /// Mark a thread as read.
 #[command]
-pub async fn mark_thread_read(
-    state: State<'_, AppState>,
-    parent_id: String,
-) -> Result<(), String> {
+pub async fn mark_thread_read(state: State<'_, AppState>, parent_id: String) -> Result<(), String> {
     let (server_url, token) = {
         let auth = state.auth.read().await;
         (auth.server_url.clone(), auth.access_token.clone())

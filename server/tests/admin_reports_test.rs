@@ -7,7 +7,8 @@
 
 mod helpers;
 
-use axum::{body::Body, http::Method};
+use axum::body::Body;
+use axum::http::Method;
 use helpers::{
     body_to_json, create_elevated_session, create_test_report, create_test_user, delete_user,
     generate_access_token, make_admin, TestApp,

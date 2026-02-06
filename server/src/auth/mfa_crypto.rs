@@ -3,10 +3,8 @@
 //! Provides AES-256-GCM encryption for MFA secrets stored in the database.
 //! This ensures that TOTP secrets are never stored in plaintext.
 
-use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
-    Aes256Gcm, Nonce,
-};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::{Aes256Gcm, Nonce};
 use thiserror::Error;
 
 /// Encryption errors.

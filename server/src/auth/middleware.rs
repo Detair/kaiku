@@ -1,18 +1,15 @@
 //! Authentication Middleware
 
-use axum::{
-    extract::{Request, State},
-    http::header::AUTHORIZATION,
-    middleware::Next,
-    response::Response,
-};
+use axum::extract::{Request, State};
+use axum::http::header::AUTHORIZATION;
+use axum::middleware::Next;
+use axum::response::Response;
 use uuid::Uuid;
-
-use crate::api::AppState;
-use crate::db::{find_user_by_id, User};
 
 use super::error::AuthError;
 use super::jwt::validate_access_token;
+use crate::api::AppState;
+use crate::db::{find_user_by_id, User};
 
 /// Authenticated user injected into request extensions.
 ///

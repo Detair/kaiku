@@ -2,7 +2,8 @@
 //!
 //! Public endpoint for retrieving server configuration that clients need.
 
-use axum::{extract::State, Json};
+use axum::extract::State;
+use axum::Json;
 use serde::Serialize;
 
 use crate::api::AppState;

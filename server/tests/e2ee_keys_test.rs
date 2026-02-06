@@ -9,7 +9,8 @@
 //! Run with: `cargo test --test e2ee_keys_test`
 //! Run ignored (integration) tests: `cargo test --test e2ee_keys_test -- --ignored`
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use uuid::Uuid;
 
 // ============================================================================

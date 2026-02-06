@@ -1,16 +1,13 @@
 //! Admin authentication and authorization middleware.
 
-use axum::{
-    extract::{Request, State},
-    middleware::Next,
-    response::Response,
-};
+use axum::extract::{Request, State};
+use axum::middleware::Next;
+use axum::response::Response;
 
+use super::types::{AdminError, ElevatedAdmin, SystemAdminUser};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::queries::get_system_admin;
-
-use super::types::{AdminError, ElevatedAdmin, SystemAdminUser};
 
 struct ElevatedSessionRecord {
     #[allow(dead_code)]

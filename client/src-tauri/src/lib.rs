@@ -11,17 +11,17 @@ mod presence;
 mod video;
 mod webrtc;
 
+use std::sync::Arc;
+
 use audio::AudioHandle;
 use commands::clipboard::ClipboardGuard;
 use commands::screen_share::ScreenSharePipeline;
+use network::WebSocketManager;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use webrtc::WebRtcClient;
-
-use network::WebSocketManager;
 
 /// Run the Tauri application.
 pub fn run() {

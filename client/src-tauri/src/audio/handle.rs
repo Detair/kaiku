@@ -3,14 +3,16 @@
 //! This module provides a thread-safe handle to the audio system by moving
 //! non-Send/Sync types (`cpal::Stream`) into background tasks.
 
-use super::{AudioDevice, AudioDeviceList, AudioError, CHANNELS, FRAME_SIZE, SAMPLE_RATE};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
+
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, Host};
 use opus::{Channels as OpusChannels, Decoder, Encoder};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+use super::{AudioDevice, AudioDeviceList, AudioError, CHANNELS, FRAME_SIZE, SAMPLE_RATE};
 
 /// Audio handle that can be safely shared across threads
 pub struct AudioHandle {

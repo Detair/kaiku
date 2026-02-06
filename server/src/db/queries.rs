@@ -4,9 +4,10 @@
 //!
 //! All query functions include error context logging to aid debugging.
 
+use std::fmt::Write;
+
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
-use std::fmt::Write;
 use tracing::error;
 use uuid::Uuid;
 
@@ -988,7 +989,8 @@ pub async fn search_messages_in_channels(
 
 /// Count total search results in specific channels for pagination.
 ///
-/// **Security:** Only counts messages in channels the user has access to (provided as `channel_ids`).
+/// **Security:** Only counts messages in channels the user has access to (provided as
+/// `channel_ids`).
 pub async fn count_search_messages_in_channels(
     pool: &PgPool,
     channel_ids: &[Uuid],

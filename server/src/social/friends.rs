@@ -1,7 +1,5 @@
-use axum::{
-    extract::{Path, State},
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::Json;
 use uuid::Uuid;
 use validator::Validate;
 

@@ -12,7 +12,8 @@
 
 mod helpers;
 
-use axum::{body::Body, http::Method};
+use axum::body::Body;
+use axum::http::Method;
 use helpers::{create_test_user, generate_access_token, make_admin, TestApp};
 use serial_test::serial;
 use tokio::time::{timeout, Duration};

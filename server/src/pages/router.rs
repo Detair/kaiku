@@ -1,9 +1,7 @@
 //! Router configuration for information pages.
 
-use axum::{
-    routing::{delete, get, patch, post},
-    Router,
-};
+use axum::routing::{delete, get, patch, post};
+use axum::Router;
 
 use super::handlers;
 use crate::api::AppState;

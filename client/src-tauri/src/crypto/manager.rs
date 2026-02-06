@@ -458,8 +458,9 @@ impl CryptoManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_crypto_manager_init() {

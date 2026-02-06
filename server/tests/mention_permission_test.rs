@@ -2,10 +2,8 @@
 
 use sqlx::PgPool;
 use uuid::Uuid;
-use vc_server::{
-    db::{self, ChannelType},
-    permissions::GuildPermissions,
-};
+use vc_server::db::{self, ChannelType};
+use vc_server::permissions::GuildPermissions;
 
 /// Test that users without `MENTION_EVERYONE` permission cannot use @everyone or @here.
 #[sqlx::test]

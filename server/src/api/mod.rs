@@ -12,38 +12,27 @@ mod settings;
 mod setup;
 pub mod unread;
 
-use axum::{
-    extract::{DefaultBodyLimit, FromRef, State},
-    middleware::from_fn,
-    middleware::from_fn_with_state,
-    routing::{delete, get, post, put},
-    Json, Router,
-};
+use std::sync::Arc;
+
+use axum::extract::{DefaultBodyLimit, FromRef, State};
+use axum::middleware::{from_fn, from_fn_with_state};
+use axum::routing::{delete, get, post, put};
+use axum::{Json, Router};
 use fred::interfaces::ClientLike;
 use serde::Serialize;
 use sqlx::PgPool;
-use std::sync::Arc;
-use tower_http::{
-    compression::CompressionLayer,
-    cors::{Any, CorsLayer},
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    trace::TraceLayer,
-};
+use tower_http::compression::CompressionLayer;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::trace::TraceLayer;
 
-use crate::{
-    admin, auth,
-    auth::oidc::OidcProviderManager,
-    chat,
-    chat::S3Client,
-    config::Config,
-    connectivity, crypto,
-    email::EmailService,
-    guild, moderation, pages,
-    ratelimit::{rate_limit_by_user, with_category, RateLimitCategory, RateLimiter},
-    social, voice,
-    voice::SfuServer,
-    ws,
-};
+use crate::auth::oidc::OidcProviderManager;
+use crate::chat::S3Client;
+use crate::config::Config;
+use crate::email::EmailService;
+use crate::ratelimit::{rate_limit_by_user, with_category, RateLimitCategory, RateLimiter};
+use crate::voice::SfuServer;
+use crate::{admin, auth, chat, connectivity, crypto, guild, moderation, pages, social, voice, ws};
 
 /// Shared application state.
 #[derive(Clone)]

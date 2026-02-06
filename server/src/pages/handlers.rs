@@ -1,21 +1,19 @@
 //! API handlers for information pages.
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::Json;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    pages::{
-        queries, CreatePageRequest, Page, PageListItem, ReorderRequest, UpdatePageRequest,
-        MAX_CONTENT_SIZE, MAX_PAGES_PER_SCOPE, MAX_SLUG_LENGTH, MAX_TITLE_LENGTH,
-    },
-    permissions::{is_system_admin, require_guild_permission, GuildPermissions, PermissionError},
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::pages::{
+    queries, CreatePageRequest, Page, PageListItem, ReorderRequest, UpdatePageRequest,
+    MAX_CONTENT_SIZE, MAX_PAGES_PER_SCOPE, MAX_SLUG_LENGTH, MAX_TITLE_LENGTH,
+};
+use crate::permissions::{
+    is_system_admin, require_guild_permission, GuildPermissions, PermissionError,
 };
 
 /// Error response type for page handlers.

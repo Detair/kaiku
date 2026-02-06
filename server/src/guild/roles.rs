@@ -1,22 +1,19 @@
 //! Guild role management handlers.
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use thiserror::Error;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::types::{CreateRoleRequest, RoleResponse, UpdateRoleRequest};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::{
     can_manage_role, require_guild_permission, GuildPermissions, PermissionError,
 };
-
-use super::types::{CreateRoleRequest, RoleResponse, UpdateRoleRequest};
 
 // ============================================================================
 // Error Type

@@ -10,14 +10,11 @@ pub mod s3;
 mod screenshare;
 mod uploads;
 
-use axum::{
-    routing::{delete, get, patch, post, put},
-    Router,
-};
+use axum::routing::{delete, get, patch, post, put};
+use axum::Router;
+pub use s3::S3Client;
 
 use crate::api::AppState;
-
-pub use s3::S3Client;
 
 /// Create channels router.
 pub fn channels_router() -> Router<AppState> {

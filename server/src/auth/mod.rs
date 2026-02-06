@@ -10,20 +10,16 @@ mod middleware;
 pub mod oidc;
 mod password;
 
-use axum::{
-    extract::DefaultBodyLimit,
-    middleware as axum_middleware,
-    routing::{get, post},
-    Router,
-};
-
-use crate::api::AppState;
-use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, RateLimitCategory};
-
+use axum::extract::DefaultBodyLimit;
+use axum::routing::{get, post};
+use axum::{middleware as axum_middleware, Router};
 pub use error::{AuthError, AuthResult};
 pub use jwt::Claims;
 pub use middleware::{require_auth, AuthUser};
 pub use password::{hash_password, verify_password};
+
+use crate::api::AppState;
+use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, RateLimitCategory};
 
 /// Hash a token for secure storage using SHA256.
 ///

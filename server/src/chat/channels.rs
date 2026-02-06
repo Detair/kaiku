@@ -1,21 +1,17 @@
 //! Channel Management Handlers
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    db::{self, ChannelType},
-    ws::{broadcast_to_user, ServerEvent},
-};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::db::{self, ChannelType};
+use crate::ws::{broadcast_to_user, ServerEvent};
 
 // ============================================================================
 // Error Types

@@ -25,11 +25,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::{
-    extract::{State, WebSocketUpgrade},
-    http::HeaderMap,
-    response::Response,
-};
+use axum::extract::{State, WebSocketUpgrade};
+use axum::http::HeaderMap;
+use axum::response::Response;
 use chrono::{DateTime, Utc};
 use fred::prelude::*;
 use futures::{SinkExt, StreamExt};
@@ -38,9 +36,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    api::AppState, auth::jwt, db, social::block_cache, voice::Quality, voice::ScreenShareInfo,
-};
+use crate::api::AppState;
+use crate::auth::jwt;
+use crate::db;
+use crate::social::block_cache;
+use crate::voice::{Quality, ScreenShareInfo};
 
 /// Minimum interval between activity updates (10 seconds).
 const ACTIVITY_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
@@ -1386,7 +1386,8 @@ async fn handle_pubsub(
                                         .and_then(|id| Uuid::parse_str(id).ok())
                                         .is_some_and(|author_id| {
                                             // Block check must not fail open
-                                            // Use blocking_read since we're in a sync closure within async context
+                                            // Use blocking_read since we're in a sync closure
+                                            // within async context
                                             blocked_users.blocking_read().contains(&author_id)
                                         })
                                 }
@@ -1397,7 +1398,8 @@ async fn handle_pubsub(
                                 | ServerEvent::CallParticipantJoined { user_id: uid, .. }
                                 | ServerEvent::CallParticipantLeft { user_id: uid, .. } => {
                                     // Block check must not fail open
-                                    // Use blocking_read since we're in a sync closure within async context
+                                    // Use blocking_read since we're in a sync closure within async
+                                    // context
                                     blocked_users.blocking_read().contains(uid)
                                 }
                                 _ => false,

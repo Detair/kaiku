@@ -1,24 +1,21 @@
 //! HTTP handlers for DM voice call API endpoints.
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
-use serde::Serialize;
 use std::collections::HashSet;
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
+use serde::Serialize;
 use uuid::Uuid;
 
-use crate::{
-    api::AppState,
-    auth::AuthUser,
-    db::{self, ChannelType},
-    social::block_cache,
-    voice::call::CallState,
-    voice::call_service::{CallError, CallService},
-    ws::{broadcast_to_channel, ServerEvent},
-};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::db::{self, ChannelType};
+use crate::social::block_cache;
+use crate::voice::call::CallState;
+use crate::voice::call_service::{CallError, CallService};
+use crate::ws::{broadcast_to_channel, ServerEvent};
 
 /// Response for call state
 #[derive(Debug, Serialize)]

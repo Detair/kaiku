@@ -3,18 +3,12 @@
 //! Dedicated WebSocket endpoint for bot applications with separate event handling
 //! and rate limiting from the user gateway.
 
-use argon2::{
-    password_hash::{PasswordHash, PasswordVerifier},
-    Argon2,
-};
-use axum::{
-    extract::{
-        ws::{Message, WebSocket},
-        State, WebSocketUpgrade,
-    },
-    http::{HeaderMap, StatusCode},
-    response::Response,
-};
+use argon2::password_hash::{PasswordHash, PasswordVerifier};
+use argon2::Argon2;
+use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{State, WebSocketUpgrade};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use fred::interfaces::{ClientLike, EventInterface, KeysInterface, PubsubInterface};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};

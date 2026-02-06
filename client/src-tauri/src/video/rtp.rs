@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use tracing::trace;
-use webrtc::track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter};
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocalWriter;
 
 use super::{EncodedPacket, VideoError};
 

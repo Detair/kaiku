@@ -1,22 +1,26 @@
 //! Authentication HTTP Handlers
 
-use axum::{
-    extract::{ConnectInfo, Multipart, Path, State},
-    http::{header::USER_AGENT, HeaderMap},
-    Extension, Json,
-};
-use chrono::{Duration, Utc};
-use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Multipart, Path, State};
+use axum::http::header::USER_AGENT;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::{Extension, Json};
+use chrono::{Duration, Utc};
+use fred::prelude::*;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 use validator::Validate;
 
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Redirect, Response};
-use fred::prelude::*;
-use sha2::{Digest, Sha256};
-
+use super::error::{AuthError, AuthResult};
+use super::jwt::{generate_token_pair, validate_refresh_token};
+use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
+use super::middleware::AuthUser;
+use super::oidc::{append_collision_suffix, generate_username_from_claims, OidcFlowState};
+use super::password::{hash_password, verify_password};
 use crate::api::AppState;
 use crate::db::{
     self, create_password_reset_token, create_session, delete_session_by_token_hash, email_exists,
@@ -28,13 +32,6 @@ use crate::db::{
 use crate::ratelimit::NormalizedIp;
 use crate::util::format_file_size;
 use crate::ws::broadcast_user_patch;
-
-use super::error::{AuthError, AuthResult};
-use super::jwt::{generate_token_pair, validate_refresh_token};
-use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
-use super::middleware::AuthUser;
-use super::oidc::{append_collision_suffix, generate_username_from_claims, OidcFlowState};
-use super::password::{hash_password, verify_password};
 
 // ============================================================================
 // Request/Response Types
@@ -1279,7 +1276,8 @@ pub async fn oidc_callback(
                 AuthError::Database(e)
             })?;
 
-            // Lock setup_complete to serialize first-user detection (same pattern as local register)
+            // Lock setup_complete to serialize first-user detection (same pattern as local
+            // register)
             let _ = sqlx::query_scalar::<_, serde_json::Value>(
                 "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
             )

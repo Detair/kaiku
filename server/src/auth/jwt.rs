@@ -5,7 +5,8 @@
 //! This allows separate signing (private key) and verification (public key),
 //! supporting distributed architectures securely.
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};

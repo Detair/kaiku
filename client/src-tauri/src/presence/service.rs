@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
 use tauri::{AppHandle, Emitter};
 use tokio::time::interval;
 

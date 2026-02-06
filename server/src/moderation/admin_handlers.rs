@@ -1,9 +1,7 @@
 //! Admin-facing report handlers.
 
-use axum::{
-    extract::{Path, Query, State},
-    Extension, Json,
-};
+use axum::extract::{Path, Query, State};
+use axum::{Extension, Json};
 use uuid::Uuid;
 
 use super::types::{

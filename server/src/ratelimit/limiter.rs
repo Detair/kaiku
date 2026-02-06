@@ -1,7 +1,8 @@
 //! Core rate limiter service using Redis.
 
-use fred::prelude::*;
 use std::sync::Arc;
+
+use fred::prelude::*;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -407,8 +408,8 @@ impl RateLimiter {
             RateLimitCategory::VoiceJoin => &self.config.limits.voice_join,
             RateLimitCategory::FailedAuth => {
                 // FailedAuth uses max_failures as requests and window_secs from failed_auth config.
-                // Note: This category should not be used with check() - use record_failed_auth() instead.
-                // This exists for consistency in the type system.
+                // Note: This category should not be used with check() - use record_failed_auth()
+                // instead. This exists for consistency in the type system.
                 &self.config.limits.failed_auth_as_limit
             }
         }
@@ -417,8 +418,9 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashSet;
+
+    use super::*;
 
     fn mock_config() -> RateLimitConfig {
         RateLimitConfig {
