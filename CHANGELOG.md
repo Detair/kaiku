@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Advanced message search with filters (date range, channel, author, has:link, has:file)
+- DM message search endpoint (`GET /api/dm/search`) with the same filter support
+- DM search UI accessible from the home sidebar
+- Dedicated Search rate limit category (15 req/min) to prevent abuse
 - Bot ecosystem infrastructure (Phase 5)
   - Database schema for bot users, applications, and slash commands
   - Bot application management API (create, list, get, delete)
@@ -37,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bot token format changed to "bot_user_id.secret" for indexed authentication (breaking change for existing bots)
 
 ### Security
+- Encrypted messages are now excluded from all search results
 - Fixed O(n) authentication DoS vulnerability in bot token verification (now uses indexed lookup)
 - Fixed TOCTOU race condition in bot user creation (moved check inside transaction with FOR UPDATE lock)
 - Fixed TOCTOU race condition in bot token reset (added transaction with FOR UPDATE lock)
