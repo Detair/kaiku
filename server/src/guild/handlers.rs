@@ -30,6 +30,17 @@ pub struct ChannelWithUnread {
     pub unread_count: i64,
 }
 
+/// A bot installed in a guild.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct InstalledBot {
+    pub application_id: Uuid,
+    pub bot_user_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub installed_by: Uuid,
+    pub installed_at: chrono::DateTime<chrono::Utc>,
+}
+
 // ============================================================================
 // Request Types
 // ============================================================================
@@ -674,6 +685,86 @@ pub async fn add_bot_to_guild(
     )
     .execute(&state.db)
     .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// List bots installed in a guild.
+///
+/// `GET /api/guilds/:guild_id/bots`
+#[tracing::instrument(skip(state))]
+pub async fn list_guild_bots(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(guild_id): Path<Uuid>,
+) -> Result<Json<Vec<InstalledBot>>, GuildError> {
+    // Verify membership
+    let is_member = db::is_guild_member(&state.db, guild_id, auth.id).await?;
+    if !is_member {
+        return Err(GuildError::Forbidden);
+    }
+
+    let bots = sqlx::query_as::<_, InstalledBot>(
+        r"SELECT
+            gbi.application_id,
+            ba.bot_user_id,
+            ba.name,
+            ba.description,
+            gbi.installed_by,
+            gbi.installed_at
+           FROM guild_bot_installations gbi
+           INNER JOIN bot_applications ba ON gbi.application_id = ba.id
+           WHERE gbi.guild_id = $1
+           ORDER BY gbi.installed_at",
+    )
+    .bind(guild_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(bots))
+}
+
+/// Remove a bot from a guild.
+///
+/// `DELETE /api/guilds/:guild_id/bots/:bot_id`
+#[tracing::instrument(skip(state))]
+pub async fn remove_bot_from_guild(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((guild_id, bot_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, GuildError> {
+    let _ctx =
+        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_GUILD)
+            .await
+            .map_err(|e| match e {
+                PermissionError::NotGuildMember => GuildError::Forbidden,
+                other => GuildError::Permission(other),
+            })?;
+
+    // Look up application_id from bot_user_id
+    let app = sqlx::query!(
+        "SELECT id FROM bot_applications WHERE bot_user_id = $1",
+        bot_id
+    )
+    .fetch_optional(&state.db)
+    .await?;
+
+    let application_id = match app {
+        Some(app) => app.id,
+        None => return Err(GuildError::NotFound),
+    };
+
+    let result = sqlx::query!(
+        "DELETE FROM guild_bot_installations WHERE guild_id = $1 AND application_id = $2",
+        guild_id,
+        application_id
+    )
+    .execute(&state.db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(GuildError::NotFound);
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

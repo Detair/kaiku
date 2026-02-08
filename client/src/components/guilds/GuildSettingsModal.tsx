@@ -6,13 +6,14 @@
 
 import { Component, createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Link, Users, Shield, Smile } from "lucide-solid";
+import { X, Link, Users, Shield, Smile, Bot } from "lucide-solid";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import InvitesTab from "./InvitesTab";
 import MembersTab from "./MembersTab";
 import RolesTab from "./RolesTab";
 import EmojisTab from "./EmojisTab";
+import BotsTab from "./BotsTab";
 import RoleEditor from "./RoleEditor";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
@@ -23,7 +24,7 @@ interface GuildSettingsModalProps {
   onClose: () => void;
 }
 
-type TabId = "invites" | "members" | "roles" | "emojis";
+type TabId = "invites" | "members" | "roles" | "emojis" | "bots";
 
 const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   const guild = () => guildsState.guilds.find((g) => g.id === props.guildId);
@@ -50,6 +51,15 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       authState.user?.id || "",
       isOwner(),
       PermissionBits.MANAGE_EMOJIS_AND_STICKERS
+    );
+
+  const canManageBots = () =>
+    isOwner() ||
+    memberHasPermission(
+      props.guildId,
+      authState.user?.id || "",
+      isOwner(),
+      PermissionBits.MANAGE_GUILD
     );
 
   const handleBackdropClick = (e: MouseEvent) => {
@@ -136,6 +146,19 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 Emojis
               </button>
             </Show>
+            <Show when={canManageBots()}>
+              <button
+                onClick={() => setActiveTab("bots")}
+                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
+                classList={{
+                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "bots",
+                  "text-text-secondary hover:text-text-primary": activeTab() !== "bots",
+                }}
+              >
+                <Bot class="w-4 h-4" />
+                Bots
+              </button>
+            </Show>
             <Show when={canManageRoles()}>
               <button
                 onClick={() => setActiveTab("roles")}
@@ -161,6 +184,9 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </Show>
             <Show when={activeTab() === "emojis" && canManageEmojis()}>
               <EmojisTab guildId={props.guildId} />
+            </Show>
+            <Show when={activeTab() === "bots" && canManageBots()}>
+              <BotsTab guildId={props.guildId} />
             </Show>
             <Show when={activeTab() === "roles" && canManageRoles()}>
               <Show

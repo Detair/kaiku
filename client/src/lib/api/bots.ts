@@ -37,6 +37,15 @@ export interface CommandOption {
   required: boolean;
 }
 
+export interface InstalledBot {
+  application_id: string;
+  bot_user_id: string;
+  name: string;
+  description?: string;
+  installed_by: string;
+  installed_at: string;
+}
+
 export interface CreateApplicationRequest {
   name: string;
   description?: string;
@@ -273,5 +282,41 @@ export async function deleteAllSlashCommands(
 
   if (!response.ok) {
     throw new Error('Failed to delete commands');
+  }
+}
+
+/**
+ * List bots installed in a guild.
+ */
+export async function listInstalledBots(guildId: string): Promise<InstalledBot[]> {
+  const token = getAccessToken();
+  const response = await fetch(`${API_BASE}/api/guilds/${guildId}/bots`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to list installed bots');
+  }
+
+  return response.json();
+}
+
+/**
+ * Remove a bot from a guild.
+ */
+export async function removeInstalledBot(guildId: string, botId: string): Promise<void> {
+  const token = getAccessToken();
+  const response = await fetch(`${API_BASE}/api/guilds/${guildId}/bots/${botId}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to remove bot');
   }
 }
