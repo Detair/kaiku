@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - API client library for bot operations (applications, commands, tokens)
   - Token display modal with copy functionality and security warnings
   - Application CRUD interface with validation
+  - Slash command management UI (register, view, delete commands with options)
   - Bot message sending with channel membership authorization
   - Command response handling with Redis storage and 5-minute TTL
   - Input validation for bot messages and command responses (1-4000 characters)
