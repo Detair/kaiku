@@ -12,6 +12,7 @@ import {
   type BotApplication,
   type BotTokenResponse,
 } from '../../lib/api/bots';
+import { A } from '@solidjs/router';
 import { showToast } from '../../components/ui/Toast';
 
 const BotApplications: Component = () => {
@@ -202,12 +203,12 @@ const BotApplications: Component = () => {
                   >
                     Reset Token
                   </button>
-                  <a
+                  <A
                     href={`/settings/bots/${app.id}/commands`}
                     class="px-3 py-1 text-sm bg-surface-700 hover:bg-surface-600 rounded transition-colors inline-block"
                   >
                     Manage Commands
-                  </a>
+                  </A>
                 </div>
               </Show>
             </div>

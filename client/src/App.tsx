@@ -12,6 +12,7 @@ import InviteJoin from "./views/InviteJoin";
 import PageViewRoute from "./views/PageViewRoute";
 import AdminDashboard from "./views/AdminDashboard";
 import { ConnectionHistory } from "./pages/settings/ConnectionHistory";
+import BotSlashCommands from "./pages/settings/BotSlashCommands";
 
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
@@ -118,6 +119,13 @@ const ProtectedConnectionHistory: Component = () => (
   </AuthGuard>
 );
 
+// Protected bot commands wrapper
+const ProtectedBotCommands: Component = () => (
+  <AuthGuard>
+    <BotSlashCommands />
+  </AuthGuard>
+);
+
 // Wrapped components for routes
 const LoginPage = () => <Layout><Login /></Layout>;
 const RegisterPage = () => <Layout><Register /></Layout>;
@@ -129,6 +137,7 @@ const InvitePage = () => <Layout><ProtectedInvite /></Layout>;
 const PagePage = () => <Layout><ProtectedPageView /></Layout>;
 const AdminPage = () => <Layout><ProtectedAdmin /></Layout>;
 const ConnectionHistoryPage = () => <Layout><ProtectedConnectionHistory /></Layout>;
+const BotCommandsPage = () => <Layout><ProtectedBotCommands /></Layout>;
 
 // Export routes as JSX Route elements
 export const AppRoutes = (): JSX.Element => (
@@ -143,6 +152,7 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />
     <Route path="/admin" component={AdminPage} />
     <Route path="/settings/connection" component={ConnectionHistoryPage} />
+    <Route path="/settings/bots/:id/commands" component={BotCommandsPage} />
     <Route path="/*" component={MainPage} />
   </>
 );
