@@ -32,6 +32,7 @@ fn test_participant_info_fields() {
         display_name: Some("Test User".to_string()),
         muted: false,
         screen_sharing: false,
+        webcam_active: false,
     };
 
     assert!(!info.muted);
@@ -50,6 +51,7 @@ fn test_participant_info_serialization() {
         display_name: Some("Test User".to_string()),
         muted: true,
         screen_sharing: true,
+        webcam_active: false,
     };
 
     let json = serde_json::to_string(&info).expect("Should serialize");
@@ -70,6 +72,7 @@ fn test_participant_info_muted_default() {
         display_name: None,
         muted: false,
         screen_sharing: false,
+        webcam_active: false,
     };
 
     assert!(!info.muted, "New participants should start unmuted");

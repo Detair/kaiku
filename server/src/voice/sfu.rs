@@ -587,12 +587,7 @@ impl SfuServer {
                     peer.set_incoming_track(source_type, track.clone()).await;
 
                     // Start RTP forwarder
-                    spawn_rtp_forwarder(
-                        uid,
-                        source_type,
-                        track.clone(),
-                        room.track_router.clone(),
-                    );
+                    spawn_rtp_forwarder(uid, source_type, track.clone(), room.track_router.clone());
 
                     // Create subscriber tracks for all existing peers
                     let other_peers = room.get_other_peers(uid).await;

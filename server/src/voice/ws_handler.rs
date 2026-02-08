@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
@@ -23,7 +24,6 @@ use super::track_types::TrackSource;
 use super::webcam::WebcamInfo;
 use super::Quality;
 use crate::ws::{ClientEvent, ServerEvent, VoiceParticipant};
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 
 /// Handle a voice-related client event.
 pub async fn handle_voice_event(
