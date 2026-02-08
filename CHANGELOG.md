@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Command response handling with Redis storage and 5-minute TTL
   - Input validation for bot messages and command responses (1-4000 characters)
   - Developer documentation for the bot system (`docs/development/bot-system.md`)
+  - Guild bot management UI in server settings (list installed bots, remove bots)
+  - Guild bot list and remove API endpoints (`GET/DELETE /api/guilds/{id}/bots`)
 
 ### Changed
 - Bot token format changed to "bot_user_id.secret" for indexed authentication (breaking change for existing bots)
