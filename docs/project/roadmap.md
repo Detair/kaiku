@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 4 (Advanced Features) - In Progress
 
-**Last Updated:** 2026-02-01
+**Last Updated:** 2026-02-08
 
 ## Quick Status Overview
 
@@ -358,7 +358,7 @@ This roadmap outlines the development path from the current prototype to a produ
 - [ ] **[Storage] SaaS Scaling Architecture**
   - Transition from Proxy Method to Signed URLs/Cookies.
   - CDN Integration with CloudFront/Cloudflare.
-- [ ] **[API] Bot Ecosystem** ⏳ ~85% Complete
+- [ ] **[API] Bot Ecosystem** ⏳ ~90% Complete
   - ✅ Database schema (bot_applications, slash_commands, guild_bot_installations, users.is_bot)
   - ✅ Bot application management API (create, list, get, delete, token reset)
   - ✅ Secure bot token auth (Argon2id, indexed O(1) lookup, TOCTOU protection)
@@ -371,10 +371,10 @@ This roadmap outlines the development path from the current prototype to a produ
   - ✅ Frontend: Bot applications management UI in settings
   - ✅ Frontend: API client library for all bot operations
   - ✅ 14 comprehensive integration tests
+  - ✅ Frontend: Slash command management UI (register, view, delete commands with options)
+  - ✅ Developer documentation / bot API guide (`docs/development/bot-system.md`)
   - **Remaining:**
-    - [ ] Frontend: Command management page (`/settings/bots/{app_id}/commands` — link exists, page not built)
     - [ ] Frontend: Guild bot installation UI in guild settings
-    - [ ] Developer documentation / bot API guide
 - [ ] **[Voice] Multi-Stream Support**
   - Simultaneous Webcam and Screen Sharing.
   - Implement Simulcast (quality tiers) for bandwidth management.
