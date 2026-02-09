@@ -80,11 +80,15 @@ impl FrameCapturer {
 
                 match capturer.get_next_frame() {
                     Ok(frame) => {
-                        let bgra_data = if let scap::frame::Frame::BGRA(bgra) = frame {
-                            bgra.data
-                        } else {
-                            warn!("Unexpected frame format, skipping");
-                            continue;
+                        let bgra_data = match frame {
+                            scap::frame::Frame::Video(
+                                scap::frame::VideoFrame::BGRA(bgra),
+                            ) => bgra.data,
+                            scap::frame::Frame::Audio(_) => continue,
+                            scap::frame::Frame::Video(_) => {
+                                warn!("Unexpected frame format, skipping");
+                                continue;
+                            }
                         };
 
                         let i420 = converter.convert_owned(&bgra_data);

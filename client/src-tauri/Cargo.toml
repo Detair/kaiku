@@ -49,7 +49,7 @@ keyring = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Screen capture
-scap = "0.0.8"
+scap = { git = "https://github.com/Detair/scap.git", branch = "fix/linux-frame-enum" }
 
 # Webcam capture
 nokhwa = { version = "0.10", features = ["input-native"] }

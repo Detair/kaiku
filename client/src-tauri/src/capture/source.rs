@@ -47,7 +47,7 @@ pub fn enumerate_sources() -> Result<Vec<CaptureSource>, CaptureError> {
                     name,
                     source_type: CaptureSourceType::Monitor,
                     thumbnail: None, // Thumbnails generated on-demand to avoid blocking
-                    is_primary: false, // scap v0.0.8 doesn't expose primary display info
+                    is_primary: false, // scap doesn't expose primary display info
                 }
             }
             scap::Target::Window(window) => {
