@@ -450,3 +450,188 @@ pub async fn body_to_json(response: Response<Body>) -> serde_json::Value {
         panic!("Failed to parse response as JSON: {e}\nBody: {preview}")
     })
 }
+
+// ============================================================================
+// Data helpers (guilds, channels, messages)
+// ============================================================================
+
+/// Create a guild with the given owner and return its ID.
+pub async fn create_guild(pool: &PgPool, owner_id: Uuid) -> Uuid {
+    let guild_id = Uuid::now_v7();
+    let name = format!("TestGuild_{}", &guild_id.to_string()[..8]);
+
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind(&name)
+        .bind(owner_id)
+        .execute(pool)
+        .await
+        .expect("Failed to create guild");
+
+    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+        .bind(guild_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await
+        .expect("Failed to add guild member");
+
+    guild_id
+}
+
+/// Create a text channel in a guild and return its ID.
+pub async fn create_channel(pool: &PgPool, guild_id: Uuid, name: &str) -> Uuid {
+    let channel_id = Uuid::now_v7();
+
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, $3, 'text')",
+    )
+    .bind(channel_id)
+    .bind(guild_id)
+    .bind(name)
+    .execute(pool)
+    .await
+    .expect("Failed to create channel");
+
+    channel_id
+}
+
+/// Insert a message and return its ID.
+pub async fn insert_message(
+    pool: &PgPool,
+    channel_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+) -> Uuid {
+    let msg_id = Uuid::now_v7();
+
+    sqlx::query("INSERT INTO messages (id, channel_id, user_id, content) VALUES ($1, $2, $3, $4)")
+        .bind(msg_id)
+        .bind(channel_id)
+        .bind(user_id)
+        .bind(content)
+        .execute(pool)
+        .await
+        .expect("Failed to insert message");
+
+    msg_id
+}
+
+/// Insert an encrypted message and return its ID.
+pub async fn insert_encrypted_message(
+    pool: &PgPool,
+    channel_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+) -> Uuid {
+    let msg_id = Uuid::now_v7();
+
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, user_id, content, encrypted, nonce) VALUES ($1, $2, $3, $4, true, 'dGVzdF9ub25jZQ==')",
+    )
+    .bind(msg_id)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(content)
+    .execute(pool)
+    .await
+    .expect("Failed to insert encrypted message");
+
+    msg_id
+}
+
+/// Insert a file attachment for a message.
+pub async fn insert_attachment(pool: &PgPool, message_id: Uuid) {
+    sqlx::query(
+        "INSERT INTO file_attachments (message_id, filename, mime_type, size_bytes, s3_key) VALUES ($1, 'test.png', 'image/png', 1024, 'uploads/test.png')",
+    )
+    .bind(message_id)
+    .execute(pool)
+    .await
+    .expect("Failed to insert attachment");
+}
+
+/// Add a user as a guild member.
+pub async fn add_guild_member(pool: &PgPool, guild_id: Uuid, user_id: Uuid) {
+    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("Failed to add guild member");
+}
+
+/// Insert a message with a custom timestamp and return its ID.
+pub async fn insert_message_at(
+    pool: &PgPool,
+    channel_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+    created_at: &str,
+) -> Uuid {
+    let msg_id = Uuid::now_v7();
+
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, user_id, content, created_at) VALUES ($1, $2, $3, $4, $5::timestamptz)",
+    )
+    .bind(msg_id)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(content)
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .expect("Failed to insert message with timestamp");
+
+    msg_id
+}
+
+/// Insert a soft-deleted message and return its ID.
+pub async fn insert_deleted_message(
+    pool: &PgPool,
+    channel_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+) -> Uuid {
+    let msg_id = Uuid::now_v7();
+
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, user_id, content, deleted_at) VALUES ($1, $2, $3, $4, NOW())",
+    )
+    .bind(msg_id)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(content)
+    .execute(pool)
+    .await
+    .expect("Failed to insert deleted message");
+
+    msg_id
+}
+
+/// Delete a DM channel by ID (cascades messages and participants).
+pub async fn delete_dm_channel(pool: &PgPool, channel_id: Uuid) {
+    sqlx::query("DELETE FROM channels WHERE id = $1")
+        .bind(channel_id)
+        .execute(pool)
+        .await
+        .ok();
+}
+
+/// Delete a guild (cascades channels, messages, members).
+pub async fn delete_guild(pool: &PgPool, guild_id: Uuid) {
+    sqlx::query("DELETE FROM channels WHERE guild_id = $1")
+        .bind(guild_id)
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1")
+        .bind(guild_id)
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .execute(pool)
+        .await
+        .ok();
+}

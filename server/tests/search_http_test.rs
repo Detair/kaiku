@@ -10,129 +10,16 @@ mod helpers;
 use axum::body::Body;
 use axum::http::Method;
 use helpers::{
-    body_to_json, create_dm_channel, create_test_user, delete_user, generate_access_token, TestApp,
+    add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
+    create_test_user, delete_dm_channel, delete_guild, delete_user, generate_access_token,
+    insert_attachment, insert_encrypted_message, insert_message, insert_message_at, TestApp,
 };
 use serial_test::serial;
 use uuid::Uuid;
 
 // ============================================================================
-// Local test helpers
+// Local request helpers
 // ============================================================================
-
-/// Create a guild with the given owner and return its ID.
-async fn create_guild(pool: &sqlx::PgPool, owner_id: Uuid) -> Uuid {
-    let guild_id = Uuid::now_v7();
-    let name = format!("SearchTestGuild_{}", &guild_id.to_string()[..8]);
-
-    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
-        .bind(guild_id)
-        .bind(&name)
-        .bind(owner_id)
-        .execute(pool)
-        .await
-        .expect("Failed to create guild");
-
-    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
-        .bind(guild_id)
-        .bind(owner_id)
-        .execute(pool)
-        .await
-        .expect("Failed to add guild member");
-
-    guild_id
-}
-
-/// Create a text channel in a guild and return its ID.
-async fn create_channel(pool: &sqlx::PgPool, guild_id: Uuid, name: &str) -> Uuid {
-    let channel_id = Uuid::now_v7();
-
-    sqlx::query(
-        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, $3, 'text')",
-    )
-    .bind(channel_id)
-    .bind(guild_id)
-    .bind(name)
-    .execute(pool)
-    .await
-    .expect("Failed to create channel");
-
-    channel_id
-}
-
-/// Insert a message and return its ID.
-async fn insert_message(
-    pool: &sqlx::PgPool,
-    channel_id: Uuid,
-    user_id: Uuid,
-    content: &str,
-) -> Uuid {
-    let msg_id = Uuid::now_v7();
-
-    sqlx::query("INSERT INTO messages (id, channel_id, user_id, content) VALUES ($1, $2, $3, $4)")
-        .bind(msg_id)
-        .bind(channel_id)
-        .bind(user_id)
-        .bind(content)
-        .execute(pool)
-        .await
-        .expect("Failed to insert message");
-
-    msg_id
-}
-
-/// Insert an encrypted message and return its ID.
-async fn insert_encrypted_message(
-    pool: &sqlx::PgPool,
-    channel_id: Uuid,
-    user_id: Uuid,
-    content: &str,
-) -> Uuid {
-    let msg_id = Uuid::now_v7();
-
-    sqlx::query(
-        "INSERT INTO messages (id, channel_id, user_id, content, encrypted, nonce) VALUES ($1, $2, $3, $4, true, 'dGVzdF9ub25jZQ==')",
-    )
-    .bind(msg_id)
-    .bind(channel_id)
-    .bind(user_id)
-    .bind(content)
-    .execute(pool)
-    .await
-    .expect("Failed to insert encrypted message");
-
-    msg_id
-}
-
-/// Insert a file attachment for a message.
-async fn insert_attachment(pool: &sqlx::PgPool, message_id: Uuid) {
-    sqlx::query(
-        "INSERT INTO file_attachments (message_id, filename, mime_type, size_bytes, s3_key) VALUES ($1, 'test.png', 'image/png', 1024, 'uploads/test.png')",
-    )
-    .bind(message_id)
-    .execute(pool)
-    .await
-    .expect("Failed to insert attachment");
-}
-
-/// Delete a guild (cascades channels, messages, members).
-async fn delete_guild(pool: &sqlx::PgPool, guild_id: Uuid) {
-    // Delete channels (cascades messages and attachments)
-    sqlx::query("DELETE FROM channels WHERE guild_id = $1")
-        .bind(guild_id)
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1")
-        .bind(guild_id)
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("DELETE FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .execute(pool)
-        .await
-        .ok();
-}
 
 /// Helper: guild search GET request.
 fn guild_search_request(
@@ -179,6 +66,51 @@ async fn test_guild_search_requires_auth() {
     assert_eq!(resp.status(), 401);
 
     delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, user_id).await;
+}
+
+// ============================================================================
+// Guild Search — Non-member Forbidden
+// ============================================================================
+
+#[tokio::test]
+#[serial]
+async fn test_guild_search_non_member_forbidden() {
+    let app = TestApp::new().await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let (outsider_id, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild(&app.pool, owner_id).await;
+    let channel_id = create_channel(&app.pool, guild_id, "general").await;
+
+    insert_message(&app.pool, channel_id, owner_id, "Secret test message").await;
+
+    // Outsider (not a member) tries to search — should get 403
+    let token = generate_access_token(&app.config, outsider_id);
+    let req = guild_search_request(guild_id, "q=test", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 403);
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, owner_id).await;
+    delete_user(&app.pool, outsider_id).await;
+}
+
+// ============================================================================
+// Guild Search — Nonexistent Guild
+// ============================================================================
+
+#[tokio::test]
+#[serial]
+async fn test_guild_search_nonexistent_guild() {
+    let app = TestApp::new().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    let fake_guild_id = Uuid::now_v7();
+    let req = guild_search_request(fake_guild_id, "q=test", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 404);
+
     delete_user(&app.pool, user_id).await;
 }
 
@@ -251,20 +183,7 @@ async fn test_guild_search_date_filter() {
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
     let token = generate_access_token(&app.config, user_id);
 
-    // Insert a message with an old timestamp
-    let old_msg = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO messages (id, channel_id, user_id, content, created_at) VALUES ($1, $2, $3, $4, '2024-01-15T12:00:00Z')",
-    )
-    .bind(old_msg)
-    .bind(channel_id)
-    .bind(user_id)
-    .bind("Old test message")
-    .execute(&app.pool)
-    .await
-    .expect("insert old message");
-
-    // Insert a recent message
+    insert_message_at(&app.pool, channel_id, user_id, "Old test message", "2024-01-15T12:00:00Z").await;
     insert_message(&app.pool, channel_id, user_id, "Recent test message").await;
 
     // Search with date_from after old message
@@ -292,14 +211,7 @@ async fn test_guild_search_author_filter() {
     let guild_id = create_guild(&app.pool, user_a).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
 
-    // Add user_b as guild member
-    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
-        .bind(guild_id)
-        .bind(user_b)
-        .execute(&app.pool)
-        .await
-        .expect("add member");
-
+    add_guild_member(&app.pool, guild_id, user_b).await;
     let token = generate_access_token(&app.config, user_a);
 
     insert_message(&app.pool, channel_id, user_a, "Test from user A").await;
@@ -418,42 +330,32 @@ async fn test_guild_search_has_file() {
 }
 
 // ============================================================================
-// Guild Search — Validation Errors
+// Guild Search — Validation Errors (data-driven)
 // ============================================================================
 
 #[tokio::test]
 #[serial]
-async fn test_guild_search_invalid_date_range() {
+async fn test_guild_search_validation() {
     let app = TestApp::new().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     create_channel(&app.pool, guild_id, "general").await;
     let token = generate_access_token(&app.config, user_id);
 
-    let req = guild_search_request(
-        guild_id,
-        "q=test&date_from=2025-12-01T00:00:00Z&date_to=2025-01-01T00:00:00Z",
-        &token,
-    );
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 400);
+    let cases = [
+        ("q=test&has=invalid", "Invalid has"),
+        ("q=test&sort=invalid", "Invalid sort"),
+        (
+            "q=test&date_from=2025-12-01T00:00:00Z&date_to=2025-01-01T00:00:00Z",
+            "Invalid date range (from > to)",
+        ),
+    ];
 
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
-}
-
-#[tokio::test]
-#[serial]
-async fn test_guild_search_invalid_has() {
-    let app = TestApp::new().await;
-    let (user_id, _) = create_test_user(&app.pool).await;
-    let guild_id = create_guild(&app.pool, user_id).await;
-    create_channel(&app.pool, guild_id, "general").await;
-    let token = generate_access_token(&app.config, user_id);
-
-    let req = guild_search_request(guild_id, "q=test&has=invalid", &token);
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 400);
+    for (qs, label) in cases {
+        let req = guild_search_request(guild_id, qs, &token);
+        let resp = app.oneshot(req).await;
+        assert_eq!(resp.status(), 400, "{label} should return 400");
+    }
 
     delete_guild(&app.pool, guild_id).await;
     delete_user(&app.pool, user_id).await;
@@ -501,12 +403,7 @@ async fn test_dm_search_basic() {
     assert_eq!(json["total"], 2);
     assert_eq!(json["results"].as_array().unwrap().len(), 2);
 
-    // Cleanup: delete DM channel (cascades messages)
-    sqlx::query("DELETE FROM channels WHERE id = $1")
-        .bind(dm_id)
-        .execute(&app.pool)
-        .await
-        .ok();
+    delete_dm_channel(&app.pool, dm_id).await;
     delete_user(&app.pool, user_a).await;
     delete_user(&app.pool, user_b).await;
 }
@@ -544,12 +441,8 @@ async fn test_dm_search_only_own_dms() {
     );
     assert_eq!(json["results"][0]["channel_id"], dm_ab.to_string());
 
-    // Cleanup
-    sqlx::query("DELETE FROM channels WHERE id = ANY($1)")
-        .bind(vec![dm_ab, dm_bc])
-        .execute(&app.pool)
-        .await
-        .ok();
+    delete_dm_channel(&app.pool, dm_ab).await;
+    delete_dm_channel(&app.pool, dm_bc).await;
     delete_user(&app.pool, user_a).await;
     delete_user(&app.pool, user_b).await;
     delete_user(&app.pool, user_c).await;
@@ -584,12 +477,8 @@ async fn test_dm_search_channel_filter() {
     assert_eq!(json["total"], 1);
     assert_eq!(json["results"][0]["channel_id"], dm_ab.to_string());
 
-    // Cleanup
-    sqlx::query("DELETE FROM channels WHERE id = ANY($1)")
-        .bind(vec![dm_ab, dm_ac])
-        .execute(&app.pool)
-        .await
-        .ok();
+    delete_dm_channel(&app.pool, dm_ab).await;
+    delete_dm_channel(&app.pool, dm_ac).await;
     delete_user(&app.pool, user_a).await;
     delete_user(&app.pool, user_b).await;
     delete_user(&app.pool, user_c).await;
@@ -621,12 +510,7 @@ async fn test_dm_search_excludes_encrypted() {
         "Encrypted DM should be excluded from search"
     );
 
-    // Cleanup
-    sqlx::query("DELETE FROM channels WHERE id = $1")
-        .bind(dm_id)
-        .execute(&app.pool)
-        .await
-        .ok();
+    delete_dm_channel(&app.pool, dm_id).await;
     delete_user(&app.pool, user_a).await;
     delete_user(&app.pool, user_b).await;
 }
@@ -775,20 +659,7 @@ async fn test_guild_search_sort_date() {
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
     let token = generate_access_token(&app.config, user_id);
 
-    // Insert an old message
-    let old_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO messages (id, channel_id, user_id, content, created_at) VALUES ($1, $2, $3, $4, '2024-06-01T12:00:00Z')",
-    )
-    .bind(old_id)
-    .bind(channel_id)
-    .bind(user_id)
-    .bind("Papaya older message")
-    .execute(&app.pool)
-    .await
-    .expect("insert old message");
-
-    // Insert a recent message (uses NOW())
+    insert_message_at(&app.pool, channel_id, user_id, "Papaya older message", "2024-06-01T12:00:00Z").await;
     insert_message(&app.pool, channel_id, user_id, "Papaya newer message").await;
 
     let req = guild_search_request(guild_id, "q=papaya&sort=date", &token);
@@ -810,23 +681,3 @@ async fn test_guild_search_sort_date() {
     delete_user(&app.pool, user_id).await;
 }
 
-// ============================================================================
-// Guild Search — Invalid sort value
-// ============================================================================
-
-#[tokio::test]
-#[serial]
-async fn test_guild_search_sort_invalid() {
-    let app = TestApp::new().await;
-    let (user_id, _) = create_test_user(&app.pool).await;
-    let guild_id = create_guild(&app.pool, user_id).await;
-    create_channel(&app.pool, guild_id, "general").await;
-    let token = generate_access_token(&app.config, user_id);
-
-    let req = guild_search_request(guild_id, "q=test&sort=invalid", &token);
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 400);
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
-}
