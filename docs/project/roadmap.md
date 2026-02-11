@@ -470,7 +470,7 @@ This roadmap outlines the development path from the current prototype to a produ
     - ✅ **Frontend:** Global search UI with Ctrl+Shift+F shortcut and "Search Everywhere" in Command Palette
     - ✅ **Frontend:** Search syntax help tooltip (AND, OR, "exact phrase", -exclude)
     - ✅ **Backend:** Dedicated Search rate limit category (15 req/min)
-    - ✅ **Tests:** 29 integration tests (9 global search, 20 guild/DM search) covering auth, filters, ranking, headlines, sort, pagination, access control, validation
+    - ✅ **Tests:** 38 integration tests (18 global search, 20 guild/DM search) covering auth, access control (non-member 403, nonexistent guild 404), soft-deleted/encrypted exclusion, date/author/has:link/has:file filters, relevance ranking, headlines, sort (relevance/date), pagination, limit clamping, validation (data-driven). 11 shared test helpers.
     - **Tech Debt:**
       - [ ] Implement channel-level permission filtering (currently all guild members see all channels)
       - [ ] Add integration tests for search edge cases:
@@ -584,7 +584,7 @@ This roadmap outlines the development path from the current prototype to a produ
 ## Recent Changes
 
 ### 2026-02-10
-- **Search Integration Tests** - Added 14 new integration tests for search enhancements: 9 tests for global search endpoint (`GET /api/search`) covering auth, multi-guild results, DM inclusion, source types, access control, validation, and pagination; 5 tests for guild search covering `ts_headline` snippets with `<mark>` tags, `ts_rank` relevance scoring, sort parameter (relevance/date/invalid). Updated roadmap search checklist to reflect all completed items (DM search, filters, ranking, headlines, global search, syntax help, rate limiting).
+- **Search Integration Tests** - 38 integration tests across 2 test files (18 global search, 20 guild/DM search) with 11 shared helpers in `helpers/mod.rs`. Coverage includes: auth (401), access control (non-member 403, nonexistent guild 404), soft-deleted and encrypted message exclusion, date/author/has:link/has:file filters, `ts_rank` relevance ranking, `ts_headline` snippets with `<mark>` tags, sort (relevance/date), pagination with offset verification, limit clamping (1-100), and data-driven validation tests. Extracted all inline SQL into reusable helpers (`create_guild`, `create_channel`, `insert_message`, `insert_message_at`, `insert_encrypted_message`, `insert_deleted_message`, `insert_attachment`, `add_guild_member`, `delete_guild`, `delete_dm_channel`). Updated roadmap search checklist.
 
 ### 2026-01-31
 - **Toast Component Tests** - Created comprehensive test suite for toast notification system (16 passing tests, 5 skipped timing tests). Tests verify API behavior including deduplication, max visible limit (5), dismissal, and toast types. Added duration: 0 workaround for vitest window.setTimeout issues.
