@@ -16,6 +16,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Phase 4** | 🔄 In Progress | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
 | **Phase 5** | 📋 Planned | 0% | - |
+| **Phase 10** | 📋 Planned | 0% | SaaS Scaling Architecture |
 
 **Production Ready Features:**
 - ✅ Modern UI with "Focused Hybrid" design system
@@ -355,9 +356,6 @@ This roadmap outlines the development path from the current prototype to a produ
   - Added `icon.ico` to repo for Tauri deb bundling.
   - Added CI pipeline documentation at `docs/development/ci.md`.
   - **Known limitation:** Windows Tauri build fails (`libvpx` not available via choco), marked `continue-on-error: true`.
-- [ ] **[Storage] SaaS Scaling Architecture**
-  - Transition from Proxy Method to Signed URLs/Cookies.
-  - CDN Integration with CloudFront/Cloudflare.
 - [x] **[API] Bot Ecosystem** ✅
   - ✅ Database schema (bot_applications, slash_commands, guild_bot_installations, users.is_bot)
   - ✅ Bot application management API (create, list, get, delete, token reset)
@@ -578,6 +576,15 @@ This roadmap outlines the development path from the current prototype to a produ
 - [ ] **[Infra] SaaS Observability & Telemetry**
   - **Context:** Maintain uptime and catch bugs at scale.
   - **Strategy:** Integrate **Sentry** (error tracking) and **OpenTelemetry** for performance monitoring across the Rust backend and Tauri clients.
+
+---
+
+## Phase 10: SaaS Infrastructure at Scale
+*Goal: Full SaaS-grade media delivery and CDN infrastructure.*
+
+- [ ] **[Storage] SaaS Scaling Architecture**
+  - Transition from Proxy Method to Signed URLs/Cookies.
+  - CDN Integration with CloudFront/Cloudflare.
 
 ---
 

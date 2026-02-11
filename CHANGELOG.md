@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Command Palette mute/deafen commands now toggle microphone and deafen state instead of logging to console
+- "Delete Message" context menu action now calls the server API with confirmation dialog
+- "Mark as Read" channel context menu action now clears unread state via `markChannelAsRead`
+- "Mute/Unmute Channel" context menu action now toggles notification level via preferences store
+- "View Profile" and "Send Message" user context menu actions now navigate to or create a DM conversation
+- "Add Friend" user context menu action now sends a friend request
+- SearchPanel TypeScript compilation errors (type mismatch in `handleResultClick` signature)
+
 ### Added
 - Relevance-ranked search results using PostgreSQL `ts_rank` with sort toggle (Relevance / Date)
 - Server-side search snippet highlighting using PostgreSQL `ts_headline` with `<mark>` tags

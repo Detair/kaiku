@@ -9,12 +9,13 @@ import CodeBlock from "@/components/ui/CodeBlock";
 import ReactionBar from "./ReactionBar";
 import ThreadIndicator from "./ThreadIndicator";
 import MessageActions, { QUICK_EMOJIS } from "./MessageActions";
-import { getServerUrl, getAccessToken, addReaction, removeReaction } from "@/lib/tauri";
+import { getServerUrl, getAccessToken, addReaction, removeReaction, deleteMessage } from "@/lib/tauri";
 import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
 import { showUserContextMenu, triggerReport } from "@/lib/contextMenuBuilders";
 import { spoilerExtension } from "@/lib/markdown/spoilerExtension";
 import { openThread } from "@/stores/threads";
+import { removeMessage } from "@/stores/messages";
 
 interface MessageItemProps {
   message: Message;
@@ -247,9 +248,15 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           label: "Delete Message",
           icon: Trash2,
           danger: true,
-          action: () => {
-            // TODO: trigger delete confirmation
-            console.log("Delete message:", msg.id);
+          action: async () => {
+            if (confirm("Delete this message? This cannot be undone.")) {
+              try {
+                await deleteMessage(msg.id);
+                removeMessage(msg.channel_id, msg.id);
+              } catch (e) {
+                console.error("Failed to delete message:", e);
+              }
+            }
           },
         },
       );

@@ -18,9 +18,10 @@
  */
 
 import { Component, createSignal, createEffect, createMemo, For, Show, onCleanup } from "solid-js";
-import { Hash, Volume2, Command, Search } from "lucide-solid";
+import { Hash, Volume2, Search, Mic, MicOff, VolumeX } from "lucide-solid";
 import { channelsState, selectChannel } from "@/stores/channels";
 import { setShowGlobalSearch } from "@/stores/search";
+import { toggleMute, toggleDeafen, voiceState } from "@/stores/voice";
 import type { Channel } from "@/lib/types";
 
 interface CommandItem {
@@ -72,20 +73,20 @@ const CommandPalette: Component = () => {
       items.push({
         id: "cmd-mute",
         type: "command",
-        label: "Mute Microphone",
-        icon: Command,
+        label: voiceState.muted ? "Unmute Microphone" : "Mute Microphone",
+        icon: voiceState.muted ? MicOff : Mic,
         action: () => {
-          console.log("Mute command");
+          toggleMute();
           setIsOpen(false);
         },
       });
       items.push({
         id: "cmd-deafen",
         type: "command",
-        label: "Deafen",
-        icon: Command,
+        label: voiceState.deafened ? "Undeafen" : "Deafen",
+        icon: VolumeX,
         action: () => {
-          console.log("Deafen command");
+          toggleDeafen();
           setIsOpen(false);
         },
       });

@@ -14,7 +14,8 @@ import { Hash, Volume2, Settings, BellOff, Star, CheckCheck, Bell, StarOff, Copy
 import type { ChannelWithUnread } from "@/lib/types";
 import { isInChannel, getParticipants, voiceState } from "@/stores/voice";
 import { authState } from "@/stores/auth";
-import { isChannelMuted } from "@/stores/sound";
+import { isChannelMuted, setChannelNotificationLevel } from "@/stores/sound";
+import { markChannelAsRead } from "@/stores/channels";
 import { isFavorited, toggleFavorite } from "@/stores/favorites";
 import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
 
@@ -79,8 +80,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         label: "Mark as Read",
         icon: CheckCheck,
         action: () => {
-          // TODO: call markChannelAsRead when implemented
-          console.log("Mark as read:", ch.id);
+          markChannelAsRead(ch.id);
         },
       });
     }
@@ -90,8 +90,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
       label: muted ? "Unmute Channel" : "Mute Channel",
       icon: muted ? Bell : BellOff,
       action: () => {
-        // TODO: call toggleChannelMute
-        console.log("Toggle mute:", ch.id);
+        setChannelNotificationLevel(ch.id, muted ? "all" : "none");
       },
     });
 

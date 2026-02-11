@@ -11,7 +11,7 @@ import { useNavigate } from "@solidjs/router";
 import { Search, X, Loader2, Hash, Filter, Link, Paperclip, Globe, MessageSquare } from "lucide-solid";
 import { searchState, search, searchDMs, searchGlobal, loadMore, clearSearch, hasMore } from "@/stores/search";
 import { getActiveGuild } from "@/stores/guilds";
-import type { SearchFilters, GlobalSearchResult } from "@/lib/types";
+import type { SearchFilters, SearchResult, GlobalSearchResult } from "@/lib/types";
 import Avatar from "@/components/ui/Avatar";
 import { formatTimestamp } from "@/lib/utils";
 import DOMPurify from "dompurify";
@@ -82,7 +82,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
   };
 
   // Navigate to the message's channel when clicked
-  const handleResultClick = (result: { channel_id: string; id: string } & Record<string, unknown>) => {
+  const handleResultClick = (result: SearchResult | GlobalSearchResult) => {
     if (mode() === "global" && "source" in result) {
       const globalResult = result as GlobalSearchResult;
       if (globalResult.source.type === "guild" && globalResult.source.guild_id) {

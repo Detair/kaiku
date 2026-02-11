@@ -3287,6 +3287,20 @@ export async function removeReaction(
 }
 
 /**
+ * Delete a message (soft delete, own messages only).
+ */
+export async function deleteMessage(
+  messageId: string
+): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("delete_message", { messageId });
+  }
+
+  await httpRequest<void>("DELETE", `/api/messages/${messageId}`);
+}
+
+/**
  * Get aggregate unread counts across all guilds and DMs.
  * Returns unread counts grouped by guild, plus DM unreads.
  */

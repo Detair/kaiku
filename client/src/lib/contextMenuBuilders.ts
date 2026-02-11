@@ -7,6 +7,10 @@
 import { User, MessageSquare, UserPlus, Ban, Copy, Flag } from "lucide-solid";
 import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
+import { createDM } from "@/lib/tauri";
+import { selectDM, loadDMs, dmsState } from "@/stores/dms";
+import { selectHome } from "@/stores/guilds";
+import { sendFriendRequest } from "@/stores/friends";
 interface UserMenuTarget {
   id: string;
   username: string;
@@ -59,9 +63,24 @@ export function showUserContextMenu(event: MouseEvent, user: UserMenuTarget): vo
     {
       label: "View Profile",
       icon: User,
-      action: () => {
-        // TODO: open profile modal/panel
-        console.log("View profile:", user.id);
+      action: async () => {
+        // Navigate to DM with this user to see their profile info
+        try {
+          const existing = dmsState.dms.find((dm) =>
+            dm.participants?.some((p) => p.user_id === user.id) && dm.participants.length <= 2
+          );
+          if (existing) {
+            selectHome();
+            selectDM(existing.id);
+          } else {
+            const dm = await createDM([user.id]);
+            await loadDMs();
+            selectHome();
+            selectDM(dm.channel.id);
+          }
+        } catch (e) {
+          console.error("Failed to view profile:", e);
+        }
       },
     },
   ];
@@ -71,18 +90,35 @@ export function showUserContextMenu(event: MouseEvent, user: UserMenuTarget): vo
       {
         label: "Send Message",
         icon: MessageSquare,
-        action: () => {
-          // TODO: navigate to or create DM with this user
-          console.log("Send message to:", user.id);
+        action: async () => {
+          try {
+            const existing = dmsState.dms.find((dm) =>
+              dm.participants?.some((p) => p.user_id === user.id) && dm.participants.length <= 2
+            );
+            if (existing) {
+              selectHome();
+              selectDM(existing.id);
+            } else {
+              const dm = await createDM([user.id]);
+              await loadDMs();
+              selectHome();
+              selectDM(dm.channel.id);
+            }
+          } catch (e) {
+            console.error("Failed to open DM:", e);
+          }
         },
       },
       { separator: true },
       {
         label: "Add Friend",
         icon: UserPlus,
-        action: () => {
-          // TODO: send friend request
-          console.log("Add friend:", user.username);
+        action: async () => {
+          try {
+            await sendFriendRequest(user.username);
+          } catch (e) {
+            console.error("Failed to send friend request:", e);
+          }
         },
       },
       { separator: true },
