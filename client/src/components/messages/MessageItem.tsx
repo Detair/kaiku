@@ -16,6 +16,7 @@ import { showUserContextMenu, triggerReport } from "@/lib/contextMenuBuilders";
 import { spoilerExtension } from "@/lib/markdown/spoilerExtension";
 import { openThread } from "@/stores/threads";
 import { removeMessage } from "@/stores/messages";
+import { showToast } from "@/components/ui/Toast";
 
 interface MessageItemProps {
   message: Message;
@@ -45,35 +46,56 @@ const PURIFY_CONFIG = {
   RETURN_TRUSTED_TYPE: false as const,
 };
 
+// Restrict class attribute values to prevent CSS-based UI spoofing
+const ALLOWED_CLASSES = new Set(['mention-everyone', 'mention-user', 'spoiler']);
+DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+  if (data.attrName === 'class') {
+    const filtered = data.attrValue.split(/\s+/).filter(cls => ALLOWED_CLASSES.has(cls)).join(' ');
+    data.attrValue = filtered;
+    if (!filtered) data.keepAttr = false;
+  }
+});
+
 const sanitizeHtml = (html: string): string => {
   return DOMPurify.sanitize(html, PURIFY_CONFIG) as string;
 };
 
 /**
  * Highlight @mentions in text before markdown parsing.
- * Wraps @everyone, @here, and @username in styled <mark> tags.
- * Escapes any existing mark tags to prevent nesting issues.
+ * Protects inline code spans from modification, then wraps
+ * @everyone, @here, and @username in styled <mark> tags.
  */
 function highlightMentions(text: string): string {
-  // Escape any existing mark tags first to avoid nesting
-  text = text.replace(/<mark/g, '&lt;mark').replace(/<\/mark>/g, '&lt;/mark&gt;');
+  // Protect inline code spans from mention processing
+  const codeSpans: string[] = [];
+  let processed = text.replace(/`[^`]+`/g, (match) => {
+    codeSpans.push(match);
+    return `\x00CODE${codeSpans.length - 1}\x00`;
+  });
 
-  // @everyone and @here -- high-visibility
-  let result = text.replace(
-    /\B@(everyone|here)\b/g,
+  // Escape any existing mark/span tags to prevent injection via user HTML
+  processed = processed.replace(/<\/?(?:mark|span)\b[^>]*>/gi, (match) =>
+    match.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  );
+
+  // @everyone and @here -- high-visibility (only after whitespace or start of string)
+  processed = processed.replace(
+    /(?<=\s|^)@(everyone|here)\b/g,
     '<mark class="mention-everyone">@$1</mark>'
   );
 
-  // @username -- normal mention (2-32 chars, alphanumeric + underscore)
-  result = result.replace(
-    /\B@([\w]{2,32})\b/g,
+  // @username -- normal mention (2-32 chars, alphanumeric + underscore only)
+  processed = processed.replace(
+    /(?<=\s|^)@([a-zA-Z0-9_]{2,32})\b/g,
     (match, username) => {
-      if (username === "everyone" || username === "here") return match; // Already handled
+      if (username === "everyone" || username === "here") return match;
       return `<mark class="mention-user">@${username}</mark>`;
     }
   );
 
-  return result;
+  // Restore inline code spans
+  processed = processed.replace(/\x00CODE(\d+)\x00/g, (_, idx) => codeSpans[parseInt(idx)]);
+  return processed;
 }
 
 interface CodeBlockData {
@@ -147,6 +169,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       await addReaction(props.message.channel_id, props.message.id, emoji);
     } catch (err) {
       console.error("Failed to add reaction:", err);
+      showToast({ type: "error", title: "Reaction Failed", message: "Could not add reaction." });
     }
   };
 
@@ -155,6 +178,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       await removeReaction(props.message.channel_id, props.message.id, emoji);
     } catch (err) {
       console.error("Failed to remove reaction:", err);
+      showToast({ type: "error", title: "Reaction Failed", message: "Could not remove reaction." });
     }
   };
 
@@ -170,51 +194,55 @@ const MessageItem: Component<MessageItemProps> = (props) => {
   const isImage = (mimeType: string) => mimeType.startsWith("image/");
 
   // Parse markdown and extract code blocks for separate rendering
-  const contentBlocks = createMemo(() => {
+  const contentBlocks = createMemo((): ContentBlock[] => {
     const content = props.message.content;
-    const blocks: ContentBlock[] = [];
 
-    // Split content by code blocks
-    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
-    let lastIndex = 0;
-    let match;
+    try {
+      const blocks: ContentBlock[] = [];
 
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      // Add text before code block
-      if (match.index > lastIndex) {
-        const text = content.substring(lastIndex, match.index);
+      // Split content by fenced code blocks
+      const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+      let lastIndex = 0;
+      let match;
+
+      while ((match = codeBlockRegex.exec(content)) !== null) {
+        if (match.index > lastIndex) {
+          const text = content.substring(lastIndex, match.index);
+          if (text.trim()) {
+            const html = sanitizeHtml(marked.parse(highlightMentions(text), { async: false }) as string);
+            blocks.push({ type: 'text', html });
+          }
+        }
+
+        blocks.push({
+          type: 'code',
+          language: match[1] || 'plaintext',
+          code: match[2].trim(),
+        });
+
+        lastIndex = match.index + match[0].length;
+      }
+
+      if (lastIndex < content.length) {
+        const text = content.substring(lastIndex);
         if (text.trim()) {
           const html = sanitizeHtml(marked.parse(highlightMentions(text), { async: false }) as string);
           blocks.push({ type: 'text', html });
         }
       }
 
-      // Add code block
-      blocks.push({
-        type: 'code',
-        language: match[1] || 'plaintext',
-        code: match[2].trim(),
-      });
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Add remaining text
-    if (lastIndex < content.length) {
-      const text = content.substring(lastIndex);
-      if (text.trim()) {
-        const html = sanitizeHtml(marked.parse(highlightMentions(text), { async: false }) as string);
+      if (blocks.length === 0) {
+        const html = sanitizeHtml(marked.parse(highlightMentions(content), { async: false }) as string);
         blocks.push({ type: 'text', html });
       }
-    }
 
-    // If no code blocks found, just parse the whole content
-    if (blocks.length === 0) {
-      const html = sanitizeHtml(marked.parse(highlightMentions(content), { async: false }) as string);
-      blocks.push({ type: 'text', html });
+      return blocks;
+    } catch (err) {
+      console.error("Failed to parse message content:", err);
+      // Fallback: render plain text safely
+      const safeText = DOMPurify.sanitize(content, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }) as string;
+      return [{ type: 'text', html: safeText }];
     }
-
-    return blocks;
   });
 
   const handleContextMenu = (e: MouseEvent) => {

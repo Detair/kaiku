@@ -90,7 +90,7 @@ textarea.bg-transparent {
 
 /* Mention highlighting */
 .mention-everyone {
-  background-color: rgba(99, 102, 241, 0.2);
+  background-color: color-mix(in srgb, var(--color-accent-primary) 20%, transparent);
   color: var(--color-accent-primary);
   padding: 0 2px;
   border-radius: 3px;
@@ -98,7 +98,7 @@ textarea.bg-transparent {
 }
 
 .mention-user {
-  background-color: rgba(99, 102, 241, 0.15);
+  background-color: color-mix(in srgb, var(--color-accent-primary) 15%, transparent);
   color: var(--color-accent-primary);
   padding: 0 2px;
   border-radius: 3px;
@@ -106,5 +106,12 @@ textarea.bg-transparent {
 }
 
 .mention-user:hover {
-  background-color: rgba(99, 102, 241, 0.3);
+  background-color: color-mix(in srgb, var(--color-accent-primary) 30%, transparent);
+}
+
+/* Suppress mention styling inside unrevealed spoilers */
+.spoiler:not(.revealed) .mention-everyone,
+.spoiler:not(.revealed) .mention-user {
+  background-color: inherit;
+  color: inherit;
 }

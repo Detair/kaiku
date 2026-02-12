@@ -19,37 +19,24 @@ marked.setOptions({
 // DOMPurify config matching MessageItem.tsx
 const PURIFY_CONFIG = {
   ALLOWED_TAGS: [
-    "p",
-    "br",
-    "strong",
-    "em",
-    "code",
-    "pre",
-    "a",
-    "ul",
-    "ol",
-    "li",
-    "blockquote",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "hr",
-    "del",
-    "s",
-    "table",
-    "thead",
-    "tbody",
-    "tr",
-    "th",
-    "td",
+    "p", "br", "strong", "em", "code", "pre", "a", "ul", "ol", "li",
+    "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "del", "s",
+    "table", "thead", "tbody", "tr", "th", "td", "span", "mark",
   ],
-  ALLOWED_ATTR: ["href", "target", "rel"],
+  ALLOWED_ATTR: ["href", "target", "rel", "class", "data-spoiler"],
   ALLOW_DATA_ATTR: false,
   RETURN_TRUSTED_TYPE: false as const,
 };
+
+// Restrict class values to an allowlist (matching MessageItem.tsx hook)
+const ALLOWED_CLASSES = new Set(["mention-everyone", "mention-user", "spoiler"]);
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "class") {
+    const filtered = data.attrValue.split(/\s+/).filter(cls => ALLOWED_CLASSES.has(cls)).join(" ");
+    data.attrValue = filtered;
+    if (!filtered) data.keepAttr = false;
+  }
+});
 
 const sanitizeHtml = (html: string): string => {
   return DOMPurify.sanitize(html, PURIFY_CONFIG) as string;
@@ -204,10 +191,26 @@ describe("XSS Prevention", () => {
       expect(result).not.toContain('id="');
     });
 
-    it("should remove class attributes", () => {
-      const malicious = '<p class="evil">Text</p>';
+    it("should strip arbitrary class values but keep allowed ones", () => {
+      const malicious = '<span class="evil admin-panel">Text</span>';
       const result = sanitizeHtml(malicious);
-      expect(result).not.toContain('class="');
+      expect(result).not.toContain("evil");
+      expect(result).not.toContain("admin-panel");
+      // class attribute removed entirely since no allowed classes remain
+      expect(result).not.toContain('class=');
+    });
+
+    it("should preserve allowed class values", () => {
+      const safe = '<span class="spoiler">Hidden</span>';
+      const result = sanitizeHtml(safe);
+      expect(result).toContain('class="spoiler"');
+    });
+
+    it("should filter mixed allowed and disallowed class values", () => {
+      const mixed = '<span class="spoiler evil">Text</span>';
+      const result = sanitizeHtml(mixed);
+      expect(result).toContain('class="spoiler"');
+      expect(result).not.toContain("evil");
     });
 
     it("should remove data-* attributes", () => {

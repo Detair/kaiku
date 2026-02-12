@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Content spoilers (`||text||`) now render correctly — DOMPurify config was stripping spoiler HTML tags
+- Mention highlighting no longer corrupts inline code spans (e.g. `` `@everyone` `` renders correctly)
+- Mention styling no longer bleeds through unrevealed spoiler overlays
+- Reaction add/remove errors now show toast notifications instead of failing silently
 - Command Palette mute/deafen commands now toggle microphone and deafen state instead of logging to console
 - "Delete Message" context menu action now calls the server API with confirmation dialog
 - "Mark as Read" channel context menu action now clears unread state via `markChannelAsRead`
@@ -88,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bot token format changed to "bot_user_id.secret" for indexed authentication (breaking change for existing bots)
 
 ### Security
+- DOMPurify class attribute allowlist prevents CSS-based UI spoofing via arbitrary class injection in messages
 - Encrypted messages are now excluded from all search results
 - Fixed O(n) authentication DoS vulnerability in bot token verification (now uses indexed lookup)
 - Fixed TOCTOU race condition in bot user creation (moved check inside transaction with FOR UPDATE lock)

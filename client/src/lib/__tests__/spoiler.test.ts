@@ -23,12 +23,22 @@ const PURIFY_CONFIG = {
   ALLOWED_TAGS: [
     "p", "br", "strong", "em", "code", "pre", "a", "ul", "ol", "li",
     "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "del", "s",
-    "table", "thead", "tbody", "tr", "th", "td", "span",
+    "table", "thead", "tbody", "tr", "th", "td", "span", "mark",
   ],
   ALLOWED_ATTR: ["href", "target", "rel", "class", "data-spoiler"],
   ALLOW_DATA_ATTR: false,
   RETURN_TRUSTED_TYPE: false as const,
 };
+
+// Restrict class values to an allowlist (matching MessageItem.tsx hook)
+const ALLOWED_CLASSES = new Set(["mention-everyone", "mention-user", "spoiler"]);
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "class") {
+    const filtered = data.attrValue.split(/\s+/).filter(cls => ALLOWED_CLASSES.has(cls)).join(" ");
+    data.attrValue = filtered;
+    if (!filtered) data.keepAttr = false;
+  }
+});
 
 const sanitizeHtml = (html: string): string => {
   return DOMPurify.sanitize(html, PURIFY_CONFIG) as string;
