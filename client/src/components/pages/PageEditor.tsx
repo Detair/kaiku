@@ -43,6 +43,18 @@ export default function PageEditor(props: PageEditorProps) {
 
   let textareaRef: HTMLTextAreaElement | undefined;
 
+  // Sync signals when props.page changes (e.g. navigating to a different page)
+  createEffect(() => {
+    const page = props.page;
+    setTitle(page?.title || "");
+    setSlug(page?.slug || "");
+    setContent(page?.content || "");
+    setRequiresAcceptance(page?.requires_acceptance || false);
+    setSlugManuallyEdited(!!page?.slug);
+    setHasUnsavedChanges(false);
+    setError(null);
+  });
+
   // Track unsaved changes
   createEffect(() => {
     const hasChanges =

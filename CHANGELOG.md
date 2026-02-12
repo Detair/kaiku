@@ -12,8 +12,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password reset endpoint no longer leaks user existence via HTTP 500 on database errors — all code paths now return generic 200
 - Password reset aborts if old token invalidation fails, preventing token accumulation
 - SMTP connection verified at server startup; misconfiguration logged at error level instead of warn
+- Page handlers no longer leak database schema details in error responses — all internal errors logged server-side, generic message returned to client
+- DOMPurify configuration no longer uses global `setConfig()` — inline config prevents cross-component state pollution
+- Mermaid SVG sanitization uses explicit `ALLOWED_TAGS` allowlist instead of additive `ADD_TAGS`, preventing HTML tag leakage into SVG context
 
 ### Fixed
+- `get_page_by_id` now filters soft-deleted pages (`deleted_at IS NULL`), preventing operations on deleted pages
+- `reorder_pages` wrapped in database transaction to prevent partial reorder on failure, with duplicate page ID validation
+- Page acceptance endpoint now validates `requires_acceptance` flag before recording acceptance
+- Guild-scoped page acceptance endpoint added — guild pages are accepted via `/guilds/{id}/pages/{id}/accept`
+- Silent audit log failures (`.ok()`) replaced with explicit error logging across all page handlers
+- Silent `unwrap_or` in slug/limit checks replaced with `unwrap_or_else` + error logging in page creation/update handlers
+- `PlatformPagesCard` and `PageSection` components now use reactive `<Show>` wrappers instead of non-reactive early returns
+- `PlatformPagesCard` now displays error state when page loading fails instead of rendering empty
+- `AcceptanceManager` now checks `acceptPage` return value and surfaces acceptance failures to the user
+- `AcceptanceManager` shows blocking error overlay when a required platform page fails to load (instead of silently skipping)
+- `AcceptanceManager.handleDefer` now properly awaits async `showNextPage()` call
+- `PageAcceptanceModal` resets `isAccepting` state in `finally` block, preventing stuck "Accepting..." button on error
+- `PageAcceptanceModal` re-checks scroll height after markdown rendering completes, fixing premature "scroll to bottom" requirement
+- `PageAcceptanceModal` adds `role="dialog"` and `aria-modal` for accessibility
+- `PageView.handleDelete` now catches and displays delete errors instead of failing silently
+- `PageEditor` syncs form signals when `props.page` changes, fixing stale form data when navigating between pages
+- Client `MAX_PAGES_PER_SCOPE` constant corrected from 50 to 10 to match server
 - Password reset views now read server URL from localStorage, matching Login/Register behavior for self-hosted setups
 - Server URL forwarded from Forgot Password to Reset Password page via query parameter
 - Forgot Password and Reset Password form labels now linked to inputs via `for`/`id` for accessibility

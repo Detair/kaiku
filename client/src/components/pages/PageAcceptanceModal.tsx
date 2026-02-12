@@ -38,15 +38,20 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
     }
   };
 
-  // Check on mount if content doesn't need scrolling
+  // Check on mount if content doesn't need scrolling.
+  // Delayed re-check accounts for async markdown rendering changing scroll height.
   onMount(() => {
-    if (contentRef) {
+    const doCheck = () => {
+      if (!contentRef) return;
       const { scrollHeight, clientHeight } = contentRef;
-      // If content fits without scrolling, consider it "read"
       if (scrollHeight <= clientHeight) {
         setHasScrolledToBottom(true);
       }
-    }
+    };
+
+    doCheck();
+    // Re-check after markdown finishes rendering
+    setTimeout(doCheck, 500);
   });
 
   const handleAccept = async () => {
@@ -59,6 +64,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
       await props.onAccept();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to accept page");
+    } finally {
       setIsAccepting(false);
     }
   };
@@ -71,7 +77,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
   const canAccept = () => hasScrolledToBottom() && !isAccepting();
 
   return (
-    <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       {/* Backdrop */}
       <div
         class="absolute inset-0 bg-black/70"

@@ -210,11 +210,15 @@ pub async fn get_page_by_slug(
     Ok(page)
 }
 
-/// Get page by ID.
+/// Get page by ID (excludes soft-deleted pages).
 pub async fn get_page_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Page>, sqlx::Error> {
-    let page: Option<Page> = sqlx::query_as!(Page, r"SELECT * FROM pages WHERE id = $1", id)
-        .fetch_optional(pool)
-        .await?;
+    let page: Option<Page> = sqlx::query_as!(
+        Page,
+        r"SELECT * FROM pages WHERE id = $1 AND deleted_at IS NULL",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
     Ok(page)
 }
 
@@ -321,13 +325,41 @@ pub async fn restore_page(pool: &PgPool, id: Uuid) -> Result<Page, sqlx::Error> 
 /// Reorder pages by updating their positions.
 ///
 /// Verifies all page IDs belong to the specified scope before reordering.
+/// Wrapped in a transaction to prevent partial updates on failure.
 pub async fn reorder_pages(
     pool: &PgPool,
     guild_id: Option<Uuid>,
     page_ids: &[Uuid],
 ) -> Result<(), sqlx::Error> {
+    // Check for duplicate IDs
+    let unique: std::collections::HashSet<&Uuid> = page_ids.iter().collect();
+    if unique.len() != page_ids.len() {
+        return Err(sqlx::Error::Protocol(
+            "Duplicate page IDs in reorder request".to_string(),
+        ));
+    }
+
+    let mut tx = pool.begin().await?;
+
     // Verify all pages belong to the correct scope and count matches
-    let existing_count = count_pages(pool, guild_id).await?;
+    let existing_count: i64 = match guild_id {
+        Some(gid) => {
+            sqlx::query_scalar!(
+                r#"SELECT COUNT(*) as "count!" FROM pages WHERE guild_id = $1 AND deleted_at IS NULL"#,
+                gid
+            )
+            .fetch_one(&mut *tx)
+            .await?
+        }
+        None => {
+            sqlx::query_scalar!(
+                r#"SELECT COUNT(*) as "count!" FROM pages WHERE guild_id IS NULL AND deleted_at IS NULL"#
+            )
+            .fetch_one(&mut *tx)
+            .await?
+        }
+    };
+
     if page_ids.len() as i64 != existing_count {
         return Err(sqlx::Error::Protocol(
             "Page count mismatch during reorder".to_string(),
@@ -335,7 +367,6 @@ pub async fn reorder_pages(
     }
 
     // Verify all provided page IDs actually belong to this scope (security check)
-    // Uses runtime query to avoid compile-time DATABASE_URL requirement
     let valid_count: i64 = match guild_id {
         Some(gid) => {
             sqlx::query_scalar(
@@ -344,7 +375,7 @@ pub async fn reorder_pages(
             )
             .bind(page_ids)
             .bind(gid)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx)
             .await?
         }
         None => {
@@ -353,7 +384,7 @@ pub async fn reorder_pages(
                    WHERE id = ANY($1) AND guild_id IS NULL AND deleted_at IS NULL",
             )
             .bind(page_ids)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx)
             .await?
         }
     };
@@ -371,9 +402,11 @@ pub async fn reorder_pages(
             page_id,
             position as i32
         )
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
+
+    tx.commit().await?;
     Ok(())
 }
 

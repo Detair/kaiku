@@ -46,4 +46,5 @@ pub fn guild_pages_router() -> Router<AppState> {
         .route("/by-slug/{slug}", get(handlers::get_guild_page))
         .route("/{id}", patch(handlers::update_guild_page))
         .route("/{id}", delete(handlers::delete_guild_page))
+        .route("/{id}/accept", post(handlers::accept_guild_page))
 }

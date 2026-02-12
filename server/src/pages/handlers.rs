@@ -29,7 +29,13 @@ pub async fn list_platform_pages(
 ) -> PageResult<Json<Vec<PageListItem>>> {
     let pages = queries::list_pages(&state.db, None)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to list platform pages: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
     Ok(Json(pages))
 }
 
@@ -40,7 +46,13 @@ pub async fn get_platform_page(
 ) -> PageResult<Json<Page>> {
     queries::get_page_by_slug(&state.db, None, &slug)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            error!("Failed to get platform page '{}': {}", slug, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
         .map(Json)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))
 }
@@ -122,7 +134,13 @@ pub async fn create_platform_page(
         user.id,
     )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| {
+        error!("Failed to create platform page: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+    })?;
 
     // Log audit (non-blocking, log errors instead of failing)
     if let Err(e) =
@@ -156,7 +174,13 @@ pub async fn update_platform_page(
     // Get existing page
     let old_page = queries::get_page_by_id(&state.db, id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            error!("Failed to get page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify it's a platform page
@@ -172,7 +196,10 @@ pub async fn update_platform_page(
         validate_slug(slug)?;
         if queries::slug_exists(&state.db, None, slug, Some(id))
             .await
-            .unwrap_or(true)
+            .unwrap_or_else(|e| {
+                error!("Slug check failed, assuming exists: {}", e);
+                true
+            })
         {
             return Err((StatusCode::CONFLICT, "Slug already exists".to_string()));
         }
@@ -189,10 +216,16 @@ pub async fn update_platform_page(
         user.id,
     )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| {
+        error!("Failed to update platform page {}: {}", id, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+    })?;
 
     // Log audit
-    queries::log_audit(
+    if let Err(e) = queries::log_audit(
         &state.db,
         id,
         "update",
@@ -202,7 +235,9 @@ pub async fn update_platform_page(
         None,
     )
     .await
-    .ok();
+    {
+        error!("Failed to log audit for page {}: {}", id, e);
+    }
 
     Ok(Json(page))
 }
@@ -228,7 +263,13 @@ pub async fn delete_platform_page(
     // Get existing page
     let page = queries::get_page_by_id(&state.db, id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            error!("Failed to get page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify it's a platform page
@@ -239,10 +280,16 @@ pub async fn delete_platform_page(
     // Soft delete
     queries::soft_delete_page(&state.db, id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to delete platform page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
 
     // Log audit
-    queries::log_audit(
+    if let Err(e) = queries::log_audit(
         &state.db,
         id,
         "delete",
@@ -252,7 +299,9 @@ pub async fn delete_platform_page(
         None,
     )
     .await
-    .ok();
+    {
+        error!("Failed to log audit for page {}: {}", id, e);
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -277,7 +326,13 @@ pub async fn reorder_platform_pages(
 
     queries::reorder_pages(&state.db, None, &req.page_ids)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to reorder platform pages: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -296,7 +351,13 @@ fn permission_error_to_response(err: PermissionError) -> (StatusCode, String) {
         PermissionError::MissingPermission(p) => {
             (StatusCode::FORBIDDEN, format!("Missing permission: {p:?}"))
         }
-        PermissionError::DatabaseError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        PermissionError::DatabaseError(msg) => {
+            error!("Permission database error: {}", msg);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        }
         _ => (StatusCode::FORBIDDEN, err.to_string()),
     }
 }
@@ -314,13 +375,23 @@ async fn check_manage_pages_permission(
 }
 
 /// List all pages for a guild.
+///
+/// Note: Does not check guild membership — guild information pages (rules, welcome)
+/// are intentionally readable by any authenticated user who has the guild ID.
+/// Write operations are protected by `MANAGE_PAGES` permission.
 pub async fn list_guild_pages(
     State(state): State<AppState>,
     Path(guild_id): Path<Uuid>,
 ) -> PageResult<Json<Vec<PageListItem>>> {
     let pages = queries::list_pages(&state.db, Some(guild_id))
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to list guild pages for {}: {}", guild_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
     Ok(Json(pages))
 }
 
@@ -331,7 +402,13 @@ pub async fn get_guild_page(
 ) -> PageResult<Json<Page>> {
     queries::get_page_by_slug(&state.db, Some(guild_id), &slug)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            error!("Failed to get guild page '{}' in {}: {}", slug, guild_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
         .map(Json)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))
 }
@@ -356,17 +433,23 @@ pub async fn create_guild_page(
 
     validate_slug(&slug)?;
 
-    // Check slug availability
+    // Check slug availability (conservative: assume exists on error)
     if queries::slug_exists(&state.db, Some(guild_id), &slug, None)
         .await
-        .unwrap_or(true)
+        .unwrap_or_else(|e| {
+            error!("Slug check failed, assuming exists: {}", e);
+            true
+        })
     {
         return Err((StatusCode::CONFLICT, "Slug already exists".to_string()));
     }
 
     if queries::slug_recently_deleted(&state.db, Some(guild_id), &slug)
         .await
-        .unwrap_or(false)
+        .unwrap_or_else(|e| {
+            error!("Recently deleted check failed: {}", e);
+            false
+        })
     {
         return Err((
             StatusCode::CONFLICT,
@@ -374,10 +457,13 @@ pub async fn create_guild_page(
         ));
     }
 
-    // Check page limit
+    // Check page limit (conservative: assume at limit on error)
     if queries::is_at_page_limit(&state.db, Some(guild_id))
         .await
-        .unwrap_or(true)
+        .unwrap_or_else(|e| {
+            error!("Page limit check failed, assuming at limit: {}", e);
+            true
+        })
     {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -396,7 +482,13 @@ pub async fn create_guild_page(
         user.id,
     )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| {
+        error!("Failed to create guild page in {}: {}", guild_id, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+    })?;
 
     // Log audit (non-blocking, log errors instead of failing)
     if let Err(e) =
@@ -421,7 +513,13 @@ pub async fn update_guild_page(
     // Get existing page
     let old_page = queries::get_page_by_id(&state.db, id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            error!("Failed to get page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify page belongs to this guild
@@ -437,7 +535,10 @@ pub async fn update_guild_page(
         validate_slug(slug)?;
         if queries::slug_exists(&state.db, Some(guild_id), slug, Some(id))
             .await
-            .unwrap_or(true)
+            .unwrap_or_else(|e| {
+                error!("Slug check failed, assuming exists: {}", e);
+                true
+            })
         {
             return Err((StatusCode::CONFLICT, "Slug already exists".to_string()));
         }
@@ -454,10 +555,16 @@ pub async fn update_guild_page(
         user.id,
     )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| {
+        error!("Failed to update guild page {}: {}", id, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+    })?;
 
     // Log audit
-    queries::log_audit(
+    if let Err(e) = queries::log_audit(
         &state.db,
         id,
         "update",
@@ -467,7 +574,9 @@ pub async fn update_guild_page(
         None,
     )
     .await
-    .ok();
+    {
+        error!("Failed to log audit for page {}: {}", id, e);
+    }
 
     Ok(Json(page))
 }
@@ -484,7 +593,13 @@ pub async fn delete_guild_page(
     // Get existing page
     let page = queries::get_page_by_id(&state.db, id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            error!("Failed to get page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
 
     // Verify page belongs to this guild
@@ -495,10 +610,16 @@ pub async fn delete_guild_page(
     // Soft delete
     queries::soft_delete_page(&state.db, id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to delete guild page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
 
     // Log audit
-    queries::log_audit(
+    if let Err(e) = queries::log_audit(
         &state.db,
         id,
         "delete",
@@ -508,7 +629,9 @@ pub async fn delete_guild_page(
         None,
     )
     .await
-    .ok();
+    {
+        error!("Failed to log audit for page {}: {}", id, e);
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -525,7 +648,13 @@ pub async fn reorder_guild_pages(
 
     queries::reorder_pages(&state.db, Some(guild_id), &req.page_ids)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to reorder guild pages in {}: {}", guild_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -542,12 +671,73 @@ pub async fn accept_page(
 ) -> PageResult<StatusCode> {
     let page = queries::get_page_by_id(&state.db, id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            error!("Failed to get page {} for acceptance: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+
+    if !page.requires_acceptance {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This page does not require acceptance".to_string(),
+        ));
+    }
 
     queries::accept_page(&state.db, user.id, id, &page.content_hash)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to record page acceptance for page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Accept a guild page (record user acceptance with guild scope check).
+pub async fn accept_guild_page(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((guild_id, id)): Path<(Uuid, Uuid)>,
+) -> PageResult<StatusCode> {
+    let page = queries::get_page_by_id(&state.db, id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get page {} for acceptance: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+
+    // Verify page belongs to this guild
+    if page.guild_id != Some(guild_id) {
+        return Err((StatusCode::NOT_FOUND, "Page not found".to_string()));
+    }
+
+    if !page.requires_acceptance {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This page does not require acceptance".to_string(),
+        ));
+    }
+
+    queries::accept_page(&state.db, user.id, id, &page.content_hash)
+        .await
+        .map_err(|e| {
+            error!("Failed to record page acceptance for page {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -559,7 +749,13 @@ pub async fn get_pending_acceptance(
 ) -> PageResult<Json<Vec<PageListItem>>> {
     let pages = queries::get_pending_acceptance(&state.db, user.id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            error!("Failed to get pending acceptance: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        })?;
     Ok(Json(pages))
 }
 

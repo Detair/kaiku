@@ -33,6 +33,7 @@ function formatDate(dateStr: string): string {
 
 export default function PageView(props: PageViewProps) {
   const [isDeleting, setIsDeleting] = createSignal(false);
+  const [deleteError, setDeleteError] = createSignal<string | null>(null);
 
   const handleDelete = async () => {
     if (!confirm(`Are you sure you want to delete "${props.page.title}"?`)) {
@@ -40,8 +41,12 @@ export default function PageView(props: PageViewProps) {
     }
 
     setIsDeleting(true);
+    setDeleteError(null);
     try {
       await props.onDelete?.();
+    } catch (err) {
+      console.error("Failed to delete page:", err);
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete page");
     } finally {
       setIsDeleting(false);
     }
@@ -100,6 +105,13 @@ export default function PageView(props: PageViewProps) {
           </div>
         </Show>
       </div>
+
+      {/* Delete error */}
+      <Show when={deleteError()}>
+        <div class="mx-6 mt-2 px-3 py-2 bg-red-900/30 border border-red-700 rounded text-sm text-red-300">
+          {deleteError()}
+        </div>
+      </Show>
 
       {/* Content */}
       <div class="flex-1 overflow-auto">

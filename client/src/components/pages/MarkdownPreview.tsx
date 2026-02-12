@@ -28,7 +28,7 @@ function initMermaid() {
   mermaidInitialized = true;
 }
 
-// DOMPurify configuration - allowlist approach
+// DOMPurify configuration - allowlist approach (passed inline, not via setConfig)
 const ALLOWED_TAGS = [
   "p", "br", "strong", "em", "b", "i", "u", "s", "del",
   "code", "pre", "kbd", "samp", "var",
@@ -53,16 +53,17 @@ const ALLOWED_ATTR = [
 // URL protocol allowlist
 const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
 
-// Configure DOMPurify
-DOMPurify.setConfig({
+// Inline config passed to each sanitize() call — avoids global setConfig pollution
+const MARKDOWN_PURIFY_CONFIG = {
   ALLOWED_TAGS,
   ALLOWED_ATTR,
   ALLOWED_URI_REGEXP,
   ALLOW_DATA_ATTR: false,
   ADD_ATTR: ["target"],
-});
+};
 
-// Add hook to open links in new tab
+// Global hook: opens external links in new tab with noopener.
+// Intentionally global — this behavior is desirable for all sanitized contexts.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
     const href = node.getAttribute("href") || "";
@@ -74,12 +75,13 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   }
 });
 
-// SVG-specific sanitization for mermaid diagrams
-// Note: foreignObject and style are explicitly forbidden as they are XSS vectors
+// SVG-specific sanitization for mermaid diagrams — explicit allowlist (not additive)
+// foreignObject, style, and script are excluded as they are XSS vectors
 const MERMAID_SVG_CONFIG = {
-  ADD_TAGS: ["svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "tspan", "defs", "marker"],
-  ADD_ATTR: ["viewBox", "d", "fill", "stroke", "stroke-width", "transform", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "points", "font-size", "font-family", "text-anchor", "dominant-baseline", "marker-end", "marker-start", "xmlns", "preserveAspectRatio"],
+  ALLOWED_TAGS: ["svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "tspan", "defs", "marker"],
+  ALLOWED_ATTR: ["viewBox", "d", "fill", "stroke", "stroke-width", "transform", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "points", "font-size", "font-family", "text-anchor", "dominant-baseline", "marker-end", "marker-start", "xmlns", "preserveAspectRatio"],
   FORBID_TAGS: ["foreignObject", "style", "script"],
+  ALLOW_DATA_ATTR: false,
 };
 
 interface MarkdownPreviewProps {
@@ -122,8 +124,8 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
         return; // Stale render, skip update
       }
 
-      // Sanitize HTML using DOMPurify - this is the security layer
-      const sanitizedHtml = DOMPurify.sanitize(rawHtml);
+      // Sanitize HTML using DOMPurify with inline config (not global setConfig)
+      const sanitizedHtml = DOMPurify.sanitize(rawHtml, MARKDOWN_PURIFY_CONFIG);
       setHtml(sanitizedHtml);
       setError(null);
     } catch (err) {
@@ -160,10 +162,10 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
           return; // DOM has been replaced, skip modification
         }
 
-        // Replace the code block with rendered SVG (sanitized)
+        // Replace the code block with sanitized SVG from mermaid
         const wrapper = document.createElement("div");
         wrapper.className = "mermaid-diagram";
-        // Sanitize SVG output from mermaid
+        // Security: SVG is sanitized through DOMPurify with strict SVG-only allowlist
         wrapper.innerHTML = DOMPurify.sanitize(svg, MERMAID_SVG_CONFIG);
         pre.replaceWith(wrapper);
       } catch (err) {

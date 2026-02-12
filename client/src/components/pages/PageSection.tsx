@@ -47,75 +47,72 @@ export default function PageSection(props: PageSectionProps) {
     return props.pages.filter((p) => props.pendingPageIds!.has(p.id)).length;
   };
 
-  // Hide section if no pages and user can't manage
-  if (props.pages.length === 0 && !props.canManage) {
-    return null;
-  }
-
   return (
-    <div class="mb-2">
-      {/* Section Header */}
-      <button
-        type="button"
-        onClick={handleToggle}
-        class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-zinc-400 uppercase tracking-wide hover:text-zinc-200 transition-colors"
-      >
-        <Show when={isExpanded()} fallback={<ChevronRight class="w-4 h-4" />}>
-          <ChevronDown class="w-4 h-4" />
-        </Show>
-
-        <FileText class="w-4 h-4" />
-
-        <span class="flex-1 text-left">{props.title}</span>
-
-        <Show when={hasPendingPages()}>
-          <span class="px-1.5 py-0.5 bg-amber-900/40 text-amber-400 rounded text-xs font-medium">
-            {pendingCount()}
-          </span>
-        </Show>
-
-        <Show when={props.canManage}>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              props.onCreatePage?.();
-            }}
-            class="p-1 text-zinc-500 hover:text-white hover:bg-zinc-700 rounded transition-colors"
-            title="Add page"
-          >
-            <Plus class="w-3.5 h-3.5" />
-          </button>
-        </Show>
-      </button>
-
-      {/* Page List */}
-      <Show when={isExpanded()}>
-        <div class="ml-2 space-y-0.5">
-          <Show
-            when={props.pages.length > 0}
-            fallback={
-              <Show when={props.canManage}>
-                <div class="px-3 py-2 text-sm text-zinc-500 italic">
-                  No pages yet
-                </div>
-              </Show>
-            }
-          >
-            <For each={props.pages}>
-              {(page) => (
-                <PageItem
-                  page={page}
-                  isSelected={props.selectedPageId === page.id}
-                  isPending={props.pendingPageIds?.has(page.id)}
-                  isDraggable={props.canManage}
-                  onClick={() => props.onSelectPage?.(page)}
-                />
-              )}
-            </For>
+    <Show when={props.pages.length > 0 || props.canManage}>
+      <div class="mb-2">
+        {/* Section Header */}
+        <button
+          type="button"
+          onClick={handleToggle}
+          class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-zinc-400 uppercase tracking-wide hover:text-zinc-200 transition-colors"
+        >
+          <Show when={isExpanded()} fallback={<ChevronRight class="w-4 h-4" />}>
+            <ChevronDown class="w-4 h-4" />
           </Show>
-        </div>
-      </Show>
-    </div>
+
+          <FileText class="w-4 h-4" />
+
+          <span class="flex-1 text-left">{props.title}</span>
+
+          <Show when={hasPendingPages()}>
+            <span class="px-1.5 py-0.5 bg-amber-900/40 text-amber-400 rounded text-xs font-medium">
+              {pendingCount()}
+            </span>
+          </Show>
+
+          <Show when={props.canManage}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                props.onCreatePage?.();
+              }}
+              class="p-1 text-zinc-500 hover:text-white hover:bg-zinc-700 rounded transition-colors"
+              title="Add page"
+            >
+              <Plus class="w-3.5 h-3.5" />
+            </button>
+          </Show>
+        </button>
+
+        {/* Page List */}
+        <Show when={isExpanded()}>
+          <div class="ml-2 space-y-0.5">
+            <Show
+              when={props.pages.length > 0}
+              fallback={
+                <Show when={props.canManage}>
+                  <div class="px-3 py-2 text-sm text-zinc-500 italic">
+                    No pages yet
+                  </div>
+                </Show>
+              }
+            >
+              <For each={props.pages}>
+                {(page) => (
+                  <PageItem
+                    page={page}
+                    isSelected={props.selectedPageId === page.id}
+                    isPending={props.pendingPageIds?.has(page.id)}
+                    isDraggable={props.canManage}
+                    onClick={() => props.onSelectPage?.(page)}
+                  />
+                )}
+              </For>
+            </Show>
+          </div>
+        </Show>
+      </div>
+    </Show>
   );
 }

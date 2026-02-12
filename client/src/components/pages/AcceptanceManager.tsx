@@ -24,6 +24,7 @@ interface AcceptanceManagerProps {
 export default function AcceptanceManager(_props: AcceptanceManagerProps) {
   const [currentPage, setCurrentPage] = createSignal<Page | null>(null);
   const [isLoading, setIsLoading] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
   const [deferredPageIds, setDeferredPageIds] = createSignal<Set<string>>(new Set());
 
   // Load pending pages on mount
@@ -65,7 +66,12 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
       setCurrentPage(fullPage);
     } catch (err) {
       console.error("Failed to load page for acceptance:", err);
-      // If we can't load the page, skip it
+      // Platform pages are blocking — show error instead of silently skipping
+      if (!nextPageListItem.guild_id) {
+        setError("Failed to load a required page. Please try again later.");
+        return;
+      }
+      // Guild pages can be skipped
       setDeferredPageIds((prev) => new Set([...prev, nextPageListItem.id]));
       await showNextPage();
     } finally {
@@ -78,7 +84,10 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
     const page = currentPage();
     if (!page) return;
 
-    await acceptPageAction(page.id);
+    const success = await acceptPageAction(page.id);
+    if (!success) {
+      throw new Error("Failed to accept page");
+    }
     setCurrentPage(null);
 
     // Show next page if any
@@ -86,7 +95,7 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
   };
 
   // Handle deferring (guild pages only)
-  const handleDefer = () => {
+  const handleDefer = async () => {
     const page = currentPage();
     if (!page || page.guild_id === null) return;
 
@@ -94,7 +103,7 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
     setCurrentPage(null);
 
     // Show next page if any
-    showNextPage();
+    await showNextPage();
   };
 
   // Handle close (same as defer for non-blocking)
@@ -117,14 +126,34 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
   };
 
   return (
-    <Show when={currentPage() && !isLoading()}>
-      <PageAcceptanceModal
-        page={currentPage()!}
-        isBlocking={isBlocking()}
-        onAccept={handleAccept}
-        onDefer={isBlocking() ? undefined : handleDefer}
-        onClose={isBlocking() ? undefined : handleClose}
-      />
-    </Show>
+    <>
+      <Show when={error()}>
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="absolute inset-0 bg-black/70" />
+          <div class="relative bg-zinc-800 rounded-lg p-6 max-w-md shadow-xl text-center">
+            <p class="text-red-400 mb-4">{error()}</p>
+            <button
+              type="button"
+              onClick={async () => {
+                setError(null);
+                await showNextPage();
+              }}
+              class="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-md transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </Show>
+      <Show when={currentPage() && !isLoading() && !error()}>
+        <PageAcceptanceModal
+          page={currentPage()!}
+          isBlocking={isBlocking()}
+          onAccept={handleAccept}
+          onDefer={isBlocking() ? undefined : handleDefer}
+          onClose={isBlocking() ? undefined : handleClose}
+        />
+      </Show>
+    </>
   );
 }
