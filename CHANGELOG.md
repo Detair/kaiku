@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- HTTP integration tests for chat module — 19 tests across channels CRUD, messages CRUD, DM operations, and upload error paths (`channels_http_test.rs`, `messages_http_test.rs`, `dm_http_test.rs`, `uploads_http_test.rs`) (#164)
 - Comprehensive Playwright E2E test suite covering 68 UI items across 12 spec files — Auth, Navigation, Messaging, Guild, Channels, Friends/DMs, Settings, Voice, Admin, Search, and Permissions with shared test helpers and coverage tracker (`docs/testing/ui-coverage.md`)
 
 ### Fixed
