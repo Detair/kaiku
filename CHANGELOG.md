@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Dynamic SQL query construction now uses `sqlx::QueryBuilder` instead of manual `format!()`/`write!()` with parameter index tracking, eliminating a class of potential runtime parameter mismatch errors (#174)
+
 ### Security
 - Eliminated all `.unwrap()` calls in production server code — TOTP secret decoding now returns proper errors instead of panicking, WebSocket auth responses use `.expect()` with justification, duration arithmetic uses `saturating_sub()`, and S3 endpoint formatting uses safe `if let` pattern (#163)
 - File upload magic byte validation — uploaded files are now verified against their claimed MIME type using content inspection, preventing file type spoofing (e.g. executables disguised as images)

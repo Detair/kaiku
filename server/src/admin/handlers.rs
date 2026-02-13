@@ -18,7 +18,7 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, QueryBuilder};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -492,61 +492,6 @@ async fn get_audit_log_filtered(
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
 ) -> Result<(Vec<AuditLogEntry>, (i64,)), AdminError> {
-    // Build WHERE clauses dynamically
-    let mut conditions: Vec<String> = Vec::new();
-    let mut param_idx = 1;
-
-    // Action filter
-    if action_filter.is_some() {
-        if exact_action_match {
-            conditions.push(format!("action = ${param_idx}"));
-        } else {
-            conditions.push(format!("action LIKE ${param_idx}"));
-        }
-        param_idx += 1;
-    }
-
-    // Date range filters
-    if from_date.is_some() {
-        conditions.push(format!("created_at >= ${param_idx}"));
-        param_idx += 1;
-    }
-    if to_date.is_some() {
-        conditions.push(format!("created_at <= ${param_idx}"));
-        param_idx += 1;
-    }
-
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
-
-    // Build count query
-    let count_sql = format!("SELECT COUNT(*) FROM system_audit_log {where_clause}");
-
-    // Build main query
-    let main_sql = format!(
-        r"
-        SELECT
-            id,
-            actor_id,
-            action,
-            target_type,
-            target_id,
-            details,
-            host(ip_address) as ip_address,
-            created_at
-        FROM system_audit_log
-        {where_clause}
-        ORDER BY created_at DESC
-        LIMIT ${param_idx} OFFSET ${}
-        ",
-        param_idx + 1
-    );
-
-    // Execute queries with dynamic parameter binding
-    // We need to handle this with raw query building since we have optional params
     let action_pattern = action_filter.map(|a| {
         if exact_action_match {
             a.to_string()
@@ -555,36 +500,56 @@ async fn get_audit_log_filtered(
         }
     });
 
-    // Get total count
-    let total: (i64,) = {
-        let mut query = sqlx::query_as::<_, (i64,)>(&count_sql);
-        if let Some(ref pattern) = action_pattern {
-            query = query.bind(pattern);
-        }
-        if let Some(from) = from_date {
-            query = query.bind(from);
-        }
-        if let Some(to) = to_date {
-            query = query.bind(to);
-        }
-        query.fetch_one(pool).await?
-    };
+    // Shared filter logic for both count and main queries
+    macro_rules! push_audit_filters {
+        ($builder:expr) => {{
+            let mut has_condition = false;
+            if let Some(ref pattern) = action_pattern {
+                $builder.push(" WHERE ");
+                has_condition = true;
+                if exact_action_match {
+                    $builder.push("action = ").push_bind(pattern.clone());
+                } else {
+                    $builder.push("action LIKE ").push_bind(pattern.clone());
+                }
+            }
+            if let Some(from) = from_date {
+                $builder.push(if has_condition { " AND " } else { " WHERE " });
+                has_condition = true;
+                $builder.push("created_at >= ").push_bind(from);
+            }
+            if let Some(to) = to_date {
+                $builder.push(if has_condition { " AND " } else { " WHERE " });
+                let _ = has_condition;
+                $builder.push("created_at <= ").push_bind(to);
+            }
+        }};
+    }
 
-    // Get entries
-    let entries: Vec<AuditLogEntry> = {
-        let mut query = sqlx::query_as::<_, AuditLogEntry>(&main_sql);
-        if let Some(ref pattern) = action_pattern {
-            query = query.bind(pattern);
-        }
-        if let Some(from) = from_date {
-            query = query.bind(from);
-        }
-        if let Some(to) = to_date {
-            query = query.bind(to);
-        }
-        query = query.bind(limit).bind(offset);
-        query.fetch_all(pool).await?
-    };
+    // Count query
+    let mut count_builder = QueryBuilder::new("SELECT COUNT(*) FROM system_audit_log");
+    push_audit_filters!(count_builder);
+    let total: (i64,) = count_builder
+        .build_query_as::<(i64,)>()
+        .fetch_one(pool)
+        .await?;
+
+    // Main query
+    let mut builder = QueryBuilder::new(
+        "SELECT id, actor_id, action, target_type, target_id, details, \
+         host(ip_address) as ip_address, created_at \
+         FROM system_audit_log",
+    );
+    push_audit_filters!(builder);
+    builder
+        .push(" ORDER BY created_at DESC LIMIT ")
+        .push_bind(limit)
+        .push(" OFFSET ")
+        .push_bind(offset);
+    let entries: Vec<AuditLogEntry> = builder
+        .build_query_as::<AuditLogEntry>()
+        .fetch_all(pool)
+        .await?;
 
     Ok((entries, total))
 }

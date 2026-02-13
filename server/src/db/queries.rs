@@ -5,10 +5,9 @@
 //! All query functions include error context logging to aid debugging.
 
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, QueryBuilder, Row};
 use tracing::error;
 use uuid::Uuid;
 
@@ -153,33 +152,21 @@ pub async fn update_user_profile(
     display_name: Option<&str>,
     email: Option<Option<&str>>, // Some(Some(email)) = set, Some(None) = clear, None = no change
 ) -> sqlx::Result<User> {
-    // Build dynamic update query based on what's provided
-    let mut query = String::from("UPDATE users SET updated_at = NOW()");
-    let mut param_idx = 1;
-
-    if display_name.is_some() {
-        write!(query, ", display_name = ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
-    }
-    if email.is_some() {
-        write!(query, ", email = ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
-    }
-
-    write!(query, " WHERE id = ${param_idx} RETURNING *").expect("write to String is infallible");
-
-    // Build the query with dynamic bindings
-    let mut q = sqlx::query_as::<_, User>(&query);
+    let mut builder = QueryBuilder::new("UPDATE users SET updated_at = NOW()");
 
     if let Some(name) = display_name {
-        q = q.bind(name);
+        builder.push(", display_name = ").push_bind(name);
     }
     if let Some(mail) = email {
-        q = q.bind(mail);
+        builder.push(", email = ").push_bind(mail);
     }
-    q = q.bind(user_id);
 
-    q.fetch_one(pool).await
+    builder
+        .push(" WHERE id = ")
+        .push_bind(user_id)
+        .push(" RETURNING *");
+
+    builder.build_query_as::<User>().fetch_one(pool).await
 }
 
 /// Get list of guild IDs the user is a member of.
@@ -1194,63 +1181,63 @@ pub async fn search_messages_filtered(
         return Ok(Vec::new());
     }
 
-    let mut sql = String::from(
+    let mut builder = QueryBuilder::new(
         "SELECT m.id, m.channel_id, m.user_id, m.content, m.created_at, \
-         ts_rank(m.content_search, websearch_to_tsquery('english', $2)) AS rank, \
-         ts_headline('english', m.content, websearch_to_tsquery('english', $2), \
-         'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=20, MaxFragments=2') AS headline \
+         ts_rank(m.content_search, websearch_to_tsquery('english', ",
+    );
+    builder.push_bind(query);
+    builder.push(
+        ")) AS rank, \
+         ts_headline('english', m.content, websearch_to_tsquery('english', ",
+    );
+    builder.push_bind(query);
+    builder.push(
+        "), 'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=20, MaxFragments=2') AS headline \
          FROM messages m",
     );
 
     if filters.has_file {
-        sql.push_str(" INNER JOIN file_attachments fa ON fa.message_id = m.id");
+        builder.push(" INNER JOIN file_attachments fa ON fa.message_id = m.id");
     }
 
-    sql.push_str(
-        " WHERE m.channel_id = ANY($1) AND m.deleted_at IS NULL AND m.encrypted = false AND m.content_search @@ websearch_to_tsquery('english', $2)",
+    builder.push(" WHERE m.channel_id = ANY(");
+    builder.push_bind(channel_ids);
+    builder.push(
+        ") AND m.deleted_at IS NULL AND m.encrypted = false \
+         AND m.content_search @@ websearch_to_tsquery('english', ",
     );
+    builder.push_bind(query);
+    builder.push(")");
 
-    let mut param_idx = 3u32;
-
-    if filters.date_from.is_some() {
-        write!(sql, " AND m.created_at >= ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
+    if let Some(date_from) = filters.date_from {
+        builder.push(" AND m.created_at >= ").push_bind(date_from);
     }
-    if filters.date_to.is_some() {
-        write!(sql, " AND m.created_at <= ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
+    if let Some(date_to) = filters.date_to {
+        builder.push(" AND m.created_at <= ").push_bind(date_to);
     }
-    if filters.author_id.is_some() {
-        write!(sql, " AND m.user_id = ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
+    if let Some(author_id) = filters.author_id {
+        builder.push(" AND m.user_id = ").push_bind(author_id);
     }
     if filters.has_link {
-        sql.push_str(" AND m.content ~* 'https?://'");
+        builder.push(" AND m.content ~* 'https?://'");
     }
     // has_file is handled via the JOIN (ensures at least one attachment exists)
 
     match filters.sort {
-        SearchSort::Relevance => sql.push_str(" ORDER BY rank DESC, m.created_at DESC"),
-        SearchSort::Date => sql.push_str(" ORDER BY m.created_at DESC"),
-    }
-    write!(sql, " LIMIT ${param_idx} OFFSET ${}", param_idx + 1)
-        .expect("write to String is infallible");
+        SearchSort::Relevance => builder.push(" ORDER BY rank DESC, m.created_at DESC"),
+        SearchSort::Date => builder.push(" ORDER BY m.created_at DESC"),
+    };
 
-    let mut q = sqlx::query_as::<_, SearchMessageRow>(&sql)
-        .bind(channel_ids)
-        .bind(query);
+    builder
+        .push(" LIMIT ")
+        .push_bind(limit)
+        .push(" OFFSET ")
+        .push_bind(offset);
 
-    if let Some(date_from) = filters.date_from {
-        q = q.bind(date_from);
-    }
-    if let Some(date_to) = filters.date_to {
-        q = q.bind(date_to);
-    }
-    if let Some(author_id) = filters.author_id {
-        q = q.bind(author_id);
-    }
-
-    q.bind(limit).bind(offset).fetch_all(pool).await
+    builder
+        .build_query_as::<SearchMessageRow>()
+        .fetch_all(pool)
+        .await
 }
 
 /// Count search results with advanced filters using dynamic SQL.
@@ -1264,54 +1251,38 @@ pub async fn count_search_messages_filtered(
         return Ok(0);
     }
 
-    let mut sql = String::from("SELECT COUNT(*)");
+    let mut builder = QueryBuilder::new("SELECT COUNT(*)");
 
     if filters.has_file {
-        sql.push_str(" FROM messages m INNER JOIN file_attachments fa ON fa.message_id = m.id");
+        builder.push(" FROM messages m INNER JOIN file_attachments fa ON fa.message_id = m.id");
     } else {
-        sql.push_str(" FROM messages m");
+        builder.push(" FROM messages m");
     }
 
-    sql.push_str(
-        " WHERE m.channel_id = ANY($1) AND m.deleted_at IS NULL AND m.encrypted = false AND m.content_search @@ websearch_to_tsquery('english', $2)",
+    builder.push(" WHERE m.channel_id = ANY(");
+    builder.push_bind(channel_ids);
+    builder.push(
+        ") AND m.deleted_at IS NULL AND m.encrypted = false \
+         AND m.content_search @@ websearch_to_tsquery('english', ",
     );
-
-    let mut param_idx = 3u32;
-
-    if filters.date_from.is_some() {
-        write!(sql, " AND m.created_at >= ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
-    }
-    if filters.date_to.is_some() {
-        write!(sql, " AND m.created_at <= ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
-    }
-    if filters.author_id.is_some() {
-        write!(sql, " AND m.user_id = ${param_idx}").expect("write to String is infallible");
-        param_idx += 1;
-    }
-    if filters.has_link {
-        sql.push_str(" AND m.content ~* 'https?://'");
-    }
-
-    let _ = param_idx;
-
-    let mut q = sqlx::query_as::<_, (i64,)>(&sql)
-        .bind(channel_ids)
-        .bind(query);
+    builder.push_bind(query);
+    builder.push(")");
 
     if let Some(date_from) = filters.date_from {
-        q = q.bind(date_from);
+        builder.push(" AND m.created_at >= ").push_bind(date_from);
     }
     if let Some(date_to) = filters.date_to {
-        q = q.bind(date_to);
+        builder.push(" AND m.created_at <= ").push_bind(date_to);
     }
     if let Some(author_id) = filters.author_id {
-        q = q.bind(author_id);
+        builder.push(" AND m.user_id = ").push_bind(author_id);
+    }
+    if filters.has_link {
+        builder.push(" AND m.content ~* 'https?://'");
     }
 
-    let result = q.fetch_one(pool).await?;
-    Ok(result.0)
+    let (count,) = builder.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    Ok(count)
 }
 
 // ============================================================================

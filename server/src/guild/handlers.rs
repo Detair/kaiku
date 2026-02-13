@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use sqlx::QueryBuilder;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -269,45 +270,37 @@ pub async fn update_guild(
     }
 
     // Build dynamic update query
-    let mut query_parts = vec![];
-    let mut bindings: Vec<String> = vec![];
+    let mut has_changes = false;
+    let mut builder = QueryBuilder::new("UPDATE guilds SET ");
+    {
+        let mut sep = builder.separated(", ");
+        if let Some(name) = body.name {
+            sep.push("name = ").push_bind_unseparated(name);
+            has_changes = true;
+        }
+        if let Some(desc) = body.description {
+            sep.push("description = ").push_bind_unseparated(desc);
+            has_changes = true;
+        }
+        if let Some(icon) = body.icon_url {
+            sep.push("icon_url = ").push_bind_unseparated(icon);
+            has_changes = true;
+        }
+    }
 
-    if let Some(name) = &body.name {
-        query_parts.push(format!("name = ${}", bindings.len() + 2));
-        bindings.push(name.clone());
-    }
-    if body.description.is_some() {
-        query_parts.push(format!("description = ${}", bindings.len() + 2));
-        bindings.push(body.description.clone().unwrap_or_default());
-    }
-    if body.icon_url.is_some() {
-        query_parts.push(format!("icon_url = ${}", bindings.len() + 2));
-        bindings.push(body.icon_url.clone().unwrap_or_default());
-    }
-
-    if query_parts.is_empty() {
-        // No changes, return current guild
+    if !has_changes {
         return get_guild(State(state), auth, Path(guild_id)).await;
     }
 
-    let query_str = format!(
-        "UPDATE guilds SET {} WHERE id = $1 RETURNING id, name, owner_id, icon_url, description, threads_enabled, created_at",
-        query_parts.join(", ")
-    );
+    builder.push(" WHERE id = ");
+    builder.push_bind(guild_id);
+    builder
+        .push(" RETURNING id, name, owner_id, icon_url, description, threads_enabled, created_at");
 
-    // Execute update with proper bindings
-    let mut query = sqlx::query_as::<_, Guild>(&query_str).bind(guild_id);
-    if let Some(name) = body.name {
-        query = query.bind(name);
-    }
-    if let Some(desc) = body.description {
-        query = query.bind(desc);
-    }
-    if let Some(icon) = body.icon_url {
-        query = query.bind(icon);
-    }
-
-    let updated_guild = query.fetch_one(&state.db).await?;
+    let updated_guild = builder
+        .build_query_as::<Guild>()
+        .fetch_one(&state.db)
+        .await?;
 
     Ok(Json(updated_guild))
 }
@@ -927,28 +920,30 @@ pub async fn update_guild_settings(
         .await
         .map_err(GuildError::Permission)?;
 
-    let mut query_parts = vec![];
-
-    if body.threads_enabled.is_some() {
-        query_parts.push(format!("threads_enabled = ${}", query_parts.len() + 2));
+    let mut has_changes = false;
+    let mut builder = QueryBuilder::new("UPDATE guilds SET ");
+    {
+        let mut sep = builder.separated(", ");
+        if let Some(threads_enabled) = body.threads_enabled {
+            sep.push("threads_enabled = ")
+                .push_bind_unseparated(threads_enabled);
+            has_changes = true;
+        }
     }
 
-    if query_parts.is_empty() {
-        // No changes, return current settings
+    if !has_changes {
         return get_guild_settings(State(state), auth, Path(guild_id)).await;
     }
 
-    let query_str = format!(
-        "UPDATE guilds SET {} WHERE id = $1 RETURNING threads_enabled",
-        query_parts.join(", ")
-    );
+    builder
+        .push(" WHERE id = ")
+        .push_bind(guild_id)
+        .push(" RETURNING threads_enabled");
 
-    let mut query = sqlx::query_as::<_, (bool,)>(&query_str).bind(guild_id);
-    if let Some(threads_enabled) = body.threads_enabled {
-        query = query.bind(threads_enabled);
-    }
-
-    let (threads_enabled,) = query.fetch_one(&state.db).await?;
+    let (threads_enabled,) = builder
+        .build_query_as::<(bool,)>()
+        .fetch_one(&state.db)
+        .await?;
 
     Ok(Json(GuildSettings { threads_enabled }))
 }
