@@ -36,6 +36,7 @@ use vc_server::api::{create_router, AppState};
 use vc_server::auth::jwt;
 use vc_server::config::Config;
 use vc_server::db;
+use vc_server::permissions::GuildPermissions;
 use vc_server::voice::sfu::SfuServer;
 
 // ============================================================================
@@ -475,6 +476,27 @@ pub async fn create_guild(pool: &PgPool, owner_id: Uuid) -> Uuid {
         .await
         .expect("Failed to add guild member");
 
+    guild_id
+}
+
+/// Create a guild with an `@everyone` role that has the given permissions.
+///
+/// Combines [`create_guild`] + role creation in one call.
+pub async fn create_guild_with_default_role(
+    pool: &PgPool,
+    owner_id: Uuid,
+    everyone_perms: GuildPermissions,
+) -> Uuid {
+    let guild_id = create_guild(pool, owner_id).await;
+    sqlx::query(
+        "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default) VALUES ($1, $2, '@everyone', $3, 0, true)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(guild_id)
+    .bind(everyone_perms.to_db())
+    .execute(pool)
+    .await
+    .expect("Failed to create @everyone role");
     guild_id
 }
 

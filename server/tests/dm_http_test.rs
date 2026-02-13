@@ -9,7 +9,7 @@ mod helpers;
 
 use axum::body::Body;
 use axum::http::Method;
-use helpers::{body_to_json, create_test_user, generate_access_token, CleanupGuard, TestApp};
+use helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use serial_test::serial;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -84,19 +84,6 @@ async fn list_dms(app: &TestApp, token: &str) -> serde_json::Value {
     body_to_json(resp).await
 }
 
-fn register_dm_cleanup(guard: &mut CleanupGuard, channel_id: Uuid) {
-    guard.add(move |pool| async move {
-        let _ = sqlx::query("DELETE FROM dm_participants WHERE channel_id = $1")
-            .bind(channel_id)
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("DELETE FROM channels WHERE id = $1")
-            .bind(channel_id)
-            .execute(&pool)
-            .await;
-    });
-}
-
 // ============================================================================
 // DM CRUD
 // ============================================================================
@@ -123,7 +110,8 @@ async fn test_create_and_get_dm() {
         "Response should have participants"
     );
 
-    register_dm_cleanup(&mut guard, Uuid::parse_str(dm_id).unwrap());
+    let dm_uuid = Uuid::parse_str(dm_id).unwrap();
+    guard.add(move |pool| async move { helpers::delete_dm_channel(&pool, dm_uuid).await });
 
     // GET the DM
     let req = TestApp::request(Method::GET, &format!("/api/dm/{dm_id}"))
@@ -154,7 +142,8 @@ async fn test_create_dm_returns_existing() {
     assert_eq!(status1, 201, "DM creation failed: {dm1}");
     let dm_id1 = dm1["id"].as_str().unwrap();
 
-    register_dm_cleanup(&mut guard, Uuid::parse_str(dm_id1).unwrap());
+    let dm_uuid = Uuid::parse_str(dm_id1).unwrap();
+    guard.add(move |pool| async move { helpers::delete_dm_channel(&pool, dm_uuid).await });
 
     // Create DM second time → same channel_id (idempotent)
     let (status2, dm2) = create_dm_via_api(&app, &token_a, &[user_b]).await;
@@ -184,17 +173,13 @@ async fn test_list_dms() {
 
     // A creates DM with B
     let (_, dm_ab) = create_dm_via_api(&app, &token_a, &[user_b]).await;
-    register_dm_cleanup(
-        &mut guard,
-        Uuid::parse_str(dm_ab["id"].as_str().unwrap()).unwrap(),
-    );
+    let dm_ab_uuid = Uuid::parse_str(dm_ab["id"].as_str().unwrap()).unwrap();
+    guard.add(move |pool| async move { helpers::delete_dm_channel(&pool, dm_ab_uuid).await });
 
     // A creates DM with C
     let (_, dm_ac) = create_dm_via_api(&app, &token_a, &[user_c]).await;
-    register_dm_cleanup(
-        &mut guard,
-        Uuid::parse_str(dm_ac["id"].as_str().unwrap()).unwrap(),
-    );
+    let dm_ac_uuid = Uuid::parse_str(dm_ac["id"].as_str().unwrap()).unwrap();
+    guard.add(move |pool| async move { helpers::delete_dm_channel(&pool, dm_ac_uuid).await });
 
     // A lists → should have 2 DMs
     let dms_a = list_dms(&app, &token_a).await;
@@ -225,7 +210,8 @@ async fn test_dm_non_participant_forbidden() {
     // A creates DM with B
     let (_, dm) = create_dm_via_api(&app, &token_a, &[user_b]).await;
     let dm_id = dm["id"].as_str().unwrap();
-    register_dm_cleanup(&mut guard, Uuid::parse_str(dm_id).unwrap());
+    let dm_uuid = Uuid::parse_str(dm_id).unwrap();
+    guard.add(move |pool| async move { helpers::delete_dm_channel(&pool, dm_uuid).await });
 
     // User C (non-participant) tries to GET the DM → 403
     let req = TestApp::request(Method::GET, &format!("/api/dm/{dm_id}"))
@@ -255,7 +241,8 @@ async fn test_leave_dm() {
     // A creates DM with B
     let (_, dm) = create_dm_via_api(&app, &token_a, &[user_b]).await;
     let dm_id = dm["id"].as_str().unwrap();
-    register_dm_cleanup(&mut guard, Uuid::parse_str(dm_id).unwrap());
+    let dm_uuid = Uuid::parse_str(dm_id).unwrap();
+    guard.add(move |pool| async move { helpers::delete_dm_channel(&pool, dm_uuid).await });
 
     // A leaves the DM → 204
     let req = TestApp::request(Method::POST, &format!("/api/dm/{dm_id}/leave"))

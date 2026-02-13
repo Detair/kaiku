@@ -9,85 +9,10 @@ mod helpers;
 
 use axum::body::Body;
 use axum::http::Method;
-use helpers::{body_to_json, create_test_user, generate_access_token, CleanupGuard, TestApp};
+use helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use serial_test::serial;
-use sqlx::PgPool;
 use uuid::Uuid;
-
-// ============================================================================
-// Permission bits (from server/src/permissions/guild.rs)
-// ============================================================================
-
-const VIEW_CHANNEL: i64 = 1 << 24;
-const SEND_MESSAGES: i64 = 1 << 0;
-
-// ============================================================================
-// Test Helpers
-// ============================================================================
-
-/// Create a guild with an @everyone role that has the given permissions.
-async fn create_guild_with_roles(pool: &PgPool, owner_id: Uuid, everyone_perms: i64) -> Uuid {
-    let guild_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
-        .bind(guild_id)
-        .bind("Channel Test Guild")
-        .bind(owner_id)
-        .execute(pool)
-        .await
-        .expect("Failed to create test guild");
-
-    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
-        .bind(guild_id)
-        .bind(owner_id)
-        .execute(pool)
-        .await
-        .expect("Failed to add owner as guild member");
-
-    sqlx::query(
-        "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default) VALUES ($1, $2, '@everyone', $3, 0, true)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(guild_id)
-    .bind(everyone_perms)
-    .execute(pool)
-    .await
-    .expect("Failed to create @everyone role");
-
-    guild_id
-}
-
-async fn add_guild_member(pool: &PgPool, guild_id: Uuid, user_id: Uuid) {
-    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
-        .bind(guild_id)
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .expect("Failed to add guild member");
-}
-
-async fn create_channel(pool: &PgPool, guild_id: Uuid, name: &str) -> Uuid {
-    let channel_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channels (id, name, channel_type, guild_id, position, max_screen_shares)
-         VALUES ($1, $2, 'text', $3, 0, 5)",
-    )
-    .bind(channel_id)
-    .bind(name)
-    .bind(guild_id)
-    .execute(pool)
-    .await
-    .expect("Failed to create test channel");
-    channel_id
-}
-
-fn register_guild_cleanup(guard: &mut CleanupGuard, guild_id: Uuid) {
-    guard.add(move |pool| async move {
-        let _ = sqlx::query("DELETE FROM guilds WHERE id = $1")
-            .bind(guild_id)
-            .execute(&pool)
-            .await;
-    });
-}
+use vc_server::permissions::GuildPermissions;
 
 // ============================================================================
 // Channel CRUD
@@ -99,10 +24,11 @@ async fn test_create_channel_success() {
     let app = TestApp::new().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-    let guild_id = create_guild_with_roles(&app.pool, user_id, VIEW_CHANNEL | SEND_MESSAGES).await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
 
     let mut guard = app.cleanup_guard();
-    register_guild_cleanup(&mut guard, guild_id);
+    guard.add(move |pool| async move { helpers::delete_guild(&pool, guild_id).await });
     guard.delete_user(user_id);
 
     let body = serde_json::json!({
@@ -132,10 +58,11 @@ async fn test_create_channel_validation_errors() {
     let app = TestApp::new().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-    let guild_id = create_guild_with_roles(&app.pool, user_id, VIEW_CHANNEL | SEND_MESSAGES).await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
 
     let mut guard = app.cleanup_guard();
-    register_guild_cleanup(&mut guard, guild_id);
+    guard.add(move |pool| async move { helpers::delete_guild(&pool, guild_id).await });
     guard.delete_user(user_id);
 
     // Empty name → 400
@@ -196,12 +123,13 @@ async fn test_update_channel_requires_manage_channels() {
     let token_member = generate_access_token(&app.config, member_id);
 
     // @everyone has VIEW_CHANNEL + SEND_MESSAGES but NOT MANAGE_CHANNELS
-    let guild_id = create_guild_with_roles(&app.pool, owner_id, VIEW_CHANNEL | SEND_MESSAGES).await;
-    add_guild_member(&app.pool, guild_id, member_id).await;
-    let channel_id = create_channel(&app.pool, guild_id, "perm-update-test").await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = helpers::create_guild_with_default_role(&app.pool, owner_id, perms).await;
+    helpers::add_guild_member(&app.pool, guild_id, member_id).await;
+    let channel_id = helpers::create_channel(&app.pool, guild_id, "perm-update-test").await;
 
     let mut guard = app.cleanup_guard();
-    register_guild_cleanup(&mut guard, guild_id);
+    guard.add(move |pool| async move { helpers::delete_guild(&pool, guild_id).await });
     guard.delete_user(owner_id);
     guard.delete_user(member_id);
 
@@ -244,12 +172,13 @@ async fn test_delete_channel_requires_manage_channels() {
     let token_member = generate_access_token(&app.config, member_id);
 
     // @everyone has VIEW_CHANNEL + SEND_MESSAGES but NOT MANAGE_CHANNELS
-    let guild_id = create_guild_with_roles(&app.pool, owner_id, VIEW_CHANNEL | SEND_MESSAGES).await;
-    add_guild_member(&app.pool, guild_id, member_id).await;
-    let channel_id = create_channel(&app.pool, guild_id, "perm-delete-test").await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = helpers::create_guild_with_default_role(&app.pool, owner_id, perms).await;
+    helpers::add_guild_member(&app.pool, guild_id, member_id).await;
+    let channel_id = helpers::create_channel(&app.pool, guild_id, "perm-delete-test").await;
 
     let mut guard = app.cleanup_guard();
-    register_guild_cleanup(&mut guard, guild_id);
+    guard.add(move |pool| async move { helpers::delete_guild(&pool, guild_id).await });
     guard.delete_user(owner_id);
     guard.delete_user(member_id);
 
@@ -284,7 +213,7 @@ async fn test_get_channel_not_found() {
     let mut guard = app.cleanup_guard();
     guard.delete_user(user_id);
 
-    let fake_id = Uuid::new_v4();
+    let fake_id = Uuid::now_v7();
     let req = TestApp::request(Method::GET, &format!("/api/channels/{fake_id}"))
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())

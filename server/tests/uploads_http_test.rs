@@ -11,64 +11,8 @@ use axum::body::Body;
 use axum::http::Method;
 use helpers::{create_test_user, generate_access_token, TestApp};
 use serial_test::serial;
-use sqlx::PgPool;
 use uuid::Uuid;
-
-// ============================================================================
-// Permission bits (from server/src/permissions/guild.rs)
-// ============================================================================
-
-const VIEW_CHANNEL: i64 = 1 << 24;
-const SEND_MESSAGES: i64 = 1 << 0;
-
-// ============================================================================
-// Test Helpers
-// ============================================================================
-
-async fn create_guild_with_owner(pool: &PgPool, owner_id: Uuid) -> Uuid {
-    let guild_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
-        .bind(guild_id)
-        .bind("Upload Test Guild")
-        .bind(owner_id)
-        .execute(pool)
-        .await
-        .expect("Failed to create test guild");
-
-    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
-        .bind(guild_id)
-        .bind(owner_id)
-        .execute(pool)
-        .await
-        .expect("Failed to add owner as guild member");
-
-    sqlx::query(
-        "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default) VALUES ($1, $2, '@everyone', $3, 0, true)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(guild_id)
-    .bind(VIEW_CHANNEL | SEND_MESSAGES)
-    .execute(pool)
-    .await
-    .expect("Failed to create @everyone role");
-
-    guild_id
-}
-
-async fn create_channel(pool: &PgPool, guild_id: Uuid, name: &str) -> Uuid {
-    let channel_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channels (id, name, channel_type, guild_id, position, max_screen_shares)
-         VALUES ($1, $2, 'text', $3, 0, 5)",
-    )
-    .bind(channel_id)
-    .bind(name)
-    .bind(guild_id)
-    .execute(pool)
-    .await
-    .expect("Failed to create test channel");
-    channel_id
-}
+use vc_server::permissions::GuildPermissions;
 
 // ============================================================================
 // Upload Error Paths
@@ -80,16 +24,12 @@ async fn test_upload_returns_503_without_s3() {
     let app = TestApp::new().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-    let guild_id = create_guild_with_owner(&app.pool, user_id).await;
-    let channel_id = create_channel(&app.pool, guild_id, "upload-503-test").await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
+    let channel_id = helpers::create_channel(&app.pool, guild_id, "upload-503-test").await;
 
     let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        let _ = sqlx::query("DELETE FROM guilds WHERE id = $1")
-            .bind(guild_id)
-            .execute(&pool)
-            .await;
-    });
+    guard.add(move |pool| async move { helpers::delete_guild(&pool, guild_id).await });
     guard.delete_user(user_id);
 
     // Build a minimal multipart body
@@ -122,7 +62,7 @@ async fn test_upload_returns_503_without_s3() {
 #[serial]
 async fn test_upload_requires_auth() {
     let app = TestApp::new().await;
-    let channel_id = Uuid::new_v4();
+    let channel_id = Uuid::now_v7();
 
     let boundary = "----TestBoundary";
     let body = format!(
@@ -154,7 +94,7 @@ async fn test_get_attachment_not_found() {
     let mut guard = app.cleanup_guard();
     guard.delete_user(user_id);
 
-    let fake_id = Uuid::new_v4();
+    let fake_id = Uuid::now_v7();
     let req = TestApp::request(Method::GET, &format!("/api/messages/attachments/{fake_id}"))
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
