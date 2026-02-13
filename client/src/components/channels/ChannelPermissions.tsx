@@ -14,7 +14,7 @@ import {
   permissionsState,
 } from "@/stores/permissions";
 import {
-  PERMISSIONS,
+  CHANNEL_OVERRIDE_PERMISSIONS,
   CATEGORY_NAMES,
   PermissionCategory,
   hasPermission,
@@ -66,7 +66,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
   const countOverrides = (override: ChannelOverride): { allowed: number; denied: number } => {
     let allowed = 0;
     let denied = 0;
-    for (const perm of PERMISSIONS) {
+    for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
       if (hasPermission(override.allow_permissions, perm.bit)) allowed++;
       if (hasPermission(override.deny_permissions, perm.bit)) denied++;
     }
@@ -82,7 +82,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
     }
     const override = getOverride(roleId);
     const states: Record<number, OverrideState> = {};
-    for (const perm of PERMISSIONS) {
+    for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
       states[perm.bit] = getOverrideState(override, perm.bit);
     }
     setLocalOverrides(states);
@@ -137,7 +137,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
 
   // Group permissions by category
   const permissionsByCategory = () => {
-    const categories: Record<PermissionCategory, typeof PERMISSIONS> = {
+    const categories: Record<PermissionCategory, typeof CHANNEL_OVERRIDE_PERMISSIONS> = {
       content: [],
       voice: [],
       moderation: [],
@@ -145,7 +145,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
       invites: [],
       pages: [],
     };
-    for (const perm of PERMISSIONS) {
+    for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
       categories[perm.category].push(perm);
     }
     return categories;

@@ -169,6 +169,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Drops messages far from viewport, re-fetches on scroll back
 
 ### Fixed
+- Channel permission overrides now show only channel-relevant permissions
+  - Added `View Channel` to channel override controls so visibility can be managed explicitly
+  - Removed guild-level permission toggles from the channel override editor to reduce confusing options
+- Member moderation controls now appear for users who can kick but cannot manage roles
+  - The member "Manage" dropdown is shown when you have kick authority over a target based on role hierarchy
+  - Role assignment controls stay hidden unless you have `MANAGE_ROLES`, reducing confusing disabled actions
 - Windows Tauri build failure caused by `scap` screen capture dependency (upgraded to v0.1.0-beta.1 with patched Linux PipeWire engine)
 - CI pipeline failures: disk space exhaustion in security test, Docker build for shared crate structure, and Tauri bundling missing icon
 - Voice island visibility and contrast issues (#151)
