@@ -63,7 +63,7 @@ Scripts in `/docker-entrypoint-initdb.d/` run on first startup:
 **Image:** `rustfs/rustfs:latest`
 **Purpose:** S3-compatible object storage for file uploads (avatars, attachments)
 
-**Command:** `server /data --console-address :9001`
+**Command:** `--console-enable /data`
 
 **Environment:**
 - `RUSTFS_ACCESS_KEY=rustfsdev` — Admin access key
@@ -78,7 +78,7 @@ Scripts in `/docker-entrypoint-initdb.d/` run on first startup:
 
 **Healthcheck:** `curl -f http://localhost:9000/health` every 30s
 
-**Web console:** http://localhost:9001
+**Web console:** http://localhost:9001/rustfs/console/index.html
 
 ### MailHog configuration
 

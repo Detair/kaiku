@@ -67,7 +67,7 @@ services:
     container_name: canis-dev-rustfs
     profiles: ["storage", "all"]
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    command: --console-enable /data
     environment:
       - RUSTFS_ACCESS_KEY=rustfsdev
       - RUSTFS_SECRET_KEY=rustfsdev_secret

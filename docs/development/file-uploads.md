@@ -90,7 +90,7 @@ curl -X POST "http://localhost:8080/api/messages/channel/$CHANNEL_ID/upload" \
 
 Access the RustFS web console to view uploaded files:
 
-- **URL**: http://localhost:9001
+- **URL**: http://localhost:9001/rustfs/console/index.html
 - **Username**: rustfsdev
 - **Password**: rustfsdev_secret
 
