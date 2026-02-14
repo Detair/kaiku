@@ -30,7 +30,11 @@ async fn test_first_user_receives_admin_sequential() {
         .await
         .expect("Failed to connect to DB");
 
-    // Clean slate - delete all users
+    // Clean slate - delete bot installations first (installed_by FK to users has no CASCADE)
+    sqlx::query("DELETE FROM guild_bot_installations")
+        .execute(&pool)
+        .await
+        .expect("Failed to clear guild_bot_installations");
     sqlx::query("DELETE FROM users")
         .execute(&pool)
         .await
@@ -158,6 +162,10 @@ async fn test_first_user_receives_admin_sequential() {
     );
 
     // Cleanup
+    sqlx::query("DELETE FROM guild_bot_installations")
+        .execute(&pool)
+        .await
+        .expect("Failed to cleanup guild_bot_installations");
     sqlx::query("DELETE FROM users")
         .execute(&pool)
         .await
@@ -180,7 +188,11 @@ async fn test_concurrent_registrations_only_one_gets_admin() {
             .expect("Failed to connect to DB"),
     );
 
-    // Clean slate
+    // Clean slate - delete bot installations first (installed_by FK to users has no CASCADE)
+    sqlx::query("DELETE FROM guild_bot_installations")
+        .execute(pool.as_ref())
+        .await
+        .expect("Failed to clear guild_bot_installations");
     sqlx::query("DELETE FROM users")
         .execute(pool.as_ref())
         .await
@@ -304,10 +316,14 @@ async fn test_concurrent_registrations_only_one_gets_admin() {
     );
 
     // Cleanup
+    sqlx::query("DELETE FROM guild_bot_installations")
+        .execute(pool.as_ref())
+        .await
+        .expect("Failed to cleanup guild_bot_installations");
     sqlx::query("DELETE FROM users")
         .execute(pool.as_ref())
         .await
-        .expect("Failed to cleanup");
+        .expect("Failed to cleanup users");
 
     println!("✅ Concurrent registration test passed");
     println!(

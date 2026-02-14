@@ -28,8 +28,12 @@ async fn test_first_user_detection_works() {
     // Use a transaction for isolation (will be rolled back automatically on drop)
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
-    // Delete all users in this transaction (isolated from other tests)
-    // Delete users first - cascades to system_admins due to ON DELETE CASCADE
+    // Delete bot installations first (installed_by FK to users has no CASCADE)
+    sqlx::query("DELETE FROM guild_bot_installations")
+        .execute(&mut *tx)
+        .await
+        .expect("Failed to clear guild_bot_installations");
+    // Delete users - cascades to system_admins due to ON DELETE CASCADE
     sqlx::query("DELETE FROM users")
         .execute(&mut *tx)
         .await
@@ -410,6 +414,11 @@ async fn test_second_user_not_admin() {
     // Use isolated transaction
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
+    // Delete bot installations first (installed_by FK to users has no CASCADE)
+    sqlx::query("DELETE FROM guild_bot_installations")
+        .execute(&mut *tx)
+        .await
+        .expect("Failed to clear guild_bot_installations");
     // Clean slate in transaction (cascades to system_admins)
     sqlx::query("DELETE FROM users")
         .execute(&mut *tx)

@@ -5,6 +5,12 @@
 //! uses `#[serial]` and a [`CleanupGuard`] to guarantee state restoration
 //! even if assertions fail.
 //!
+//! Uses a per-test fresh pool (`setup_test_app`) because the `setup::complete`
+//! handler's transaction creates connections on the current tokio runtime.
+//! When that runtime drops between `#[tokio::test]` runs, those connections
+//! become stale. The shared `OnceCell<PgPool>`'s `test_before_acquire` ping
+//! then hangs on the stale connections, causing `PoolTimedOut` in later tests.
+//!
 //! Run with: `cargo test --test setup_http_test -- --nocapture`
 
 mod helpers;
@@ -13,7 +19,50 @@ use axum::body::Body;
 use axum::http::Method;
 use helpers::{body_to_json, create_test_user, generate_access_token, make_admin, TestApp};
 use serial_test::serial;
+use std::sync::Arc;
 use tokio::time::{timeout, Duration};
+use vc_server::api::{create_router, AppState};
+use vc_server::voice::sfu::SfuServer;
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+/// Create a TestApp with a fresh pool (not shared via OnceCell).
+///
+/// The shared `OnceCell<PgPool>` connections become stale when their originating
+/// tokio runtime drops between `#[tokio::test]` runs. The setup `complete`
+/// handler's transaction exacerbates this by creating connections that are
+/// returned to the pool and then go stale. A fresh pool per test avoids this.
+async fn setup_test_app() -> TestApp {
+    let config = helpers::shared_config().await.clone();
+    let pool = vc_server::db::create_pool(&config.database_url)
+        .await
+        .expect("Failed to connect to test DB");
+    let redis = vc_server::db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Failed to connect to test Redis");
+    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
+
+    let state = AppState::new(
+        pool.clone(),
+        redis,
+        config.clone(),
+        None,
+        sfu,
+        None,
+        None,
+        None,
+    );
+    let router = create_router(state);
+    let config = Arc::new(config);
+
+    TestApp {
+        router,
+        pool,
+        config,
+    }
+}
 
 // ============================================================================
 // Database state helpers
@@ -45,7 +94,7 @@ async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_status_returns_setup_state() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
 
     let req = TestApp::request(Method::GET, "/api/setup/status")
         .body(Body::empty())
@@ -65,7 +114,7 @@ async fn test_status_returns_setup_state() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_config_returns_values_when_setup_incomplete() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
     let prev = set_setup_complete(&app.pool, false).await;
 
     // Guard restores setup_complete even if assertions below panic
@@ -101,7 +150,7 @@ async fn test_config_returns_values_when_setup_incomplete() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_config_returns_403_when_setup_complete() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
     let prev = set_setup_complete(&app.pool, true).await;
 
     let mut guard = app.cleanup_guard();
@@ -121,7 +170,7 @@ async fn test_config_returns_403_when_setup_complete() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_complete_requires_auth() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -144,7 +193,7 @@ async fn test_complete_requires_auth() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_complete_requires_admin() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -176,7 +225,7 @@ async fn test_complete_requires_admin() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_complete_succeeds_for_admin() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     make_admin(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
@@ -221,7 +270,7 @@ async fn test_complete_succeeds_for_admin() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_complete_rejects_invalid_body() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     make_admin(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
@@ -254,7 +303,7 @@ async fn test_complete_rejects_invalid_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_complete_already_done() {
-    let app = TestApp::new().await;
+    let app = setup_test_app().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     make_admin(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
