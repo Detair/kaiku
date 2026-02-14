@@ -76,6 +76,7 @@ const channel = await invoke<Channel>('get_channel', { id });
 
 > Full specification: `docs/plans/2026-01-18-git-workflow-design.md`
 
+**NEVER commit directly to `main`.** Always create a feature branch or worktree for changes and merge via PR.
 **Branch naming:** `feature/<name>`, `fix/<name>`, `refactor/<area>`, `docs/<topic>`
 **Worktrees:** Main worktree stays on `main`, one worktree per feature, clean up after merge.
 
