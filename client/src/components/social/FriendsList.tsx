@@ -20,6 +20,7 @@ import {
 import { getUserActivity } from "@/stores/presence";
 import type { Friend } from "@/lib/types";
 import { ActivityIndicator } from "@/components/ui";
+import { showToast } from "@/components/ui/Toast";
 import AddFriend from "./AddFriend";
 
 type FriendsTab = "online" | "all" | "pending" | "blocked";
@@ -65,6 +66,7 @@ const FriendsList: Component = () => {
       await acceptFriendRequest(friendshipId);
     } catch (err) {
       console.error("Failed to accept friend request:", err);
+      showToast({ type: "error", title: "Could not accept friend request. Please try again." });
     }
   };
 
@@ -73,6 +75,7 @@ const FriendsList: Component = () => {
       await rejectFriendRequest(friendshipId);
     } catch (err) {
       console.error("Failed to reject friend request:", err);
+      showToast({ type: "error", title: "Could not decline friend request. Please try again." });
     }
   };
 
@@ -83,6 +86,7 @@ const FriendsList: Component = () => {
       }
     } catch (err) {
       console.error("Failed to remove friend:", err);
+      showToast({ type: "error", title: "Could not remove friend. Please try again." });
     }
   };
 
@@ -91,6 +95,7 @@ const FriendsList: Component = () => {
       await unblockUser(userId);
     } catch (err) {
       console.error("Failed to unblock user:", err);
+      showToast({ type: "error", title: "Could not unblock user. Please try again." });
     }
   };
 

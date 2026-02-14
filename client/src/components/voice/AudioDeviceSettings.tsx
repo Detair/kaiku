@@ -18,6 +18,7 @@ import { X, Mic, Headphones, Loader2 } from "lucide-solid";
 import { createVoiceAdapter } from "@/lib/webrtc";
 import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
+import { showToast } from "@/components/ui/Toast";
 
 interface AudioDeviceSettingsProps {
   onClose: () => void;
@@ -205,7 +206,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
   // Handle input device change
   const handleInputChange = async (deviceId: string) => {
     setSelectedInput(deviceId);
-    setError(""); // Clear previous errors
+    setError("");
 
     const voiceAdapter = adapter();
     if (!voiceAdapter) return;
@@ -214,19 +215,19 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       const result = await voiceAdapter.setInputDevice(deviceId);
 
       if (!result.ok) {
-        setError(getDeviceErrorMessage(result.error));
+        showToast({ type: "error", title: getDeviceErrorMessage(result.error) });
         console.error("Set input device failed:", result.error);
       }
     } catch (err) {
       console.error("Failed to set input device:", err);
-      setError("Unexpected error while changing input device");
+      showToast({ type: "error", title: "Unexpected error while changing input device" });
     }
   };
 
   // Handle output device change
   const handleOutputChange = async (deviceId: string) => {
     setSelectedOutput(deviceId);
-    setError(""); // Clear previous errors
+    setError("");
 
     const voiceAdapter = adapter();
     if (!voiceAdapter) return;
@@ -235,19 +236,18 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       const result = await voiceAdapter.setOutputDevice(deviceId);
 
       if (!result.ok) {
-        setError(getDeviceErrorMessage(result.error));
+        showToast({ type: "error", title: getDeviceErrorMessage(result.error) });
         console.error("Set output device failed:", result.error);
       }
     } catch (err) {
       console.error("Failed to set output device:", err);
-      setError("Unexpected error while changing output device");
+      showToast({ type: "error", title: "Unexpected error while changing output device" });
     }
   };
 
   // Start microphone test
   const startMicTest = async () => {
-    setError(""); // Clear previous errors
-
+    setError("");
     const voiceAdapter = adapter();
     if (!voiceAdapter) return;
 
@@ -255,7 +255,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       const result = await voiceAdapter.startMicTest(selectedInput());
 
       if (!result.ok) {
-        setError(getDeviceErrorMessage(result.error));
+        showToast({ type: "error", title: getDeviceErrorMessage(result.error) });
         console.error("Mic test start failed:", result.error);
         return;
       }
@@ -272,7 +272,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }, 50);
     } catch (err) {
       console.error("Failed to start mic test:", err);
-      setError("Unexpected error while starting microphone test");
+      showToast({ type: "error", title: "Unexpected error while starting microphone test" });
     }
   };
 
@@ -299,7 +299,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
 
   // Test speaker by playing a 440Hz tone (A4 note) for 1 second
   const testSpeaker = () => {
-    setError(""); // Clear previous errors
+    setError("");
     try {
       // Create audio context if not exists
       if (!audioContext) {
@@ -335,7 +335,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }, 1000);
     } catch (err) {
       console.error("Failed to test speaker:", err);
-      setError("Failed to play test sound. Check your browser permissions.");
+      showToast({ type: "error", title: "Failed to play test sound. Check your browser permissions." });
       setIsTestingSpeaker(false);
     }
   };

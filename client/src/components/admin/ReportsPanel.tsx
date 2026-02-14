@@ -10,6 +10,7 @@ import { Flag, ChevronLeft, ChevronRight, Loader2, UserCheck, CheckCircle, XCirc
 import * as tauri from "@/lib/tauri";
 import { adminState } from "@/stores/admin";
 import { showToast } from "@/components/ui/Toast";
+import Skeleton from "@/components/ui/Skeleton";
 
 const PAGE_SIZE = 20;
 
@@ -35,6 +36,7 @@ const ReportsPanel: Component = () => {
   const [statusFilter, setStatusFilter] = createSignal<string>("");
   const [categoryFilter, setCategoryFilter] = createSignal<string>("");
   const [stats, setStats] = createSignal<tauri.ReportStatsResponse | null>(null);
+  const [statsLoading, setStatsLoading] = createSignal(false);
 
   // Resolve dialog state
   const [resolveReportId, setResolveReportId] = createSignal<string | null>(null);
@@ -64,11 +66,15 @@ const ReportsPanel: Component = () => {
   };
 
   const loadStats = async () => {
+    setStatsLoading(true);
     try {
       const s = await tauri.adminGetReportStats();
       setStats(s);
     } catch (err) {
       console.error("[Admin] Failed to load report stats:", err);
+      showToast({ type: "error", title: "Failed to load report stats" });
+    } finally {
+      setStatsLoading(false);
     }
   };
 
@@ -136,15 +142,25 @@ const ReportsPanel: Component = () => {
           </h2>
 
           {/* Stats badges */}
-          <Show when={stats()}>
-            <div class="flex items-center gap-2">
-              <span class="px-2 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
-                {stats()!.pending} pending
-              </span>
-              <span class="px-2 py-1 rounded-full text-xs font-medium bg-blue-400/10 text-blue-400 border border-blue-400/30">
-                {stats()!.reviewing} reviewing
-              </span>
-            </div>
+          <Show
+            when={!statsLoading()}
+            fallback={
+              <div class="flex items-center gap-2">
+                <Skeleton width="90px" height="26px" class="rounded-full" />
+                <Skeleton width="100px" height="26px" class="rounded-full" />
+              </div>
+            }
+          >
+            <Show when={stats()}>
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
+                  {stats()!.pending} pending
+                </span>
+                <span class="px-2 py-1 rounded-full text-xs font-medium bg-blue-400/10 text-blue-400 border border-blue-400/30">
+                  {stats()!.reviewing} reviewing
+                </span>
+              </div>
+            </Show>
           </Show>
         </div>
 

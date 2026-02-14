@@ -40,6 +40,7 @@ import { joinVoice, leaveVoice, isInChannel } from "@/stores/voice";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
 import type { ChannelWithUnread, ChannelCategory } from "@/lib/types";
+import { showToast } from "@/components/ui/Toast";
 import CategoryHeader from "./CategoryHeader";
 import ChannelItem from "./ChannelItem";
 import CreateChannelModal from "./CreateChannelModal";
@@ -153,6 +154,7 @@ const ChannelList: Component = () => {
         await joinVoice(channelId);
       } catch (err) {
         console.error("Failed to join voice:", err);
+        showToast({ type: "error", title: "Could not join voice channel. Please try again." });
       }
     }
   };
