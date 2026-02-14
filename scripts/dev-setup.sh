@@ -385,7 +385,7 @@ if ! $NO_DOCKER; then
     echo "  Services:"
     echo "    - PostgreSQL: localhost:5432 (user: voicechat, pass: devpassword)"
     echo "    - Valkey:     localhost:6379"
-    echo "    - RustFS:     localhost:9000 (console: localhost:9001)"
+    echo "    - RustFS:     localhost:9000 (console: localhost:9001/rustfs/console/index.html)"
     echo "    - MailHog:    localhost:8025 (SMTP: localhost:1025)"
     echo ""
 fi
