@@ -114,3 +114,93 @@ impl EmailService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a Config with all SMTP fields populated (using `smtp_tls: "none"`
+    /// to avoid DNS resolution / TLS handshake in tests).
+    fn smtp_test_config() -> Config {
+        let mut config = Config::default_for_test();
+        config.smtp_host = Some("localhost".into());
+        config.smtp_username = Some("testuser".into());
+        config.smtp_password = Some("testpass".into());
+        config.smtp_from = Some("noreply@example.com".into());
+        config.smtp_tls = "none".into();
+        config
+    }
+
+    /// Extract the error from a Result<EmailService>, panicking if Ok.
+    fn expect_err(result: Result<EmailService>) -> anyhow::Error {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_new_success() {
+        let config = smtp_test_config();
+        let result = EmailService::new(&config);
+        assert!(
+            result.is_ok(),
+            "EmailService::new should succeed with valid SMTP config"
+        );
+    }
+
+    #[test]
+    fn test_new_missing_host() {
+        let mut config = smtp_test_config();
+        config.smtp_host = None;
+        let err = expect_err(EmailService::new(&config));
+        assert!(
+            err.to_string().contains("SMTP_HOST"),
+            "Error should mention SMTP_HOST: {err}"
+        );
+    }
+
+    #[test]
+    fn test_new_missing_username() {
+        let mut config = smtp_test_config();
+        config.smtp_username = None;
+        let err = expect_err(EmailService::new(&config));
+        assert!(
+            err.to_string().contains("SMTP_USERNAME"),
+            "Error should mention SMTP_USERNAME: {err}"
+        );
+    }
+
+    #[test]
+    fn test_new_missing_password() {
+        let mut config = smtp_test_config();
+        config.smtp_password = None;
+        let err = expect_err(EmailService::new(&config));
+        assert!(
+            err.to_string().contains("SMTP_PASSWORD"),
+            "Error should mention SMTP_PASSWORD: {err}"
+        );
+    }
+
+    #[test]
+    fn test_new_missing_from() {
+        let mut config = smtp_test_config();
+        config.smtp_from = None;
+        let err = expect_err(EmailService::new(&config));
+        assert!(
+            err.to_string().contains("SMTP_FROM"),
+            "Error should mention SMTP_FROM: {err}"
+        );
+    }
+
+    #[test]
+    fn test_new_invalid_from_address() {
+        let mut config = smtp_test_config();
+        config.smtp_from = Some("not-an-email".into());
+        let err = expect_err(EmailService::new(&config));
+        assert!(
+            err.to_string().contains("valid email"),
+            "Error should mention invalid email: {err}"
+        );
+    }
+}

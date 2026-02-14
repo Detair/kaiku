@@ -215,7 +215,7 @@ pub async fn get_summary(
             AVG(avg_loss)::REAL AS avg_loss,
             AVG(avg_jitter)::SMALLINT AS avg_jitter,
             COUNT(*) AS total_sessions,
-            COALESCE(SUM(EXTRACT(EPOCH FROM (ended_at - started_at))::BIGINT), 0) AS total_duration
+            COALESCE(SUM(EXTRACT(EPOCH FROM (ended_at - started_at))::BIGINT), 0)::BIGINT AS total_duration
         FROM connection_sessions
         WHERE user_id = $1
           AND started_at >= NOW() - INTERVAL '30 days'

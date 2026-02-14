@@ -239,4 +239,57 @@ mod tests {
         assert!(serde_json::from_str::<ActivityType>("\"Game\"").is_err());
         assert!(serde_json::from_str::<ActivityType>("\"game\"").is_ok());
     }
+
+    #[test]
+    fn test_activity_name_max_length_boundary() {
+        let activity = Activity {
+            activity_type: ActivityType::Game,
+            name: "x".repeat(MAX_ACTIVITY_NAME_LEN),
+            started_at: Utc::now(),
+            details: None,
+        };
+        assert!(
+            activity.validate().is_ok(),
+            "Name at exactly MAX_ACTIVITY_NAME_LEN should pass"
+        );
+    }
+
+    #[test]
+    fn test_activity_details_max_length_boundary() {
+        let activity = Activity {
+            activity_type: ActivityType::Game,
+            name: "Test".to_string(),
+            started_at: Utc::now(),
+            details: Some("d".repeat(MAX_ACTIVITY_DETAILS_LEN)),
+        };
+        assert!(
+            activity.validate().is_ok(),
+            "Details at exactly MAX_ACTIVITY_DETAILS_LEN should pass"
+        );
+    }
+
+    #[test]
+    fn test_activity_roundtrip_with_all_types() {
+        let types = [
+            ActivityType::Game,
+            ActivityType::Listening,
+            ActivityType::Watching,
+            ActivityType::Coding,
+            ActivityType::Custom,
+        ];
+        for activity_type in types {
+            let activity = Activity {
+                activity_type: activity_type.clone(),
+                name: "RoundTrip".to_string(),
+                started_at: Utc::now(),
+                details: Some("testing".to_string()),
+            };
+            let json = serde_json::to_string(&activity).unwrap();
+            let roundtripped: Activity = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                roundtripped, activity,
+                "Round-trip failed for {activity_type:?}"
+            );
+        }
+    }
 }

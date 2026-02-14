@@ -634,6 +634,20 @@ pub async fn delete_dm_channel(pool: &PgPool, channel_id: Uuid) {
         .ok();
 }
 
+/// Delete connection session data (metrics + session row).
+pub async fn delete_connection_data(pool: &PgPool, session_id: Uuid) {
+    sqlx::query("DELETE FROM connection_metrics WHERE session_id = $1")
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM connection_sessions WHERE id = $1")
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .ok();
+}
+
 /// Delete a guild (cascades channels, messages, members).
 pub async fn delete_guild(pool: &PgPool, guild_id: Uuid) {
     sqlx::query("DELETE FROM channels WHERE guild_id = $1")
