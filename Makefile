@@ -135,7 +135,7 @@ audit: ## Security audit of dependencies
 # Docker
 #==============================================================================
 
-docker-up: ## Start Docker services (PostgreSQL, Valkey, MinIO, MailHog)
+docker-up: ## Start Docker services (PostgreSQL, Valkey, RustFS, MailHog)
 	@docker compose -f docker-compose.dev.yml up -d
 
 docker-down: ## Stop Docker services

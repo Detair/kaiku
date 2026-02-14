@@ -321,7 +321,7 @@ This document lists all open standards, protocols, and libraries used. The goal 
 
 **Compatible Backends:**
 - AWS S3
-- MinIO (Self-Hosted)
+- RustFS (Self-Hosted)
 - Backblaze B2
 - Cloudflare R2
 - DigitalOcean Spaces

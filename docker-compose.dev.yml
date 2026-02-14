@@ -2,7 +2,7 @@
 #
 # Usage:
 #   docker compose -f docker-compose.dev.yml up -d              # Start all services
-#   docker compose -f docker-compose.dev.yml --profile storage up -d  # Include MinIO
+#   docker compose -f docker-compose.dev.yml --profile storage up -d  # Include RustFS
 #   docker compose -f docker-compose.dev.yml --profile mail up -d     # Include MailHog
 #   docker compose -f docker-compose.dev.yml --profile all up -d      # Everything
 #
@@ -13,7 +13,7 @@
 #   export DATABASE_URL="postgresql://voicechat:voicechat_dev@localhost:5433/voicechat"
 #   export VALKEY_URL="redis://localhost:6379"  # Valkey uses Redis protocol
 #   export JWT_SECRET="dev-secret-change-in-production"
-#   export S3_ENDPOINT="http://localhost:9000"  # If using MinIO
+#   export S3_ENDPOINT="http://localhost:9000"  # If using RustFS
 
 services:
   # ==========================================================================
@@ -60,24 +60,24 @@ services:
       retries: 5
 
   # ==========================================================================
-  # MinIO (S3-compatible storage) - Optional
+  # RustFS (S3-compatible storage, Apache-2.0) - Optional
   # ==========================================================================
-  minio:
-    image: minio/minio:latest
-    container_name: canis-dev-minio
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: canis-dev-rustfs
     profiles: ["storage", "all"]
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - RUSTFS_ACCESS_KEY=rustfsdev
+      - RUSTFS_SECRET_KEY=rustfsdev_secret
     ports:
       - "9000:9000"   # API
       - "9001:9001"   # Console
     volumes:
-      - minio_dev_data:/data
+      - rustfs_dev_data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -97,4 +97,4 @@ services:
 volumes:
   postgres_dev_data:
   valkey_dev_data:
-  minio_dev_data:
+  rustfs_dev_data:

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - E2E tests no longer silently pass without assertions — eliminated 97 anti-pattern instances across 10 spec files: `.catch(() => false)` guards converted to hard `expect()` assertions, `waitForTimeout()` calls replaced with deterministic waits, duplicate `login()` with wrong default password removed from `permissions.spec.ts` (#186)
 
 ### Changed
+- Replaced MinIO (AGPL-3.0) with RustFS (Apache-2.0) as the default S3-compatible object storage for development — no code changes needed, only Docker and documentation updates
 - Bot command responses now enforce single-response semantics — each `interaction_id` accepts exactly one `CommandResponse`, duplicate responses are rejected with a clear error (#176)
 - Guild channel permission checks in search and channel listing are now batched — fetches membership, roles, and channel overrides in ~4 queries total instead of 5 per channel, reducing database round-trips from 5N to constant for N-channel guilds (#181)
 - Dynamic SQL query construction now uses `sqlx::QueryBuilder` instead of manual `format!()`/`write!()` with parameter index tracking, eliminating a class of potential runtime parameter mismatch errors (#174)
@@ -203,9 +204,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `addMessage` now re-reads store state after async decryption to avoid overwriting concurrent prepends
 - File attachment uploads in text chat (#149)
   - Fixed AWS SDK panic when initializing S3 client (missing tokio sleep implementation)
-  - MinIO bucket now automatically initialized in development environment
+  - Object storage bucket now automatically initialized in development environment
   - Added comprehensive file uploads documentation (docs/development/file-uploads.md)
-  - Added MinIO initialization script (scripts/init-minio.sh)
+  - Added storage initialization script (scripts/init-rustfs.sh)
   - Updated setup guide with file upload configuration steps
 
 ### Added
@@ -503,7 +504,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Information section for server-wide pages (Rules, Announcements)
   - Collapsible Direct Messages list sorted by recent activity
 - Custom Avatars system
-  - `POST /auth/me/avatar` endpoint with S3/MinIO storage backend
+  - `POST /auth/me/avatar` endpoint with S3 storage backend
   - "My Account" settings tab with avatar upload and preview
   - Client-side validation for image type and size (5MB limit)
   - Instant profile update propagation across the UI

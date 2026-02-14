@@ -770,7 +770,7 @@ pub async fn upload_avatar(
         .as_deref()
         .filter(|s| s.contains("localhost") || s.contains("127.0.0.1"))
     {
-        // For MinIO/Local: endpoint/bucket/key
+        // For RustFS/Local: endpoint/bucket/key
         format!("{ep}/{bucket}/{key}")
     } else if let Some(ep) = endpoint {
         // Custom endpoint (R2, etc): endpoint/bucket/key or bucket.endpoint/key

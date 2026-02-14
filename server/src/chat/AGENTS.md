@@ -19,7 +19,7 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 - `messages.rs` — Message handlers (list, create, edit, delete)
 - `dm.rs` — DM channel creation and management
 - `uploads.rs` — File upload/download handlers with multipart form support
-- `s3.rs` — S3Client wrapper for object storage (AWS S3, MinIO, etc.)
+- `s3.rs` — S3Client wrapper for object storage (AWS S3, RustFS, etc.)
 
 ## For AI Agents
 
@@ -50,7 +50,7 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 ### File Upload Flow
 
 **Storage Options**:
-1. S3-compatible (AWS S3, MinIO, DigitalOcean Spaces) if `AppState.s3.is_some()`
+1. S3-compatible (AWS S3, RustFS, DigitalOcean Spaces) if `AppState.s3.is_some()`
 2. Fallback: Return error if S3 not configured (local filesystem not supported)
 
 **Upload Endpoint**: `POST /api/messages/upload`

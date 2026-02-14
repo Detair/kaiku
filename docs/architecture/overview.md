@@ -595,7 +595,7 @@
 │                                                                  │
 │  External Connections:                                          │
 │  ─────────────────────                                          │
-│  • S3-compatible storage (MinIO, Backblaze, AWS)                │
+│  • S3-compatible storage (RustFS, Backblaze, AWS)               │
 │  • SMTP server (for email notifications)                        │
 │  • OIDC provider (Authentik, Keycloak, etc.)                    │
 │                                                                  │

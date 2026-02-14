@@ -5,7 +5,7 @@
 # This script sets up the complete development environment:
 # - Checks for required tools
 # - Creates .env file with secure defaults
-# - Starts Docker/Podman services (PostgreSQL, Valkey, MinIO, MailHog)
+# - Starts Docker/Podman services (PostgreSQL, Valkey, RustFS, MailHog)
 # - Runs database migrations
 # - Installs frontend dependencies
 #
@@ -295,13 +295,13 @@ BIND_ADDRESS=0.0.0.0:8080
 RUST_LOG=vc_server=debug,tower_http=debug,sqlx=warn
 
 # =============================================================================
-# S3 Storage (MinIO for development)
+# S3 Storage (RustFS for development)
 # =============================================================================
 
 S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=voicechat
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin
+AWS_ACCESS_KEY_ID=rustfsdev
+AWS_SECRET_ACCESS_KEY=rustfsdev_secret
 
 # =============================================================================
 # WebRTC
@@ -385,7 +385,7 @@ if ! $NO_DOCKER; then
     echo "  Services:"
     echo "    - PostgreSQL: localhost:5432 (user: voicechat, pass: devpassword)"
     echo "    - Valkey:     localhost:6379"
-    echo "    - MinIO:      localhost:9000 (console: localhost:9001)"
+    echo "    - RustFS:     localhost:9000 (console: localhost:9001)"
     echo "    - MailHog:    localhost:8025 (SMTP: localhost:1025)"
     echo ""
 fi
@@ -472,6 +472,6 @@ echo ""
 echo "Environment:"
 echo ""
 echo "  Server:    http://localhost:8080"
-echo "  MinIO:     http://localhost:9001 (admin/minioadmin)"
+echo "  RustFS:    http://localhost:9001 (rustfsdev / rustfsdev_secret)"
 echo "  MailHog:   http://localhost:8025"
 echo ""

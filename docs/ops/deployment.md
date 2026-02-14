@@ -84,7 +84,7 @@ TURN_CREDENTIAL=your-turn-password
 
 ### Optional: S3 Storage
 
-For file uploads, configure S3-compatible storage:
+For file uploads, configure S3-compatible storage (RustFS is the recommended dev backend; any S3-compatible service works for production):
 
 ```bash
 S3_ENDPOINT=https://s3.yourdomain.com

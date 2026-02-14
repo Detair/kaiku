@@ -1,7 +1,7 @@
 //! S3 Storage Client
 //!
 //! Handles S3-compatible storage for file uploads.
-//! Supports any S3-compatible backend: AWS S3, `MinIO`, Backblaze B2, Cloudflare R2.
+//! Supports any S3-compatible backend: AWS S3, RustFS, Backblaze B2, Cloudflare R2.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,7 +54,7 @@ pub enum S3Error {
 impl S3Client {
     /// Create a new S3 client from configuration.
     ///
-    /// Supports custom endpoints for S3-compatible backends (`MinIO`, R2, B2).
+    /// Supports custom endpoints for S3-compatible backends (RustFS, R2, B2).
     /// Uses path-style addressing when a custom endpoint is configured.
     pub async fn new(config: &Config) -> Result<Self, S3Error> {
         let region =
@@ -88,7 +88,7 @@ impl S3Client {
         if let Some(endpoint) = &config.s3_endpoint {
             s3_config_builder = s3_config_builder
                 .endpoint_url(endpoint)
-                .force_path_style(true); // Required for MinIO and most S3-compatible backends
+                .force_path_style(true); // Required for RustFS and most S3-compatible backends
         }
 
         let s3_config = s3_config_builder.build();

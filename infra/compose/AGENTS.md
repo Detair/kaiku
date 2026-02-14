@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Docker Compose configurations for running development and testing infrastructure services. Provides containerized PostgreSQL, Redis, MinIO (S3), and MailHog for local development.
+Docker Compose configurations for running development and testing infrastructure services. Provides containerized PostgreSQL, Redis, RustFS (S3), and MailHog for local development.
 
 ## Key Files
 
@@ -22,7 +22,7 @@ The compose file defines 4 services:
 |---------|-------|---------|-------|
 | `postgres` | postgres:15-alpine | Primary database | 5432 |
 | `redis` | redis:7-alpine | Cache, sessions, presence | 6379 |
-| `minio` | minio/minio:latest | S3-compatible object storage | 9000 (API), 9001 (Console) |
+| `rustfs` | rustfs/rustfs:latest | S3-compatible object storage | 9000 (API), 9001 (Console) |
 | `mailhog` | mailhog/mailhog:latest | Email testing (dev only) | 1025 (SMTP), 8025 (Web UI) |
 
 ### PostgreSQL configuration
@@ -58,25 +58,25 @@ Scripts in `/docker-entrypoint-initdb.d/` run on first startup:
 
 **Healthcheck:** `redis-cli ping` every 5s
 
-### MinIO configuration
+### RustFS configuration
 
-**Image:** `minio/minio:latest`
+**Image:** `rustfs/rustfs:latest`
 **Purpose:** S3-compatible object storage for file uploads (avatars, attachments)
 
 **Command:** `server /data --console-address :9001`
 
 **Environment:**
-- `MINIO_ROOT_USER=minioadmin` — Admin username
-- `MINIO_ROOT_PASSWORD=minioadmin` — **DEV ONLY** password
+- `RUSTFS_ACCESS_KEY=rustfsdev` — Admin access key
+- `RUSTFS_SECRET_KEY=rustfsdev_secret` — **DEV ONLY** secret key
 
 **Ports:**
 - `9000` — S3 API endpoint
 - `9001` — Web console
 
 **Volumes:**
-- `minio_data:/data` — Persistent storage
+- `rustfs_dev_data:/data` — Persistent storage
 
-**Healthcheck:** `curl -f http://localhost:9000/minio/health/live` every 30s
+**Healthcheck:** `curl -f http://localhost:9000/health` every 30s
 
 **Web console:** http://localhost:9001
 
@@ -135,13 +135,12 @@ DATABASE_URL=postgresql://voicechat:devpassword@localhost:5432/voicechat
 REDIS_URL=redis://localhost:6379
 ```
 
-**MinIO (S3):**
+**RustFS (S3):**
 ```
 S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin
+AWS_ACCESS_KEY_ID=rustfsdev
+AWS_SECRET_ACCESS_KEY=rustfsdev_secret
 S3_BUCKET=voicechat
-S3_REGION=us-east-1
 ```
 
 **SMTP (MailHog):**
@@ -270,7 +269,7 @@ services:
 All services include healthchecks:
 - Postgres: `pg_isready -U voicechat`
 - Redis: `redis-cli ping`
-- MinIO: `curl -f http://localhost:9000/minio/health/live`
+- RustFS: `curl -f http://localhost:9000/health`
 - MailHog: None (optional service)
 
 Docker Compose waits for healthy status before marking services as ready.

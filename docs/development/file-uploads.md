@@ -2,54 +2,55 @@
 
 ## Overview
 
-File uploads in VoiceChat require S3-compatible storage. For local development, we use MinIO, an open-source S3-compatible storage server.
+File uploads in VoiceChat require S3-compatible storage. For local development, we use RustFS, an Apache-2.0 licensed, Rust-native, S3-compatible storage server.
 
 ## Setup
 
-### 1. Start MinIO
+### 1. Start RustFS
 
-MinIO is included in the development Docker Compose setup but requires the `storage` profile:
+RustFS is included in the development Docker Compose setup but requires the `storage` profile:
 
 ```bash
-# Start all services including MinIO
+# Start all services including RustFS
 docker compose -f docker-compose.dev.yml --profile storage up -d
 
 # Or start only core services + storage
 docker compose -f docker-compose.dev.yml --profile storage up -d
 ```
 
-### 2. Initialize the MinIO Bucket
+### 2. Initialize the RustFS Bucket
 
-After starting MinIO for the first time, initialize the bucket:
+After starting RustFS for the first time, initialize the bucket:
 
 ```bash
 # Using Docker (recommended - no local mc client needed)
-docker exec canis-dev-minio mc alias set local http://localhost:9000 minioadmin minioadmin
-docker exec canis-dev-minio mc mb --ignore-existing local/voicechat
-docker exec canis-dev-minio mc anonymous set none local/voicechat
+docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
+  mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret && \
+  mc mb --ignore-existing local/voicechat && \
+  mc anonymous set none local/voicechat"
 
 # Or use the provided script (requires mc client installed locally)
-./scripts/init-minio.sh
+./scripts/init-rustfs.sh
 ```
 
 ### 3. Configure Environment Variables
 
-Ensure your `.env` file contains the MinIO configuration:
+Ensure your `.env` file contains the S3 configuration:
 
 ```bash
-# S3 Configuration (MinIO for development)
+# S3 Configuration (RustFS for development)
 S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=voicechat
 S3_PRESIGN_EXPIRY=3600
 
-# AWS Credentials (MinIO defaults)
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin
+# AWS Credentials (must match RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY in docker-compose.dev.yml)
+AWS_ACCESS_KEY_ID=rustfsdev
+AWS_SECRET_ACCESS_KEY=rustfsdev_secret
 ```
 
 ### 4. Start/Restart the Server
 
-The server will automatically detect and connect to MinIO on startup:
+The server will automatically detect and connect to RustFS on startup:
 
 ```bash
 cd server
@@ -85,44 +86,46 @@ curl -X POST "http://localhost:8080/api/messages/channel/$CHANNEL_ID/upload" \
 4. Select a file to upload
 5. Send the message
 
-## MinIO Console
+## RustFS Console
 
-Access the MinIO web console to view uploaded files:
+Access the RustFS web console to view uploaded files:
 
 - **URL**: http://localhost:9001
-- **Username**: minioadmin
-- **Password**: minioadmin
+- **Username**: rustfsdev
+- **Password**: rustfsdev_secret
 
 ## Troubleshooting
 
 ### "File uploads are not configured" Error
 
-**Cause**: Server couldn't connect to S3/MinIO.
+**Cause**: Server couldn't connect to S3/RustFS.
 
 **Solutions**:
-1. Check MinIO is running: `docker ps | grep minio`
+1. Check RustFS is running: `docker ps | grep rustfs`
 2. Verify environment variables in `.env`
 3. Check server logs for S3 connection errors
-4. Restart the server after starting MinIO
+4. Restart the server after starting RustFS
 
 ### Bucket Access Denied
 
 **Cause**: Bucket doesn't exist or has wrong permissions.
 
-**Solution**: Run the initialization script again:
+**Solution**: Run the initialization commands again:
 ```bash
-docker exec canis-dev-minio mc mb --ignore-existing local/voicechat
-docker exec canis-dev-minio mc anonymous set none local/voicechat
+docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
+  mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret && \
+  mc mb --ignore-existing local/voicechat && \
+  mc anonymous set none local/voicechat"
 ```
 
 ### Connection Timeout
 
-**Cause**: MinIO not responding or wrong endpoint.
+**Cause**: RustFS not responding or wrong endpoint.
 
 **Solution**:
-1. Test MinIO health: `curl http://localhost:9000/minio/health/live`
-2. Check `S3_ENDPOINT` in `.env` matches MinIO port (9000, not 9001)
-3. Restart MinIO: `docker restart canis-dev-minio`
+1. Test RustFS health: `curl http://localhost:9000/health`
+2. Check `S3_ENDPOINT` in `.env` matches RustFS port (9000, not 9001)
+3. Restart RustFS: `docker restart canis-dev-rustfs`
 
 ## File Upload Limits
 
@@ -140,7 +143,7 @@ MAX_AVATAR_SIZE=10485760          # 10MB for avatars
 MAX_EMOJI_SIZE=524288             # 512KB for emojis
 ```
 
-**Important**: `MAX_UPLOAD_SIZE` must be ≥ all other limits.
+**Important**: `MAX_UPLOAD_SIZE` must be >= all other limits.
 
 ## Production Deployment
 
@@ -176,8 +179,8 @@ AWS_SECRET_ACCESS_KEY=<b2-application-key>
 
 ## Security Notes
 
-- MinIO credentials are for **development only**
-- Never use `minioadmin` in production
+- RustFS credentials are for **development only**
+- Never use default dev credentials in production
 - Always use HTTPS (`https://`) endpoints in production
 - Set restrictive bucket policies (private buckets)
 - Use presigned URLs for temporary access (default: 1 hour)

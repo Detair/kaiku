@@ -196,15 +196,16 @@ curl http://localhost:8080/api/guilds \
 
 ## File Uploads (Optional)
 
-To enable file uploads in development, start MinIO:
+To enable file uploads in development, start RustFS:
 
 ```bash
 # Start with storage profile
 docker compose -f docker-compose.dev.yml --profile storage up -d
 
-# Initialize the bucket
-docker exec canis-dev-minio mc alias set local http://localhost:9000 minioadmin minioadmin
-docker exec canis-dev-minio mc mb --ignore-existing local/voicechat
+# Initialize the bucket (uses minio/mc container since RustFS doesn't bundle mc)
+docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
+  mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret && \
+  mc mb --ignore-existing local/voicechat"
 ```
 
 See [File Uploads Development Guide](file-uploads.md) for details.

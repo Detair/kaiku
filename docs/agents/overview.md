@@ -25,7 +25,7 @@ Client (Tauri 2.0)          Server (Axum)
 - `CHANGELOG.md` - Change log (keepachangelog.com format)
 - `README.md` - Quick start and project overview
 - `Makefile` - Build and development commands
-- `docker-compose.dev.yml` - Development services (PostgreSQL, Valkey, MinIO)
+- `docker-compose.dev.yml` - Development services (PostgreSQL, Valkey, RustFS)
 - `deny.toml` - License compliance (cargo-deny configuration)
 - `.env.example` - Environment configuration template
 
@@ -72,4 +72,4 @@ cargo deny check  # License compliance check
 ## Dependencies
 - PostgreSQL 15+ (primary database)
 - Valkey 8+ (sessions, caching, presence)
-- MinIO (S3-compatible file storage)
+- RustFS (S3-compatible file storage)
