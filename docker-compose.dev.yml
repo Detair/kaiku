@@ -69,15 +69,15 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      - RUSTFS_ROOT_USER=minioadmin
-      - RUSTFS_ROOT_PASSWORD=minioadmin
+      - RUSTFS_ACCESS_KEY=minioadmin
+      - RUSTFS_SECRET_KEY=minioadmin
     ports:
       - "9000:9000"   # API
       - "9001:9001"   # Console
     volumes:
       - rustfs_dev_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5

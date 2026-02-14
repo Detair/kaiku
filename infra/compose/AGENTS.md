@@ -66,8 +66,8 @@ Scripts in `/docker-entrypoint-initdb.d/` run on first startup:
 **Command:** `server /data --console-address :9001`
 
 **Environment:**
-- `RUSTFS_ROOT_USER=minioadmin` — Admin username
-- `RUSTFS_ROOT_PASSWORD=minioadmin` — **DEV ONLY** password
+- `RUSTFS_ACCESS_KEY=minioadmin` — Admin access key
+- `RUSTFS_SECRET_KEY=minioadmin` — **DEV ONLY** secret key
 
 **Ports:**
 - `9000` — S3 API endpoint
@@ -76,7 +76,7 @@ Scripts in `/docker-entrypoint-initdb.d/` run on first startup:
 **Volumes:**
 - `rustfs_dev_data:/data` — Persistent storage
 
-**Healthcheck:** `curl -f http://localhost:9000/minio/health/live` every 30s
+**Healthcheck:** `curl -f http://localhost:9000/health` every 30s
 
 **Web console:** http://localhost:9001
 
@@ -270,7 +270,7 @@ services:
 All services include healthchecks:
 - Postgres: `pg_isready -U voicechat`
 - Redis: `redis-cli ping`
-- RustFS: `curl -f http://localhost:9000/minio/health/live`
+- RustFS: `curl -f http://localhost:9000/health`
 - MailHog: None (optional service)
 
 Docker Compose waits for healthy status before marking services as ready.

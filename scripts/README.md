@@ -8,17 +8,18 @@ This directory contains utility scripts for development and maintenance.
 
 Initializes RustFS (S3-compatible storage) for local development.
 
-**Prerequisites**: MinIO Client (`mc`) installed locally, or use Docker method (recommended).
+**Prerequisites**: `mc` ([MinIO Client](https://min.io/docs/minio/linux/reference/minio-mc.html)) installed locally, or use Docker method (recommended).
 
 **Usage**:
 
 ```bash
 # Method 1: Via Docker (recommended - no local installation needed)
-docker exec canis-dev-rustfs mc alias set local http://localhost:9000 minioadmin minioadmin
-docker exec canis-dev-rustfs mc mb --ignore-existing local/voicechat
-docker exec canis-dev-rustfs mc anonymous set none local/voicechat
+docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
+  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc mb --ignore-existing local/voicechat && \
+  mc anonymous set none local/voicechat"
 
-# Method 2: Using the script (requires mc client)
+# Method 2: Using the script (requires mc client on host)
 ./scripts/init-rustfs.sh
 ```
 

@@ -202,9 +202,10 @@ To enable file uploads in development, start RustFS:
 # Start with storage profile
 docker compose -f docker-compose.dev.yml --profile storage up -d
 
-# Initialize the bucket
-docker exec canis-dev-rustfs mc alias set local http://localhost:9000 minioadmin minioadmin
-docker exec canis-dev-rustfs mc mb --ignore-existing local/voicechat
+# Initialize the bucket (uses minio/mc container since RustFS doesn't bundle mc)
+docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
+  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc mb --ignore-existing local/voicechat"
 ```
 
 See [File Uploads Development Guide](file-uploads.md) for details.

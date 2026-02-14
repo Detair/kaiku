@@ -24,9 +24,10 @@ After starting RustFS for the first time, initialize the bucket:
 
 ```bash
 # Using Docker (recommended - no local mc client needed)
-docker exec canis-dev-rustfs mc alias set local http://localhost:9000 minioadmin minioadmin
-docker exec canis-dev-rustfs mc mb --ignore-existing local/voicechat
-docker exec canis-dev-rustfs mc anonymous set none local/voicechat
+docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
+  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc mb --ignore-existing local/voicechat && \
+  mc anonymous set none local/voicechat"
 
 # Or use the provided script (requires mc client installed locally)
 ./scripts/init-rustfs.sh
@@ -109,10 +110,12 @@ Access the RustFS web console to view uploaded files:
 
 **Cause**: Bucket doesn't exist or has wrong permissions.
 
-**Solution**: Run the initialization script again:
+**Solution**: Run the initialization commands again:
 ```bash
-docker exec canis-dev-rustfs mc mb --ignore-existing local/voicechat
-docker exec canis-dev-rustfs mc anonymous set none local/voicechat
+docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
+  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc mb --ignore-existing local/voicechat && \
+  mc anonymous set none local/voicechat"
 ```
 
 ### Connection Timeout
@@ -120,7 +123,7 @@ docker exec canis-dev-rustfs mc anonymous set none local/voicechat
 **Cause**: RustFS not responding or wrong endpoint.
 
 **Solution**:
-1. Test RustFS health: `curl http://localhost:9000/minio/health/live`
+1. Test RustFS health: `curl http://localhost:9000/health`
 2. Check `S3_ENDPOINT` in `.env` matches RustFS port (9000, not 9001)
 3. Restart RustFS: `docker restart canis-dev-rustfs`
 

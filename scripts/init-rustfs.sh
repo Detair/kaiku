@@ -7,7 +7,7 @@ echo "Initializing RustFS for development..."
 
 # Wait for RustFS to be ready
 echo "Waiting for RustFS to be ready..."
-until curl -sf http://localhost:9000/minio/health/live > /dev/null 2>&1; do
+until curl -sf http://localhost:9000/health > /dev/null 2>&1; do
   sleep 1
 done
 
@@ -16,7 +16,7 @@ echo "RustFS is ready!"
 # Install mc (MinIO Client) if not already installed
 # mc is S3-compatible and works with RustFS
 if ! command -v mc &> /dev/null; then
-  echo "MinIO Client (mc) not found. Please install it:"
+  echo "mc (S3-compatible CLI client) not found. Please install it:"
   echo "  - macOS: brew install minio/stable/mc"
   echo "  - Linux: wget https://dl.min.io/client/mc/release/linux-amd64/mc && chmod +x mc && sudo mv mc /usr/local/bin/"
   exit 1
