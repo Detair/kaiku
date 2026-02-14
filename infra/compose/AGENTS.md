@@ -66,8 +66,8 @@ Scripts in `/docker-entrypoint-initdb.d/` run on first startup:
 **Command:** `server /data --console-address :9001`
 
 **Environment:**
-- `RUSTFS_ACCESS_KEY=minioadmin` — Admin access key
-- `RUSTFS_SECRET_KEY=minioadmin` — **DEV ONLY** secret key
+- `RUSTFS_ACCESS_KEY=rustfsdev` — Admin access key
+- `RUSTFS_SECRET_KEY=rustfsdev_secret` — **DEV ONLY** secret key
 
 **Ports:**
 - `9000` — S3 API endpoint
@@ -138,10 +138,9 @@ REDIS_URL=redis://localhost:6379
 **RustFS (S3):**
 ```
 S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin
+AWS_ACCESS_KEY_ID=rustfsdev
+AWS_SECRET_ACCESS_KEY=rustfsdev_secret
 S3_BUCKET=voicechat
-S3_REGION=us-east-1
 ```
 
 **SMTP (MailHog):**

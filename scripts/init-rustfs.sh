@@ -24,7 +24,7 @@ fi
 
 # Configure mc alias
 echo "Configuring mc client..."
-mc alias set local http://localhost:9000 minioadmin minioadmin > /dev/null
+mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret > /dev/null
 
 # Create bucket if it doesn't exist
 BUCKET_NAME="voicechat"
@@ -44,5 +44,5 @@ echo "RustFS initialization complete!"
 echo ""
 echo "RustFS is ready for file uploads:"
 echo "  - API: http://localhost:9000"
-echo "  - Console: http://localhost:9001 (minioadmin / minioadmin)"
+echo "  - Console: http://localhost:9001 (rustfsdev / rustfsdev_secret)"
 echo "  - Bucket: $BUCKET_NAME"

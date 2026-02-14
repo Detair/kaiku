@@ -300,8 +300,8 @@ RUST_LOG=vc_server=debug,tower_http=debug,sqlx=warn
 
 S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=voicechat
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin
+AWS_ACCESS_KEY_ID=rustfsdev
+AWS_SECRET_ACCESS_KEY=rustfsdev_secret
 
 # =============================================================================
 # WebRTC
@@ -472,6 +472,6 @@ echo ""
 echo "Environment:"
 echo ""
 echo "  Server:    http://localhost:8080"
-echo "  RustFS:    http://localhost:9001 (admin/minioadmin)"
+echo "  RustFS:    http://localhost:9001 (rustfsdev / rustfsdev_secret)"
 echo "  MailHog:   http://localhost:8025"
 echo ""

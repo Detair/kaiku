@@ -25,7 +25,7 @@ After starting RustFS for the first time, initialize the bucket:
 ```bash
 # Using Docker (recommended - no local mc client needed)
 docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
-  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret && \
   mc mb --ignore-existing local/voicechat && \
   mc anonymous set none local/voicechat"
 
@@ -43,9 +43,9 @@ S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=voicechat
 S3_PRESIGN_EXPIRY=3600
 
-# AWS Credentials (RustFS defaults)
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin
+# AWS Credentials (must match RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY in docker-compose.dev.yml)
+AWS_ACCESS_KEY_ID=rustfsdev
+AWS_SECRET_ACCESS_KEY=rustfsdev_secret
 ```
 
 ### 4. Start/Restart the Server
@@ -91,8 +91,8 @@ curl -X POST "http://localhost:8080/api/messages/channel/$CHANNEL_ID/upload" \
 Access the RustFS web console to view uploaded files:
 
 - **URL**: http://localhost:9001
-- **Username**: minioadmin
-- **Password**: minioadmin
+- **Username**: rustfsdev
+- **Password**: rustfsdev_secret
 
 ## Troubleshooting
 
@@ -113,7 +113,7 @@ Access the RustFS web console to view uploaded files:
 **Solution**: Run the initialization commands again:
 ```bash
 docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
-  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret && \
   mc mb --ignore-existing local/voicechat && \
   mc anonymous set none local/voicechat"
 ```
@@ -180,7 +180,7 @@ AWS_SECRET_ACCESS_KEY=<b2-application-key>
 ## Security Notes
 
 - RustFS credentials are for **development only**
-- Never use `minioadmin` in production
+- Never use default dev credentials in production
 - Always use HTTPS (`https://`) endpoints in production
 - Set restrictive bucket policies (private buckets)
 - Use presigned URLs for temporary access (default: 1 hour)

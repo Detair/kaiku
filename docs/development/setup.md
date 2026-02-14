@@ -204,7 +204,7 @@ docker compose -f docker-compose.dev.yml --profile storage up -d
 
 # Initialize the bucket (uses minio/mc container since RustFS doesn't bundle mc)
 docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
-  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret && \
   mc mb --ignore-existing local/voicechat"
 ```
 

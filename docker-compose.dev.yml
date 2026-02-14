@@ -69,8 +69,8 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      - RUSTFS_ACCESS_KEY=minioadmin
-      - RUSTFS_SECRET_KEY=minioadmin
+      - RUSTFS_ACCESS_KEY=rustfsdev
+      - RUSTFS_SECRET_KEY=rustfsdev_secret
     ports:
       - "9000:9000"   # API
       - "9001:9001"   # Console

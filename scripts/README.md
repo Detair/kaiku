@@ -15,7 +15,7 @@ Initializes RustFS (S3-compatible storage) for local development.
 ```bash
 # Method 1: Via Docker (recommended - no local installation needed)
 docker run --rm --network container:canis-dev-rustfs --entrypoint sh minio/mc -c "\
-  mc alias set local http://localhost:9000 minioadmin minioadmin && \
+  mc alias set local http://localhost:9000 rustfsdev rustfsdev_secret && \
   mc mb --ignore-existing local/voicechat && \
   mc anonymous set none local/voicechat"
 
