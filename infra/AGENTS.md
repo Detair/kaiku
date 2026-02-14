@@ -14,7 +14,7 @@ Docker configurations and deployment scripts for development and production envi
 The development environment uses Docker Compose to run:
 - **PostgreSQL 15** - Primary database
 - **Redis 7** - Sessions, caching, presence
-- **MinIO** - S3-compatible file storage
+- **RustFS** - S3-compatible file storage
 - **MailHog** - Email testing (development only)
 
 ### Quick Start
@@ -37,7 +37,7 @@ make docker-down
 Development services use defaults from `.env.example`. For production, customize:
 - `DATABASE_URL` - PostgreSQL connection string
 - `REDIS_URL` - Redis connection string
-- `S3_*` - MinIO/S3 configuration
+- `S3_*` - RustFS/S3 configuration
 
 ### Production Deployment
 See `../DEPLOY.md` for production deployment instructions.
@@ -46,4 +46,4 @@ See `../DEPLOY.md` for production deployment instructions.
 - Docker & Docker Compose
 - PostgreSQL 15+
 - Redis 7+
-- MinIO (S3-compatible)
+- RustFS (S3-compatible)
