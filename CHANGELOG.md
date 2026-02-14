@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Lazy loading for admin, settings, guild settings, voice, and screen share components — reduces initial bundle by code-splitting 17 components into separate chunks loaded on demand (#168)
 - Settings and category collapse state now persist across Tauri app restarts — audio, voice, theme, and notification preferences saved to `settings.json`, category expand/collapse state saved to `ui_state.json` in the app data directory (#172)
 - HTTP integration tests for chat module — 19 tests across channels CRUD, messages CRUD, DM operations, and upload error paths (`channels_http_test.rs`, `messages_http_test.rs`, `dm_http_test.rs`, `uploads_http_test.rs`) (#164)
 - Comprehensive Playwright E2E test suite covering 68 UI items across 12 spec files — Auth, Navigation, Messaging, Guild, Channels, Friends/DMs, Settings, Voice, Admin, Search, and Permissions with shared test helpers and coverage tracker (`docs/testing/ui-coverage.md`)

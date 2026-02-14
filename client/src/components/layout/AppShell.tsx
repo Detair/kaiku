@@ -12,12 +12,14 @@
  * 4. Voice Island (overlay) - Floating voice controls
  */
 
-import { Component, JSX, ParentProps, Show } from "solid-js";
+import { Component, JSX, ParentProps, Show, lazy, Suspense } from "solid-js";
 import ServerRail from "./ServerRail";
 import Sidebar from "./Sidebar";
 import VoiceIsland from "./VoiceIsland";
-import ScreenShareViewer from "@/components/voice/ScreenShareViewer";
 import { voiceState } from "@/stores/voice";
+import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
+
+const ScreenShareViewer = lazy(() => import("@/components/voice/ScreenShareViewer"));
 
 interface AppShellProps extends ParentProps {
   /**
@@ -58,7 +60,11 @@ const AppShell: Component<AppShellProps> = (props) => {
       </Show>
 
       {/* Screen Share Viewer (Portal overlay) */}
-      <ScreenShareViewer />
+      <LazyErrorBoundary name="ScreenShareViewer">
+        <Suspense>
+          <ScreenShareViewer />
+        </Suspense>
+      </LazyErrorBoundary>
     </div>
   );
 };

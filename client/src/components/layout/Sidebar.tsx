@@ -9,7 +9,7 @@
  * - User panel at bottom
  */
 
-import { Component, createSignal, createEffect, onMount, Show } from "solid-js";
+import { Component, createSignal, createEffect, onMount, Show, lazy, Suspense } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { ChevronDown, Settings, Search } from "lucide-solid";
 import { loadChannels } from "@/stores/channels";
@@ -23,11 +23,13 @@ import {
   loadPendingAcceptance,
 } from "@/stores/pages";
 import ChannelList from "@/components/channels/ChannelList";
-import { PageSection } from "@/components/pages";
-import { SearchPanel } from "@/components/search";
+import PageSection from "@/components/pages/PageSection";
+import SearchPanel from "@/components/search/SearchPanel";
 import UserPanel from "./UserPanel";
-import GuildSettingsModal from "@/components/guilds/GuildSettingsModal";
+import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { PageListItem } from "@/lib/types";
+
+const GuildSettingsModal = lazy(() => import("@/components/guilds/GuildSettingsModal"));
 
 const Sidebar: Component = () => {
   const navigate = useNavigate();
@@ -150,10 +152,14 @@ const Sidebar: Component = () => {
 
       {/* Guild Settings Modal */}
       <Show when={showGuildSettings() && activeGuild()}>
-        <GuildSettingsModal
-          guildId={activeGuild()!.id}
-          onClose={() => setShowGuildSettings(false)}
-        />
+        <LazyErrorBoundary name="GuildSettingsModal">
+          <Suspense fallback={<ModalFallback />}>
+            <GuildSettingsModal
+              guildId={activeGuild()!.id}
+              onClose={() => setShowGuildSettings(false)}
+            />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
 
       {/* Search Panel Overlay */}

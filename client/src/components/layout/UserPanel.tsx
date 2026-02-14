@@ -7,7 +7,7 @@
  * Voice controls are in VoiceIsland (appears when connected to voice).
  */
 
-import { Component, Show, createSignal, onMount } from "solid-js";
+import { Component, Show, createSignal, onMount, lazy, Suspense } from "solid-js";
 import { Settings, Shield, LogOut } from "lucide-solid";
 import { authState, logout } from "@/stores/auth";
 import { adminState, checkAdminStatus } from "@/stores/admin";
@@ -15,9 +15,11 @@ import { getUserPresence } from "@/stores/presence";
 import Avatar from "@/components/ui/Avatar";
 import StatusPicker from "@/components/ui/StatusPicker";
 import CustomStatusModal from "@/components/ui/CustomStatusModal";
-import { SettingsModal } from "@/components/settings";
-import { AdminQuickModal } from "@/components/admin";
+import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { CustomStatus } from "@/lib/types";
+
+const SettingsModal = lazy(() => import("@/components/settings/SettingsModal"));
+const AdminQuickModal = lazy(() => import("@/components/admin/AdminQuickModal"));
 
 const UserPanel: Component = () => {
   const user = () => authState.user;
@@ -116,12 +118,20 @@ const UserPanel: Component = () => {
 
       {/* Settings Modal */}
       <Show when={showSettings()}>
-        <SettingsModal onClose={() => setShowSettings(false)} />
+        <LazyErrorBoundary name="SettingsModal">
+          <Suspense fallback={<ModalFallback />}>
+            <SettingsModal onClose={() => setShowSettings(false)} />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
 
       {/* Admin Quick Modal */}
       <Show when={showAdmin()}>
-        <AdminQuickModal onClose={() => setShowAdmin(false)} />
+        <LazyErrorBoundary name="AdminQuickModal">
+          <Suspense fallback={<ModalFallback />}>
+            <AdminQuickModal onClose={() => setShowAdmin(false)} />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
 
       {/* Custom Status Modal */}

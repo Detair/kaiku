@@ -1,25 +1,28 @@
-import { Component, ParentProps, JSX, onMount, createSignal, Show } from "solid-js";
+import { Component, ParentProps, JSX, onMount, createSignal, Show, lazy, Suspense } from "solid-js";
 import { Route } from "@solidjs/router";
 
-// Views
+// Views (eager: first views users see)
 import Login from "./views/Login";
 import Register from "./views/Register";
-import ForgotPassword from "./views/ForgotPassword";
-import ResetPassword from "./views/ResetPassword";
 import Main from "./views/Main";
-import ThemeDemo from "./pages/ThemeDemo";
-import InviteJoin from "./views/InviteJoin";
-import PageViewRoute from "./views/PageViewRoute";
-import AdminDashboard from "./views/AdminDashboard";
-import { ConnectionHistory } from "./pages/settings/ConnectionHistory";
-import BotSlashCommands from "./pages/settings/BotSlashCommands";
+
+// Views (lazy: not part of main flow)
+const ForgotPassword = lazy(() => import("./views/ForgotPassword"));
+const ResetPassword = lazy(() => import("./views/ResetPassword"));
+const ThemeDemo = lazy(() => import("./pages/ThemeDemo"));
+const InviteJoin = lazy(() => import("./views/InviteJoin"));
+const PageViewRoute = lazy(() => import("./views/PageViewRoute"));
+const AdminDashboard = lazy(() => import("./views/AdminDashboard"));
+const ConnectionHistory = lazy(() => import("./pages/settings/ConnectionHistory"));
+const BotSlashCommands = lazy(() => import("./pages/settings/BotSlashCommands"));
 
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
-import { AcceptanceManager } from "./components/pages";
+import AcceptanceManager from "./components/pages/AcceptanceManager";
 import { ToastContainer } from "./components/ui/Toast";
 import { ContextMenuContainer } from "./components/ui/ContextMenu";
 import E2EESetupPrompt from "./components/E2EESetupPrompt";
+import { PageFallback, LazyErrorBoundary } from "./components/ui/LazyFallback";
 import SetupWizard from "./components/SetupWizard";
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
@@ -94,45 +97,65 @@ const ProtectedMain: Component = () => (
 // Protected invite wrapper (needs auth check but shows loading state)
 const ProtectedInvite: Component = () => (
   <AuthGuard>
-    <InviteJoin />
+    <LazyErrorBoundary name="InviteJoin">
+      <Suspense fallback={<PageFallback />}>
+        <InviteJoin />
+      </Suspense>
+    </LazyErrorBoundary>
   </AuthGuard>
 );
 
 // Protected page view wrapper
 const ProtectedPageView: Component = () => (
   <AuthGuard>
-    <PageViewRoute />
+    <LazyErrorBoundary name="PageView">
+      <Suspense fallback={<PageFallback />}>
+        <PageViewRoute />
+      </Suspense>
+    </LazyErrorBoundary>
   </AuthGuard>
 );
 
 // Protected admin wrapper
 const ProtectedAdmin: Component = () => (
   <AuthGuard>
-    <AdminDashboard />
+    <LazyErrorBoundary name="AdminDashboard">
+      <Suspense fallback={<PageFallback />}>
+        <AdminDashboard />
+      </Suspense>
+    </LazyErrorBoundary>
   </AuthGuard>
 );
 
 // Protected connection history wrapper
 const ProtectedConnectionHistory: Component = () => (
   <AuthGuard>
-    <ConnectionHistory />
+    <LazyErrorBoundary name="ConnectionHistory">
+      <Suspense fallback={<PageFallback />}>
+        <ConnectionHistory />
+      </Suspense>
+    </LazyErrorBoundary>
   </AuthGuard>
 );
 
 // Protected bot commands wrapper
 const ProtectedBotCommands: Component = () => (
   <AuthGuard>
-    <BotSlashCommands />
+    <LazyErrorBoundary name="BotSlashCommands">
+      <Suspense fallback={<PageFallback />}>
+        <BotSlashCommands />
+      </Suspense>
+    </LazyErrorBoundary>
   </AuthGuard>
 );
 
 // Wrapped components for routes
 const LoginPage = () => <Layout><Login /></Layout>;
 const RegisterPage = () => <Layout><Register /></Layout>;
-const ForgotPasswordPage = () => <Layout><ForgotPassword /></Layout>;
-const ResetPasswordPage = () => <Layout><ResetPassword /></Layout>;
+const ForgotPasswordPage = () => <Layout><LazyErrorBoundary name="ForgotPassword"><Suspense fallback={<PageFallback />}><ForgotPassword /></Suspense></LazyErrorBoundary></Layout>;
+const ResetPasswordPage = () => <Layout><LazyErrorBoundary name="ResetPassword"><Suspense fallback={<PageFallback />}><ResetPassword /></Suspense></LazyErrorBoundary></Layout>;
 const MainPage = () => <Layout><ProtectedMain /></Layout>;
-const ThemeDemoPage = () => <Layout><ThemeDemo /></Layout>;
+const ThemeDemoPage = () => <Layout><LazyErrorBoundary name="ThemeDemo"><Suspense fallback={<PageFallback />}><ThemeDemo /></Suspense></LazyErrorBoundary></Layout>;
 const InvitePage = () => <Layout><ProtectedInvite /></Layout>;
 const PagePage = () => <Layout><ProtectedPageView /></Layout>;
 const AdminPage = () => <Layout><ProtectedAdmin /></Layout>;

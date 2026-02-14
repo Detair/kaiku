@@ -23,16 +23,18 @@
  * - Decoupled channel name resolution via getVoiceChannelInfo()
  */
 
-import { Component, createSignal, createEffect, onMount, onCleanup, Show } from "solid-js";
+import { Component, createSignal, createEffect, onMount, onCleanup, Show, lazy, Suspense } from "solid-js";
 import { Mic, MicOff, Headphones, Monitor, PhoneOff, Settings, GripVertical } from "lucide-solid";
 import { voiceState, setMute, setDeafen, leaveVoice, getVoiceChannelInfo, getLocalMetrics, stopScreenShare } from "@/stores/voice";
 import { formatElapsedTime } from "@/lib/utils";
-import AudioDeviceSettings from "@/components/voice/AudioDeviceSettings";
-import ScreenShareQualityPicker from "@/components/voice/ScreenShareQualityPicker";
-import ScreenShareSourcePicker from "@/components/voice/ScreenShareSourcePicker";
 import { QualityIndicator } from "@/components/voice/QualityIndicator";
 import { QualityTooltip } from "@/components/voice/QualityTooltip";
+import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { ConnectionMetrics } from "@/lib/webrtc/types";
+
+const AudioDeviceSettings = lazy(() => import("@/components/voice/AudioDeviceSettings"));
+const ScreenShareQualityPicker = lazy(() => import("@/components/voice/ScreenShareQualityPicker"));
+const ScreenShareSourcePicker = lazy(() => import("@/components/voice/ScreenShareSourcePicker"));
 
 const VoiceIsland: Component = () => {
   const [elapsedTime, setElapsedTime] = createSignal<string>("00:00");
@@ -383,29 +385,41 @@ const VoiceIsland: Component = () => {
 
       {/* Audio Settings Modal */}
       <Show when={showSettings()}>
-        <AudioDeviceSettings
-          onClose={() => setShowSettings(false)}
-          parentPosition={position()}
-        />
+        <LazyErrorBoundary name="AudioDeviceSettings">
+          <Suspense fallback={<ModalFallback />}>
+            <AudioDeviceSettings
+              onClose={() => setShowSettings(false)}
+              parentPosition={position()}
+            />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
 
       {/* Native Source Picker (Tauri only) */}
       <Show when={showSourcePicker()}>
-        <ScreenShareSourcePicker
-          onSelect={handleSourceSelected}
-          onClose={() => setShowSourcePicker(false)}
-        />
+        <LazyErrorBoundary name="ScreenShareSourcePicker">
+          <Suspense fallback={<ModalFallback />}>
+            <ScreenShareSourcePicker
+              onSelect={handleSourceSelected}
+              onClose={() => setShowSourcePicker(false)}
+            />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
 
       {/* Screen Share Quality Picker */}
       <Show when={showScreenSharePicker()}>
-        <ScreenShareQualityPicker
-          sourceId={selectedSourceId()}
-          onClose={() => {
-            setShowScreenSharePicker(false);
-            setSelectedSourceId(undefined);
-          }}
-        />
+        <LazyErrorBoundary name="ScreenShareQualityPicker">
+          <Suspense fallback={<ModalFallback />}>
+            <ScreenShareQualityPicker
+              sourceId={selectedSourceId()}
+              onClose={() => {
+                setShowScreenSharePicker(false);
+                setSelectedSourceId(undefined);
+              }}
+            />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
     </div>
   );

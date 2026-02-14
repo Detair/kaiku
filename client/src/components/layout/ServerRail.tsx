@@ -14,11 +14,13 @@
  * - Bottom: "Create Server" (+) button, "Join Server" button
  */
 
-import { Component, createSignal, For, Show } from "solid-js";
+import { Component, createSignal, For, Show, lazy, Suspense } from "solid-js";
 import { Home, Plus, UserPlus } from "lucide-solid";
 import { guildsState, selectHome, selectGuild, getGuildUnreadCount } from "@/stores/guilds";
-import CreateGuildModal from "@/components/guilds/CreateGuildModal";
-import JoinGuildModal from "@/components/guilds/JoinGuildModal";
+import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
+
+const CreateGuildModal = lazy(() => import("@/components/guilds/CreateGuildModal"));
+const JoinGuildModal = lazy(() => import("@/components/guilds/JoinGuildModal"));
 
 const ServerRail: Component = () => {
   // Hover state (still local to component)
@@ -170,12 +172,20 @@ const ServerRail: Component = () => {
 
       {/* Create Guild Modal */}
       <Show when={showCreateModal()}>
-        <CreateGuildModal onClose={() => setShowCreateModal(false)} />
+        <LazyErrorBoundary name="CreateGuildModal">
+          <Suspense fallback={<ModalFallback />}>
+            <CreateGuildModal onClose={() => setShowCreateModal(false)} />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
 
       {/* Join Guild Modal */}
       <Show when={showJoinModal()}>
-        <JoinGuildModal onClose={() => setShowJoinModal(false)} />
+        <LazyErrorBoundary name="JoinGuildModal">
+          <Suspense fallback={<ModalFallback />}>
+            <JoinGuildModal onClose={() => setShowJoinModal(false)} />
+          </Suspense>
+        </LazyErrorBoundary>
       </Show>
     </aside>
   );
