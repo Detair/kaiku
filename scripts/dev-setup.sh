@@ -273,7 +273,7 @@ else
 # Database & Services
 # =============================================================================
 
-DATABASE_URL=postgres://voicechat:devpassword@localhost:5432/voicechat
+DATABASE_URL=postgres://voicechat:voicechat_dev@localhost:5433/voicechat
 REDIS_URL=redis://localhost:6379  # Valkey uses Redis protocol
 
 # =============================================================================
@@ -351,7 +351,7 @@ if ! $NO_DOCKER; then
     # Wait for PostgreSQL
     echo -n "  PostgreSQL: "
     for i in {1..30}; do
-        if $EXEC_CMD voicechat-dev-postgres pg_isready -U voicechat &> /dev/null; then
+        if $EXEC_CMD canis-dev-postgres pg_isready -U voicechat -d voicechat &> /dev/null; then
             echo -e "${GREEN}ready${NC}"
             break
         fi
@@ -383,7 +383,7 @@ if ! $NO_DOCKER; then
     log_success "All container services are running"
     echo ""
     echo "  Services:"
-    echo "    - PostgreSQL: localhost:5432 (user: voicechat, pass: devpassword)"
+    echo "    - PostgreSQL: localhost:5433 (user: voicechat, pass: voicechat_dev)"
     echo "    - Valkey:     localhost:6379"
     echo "    - RustFS:     localhost:9000 (console: localhost:9001/rustfs/console/index.html)"
     echo "    - MailHog:    localhost:8025 (SMTP: localhost:1025)"
@@ -398,7 +398,10 @@ log_info "Running database migrations..."
 cd "${PROJECT_ROOT}"
 
 # Load .env for DATABASE_URL
-export $(grep -v '^#' .env | xargs)
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
 
 if $HAS_SQLX; then
     # Use sqlx-cli if available

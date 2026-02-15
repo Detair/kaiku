@@ -19,6 +19,8 @@ GREEN := \033[32m
 YELLOW := \033[33m
 RESET := \033[0m
 
+COMPOSE_CMD := $(shell if command -v docker >/dev/null 2>&1; then echo "docker compose"; elif command -v podman-compose >/dev/null 2>&1; then echo "podman-compose"; else echo "docker compose"; fi)
+
 #==============================================================================
 # Help
 #==============================================================================
@@ -61,12 +63,12 @@ doctor: ## Verify toolchain, env, and service status
 	@echo "$(CYAN)Checking required commands...$(RESET)"
 	@command -v cargo >/dev/null || (echo "$(YELLOW)Missing: cargo$(RESET)" && exit 1)
 	@command -v bun >/dev/null || (echo "$(YELLOW)Missing: bun$(RESET)" && exit 1)
-	@command -v docker >/dev/null || (echo "$(YELLOW)Missing: docker$(RESET)" && exit 1)
-	@docker compose version >/dev/null 2>&1 || (echo "$(YELLOW)Missing: docker compose plugin$(RESET)" && exit 1)
+	@(command -v docker >/dev/null || command -v podman >/dev/null) || (echo "$(YELLOW)Missing: docker or podman$(RESET)" && exit 1)
+	@(docker compose version >/dev/null 2>&1 || podman-compose --version >/dev/null 2>&1) || (echo "$(YELLOW)Missing: docker compose plugin or podman-compose$(RESET)" && exit 1)
 	@echo "$(CYAN)Checking environment file...$(RESET)"
 	@[ -f .env ] && echo "$(GREEN).env present$(RESET)" || echo "$(YELLOW).env missing (run make setup)$(RESET)"
 	@echo "$(CYAN)Checking service status...$(RESET)"
-	@docker compose -f docker-compose.dev.yml ps >/dev/null 2>&1 && echo "$(GREEN)Compose reachable$(RESET)" || echo "$(YELLOW)Compose services unavailable (run make services-up)$(RESET)"
+	@(docker compose -f docker-compose.dev.yml ps >/dev/null 2>&1 || podman-compose -f docker-compose.dev.yml ps >/dev/null 2>&1) && echo "$(GREEN)Compose reachable$(RESET)" || echo "$(YELLOW)Compose services unavailable (run make services-up)$(RESET)"
 
 setup-clean: ## Clean setup (removes .env and Docker volumes)
 	@./scripts/dev-setup.sh --clean
@@ -152,23 +154,23 @@ audit: ## Security audit of dependencies
 #==============================================================================
 
 docker-up: ## Start Docker services (PostgreSQL, Valkey, RustFS, MailHog)
-	@docker compose -f docker-compose.dev.yml up -d
+	@$(COMPOSE_CMD) -f docker-compose.dev.yml up -d
 
 services-up: docker-up ## Start development services
 
 docker-down: ## Stop Docker services
-	@docker compose -f docker-compose.dev.yml down
+	@$(COMPOSE_CMD) -f docker-compose.dev.yml down
 
 services-down: docker-down ## Stop development services
 
 docker-logs: ## View Docker service logs
-	@docker compose -f docker-compose.dev.yml logs -f
+	@$(COMPOSE_CMD) -f docker-compose.dev.yml logs -f
 
 docker-ps: ## Show Docker service status
-	@docker compose -f docker-compose.dev.yml ps
+	@$(COMPOSE_CMD) -f docker-compose.dev.yml ps
 
 docker-clean: ## Stop services and remove volumes
-	@docker compose -f docker-compose.dev.yml down -v
+	@$(COMPOSE_CMD) -f docker-compose.dev.yml down -v
 	@echo "$(GREEN)Docker volumes removed$(RESET)"
 
 docker-restart: docker-down docker-up ## Restart Docker services
