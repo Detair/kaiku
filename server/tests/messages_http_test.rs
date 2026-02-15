@@ -66,7 +66,7 @@ async fn list_messages(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_create_message_success() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
@@ -93,7 +93,7 @@ async fn test_create_message_success() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_create_message_validation_errors() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
@@ -143,7 +143,7 @@ async fn test_create_message_validation_errors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_list_messages_pagination() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
@@ -199,7 +199,7 @@ async fn test_list_messages_pagination() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_edit_message_owner_only() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -253,7 +253,7 @@ async fn test_edit_message_owner_only() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_delete_message_owner_only() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -299,7 +299,7 @@ async fn test_delete_message_owner_only() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_create_message_nonexistent_channel() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 

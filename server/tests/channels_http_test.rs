@@ -21,7 +21,7 @@ use vc_server::permissions::GuildPermissions;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_create_channel_success() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
@@ -55,7 +55,7 @@ async fn test_create_channel_success() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_create_channel_validation_errors() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
@@ -116,7 +116,7 @@ async fn test_create_channel_validation_errors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_update_channel_requires_manage_channels() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (member_id, _) = create_test_user(&app.pool).await;
     let token_owner = generate_access_token(&app.config, owner_id);
@@ -165,7 +165,7 @@ async fn test_update_channel_requires_manage_channels() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_delete_channel_requires_manage_channels() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (member_id, _) = create_test_user(&app.pool).await;
     let token_owner = generate_access_token(&app.config, owner_id);
@@ -206,7 +206,7 @@ async fn test_delete_channel_requires_manage_channels() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_get_channel_not_found() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 

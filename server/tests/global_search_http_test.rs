@@ -36,7 +36,7 @@ fn global_search_request(query_string: &str, token: &str) -> axum::http::Request
 #[tokio::test]
 #[serial]
 async fn test_global_search_requires_auth() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
 
     let req = TestApp::request(Method::GET, "/api/search?q=test")
         .body(Body::empty())
@@ -53,7 +53,7 @@ async fn test_global_search_requires_auth() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_basic() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -120,7 +120,7 @@ async fn test_global_search_basic() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_multi_guild() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -165,7 +165,7 @@ async fn test_global_search_multi_guild() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_includes_dms() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
@@ -208,7 +208,7 @@ async fn test_global_search_includes_dms() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_source_guild() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -248,7 +248,7 @@ async fn test_global_search_source_guild() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_source_dm() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
@@ -286,7 +286,7 @@ async fn test_global_search_source_dm() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_excludes_inaccessible() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
 
@@ -326,7 +326,7 @@ async fn test_global_search_excludes_inaccessible() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_excludes_deleted() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -356,7 +356,7 @@ async fn test_global_search_excludes_deleted() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_excludes_encrypted() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -392,7 +392,7 @@ async fn test_global_search_excludes_encrypted() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_date_filter() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -429,7 +429,7 @@ async fn test_global_search_date_filter() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_author_filter() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_a).await;
@@ -461,7 +461,7 @@ async fn test_global_search_author_filter() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_has_link() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -497,7 +497,7 @@ async fn test_global_search_has_link() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_has_file() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -535,7 +535,7 @@ async fn test_global_search_has_file() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_sort_relevance() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -576,7 +576,7 @@ async fn test_global_search_sort_relevance() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_sort_date() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -618,7 +618,7 @@ async fn test_global_search_sort_date() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_validation() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -649,7 +649,7 @@ async fn test_global_search_validation() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_pagination() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -731,7 +731,7 @@ async fn test_global_search_pagination() {
 #[tokio::test]
 #[serial]
 async fn test_global_search_limit_clamping() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;

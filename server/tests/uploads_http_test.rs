@@ -21,7 +21,7 @@ use vc_server::permissions::GuildPermissions;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_upload_returns_503_without_s3() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
@@ -61,7 +61,7 @@ async fn test_upload_returns_503_without_s3() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_upload_requires_auth() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let channel_id = Uuid::now_v7();
 
     let boundary = "----TestBoundary";
@@ -87,7 +87,7 @@ async fn test_upload_requires_auth() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_get_attachment_not_found() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 

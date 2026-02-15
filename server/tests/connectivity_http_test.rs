@@ -78,7 +78,7 @@ async fn insert_test_session(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_summary_empty() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -107,7 +107,7 @@ async fn test_summary_empty() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_summary_with_data() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let channel_id = helpers::create_channel(
@@ -153,7 +153,7 @@ async fn test_summary_with_data() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_summary_unauthenticated() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/summary")
         .body(Body::empty())
@@ -170,7 +170,7 @@ async fn test_summary_unauthenticated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_sessions_empty() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -193,7 +193,7 @@ async fn test_sessions_empty() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_sessions_with_data() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = helpers::create_guild(&app.pool, user_id).await;
@@ -231,7 +231,7 @@ async fn test_sessions_with_data() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_sessions_pagination() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = helpers::create_guild(&app.pool, user_id).await;
@@ -275,7 +275,7 @@ async fn test_sessions_pagination() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_sessions_unauthenticated() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")
         .body(Body::empty())
@@ -292,7 +292,7 @@ async fn test_sessions_unauthenticated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_session_detail() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = helpers::create_guild(&app.pool, user_id).await;
@@ -337,7 +337,7 @@ async fn test_session_detail() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_session_detail_not_found() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -362,7 +362,7 @@ async fn test_session_detail_not_found() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_session_rls_isolation() {
-    let app = TestApp::new().await;
+    let app = helpers::fresh_test_app().await;
 
     // Create two users
     let (user_a, _) = create_test_user(&app.pool).await;

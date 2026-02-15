@@ -16,44 +16,8 @@ use axum::body::Body;
 use axum::http::Method;
 use helpers::{create_test_user, generate_access_token, make_admin, TestApp};
 use serial_test::serial;
-use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 use tower::ServiceExt;
-use vc_server::api::{create_router, AppState};
-use vc_server::voice::sfu::SfuServer;
-
-/// Create a TestApp with a fresh pool (not shared via OnceCell).
-///
-/// The shared test pool can hold stale connections after prior test runtimes
-/// shut down, which intermittently causes PoolTimedOut in this suite.
-async fn setup_test_app() -> TestApp {
-    let config = helpers::shared_config().await.clone();
-    let pool = vc_server::db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to test DB");
-    let redis = vc_server::db::create_redis_client(&config.redis_url)
-        .await
-        .expect("Failed to connect to test Redis");
-    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
-
-    let state = AppState::new(
-        pool.clone(),
-        redis,
-        config.clone(),
-        None,
-        sfu,
-        None,
-        None,
-        None,
-    );
-    let router = create_router(state);
-
-    TestApp {
-        router,
-        pool,
-        config: Arc::new(config),
-    }
-}
 
 /// Set `setup_complete` to the given value and return the previous value.
 async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
@@ -82,7 +46,7 @@ async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_concurrent_http_setup_completion() {
-    let app = setup_test_app().await;
+    let app = helpers::fresh_test_app().await;
 
     // Create two separate admin users
     let (admin1_id, _) = create_test_user(&app.pool).await;
@@ -163,7 +127,7 @@ async fn test_concurrent_http_setup_completion() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_concurrent_http_setup_five_admins() {
-    let app = setup_test_app().await;
+    let app = helpers::fresh_test_app().await;
 
     let num_admins = 5;
     let mut admin_ids = Vec::new();

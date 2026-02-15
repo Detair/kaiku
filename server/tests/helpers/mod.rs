@@ -257,6 +257,39 @@ impl TestApp {
     }
 }
 
+/// Build a [`TestApp`] with fresh DB and Redis resources for one test.
+///
+/// Prefer this helper for HTTP integration tests that are sensitive to stale
+/// runtime-bound connections across `#[tokio::test]` runs.
+pub async fn fresh_test_app() -> TestApp {
+    let config = shared_config().await.clone();
+    let pool = db::create_pool(&config.database_url)
+        .await
+        .expect("Failed to connect to test DB");
+    let redis = db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Failed to connect to test Redis");
+    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
+
+    let state = AppState::new(
+        pool.clone(),
+        redis,
+        config.clone(),
+        None,
+        sfu,
+        None,
+        None,
+        None,
+    );
+    let router = create_router(state);
+
+    TestApp {
+        router,
+        pool,
+        config: Arc::new(config),
+    }
+}
+
 // ============================================================================
 // Test Server (Issue #139)
 // ============================================================================
