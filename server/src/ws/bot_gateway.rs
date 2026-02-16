@@ -524,7 +524,8 @@ async fn handle_bot_event(
                 .await
                 .map_err(|e| format!("Failed to look up bot user: {e}"))?;
             let bot_name = bot_user
-                .map(|u| u.display_name)
+                .as_ref()
+                .map(|u| u.display_name.clone())
                 .unwrap_or_else(|| "Bot".to_string());
 
             if ephemeral {
@@ -563,6 +564,24 @@ async fn handle_bot_event(
                     format!("Failed to create message: {e}")
                 })?;
 
+                let author_json = if let Some(ref u) = bot_user {
+                    serde_json::json!({
+                        "id": u.id,
+                        "username": u.username,
+                        "display_name": u.display_name,
+                        "avatar_url": u.avatar_url,
+                        "status": format!("{:?}", u.status).to_lowercase(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": bot_user_id,
+                        "username": "bot",
+                        "display_name": "Bot",
+                        "avatar_url": null,
+                        "status": "offline",
+                    })
+                };
+
                 crate::ws::broadcast_to_channel(
                     &state.redis,
                     channel_id,
@@ -571,9 +590,7 @@ async fn handle_bot_event(
                         message: serde_json::json!({
                             "id": message.id,
                             "channel_id": channel_id,
-                            "author": {
-                                "id": bot_user_id,
-                            },
+                            "author": author_json,
                             "content": message.content,
                             "encrypted": message.encrypted,
                             "nonce": message.nonce,

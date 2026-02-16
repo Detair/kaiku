@@ -639,33 +639,28 @@ pub async fn create(
 
                         // Spawn timeout relay
                         {
-                            let redis_url = state.config.redis_url.clone();
+                            let timeout_redis = state.redis.clone();
                             let invoker_id = auth_user.id;
                             let cmd_name = command_name.clone();
                             let ch_id = channel_id;
                             let iid = interaction_id;
                             tokio::spawn(async move {
                                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                                if let Ok(timeout_redis) =
-                                    crate::db::create_redis_client(&redis_url).await
-                                {
-                                    let response_key = format!("interaction:{iid}:response");
-                                    let exists: bool =
-                                        timeout_redis.exists(&response_key).await.unwrap_or(false);
-                                    if !exists {
-                                        let event =
-                                            crate::ws::ServerEvent::CommandResponseTimeout {
-                                                interaction_id: iid,
-                                                command_name: cmd_name,
-                                                channel_id: ch_id,
-                                            };
-                                        let _ = crate::ws::broadcast_to_user(
-                                            &timeout_redis,
-                                            invoker_id,
-                                            &event,
-                                        )
-                                        .await;
-                                    }
+                                let response_key = format!("interaction:{iid}:response");
+                                let exists: bool =
+                                    timeout_redis.exists(&response_key).await.unwrap_or(false);
+                                if !exists {
+                                    let event = crate::ws::ServerEvent::CommandResponseTimeout {
+                                        interaction_id: iid,
+                                        command_name: cmd_name,
+                                        channel_id: ch_id,
+                                    };
+                                    let _ = crate::ws::broadcast_to_user(
+                                        &timeout_redis,
+                                        invoker_id,
+                                        &event,
+                                    )
+                                    .await;
                                 }
                             });
                         }
