@@ -244,6 +244,7 @@ async fn handle_bot_socket(socket: WebSocket, state: AppState, bot_user_id: Uuid
 
     // Handle incoming messages from bot
     let state_clone = state.clone();
+    let (error_tx, mut error_rx) = tokio::sync::mpsc::unbounded_channel::<BotServerEvent>();
     let bot_receiver = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
@@ -251,18 +252,32 @@ async fn handle_bot_socket(socket: WebSocket, state: AppState, bot_user_id: Uuid
                     Ok(event) => {
                         if let Err(e) = handle_bot_event(event, &state_clone, bot_user_id).await {
                             error!("Error handling bot event: {}", e);
+                            let _ = error_tx.send(BotServerEvent::Error {
+                                code: "handler_error".to_string(),
+                                message: e,
+                            });
                         }
                     }
                     Err(e) => {
                         warn!("Failed to parse bot message: {}", e);
+                        let _ = error_tx.send(BotServerEvent::Error {
+                            code: "invalid_json".to_string(),
+                            message: format!("Failed to parse message: {}", e),
+                        });
                     }
                 }
             }
         }
     });
 
-    // Forward events to bot
-    while let Some(event) = rx.recv().await {
+    // Forward events to bot (both Redis events and error events)
+    loop {
+        let event = tokio::select! {
+            Some(evt) = rx.recv() => evt,
+            Some(err_evt) = error_rx.recv() => err_evt,
+            else => break,
+        };
+
         match serde_json::to_string(&event) {
             Ok(json) => {
                 if sender.send(Message::Text(json.into())).await.is_err() {
