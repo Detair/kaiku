@@ -486,6 +486,20 @@ pub async fn create(
                         thread_info: None,
                     };
 
+                    let message_json = serde_json::to_value(&response).unwrap_or_default();
+                    if let Err(e) = broadcast_to_channel(
+                        &state.redis,
+                        channel_id,
+                        &ServerEvent::MessageNew {
+                            channel_id,
+                            message: message_json,
+                        },
+                    )
+                    .await
+                    {
+                        warn!(channel_id = %channel_id, error = %e, "Failed to broadcast ping response");
+                    }
+
                     return Ok((StatusCode::OK, Json(response)));
                 }
 
