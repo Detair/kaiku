@@ -186,9 +186,11 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     });
 
     return filtered.slice(0, 8).map(c => ({
-      id: c.name,
+      id: c.is_ambiguous ? `${c.name}:${c.application_id}` : c.name,
       label: `/${c.name}`,
-      description: `${c.description} · ${c.bot_name}`,
+      description: c.is_ambiguous
+        ? `${c.description} · ${c.bot_name} (ambiguous)`
+        : `${c.description} · ${c.bot_name}`,
       icon: <Terminal class="w-4 h-4 text-text-secondary" />,
     }));
   });

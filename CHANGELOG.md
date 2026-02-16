@@ -16,12 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Built-in `/ping` command for smoke testing — responds with "Pong!" and server-side latency in any guild channel without bot installation
+- Command response delivery — bot slash command responses now reach the invoking user via WebSocket relay; non-ephemeral responses become persistent chat messages, ephemeral responses are shown only to the invoker
+- 30-second timeout notification when bots don't respond to slash commands
+- Structured bot gateway error events (`invalid_json`, `handler_error`) — bots now receive programmatic feedback on failures
+- Example Python bot script (`docs/examples/ping-bot.py`) demonstrating full bot lifecycle
 - Lazy loading for admin, settings, guild settings, voice, and screen share components — reduces initial bundle by code-splitting 17 components into separate chunks loaded on demand (#168)
 - Settings and category collapse state now persist across Tauri app restarts — audio, voice, theme, and notification preferences saved to `settings.json`, category expand/collapse state saved to `ui_state.json` in the app data directory (#172)
 - HTTP integration tests for chat module — 19 tests across channels CRUD, messages CRUD, DM operations, and upload error paths (`channels_http_test.rs`, `messages_http_test.rs`, `dm_http_test.rs`, `uploads_http_test.rs`) (#164)
 - Comprehensive Playwright E2E test suite covering 68 UI items across 12 spec files — Auth, Navigation, Messaging, Guild, Channels, Friends/DMs, Settings, Voice, Admin, Search, and Permissions with shared test helpers and coverage tracker (`docs/testing/ui-coverage.md`)
 
 ### Fixed
+- Slash command autocomplete now allows hyphens in command names
+- Guild command listing shows all providers instead of silently deduplicating — fixes inconsistency where autocomplete showed one bot but invocation picked a different one
+- Ambiguity errors now include conflicting bot names for easier disambiguation
+- Slash command fetch retry no longer locks out permanently on failure
 - E2E tests no longer silently pass without assertions — eliminated 97 anti-pattern instances across 10 spec files: `.catch(() => false)` guards converted to hard `expect()` assertions, `waitForTimeout()` calls replaced with deterministic waits, duplicate `login()` with wrong default password removed from `permissions.spec.ts` (#186)
 
 ### Changed

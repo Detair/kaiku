@@ -244,6 +244,7 @@ async fn handle_bot_socket(socket: WebSocket, state: AppState, bot_user_id: Uuid
 
     // Handle incoming messages from bot
     let state_clone = state.clone();
+    let (error_tx, mut error_rx) = tokio::sync::mpsc::unbounded_channel::<BotServerEvent>();
     let bot_receiver = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
@@ -251,18 +252,32 @@ async fn handle_bot_socket(socket: WebSocket, state: AppState, bot_user_id: Uuid
                     Ok(event) => {
                         if let Err(e) = handle_bot_event(event, &state_clone, bot_user_id).await {
                             error!("Error handling bot event: {}", e);
+                            let _ = error_tx.send(BotServerEvent::Error {
+                                code: "handler_error".to_string(),
+                                message: e,
+                            });
                         }
                     }
                     Err(e) => {
                         warn!("Failed to parse bot message: {}", e);
+                        let _ = error_tx.send(BotServerEvent::Error {
+                            code: "invalid_json".to_string(),
+                            message: format!("Failed to parse message: {e}"),
+                        });
                     }
                 }
             }
         }
     });
 
-    // Forward events to bot
-    while let Some(event) = rx.recv().await {
+    // Forward events to bot (both Redis events and error events)
+    loop {
+        let event = tokio::select! {
+            Some(evt) = rx.recv() => evt,
+            Some(err_evt) = error_rx.recv() => err_evt,
+            else => break,
+        };
+
         match serde_json::to_string(&event) {
             Ok(json) => {
                 if sender.send(Message::Text(json.into())).await.is_err() {
@@ -474,6 +489,122 @@ async fn handle_bot_event(
                     error!("Failed to publish command response: {e}");
                     format!("Failed to publish response: {e}")
                 })?;
+
+            // Deliver response to the invoking user/channel
+            let context_key = format!("interaction:{interaction_id}:context");
+            let context_raw: Option<String> = state.redis.get(&context_key).await.map_err(|e| {
+                error!("Failed to fetch interaction context: {e}");
+                format!("Failed to fetch interaction context: {e}")
+            })?;
+
+            let Some(context_raw) = context_raw else {
+                warn!(interaction_id = %interaction_id, "Interaction context not found, skipping delivery");
+                return Ok(());
+            };
+
+            let context: serde_json::Value = serde_json::from_str(&context_raw).map_err(|e| {
+                error!("Failed to parse interaction context: {e}");
+                format!("Failed to parse interaction context: {e}")
+            })?;
+
+            let user_id = context["user_id"]
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or("Invalid user_id in interaction context")?;
+            let channel_id = context["channel_id"]
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or("Invalid channel_id in interaction context")?;
+            let command_name = context["command_name"]
+                .as_str()
+                .ok_or("Invalid command_name in interaction context")?
+                .to_string();
+
+            let bot_user = crate::db::find_user_by_id(&state.db, bot_user_id)
+                .await
+                .map_err(|e| format!("Failed to look up bot user: {e}"))?;
+            let bot_name = bot_user
+                .as_ref()
+                .map(|u| u.display_name.clone())
+                .unwrap_or_else(|| "Bot".to_string());
+
+            if ephemeral {
+                // Ephemeral: only deliver to the invoking user
+                crate::ws::broadcast_to_user(
+                    &state.redis,
+                    user_id,
+                    &crate::ws::ServerEvent::CommandResponse {
+                        interaction_id,
+                        content,
+                        command_name,
+                        bot_name,
+                        channel_id,
+                        ephemeral: true,
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    warn!("Failed to deliver ephemeral command response: {e}");
+                    format!("Failed to deliver response: {e}")
+                })?;
+            } else {
+                // Non-ephemeral: insert a real message and broadcast to channel
+                let message = crate::db::create_message(
+                    &state.db,
+                    channel_id,
+                    bot_user_id,
+                    &content,
+                    false,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|e| {
+                    error!("Failed to create bot command response message: {e}");
+                    format!("Failed to create message: {e}")
+                })?;
+
+                let author_json = if let Some(ref u) = bot_user {
+                    serde_json::json!({
+                        "id": u.id,
+                        "username": u.username,
+                        "display_name": u.display_name,
+                        "avatar_url": u.avatar_url,
+                        "status": format!("{:?}", u.status).to_lowercase(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": bot_user_id,
+                        "username": "bot",
+                        "display_name": "Bot",
+                        "avatar_url": null,
+                        "status": "offline",
+                    })
+                };
+
+                crate::ws::broadcast_to_channel(
+                    &state.redis,
+                    channel_id,
+                    &crate::ws::ServerEvent::MessageNew {
+                        channel_id,
+                        message: serde_json::json!({
+                            "id": message.id,
+                            "channel_id": channel_id,
+                            "author": author_json,
+                            "content": message.content,
+                            "encrypted": message.encrypted,
+                            "nonce": message.nonce,
+                            "reply_to": message.reply_to,
+                            "created_at": message.created_at.to_rfc3339(),
+                        }),
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    warn!("Failed to broadcast bot command response: {e}");
+                    format!("Failed to broadcast: {e}")
+                })?;
+            }
 
             Ok(())
         }

@@ -438,6 +438,71 @@ pub async fn create(
             if let Some(command_name) = parts.next() {
                 let command_name = command_name.to_lowercase();
 
+                // Built-in /ping: responds directly without bot routing
+                if command_name == "ping" {
+                    let start = std::time::Instant::now();
+                    let author = db::find_user_by_id(&state.db, auth_user.id)
+                        .await?
+                        .map(AuthorProfile::from)
+                        .unwrap_or_else(|| AuthorProfile {
+                            id: auth_user.id,
+                            username: "unknown".to_string(),
+                            display_name: "Unknown User".to_string(),
+                            avatar_url: None,
+                            status: "offline".to_string(),
+                        });
+                    let latency_ms = start.elapsed().as_millis();
+                    let content = format!("Pong! (latency: {latency_ms}ms)");
+
+                    let msg = sqlx::query!(
+                        r#"
+                        INSERT INTO messages (channel_id, user_id, content)
+                        VALUES ($1, $2, $3)
+                        RETURNING id, created_at
+                        "#,
+                        channel_id,
+                        auth_user.id,
+                        content,
+                    )
+                    .fetch_one(&state.db)
+                    .await
+                    .map_err(MessageError::Database)?;
+
+                    let response = MessageResponse {
+                        id: msg.id,
+                        channel_id,
+                        author,
+                        content,
+                        encrypted: false,
+                        attachments: vec![],
+                        reply_to: None,
+                        parent_id: None,
+                        thread_reply_count: 0,
+                        thread_last_reply_at: None,
+                        edited_at: None,
+                        created_at: msg.created_at,
+                        mention_type: None,
+                        reactions: None,
+                        thread_info: None,
+                    };
+
+                    let message_json = serde_json::to_value(&response).unwrap_or_default();
+                    if let Err(e) = broadcast_to_channel(
+                        &state.redis,
+                        channel_id,
+                        &ServerEvent::MessageNew {
+                            channel_id,
+                            message: message_json,
+                        },
+                    )
+                    .await
+                    {
+                        warn!(channel_id = %channel_id, error = %e, "Failed to broadcast ping response");
+                    }
+
+                    return Ok((StatusCode::OK, Json(response)));
+                }
+
                 let commands = sqlx::query!(
                     r#"
                     SELECT ba.bot_user_id, sc.options, (sc.guild_id IS NOT NULL) AS "guild_scoped!"
@@ -460,15 +525,33 @@ pub async fn create(
                 })?;
 
                 if let Some(command) = commands.first() {
-                    let same_priority_matches = commands
+                    let same_priority: Vec<_> = commands
                         .iter()
-                        .filter(|candidate| candidate.guild_scoped == command.guild_scoped)
-                        .count();
+                        .filter(|c| c.guild_scoped == command.guild_scoped)
+                        .collect();
 
-                    if same_priority_matches > 1 {
-                        return Err(MessageError::Validation(
-                            "Command is ambiguous: multiple bots provide this command".to_string(),
-                        ));
+                    if same_priority.len() > 1 {
+                        let bot_ids: Vec<Uuid> =
+                            same_priority.iter().filter_map(|c| c.bot_user_id).collect();
+                        let bot_names: Vec<String> = sqlx::query_scalar!(
+                            "SELECT COALESCE(display_name, username) FROM users WHERE id = ANY($1)",
+                            &bot_ids,
+                        )
+                        .fetch_all(&state.db)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .flatten()
+                        .collect();
+
+                        let names = if bot_names.is_empty() {
+                            "multiple bots".to_string()
+                        } else {
+                            bot_names.join(", ")
+                        };
+                        return Err(MessageError::Validation(format!(
+                            "Command '/{command_name}' is ambiguous: provided by {names}"
+                        )));
                     }
 
                     if let Some(bot_user_id) = command.bot_user_id {
@@ -492,7 +575,7 @@ pub async fn create(
                         let interaction_id = Uuid::new_v4();
                         let event = crate::ws::bot_gateway::BotServerEvent::CommandInvoked {
                             interaction_id,
-                            command_name,
+                            command_name: command_name.clone(),
                             guild_id: Some(guild_id),
                             channel_id,
                             user_id: auth_user.id,
@@ -534,6 +617,30 @@ pub async fn create(
                                 )
                             })?;
 
+                        // Store interaction context for response delivery
+                        let context_key = format!("interaction:{interaction_id}:context");
+                        let context_data = serde_json::json!({
+                            "user_id": auth_user.id,
+                            "channel_id": channel_id,
+                            "guild_id": guild_id,
+                            "command_name": command_name,
+                        });
+                        routing_redis
+                            .set::<(), _, _>(
+                                &context_key,
+                                context_data.to_string(),
+                                Some(fred::types::Expiration::EX(300)),
+                                None,
+                                false,
+                            )
+                            .await
+                            .map_err(|e| {
+                                warn!(error = %e, "Failed to store interaction context");
+                                MessageError::Validation(
+                                    "Bot command routing unavailable".to_string(),
+                                )
+                            })?;
+
                         routing_redis
                             .publish::<(), _, _>(format!("bot:{bot_user_id}"), payload)
                             .await
@@ -543,6 +650,34 @@ pub async fn create(
                                     "Bot command routing unavailable".to_string(),
                                 )
                             })?;
+
+                        // Spawn timeout relay
+                        {
+                            let timeout_redis = state.redis.clone();
+                            let invoker_id = auth_user.id;
+                            let cmd_name = command_name.clone();
+                            let ch_id = channel_id;
+                            let iid = interaction_id;
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                                let response_key = format!("interaction:{iid}:response");
+                                let exists: bool =
+                                    timeout_redis.exists(&response_key).await.unwrap_or(false);
+                                if !exists {
+                                    let event = crate::ws::ServerEvent::CommandResponseTimeout {
+                                        interaction_id: iid,
+                                        command_name: cmd_name,
+                                        channel_id: ch_id,
+                                    };
+                                    let _ = crate::ws::broadcast_to_user(
+                                        &timeout_redis,
+                                        invoker_id,
+                                        &event,
+                                    )
+                                    .await;
+                                }
+                            });
+                        }
 
                         let author = db::find_user_by_id(&state.db, auth_user.id)
                             .await?

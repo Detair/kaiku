@@ -191,4 +191,6 @@ pub struct GuildCommandInfo {
     pub name: String,
     pub description: String,
     pub bot_name: String,
+    pub application_id: Uuid,
+    pub is_ambiguous: bool,
 }

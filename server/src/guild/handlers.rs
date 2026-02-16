@@ -795,27 +795,37 @@ pub async fn list_guild_commands(
         return Err(GuildError::Forbidden);
     }
 
-    // Single query: guild-scoped + global commands from installed bots.
-    // DISTINCT ON deduplicates by name; ORDER BY (sc.guild_id IS NULL) ensures
-    // guild-scoped commands (IS NULL = false = 0) win over global ones (= 1).
-    let commands: Vec<(String, String, String)> = sqlx::query_as(
-        r"SELECT DISTINCT ON (sc.name) sc.name, sc.description, ba.name as bot_name
+    // Return all commands from installed bots (no DISTINCT ON).
+    let rows: Vec<(String, String, String, Uuid)> = sqlx::query_as(
+        r"SELECT sc.name, sc.description, ba.name as bot_name, ba.id as application_id
            FROM slash_commands sc
            INNER JOIN bot_applications ba ON sc.application_id = ba.id
            INNER JOIN guild_bot_installations gbi ON ba.id = gbi.application_id
            WHERE gbi.guild_id = $1 AND (sc.guild_id = $1 OR sc.guild_id IS NULL)
-           ORDER BY sc.name, (sc.guild_id IS NULL)",
+           ORDER BY sc.name, (sc.guild_id IS NULL), sc.created_at",
     )
     .bind(guild_id)
     .fetch_all(&state.db)
     .await?;
 
-    let result: Vec<GuildCommandInfo> = commands
+    // Compute ambiguity: count how many distinct apps provide each command name.
+    let mut name_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (name, _, _, _) in &rows {
+        *name_counts.entry(name.clone()).or_insert(0) += 1;
+    }
+
+    let result: Vec<GuildCommandInfo> = rows
         .into_iter()
-        .map(|(name, description, bot_name)| GuildCommandInfo {
-            name,
-            description,
-            bot_name,
+        .map(|(name, description, bot_name, application_id)| {
+            let is_ambiguous = name_counts.get(&name).copied().unwrap_or(0) > 1;
+            GuildCommandInfo {
+                name,
+                description,
+                bot_name,
+                application_id,
+                is_ambiguous,
+            }
         })
         .collect();
 

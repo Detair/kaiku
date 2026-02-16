@@ -707,6 +707,32 @@ pub enum ServerEvent {
         /// Report ID.
         report_id: Uuid,
     },
+
+    // Slash command response events
+    /// Bot command response delivered to invoking user.
+    CommandResponse {
+        /// Interaction ID.
+        interaction_id: Uuid,
+        /// Response content from the bot.
+        content: String,
+        /// Command name that was invoked.
+        command_name: String,
+        /// Bot display name.
+        bot_name: String,
+        /// Channel where command was invoked.
+        channel_id: Uuid,
+        /// Whether response is ephemeral (only visible to invoker).
+        ephemeral: bool,
+    },
+    /// Bot command response timed out.
+    CommandResponseTimeout {
+        /// Interaction ID.
+        interaction_id: Uuid,
+        /// Command name that timed out.
+        command_name: String,
+        /// Channel where command was invoked.
+        channel_id: Uuid,
+    },
 }
 
 /// Redis pub/sub channels.

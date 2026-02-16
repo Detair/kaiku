@@ -614,6 +614,58 @@ export async function initWebSocket(): Promise<void> {
         }
       )
     );
+
+    // Bot command response events
+    unlisteners.push(
+      await listen<{ interaction_id: string; content: string; command_name: string; bot_name: string; channel_id: string; ephemeral: boolean }>(
+        "ws:command_response",
+        async (event) => {
+          if (event.payload.ephemeral) {
+            console.log("[WebSocket] Ephemeral command response:", event.payload.command_name, event.payload.content);
+            const syntheticMessage: Message = {
+              id: crypto.randomUUID(),
+              channel_id: event.payload.channel_id,
+              author: {
+                id: "system",
+                username: event.payload.bot_name,
+                display_name: event.payload.bot_name,
+                avatar_url: null,
+                status: "online",
+              },
+              content: event.payload.content,
+              encrypted: false,
+              attachments: [],
+              reply_to: null,
+              parent_id: null,
+              thread_reply_count: 0,
+              thread_last_reply_at: null,
+              edited_at: null,
+              created_at: new Date().toISOString(),
+              mention_type: null,
+            };
+            await addMessage(syntheticMessage);
+          } else {
+            console.log("[WebSocket] Non-ephemeral command response (handled via message_new):", event.payload.command_name);
+          }
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ interaction_id: string; command_name: string; channel_id: string }>(
+        "ws:command_response_timeout",
+        async (event) => {
+          console.warn("[WebSocket] Command response timeout:", event.payload.command_name);
+          const { showToast } = await import("@/components/ui/Toast");
+          showToast({
+            type: "warning",
+            title: "Command Timeout",
+            message: `Command /${event.payload.command_name} did not respond within 30 seconds.`,
+            duration: 5000,
+          });
+        }
+      )
+    );
   } else {
     // Browser mode - use browser WebSocket events
     const attachMessageHandler = () => {
@@ -937,6 +989,50 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     // State sync events
     case "patch":
       await handlePatchEvent(event.entity_type, event.entity_id, event.diff);
+      break;
+
+    // Bot command response events
+    case "command_response":
+      if (event.ephemeral) {
+        // For ephemeral responses, create a local system message
+        console.log("[WebSocket] Ephemeral command response:", event.command_name, event.content);
+        const syntheticMessage: Message = {
+          id: crypto.randomUUID(),
+          channel_id: event.channel_id,
+          author: {
+            id: "system",
+            username: event.bot_name,
+            display_name: event.bot_name,
+            avatar_url: null,
+            status: "online",
+          },
+          content: event.content,
+          encrypted: false,
+          attachments: [],
+          reply_to: null,
+          parent_id: null,
+          thread_reply_count: 0,
+          thread_last_reply_at: null,
+          edited_at: null,
+          created_at: new Date().toISOString(),
+          mention_type: null,
+        };
+        await addMessage(syntheticMessage);
+      } else {
+        // Non-ephemeral responses arrive as regular message_new events
+        console.log("[WebSocket] Non-ephemeral command response (handled via message_new):", event.command_name);
+      }
+      break;
+
+    case "command_response_timeout":
+      console.warn("[WebSocket] Command response timeout:", event.command_name);
+      const { showToast } = await import("@/components/ui/Toast");
+      showToast({
+        type: "warning",
+        title: "Command Timeout",
+        message: `Command /${event.command_name} did not respond within 30 seconds.`,
+        duration: 5000,
+      });
       break;
 
     default:

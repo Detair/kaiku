@@ -41,6 +41,8 @@ export interface GuildCommand {
   name: string;
   description: string;
   bot_name: string;
+  application_id: string;
+  is_ambiguous: boolean;
 }
 
 export interface InstalledBot {

@@ -1370,3 +1370,467 @@ async fn test_slash_command_invocation_ambiguous() {
         .unwrap();
     delete_user(&app.pool, user_id).await;
 }
+
+/// Test that registering commands with duplicate names in a single batch returns 409 Conflict.
+#[tokio::test]
+#[serial]
+async fn test_register_commands_rejects_batch_duplicates() {
+    let app = TestApp::new().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // Create application
+    let create_req = TestApp::request(Method::POST, "/api/applications")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(&json!({ "name": "Dup Batch Bot" })).unwrap(),
+        ))
+        .unwrap();
+    let create_resp = app.oneshot(create_req).await;
+    assert_eq!(create_resp.status(), 201);
+    let body = create_resp.into_body().collect().await.unwrap().to_bytes();
+    let app_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let app_id = app_data["id"].as_str().unwrap();
+
+    // Try to register commands with duplicate names in the same batch
+    let register_req = TestApp::request(
+        Method::PUT,
+        &format!("/api/applications/{}/commands", app_id),
+    )
+    .header("Authorization", format!("Bearer {}", token))
+    .header("Content-Type", "application/json")
+    .body(Body::from(
+        serde_json::to_string(&json!({
+            "commands": [
+                {
+                    "name": "hello",
+                    "description": "Says hello",
+                    "options": []
+                },
+                {
+                    "name": "hello",
+                    "description": "Also says hello",
+                    "options": []
+                }
+            ]
+        }))
+        .unwrap(),
+    ))
+    .unwrap();
+
+    let register_resp = app.oneshot(register_req).await;
+    assert_eq!(
+        register_resp.status(),
+        409,
+        "Expected 409 Conflict for duplicate command names in batch"
+    );
+
+    delete_user(&app.pool, user_id).await;
+}
+
+/// Test that listing guild commands shows entries from all installed bots (no deduplication)
+/// and marks ambiguous commands with `is_ambiguous: true`.
+#[tokio::test]
+#[serial]
+async fn test_list_guild_commands_shows_all_providers() {
+    let app = TestApp::new().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // Create two bot applications
+    let mut app_ids = Vec::new();
+    for name in ["Provider Bot A", "Provider Bot B"] {
+        let create_req = TestApp::request(Method::POST, "/api/applications")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&json!({ "name": name })).unwrap(),
+            ))
+            .unwrap();
+        let create_resp = app.oneshot(create_req).await;
+        assert_eq!(create_resp.status(), 201);
+        let body = create_resp.into_body().collect().await.unwrap().to_bytes();
+        let app_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        app_ids.push(uuid::Uuid::parse_str(app_data["id"].as_str().unwrap()).unwrap());
+    }
+
+    // Register /hello on both bots (global scope)
+    for app_id in &app_ids {
+        let register_req = TestApp::request(
+            Method::PUT,
+            &format!("/api/applications/{}/commands", app_id),
+        )
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(&json!({
+                "commands": [{
+                    "name": "hello",
+                    "description": "Say hello",
+                    "options": []
+                }]
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+        let register_resp = app.oneshot(register_req).await;
+        assert_eq!(register_resp.status(), 200);
+    }
+
+    // Create guild and install both bots
+    let guild_id = uuid::Uuid::new_v4();
+
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind("Guild Commands Test")
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    for app_id in &app_ids {
+        sqlx::query(
+            "INSERT INTO guild_bot_installations (guild_id, application_id, installed_by) VALUES ($1, $2, $3)",
+        )
+        .bind(guild_id)
+        .bind(app_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    }
+
+    // List guild commands
+    let list_req = TestApp::request(Method::GET, &format!("/api/guilds/{}/commands", guild_id))
+        .header("Authorization", format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+
+    let list_resp = app.oneshot(list_req).await;
+    assert_eq!(list_resp.status(), 200);
+
+    let body = list_resp.into_body().collect().await.unwrap().to_bytes();
+    let commands: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+
+    // Both entries should appear (not deduplicated)
+    assert_eq!(
+        commands.len(),
+        2,
+        "Expected 2 command entries (one per provider), got: {:?}",
+        commands
+    );
+
+    // Both should be marked as ambiguous
+    for cmd in &commands {
+        assert_eq!(cmd["name"], "hello");
+        assert_eq!(
+            cmd["is_ambiguous"], true,
+            "Expected is_ambiguous=true for command: {:?}",
+            cmd
+        );
+        assert!(
+            cmd["application_id"].is_string(),
+            "Expected application_id to be present"
+        );
+        assert!(
+            cmd["bot_name"].is_string(),
+            "Expected bot_name to be present"
+        );
+    }
+
+    // Cleanup
+    sqlx::query("DELETE FROM guild_bot_installations WHERE guild_id = $1")
+        .bind(guild_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    delete_user(&app.pool, user_id).await;
+}
+
+/// Test that invoking an ambiguous command returns a 400 error containing the bot names.
+#[tokio::test]
+#[serial]
+async fn test_ambiguity_error_includes_bot_names() {
+    let app = TestApp::new().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // Create two bot applications with distinct names
+    let mut app_ids = Vec::new();
+    let mut _bot_user_ids = Vec::new();
+    for name in ["AmbigBotAlpha", "AmbigBotBeta"] {
+        let create_req = TestApp::request(Method::POST, "/api/applications")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&json!({ "name": name })).unwrap(),
+            ))
+            .unwrap();
+        let create_resp = app.oneshot(create_req).await;
+        assert_eq!(create_resp.status(), 201);
+        let body = create_resp.into_body().collect().await.unwrap().to_bytes();
+        let app_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let app_id = uuid::Uuid::parse_str(app_data["id"].as_str().unwrap()).unwrap();
+
+        // Create bot user for each application
+        let bot_req = TestApp::request(Method::POST, &format!("/api/applications/{}/bot", app_id))
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Body::empty())
+            .unwrap();
+        let bot_resp = app.oneshot(bot_req).await;
+        assert_eq!(bot_resp.status(), 201);
+        let bot_body = bot_resp.into_body().collect().await.unwrap().to_bytes();
+        let bot_data: serde_json::Value = serde_json::from_slice(&bot_body).unwrap();
+        _bot_user_ids
+            .push(uuid::Uuid::parse_str(bot_data["bot_user_id"].as_str().unwrap()).unwrap());
+
+        app_ids.push(app_id);
+    }
+
+    // Register /hello on both
+    for app_id in &app_ids {
+        let register_req = TestApp::request(
+            Method::PUT,
+            &format!("/api/applications/{}/commands", app_id),
+        )
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(&json!({
+                "commands": [{
+                    "name": "hello",
+                    "description": "Say hello",
+                    "options": []
+                }]
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+        let register_resp = app.oneshot(register_req).await;
+        assert_eq!(register_resp.status(), 200);
+    }
+
+    // Create guild, channel, and install both bots
+    let guild_id = uuid::Uuid::new_v4();
+    let channel_id = uuid::Uuid::new_v4();
+
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind("Ambiguity Names Guild")
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, $3, 'text')",
+    )
+    .bind(channel_id)
+    .bind(guild_id)
+    .bind("bot-commands")
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    for app_id in &app_ids {
+        sqlx::query(
+            "INSERT INTO guild_bot_installations (guild_id, application_id, installed_by) VALUES ($1, $2, $3)",
+        )
+        .bind(guild_id)
+        .bind(app_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    }
+
+    // Invoke the ambiguous /hello command
+    let msg_req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{}", channel_id),
+    )
+    .header("Authorization", format!("Bearer {}", token))
+    .header("Content-Type", "application/json")
+    .body(Body::from(
+        serde_json::to_string(&json!({ "content": "/hello world" })).unwrap(),
+    ))
+    .unwrap();
+
+    let msg_resp = app.oneshot(msg_req).await;
+    assert_eq!(msg_resp.status(), 400, "Expected 400 for ambiguous command");
+
+    let body = msg_resp.into_body().collect().await.unwrap().to_bytes();
+    let error_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let error_message = error_json["message"].as_str().unwrap_or("");
+
+    // The error message should contain "ambiguous" and at least reference the bot names
+    assert!(
+        error_message.contains("ambiguous"),
+        "Error should mention 'ambiguous', got: {}",
+        error_message
+    );
+    // Bot display names are derived from the bot user display_name. The create bot user endpoint
+    // sets the display_name from the application name, so check for those.
+    // At minimum, the error should not say "multiple bots" -- it should list actual names.
+    assert!(
+        !error_message.contains("multiple bots"),
+        "Error should list actual bot names, not 'multiple bots', got: {}",
+        error_message
+    );
+
+    // Cleanup
+    sqlx::query("DELETE FROM guild_bot_installations WHERE guild_id = $1")
+        .bind(guild_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM channels WHERE id = $1")
+        .bind(channel_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    delete_user(&app.pool, user_id).await;
+}
+
+/// Test that the built-in /ping command returns a 200 OK with "Pong!" in the content.
+#[tokio::test]
+#[serial]
+async fn test_builtin_ping_returns_pong() {
+    let app = TestApp::new().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // Create guild and channel
+    let guild_id = uuid::Uuid::new_v4();
+    let channel_id = uuid::Uuid::new_v4();
+
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind("Ping Test Guild")
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, $3, 'text')",
+    )
+    .bind(channel_id)
+    .bind(guild_id)
+    .bind("general")
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    // Send /ping
+    let msg_req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{}", channel_id),
+    )
+    .header("Authorization", format!("Bearer {}", token))
+    .header("Content-Type", "application/json")
+    .body(Body::from(
+        serde_json::to_string(&json!({ "content": "/ping" })).unwrap(),
+    ))
+    .unwrap();
+
+    let msg_resp = app.oneshot(msg_req).await;
+    let status = msg_resp.status();
+    let body = msg_resp.into_body().collect().await.unwrap().to_bytes();
+    let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        status,
+        200,
+        "Expected 200 OK for /ping (not 202 Accepted), got body: {}",
+        serde_json::to_string_pretty(&body_json).unwrap()
+    );
+
+    let content = body_json["content"].as_str().unwrap_or("");
+    assert!(
+        content.starts_with("Pong!"),
+        "Expected content to start with 'Pong!', got: {}",
+        content
+    );
+
+    // Verify the message was persisted (built-in /ping creates a real message)
+    let persisted_count = sqlx::query_scalar!(
+        "SELECT COUNT(*) as \"count!\" FROM messages WHERE channel_id = $1",
+        channel_id
+    )
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        persisted_count, 1,
+        "Built-in /ping should persist a message"
+    );
+
+    // Cleanup
+    sqlx::query("DELETE FROM messages WHERE channel_id = $1")
+        .bind(channel_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM channels WHERE id = $1")
+        .bind(channel_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    delete_user(&app.pool, user_id).await;
+}

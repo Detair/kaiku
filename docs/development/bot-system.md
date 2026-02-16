@@ -554,6 +554,11 @@ while True:
         print(f"Error: {event['message']}")
 ```
 
+## Runnable Example
+
+A complete, runnable Python bot is available at [`docs/examples/ping-bot.py`](../examples/ping-bot.py).
+It demonstrates the full lifecycle: creating an application, registering `/ping`, connecting to the gateway, and responding to commands.
+
 ## Database Schema
 
 For reference, the bot ecosystem uses these tables:

@@ -15,7 +15,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
-| **Expansion** | **Phase 5** | 🔄 In Progress | 43.75% (7/16) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial |
+| **Expansion** | **Phase 5** | 🔄 In Progress | 50% (8/16) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability |
 | **Expansion** | **Phase 6** | 📋 Planned | 0% | Mobile, personal workspaces, sovereign guild model, live session toolkits |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing |
@@ -454,13 +454,17 @@ This section is the canonical high-level roadmap view. Detailed implementation c
       - Isolate bot traffic from user-facing real-time performance
       - Add rate limiting specific to bot connections
       - Support Gateway intents for event filtering
-- [ ] **[Ecosystem] Slash Command Reliability & /ping Reference Command** ([Design](../plans/2026-02-15-phase-5-slash-command-reliability-design.md), [Implementation](../plans/2026-02-15-phase-5-slash-command-reliability-implementation.md)) `Priority: High`
-  - **Context:** `/ command` works but has blocking correctness and UX reliability gaps that impact production confidence.
-  - **Implementation:**
-    - Harden uniqueness and ambiguity handling for command registration/listing/invocation
-    - Complete end-user command response delivery path (including ephemeral behavior)
-    - Align bot error-event contract and frontend autocomplete reliability fixes
-    - Add `/ping` as a canonical smoke-test command with end-to-end coverage
+- [x] **[Ecosystem] Slash Command Reliability & /ping Reference Command** ✅ ([Design](../plans/2026-02-16-slash-command-reliability-design.md), [Implementation](../plans/2026-02-16-slash-command-reliability-implementation.md))
+  - ✅ Global command uniqueness index and batch duplicate detection (409 Conflict)
+  - ✅ Guild command listing shows all providers with `is_ambiguous` flag (removed DISTINCT ON)
+  - ✅ Command response delivery via WebSocket relay (ephemeral + non-ephemeral)
+  - ✅ 30-second response timeout notification
+  - ✅ Ambiguity error includes conflicting bot names
+  - ✅ Structured bot gateway error events (invalid_json, handler_error)
+  - ✅ Frontend autocomplete: hyphen support, ambiguity labels, fetch retry fix
+  - ✅ Built-in `/ping` command (no bot required)
+  - ✅ Example bot script (`docs/examples/ping-bot.py`)
+  - ✅ 4 new integration tests (21 total bot ecosystem tests passing)
 - [ ] **[UX] Production-Scale Polish** ([Design](../plans/2026-02-15-phase-5-production-polish-design.md), [Implementation](../plans/2026-02-15-phase-5-production-polish-implementation.md))
   - **Implementation:**
     - **Virtualized Message Lists:**

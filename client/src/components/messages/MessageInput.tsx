@@ -157,7 +157,10 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   createEffect(() => {
     if (autocompleteType() === "command" && !commandsFetched() && props.guildId) {
       setCommandsFetched(true);
-      listGuildCommands(props.guildId!).then(setGuildCommands).catch(() => setGuildCommands([]));
+      listGuildCommands(props.guildId!).then(setGuildCommands).catch(() => {
+        setGuildCommands([]);
+        setCommandsFetched(false); // Allow retry on next / keystroke
+      });
     }
   });
 
@@ -170,7 +173,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
     // Check for /command (only at start of message, only in guilds)
     if (props.guildId) {
-      const commandMatch = textBeforeCursor.match(/^\/(\w*)$/);
+      const commandMatch = textBeforeCursor.match(/^\/([a-z0-9_-]*)$/);
       if (commandMatch) {
         setAutocompleteType("command");
         setAutocompleteQuery(commandMatch[1]);

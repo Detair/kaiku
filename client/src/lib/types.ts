@@ -480,7 +480,10 @@ export type ServerEvent =
   | { type: "thread_reply_delete"; channel_id: string; parent_id: string; message_id: string; thread_info: ThreadInfo }
   | { type: "thread_read"; thread_parent_id: string; last_read_message_id: string | null }
   // State sync events
-  | { type: "patch"; entity_type: string; entity_id: string; diff: Record<string, unknown> };
+  | { type: "patch"; entity_type: string; entity_id: string; diff: Record<string, unknown> }
+  // Bot command response events
+  | { type: "command_response"; interaction_id: string; content: string; command_name: string; bot_name: string; channel_id: string; ephemeral: boolean }
+  | { type: "command_response_timeout"; interaction_id: string; command_name: string; channel_id: string };
 
 // Settings Types
 

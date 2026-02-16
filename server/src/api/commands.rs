@@ -2,6 +2,8 @@
 //!
 //! Handlers for registering and managing slash commands.
 
+use std::collections::HashSet;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -34,6 +36,9 @@ pub enum CommandError {
     /// Invalid description.
     #[error("Command description must be 1-100 characters")]
     InvalidDescription,
+    /// Duplicate command name in a single registration batch.
+    #[error("Duplicate command name in batch: {0}")]
+    DuplicateName(String),
 }
 
 impl From<CommandError> for (StatusCode, String) {
@@ -51,6 +56,7 @@ impl From<CommandError> for (StatusCode, String) {
             CommandError::Forbidden => (StatusCode::FORBIDDEN, err.to_string()),
             CommandError::InvalidName => (StatusCode::BAD_REQUEST, err.to_string()),
             CommandError::InvalidDescription => (StatusCode::BAD_REQUEST, err.to_string()),
+            CommandError::DuplicateName(_) => (StatusCode::CONFLICT, err.to_string()),
         }
     }
 }
@@ -188,6 +194,14 @@ pub async fn register_commands(
     for cmd in &req.commands {
         validate_command_name(&cmd.name)?;
         validate_command_description(&cmd.description)?;
+    }
+
+    // Check for duplicate names within the batch
+    let mut seen_names = HashSet::with_capacity(req.commands.len());
+    for cmd in &req.commands {
+        if !seen_names.insert(&cmd.name) {
+            return Err(CommandError::DuplicateName(cmd.name.clone()).into());
+        }
     }
 
     // Start transaction
