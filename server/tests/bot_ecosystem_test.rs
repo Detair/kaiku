@@ -1452,9 +1452,7 @@ async fn test_list_guild_commands_shows_all_providers() {
         assert_eq!(create_resp.status(), 201);
         let body = create_resp.into_body().collect().await.unwrap().to_bytes();
         let app_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        app_ids.push(
-            uuid::Uuid::parse_str(app_data["id"].as_str().unwrap()).unwrap(),
-        );
+        app_ids.push(uuid::Uuid::parse_str(app_data["id"].as_str().unwrap()).unwrap());
     }
 
     // Register /hello on both bots (global scope)
@@ -1511,13 +1509,10 @@ async fn test_list_guild_commands_shows_all_providers() {
     }
 
     // List guild commands
-    let list_req = TestApp::request(
-        Method::GET,
-        &format!("/api/guilds/{}/commands", guild_id),
-    )
-    .header("Authorization", format!("Bearer {}", token))
-    .body(Body::empty())
-    .unwrap();
+    let list_req = TestApp::request(Method::GET, &format!("/api/guilds/{}/commands", guild_id))
+        .header("Authorization", format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
 
     let list_resp = app.oneshot(list_req).await;
     assert_eq!(list_resp.status(), 200);
@@ -1597,20 +1592,16 @@ async fn test_ambiguity_error_includes_bot_names() {
         let app_id = uuid::Uuid::parse_str(app_data["id"].as_str().unwrap()).unwrap();
 
         // Create bot user for each application
-        let bot_req = TestApp::request(
-            Method::POST,
-            &format!("/api/applications/{}/bot", app_id),
-        )
-        .header("Authorization", format!("Bearer {}", token))
-        .body(Body::empty())
-        .unwrap();
+        let bot_req = TestApp::request(Method::POST, &format!("/api/applications/{}/bot", app_id))
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Body::empty())
+            .unwrap();
         let bot_resp = app.oneshot(bot_req).await;
         assert_eq!(bot_resp.status(), 201);
         let bot_body = bot_resp.into_body().collect().await.unwrap().to_bytes();
         let bot_data: serde_json::Value = serde_json::from_slice(&bot_body).unwrap();
-        _bot_user_ids.push(
-            uuid::Uuid::parse_str(bot_data["bot_user_id"].as_str().unwrap()).unwrap(),
-        );
+        _bot_user_ids
+            .push(uuid::Uuid::parse_str(bot_data["bot_user_id"].as_str().unwrap()).unwrap());
 
         app_ids.push(app_id);
     }
@@ -1793,7 +1784,8 @@ async fn test_builtin_ping_returns_pong() {
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(
-        status, 200,
+        status,
+        200,
         "Expected 200 OK for /ping (not 202 Accepted), got body: {}",
         serde_json::to_string_pretty(&body_json).unwrap()
     );

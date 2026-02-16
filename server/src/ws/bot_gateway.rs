@@ -262,7 +262,7 @@ async fn handle_bot_socket(socket: WebSocket, state: AppState, bot_user_id: Uuid
                         warn!("Failed to parse bot message: {}", e);
                         let _ = error_tx.send(BotServerEvent::Error {
                             code: "invalid_json".to_string(),
-                            message: format!("Failed to parse message: {}", e),
+                            message: format!("Failed to parse message: {e}"),
                         });
                     }
                 }
@@ -492,14 +492,10 @@ async fn handle_bot_event(
 
             // Deliver response to the invoking user/channel
             let context_key = format!("interaction:{interaction_id}:context");
-            let context_raw: Option<String> = state
-                .redis
-                .get(&context_key)
-                .await
-                .map_err(|e| {
-                    error!("Failed to fetch interaction context: {e}");
-                    format!("Failed to fetch interaction context: {e}")
-                })?;
+            let context_raw: Option<String> = state.redis.get(&context_key).await.map_err(|e| {
+                error!("Failed to fetch interaction context: {e}");
+                format!("Failed to fetch interaction context: {e}")
+            })?;
 
             let Some(context_raw) = context_raw else {
                 warn!(interaction_id = %interaction_id, "Interaction context not found, skipping delivery");

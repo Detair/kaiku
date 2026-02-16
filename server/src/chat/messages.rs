@@ -517,10 +517,8 @@ pub async fn create(
                         .collect();
 
                     if same_priority.len() > 1 {
-                        let bot_ids: Vec<Uuid> = same_priority
-                            .iter()
-                            .filter_map(|c| c.bot_user_id)
-                            .collect();
+                        let bot_ids: Vec<Uuid> =
+                            same_priority.iter().filter_map(|c| c.bot_user_id).collect();
                         let bot_names: Vec<String> = sqlx::query_scalar!(
                             "SELECT COALESCE(display_name, username) FROM users WHERE id = ANY($1)",
                             &bot_ids,
@@ -648,16 +646,25 @@ pub async fn create(
                             let iid = interaction_id;
                             tokio::spawn(async move {
                                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                                if let Ok(timeout_redis) = crate::db::create_redis_client(&redis_url).await {
+                                if let Ok(timeout_redis) =
+                                    crate::db::create_redis_client(&redis_url).await
+                                {
                                     let response_key = format!("interaction:{iid}:response");
-                                    let exists: bool = timeout_redis.exists(&response_key).await.unwrap_or(false);
+                                    let exists: bool =
+                                        timeout_redis.exists(&response_key).await.unwrap_or(false);
                                     if !exists {
-                                        let event = crate::ws::ServerEvent::CommandResponseTimeout {
-                                            interaction_id: iid,
-                                            command_name: cmd_name,
-                                            channel_id: ch_id,
-                                        };
-                                        let _ = crate::ws::broadcast_to_user(&timeout_redis, invoker_id, &event).await;
+                                        let event =
+                                            crate::ws::ServerEvent::CommandResponseTimeout {
+                                                interaction_id: iid,
+                                                command_name: cmd_name,
+                                                channel_id: ch_id,
+                                            };
+                                        let _ = crate::ws::broadcast_to_user(
+                                            &timeout_redis,
+                                            invoker_id,
+                                            &event,
+                                        )
+                                        .await;
                                     }
                                 }
                             });
