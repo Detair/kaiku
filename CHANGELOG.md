@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Virtualized guild member list, DM conversation sidebar, and search results using `@tanstack/solid-virtual` for smooth scrolling with large datasets
+- Toast usage convention documentation with type/duration table and deduplication guidance
+
+### Changed
+- Upgraded message list virtualizer from custom implementation to `@tanstack/solid-virtual` for proper dynamic sizing via ResizeObserver
+
+### Fixed
+- Message list layout drift when images load or code blocks expand — now uses real element measurement instead of estimated sizes
+- Toast notifications now use consistent durations (error: 8s, success: 3s) and dedup IDs for repeatable events (command timeout, screen share)
+- Toast auto-dismiss tests were silently excluded by vitest config — renamed to `.test.ts` and unskipped all timer-based tests (18 tests now running)
+
+### Added
 - Built-in `/ping` command for smoke testing — responds with "Pong!" and server-side latency in any guild channel without bot installation
 - Command response delivery — bot slash command responses now reach the invoking user via WebSocket relay; non-ephemeral responses become persistent chat messages, ephemeral responses are shown only to the invoker
 - 30-second timeout notification when bots don't respond to slash commands

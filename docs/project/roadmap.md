@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 5 (Ecosystem & SaaS Readiness) - In Progress
 
-**Last Updated:** 2026-02-15
+**Last Updated:** 2026-02-17
 
 ## Quick Status Overview
 
@@ -15,7 +15,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
-| **Expansion** | **Phase 5** | 🔄 In Progress | 50% (8/16) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability |
+| **Expansion** | **Phase 5** | 🔄 In Progress | 56% (9/16) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish |
 | **Expansion** | **Phase 6** | 📋 Planned | 0% | Mobile, personal workspaces, sovereign guild model, live session toolkits |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing |
@@ -465,19 +465,15 @@ This section is the canonical high-level roadmap view. Detailed implementation c
   - ✅ Built-in `/ping` command (no bot required)
   - ✅ Example bot script (`docs/examples/ping-bot.py`)
   - ✅ 4 new integration tests (21 total bot ecosystem tests passing)
-- [ ] **[UX] Production-Scale Polish** ([Design](../plans/2026-02-15-phase-5-production-polish-design.md), [Implementation](../plans/2026-02-15-phase-5-production-polish-implementation.md))
-  - **Implementation:**
-    - **Virtualized Message Lists:**
-      - Research and implement list virtualization for `MessageList.tsx`
-      - Use DOM recycling to handle 10,000+ message histories efficiently
-      - Maintain scroll position and smooth scrolling behavior
-      - Optimize re-renders with memo and granular updates
-    - **Global Toast Notification Service:**
-      - Create Global Toast Provider using Solid.js context
-      - Support multiple notification types (success, error, warning, info)
-      - Queue management with automatic dismissal
-      - Position control (top-right, bottom-right, etc.)
-      - Action buttons for interactive notifications
+- [x] **[UX] Production-Scale Polish** ([Design](../plans/2026-02-16-production-scale-polish-design.md), [Implementation](../plans/2026-02-16-production-scale-polish-implementation.md)) ✅
+  - **Completed:**
+    - ✅ Replaced custom virtualizer with `@tanstack/solid-virtual` (ResizeObserver-based dynamic sizing)
+    - ✅ Virtualized guild member list (`MembersTab.tsx`)
+    - ✅ Virtualized DM conversation sidebar (`HomeSidebar.tsx`)
+    - ✅ Virtualized search results (`SearchPanel.tsx`)
+    - ✅ Toast convention documentation with type/duration table
+    - ✅ Standardized toast durations and dedup IDs across 23 files
+    - ✅ Fixed toast test suite (18 tests, was silently excluded by vitest config)
 - [x] **[UX] Friction-Reduction & Productivity** ✅
   - **Context:** Streamline daily interactions to make the platform feel snappy and reliable.
   - **Completed:**
