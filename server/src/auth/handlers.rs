@@ -15,6 +15,7 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 use validator::Validate;
 
+use super::backup_codes::{find_matching_backup_code, generate_backup_codes};
 use super::error::{AuthError, AuthResult};
 use super::jwt::{generate_token_pair, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
@@ -23,11 +24,12 @@ use super::oidc::{append_collision_suffix, generate_username_from_claims, OidcFl
 use super::password::{hash_password, verify_password};
 use crate::api::AppState;
 use crate::db::{
-    self, create_password_reset_token, create_session, delete_session_by_token_hash, email_exists,
-    find_session_by_token_hash, find_user_by_email, find_user_by_external_id, find_user_by_id,
-    find_user_by_username, find_valid_reset_token, get_auth_methods_allowed,
-    invalidate_user_reset_tokens, is_setup_complete, set_mfa_secret, update_user_avatar,
-    update_user_profile, username_exists,
+    self, create_password_reset_token, create_session, delete_mfa_backup_codes,
+    delete_session_by_token_hash, email_exists, find_session_by_token_hash, find_user_by_email,
+    find_user_by_external_id, find_user_by_id, find_user_by_username, find_valid_reset_token,
+    get_auth_methods_allowed, get_unused_mfa_backup_codes, invalidate_user_reset_tokens,
+    is_setup_complete, mark_mfa_backup_code_used, set_mfa_secret, store_mfa_backup_codes,
+    update_user_avatar, update_user_profile, username_exists,
 };
 use crate::ratelimit::NormalizedIp;
 use crate::util::format_file_size;
@@ -120,6 +122,13 @@ pub struct MfaSetupResponse {
     pub secret: String,
     /// QR code URL for authenticator apps.
     pub qr_code_url: String,
+}
+
+/// MFA backup codes response (shown exactly once upon generation).
+#[derive(Debug, Serialize)]
+pub struct MfaBackupCodesResponse {
+    /// Plaintext backup codes (shown to user once; store them securely).
+    pub codes: Vec<String>,
 }
 
 /// MFA verification request.
@@ -506,14 +515,33 @@ pub async fn login(
         )
         .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
 
-        // Verify the code
-        let is_valid = totp
+        // Try TOTP code first
+        let totp_valid = totp
             .check_current(mfa_code)
             .map_err(|e| AuthError::Internal(format!("Failed to verify TOTP code: {e}")))?;
 
-        if !is_valid {
-            record_failed_auth!();
-            return Err(AuthError::InvalidMfaCode);
+        if !totp_valid {
+            // TOTP failed — try backup code
+            let backup_codes = get_unused_mfa_backup_codes(&state.db, user.id)
+                .await
+                .map_err(AuthError::Database)?;
+
+            let hashes: Vec<String> = backup_codes.iter().map(|c| c.code_hash.clone()).collect();
+            if let Some(matched_idx) = find_matching_backup_code(mfa_code, &hashes) {
+                // Mark backup code as used
+                let used_code_id = backup_codes[matched_idx].id;
+                mark_mfa_backup_code_used(&state.db, used_code_id)
+                    .await
+                    .map_err(AuthError::Database)?;
+                tracing::info!(
+                    user_id = %user.id,
+                    code_id = %used_code_id,
+                    "MFA backup code used for login"
+                );
+            } else {
+                record_failed_auth!();
+                return Err(AuthError::InvalidMfaCode);
+            }
         }
     }
 
@@ -957,7 +985,7 @@ pub async fn mfa_setup(
     }))
 }
 
-/// Verify MFA code.
+/// Verify MFA code (TOTP or backup code).
 ///
 /// POST /auth/mfa/verify
 pub async fn mfa_verify(
@@ -980,7 +1008,7 @@ pub async fn mfa_verify(
     let user = find_user_by_id(&state.db, auth_user.id)
         .await
         .map_err(|_| AuthError::Internal("Database error".to_string()))?
-        .ok_or_else(|| AuthError::UserNotFound)?;
+        .ok_or(AuthError::UserNotFound)?;
 
     // Check if MFA is enabled
     let encrypted_secret = user
@@ -1008,13 +1036,31 @@ pub async fn mfa_verify(
     )
     .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
 
-    // Verify the code
-    let is_valid = totp
+    // Try TOTP code first
+    let totp_valid = totp
         .check_current(&request.code)
         .map_err(|e| AuthError::Internal(format!("Failed to verify TOTP code: {e}")))?;
 
-    if !is_valid {
-        return Err(AuthError::InvalidMfaCode);
+    if !totp_valid {
+        // TOTP failed — try backup code
+        let backup_codes = get_unused_mfa_backup_codes(&state.db, auth_user.id)
+            .await
+            .map_err(AuthError::Database)?;
+
+        let hashes: Vec<String> = backup_codes.iter().map(|c| c.code_hash.clone()).collect();
+        if let Some(matched_idx) = find_matching_backup_code(&request.code, &hashes) {
+            let used_code_id = backup_codes[matched_idx].id;
+            mark_mfa_backup_code_used(&state.db, used_code_id)
+                .await
+                .map_err(AuthError::Database)?;
+            tracing::info!(
+                user_id = %auth_user.id,
+                code_id = %used_code_id,
+                "MFA backup code used for verification"
+            );
+        } else {
+            return Err(AuthError::InvalidMfaCode);
+        }
     }
 
     Ok(Json(serde_json::json!({
@@ -1045,10 +1091,64 @@ pub async fn mfa_disable(
         .await
         .map_err(|e| AuthError::Internal(format!("Failed to disable MFA: {e}")))?;
 
+    // Delete all backup codes (no longer needed)
+    delete_mfa_backup_codes(&state.db, auth_user.id)
+        .await
+        .map_err(|e| AuthError::Internal(format!("Failed to delete backup codes: {e}")))?;
+
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "MFA disabled successfully"
     })))
+}
+
+/// Generate MFA backup codes (one-time display).
+///
+/// Generates 10 random 8-character alphanumeric backup codes, hashes them with
+/// Argon2id, and stores only the hashes. Returns the plaintext codes to the
+/// user exactly once — they must save them now.
+///
+/// Calling this endpoint again regenerates all codes, invalidating any previously
+/// generated codes.
+///
+/// Requires MFA to be enabled on the account.
+///
+/// POST /auth/mfa/backup-codes
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
+pub async fn mfa_generate_backup_codes(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> AuthResult<Json<MfaBackupCodesResponse>> {
+    // Verify MFA is enabled before generating backup codes
+    let user = find_user_by_id(&state.db, auth_user.id)
+        .await
+        .map_err(AuthError::Database)?
+        .ok_or(AuthError::UserNotFound)?;
+
+    if user.mfa_secret.is_none() {
+        return Err(AuthError::Internal(
+            "MFA must be enabled before generating backup codes".to_string(),
+        ));
+    }
+
+    // Generate 10 random backup codes and their Argon2id hashes
+    let (plaintext_codes, hashes) = generate_backup_codes()
+        .map_err(|e| AuthError::Internal(format!("Failed to generate backup codes: {e}")))?;
+
+    // Store hashes (replaces any existing codes)
+    store_mfa_backup_codes(&state.db, auth_user.id, &hashes)
+        .await
+        .map_err(AuthError::Database)?;
+
+    tracing::info!(
+        user_id = %auth_user.id,
+        count = plaintext_codes.len(),
+        "MFA backup codes generated"
+    );
+
+    Ok(Json(MfaBackupCodesResponse {
+        codes: plaintext_codes,
+    }))
 }
 
 /// OIDC callback query parameters.

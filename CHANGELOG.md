@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Notification sounds now play for the active channel when the application window is in the background
 
 ### Added
+- MFA backup codes — users with MFA enabled can generate 10 one-time recovery codes (`POST /api/auth/mfa/backup-codes`) to regain account access if their authenticator app is unavailable; each code is single-use and hashed with Argon2id at rest
 - Virtualized guild member list, DM conversation sidebar, and search results using `@tanstack/solid-virtual` for smooth scrolling with large datasets
 - Toast usage convention documentation with type/duration table and deduplication guidance
 - Built-in `/ping` command for smoke testing — responds with "Pong!" and server-side latency in any guild channel without bot installation

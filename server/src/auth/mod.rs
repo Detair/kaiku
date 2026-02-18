@@ -2,6 +2,7 @@
 //!
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
+mod backup_codes;
 mod error;
 mod handlers;
 pub mod jwt;
@@ -50,8 +51,9 @@ pub fn hash_token(token: &str) -> String {
 /// - POST /me - Update profile
 /// - POST /me/avatar - Upload avatar
 /// - POST /mfa/setup - Setup MFA
-/// - POST /mfa/verify - Verify MFA
+/// - POST /mfa/verify - Verify MFA (TOTP or backup code)
 /// - POST /mfa/disable - Disable MFA
+/// - POST /mfa/backup-codes - Generate MFA backup codes
 pub fn router(state: AppState) -> Router<AppState> {
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
@@ -150,6 +152,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/mfa/setup", post(handlers::mfa_setup))
         .route("/mfa/verify", post(handlers::mfa_verify))
         .route("/mfa/disable", post(handlers::mfa_disable))
+        .route("/mfa/backup-codes", post(handlers::mfa_generate_backup_codes))
         .layer(axum_middleware::from_fn_with_state(state, require_auth));
 
     public_routes.merge(protected_routes)
