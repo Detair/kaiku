@@ -137,6 +137,11 @@ pub async fn search_dm_messages(
             "Search query must be at least 2 characters".to_string(),
         ));
     }
+    if search_term.len() > 1000 {
+        return Err(DmSearchError::InvalidQuery(
+            "Search query must not exceed 1000 characters".to_string(),
+        ));
+    }
 
     // Validate date range
     if let (Some(from), Some(to)) = (query.date_from, query.date_to) {

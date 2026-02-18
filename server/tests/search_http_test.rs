@@ -11,11 +11,13 @@ use axum::body::Body;
 use axum::http::Method;
 use helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
-    create_test_user, delete_dm_channel, delete_guild, delete_user, generate_access_token,
-    insert_attachment, insert_encrypted_message, insert_message, insert_message_at, TestApp,
+    create_guild_with_default_role, create_test_user, delete_dm_channel, delete_guild,
+    delete_user, generate_access_token, insert_attachment, insert_encrypted_message,
+    insert_message, insert_message_at, TestApp,
 };
 use serial_test::serial;
 use uuid::Uuid;
+use vc_server::permissions::GuildPermissions;
 
 // ============================================================================
 // Local request helpers
@@ -693,4 +695,564 @@ async fn test_guild_search_sort_date() {
 
     delete_guild(&app.pool, guild_id).await;
     delete_user(&app.pool, user_id).await;
+}
+
+// ============================================================================
+// TD-08: Search Security Tests — Special Characters / Injection
+// ============================================================================
+
+/// Special characters that should not cause errors or SQL injection.
+/// websearch_to_tsquery uses parameterized queries so special SQL characters
+/// are never interpolated into the query string.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_special_characters_no_error() {
+    let app = helpers::fresh_test_app().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild(&app.pool, user_id).await;
+    create_channel(&app.pool, guild_id, "general").await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // None of these should crash or return 500.
+    // websearch_to_tsquery handles special characters gracefully via parameterized queries.
+    let cases = [
+        // URL-encoded special chars (axum decodes them before the handler sees them)
+        ("q=%40%23%24%25%5E%26%2A%28%29", "@#$%^&*()"),
+        ("q=%27%3B+DROP+TABLE+messages+--", "'; DROP TABLE messages --"),
+        (
+            "q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E",
+            "<script>alert(1)</script>",
+        ),
+        ("q=hello+world", "normal websearch AND"),
+    ];
+
+    for (qs, label) in cases {
+        let req = guild_search_request(guild_id, qs, &token);
+        let resp = app.oneshot(req).await;
+        let status = resp.status();
+        // Acceptable outcomes: 200 (handled gracefully) or 400 (validation rejected it).
+        // A 500 means the handler failed to guard against the input.
+        assert!(
+            status.is_success() || status == 400,
+            "'{label}' returned unexpected status {status} — expected 200 or 400"
+        );
+    }
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, user_id).await;
+}
+
+/// A query longer than 1000 characters must be rejected with 400.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_long_query_rejected() {
+    let app = helpers::fresh_test_app().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild(&app.pool, user_id).await;
+    create_channel(&app.pool, guild_id, "general").await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // 1001 'a' characters — just over the 1000-char limit.
+    let long_query = "a".repeat(1001);
+    let qs = format!("q={long_query}");
+    let req = guild_search_request(guild_id, &qs, &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "query of 1001 chars should be rejected with 400"
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, user_id).await;
+}
+
+/// A query of exactly 1000 characters must be accepted (boundary condition).
+#[tokio::test]
+#[serial]
+async fn test_guild_search_max_length_query_accepted() {
+    let app = helpers::fresh_test_app().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild(&app.pool, user_id).await;
+    create_channel(&app.pool, guild_id, "general").await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // Exactly 1000 'a' characters — at the limit, must be accepted.
+    let max_query = "a".repeat(1000);
+    let qs = format!("q={max_query}");
+    let req = guild_search_request(guild_id, &qs, &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(
+        resp.status(),
+        200,
+        "query of exactly 1000 chars should be accepted"
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, user_id).await;
+}
+
+/// Messages containing HTML/XSS payloads are returned verbatim in the `content`
+/// field. The server must not alter the stored content; the client is responsible
+/// for HTML-escaping on render.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_xss_content_returned_verbatim() {
+    let app = helpers::fresh_test_app().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild(&app.pool, user_id).await;
+    let channel_id = create_channel(&app.pool, guild_id, "general").await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // Insert a message that contains an XSS payload.
+    let xss_content = "check <img src=x onerror=alert(1)> this xssattack";
+    insert_message(&app.pool, channel_id, user_id, xss_content).await;
+
+    let req = guild_search_request(guild_id, "q=xssattack", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+
+    let json = body_to_json(resp).await;
+    assert_eq!(json["total"], 1, "should find the XSS-containing message");
+
+    // The raw content field must be returned as stored.
+    let content = json["results"][0]["content"].as_str().unwrap();
+    assert!(
+        content.contains("onerror"),
+        "raw content should contain the stored XSS payload unmodified"
+    );
+    // The server must not HTML-escape the content field.
+    assert!(
+        !content.contains("&lt;"),
+        "content field must not be HTML-escaped by the server; clients escape on render"
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, user_id).await;
+}
+
+// ============================================================================
+// TD-08: Search Security Tests — Large Result Sets / Pagination
+// ============================================================================
+
+/// Insert 210 matching messages and verify that pagination returns correct
+/// non-overlapping pages and that the total count is accurate.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_large_result_set_pagination() {
+    let app = helpers::fresh_test_app().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild(&app.pool, user_id).await;
+    let channel_id = create_channel(&app.pool, guild_id, "general").await;
+    let token = generate_access_token(&app.config, user_id);
+
+    // Insert 210 messages that all contain the rare word "paginationterm".
+    let n: i64 = 210;
+    for i in 0..n {
+        insert_message(
+            &app.pool,
+            channel_id,
+            user_id,
+            &format!("paginationterm message number {i}"),
+        )
+        .await;
+    }
+
+    // Page 1: limit=100, offset=0
+    let req = guild_search_request(guild_id, "q=paginationterm&limit=100&offset=0", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+    let json1 = body_to_json(resp).await;
+    assert_eq!(
+        json1["total"], n,
+        "total should reflect all matching messages"
+    );
+    assert_eq!(
+        json1["results"].as_array().unwrap().len(),
+        100,
+        "first page should have 100 results"
+    );
+
+    // Page 2: limit=100, offset=100
+    let req = guild_search_request(guild_id, "q=paginationterm&limit=100&offset=100", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+    let json2 = body_to_json(resp).await;
+    assert_eq!(
+        json2["total"], n,
+        "total should be consistent across pages"
+    );
+    assert_eq!(
+        json2["results"].as_array().unwrap().len(),
+        100,
+        "second page should have 100 results"
+    );
+
+    // Page 3: limit=100, offset=200 — only 10 remain
+    let req = guild_search_request(guild_id, "q=paginationterm&limit=100&offset=200", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+    let json3 = body_to_json(resp).await;
+    assert_eq!(
+        json3["results"].as_array().unwrap().len(),
+        10,
+        "third page should have the remaining 10 results"
+    );
+
+    // Verify no overlap between page 1 and page 2 by comparing message IDs.
+    let ids1: std::collections::HashSet<String> = json1["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    let ids2: std::collections::HashSet<String> = json2["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids1.is_disjoint(&ids2),
+        "page 1 and page 2 must not share any message IDs"
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, user_id).await;
+}
+
+// ============================================================================
+// TD-02: Search — Channel Permission Filtering Integration Tests
+// ============================================================================
+
+// VIEW_CHANNEL bit = 1 << 24 (matches GuildPermissions::VIEW_CHANNEL in guild.rs)
+const VIEW_CHANNEL_BIT: i64 = 1 << 24;
+
+/// Create a guild role with arbitrary permissions.
+async fn create_role_with_perms(
+    pool: &sqlx::PgPool,
+    guild_id: Uuid,
+    name: &str,
+    permissions: i64,
+) -> Uuid {
+    let role_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+         VALUES ($1, $2, $3, $4, 500, false)",
+    )
+    .bind(role_id)
+    .bind(guild_id)
+    .bind(name)
+    .bind(permissions)
+    .execute(pool)
+    .await
+    .expect("Failed to create role");
+    role_id
+}
+
+/// Assign a role to a guild member.
+async fn assign_role_to_member(pool: &sqlx::PgPool, guild_id: Uuid, user_id: Uuid, role_id: Uuid) {
+    sqlx::query(
+        "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(role_id)
+    .execute(pool)
+    .await
+    .expect("Failed to assign role");
+}
+
+/// Create a channel permission override.
+async fn create_channel_perm_override(
+    pool: &sqlx::PgPool,
+    channel_id: Uuid,
+    role_id: Uuid,
+    allow: i64,
+    deny: i64,
+) {
+    let override_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO channel_overrides
+         (id, channel_id, role_id, allow_permissions, deny_permissions)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(override_id)
+    .bind(channel_id)
+    .bind(role_id)
+    .bind(allow)
+    .bind(deny)
+    .execute(pool)
+    .await
+    .expect("Failed to create channel override");
+}
+
+/// Guild search must not return messages from channels the user cannot VIEW.
+///
+/// Setup:
+/// - Guild with @everyone granting VIEW_CHANNEL at guild level
+/// - `restricted` channel has a deny-VIEW_CHANNEL override for @everyone
+/// - Both channels have a matching message
+///
+/// Expected: search returns only the message from the visible channel.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_excludes_hidden_channels() {
+    let app = helpers::fresh_test_app().await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let (member_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, member_id);
+
+    // @everyone has VIEW_CHANNEL.
+    let guild_id = create_guild_with_default_role(
+        &app.pool,
+        owner_id,
+        GuildPermissions::VIEW_CHANNEL,
+    )
+    .await;
+    add_guild_member(&app.pool, guild_id, member_id).await;
+
+    let visible_ch = create_channel(&app.pool, guild_id, "visible-ch").await;
+    let restricted_ch = create_channel(&app.pool, guild_id, "restricted-ch").await;
+
+    // Get the @everyone role ID.
+    let (everyone_role_id,): (Uuid,) = sqlx::query_as(
+        "SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true",
+    )
+    .bind(guild_id)
+    .fetch_one(&app.pool)
+    .await
+    .expect("Failed to fetch @everyone role");
+
+    // Deny VIEW_CHANNEL on `restricted_ch` for @everyone.
+    create_channel_perm_override(
+        &app.pool,
+        restricted_ch,
+        everyone_role_id,
+        0,
+        VIEW_CHANNEL_BIT,
+    )
+    .await;
+
+    // One matching message in each channel.
+    insert_message(
+        &app.pool,
+        visible_ch,
+        owner_id,
+        "unique_perm_filter_term in visible",
+    )
+    .await;
+    insert_message(
+        &app.pool,
+        restricted_ch,
+        owner_id,
+        "unique_perm_filter_term in restricted",
+    )
+    .await;
+
+    let req = guild_search_request(guild_id, "q=unique_perm_filter_term", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+
+    let json = body_to_json(resp).await;
+    assert_eq!(
+        json["total"], 1,
+        "member must only see the visible channel message; got: {json}"
+    );
+    assert_eq!(
+        json["results"][0]["channel_id"].as_str().unwrap(),
+        visible_ch.to_string(),
+        "result must be from the visible channel, not the restricted one"
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, owner_id).await;
+    delete_user(&app.pool, member_id).await;
+}
+
+/// Guild owner bypasses channel permission overrides and can find messages in all channels.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_owner_sees_all_channels() {
+    let app = helpers::fresh_test_app().await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner_id);
+
+    // @everyone has NO permissions.
+    let guild_id = create_guild_with_default_role(
+        &app.pool,
+        owner_id,
+        GuildPermissions::empty(),
+    )
+    .await;
+
+    let secret_ch = create_channel(&app.pool, guild_id, "owner-only-ch").await;
+
+    // Deny VIEW_CHANNEL on `secret_ch` for @everyone.
+    let (everyone_role_id,): (Uuid,) = sqlx::query_as(
+        "SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true",
+    )
+    .bind(guild_id)
+    .fetch_one(&app.pool)
+    .await
+    .expect("Failed to fetch @everyone role");
+    create_channel_perm_override(
+        &app.pool,
+        secret_ch,
+        everyone_role_id,
+        0,
+        VIEW_CHANNEL_BIT,
+    )
+    .await;
+
+    insert_message(&app.pool, secret_ch, owner_id, "owner_bypass_secret_term").await;
+
+    // Owner searches — must see the message despite the deny override.
+    let req = guild_search_request(guild_id, "q=owner_bypass_secret_term", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+
+    let json = body_to_json(resp).await;
+    assert_eq!(
+        json["total"], 1,
+        "guild owner must bypass channel permission overrides"
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, owner_id).await;
+}
+
+/// A channel-level allow override for VIEW_CHANNEL grants search access
+/// even when @everyone has no VIEW_CHANNEL at guild level.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_channel_allow_override_grants_access() {
+    let app = helpers::fresh_test_app().await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let (member_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, member_id);
+
+    // @everyone has NO VIEW_CHANNEL.
+    let guild_id = create_guild_with_default_role(
+        &app.pool,
+        owner_id,
+        GuildPermissions::empty(),
+    )
+    .await;
+    add_guild_member(&app.pool, guild_id, member_id).await;
+
+    let special_ch = create_channel(&app.pool, guild_id, "special-allow-ch").await;
+    let invisible_ch = create_channel(&app.pool, guild_id, "invisible-ch").await;
+
+    // Create a role with a channel-level allow override for VIEW_CHANNEL.
+    let special_role = create_role_with_perms(&app.pool, guild_id, "SpecialAccess", 0).await;
+    assign_role_to_member(&app.pool, guild_id, member_id, special_role).await;
+    create_channel_perm_override(&app.pool, special_ch, special_role, VIEW_CHANNEL_BIT, 0).await;
+
+    insert_message(
+        &app.pool,
+        special_ch,
+        owner_id,
+        "allow_override_unique_term",
+    )
+    .await;
+    insert_message(
+        &app.pool,
+        invisible_ch,
+        owner_id,
+        "allow_override_unique_term",
+    )
+    .await;
+
+    let req = guild_search_request(guild_id, "q=allow_override_unique_term", &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+
+    let json = body_to_json(resp).await;
+    assert_eq!(
+        json["total"], 1,
+        "member should only see the channel where VIEW_CHANNEL was explicitly allowed"
+    );
+    assert_eq!(
+        json["results"][0]["channel_id"].as_str().unwrap(),
+        special_ch.to_string()
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, owner_id).await;
+    delete_user(&app.pool, member_id).await;
+}
+
+/// When the user provides a channel_id filter for a channel they cannot view,
+/// the search must return 0 results and must not leak information.
+#[tokio::test]
+#[serial]
+async fn test_guild_search_channel_filter_respects_visibility() {
+    let app = helpers::fresh_test_app().await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let (member_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, member_id);
+
+    // @everyone has NO VIEW_CHANNEL — member cannot see any channel.
+    let guild_id = create_guild_with_default_role(
+        &app.pool,
+        owner_id,
+        GuildPermissions::empty(),
+    )
+    .await;
+    add_guild_member(&app.pool, guild_id, member_id).await;
+
+    let hidden_ch = create_channel(&app.pool, guild_id, "hidden-filter-ch").await;
+    insert_message(
+        &app.pool,
+        hidden_ch,
+        owner_id,
+        "channel_filter_visibility_term",
+    )
+    .await;
+
+    // Member explicitly filters to the hidden channel — must get 0 results.
+    let qs = format!("q=channel_filter_visibility_term&channel_id={hidden_ch}");
+    let req = guild_search_request(guild_id, &qs, &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+
+    let json = body_to_json(resp).await;
+    assert_eq!(
+        json["total"], 0,
+        "filtering to a hidden channel must return 0 results to avoid info leakage"
+    );
+
+    delete_guild(&app.pool, guild_id).await;
+    delete_user(&app.pool, owner_id).await;
+    delete_user(&app.pool, member_id).await;
+}
+
+// ============================================================================
+// TD-08: DM Search — Long Query Rejection
+// ============================================================================
+
+/// DM search with a query longer than 1000 characters must return 400.
+#[tokio::test]
+#[serial]
+async fn test_dm_search_long_query_rejected() {
+    let app = helpers::fresh_test_app().await;
+    let (user_a, _) = create_test_user(&app.pool).await;
+    let (user_b, _) = create_test_user(&app.pool).await;
+    let dm_id = create_dm_channel(&app.pool, user_a, user_b).await;
+    let token = generate_access_token(&app.config, user_a);
+
+    let long_query = "a".repeat(1001);
+    let qs = format!("q={long_query}");
+    let req = dm_search_request(&qs, &token);
+    let resp = app.oneshot(req).await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "DM search query of 1001 chars should be rejected with 400"
+    );
+
+    delete_dm_channel(&app.pool, dm_id).await;
+    delete_user(&app.pool, user_a).await;
+    delete_user(&app.pool, user_b).await;
 }
