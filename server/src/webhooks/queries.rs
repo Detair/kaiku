@@ -254,6 +254,40 @@ pub async fn insert_dead_letter(
     Ok(())
 }
 
+/// Look up the signing secret for a webhook by ID.
+pub async fn get_signing_secret(pool: &PgPool, webhook_id: Uuid) -> sqlx::Result<Option<String>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT signing_secret FROM webhooks WHERE id = $1 AND active = true")
+            .bind(webhook_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(s,)| s))
+}
+
+/// Delete delivery log entries older than `retention_days`.
+pub async fn cleanup_old_delivery_logs(pool: &PgPool, retention_days: i32) -> sqlx::Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM webhook_delivery_log WHERE created_at < NOW() - make_interval(days => $1)",
+    )
+    .bind(retention_days)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+/// Delete dead letter entries older than `retention_days`.
+pub async fn cleanup_old_dead_letters(pool: &PgPool, retention_days: i32) -> sqlx::Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM webhook_dead_letters WHERE created_at < NOW() - make_interval(days => $1)",
+    )
+    .bind(retention_days)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 /// Find all active webhooks for bots installed in a guild that subscribe to an event type.
 pub async fn find_guild_webhooks_for_event(
     pool: &PgPool,

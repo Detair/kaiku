@@ -32,7 +32,7 @@ async fn verify_ownership(pool: &PgPool, app_id: Uuid, user_id: Uuid) -> Result<
     Ok(())
 }
 
-/// Validate a URL for webhook delivery.
+/// Validate a URL for webhook delivery (includes SSRF protection).
 fn validate_url(url: &str) -> Result<(), WebhookError> {
     if url.len() < 10 || url.len() > 2048 {
         return Err(WebhookError::Validation(
@@ -44,6 +44,22 @@ fn validate_url(url: &str) -> Result<(), WebhookError> {
             "URL must start with http:// or https://".to_string(),
         ));
     }
+
+    // SSRF protection: block private/reserved hostnames
+    let parsed = reqwest::Url::parse(url).map_err(|_| {
+        WebhookError::Validation("Invalid URL format".to_string())
+    })?;
+
+    let host = parsed.host_str().ok_or_else(|| {
+        WebhookError::Validation("URL must contain a host".to_string())
+    })?;
+
+    if super::ssrf::is_blocked_host(host) {
+        return Err(WebhookError::Validation(
+            "URL must not point to a private or reserved address".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -246,6 +262,16 @@ pub async fn test_webhook(
         return Err(WebhookError::NotFound.into());
     }
 
+    // SSRF check at delivery time (DNS rebinding protection)
+    if let Err(e) = super::ssrf::verify_resolved_ip(&webhook.url).await {
+        return Ok(Json(TestDeliveryResult {
+            success: false,
+            response_status: None,
+            latency_ms: 0,
+            error_message: Some(format!("SSRF blocked: {e}")),
+        }));
+    }
+
     // Build test payload
     let event_id = Uuid::new_v4();
     let payload = serde_json::json!({
@@ -257,7 +283,12 @@ pub async fn test_webhook(
         "data": { "test": true }
     });
 
-    let payload_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    let payload_bytes = serde_json::to_vec(&payload).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to serialize test payload: {e}"),
+        )
+    })?;
     let signature = signing::sign_payload(&webhook.signing_secret, &payload_bytes);
     let timestamp = chrono::Utc::now().timestamp().to_string();
 
