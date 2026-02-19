@@ -15,7 +15,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
-| **Expansion** | **Phase 5** | 🔄 In Progress | 56% (9/16) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish |
+| **Expansion** | **Phase 5** | 🔄 In Progress | 59% (10/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters |
 | **Expansion** | **Phase 6** | 📋 Planned | 0% | Mobile, personal workspaces, sovereign guild model, live session toolkits |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing |
@@ -55,7 +55,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 
 ### Expansion (In Progress / Next)
 - Developer ecosystem growth (bot platform maturation, webhooks, gateway improvements).
-- Safety maturity (advanced moderation filters, policy tooling, operator workflows).
+- Safety maturity (✅ advanced moderation filters, policy tooling, operator workflows).
 - Growth and onboarding (guild discovery, first-time experience, activation/retention UX).
 - Voice/media maturity (multi-stream completion, simulcast, advanced media processing).
 - Mobile strategy execution (Android-first path and shared Rust core evolution).
@@ -427,19 +427,16 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - [ ] **[SaaS] Limits & Monetization Logic** ([Design](../plans/2026-02-15-phase-5-limits-monetization-design.md), [Implementation](../plans/2026-02-15-phase-5-limits-monetization-implementation.md))
   - Enforce limits (storage, members) per Guild.
   - Prepare "Boost" logic for lifting limits.
-- [ ] **[Safety] Advanced Moderation & Safety Filters** ([Design](../plans/2026-02-15-phase-5-moderation-filters-design.md), [Implementation](../plans/2026-02-15-phase-5-moderation-filters-implementation.md))
-  - **Context:** Protect users and platform reputation with proactive content scanning.
-  - **Implementation:**
-    - **Backend:**
-      - Create `ModerationService` in `server/src/moderation/`
-      - Implement pre-defined filter sets: Hate Speech, Discrimination, Abusive Language
-      - Support configurable actions: shadow-ban, delete + warn, log for review
-      - Add filter pattern matching with false-positive handling
-    - **Frontend:**
-      - Add "Safety" tab to Guild Settings
-      - Allow guild admins to toggle filter categories
-      - Configure action policies per filter type
-      - View moderation logs with context
+- [x] **[Safety] Advanced Moderation & Safety Filters** ✅ (PR #206) ([Design](../plans/2026-02-15-phase-5-moderation-filters-design.md), [Implementation](../plans/2026-02-15-phase-5-moderation-filters-implementation.md))
+  - Guild-configurable content filters with Aho-Corasick keyword matching and regex pattern support.
+  - Built-in filter categories: Slurs, Hate Speech, Spam, Abusive Language — each with configurable actions (Block, Log, Warn).
+  - Custom guild patterns with regex support and ReDoS protection (compilation + 10ms timeout validation).
+  - Per-guild `FilterEngine` cache using `DashMap` with generation counters for TOCTOU-safe invalidation.
+  - Moderation action log with paginated viewing and content truncation (200 chars).
+  - Dry-run test endpoint for admins to preview filter behavior without affecting production cache.
+  - Integrated into message create, edit, and file upload flows; skips encrypted and DM messages.
+  - Frontend Safety tab in Guild Settings with category toggles, custom pattern CRUD, test panel, and moderation log viewer.
+  - 17 integration tests + 9 unit tests covering config CRUD, message blocking, encrypted/DM skip, log actions, permissions, and cache invalidation.
 - [ ] **[Ecosystem] Webhooks & Bot Gateway** ([Design](../plans/2026-02-15-phase-5-webhooks-bot-gateway-design.md), [Implementation](../plans/2026-02-15-phase-5-webhooks-bot-gateway-implementation.md))
   - **Context:** Expand the platform's utility with third-party integrations.
   - **Implementation:**
@@ -665,6 +662,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 ## Recent Changes
 
 ### 2026-02-19
+- **Advanced Moderation & Safety Filters** (PR #206) — Guild-configurable content filters with Aho-Corasick + regex hybrid engine. Built-in categories (slurs, hate speech, spam, abusive language) with Block/Log/Warn actions. Custom guild patterns with ReDoS protection. Per-guild cached `FilterEngine` with generation-counter invalidation. Integrated into message create/edit/upload flows (skips encrypted and DM messages). Frontend Safety tab with category toggles, custom pattern CRUD, test panel, and moderation log. 17 integration tests + 9 unit tests. Two code review rounds addressed 12 issues including TOCTOU race fix, transactional upserts, regex validation three-way match, and ephemeral test engine.
 - **Tech Debt Cleanup** (branch `chore/tech-debt`) — Resolved 16 of 30 cataloged tech debt items across server, client, and shared crates:
   - **Security:** Gated megolm E2EE stubs behind feature flag (TD-01), replaced WebSocket `.expect()` panics with proper error responses (TD-05), added search query length validation (TD-08)
   - **Features:** MFA backup codes with Argon2id hashing (TD-06), E2EE backups now include real keys (TD-04), admin elevation detection fixed (TD-17), spoiler reveal persistence (TD-22), window focus check for notifications (TD-20)
