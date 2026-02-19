@@ -6,7 +6,7 @@
 
 import { Component, createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Link, Users, Shield, Smile, Bot, Settings } from "lucide-solid";
+import { X, Link, Users, Shield, ShieldAlert, Smile, Bot, Settings } from "lucide-solid";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import GeneralTab from "./GeneralTab";
@@ -15,6 +15,7 @@ import MembersTab from "./MembersTab";
 import RolesTab from "./RolesTab";
 import EmojisTab from "./EmojisTab";
 import BotsTab from "./BotsTab";
+import SafetyTab from "./SafetyTab";
 import RoleEditor from "./RoleEditor";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
@@ -25,7 +26,7 @@ interface GuildSettingsModalProps {
   onClose: () => void;
 }
 
-type TabId = "general" | "invites" | "members" | "roles" | "emojis" | "bots";
+type TabId = "general" | "invites" | "members" | "roles" | "emojis" | "bots" | "safety";
 
 const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   const guild = () => guildsState.guilds.find((g) => g.id === props.guildId);
@@ -180,6 +181,19 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 Bots
               </button>
             </Show>
+            <Show when={canManageGuild()}>
+              <button
+                onClick={() => setActiveTab("safety")}
+                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
+                classList={{
+                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "safety",
+                  "text-text-secondary hover:text-text-primary": activeTab() !== "safety",
+                }}
+              >
+                <ShieldAlert class="w-4 h-4" />
+                Safety
+              </button>
+            </Show>
             <Show when={canManageRoles()}>
               <button
                 onClick={() => setActiveTab("roles")}
@@ -211,6 +225,9 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </Show>
             <Show when={activeTab() === "bots" && canManageBots()}>
               <BotsTab guildId={props.guildId} />
+            </Show>
+            <Show when={activeTab() === "safety" && canManageGuild()}>
+              <SafetyTab guildId={props.guildId} />
             </Show>
             <Show when={activeTab() === "roles" && canManageRoles()}>
               <Show

@@ -87,6 +87,9 @@ infer.workspace = true
 # Image format detection
 image.workspace = true
 
+# String matching
+aho-corasick.workspace = true
+
 # Lock-free concurrent data structures
 dashmap.workspace = true
 

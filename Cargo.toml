@@ -106,6 +106,9 @@ infer = "0.16"
 # Image format detection
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
+# String matching
+aho-corasick = "1"
+
 # Lock-free concurrent data structures
 dashmap = "6"
 

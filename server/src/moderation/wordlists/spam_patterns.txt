@@ -1,0 +1,8 @@
+# Spam patterns — curated starter set
+# Lines prefixed with "regex:" are compiled as regex patterns.
+# Other lines are plain keywords.
+# Lines starting with # are comments.
+regex:(?i)buy\s+now\s+\d+%\s+off
+regex:(?i)free\s+(gift\s+)?cards?\b
+regex:(?i)click\s+here\s+to\s+(claim|win|get)
+regex:(?i)(bit\.ly|tinyurl\.com|t\.co)/\S+

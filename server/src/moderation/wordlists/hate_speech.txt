@@ -1,0 +1,3 @@
+# Hate speech word list — curated starter set
+# One keyword per line. Lines starting with # are comments.
+# Guilds should extend with custom patterns for their community.
