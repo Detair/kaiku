@@ -23,8 +23,7 @@ const BACKUP_CODE_LENGTH: usize = 8;
 /// # Errors
 ///
 /// Returns an error if any code cannot be hashed (e.g., Argon2 failure).
-pub fn generate_backup_codes()
--> Result<(Vec<String>, Vec<String>), argon2::password_hash::Error> {
+pub fn generate_backup_codes() -> Result<(Vec<String>, Vec<String>), argon2::password_hash::Error> {
     let mut rng = rand::thread_rng();
     let mut plaintext = Vec::with_capacity(BACKUP_CODE_COUNT);
     let mut hashes = Vec::with_capacity(BACKUP_CODE_COUNT);
@@ -73,7 +72,10 @@ mod tests {
         let (codes, _) = generate_backup_codes().expect("generation failed");
         for code in &codes {
             assert_eq!(code.len(), BACKUP_CODE_LENGTH);
-            assert!(code.chars().all(char::is_alphanumeric), "code '{code}' contains non-alphanumeric characters");
+            assert!(
+                code.chars().all(char::is_alphanumeric),
+                "code '{code}' contains non-alphanumeric characters"
+            );
         }
     }
 
@@ -82,7 +84,10 @@ mod tests {
         let (codes, _) = generate_backup_codes().expect("generation failed");
         let mut seen = std::collections::HashSet::new();
         for code in &codes {
-            assert!(seen.insert(code.clone()), "duplicate code generated: {code}");
+            assert!(
+                seen.insert(code.clone()),
+                "duplicate code generated: {code}"
+            );
         }
     }
 

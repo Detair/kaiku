@@ -157,6 +157,28 @@ async fn main() -> Result<()> {
                 }
                 _ => {}
             }
+
+            // Cleanup webhook delivery logs older than 7 days
+            match vc_server::webhooks::queries::cleanup_old_delivery_logs(&db_pool_clone, 7).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!(count, "Cleaned up old webhook delivery logs");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to cleanup webhook delivery logs");
+                }
+                _ => {}
+            }
+
+            // Cleanup webhook dead letters older than 30 days
+            match vc_server::webhooks::queries::cleanup_old_dead_letters(&db_pool_clone, 30).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!(count, "Cleaned up old webhook dead letters");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to cleanup webhook dead letters");
+                }
+                _ => {}
+            }
         }
     });
 

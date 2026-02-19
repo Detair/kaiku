@@ -11,9 +11,9 @@ use axum::body::Body;
 use axum::http::Method;
 use helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
-    create_guild_with_default_role, create_test_user, delete_dm_channel, delete_guild,
-    delete_user, generate_access_token, insert_attachment, insert_encrypted_message,
-    insert_message, insert_message_at, TestApp,
+    create_guild_with_default_role, create_test_user, delete_dm_channel, delete_guild, delete_user,
+    generate_access_token, insert_attachment, insert_encrypted_message, insert_message,
+    insert_message_at, TestApp,
 };
 use serial_test::serial;
 use uuid::Uuid;
@@ -718,7 +718,10 @@ async fn test_guild_search_special_characters_no_error() {
     let cases = [
         // URL-encoded special chars (axum decodes them before the handler sees them)
         ("q=%40%23%24%25%5E%26%2A%28%29", "@#$%^&*()"),
-        ("q=%27%3B+DROP+TABLE+messages+--", "'; DROP TABLE messages --"),
+        (
+            "q=%27%3B+DROP+TABLE+messages+--",
+            "'; DROP TABLE messages --",
+        ),
         (
             "q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E",
             "<script>alert(1)</script>",
@@ -878,10 +881,7 @@ async fn test_guild_search_large_result_set_pagination() {
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 200);
     let json2 = body_to_json(resp).await;
-    assert_eq!(
-        json2["total"], n,
-        "total should be consistent across pages"
-    );
+    assert_eq!(json2["total"], n, "total should be consistent across pages");
     assert_eq!(
         json2["results"].as_array().unwrap().len(),
         100,
@@ -952,15 +952,13 @@ async fn create_role_with_perms(
 
 /// Assign a role to a guild member.
 async fn assign_role_to_member(pool: &sqlx::PgPool, guild_id: Uuid, user_id: Uuid, role_id: Uuid) {
-    sqlx::query(
-        "INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)",
-    )
-    .bind(guild_id)
-    .bind(user_id)
-    .bind(role_id)
-    .execute(pool)
-    .await
-    .expect("Failed to assign role");
+    sqlx::query("INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind(user_id)
+        .bind(role_id)
+        .execute(pool)
+        .await
+        .expect("Failed to assign role");
 }
 
 /// Create a channel permission override.
@@ -1004,25 +1002,20 @@ async fn test_guild_search_excludes_hidden_channels() {
     let token = generate_access_token(&app.config, member_id);
 
     // @everyone has VIEW_CHANNEL.
-    let guild_id = create_guild_with_default_role(
-        &app.pool,
-        owner_id,
-        GuildPermissions::VIEW_CHANNEL,
-    )
-    .await;
+    let guild_id =
+        create_guild_with_default_role(&app.pool, owner_id, GuildPermissions::VIEW_CHANNEL).await;
     add_guild_member(&app.pool, guild_id, member_id).await;
 
     let visible_ch = create_channel(&app.pool, guild_id, "visible-ch").await;
     let restricted_ch = create_channel(&app.pool, guild_id, "restricted-ch").await;
 
     // Get the @everyone role ID.
-    let (everyone_role_id,): (Uuid,) = sqlx::query_as(
-        "SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true",
-    )
-    .bind(guild_id)
-    .fetch_one(&app.pool)
-    .await
-    .expect("Failed to fetch @everyone role");
+    let (everyone_role_id,): (Uuid,) =
+        sqlx::query_as("SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true")
+            .bind(guild_id)
+            .fetch_one(&app.pool)
+            .await
+            .expect("Failed to fetch @everyone role");
 
     // Deny VIEW_CHANNEL on `restricted_ch` for @everyone.
     create_channel_perm_override(
@@ -1079,31 +1072,19 @@ async fn test_guild_search_owner_sees_all_channels() {
     let token = generate_access_token(&app.config, owner_id);
 
     // @everyone has NO permissions.
-    let guild_id = create_guild_with_default_role(
-        &app.pool,
-        owner_id,
-        GuildPermissions::empty(),
-    )
-    .await;
+    let guild_id =
+        create_guild_with_default_role(&app.pool, owner_id, GuildPermissions::empty()).await;
 
     let secret_ch = create_channel(&app.pool, guild_id, "owner-only-ch").await;
 
     // Deny VIEW_CHANNEL on `secret_ch` for @everyone.
-    let (everyone_role_id,): (Uuid,) = sqlx::query_as(
-        "SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true",
-    )
-    .bind(guild_id)
-    .fetch_one(&app.pool)
-    .await
-    .expect("Failed to fetch @everyone role");
-    create_channel_perm_override(
-        &app.pool,
-        secret_ch,
-        everyone_role_id,
-        0,
-        VIEW_CHANNEL_BIT,
-    )
-    .await;
+    let (everyone_role_id,): (Uuid,) =
+        sqlx::query_as("SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default = true")
+            .bind(guild_id)
+            .fetch_one(&app.pool)
+            .await
+            .expect("Failed to fetch @everyone role");
+    create_channel_perm_override(&app.pool, secret_ch, everyone_role_id, 0, VIEW_CHANNEL_BIT).await;
 
     insert_message(&app.pool, secret_ch, owner_id, "owner_bypass_secret_term").await;
 
@@ -1133,12 +1114,8 @@ async fn test_guild_search_channel_allow_override_grants_access() {
     let token = generate_access_token(&app.config, member_id);
 
     // @everyone has NO VIEW_CHANNEL.
-    let guild_id = create_guild_with_default_role(
-        &app.pool,
-        owner_id,
-        GuildPermissions::empty(),
-    )
-    .await;
+    let guild_id =
+        create_guild_with_default_role(&app.pool, owner_id, GuildPermissions::empty()).await;
     add_guild_member(&app.pool, guild_id, member_id).await;
 
     let special_ch = create_channel(&app.pool, guild_id, "special-allow-ch").await;
@@ -1194,12 +1171,8 @@ async fn test_guild_search_channel_filter_respects_visibility() {
     let token = generate_access_token(&app.config, member_id);
 
     // @everyone has NO VIEW_CHANNEL — member cannot see any channel.
-    let guild_id = create_guild_with_default_role(
-        &app.pool,
-        owner_id,
-        GuildPermissions::empty(),
-    )
-    .await;
+    let guild_id =
+        create_guild_with_default_role(&app.pool, owner_id, GuildPermissions::empty()).await;
     add_guild_member(&app.pool, guild_id, member_id).await;
 
     let hidden_ch = create_channel(&app.pool, guild_id, "hidden-filter-ch").await;

@@ -92,11 +92,13 @@ pub struct TestDeliveryResult {
 }
 
 /// Item queued for webhook delivery via Redis.
+///
+/// Note: `signing_secret` is intentionally excluded — it is looked up from the
+/// database at delivery time to avoid exposing secrets in Redis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookDeliveryItem {
     pub webhook_id: Uuid,
     pub url: String,
-    pub signing_secret: String,
     pub event_type: BotEventType,
     pub event_id: Uuid,
     pub payload: serde_json::Value,

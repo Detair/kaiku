@@ -9,4 +9,5 @@ pub mod events;
 pub mod handlers;
 pub mod queries;
 pub mod signing;
+pub mod ssrf;
 pub mod types;

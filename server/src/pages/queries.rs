@@ -276,7 +276,9 @@ pub async fn update_page(pool: &PgPool, params: UpdatePageParams<'_>) -> Result<
     let new_title = params.title.unwrap_or(&page.title);
     let new_slug = params.slug.unwrap_or(&page.slug);
     let new_content = params.content.unwrap_or(&page.content);
-    let new_requires_acceptance = params.requires_acceptance.unwrap_or(page.requires_acceptance);
+    let new_requires_acceptance = params
+        .requires_acceptance
+        .unwrap_or(page.requires_acceptance);
     let new_content_hash = if params.content.is_some() {
         hash_content(new_content)
     } else {

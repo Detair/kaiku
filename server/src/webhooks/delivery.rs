@@ -64,7 +64,14 @@ async fn schedule_retry(
         .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON serialize error: {e}")))?;
 
     redis
-        .zadd::<(), _, _>(RETRY_ZSET_KEY, None, None, false, false, (deliver_at, payload))
+        .zadd::<(), _, _>(
+            RETRY_ZSET_KEY,
+            None,
+            None,
+            false,
+            false,
+            (deliver_at, payload),
+        )
         .await?;
     Ok(())
 }
@@ -75,7 +82,11 @@ async fn promote_due_retries(redis: &Client) {
 
     // C1: Atomic fetch-and-remove via Lua script to prevent duplicate deliveries
     let items: Vec<String> = match redis
-        .eval(PROMOTE_RETRIES_LUA, vec![RETRY_ZSET_KEY], vec![now.to_string()])
+        .eval(
+            PROMOTE_RETRIES_LUA,
+            vec![RETRY_ZSET_KEY],
+            vec![now.to_string()],
+        )
         .await
     {
         Ok(items) => items,
@@ -131,7 +142,8 @@ pub async fn spawn_delivery_worker(db: PgPool, redis: Client, http_client: reqwe
                     error!(
                         consecutive_errors,
                         backoff_secs,
-                        "Persistent Redis failure in delivery worker, backing off: {}", e
+                        "Persistent Redis failure in delivery worker, backing off: {}",
+                        e
                     );
                 } else {
                     error!("Failed to BRPOP from delivery queue: {}", e);
@@ -359,7 +371,10 @@ async fn handle_retry(db: &PgPool, redis: &Client, mut item: WebhookDeliveryItem
             )
             .await
             {
-                error!("Failed to insert dead letter after retry failure: {}", dl_err);
+                error!(
+                    "Failed to insert dead letter after retry failure: {}",
+                    dl_err
+                );
             }
         }
     } else {

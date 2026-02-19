@@ -152,7 +152,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/mfa/setup", post(handlers::mfa_setup))
         .route("/mfa/verify", post(handlers::mfa_verify))
         .route("/mfa/disable", post(handlers::mfa_disable))
-        .route("/mfa/backup-codes", post(handlers::mfa_generate_backup_codes))
+        .route(
+            "/mfa/backup-codes",
+            post(handlers::mfa_generate_backup_codes),
+        )
         .layer(axum_middleware::from_fn_with_state(state, require_auth));
 
     public_routes.merge(protected_routes)

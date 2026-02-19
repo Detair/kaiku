@@ -46,13 +46,12 @@ fn validate_url(url: &str) -> Result<(), WebhookError> {
     }
 
     // SSRF protection: block private/reserved hostnames
-    let parsed = reqwest::Url::parse(url).map_err(|_| {
-        WebhookError::Validation("Invalid URL format".to_string())
-    })?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| WebhookError::Validation("Invalid URL format".to_string()))?;
 
-    let host = parsed.host_str().ok_or_else(|| {
-        WebhookError::Validation("URL must contain a host".to_string())
-    })?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| WebhookError::Validation("URL must contain a host".to_string()))?;
 
     if super::ssrf::is_blocked_host(host) {
         return Err(WebhookError::Validation(

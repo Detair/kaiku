@@ -51,7 +51,7 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
                 || v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 2 // 192.0.2.0/24 (TEST-NET-1)
                 || v4.octets()[0] == 198 && v4.octets()[1] == 51 && v4.octets()[2] == 100 // 198.51.100.0/24 (TEST-NET-2)
                 || v4.octets()[0] == 203 && v4.octets()[1] == 0 && v4.octets()[2] == 113 // 203.0.113.0/24 (TEST-NET-3)
-                || v4.octets()[0] >= 224  // 224.0.0.0/4 (multicast) + 240.0.0.0/4 (reserved)
+                || v4.octets()[0] >= 224 // 224.0.0.0/4 (multicast) + 240.0.0.0/4 (reserved)
         }
         IpAddr::V6(v6) => {
             v6.is_loopback()              // ::1

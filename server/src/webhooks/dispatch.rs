@@ -47,7 +47,6 @@ pub async fn dispatch_guild_event(
         let item = WebhookDeliveryItem {
             webhook_id: webhook.id,
             url: webhook.url.clone(),
-            signing_secret: webhook.signing_secret.clone(),
             event_type,
             event_id,
             payload: payload.clone(),
@@ -101,7 +100,6 @@ pub async fn dispatch_command_event(
         let item = WebhookDeliveryItem {
             webhook_id: webhook.id,
             url: webhook.url.clone(),
-            signing_secret: webhook.signing_secret.clone(),
             event_type: BotEventType::CommandInvoked,
             event_id,
             payload: payload.clone(),

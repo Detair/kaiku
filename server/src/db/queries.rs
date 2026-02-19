@@ -404,7 +404,10 @@ pub async fn store_mfa_backup_codes(
     user_id: Uuid,
     code_hashes: &[String],
 ) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await.map_err(db_error!("store_mfa_backup_codes", user_id = %user_id))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(db_error!("store_mfa_backup_codes", user_id = %user_id))?;
 
     // Delete existing codes for this user
     sqlx::query("DELETE FROM mfa_backup_codes WHERE user_id = $1")
@@ -415,14 +418,12 @@ pub async fn store_mfa_backup_codes(
 
     // Insert new codes
     for code_hash in code_hashes {
-        sqlx::query(
-            "INSERT INTO mfa_backup_codes (user_id, code_hash) VALUES ($1, $2)",
-        )
-        .bind(user_id)
-        .bind(code_hash)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error!("store_mfa_backup_codes/insert", user_id = %user_id))?;
+        sqlx::query("INSERT INTO mfa_backup_codes (user_id, code_hash) VALUES ($1, $2)")
+            .bind(user_id)
+            .bind(code_hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error!("store_mfa_backup_codes/insert", user_id = %user_id))?;
     }
 
     tx.commit()
@@ -497,7 +498,10 @@ pub struct CreateChannelParams<'a> {
 }
 
 /// Create a new channel.
-pub async fn create_channel(pool: &PgPool, params: CreateChannelParams<'_>) -> sqlx::Result<Channel> {
+pub async fn create_channel(
+    pool: &PgPool,
+    params: CreateChannelParams<'_>,
+) -> sqlx::Result<Channel> {
     // Get the next position for this category
     let row = sqlx::query(
         "SELECT COALESCE(MAX(position), 0) + 1 as next_pos FROM channels WHERE category_id IS NOT DISTINCT FROM $1",
