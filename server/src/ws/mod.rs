@@ -707,6 +707,17 @@ pub enum ServerEvent {
         /// Report ID.
         report_id: Uuid,
     },
+    /// Content filter blocked a message (broadcast to admin subscribers)
+    AdminModerationBlocked {
+        /// Guild where the message was blocked.
+        guild_id: Uuid,
+        /// User who sent the blocked message.
+        user_id: Uuid,
+        /// Channel where the message was attempted.
+        channel_id: Uuid,
+        /// Filter category that matched.
+        category: String,
+    },
 
     // Slash command response events
     /// Bot command response delivered to invoking user.
@@ -1450,7 +1461,12 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
         if let Some(uuid_str) = channel_name.strip_prefix("channel:") {
             if let Ok(channel_id) = Uuid::parse_str(uuid_str) {
                 // Check if we're subscribed to this channel
-                if params.subscribed_channels.read().await.contains(&channel_id) {
+                if params
+                    .subscribed_channels
+                    .read()
+                    .await
+                    .contains(&channel_id)
+                {
                     // Parse and forward the event (with block filtering)
                     if let Some(payload) = message.value.as_str() {
                         if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
@@ -1466,7 +1482,10 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                                             // Block check must not fail open
                                             // Use blocking_read since we're in a sync closure
                                             // within async context
-                                            params.blocked_users.blocking_read().contains(&author_id)
+                                            params
+                                                .blocked_users
+                                                .blocking_read()
+                                                .contains(&author_id)
                                         })
                                 }
                                 ServerEvent::TypingStart { user_id: uid, .. }

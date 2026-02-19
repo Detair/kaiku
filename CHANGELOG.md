@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Production client builds now selectively strip `console.log` and `console.debug` while preserving `console.error` and `console.warn` for diagnostics (TD-09)
 
 ### Added
+- Guild content safety filters — guild managers can enable built-in filter categories (Slurs, Hate Speech, Spam, Abusive Language) or add custom keyword/regex patterns to automatically block, log, or warn on matching messages; includes dry-run test panel, paginated moderation log, and new Safety tab in Server Settings
+  - Filters apply to guild text messages only; encrypted messages and DMs are not inspected
+  - Uses Aho-Corasick for fast keyword matching + compiled regex for pattern rules
+  - Per-guild filter engines are lazily cached and invalidated on config changes
+  - Admin notification via `admin_moderation_blocked` WebSocket event when messages are blocked
+  - All config changes logged to the system audit log
 - MFA backup codes — users with MFA enabled can generate 10 one-time recovery codes (`POST /api/auth/mfa/backup-codes`) to regain account access if their authenticator app is unavailable; each code is single-use and hashed with Argon2id at rest
 - Virtualized guild member list, DM conversation sidebar, and search results using `@tanstack/solid-virtual` for smooth scrolling with large datasets
 - Toast usage convention documentation with type/duration table and deduplication guidance

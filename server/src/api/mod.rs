@@ -31,6 +31,7 @@ use crate::auth::oidc::OidcProviderManager;
 use crate::chat::S3Client;
 use crate::config::Config;
 use crate::email::EmailService;
+use crate::moderation::filter_cache::FilterCache;
 use crate::ratelimit::{rate_limit_by_user, with_category, RateLimitCategory, RateLimiter};
 use crate::voice::SfuServer;
 use crate::{admin, auth, chat, connectivity, crypto, guild, moderation, pages, social, voice, ws};
@@ -54,6 +55,8 @@ pub struct AppState {
     pub email: Option<Arc<EmailService>>,
     /// OIDC provider manager (optional, requires MFA encryption key)
     pub oidc_manager: Option<Arc<OidcProviderManager>>,
+    /// Per-guild content filter engine cache
+    pub filter_cache: Arc<FilterCache>,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -87,6 +90,7 @@ impl AppState {
             rate_limiter: cfg.rate_limiter,
             email: cfg.email.map(Arc::new),
             oidc_manager: cfg.oidc_manager.map(Arc::new),
+            filter_cache: Arc::new(FilterCache::new()),
         }
     }
 
@@ -160,6 +164,10 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/channels", chat::channels_router())
         .nest("/api/messages", chat::messages_router())
         .nest("/api/guilds", guild::router())
+        .nest(
+            "/api/guilds/{id}/filters",
+            moderation::filter_handlers::router(),
+        )
         .nest("/api/invites", guild::invite_router())
         .nest("/api/pages", pages::platform_pages_router())
         .nest("/api/dm", chat::dm_router())

@@ -519,6 +519,40 @@ pub async fn upload_message_with_file(
     // Validate actual file content matches claimed MIME type (magic byte check)
     let file_content_type = validate_file_content(&file_data, &file_content_type)?;
 
+    // Content filtering on message text (if non-empty, guild channels only)
+    if !content.is_empty() {
+        let channel = db::find_channel_by_id(&state.db, channel_id)
+            .await?
+            .ok_or(UploadError::Validation("Channel not found".to_string()))?;
+        if let Some(guild_id) = channel.guild_id {
+            if let Ok(engine) = state.filter_cache.get_or_build(&state.db, guild_id).await {
+                let result = engine.check(&content);
+                if result.blocked {
+                    for m in &result.matches {
+                        crate::moderation::filter_queries::log_moderation_action(
+                            &state.db,
+                            &crate::moderation::filter_queries::LogActionParams {
+                                guild_id,
+                                user_id: auth_user.id,
+                                channel_id,
+                                action: m.action,
+                                category: Some(m.category),
+                                matched_pattern: &m.matched_pattern,
+                                original_content: &content,
+                                custom_pattern_id: m.custom_pattern_id,
+                            },
+                        )
+                        .await
+                        .ok();
+                    }
+                    return Err(UploadError::Validation(
+                        "Your message was blocked by the server's content filter.".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
     // Create the message first
     // Note: Empty content is allowed when attaching files (file-only messages)
     // This differs from regular text messages which require 1-4000 chars validation

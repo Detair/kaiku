@@ -14,9 +14,11 @@ use validator::Validate;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
+use crate::moderation::filter_queries;
+use crate::moderation::filter_types::FilterAction;
 use crate::permissions::{get_member_permission_context, GuildPermissions};
 use crate::social::block_cache;
-use crate::ws::{broadcast_to_channel, broadcast_to_user, ServerEvent};
+use crate::ws::{broadcast_admin_event, broadcast_to_channel, broadcast_to_user, ServerEvent};
 
 // ============================================================================
 // Error Types
@@ -28,6 +30,7 @@ pub enum MessageError {
     ChannelNotFound,
     Forbidden,
     Blocked,
+    ContentFiltered,
     Validation(String),
     Database(sqlx::Error),
 }
@@ -54,6 +57,11 @@ impl IntoResponse for MessageError {
                 StatusCode::FORBIDDEN,
                 "BLOCKED",
                 "Cannot send messages to this user".to_string(),
+            ),
+            Self::ContentFiltered => (
+                StatusCode::FORBIDDEN,
+                "CONTENT_FILTERED",
+                "Your message was blocked by the server's content filter.".to_string(),
             ),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::Database(_) => (
@@ -418,6 +426,72 @@ pub async fn create(
         return Err(MessageError::Validation(
             "Encrypted messages require a nonce".to_string(),
         ));
+    }
+
+    // Content filtering: skip encrypted messages (can't inspect E2EE) and DMs (guild-scoped)
+    if !body.encrypted {
+        if let Some(guild_id) = channel.guild_id {
+            if let Ok(engine) = state.filter_cache.get_or_build(&state.db, guild_id).await {
+                let result = engine.check(&body.content);
+                if result.blocked {
+                    // Log all matches to moderation_actions table
+                    for m in &result.matches {
+                        filter_queries::log_moderation_action(
+                            &state.db,
+                            &filter_queries::LogActionParams {
+                                guild_id,
+                                user_id: auth_user.id,
+                                channel_id,
+                                action: m.action,
+                                category: Some(m.category),
+                                matched_pattern: &m.matched_pattern,
+                                original_content: &body.content,
+                                custom_pattern_id: m.custom_pattern_id,
+                            },
+                        )
+                        .await
+                        .ok();
+                    }
+                    // Notify admins
+                    if let Some(first) = result.matches.first() {
+                        broadcast_admin_event(
+                            &state.redis,
+                            &ServerEvent::AdminModerationBlocked {
+                                guild_id,
+                                user_id: auth_user.id,
+                                channel_id,
+                                category: first.category.to_string(),
+                            },
+                        )
+                        .await
+                        .ok();
+                    }
+                    return Err(MessageError::ContentFiltered);
+                }
+                // For "log" actions (not block), still log but allow the message
+                for m in result
+                    .matches
+                    .iter()
+                    .filter(|m| m.action == FilterAction::Log)
+                {
+                    filter_queries::log_moderation_action(
+                        &state.db,
+                        &filter_queries::LogActionParams {
+                            guild_id,
+                            user_id: auth_user.id,
+                            channel_id,
+                            action: m.action,
+                            category: Some(m.category),
+                            matched_pattern: &m.matched_pattern,
+                            original_content: &body.content,
+                            custom_pattern_id: m.custom_pattern_id,
+                        },
+                    )
+                    .await
+                    .ok();
+                }
+            }
+        }
     }
 
     // Validate reply_to exists if provided
@@ -882,6 +956,38 @@ pub async fn update(
     )
     .await
     .map_err(|_| MessageError::Forbidden)?;
+
+    // Content filtering on edited content: skip encrypted messages and DMs
+    if !existing_message.encrypted {
+        let channel = db::find_channel_by_id(&state.db, existing_message.channel_id)
+            .await?
+            .ok_or(MessageError::ChannelNotFound)?;
+        if let Some(guild_id) = channel.guild_id {
+            if let Ok(engine) = state.filter_cache.get_or_build(&state.db, guild_id).await {
+                let result = engine.check(&body.content);
+                if result.blocked {
+                    for m in &result.matches {
+                        filter_queries::log_moderation_action(
+                            &state.db,
+                            &filter_queries::LogActionParams {
+                                guild_id,
+                                user_id: auth_user.id,
+                                channel_id: existing_message.channel_id,
+                                action: m.action,
+                                category: Some(m.category),
+                                matched_pattern: &m.matched_pattern,
+                                original_content: &body.content,
+                                custom_pattern_id: m.custom_pattern_id,
+                            },
+                        )
+                        .await
+                        .ok();
+                    }
+                    return Err(MessageError::ContentFiltered);
+                }
+            }
+        }
+    }
 
     // Update message (only owner can edit)
     let message = db::update_message(&state.db, id, auth_user.id, &body.content)
@@ -1455,8 +1561,11 @@ mod tests {
             redis,
             config,
             s3: None,
-            sfu: crate::voice::SfuServer::new(std::sync::Arc::new(Config::default_for_test()), None)
-                .unwrap(),
+            sfu: crate::voice::SfuServer::new(
+                std::sync::Arc::new(Config::default_for_test()),
+                None,
+            )
+            .unwrap(),
             rate_limiter: None,
             email: None,
             oidc_manager: None,
