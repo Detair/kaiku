@@ -11,11 +11,15 @@ use super::filter_types::{
     ModerationAction,
 };
 
+/// Maximum characters of original content stored in moderation log.
+const MAX_LOGGED_CONTENT_LEN: usize = 200;
+
 // ============================================================================
 // Filter Config Queries
 // ============================================================================
 
 /// List all filter configs for a guild.
+#[tracing::instrument(skip(pool))]
 pub async fn list_filter_configs(
     pool: &PgPool,
     guild_id: Uuid,
@@ -31,12 +35,14 @@ pub async fn list_filter_configs(
     .await
 }
 
-/// Upsert filter configs for a guild (batch).
+/// Upsert filter configs for a guild (batch, transactional).
+#[tracing::instrument(skip(pool, configs))]
 pub async fn upsert_filter_configs(
     pool: &PgPool,
     guild_id: Uuid,
     configs: &[FilterConfigEntry],
 ) -> sqlx::Result<Vec<GuildFilterConfig>> {
+    let mut tx = pool.begin().await?;
     let mut results = Vec::new();
 
     for entry in configs {
@@ -51,12 +57,13 @@ pub async fn upsert_filter_configs(
         .bind(entry.category)
         .bind(entry.enabled)
         .bind(entry.action)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
 
         results.push(row);
     }
 
+    tx.commit().await?;
     Ok(results)
 }
 
@@ -65,6 +72,7 @@ pub async fn upsert_filter_configs(
 // ============================================================================
 
 /// List all custom patterns for a guild.
+#[tracing::instrument(skip(pool))]
 pub async fn list_custom_patterns(
     pool: &PgPool,
     guild_id: Uuid,
@@ -81,6 +89,7 @@ pub async fn list_custom_patterns(
 }
 
 /// Count custom patterns for a guild.
+#[tracing::instrument(skip(pool))]
 pub async fn count_custom_patterns(pool: &PgPool, guild_id: Uuid) -> sqlx::Result<i64> {
     let row: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM guild_filter_patterns WHERE guild_id = $1")
@@ -91,6 +100,7 @@ pub async fn count_custom_patterns(pool: &PgPool, guild_id: Uuid) -> sqlx::Resul
 }
 
 /// Create a new custom pattern.
+#[tracing::instrument(skip(pool))]
 pub async fn create_custom_pattern(
     pool: &PgPool,
     guild_id: Uuid,
@@ -113,7 +123,26 @@ pub async fn create_custom_pattern(
     .await
 }
 
+/// Get a single custom pattern by id and guild.
+#[tracing::instrument(skip(pool))]
+pub async fn get_custom_pattern(
+    pool: &PgPool,
+    pattern_id: Uuid,
+    guild_id: Uuid,
+) -> sqlx::Result<Option<GuildFilterPattern>> {
+    sqlx::query_as::<_, GuildFilterPattern>(
+        "SELECT id, guild_id, pattern, is_regex, description, enabled, created_by, created_at, updated_at
+         FROM guild_filter_patterns
+         WHERE id = $1 AND guild_id = $2",
+    )
+    .bind(pattern_id)
+    .bind(guild_id)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Update a custom pattern. Returns None if not found or wrong guild.
+#[tracing::instrument(skip(pool))]
 pub async fn update_custom_pattern(
     pool: &PgPool,
     pattern_id: Uuid,
@@ -145,6 +174,7 @@ pub async fn update_custom_pattern(
 }
 
 /// Delete a custom pattern. Returns true if deleted.
+#[tracing::instrument(skip(pool))]
 pub async fn delete_custom_pattern(
     pool: &PgPool,
     pattern_id: Uuid,
@@ -175,10 +205,25 @@ pub struct LogActionParams<'a> {
 }
 
 /// Log a moderation action.
+///
+/// Truncates `original_content` to [`MAX_LOGGED_CONTENT_LEN`] characters
+/// before storing to limit data retention footprint.
+#[tracing::instrument(skip(pool, params))]
 pub async fn log_moderation_action(
     pool: &PgPool,
     params: &LogActionParams<'_>,
 ) -> sqlx::Result<ModerationAction> {
+    // Truncate content on char boundary to limit stored data
+    let truncated: &str = if params.original_content.len() > MAX_LOGGED_CONTENT_LEN {
+        let mut end = MAX_LOGGED_CONTENT_LEN;
+        while !params.original_content.is_char_boundary(end) {
+            end -= 1;
+        }
+        &params.original_content[..end]
+    } else {
+        params.original_content
+    };
+
     sqlx::query_as::<_, ModerationAction>(
         "INSERT INTO moderation_actions (guild_id, user_id, channel_id, action, category, matched_pattern, original_content, custom_pattern_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -190,13 +235,14 @@ pub async fn log_moderation_action(
     .bind(params.action)
     .bind(params.category)
     .bind(params.matched_pattern)
-    .bind(params.original_content)
+    .bind(truncated)
     .bind(params.custom_pattern_id)
     .fetch_one(pool)
     .await
 }
 
 /// List moderation actions for a guild (paginated).
+#[tracing::instrument(skip(pool))]
 pub async fn list_moderation_log(
     pool: &PgPool,
     guild_id: Uuid,

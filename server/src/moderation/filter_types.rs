@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 // ============================================================================
@@ -131,12 +131,30 @@ pub struct CreatePatternRequest {
 }
 
 /// Request to update a custom filter pattern.
+///
+/// `description` uses double-option deserialization:
+/// - Field absent → `None` (don't change)
+/// - `"description": null` → `Some(None)` (clear to null)
+/// - `"description": "text"` → `Some(Some("text"))` (set value)
 #[derive(Debug, Deserialize)]
 pub struct UpdatePatternRequest {
     pub pattern: Option<String>,
     pub is_regex: Option<bool>,
-    pub description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub description: Option<Option<String>>,
     pub enabled: Option<bool>,
+}
+
+/// Deserialize a field that distinguishes between absent, null, and present.
+///
+/// - Field absent in JSON → `#[serde(default)]` yields `None` (skip calling this)
+/// - `"field": null` → `Some(None)` (clear the value)
+/// - `"field": "text"` → `Some(Some("text"))` (set value)
+fn deserialize_double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// Request to test content against active filters.

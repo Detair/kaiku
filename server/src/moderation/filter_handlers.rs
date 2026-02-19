@@ -6,7 +6,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use uuid::Uuid;
 
@@ -56,6 +56,7 @@ pub fn router() -> Router<AppState> {
 /// List guild filter category configs.
 ///
 /// GET `/api/guilds/{id}/filters`
+#[tracing::instrument(skip(state, auth_user))]
 async fn list_filter_configs(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -77,6 +78,7 @@ async fn list_filter_configs(
 /// Update guild filter category configs (bulk upsert).
 ///
 /// PUT `/api/guilds/{id}/filters`
+#[tracing::instrument(skip(state, auth_user, body))]
 async fn update_filter_configs(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -124,6 +126,7 @@ async fn update_filter_configs(
 /// List guild custom filter patterns.
 ///
 /// GET `/api/guilds/{id}/filters/patterns`
+#[tracing::instrument(skip(state, auth_user))]
 async fn list_custom_patterns(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -145,6 +148,7 @@ async fn list_custom_patterns(
 /// Create a custom filter pattern.
 ///
 /// POST `/api/guilds/{id}/filters/patterns`
+#[tracing::instrument(skip(state, auth_user, body))]
 async fn create_custom_pattern(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -215,6 +219,7 @@ async fn create_custom_pattern(
 /// Update a custom filter pattern.
 ///
 /// PUT `/api/guilds/{id}/filters/patterns/{pid}`
+#[tracing::instrument(skip(state, auth_user, body))]
 async fn update_custom_pattern(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -239,16 +244,34 @@ async fn update_custom_pattern(
         }
     }
 
-    // Validate regex if pattern is being updated and is_regex is true
-    let is_regex = body.is_regex.unwrap_or(false);
-    if is_regex {
+    // Validate regex when is_regex is (or will be) true
+    if body.is_regex == Some(true) {
         if let Some(ref pattern) = body.pattern {
+            // New pattern provided + is_regex=true: validate the new pattern
+            validate_regex(pattern)?;
+        } else {
+            // is_regex changed to true without new pattern: validate existing pattern text
+            let existing = filter_queries::get_custom_pattern(&state.db, pattern_id, guild_id)
+                .await?
+                .ok_or(FilterError::NotFound)?;
+            if !existing.is_regex {
+                validate_regex(&existing.pattern)?;
+            }
+        }
+    } else if let Some(ref pattern) = body.pattern {
+        // New pattern text provided without explicit is_regex: check current DB state
+        let existing = filter_queries::get_custom_pattern(&state.db, pattern_id, guild_id)
+            .await?
+            .ok_or(FilterError::NotFound)?;
+        if existing.is_regex {
             validate_regex(pattern)?;
         }
     }
 
     // Convert description for the query: Option<Option<&str>>
-    let description = body.description.as_ref().map(|d| Some(d.as_str()));
+    // body.description is Option<Option<String>> from double-option deserialization:
+    //   None → don't change, Some(None) → clear to null, Some(Some(s)) → set to s
+    let description = body.description.as_ref().map(|inner| inner.as_deref());
 
     let pattern = filter_queries::update_custom_pattern(
         &state.db,
@@ -271,6 +294,7 @@ async fn update_custom_pattern(
 /// Delete a custom filter pattern.
 ///
 /// DELETE `/api/guilds/{id}/filters/patterns/{pid}`
+#[tracing::instrument(skip(state, auth_user))]
 async fn delete_custom_pattern(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -312,6 +336,7 @@ async fn delete_custom_pattern(
 /// List moderation action log for a guild (paginated).
 ///
 /// GET `/api/guilds/{id}/filters/log`
+#[tracing::instrument(skip(state, auth_user))]
 async fn list_moderation_log(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -344,6 +369,7 @@ async fn list_moderation_log(
 /// Test content against active filters (dry-run).
 ///
 /// POST `/api/guilds/{id}/filters/test`
+#[tracing::instrument(skip(state, auth_user, body))]
 async fn test_filter(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -365,11 +391,10 @@ async fn test_filter(
         )));
     }
 
-    // Force rebuild from DB to test latest config
-    state.filter_cache.invalidate(guild_id);
+    // Build a fresh ephemeral engine from DB without touching the shared cache
     let engine = state
         .filter_cache
-        .get_or_build(&state.db, guild_id)
+        .build_ephemeral(&state.db, guild_id)
         .await
         .map_err(|e| FilterError::Validation(format!("Failed to build filter engine: {e}")))?;
 

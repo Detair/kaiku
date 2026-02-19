@@ -468,11 +468,11 @@ pub async fn create(
                     }
                     return Err(MessageError::ContentFiltered);
                 }
-                // For "log" actions (not block), still log but allow the message
+                // For "log" and "warn" actions, still log but allow the message
                 for m in result
                     .matches
                     .iter()
-                    .filter(|m| m.action == FilterAction::Log)
+                    .filter(|m| m.action == FilterAction::Log || m.action == FilterAction::Warn)
                 {
                     filter_queries::log_moderation_action(
                         &state.db,
@@ -984,6 +984,28 @@ pub async fn update(
                         .ok();
                     }
                     return Err(MessageError::ContentFiltered);
+                }
+                // For "log" and "warn" actions, still log but allow the edit
+                for m in result
+                    .matches
+                    .iter()
+                    .filter(|m| m.action == FilterAction::Log || m.action == FilterAction::Warn)
+                {
+                    filter_queries::log_moderation_action(
+                        &state.db,
+                        &filter_queries::LogActionParams {
+                            guild_id,
+                            user_id: auth_user.id,
+                            channel_id: existing_message.channel_id,
+                            action: m.action,
+                            category: Some(m.category),
+                            matched_pattern: &m.matched_pattern,
+                            original_content: &body.content,
+                            custom_pattern_id: m.custom_pattern_id,
+                        },
+                    )
+                    .await
+                    .ok();
                 }
             }
         }

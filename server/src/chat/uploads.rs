@@ -549,6 +549,27 @@ pub async fn upload_message_with_file(
                         "Your message was blocked by the server's content filter.".to_string(),
                     ));
                 }
+                // For "log" and "warn" actions, still log but allow the upload
+                for m in result.matches.iter().filter(|m| {
+                    m.action == crate::moderation::filter_types::FilterAction::Log
+                        || m.action == crate::moderation::filter_types::FilterAction::Warn
+                }) {
+                    crate::moderation::filter_queries::log_moderation_action(
+                        &state.db,
+                        &crate::moderation::filter_queries::LogActionParams {
+                            guild_id,
+                            user_id: auth_user.id,
+                            channel_id,
+                            action: m.action,
+                            category: Some(m.category),
+                            matched_pattern: &m.matched_pattern,
+                            original_content: &content,
+                            custom_pattern_id: m.custom_pattern_id,
+                        },
+                    )
+                    .await
+                    .ok();
+                }
             }
         }
     }
