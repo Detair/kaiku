@@ -59,6 +59,11 @@ pub fn run() {
             commands::auth::get_auth_info,
             commands::auth::register,
             commands::auth::oidc_authorize,
+            commands::auth::mfa_setup,
+            commands::auth::mfa_verify,
+            commands::auth::mfa_disable,
+            commands::auth::mfa_generate_backup_codes,
+            commands::auth::mfa_backup_code_count,
             // Chat commands
             commands::chat::get_channels,
             commands::chat::get_messages,

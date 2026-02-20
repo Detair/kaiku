@@ -156,6 +156,10 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/mfa/backup-codes",
             post(handlers::mfa_generate_backup_codes),
         )
+        .route(
+            "/mfa/backup-codes/count",
+            get(handlers::mfa_backup_code_count),
+        )
         .layer(axum_middleware::from_fn_with_state(state, require_auth));
 
     public_routes.merge(protected_routes)

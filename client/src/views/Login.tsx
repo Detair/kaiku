@@ -1,9 +1,9 @@
 import { Component, createSignal, createResource, Show, For } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
-import { login, loginWithOidc, authState, clearError } from "@/stores/auth";
+import { login, loginWithOidc, authState, clearError, setAuthState } from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
-import { Github, Chrome, KeyRound } from "lucide-solid";
+import { Github, Chrome, KeyRound, ShieldCheck } from "lucide-solid";
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -24,6 +24,7 @@ const Login: Component = () => {
   const [serverUrl, setServerUrl] = createSignal(defaultServerUrl);
   const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
+  const [mfaCode, setMfaCode] = createSignal("");
   const [localError, setLocalError] = createSignal("");
   const [oidcLoading, setOidcLoading] = createSignal<string | null>(null);
 
@@ -64,12 +65,35 @@ const Login: Component = () => {
       return;
     }
 
+    // If MFA is required and no code provided
+    if (authState.mfaRequired && !mfaCode().trim()) {
+      setLocalError("MFA code is required");
+      return;
+    }
+
     try {
-      await login(serverUrl(), username(), password());
+      await login(
+        serverUrl(),
+        username(),
+        password(),
+        authState.mfaRequired ? mfaCode() : undefined
+      );
       navigate("/", { replace: true });
     } catch (err) {
-      // Error is already set in auth store
+      // MFA_REQUIRED is handled by the store — just reset MFA code input
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === "MFA_REQUIRED") {
+        setMfaCode("");
+        // Error is not set — mfaRequired flag drives the UI
+      }
+      // Other errors are already set in auth store
     }
+  };
+
+  const handleBackToLogin = () => {
+    setAuthState({ mfaRequired: false, error: null });
+    setMfaCode("");
+    setPassword("");
   };
 
   const handleOidcLogin = async (provider: OidcProvider) => {
@@ -169,88 +193,39 @@ const Login: Component = () => {
             placeholder="https://chat.example.com"
             value={serverUrl()}
             onInput={(e) => handleServerUrlChange(e.currentTarget.value)}
-            disabled={authState.isLoading || !!oidcLoading()}
+            disabled={authState.isLoading || !!oidcLoading() || authState.mfaRequired}
             required
           />
         </div>
 
-        {/* SSO Buttons */}
-        <Show when={showOidc()}>
-          <div class="space-y-2 mb-4">
-            <For each={settings()!.oidc_providers}>
-              {(provider) => {
-                const Icon = providerIcon(provider.icon_hint);
-                return (
-                  <button
-                    type="button"
-                    class="w-full flex items-center justify-center gap-3 px-4 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-text-primary text-sm font-medium transition-colors"
-                    disabled={authState.isLoading || !!oidcLoading()}
-                    onClick={() => handleOidcLogin(provider)}
-                  >
-                    <Show
-                      when={oidcLoading() !== provider.slug}
-                      fallback={
-                        <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      }
-                    >
-                      <Icon class="w-4 h-4" />
-                    </Show>
-                    Continue with {provider.display_name}
-                  </button>
-                );
-              }}
-            </For>
-          </div>
-
-          <Show when={showLocalLogin()}>
-            <div class="relative my-5">
-              <div class="absolute inset-0 flex items-center">
-                <div class="w-full border-t border-white/10" />
-              </div>
-              <div class="relative flex justify-center text-xs">
-                <span class="bg-background-secondary px-3 text-text-muted">or</span>
-              </div>
-            </div>
-          </Show>
-        </Show>
-
-        {/* Local Login Form */}
-        <Show when={showLocalLogin()}>
+        {/* MFA Code Step */}
+        <Show when={authState.mfaRequired}>
           <form onSubmit={handleLogin} class="space-y-4">
+            <div class="flex items-center gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg">
+              <ShieldCheck class="w-5 h-5 text-accent-primary flex-shrink-0" />
+              <p class="text-sm text-text-secondary">
+                Two-factor authentication is enabled. Enter a code from your authenticator app or a backup code.
+              </p>
+            </div>
+
             <div>
               <label class="block text-sm font-medium text-text-secondary mb-1">
-                Username
+                MFA Code
               </label>
               <input
                 type="text"
-                class="input-field"
-                placeholder="Enter your username"
-                value={username()}
-                onInput={(e) => setUsername(e.currentTarget.value)}
+                class="input-field font-mono text-center text-lg tracking-widest"
+                placeholder="000000"
+                value={mfaCode()}
+                onInput={(e) => setMfaCode(e.currentTarget.value.replace(/\s/g, ""))}
                 disabled={authState.isLoading}
+                maxLength={20}
+                autofocus
                 required
               />
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
-                Password
-              </label>
-              <input
-                type="password"
-                class="input-field"
-                placeholder="Enter your password"
-                value={password()}
-                onInput={(e) => setPassword(e.currentTarget.value)}
-                disabled={authState.isLoading}
-                required
-              />
-            </div>
-
-            <div class="text-right">
-              <A href="/forgot-password" class="text-sm text-primary hover:underline">
-                Forgot password?
-              </A>
+              <p class="text-xs text-text-muted mt-1">
+                Enter a 6-digit TOTP code or an 8-character backup code.
+              </p>
             </div>
 
             <Show when={error()}>
@@ -269,29 +244,145 @@ const Login: Component = () => {
                 fallback={
                   <>
                     <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Logging in...
+                    Verifying...
                   </>
                 }
               >
-                Login
+                Verify
               </Show>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleBackToLogin}
+              class="w-full text-sm text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Back to login
             </button>
           </form>
         </Show>
 
-        {/* Error display when no local login form */}
-        <Show when={!showLocalLogin() && error()}>
-          <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
-            {error()}
-          </div>
-        </Show>
+        {/* Normal Login Flow (hidden during MFA) */}
+        <Show when={!authState.mfaRequired}>
+          {/* SSO Buttons */}
+          <Show when={showOidc()}>
+            <div class="space-y-2 mb-4">
+              <For each={settings()!.oidc_providers}>
+                {(provider) => {
+                  const Icon = providerIcon(provider.icon_hint);
+                  return (
+                    <button
+                      type="button"
+                      class="w-full flex items-center justify-center gap-3 px-4 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-text-primary text-sm font-medium transition-colors"
+                      disabled={authState.isLoading || !!oidcLoading()}
+                      onClick={() => handleOidcLogin(provider)}
+                    >
+                      <Show
+                        when={oidcLoading() !== provider.slug}
+                        fallback={
+                          <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        }
+                      >
+                        <Icon class="w-4 h-4" />
+                      </Show>
+                      Continue with {provider.display_name}
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
 
-        <p class="text-center text-sm text-text-secondary mt-4">
-          Don't have an account?{" "}
-          <A href="/register" class="text-primary hover:underline">
-            Register
-          </A>
-        </p>
+            <Show when={showLocalLogin()}>
+              <div class="relative my-5">
+                <div class="absolute inset-0 flex items-center">
+                  <div class="w-full border-t border-white/10" />
+                </div>
+                <div class="relative flex justify-center text-xs">
+                  <span class="bg-background-secondary px-3 text-text-muted">or</span>
+                </div>
+              </div>
+            </Show>
+          </Show>
+
+          {/* Local Login Form */}
+          <Show when={showLocalLogin()}>
+            <form onSubmit={handleLogin} class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-text-secondary mb-1">
+                  Username
+                </label>
+                <input
+                  type="text"
+                  class="input-field"
+                  placeholder="Enter your username"
+                  value={username()}
+                  onInput={(e) => setUsername(e.currentTarget.value)}
+                  disabled={authState.isLoading}
+                  required
+                />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-text-secondary mb-1">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  class="input-field"
+                  placeholder="Enter your password"
+                  value={password()}
+                  onInput={(e) => setPassword(e.currentTarget.value)}
+                  disabled={authState.isLoading}
+                  required
+                />
+              </div>
+
+              <div class="text-right">
+                <A href="/forgot-password" class="text-sm text-primary hover:underline">
+                  Forgot password?
+                </A>
+              </div>
+
+              <Show when={error()}>
+                <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+                  {error()}
+                </div>
+              </Show>
+
+              <button
+                type="submit"
+                class="btn-primary w-full flex items-center justify-center gap-2"
+                disabled={authState.isLoading}
+              >
+                <Show
+                  when={!authState.isLoading}
+                  fallback={
+                    <>
+                      <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Logging in...
+                    </>
+                  }
+                >
+                  Login
+                </Show>
+              </button>
+            </form>
+          </Show>
+
+          {/* Error display when no local login form */}
+          <Show when={!showLocalLogin() && error()}>
+            <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+              {error()}
+            </div>
+          </Show>
+
+          <p class="text-center text-sm text-text-secondary mt-4">
+            Don't have an account?{" "}
+            <A href="/register" class="text-primary hover:underline">
+              Register
+            </A>
+          </p>
+        </Show>
       </div>
     </div>
   );

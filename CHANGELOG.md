@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Admin notification via `admin_moderation_blocked` WebSocket event when messages are blocked
   - All config changes logged to the system audit log
 - MFA backup codes — users with MFA enabled can generate 10 one-time recovery codes (`POST /api/auth/mfa/backup-codes`) to regain account access if their authenticator app is unavailable; each code is single-use and hashed with Argon2id at rest
+- MFA client UI — full MFA setup wizard in Security Settings with QR code display, TOTP verification, and automatic backup code generation on first verify; MFA code input step during login when MFA is enabled; remaining backup code count display; regenerate backup codes with copy-all and download-as-txt buttons; disable MFA with code confirmation (#170)
+- MFA backup code count endpoint (`GET /auth/mfa/backup-codes/count`) — returns remaining and total backup code counts for the authenticated user
 - Virtualized guild member list, DM conversation sidebar, and search results using `@tanstack/solid-virtual` for smooth scrolling with large datasets
 - Toast usage convention documentation with type/duration table and deduplication guidance
 - Built-in `/ping` command for smoke testing — responds with "Pong!" and server-side latency in any guild channel without bot installation

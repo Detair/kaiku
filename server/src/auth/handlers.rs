@@ -15,7 +15,7 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::backup_codes::{find_matching_backup_code, generate_backup_codes};
+use super::backup_codes::{find_matching_backup_code, generate_backup_codes, BACKUP_CODE_COUNT};
 use super::error::{AuthError, AuthResult};
 use super::jwt::{generate_token_pair, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
@@ -24,12 +24,14 @@ use super::oidc::{append_collision_suffix, generate_username_from_claims, OidcFl
 use super::password::{hash_password, verify_password};
 use crate::api::AppState;
 use crate::db::{
-    self, create_password_reset_token, create_session, delete_mfa_backup_codes,
-    delete_session_by_token_hash, email_exists, find_session_by_token_hash, find_user_by_email,
-    find_user_by_external_id, find_user_by_id, find_user_by_username, find_valid_reset_token,
-    get_auth_methods_allowed, get_unused_mfa_backup_codes, invalidate_user_reset_tokens,
-    is_setup_complete, mark_mfa_backup_code_used, set_mfa_secret, store_mfa_backup_codes,
-    update_user_avatar, update_user_profile, username_exists,
+    self, count_all_mfa_backup_codes, count_unused_mfa_backup_codes,
+    create_password_reset_token, create_session, delete_mfa_backup_codes,
+    delete_session_by_token_hash, email_exists,
+    find_session_by_token_hash, find_user_by_email, find_user_by_external_id, find_user_by_id,
+    find_user_by_username, find_valid_reset_token, get_auth_methods_allowed,
+    get_unused_mfa_backup_codes, invalidate_user_reset_tokens, is_setup_complete,
+    mark_mfa_backup_code_used, set_mfa_secret, store_mfa_backup_codes, update_user_avatar,
+    update_user_profile, username_exists,
 };
 use crate::ratelimit::NormalizedIp;
 use crate::util::format_file_size;
@@ -129,6 +131,15 @@ pub struct MfaSetupResponse {
 pub struct MfaBackupCodesResponse {
     /// Plaintext backup codes (shown to user once; store them securely).
     pub codes: Vec<String>,
+}
+
+/// MFA backup code count response.
+#[derive(Debug, Serialize)]
+pub struct MfaBackupCodeCountResponse {
+    /// Number of remaining unused backup codes.
+    pub remaining: i64,
+    /// Total number of codes originally generated.
+    pub total: i64,
 }
 
 /// MFA verification request.
@@ -1019,6 +1030,13 @@ pub async fn mfa_verify(
     let secret_str = decrypt_mfa_secret(&encrypted_secret, &key_bytes)
         .map_err(|e| AuthError::Internal(format!("Failed to decrypt MFA secret: {e}")))?;
 
+    // Count all backup codes (used + unused) BEFORE verification to detect first-time setup.
+    // This must happen before any backup code is consumed, otherwise exhausting the last
+    // code would be indistinguishable from never having had codes.
+    let total_codes_before = count_all_mfa_backup_codes(&state.db, auth_user.id)
+        .await
+        .map_err(AuthError::Database)?;
+
     // Parse the secret
     let secret = Secret::Encoded(secret_str);
 
@@ -1061,6 +1079,31 @@ pub async fn mfa_verify(
         } else {
             return Err(AuthError::InvalidMfaCode);
         }
+    }
+
+    // Auto-generate backup codes only on first-time setup completion.
+    // We use total_codes_before (counted before verification) to distinguish
+    // "never had codes" from "used the last code in this request".
+    if total_codes_before == 0 {
+        // First-time verify after setup — auto-generate backup codes
+        let (plaintext_codes, hashes) = generate_backup_codes()
+            .map_err(|e| AuthError::Internal(format!("Failed to generate backup codes: {e}")))?;
+
+        store_mfa_backup_codes(&state.db, auth_user.id, &hashes)
+            .await
+            .map_err(AuthError::Database)?;
+
+        tracing::info!(
+            user_id = %auth_user.id,
+            count = plaintext_codes.len(),
+            "MFA backup codes auto-generated on first verify"
+        );
+
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "message": "MFA verification successful",
+            "backup_codes": plaintext_codes
+        })));
     }
 
     Ok(Json(serde_json::json!({
@@ -1148,6 +1191,34 @@ pub async fn mfa_generate_backup_codes(
 
     Ok(Json(MfaBackupCodesResponse {
         codes: plaintext_codes,
+    }))
+}
+
+/// Get remaining MFA backup code count.
+///
+/// GET /auth/mfa/backup-codes/count
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
+pub async fn mfa_backup_code_count(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> AuthResult<Json<MfaBackupCodeCountResponse>> {
+    // Verify MFA is enabled
+    let user = find_user_by_id(&state.db, auth_user.id)
+        .await
+        .map_err(AuthError::Database)?
+        .ok_or(AuthError::UserNotFound)?;
+
+    if user.mfa_secret.is_none() {
+        return Err(AuthError::Validation("MFA is not enabled".to_string()));
+    }
+
+    let remaining = count_unused_mfa_backup_codes(&state.db, auth_user.id)
+        .await
+        .map_err(AuthError::Database)?;
+
+    Ok(Json(MfaBackupCodeCountResponse {
+        remaining,
+        total: BACKUP_CODE_COUNT as i64,
     }))
 }
 

@@ -20,6 +20,7 @@ interface AuthState {
   isInitialized: boolean;
   error: string | null;
   setupRequired: boolean;
+  mfaRequired: boolean;
 }
 
 // Create the store
@@ -30,6 +31,7 @@ const [authState, setAuthState] = createStore<AuthState>({
   isInitialized: false,
   error: null,
   setupRequired: false,
+  mfaRequired: false,
 });
 
 // Derived state
@@ -116,22 +118,26 @@ export async function initAuth(): Promise<void> {
 
 /**
  * Login with username and password.
+ * If MFA is required, sets mfaRequired=true and throws — caller should
+ * show MFA input, then call login() again with the mfaCode.
  */
 export async function login(
   serverUrl: string,
   username: string,
-  password: string
+  password: string,
+  mfaCode?: string
 ): Promise<User> {
   setAuthState({ isLoading: true, error: null });
 
   try {
-    const result = await tauri.login(serverUrl, username, password);
+    const result = await tauri.login(serverUrl, username, password, mfaCode);
     setAuthState({
       user: result.user,
       serverUrl,
       isLoading: false,
       error: null,
       setupRequired: result.setup_required,
+      mfaRequired: false,
     });
 
     // Initialize WebSocket and presence after login
@@ -166,6 +172,13 @@ export async function login(
     return result.user;
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
+
+    // Detect MFA_REQUIRED
+    if (error === "MFA_REQUIRED") {
+      setAuthState({ isLoading: false, error: null, mfaRequired: true, serverUrl });
+      throw new Error("MFA_REQUIRED");
+    }
+
     setAuthState({ isLoading: false, error });
     throw new Error(error);
   }
