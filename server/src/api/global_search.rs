@@ -235,6 +235,7 @@ pub async fn search_all(
                 auth.id,
                 ctx.guild_owner_id,
                 ctx.everyone_permissions,
+                ctx.everyone_role_id,
                 &ctx.member_roles,
                 Some(&overrides),
             );

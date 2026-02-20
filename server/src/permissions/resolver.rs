@@ -18,6 +18,7 @@ pub fn compute_guild_permissions(
     user_id: Uuid,
     guild_owner_id: Uuid,
     everyone_permissions: GuildPermissions,
+    everyone_role_id: Option<Uuid>,
     user_roles: &[GuildRole],
     channel_overrides: Option<&[ChannelOverride]>,
 ) -> GuildPermissions {
@@ -42,6 +43,15 @@ pub fn compute_guild_permissions(
         let mut role_allow = GuildPermissions::empty();
         let mut role_deny = GuildPermissions::empty();
 
+        // Check @everyone role override first
+        if let Some(eid) = everyone_role_id {
+            if let Some(ovr) = overrides.iter().find(|o| o.role_id == eid) {
+                role_allow |= ovr.allow_permissions;
+                role_deny |= ovr.deny_permissions;
+            }
+        }
+
+        // Then check explicitly assigned role overrides
         for role in user_roles {
             if let Some(ovr) = overrides.iter().find(|o| o.role_id == role.id) {
                 role_allow |= ovr.allow_permissions;
@@ -197,8 +207,14 @@ mod tests {
     #[test]
     fn test_owner_has_all_permissions() {
         let owner_id = Uuid::new_v4();
-        let perms =
-            compute_guild_permissions(owner_id, owner_id, GuildPermissions::empty(), &[], None);
+        let perms = compute_guild_permissions(
+            owner_id,
+            owner_id,
+            GuildPermissions::empty(),
+            None,
+            &[],
+            None,
+        );
         assert_eq!(perms, GuildPermissions::all());
     }
 
@@ -208,7 +224,7 @@ mod tests {
         let owner_id = Uuid::new_v4();
         let everyone = GuildPermissions::SEND_MESSAGES | GuildPermissions::VOICE_CONNECT;
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[], None);
+        let perms = compute_guild_permissions(user_id, owner_id, everyone, None, &[], None);
 
         assert!(perms.has(GuildPermissions::SEND_MESSAGES));
         assert!(perms.has(GuildPermissions::VOICE_CONNECT));
@@ -233,7 +249,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[mod_role], None);
+        let perms = compute_guild_permissions(user_id, owner_id, everyone, None, &[mod_role], None);
 
         assert!(perms.has(GuildPermissions::SEND_MESSAGES)); // from everyone
         assert!(perms.has(GuildPermissions::MANAGE_MESSAGES)); // from role
@@ -273,6 +289,7 @@ mod tests {
             user_id,
             owner_id,
             everyone,
+            None,
             &[role],
             Some(&[override_entry]),
         );
@@ -370,7 +387,8 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[role1, role2], None);
+        let perms =
+            compute_guild_permissions(user_id, owner_id, everyone, None, &[role1, role2], None);
 
         // Should have permissions from both roles
         assert!(perms.has(GuildPermissions::SEND_MESSAGES));
@@ -484,6 +502,7 @@ mod tests {
             user_id,
             owner_id,
             everyone,
+            None,
             &[role1, role2],
             Some(&[override1, override2]),
         );
@@ -556,6 +575,7 @@ mod tests {
             user_id,
             owner_id,
             everyone,
+            None,
             &[allow_role.clone(), deny_role.clone()],
             Some(&overrides),
         );
@@ -565,6 +585,7 @@ mod tests {
             user_id,
             owner_id,
             everyone,
+            None,
             &[deny_role, allow_role],
             Some(&overrides),
         );
