@@ -457,6 +457,18 @@ pub async fn mark_mfa_backup_code_used(pool: &PgPool, code_id: Uuid) -> sqlx::Re
     Ok(())
 }
 
+/// Count unused MFA backup codes for a user.
+pub async fn count_unused_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM mfa_backup_codes WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db_error!("count_unused_mfa_backup_codes", user_id = %user_id))?;
+    Ok(count)
+}
+
 /// Delete all MFA backup codes for a user (e.g. when MFA is disabled).
 pub async fn delete_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
     let result = sqlx::query("DELETE FROM mfa_backup_codes WHERE user_id = $1")

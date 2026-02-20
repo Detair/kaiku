@@ -412,8 +412,16 @@ async function httpRequest<T>(
 
     try {
       const errorBody = await response.json();
+      // Detect MFA_REQUIRED from server
+      if (response.status === 403 && errorBody.error === "MFA_REQUIRED") {
+        throw new Error("MFA_REQUIRED");
+      }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
+      // Re-throw MFA_REQUIRED without wrapping
+      if (parseError instanceof Error && parseError.message === "MFA_REQUIRED") {
+        throw parseError;
+      }
       // Log parse failure but continue with text fallback
       console.warn(`[httpRequest] Failed to parse error response as JSON for ${path}:`, parseError);
 
@@ -443,12 +451,13 @@ async function httpRequest<T>(
 export async function login(
   serverUrl: string,
   username: string,
-  password: string
+  password: string,
+  mfaCode?: string
 ): Promise<AuthResult> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("login", {
-      request: { server_url: serverUrl, username, password },
+      request: { server_url: serverUrl, username, password, mfa_code: mfaCode ?? null },
     });
   }
 
@@ -456,10 +465,15 @@ export async function login(
   browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
 
+  const body: Record<string, unknown> = { username, password };
+  if (mfaCode) {
+    body.mfa_code = mfaCode;
+  }
+
   const response = await httpRequest<AuthResponse>(
     "POST",
     "/auth/login",
-    { username, password }
+    body
   );
 
   // Store all token data
@@ -658,6 +672,75 @@ export async function getCurrentUser(): Promise<User | null> {
 
     return null;
   }
+}
+
+// ============================================================================
+// MFA Commands
+// ============================================================================
+
+export interface MfaSetupResponse {
+  secret: string;
+  qr_code_url: string;
+}
+
+export interface MfaVerifyResponse {
+  success: boolean;
+  message: string;
+  backup_codes?: string[];
+}
+
+export interface MfaBackupCodesResponse {
+  codes: string[];
+}
+
+export interface MfaBackupCodeCountResponse {
+  remaining: number;
+  total: number;
+}
+
+/** Setup MFA — returns TOTP secret and QR code URL. */
+export async function mfaSetup(): Promise<MfaSetupResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("mfa_setup");
+  }
+  return httpRequest<MfaSetupResponse>("POST", "/auth/mfa/setup");
+}
+
+/** Verify MFA code (TOTP or backup). Returns backup codes on first verify. */
+export async function mfaVerify(code: string): Promise<MfaVerifyResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("mfa_verify", { code });
+  }
+  return httpRequest<MfaVerifyResponse>("POST", "/auth/mfa/verify", { code });
+}
+
+/** Disable MFA (requires valid TOTP or backup code). */
+export async function mfaDisable(code: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("mfa_disable", { code });
+  }
+  await httpRequest<unknown>("POST", "/auth/mfa/disable", { code });
+}
+
+/** Generate (or regenerate) MFA backup codes. */
+export async function mfaGenerateBackupCodes(): Promise<MfaBackupCodesResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("mfa_generate_backup_codes");
+  }
+  return httpRequest<MfaBackupCodesResponse>("POST", "/auth/mfa/backup-codes");
+}
+
+/** Get remaining MFA backup code count. */
+export async function mfaBackupCodeCount(): Promise<MfaBackupCodeCountResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("mfa_backup_code_count");
+  }
+  return httpRequest<MfaBackupCodeCountResponse>("GET", "/auth/mfa/backup-codes/count");
 }
 
 /**

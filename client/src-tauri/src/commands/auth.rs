@@ -14,6 +14,7 @@ pub struct LoginRequest {
     pub server_url: String,
     pub username: String,
     pub password: String,
+    pub mfa_code: Option<String>,
 }
 
 /// Register request from frontend.
@@ -75,13 +76,18 @@ pub async fn login(state: State<'_, AppState>, request: LoginRequest) -> Result<
     let server_url = request.server_url.trim_end_matches('/');
 
     // Send login request to server
+    let mut login_body = serde_json::json!({
+        "username": request.username,
+        "password": request.password
+    });
+    if let Some(ref code) = request.mfa_code {
+        login_body["mfa_code"] = serde_json::json!(code);
+    }
+
     let response = state
         .http
         .post(format!("{server_url}/auth/login"))
-        .json(&serde_json::json!({
-            "username": request.username,
-            "password": request.password
-        }))
+        .json(&login_body)
         .send()
         .await
         .map_err(|e| {
@@ -93,6 +99,16 @@ pub async fn login(state: State<'_, AppState>, request: LoginRequest) -> Result<
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         error!("Login failed with status {}: {}", status, body);
+
+        // Detect MFA_REQUIRED error
+        if status.as_u16() == 403 {
+            if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
+                if error_json["error"].as_str() == Some("MFA_REQUIRED") {
+                    return Err("MFA_REQUIRED".to_string());
+                }
+            }
+        }
+
         return Err(if status.as_u16() == 401 {
             "Invalid username or password".to_string()
         } else {
@@ -563,4 +579,182 @@ fn get_refresh_token(server_url: &str) -> Result<String, keyring::Error> {
 fn clear_refresh_token(server_url: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
     entry.delete_password()
+}
+
+// ============================================================================
+// MFA Commands
+// ============================================================================
+
+/// MFA setup response from server.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MfaSetupResponse {
+    pub secret: String,
+    pub qr_code_url: String,
+}
+
+/// MFA verify response from server (may include backup codes on first verify).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MfaVerifyResponse {
+    pub success: bool,
+    pub message: String,
+    pub backup_codes: Option<Vec<String>>,
+}
+
+/// MFA backup code count response from server.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MfaBackupCodeCountResponse {
+    pub remaining: i64,
+    pub total: i64,
+}
+
+/// MFA backup codes response from server.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MfaBackupCodesResponse {
+    pub codes: Vec<String>,
+}
+
+/// Helper to get authenticated server URL and access token.
+async fn get_auth_context(state: &AppState) -> Result<(String, String), String> {
+    let auth = state.auth.read().await;
+    let server_url = auth.server_url.as_ref().ok_or("Not authenticated")?.clone();
+    let access_token = auth
+        .access_token
+        .as_ref()
+        .ok_or("Not authenticated")?
+        .clone();
+    Ok((server_url, access_token))
+}
+
+/// Setup MFA (TOTP) — returns secret and QR code URL.
+#[command]
+pub async fn mfa_setup(state: State<'_, AppState>) -> Result<MfaSetupResponse, String> {
+    let (server_url, token) = get_auth_context(&state).await?;
+
+    let response = state
+        .http
+        .post(format!("{server_url}/auth/mfa/setup"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("MFA setup request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("MFA setup failed: {body}"));
+    }
+
+    response
+        .json::<MfaSetupResponse>()
+        .await
+        .map_err(|e| format!("Invalid MFA setup response: {e}"))
+}
+
+/// Verify MFA code (TOTP or backup code).
+#[command]
+pub async fn mfa_verify(
+    state: State<'_, AppState>,
+    code: String,
+) -> Result<MfaVerifyResponse, String> {
+    let (server_url, token) = get_auth_context(&state).await?;
+
+    let response = state
+        .http
+        .post(format!("{server_url}/auth/mfa/verify"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({ "code": code }))
+        .send()
+        .await
+        .map_err(|e| format!("MFA verify request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("MFA verification failed: {body}"));
+    }
+
+    response
+        .json::<MfaVerifyResponse>()
+        .await
+        .map_err(|e| format!("Invalid MFA verify response: {e}"))
+}
+
+/// Disable MFA (requires valid TOTP or backup code).
+#[command]
+pub async fn mfa_disable(state: State<'_, AppState>, code: String) -> Result<(), String> {
+    let (server_url, token) = get_auth_context(&state).await?;
+
+    let response = state
+        .http
+        .post(format!("{server_url}/auth/mfa/disable"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({ "code": code }))
+        .send()
+        .await
+        .map_err(|e| format!("MFA disable request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("MFA disable failed: {body}"));
+    }
+
+    // Update local auth state to reflect MFA disabled
+    {
+        let mut auth = state.auth.write().await;
+        if let Some(ref mut user) = auth.user {
+            user.mfa_enabled = false;
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate (or regenerate) MFA backup codes.
+#[command]
+pub async fn mfa_generate_backup_codes(
+    state: State<'_, AppState>,
+) -> Result<MfaBackupCodesResponse, String> {
+    let (server_url, token) = get_auth_context(&state).await?;
+
+    let response = state
+        .http
+        .post(format!("{server_url}/auth/mfa/backup-codes"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Backup codes request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Backup codes generation failed: {body}"));
+    }
+
+    response
+        .json::<MfaBackupCodesResponse>()
+        .await
+        .map_err(|e| format!("Invalid backup codes response: {e}"))
+}
+
+/// Get remaining MFA backup code count.
+#[command]
+pub async fn mfa_backup_code_count(
+    state: State<'_, AppState>,
+) -> Result<MfaBackupCodeCountResponse, String> {
+    let (server_url, token) = get_auth_context(&state).await?;
+
+    let response = state
+        .http
+        .get(format!("{server_url}/auth/mfa/backup-codes/count"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Backup code count request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Backup code count failed: {body}"));
+    }
+
+    response
+        .json::<MfaBackupCodeCountResponse>()
+        .await
+        .map_err(|e| format!("Invalid backup code count response: {e}"))
 }
