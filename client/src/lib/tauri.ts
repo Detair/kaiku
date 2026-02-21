@@ -1185,15 +1185,9 @@ export async function deleteGuild(guildId: string): Promise<void> {
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}`);
 }
 
-export async function joinGuild(guildId: string, inviteCode: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("join_guild", { guildId, inviteCode });
-  }
-
-  await httpRequest<void>("POST", `/api/guilds/${guildId}/join`, {
-    invite_code: inviteCode,
-  });
+export async function joinGuild(_guildId: string, inviteCode: string): Promise<void> {
+  // Guild join always requires a valid invite code — route through the invite endpoint
+  await joinViaInvite(inviteCode);
 }
 
 export async function leaveGuild(guildId: string): Promise<void> {

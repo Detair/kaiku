@@ -143,7 +143,7 @@ pub struct MemberResponse {
 /// POST /api/channels
 pub async fn create(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Json(body): Json<CreateChannelRequest>,
 ) -> Result<(StatusCode, Json<ChannelResponse>), ChannelError> {
     // Validate input
@@ -157,6 +157,18 @@ pub async fn create(
         "dm" => ChannelType::Dm,
         _ => return Err(ChannelError::Validation("Invalid channel type".to_string())),
     };
+
+    // For guild channels, verify membership and MANAGE_CHANNELS permission
+    if let Some(guild_id) = body.guild_id {
+        crate::permissions::require_guild_permission(
+            &state.db,
+            guild_id,
+            auth_user.id,
+            crate::permissions::GuildPermissions::MANAGE_CHANNELS,
+        )
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
+    }
 
     // Validate voice channel user limit
     if channel_type == ChannelType::Voice {
@@ -275,12 +287,13 @@ pub async fn delete(
 /// GET /api/channels/:id/members
 pub async fn list_members(
     State(state): State<AppState>,
+    auth_user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<MemberResponse>>, ChannelError> {
-    // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, id)
-        .await?
-        .ok_or(ChannelError::NotFound)?;
+    // Check channel access (VIEW_CHANNEL permission or DM participant)
+    crate::permissions::require_channel_access(&state.db, auth_user.id, id)
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
 
     let users = db::list_channel_members_with_users(&state.db, id).await?;
 
@@ -301,14 +314,18 @@ pub async fn list_members(
 /// POST /api/channels/:id/members
 pub async fn add_member(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<AddMemberRequest>,
 ) -> Result<StatusCode, ChannelError> {
-    // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, id)
-        .await?
-        .ok_or(ChannelError::NotFound)?;
+    // Check channel access and MANAGE_CHANNELS permission
+    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
+
+    if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
+        return Err(ChannelError::Forbidden);
+    }
 
     // Check user exists
     let _ = db::find_user_by_id(&state.db, body.user_id)
@@ -324,9 +341,18 @@ pub async fn add_member(
 /// DELETE /`api/channels/:id/members/:user_id`
 pub async fn remove_member(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Path((channel_id, user_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ChannelError> {
+    // Check channel access and MANAGE_CHANNELS permission
+    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
+
+    if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
+        return Err(ChannelError::Forbidden);
+    }
+
     let removed = db::remove_channel_member(&state.db, channel_id, user_id).await?;
 
     if removed {

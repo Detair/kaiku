@@ -26,7 +26,6 @@ pub fn router() -> Router<AppState> {
                 .patch(handlers::update_guild)
                 .delete(handlers::delete_guild),
         )
-        .route("/{id}/join", post(handlers::join_guild))
         .route("/{id}/leave", post(handlers::leave_guild))
         .route("/{id}/members", get(handlers::list_members))
         .route("/{id}/members/{user_id}", delete(handlers::kick_member))

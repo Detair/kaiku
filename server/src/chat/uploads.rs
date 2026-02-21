@@ -436,13 +436,21 @@ pub async fn upload_message_with_file(
     let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
 
     // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, channel_id)
+    let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(UploadError::Validation("Channel not found".to_string()))?;
 
-    // Note: We don't check channel membership here to be consistent with regular
-    // message creation (POST /api/channels/:id/messages), which only verifies
-    // the channel exists. Authorization is handled at the auth_user level.
+    // Check channel access (VIEW_CHANNEL permission or DM participant)
+    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
+        .await
+        .map_err(|_| UploadError::Forbidden)?;
+
+    // For guild channels, also check SEND_MESSAGES permission
+    if channel.guild_id.is_some()
+        && !ctx.has_permission(crate::permissions::GuildPermissions::SEND_MESSAGES)
+    {
+        return Err(UploadError::Forbidden);
+    }
 
     let mut file_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;

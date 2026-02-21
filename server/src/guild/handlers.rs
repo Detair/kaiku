@@ -11,7 +11,7 @@ use validator::Validate;
 
 use super::types::{
     CreateGuildRequest, Guild, GuildCommandInfo, GuildMember, GuildSettings, GuildWithMemberCount,
-    JoinGuildRequest, UpdateGuildRequest, UpdateGuildSettingsRequest,
+    UpdateGuildRequest, UpdateGuildSettingsRequest,
 };
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -351,77 +351,6 @@ pub(super) async fn initialize_channel_read_state(
     .execute(db)
     .await?;
     Ok(())
-}
-
-/// Join guild (placeholder - requires invite system)
-#[tracing::instrument(skip(state))]
-pub async fn join_guild(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(guild_id): Path<Uuid>,
-    Json(_): Json<JoinGuildRequest>,
-) -> Result<StatusCode, GuildError> {
-    // Verify guild exists
-    let guild_check: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-    if guild_check.is_none() {
-        return Err(GuildError::NotFound);
-    }
-
-    // Check if already a member
-    let is_member = db::is_guild_member(&state.db, guild_id, auth.id).await?;
-    if is_member {
-        return Ok(StatusCode::OK);
-    }
-
-    // Add as member
-    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
-        .bind(guild_id)
-        .bind(auth.id)
-        .execute(&state.db)
-        .await?;
-
-    // Initialize read state for all text channels so pre-existing messages don't show as unread
-    initialize_channel_read_state(&state.db, guild_id, auth.id).await?;
-
-    // Dispatch MemberJoined to bot ecosystem (non-blocking)
-    {
-        let db = state.db.clone();
-        let redis = state.redis.clone();
-        let gid = guild_id;
-        let uid = auth.id;
-        tokio::spawn(async move {
-            if let Ok(Some(user)) = crate::db::find_user_by_id(&db, uid).await {
-                crate::ws::bot_events::publish_member_joined(
-                    &db,
-                    &redis,
-                    gid,
-                    uid,
-                    &user.username,
-                    &user.display_name,
-                )
-                .await;
-                crate::webhooks::dispatch::dispatch_guild_event(
-                    &db,
-                    &redis,
-                    gid,
-                    crate::webhooks::events::BotEventType::MemberJoined,
-                    serde_json::json!({
-                        "guild_id": gid,
-                        "user_id": uid,
-                        "username": user.username,
-                        "display_name": user.display_name,
-                    }),
-                )
-                .await;
-            }
-        });
-    }
-
-    Ok(StatusCode::OK)
 }
 
 /// Leave guild
