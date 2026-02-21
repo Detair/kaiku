@@ -260,7 +260,7 @@ async fn main() -> Result<()> {
         .as_ref()
         .and_then(|hex_str| hex::decode(hex_str).ok())
         .filter(|k| k.len() == 32)
-        .map(|k| std::sync::Arc::new(k));
+        .map(std::sync::Arc::new);
     let webhook_worker_handle = tokio::spawn(vc_server::webhooks::delivery::spawn_delivery_worker(
         db_pool.clone(),
         redis.clone(),

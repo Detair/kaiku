@@ -45,8 +45,16 @@ fn get_encryption_key(state: &AppState) -> Result<Vec<u8>, WebhookError> {
             "Server encryption key not configured (MFA_ENCRYPTION_KEY)".to_string(),
         )
     })?;
-    hex::decode(key_hex)
-        .map_err(|_| WebhookError::Validation("Server encryption key misconfigured".to_string()))
+    let key = hex::decode(key_hex).map_err(|_| {
+        WebhookError::Validation("Server encryption key misconfigured".to_string())
+    })?;
+    if key.len() != 32 {
+        return Err(WebhookError::Validation(format!(
+            "Server encryption key must be 32 bytes, got {}",
+            key.len()
+        )));
+    }
+    Ok(key)
 }
 
 /// Validate a URL for webhook delivery (includes SSRF protection).
@@ -285,10 +293,12 @@ pub async fn test_webhook(
         return Err(WebhookError::NotFound.into());
     }
 
-    // Decrypt signing secret
-    let encryption_key = get_encryption_key(&state)?;
-    let signing_secret = decrypt_mfa_secret(&webhook.signing_secret, &encryption_key)
-        .map_err(|e| WebhookError::Validation(format!("Failed to decrypt signing secret: {e}")))?;
+    // Decrypt signing secret (fall back to plaintext for pre-encryption legacy webhooks)
+    let signing_secret = match get_encryption_key(&state) {
+        Ok(key) => decrypt_mfa_secret(&webhook.signing_secret, &key)
+            .unwrap_or_else(|_| webhook.signing_secret.clone()),
+        Err(_) => webhook.signing_secret.clone(),
+    };
 
     // SSRF check at delivery time (DNS rebinding protection)
     if let Err(e) = super::ssrf::verify_resolved_ip(&webhook.url).await {

@@ -245,18 +245,17 @@ async fn process_delivery(
         }
     };
 
-    // Decrypt signing secret if encryption key is available
+    // Decrypt signing secret. Try AES-256-GCM decryption first; if that fails,
+    // fall back to using the value as plaintext (pre-encryption legacy secrets).
     let signing_secret = if let Some(key) = encryption_key {
-        match decrypt_mfa_secret(&encrypted_secret, key) {
-            Ok(secret) => secret,
-            Err(e) => {
-                error!(webhook_id = %item.webhook_id, error = %e, "Failed to decrypt signing secret");
-                handle_retry(db, redis, item, &format!("Decryption error: {e}")).await;
-                return;
-            }
-        }
+        decrypt_mfa_secret(&encrypted_secret, key).unwrap_or_else(|_| {
+            warn!(
+                webhook_id = %item.webhook_id,
+                "Signing secret not encrypted, using plaintext (legacy webhook)"
+            );
+            encrypted_secret
+        })
     } else {
-        // No encryption key configured — use value as-is (backward compat)
         encrypted_secret
     };
 

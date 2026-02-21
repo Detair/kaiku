@@ -690,7 +690,10 @@ pub async fn get_our_curve25519_key(state: State<'_, AppState>) -> Result<String
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
     use vc_crypto::RecoveryKey;
+
+    use super::{derive_encryption_key, derive_with_argon2id, derive_with_sha256};
 
     #[test]
     fn test_recovery_key_chunks() {
@@ -774,5 +777,70 @@ mod tests {
             key2.to_formatted_string(),
             "Generated keys should be unique"
         );
+    }
+
+    #[test]
+    fn test_argon2id_deterministic() {
+        let salt = [42u8; 16];
+        let key1 = derive_with_argon2id("test_password", &salt);
+        let key2 = derive_with_argon2id("test_password", &salt);
+        assert_eq!(key1, key2);
+        assert_ne!(key1, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_argon2id_different_salts() {
+        let key1 = derive_with_argon2id("same_password", &[1u8; 16]);
+        let key2 = derive_with_argon2id("same_password", &[2u8; 16]);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_argon2id_different_inputs() {
+        let salt = [0u8; 16];
+        let key1 = derive_with_argon2id("password_a", &salt);
+        let key2 = derive_with_argon2id("password_b", &salt);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_sha256_deterministic() {
+        let key1 = derive_with_sha256("test_input");
+        let key2 = derive_with_sha256("test_input");
+        assert_eq!(key1, key2);
+        assert_eq!(key1.len(), 32);
+    }
+
+    #[test]
+    fn test_derive_new_installation_uses_argon2id() {
+        let dir = tempdir().unwrap();
+        let salt_path = dir.path().join("kdf_salt");
+
+        // No keys.db, no salt file → should create salt and use Argon2id
+        let key = derive_encryption_key("my_key", dir.path());
+        assert_eq!(key.len(), 32);
+
+        // Salt file should now exist
+        assert!(salt_path.exists());
+        let salt = std::fs::read(&salt_path).unwrap();
+        assert_eq!(salt.len(), 16);
+
+        // Same input should produce same key (deterministic with stored salt)
+        let key2 = derive_encryption_key("my_key", dir.path());
+        assert_eq!(key, key2);
+    }
+
+    #[test]
+    fn test_derive_legacy_falls_back_to_sha256() {
+        let dir = tempdir().unwrap();
+        // Create a fake keys.db but no salt file → legacy path
+        std::fs::write(dir.path().join("keys.db"), b"fake").unwrap();
+
+        let key = derive_encryption_key("my_key", dir.path());
+        let expected = derive_with_sha256("my_key");
+        assert_eq!(key, expected);
+
+        // Salt file should NOT have been created
+        assert!(!dir.path().join("kdf_salt").exists());
     }
 }
