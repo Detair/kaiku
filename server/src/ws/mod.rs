@@ -1472,6 +1472,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                     if let Some(payload) = message.value.as_str() {
                         if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                             // Filter events from blocked users
+                            let blocked = params.blocked_users.read().await;
                             let should_filter = match &event {
                                 ServerEvent::MessageNew { message, .. } => {
                                     message
@@ -1480,13 +1481,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                                         .and_then(|id| id.as_str())
                                         .and_then(|id| Uuid::parse_str(id).ok())
                                         .is_some_and(|author_id| {
-                                            // Block check must not fail open
-                                            // Use blocking_read since we're in a sync closure
-                                            // within async context
-                                            params
-                                                .blocked_users
-                                                .blocking_read()
-                                                .contains(&author_id)
+                                            blocked.contains(&author_id)
                                         })
                                 }
                                 ServerEvent::TypingStart { user_id: uid, .. }
@@ -1495,13 +1490,11 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                                 | ServerEvent::VoiceUserLeft { user_id: uid, .. }
                                 | ServerEvent::CallParticipantJoined { user_id: uid, .. }
                                 | ServerEvent::CallParticipantLeft { user_id: uid, .. } => {
-                                    // Block check must not fail open
-                                    // Use blocking_read since we're in a sync closure within async
-                                    // context
-                                    params.blocked_users.blocking_read().contains(uid)
+                                    blocked.contains(uid)
                                 }
                                 _ => false,
                             };
+                            drop(blocked);
 
                             if !should_filter && params.tx.send(event).await.is_err() {
                                 break;
@@ -1557,9 +1550,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                     let should_filter = match &event {
                         ServerEvent::PresenceUpdate { user_id: uid, .. }
                         | ServerEvent::RichPresenceUpdate { user_id: uid, .. } => {
-                            // Block check must not fail open
-                            // Use blocking_read since we're in a sync closure within async context
-                            params.blocked_users.blocking_read().contains(uid)
+                            params.blocked_users.read().await.contains(uid)
                         }
                         _ => false,
                     };
