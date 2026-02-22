@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - WebSocket pubsub handler no longer panics when filtering events from blocked users — `blocking_read()` was incorrectly used in an async context, crashing the server whenever a blocked user's event was processed (#212)
+- Redis failures in block checks and screen share limits are now logged with user context and failsafe policy — previously errors were silently swallowed, making Redis outages invisible in call, DM, message, and friend request flows (#213)
 - Admin dashboard now correctly shows whether the current session is elevated — previously `is_elevated` was always reported as `false` regardless of actual elevation state (TD-17)
 - Revealed spoilers now stay revealed when scrolling away and back in the message list — previously clicking `||spoiler||` text to reveal it would reset when the message re-rendered (TD-22)
 - E2EE key backups now include the actual identity keys and prekeys — previously the encrypted backup contained only a timestamp placeholder, making it impossible to restore E2EE keys from a backup
