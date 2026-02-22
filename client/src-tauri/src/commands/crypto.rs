@@ -158,6 +158,33 @@ pub struct E2EEContentOutput {
     pub recipients: HashMap<String, HashMap<String, EncryptedMessageOutput>>,
 }
 
+/// Maximum length for encryption key / passphrase input (1 KB).
+/// Argon2id processes the entire input, so unbounded strings cause CPU stalls.
+const MAX_ENCRYPTION_KEY_LEN: usize = 1_024;
+
+/// Maximum length for plaintext messages (100 KB, consistent with pages.rs).
+const MAX_PLAINTEXT_LEN: usize = 102_400;
+
+/// Maximum length for backup data (10 MB).
+const MAX_BACKUP_DATA_LEN: usize = 10 * 1024 * 1024;
+
+/// Maximum length for base64-encoded ciphertext (200 KB).
+/// Base64 expands data ~33%, so this covers ~150 KB of raw ciphertext.
+const MAX_CIPHERTEXT_LEN: usize = 204_800;
+
+/// Maximum length for base64-encoded sender key (256 bytes).
+const MAX_SENDER_KEY_LEN: usize = 256;
+
+/// Maximum length for recovery key input (256 bytes).
+/// A Base58-encoded recovery key is ~44 chars plus optional whitespace.
+const MAX_RECOVERY_KEY_LEN: usize = 256;
+
+/// Maximum number of recipients for a single encrypt operation.
+const MAX_RECIPIENTS: usize = 1_000;
+
+/// Maximum number of prekeys to generate in one call.
+const MAX_PREKEY_COUNT: usize = 100;
+
 /// Salt file name stored alongside the E2EE database.
 const SALT_FILE: &str = "kdf_salt";
 
@@ -324,6 +351,19 @@ pub async fn create_backup(
     recovery_key: String,
     backup_data: String,
 ) -> Result<(), String> {
+    if recovery_key.len() > MAX_RECOVERY_KEY_LEN {
+        return Err(format!(
+            "Recovery key exceeds maximum length of {} bytes",
+            MAX_RECOVERY_KEY_LEN
+        ));
+    }
+    if backup_data.len() > MAX_BACKUP_DATA_LEN {
+        return Err(format!(
+            "Backup data exceeds maximum size of {} MB",
+            MAX_BACKUP_DATA_LEN / (1024 * 1024)
+        ));
+    }
+
     info!("Creating encrypted backup");
 
     // Parse recovery key (handles both formatted and raw Base58)
@@ -374,6 +414,13 @@ pub async fn restore_backup(
     state: State<'_, AppState>,
     recovery_key: String,
 ) -> Result<String, String> {
+    if recovery_key.len() > MAX_RECOVERY_KEY_LEN {
+        return Err(format!(
+            "Recovery key exceeds maximum length of {} bytes",
+            MAX_RECOVERY_KEY_LEN
+        ));
+    }
+
     info!("Restoring backup from server");
 
     // Parse recovery key (handles both formatted and raw Base58)
@@ -481,6 +528,13 @@ pub async fn init_e2ee(
     state: State<'_, AppState>,
     encryption_key: String,
 ) -> Result<InitE2EEResponse, String> {
+    if encryption_key.len() > MAX_ENCRYPTION_KEY_LEN {
+        return Err(format!(
+            "Encryption key exceeds maximum length of {} bytes",
+            MAX_ENCRYPTION_KEY_LEN
+        ));
+    }
+
     info!("Initializing E2EE");
 
     // Get user_id from auth state
@@ -547,6 +601,16 @@ pub async fn encrypt_message(
     plaintext: String,
     recipients: Vec<ClaimedPrekeyInput>,
 ) -> Result<E2EEContentOutput, String> {
+    if plaintext.len() > MAX_PLAINTEXT_LEN {
+        return Err(format!(
+            "Plaintext exceeds maximum size of {} KB",
+            MAX_PLAINTEXT_LEN / 1024
+        ));
+    }
+    if recipients.len() > MAX_RECIPIENTS {
+        return Err(format!("Too many recipients (max {})", MAX_RECIPIENTS));
+    }
+
     let crypto = state.crypto.lock().await;
     let manager = crypto.as_ref().ok_or("E2EE not initialized")?;
 
@@ -608,6 +672,19 @@ pub async fn decrypt_message(
     message_type: u8,
     ciphertext: String,
 ) -> Result<String, String> {
+    if sender_key.len() > MAX_SENDER_KEY_LEN {
+        return Err(format!(
+            "Sender key exceeds maximum length of {} bytes",
+            MAX_SENDER_KEY_LEN
+        ));
+    }
+    if ciphertext.len() > MAX_CIPHERTEXT_LEN {
+        return Err(format!(
+            "Ciphertext exceeds maximum size of {} KB",
+            MAX_CIPHERTEXT_LEN / 1024
+        ));
+    }
+
     let crypto = state.crypto.lock().await;
     let manager = crypto.as_ref().ok_or("E2EE not initialized")?;
 
@@ -652,6 +729,13 @@ pub async fn generate_prekeys(
     state: State<'_, AppState>,
     count: usize,
 ) -> Result<Vec<PrekeyData>, String> {
+    if count > MAX_PREKEY_COUNT {
+        return Err(format!(
+            "Prekey count exceeds maximum of {}",
+            MAX_PREKEY_COUNT
+        ));
+    }
+
     let crypto = state.crypto.lock().await;
     let manager = crypto.as_ref().ok_or("E2EE not initialized")?;
 
