@@ -365,7 +365,7 @@ pub async fn delete_platform_page(
     tag = "pages",
     request_body = ReorderRequest,
     responses(
-        (status = 200, description = "Pages reordered"),
+        (status = 204, description = "Pages reordered"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -760,7 +760,7 @@ pub async fn delete_guild_page(
     tag = "pages",
     params(("id" = Uuid, Path, description = "Guild ID")),
     request_body = ReorderRequest,
-    responses((status = 200, description = "Guild pages reordered")),
+    responses((status = 204, description = "Guild pages reordered")),
     security(("bearer_auth" = []))
 )]
 pub async fn reorder_guild_pages(
@@ -796,7 +796,7 @@ pub async fn reorder_guild_pages(
     tag = "pages",
     params(("id" = Uuid, Path, description = "Page ID")),
     responses(
-        (status = 200, description = "Page accepted"),
+        (status = 204, description = "Page accepted"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -845,7 +845,7 @@ pub async fn accept_page(
         ("id" = Uuid, Path, description = "Guild ID"),
         ("page_id" = Uuid, Path, description = "Page ID")
     ),
-    responses((status = 200, description = "Guild page accepted")),
+    responses((status = 204, description = "Guild page accepted")),
     security(("bearer_auth" = []))
 )]
 pub async fn accept_guild_page(

@@ -18,6 +18,7 @@ use crate::ws::{broadcast_admin_event, ServerEvent};
     get,
     path = "/api/admin/reports",
     tag = "moderation",
+    params(ListReportsQuery),
     responses((status = 200, body = PaginatedReports)),
     security(("bearer_auth" = []))
 )]

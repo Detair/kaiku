@@ -1844,7 +1844,7 @@ pub struct UpdateAuthSettingsRequest {
     get,
     path = "/api/admin/auth-settings",
     tag = "admin",
-    responses((status = 200, description = "Auth settings")),
+    responses((status = 200, description = "Auth settings", body = AuthSettingsResponse)),
     security(("bearer_auth" = []))
 )]
 pub async fn get_auth_settings(
@@ -1963,7 +1963,7 @@ impl From<crate::db::OidcProviderRow> for OidcProviderResponse {
     get,
     path = "/api/admin/oidc-providers",
     tag = "admin",
-    responses((status = 200, description = "OIDC providers list")),
+    responses((status = 200, description = "OIDC providers list", body = Vec<OidcProviderResponse>)),
     security(("bearer_auth" = []))
 )]
 pub async fn list_oidc_providers(

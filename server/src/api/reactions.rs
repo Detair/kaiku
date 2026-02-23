@@ -102,6 +102,7 @@ impl IntoResponse for ReactionsError {
         ("channel_id" = Uuid, Path, description = "Channel ID"),
         ("message_id" = Uuid, Path, description = "Message ID"),
     ),
+    request_body = AddReactionRequest,
     responses(
         (status = 201, description = "Reaction added", body = ReactionResponse),
     ),

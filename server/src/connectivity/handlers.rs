@@ -53,7 +53,7 @@ impl IntoResponse for ConnectivityError {
 // ============================================================================
 
 /// Pagination query parameters.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct PaginationParams {
     /// Maximum number of items to return (default: 20, max: 100).
     #[serde(default = "default_limit")]
@@ -273,6 +273,7 @@ pub async fn get_summary(
     get,
     path = "/api/me/connection/sessions",
     tag = "connectivity",
+    params(PaginationParams),
     responses(
         (status = 200, description = "Active sessions", body = SessionListResponse),
     ),

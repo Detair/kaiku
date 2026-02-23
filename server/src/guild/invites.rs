@@ -8,7 +8,7 @@ use rand::Rng;
 use uuid::Uuid;
 
 use super::handlers::GuildError;
-use super::types::{CreateInviteRequest, GuildInvite, GuildWithMemberCount, InviteResponse};
+use super::types::{CreateInviteRequest, GuildInvite, InviteResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
@@ -204,7 +204,7 @@ pub async fn delete_invite(
     path = "/api/invites/{code}/join",
     tag = "invites",
     params(("code" = String, Path, description = "Invite code")),
-    responses((status = 200, body = GuildWithMemberCount)),
+    responses((status = 200, body = InviteResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]

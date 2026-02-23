@@ -68,7 +68,7 @@ pub struct ResolveReportRequest {
     pub resolution_note: Option<String>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListReportsQuery {
     pub status: Option<ReportStatus>,
     pub category: Option<ReportCategory>,
