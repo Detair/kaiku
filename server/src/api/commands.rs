@@ -170,6 +170,7 @@ const fn validate_command_description(desc: &str) -> Result<(), CommandError> {
     params(
         ("id" = Uuid, Path, description = "Application ID"),
     ),
+    request_body = RegisterCommandsRequest,
     responses(
         (status = 200, description = "Commands registered"),
     ),

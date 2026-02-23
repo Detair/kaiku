@@ -121,7 +121,7 @@ impl From<sqlx::Error> for GuildError {
     path = "/api/guilds",
     tag = "guilds",
     request_body = CreateGuildRequest,
-    responses((status = 200, body = GuildWithMemberCount)),
+    responses((status = 200, body = Guild)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -243,7 +243,7 @@ pub async fn list_guilds(
     path = "/api/guilds/{id}",
     tag = "guilds",
     params(("id" = Uuid, Path, description = "Guild ID")),
-    responses((status = 200, body = GuildWithMemberCount)),
+    responses((status = 200, body = Guild)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -276,7 +276,7 @@ pub async fn get_guild(
     tag = "guilds",
     params(("id" = Uuid, Path, description = "Guild ID")),
     request_body = UpdateGuildRequest,
-    responses((status = 200, body = GuildWithMemberCount)),
+    responses((status = 200, body = Guild)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -670,7 +670,7 @@ pub async fn list_channels(
     tag = "guilds",
     params(("id" = Uuid, Path, description = "Guild ID")),
     request_body = ReorderChannelsRequest,
-    responses((status = 200, description = "Channels reordered")),
+    responses((status = 204, description = "Channels reordered")),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state, body))]

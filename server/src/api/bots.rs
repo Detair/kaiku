@@ -514,6 +514,7 @@ pub struct UpdateIntentsRequest {
     params(
         ("id" = Uuid, Path, description = "Application ID"),
     ),
+    request_body = UpdateIntentsRequest,
     responses(
         (status = 200, description = "Gateway intents updated"),
     ),

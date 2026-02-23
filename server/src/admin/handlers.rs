@@ -42,7 +42,7 @@ use crate::ws::{broadcast_admin_event, ServerEvent};
 // ============================================================================
 
 /// Pagination query parameters with optional search.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct PaginationParams {
     /// Maximum number of items to return.
     #[serde(default = "default_limit")]
@@ -294,6 +294,7 @@ pub async fn get_admin_stats(
     get,
     path = "/api/admin/users",
     tag = "admin",
+    params(PaginationParams),
     responses((status = 200, body = PaginatedResponse<UserSummary>)),
     security(("bearer_auth" = []))
 )]
@@ -407,6 +408,7 @@ pub async fn list_users(
     get,
     path = "/api/admin/guilds",
     tag = "admin",
+    params(PaginationParams),
     responses((status = 200, body = PaginatedResponse<GuildSummary>)),
     security(("bearer_auth" = []))
 )]
@@ -971,7 +973,7 @@ pub async fn ban_user(
     tag = "admin",
     params(("id" = Uuid, Path, description = "User ID")),
     responses(
-        (status = 200, description = "User unbanned"),
+        (status = 200, description = "User unbanned", body = BanResponse),
         (status = 404, description = "User or ban not found"),
     ),
     security(("bearer_auth" = [])),
@@ -1126,7 +1128,7 @@ pub async fn suspend_guild(
     tag = "admin",
     params(("id" = Uuid, Path, description = "Guild ID")),
     responses(
-        (status = 200, description = "Guild unsuspended"),
+        (status = 200, description = "Guild unsuspended", body = SuspendResponse),
         (status = 404, description = "Guild not found or not suspended"),
     ),
     security(("bearer_auth" = [])),

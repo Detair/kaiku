@@ -44,6 +44,7 @@ impl IntoResponse for ScreenShareError {
     path = "/api/channels/{id}/screenshare/check",
     tag = "screenshare",
     params(("id" = Uuid, Path, description = "Channel ID")),
+    request_body = ScreenShareStartRequest,
     responses(
         (status = 200, description = "Screen share availability check"),
     ),
@@ -130,6 +131,7 @@ pub async fn check(
     path = "/api/channels/{id}/screenshare/start",
     tag = "screenshare",
     params(("id" = Uuid, Path, description = "Channel ID")),
+    request_body = ScreenShareStartRequest,
     responses(
         (status = 200, description = "Screen share started"),
     ),

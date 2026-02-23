@@ -272,8 +272,9 @@ pub async fn get_config(
     post,
     path = "/api/setup/complete",
     tag = "setup",
+    request_body = CompleteSetupRequest,
     responses(
-        (status = 200, description = "Setup completed"),
+        (status = 204, description = "Setup completed"),
     ),
     security(("bearer_auth" = [])),
 )]

@@ -375,7 +375,7 @@ pub async fn remove_favorite(
     tag = "favorites",
     request_body = ReorderChannelsRequest,
     responses(
-        (status = 200, description = "Favorites reordered"),
+        (status = 204, description = "Favorites reordered"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -434,7 +434,7 @@ pub async fn reorder_channels(
     tag = "favorites",
     request_body = ReorderGuildsRequest,
     responses(
-        (status = 200, description = "Guild favorites reordered"),
+        (status = 204, description = "Guild favorites reordered"),
     ),
     security(("bearer_auth" = [])),
 )]

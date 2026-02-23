@@ -256,7 +256,7 @@ pub async fn set_override(
         ("role_id" = Uuid, Path, description = "Role ID"),
     ),
     responses(
-        (status = 204, description = "Override deleted"),
+        (status = 200, description = "Override deleted"),
     ),
     security(("bearer_auth" = [])),
 )]

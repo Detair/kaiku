@@ -177,7 +177,8 @@ pub async fn list_categories(
     path = "/api/guilds/{id}/categories",
     tag = "categories",
     params(("id" = Uuid, Path, description = "Guild ID")),
-    responses((status = 201, description = "Category created")),
+    request_body = CreateCategoryRequest,
+    responses((status = 201, description = "Category created", body = Category)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state, body))]
@@ -266,7 +267,8 @@ pub async fn create_category(
         ("id" = Uuid, Path, description = "Guild ID"),
         ("category_id" = Uuid, Path, description = "Category ID")
     ),
-    responses((status = 200, description = "Category updated")),
+    request_body = UpdateCategoryRequest,
+    responses((status = 200, description = "Category updated", body = Category)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state, body))]
@@ -420,7 +422,8 @@ pub async fn delete_category(
     path = "/api/guilds/{id}/categories/reorder",
     tag = "categories",
     params(("id" = Uuid, Path, description = "Guild ID")),
-    responses((status = 200, description = "Categories reordered")),
+    request_body = ReorderRequest,
+    responses((status = 204, description = "Categories reordered")),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state, body))]

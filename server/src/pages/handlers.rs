@@ -500,7 +500,8 @@ pub async fn get_guild_page(
     path = "/api/guilds/{id}/pages",
     tag = "pages",
     params(("id" = Uuid, Path, description = "Guild ID")),
-    responses((status = 200, description = "Guild page created")),
+    request_body = CreatePageRequest,
+    responses((status = 200, description = "Guild page created", body = Page)),
     security(("bearer_auth" = []))
 )]
 pub async fn create_guild_page(
@@ -600,7 +601,8 @@ pub async fn create_guild_page(
         ("id" = Uuid, Path, description = "Guild ID"),
         ("page_id" = Uuid, Path, description = "Page ID")
     ),
-    responses((status = 200, description = "Guild page updated")),
+    request_body = UpdatePageRequest,
+    responses((status = 200, description = "Guild page updated", body = Page)),
     security(("bearer_auth" = []))
 )]
 pub async fn update_guild_page(
@@ -757,6 +759,7 @@ pub async fn delete_guild_page(
     path = "/api/guilds/{id}/pages/reorder",
     tag = "pages",
     params(("id" = Uuid, Path, description = "Guild ID")),
+    request_body = ReorderRequest,
     responses((status = 200, description = "Guild pages reordered")),
     security(("bearer_auth" = []))
 )]

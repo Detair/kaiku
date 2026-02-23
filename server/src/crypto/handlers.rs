@@ -128,6 +128,7 @@ const MAX_DEVICES_PER_USER: i64 = 10;
     post,
     path = "/api/keys/upload",
     tag = "crypto",
+    request_body = UploadKeysRequest,
     responses(
         (status = 200, description = "Keys uploaded"),
     ),
@@ -346,6 +347,7 @@ pub async fn get_own_devices(
     path = "/api/users/{user_id}/keys/claim",
     tag = "crypto",
     params(("user_id" = Uuid, Path, description = "User ID")),
+    request_body = ClaimPrekeyRequest,
     responses(
         (status = 200, description = "Claimed prekey"),
     ),
@@ -466,6 +468,7 @@ pub struct BackupResponse {
     post,
     path = "/api/keys/backup",
     tag = "crypto",
+    request_body = UploadBackupRequest,
     responses(
         (status = 200, description = "Backup uploaded"),
     ),

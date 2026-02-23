@@ -18,7 +18,7 @@ use crate::ws::{broadcast_admin_event, ServerEvent};
     tag = "moderation",
     request_body = CreateReportRequest,
     responses(
-        (status = 201, description = "Report created", body = ReportResponse),
+        (status = 200, description = "Report created", body = ReportResponse),
         (status = 400, description = "Validation error"),
         (status = 409, description = "Duplicate report"),
         (status = 429, description = "Rate limited (max 5 reports per hour)"),

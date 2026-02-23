@@ -276,6 +276,7 @@ pub async fn create_pin(
     params(
         ("id" = Uuid, Path, description = "Pin ID"),
     ),
+    request_body = UpdatePinRequest,
     responses(
         (status = 200, description = "Pin updated"),
     ),
@@ -373,7 +374,7 @@ pub async fn delete_pin(
     tag = "pins",
     request_body = ReorderPinsRequest,
     responses(
-        (status = 200, description = "Pins reordered"),
+        (status = 204, description = "Pins reordered"),
     ),
     security(("bearer_auth" = [])),
 )]
