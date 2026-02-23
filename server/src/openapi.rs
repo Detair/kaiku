@@ -434,6 +434,10 @@ use utoipa::{Modify, OpenApi};
         crate::admin::handlers::PaginatedResponse<crate::admin::handlers::UserSummary>,
         crate::admin::handlers::PaginatedResponse<crate::admin::handlers::GuildSummary>,
         crate::admin::handlers::PaginatedResponse<crate::admin::handlers::AuditLogEntryResponse>,
+        crate::admin::handlers::DeleteResponse,
+        crate::admin::handlers::AnnouncementResponse,
+        crate::admin::handlers::AuthSettingsResponse,
+        crate::admin::handlers::OidcProviderResponse,
         // Social
         crate::social::types::FriendshipStatus,
         crate::social::types::Friendship,

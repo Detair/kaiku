@@ -859,14 +859,14 @@ pub struct SuspendResponse {
 }
 
 /// Delete response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DeleteResponse {
     pub deleted: bool,
     pub id: Uuid,
 }
 
 /// Announcement response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AnnouncementResponse {
     pub id: Uuid,
     pub title: String,
@@ -971,7 +971,7 @@ pub async fn ban_user(
     params(("id" = Uuid, Path, description = "User ID")),
     responses(
         (status = 200, description = "User unbanned"),
-        (status = 404, description = "User not found"),
+        (status = 404, description = "User or ban not found"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -1126,7 +1126,7 @@ pub async fn suspend_guild(
     params(("id" = Uuid, Path, description = "Guild ID")),
     responses(
         (status = 200, description = "Guild unsuspended"),
-        (status = 404, description = "Guild not found"),
+        (status = 404, description = "Guild not found or not suspended"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -1202,7 +1202,7 @@ pub async fn unsuspend_guild(
     path = "/api/admin/announcements",
     tag = "admin",
     request_body = CreateAnnouncementRequest,
-    responses((status = 201, description = "Announcement created")),
+    responses((status = 200, description = "Announcement created", body = AnnouncementResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -1821,7 +1821,7 @@ pub async fn bulk_suspend_guilds(
 // ============================================================================
 
 /// Auth settings response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AuthSettingsResponse {
     pub auth_methods: crate::db::AuthMethodsConfig,
     pub registration_policy: String,
@@ -1869,7 +1869,8 @@ pub async fn get_auth_settings(
     put,
     path = "/api/admin/auth-settings",
     tag = "admin",
-    responses((status = 200, description = "Auth settings updated")),
+    request_body = UpdateAuthSettingsRequest,
+    responses((status = 200, description = "Auth settings updated", body = AuthSettingsResponse)),
     security(("bearer_auth" = []))
 )]
 pub async fn update_auth_settings(
@@ -1913,7 +1914,7 @@ pub async fn update_auth_settings(
 }
 
 /// OIDC provider response (secrets masked).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct OidcProviderResponse {
     pub id: Uuid,
     pub slug: String,
@@ -1994,7 +1995,8 @@ pub struct CreateOidcProviderRequest {
     post,
     path = "/api/admin/oidc-providers",
     tag = "admin",
-    responses((status = 201, description = "OIDC provider created")),
+    request_body = CreateOidcProviderRequest,
+    responses((status = 200, description = "OIDC provider created", body = OidcProviderResponse)),
     security(("bearer_auth" = []))
 )]
 pub async fn create_oidc_provider(
@@ -2154,7 +2156,7 @@ pub async fn update_oidc_provider(
     path = "/api/admin/oidc-providers/{id}",
     tag = "admin",
     params(("id" = Uuid, Path, description = "Provider ID")),
-    responses((status = 204, description = "OIDC provider deleted")),
+    responses((status = 200, description = "OIDC provider deleted")),
     security(("bearer_auth" = []))
 )]
 pub async fn delete_oidc_provider(
@@ -2190,7 +2192,7 @@ pub async fn delete_oidc_provider(
     path = "/api/admin/users/{id}",
     tag = "admin",
     params(("id" = Uuid, Path, description = "User ID")),
-    responses((status = 204, description = "User deleted")),
+    responses((status = 200, description = "User deleted", body = DeleteResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -2267,7 +2269,7 @@ pub async fn delete_user(
     path = "/api/admin/guilds/{id}",
     tag = "admin",
     params(("id" = Uuid, Path, description = "Guild ID")),
-    responses((status = 204, description = "Guild deleted")),
+    responses((status = 200, description = "Guild deleted", body = DeleteResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
