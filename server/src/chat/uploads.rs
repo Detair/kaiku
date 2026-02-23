@@ -133,7 +133,7 @@ impl IntoResponse for UploadError {
 // ============================================================================
 
 /// Response for successful file upload.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UploadedFile {
     /// Attachment ID.
     pub id: Uuid,
@@ -273,7 +273,7 @@ fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, Uplo
     tag = "uploads",
     request_body(content = Vec<u8>, content_type = "multipart/form-data"),
     responses(
-        (status = 201, body = inline(crate::db::FileAttachment)),
+        (status = 201, body = UploadedFile),
     ),
     security(("bearer_auth" = [])),
 )]

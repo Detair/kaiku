@@ -81,7 +81,7 @@ pub async fn get_platform_page(
     tag = "pages",
     request_body = CreatePageRequest,
     responses(
-        (status = 201, description = "Platform page created", body = Page),
+        (status = 200, description = "Platform page created", body = Page),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -500,7 +500,7 @@ pub async fn get_guild_page(
     path = "/api/guilds/{id}/pages",
     tag = "pages",
     params(("id" = Uuid, Path, description = "Guild ID")),
-    responses((status = 201, description = "Guild page created")),
+    responses((status = 200, description = "Guild page created")),
     security(("bearer_auth" = []))
 )]
 pub async fn create_guild_page(

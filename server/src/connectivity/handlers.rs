@@ -340,7 +340,7 @@ pub async fn get_sessions(
     get,
     path = "/api/me/connection/sessions/{session_id}",
     tag = "connectivity",
-    params(("session_id" = String, Path, description = "Session ID")),
+    params(("session_id" = Uuid, Path, description = "Session ID")),
     responses(
         (status = 200, description = "Session detail", body = SessionDetail),
     ),

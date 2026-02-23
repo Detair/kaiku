@@ -219,7 +219,7 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
     tag = "auth",
     request_body = RegisterRequest,
     responses(
-        (status = 201, description = "User registered successfully", body = AuthResponse),
+        (status = 200, description = "User registered successfully", body = AuthResponse),
         (status = 400, description = "Bad request"),
         (status = 409, description = "Username or email already taken"),
     ),

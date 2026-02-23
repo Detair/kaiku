@@ -206,8 +206,9 @@ pub async fn list_pins(
     post,
     path = "/api/me/pins",
     tag = "pins",
+    request_body = CreatePinRequest,
     responses(
-        (status = 201, description = "Pin created"),
+        (status = 200, description = "Pin created", body = Pin),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -370,6 +371,7 @@ pub async fn delete_pin(
     put,
     path = "/api/me/pins/reorder",
     tag = "pins",
+    request_body = ReorderPinsRequest,
     responses(
         (status = 200, description = "Pins reordered"),
     ),

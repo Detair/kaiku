@@ -84,7 +84,7 @@ pub async fn list_invites(
     tag = "invites",
     params(("id" = Uuid, Path, description = "Guild ID")),
     request_body = CreateInviteRequest,
-    responses((status = 201, body = InviteResponse)),
+    responses((status = 200, body = InviteResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]

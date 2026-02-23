@@ -103,7 +103,7 @@ impl IntoResponse for ReactionsError {
         ("message_id" = Uuid, Path, description = "Message ID"),
     ),
     responses(
-        (status = 200, description = "Reaction added"),
+        (status = 201, description = "Reaction added", body = ReactionResponse),
     ),
     security(("bearer_auth" = [])),
 )]

@@ -17,7 +17,7 @@ use crate::ws::{broadcast_to_user, ServerEvent};
     tag = "social",
     request_body = SendFriendRequestBody,
     responses(
-        (status = 201, description = "Friend request sent"),
+        (status = 200, description = "Friend request sent"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -328,7 +328,7 @@ pub async fn accept_friend_request(
     tag = "social",
     params(("id" = Uuid, Path, description = "Friendship ID")),
     responses(
-        (status = 204, description = "Friend request rejected"),
+        (status = 200, description = "Friend request rejected"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -472,7 +472,7 @@ pub async fn block_user(
     tag = "social",
     params(("id" = Uuid, Path, description = "User ID")),
     responses(
-        (status = 204, description = "User unblocked"),
+        (status = 200, description = "User unblocked"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -519,7 +519,7 @@ pub async fn unblock_user(
     tag = "social",
     params(("id" = Uuid, Path, description = "Friendship ID")),
     responses(
-        (status = 204, description = "Friend removed"),
+        (status = 200, description = "Friend removed"),
     ),
     security(("bearer_auth" = [])),
 )]

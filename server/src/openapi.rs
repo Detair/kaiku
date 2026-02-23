@@ -150,6 +150,7 @@ use utoipa::{Modify, OpenApi};
         crate::guild::categories::reorder_categories,
         // Emojis
         crate::guild::emojis::list_emojis,
+        crate::guild::emojis::get_emoji,
         crate::guild::emojis::create_emoji,
         crate::guild::emojis::update_emoji,
         crate::guild::emojis::delete_emoji,

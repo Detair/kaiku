@@ -176,7 +176,7 @@ pub async fn list_roles(
     tag = "roles",
     params(("id" = Uuid, Path, description = "Guild ID")),
     request_body = CreateRoleRequest,
-    responses((status = 201, body = RoleResponse)),
+    responses((status = 200, body = RoleResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state, body))]
@@ -392,7 +392,7 @@ pub async fn update_role(
         ("id" = Uuid, Path, description = "Guild ID"),
         ("role_id" = Uuid, Path, description = "Role ID")
     ),
-    responses((status = 204, description = "Role deleted")),
+    responses((status = 200, description = "Role deleted")),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -456,7 +456,7 @@ pub async fn delete_role(
         ("user_id" = Uuid, Path, description = "User ID"),
         ("role_id" = Uuid, Path, description = "Role ID")
     ),
-    responses((status = 201, description = "Role assigned")),
+    responses((status = 200, description = "Role assigned")),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -544,7 +544,7 @@ pub async fn assign_role(
         ("user_id" = Uuid, Path, description = "User ID"),
         ("role_id" = Uuid, Path, description = "Role ID")
     ),
-    responses((status = 204, description = "Role removed")),
+    responses((status = 200, description = "Role removed")),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]

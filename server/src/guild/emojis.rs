@@ -185,6 +185,17 @@ pub async fn list_emojis(
 /// Get specific emoji.
 ///
 /// `GET /api/guilds/{id}/emojis/{emoji_id}`
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/emojis/{emoji_id}",
+    tag = "emojis",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("emoji_id" = Uuid, Path, description = "Emoji ID")
+    ),
+    responses((status = 200, body = GuildEmoji)),
+    security(("bearer_auth" = []))
+)]
 pub async fn get_emoji(
     State(state): State<AppState>,
     Path((guild_id, emoji_id)): Path<(Uuid, Uuid)>,
@@ -220,7 +231,7 @@ pub async fn get_emoji(
     tag = "emojis",
     params(("id" = Uuid, Path, description = "Guild ID")),
     request_body = CreateEmojiRequest,
-    responses((status = 201, body = GuildEmoji)),
+    responses((status = 200, body = GuildEmoji)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state, auth_user, multipart))]

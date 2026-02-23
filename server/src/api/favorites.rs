@@ -229,7 +229,7 @@ pub async fn list_favorites(
         ("channel_id" = Uuid, Path, description = "Channel ID"),
     ),
     responses(
-        (status = 201, description = "Favorite added"),
+        (status = 200, description = "Favorite added", body = Favorite),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -373,6 +373,7 @@ pub async fn remove_favorite(
     put,
     path = "/api/me/favorites/reorder",
     tag = "favorites",
+    request_body = ReorderChannelsRequest,
     responses(
         (status = 200, description = "Favorites reordered"),
     ),
@@ -431,6 +432,7 @@ pub async fn reorder_channels(
     put,
     path = "/api/me/favorites/reorder-guilds",
     tag = "favorites",
+    request_body = ReorderGuildsRequest,
     responses(
         (status = 200, description = "Guild favorites reordered"),
     ),

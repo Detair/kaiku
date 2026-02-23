@@ -137,8 +137,9 @@ pub async fn get_preferences(
     put,
     path = "/api/me/preferences",
     tag = "preferences",
+    request_body = UpdatePreferencesRequest,
     responses(
-        (status = 200, description = "Preferences updated"),
+        (status = 200, description = "Preferences updated", body = PreferencesResponse),
     ),
     security(("bearer_auth" = [])),
 )]

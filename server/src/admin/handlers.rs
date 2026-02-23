@@ -60,7 +60,7 @@ fn default_limit() -> i64 {
 }
 
 /// Audit log query parameters.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct AuditLogParams {
     /// Maximum number of items to return.
     #[serde(default = "default_limit")]
@@ -593,6 +593,7 @@ async fn get_audit_log_filtered(
     get,
     path = "/api/admin/audit-log",
     tag = "admin",
+    params(AuditLogParams),
     responses((status = 200, body = PaginatedResponse<AuditLogEntryResponse>)),
     security(("bearer_auth" = []))
 )]
@@ -845,14 +846,14 @@ pub async fn de_elevate_session(
 // ============================================================================
 
 /// Global ban response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BanResponse {
     pub banned: bool,
     pub user_id: Uuid,
 }
 
 /// Guild suspend response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SuspendResponse {
     pub suspended: bool,
     pub guild_id: Uuid,
@@ -882,7 +883,7 @@ pub struct AnnouncementResponse {
     tag = "admin",
     params(("id" = Uuid, Path, description = "User ID")),
     request_body = GlobalBanRequest,
-    responses((status = 200, description = "User banned")),
+    responses((status = 200, description = "User banned", body = BanResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -1040,7 +1041,7 @@ pub async fn unban_user(
     tag = "admin",
     params(("id" = Uuid, Path, description = "Guild ID")),
     request_body = SuspendGuildRequest,
-    responses((status = 200, description = "Guild suspended")),
+    responses((status = 200, description = "Guild suspended", body = SuspendResponse)),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
@@ -2097,7 +2098,8 @@ pub struct UpdateOidcProviderRequest {
     path = "/api/admin/oidc-providers/{id}",
     tag = "admin",
     params(("id" = Uuid, Path, description = "Provider ID")),
-    responses((status = 200, description = "OIDC provider updated")),
+    request_body = UpdateOidcProviderRequest,
+    responses((status = 200, description = "OIDC provider updated", body = OidcProviderResponse)),
     security(("bearer_auth" = []))
 )]
 pub async fn update_oidc_provider(
