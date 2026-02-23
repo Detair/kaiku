@@ -6,7 +6,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 /// User model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct User {
     /// Unique user ID.
     pub id: Uuid,
@@ -39,7 +39,7 @@ pub struct User {
 }
 
 /// Authentication method.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
 #[sqlx(type_name = "auth_method", rename_all = "lowercase")]
 pub enum AuthMethod {
     /// Local password authentication.
@@ -49,7 +49,7 @@ pub enum AuthMethod {
 }
 
 /// User online status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
 #[sqlx(type_name = "user_status", rename_all = "lowercase")]
 pub enum UserStatus {
     /// User is actively using the app.
@@ -68,7 +68,7 @@ const fn default_max_screen_shares() -> i32 {
 }
 
 /// Channel model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Channel {
     /// Unique channel ID.
     pub id: Uuid,
@@ -98,7 +98,7 @@ pub struct Channel {
 }
 
 /// Channel type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
 #[sqlx(type_name = "channel_type", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelType {
@@ -111,7 +111,7 @@ pub enum ChannelType {
 }
 
 /// Message model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Message {
     /// Unique message ID.
     pub id: Uuid,
@@ -143,7 +143,7 @@ pub struct Message {
 }
 
 /// Role model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Role {
     /// Unique role ID.
     pub id: Uuid,
@@ -152,6 +152,7 @@ pub struct Role {
     /// Display color (hex code).
     pub color: Option<String>,
     /// Permission flags (JSON object).
+    #[schema(value_type = Object)]
     pub permissions: serde_json::Value,
     /// Display position in role hierarchy.
     pub position: i32,
@@ -160,7 +161,7 @@ pub struct Role {
 }
 
 /// Channel member model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ChannelMember {
     /// Channel ID.
     pub channel_id: Uuid,
@@ -173,7 +174,7 @@ pub struct ChannelMember {
 }
 
 /// File attachment model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct FileAttachment {
     /// Unique attachment ID.
     pub id: Uuid,
@@ -243,7 +244,7 @@ pub struct PasswordResetToken {
 }
 
 /// OIDC/OAuth2 provider configuration stored in the database.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OidcProviderRow {
     /// Unique provider ID.
     pub id: Uuid,
@@ -282,7 +283,7 @@ pub struct OidcProviderRow {
 }
 
 /// Public-facing OIDC provider info (no secrets).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PublicOidcProvider {
     /// URL-safe slug.
     pub slug: String,
@@ -293,7 +294,7 @@ pub struct PublicOidcProvider {
 }
 
 /// Auth methods configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AuthMethodsConfig {
     /// Whether local (password) auth is allowed.
     pub local: bool,
@@ -311,7 +312,7 @@ impl Default for AuthMethodsConfig {
 }
 
 /// Channel unread count for a specific channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ChannelUnread {
     /// Channel ID.
     pub channel_id: Uuid,
@@ -322,7 +323,7 @@ pub struct ChannelUnread {
 }
 
 /// Guild unread summary for the unread aggregator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GuildUnreadSummary {
     /// Guild ID.
     pub guild_id: Uuid,
@@ -335,7 +336,7 @@ pub struct GuildUnreadSummary {
 }
 
 /// Aggregate unread counts across all guilds and DMs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UnreadAggregate {
     /// Guild-based unreads.
     pub guilds: Vec<GuildUnreadSummary>,
@@ -346,7 +347,7 @@ pub struct UnreadAggregate {
 }
 
 /// Bot application model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BotApplication {
     /// Unique application ID.
     pub id: Uuid,
@@ -369,7 +370,7 @@ pub struct BotApplication {
 }
 
 /// Slash command model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SlashCommand {
     /// Unique command ID.
     pub id: Uuid,
@@ -382,6 +383,7 @@ pub struct SlashCommand {
     /// Command description.
     pub description: String,
     /// Command options/parameters as JSON.
+    #[schema(value_type = Option<Object>)]
     pub options: Option<serde_json::Value>,
     /// When the command was created.
     pub created_at: DateTime<Utc>,
@@ -390,7 +392,7 @@ pub struct SlashCommand {
 }
 
 /// Guild bot installation model.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GuildBotInstallation {
     /// Unique installation ID.
     pub id: Uuid,

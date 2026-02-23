@@ -17,7 +17,7 @@ use crate::auth::AuthUser;
 // Types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PinType {
     Note,
@@ -56,12 +56,13 @@ pub struct PinRow {
     pub position: i32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Pin {
     pub id: Uuid,
     pub pin_type: PinType,
     pub content: String,
     pub title: Option<String>,
+    #[schema(value_type = Object)]
     pub metadata: serde_json::Value,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub position: i32,
@@ -81,23 +82,25 @@ impl From<PinRow> for Pin {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreatePinRequest {
     pub pin_type: PinType,
     pub content: String,
     pub title: Option<String>,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub metadata: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePinRequest {
     pub content: Option<String>,
     pub title: Option<String>,
+    #[schema(value_type = Option<Object>)]
     pub metadata: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderPinsRequest {
     pub pin_ids: Vec<Uuid>,
 }
@@ -169,6 +172,15 @@ impl IntoResponse for PinsError {
 // ============================================================================
 
 /// GET /api/me/pins - List user's pins
+#[utoipa::path(
+    get,
+    path = "/api/me/pins",
+    tag = "pins",
+    responses(
+        (status = 200, description = "List of pins"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list_pins(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -190,6 +202,15 @@ pub async fn list_pins(
 }
 
 /// POST /api/me/pins - Create a new pin
+#[utoipa::path(
+    post,
+    path = "/api/me/pins",
+    tag = "pins",
+    responses(
+        (status = 201, description = "Pin created"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn create_pin(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -247,6 +268,18 @@ pub async fn create_pin(
 }
 
 /// PUT /api/me/pins/:id - Update a pin
+#[utoipa::path(
+    put,
+    path = "/api/me/pins/{id}",
+    tag = "pins",
+    params(
+        ("id" = Uuid, Path, description = "Pin ID"),
+    ),
+    responses(
+        (status = 200, description = "Pin updated"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn update_pin(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -302,6 +335,18 @@ pub async fn update_pin(
 }
 
 /// DELETE /api/me/pins/:id - Delete a pin
+#[utoipa::path(
+    delete,
+    path = "/api/me/pins/{id}",
+    tag = "pins",
+    params(
+        ("id" = Uuid, Path, description = "Pin ID"),
+    ),
+    responses(
+        (status = 204, description = "Pin deleted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn delete_pin(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -321,6 +366,15 @@ pub async fn delete_pin(
 }
 
 /// PUT /api/me/pins/reorder - Reorder pins
+#[utoipa::path(
+    put,
+    path = "/api/me/pins/reorder",
+    tag = "pins",
+    responses(
+        (status = 200, description = "Pins reordered"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn reorder_pins(
     State(state): State<AppState>,
     auth_user: AuthUser,

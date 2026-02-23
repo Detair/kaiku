@@ -62,7 +62,7 @@ impl From<CommandError> for (StatusCode, String) {
 }
 
 /// Command option type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CommandOptionType {
     /// String input.
@@ -80,7 +80,7 @@ pub enum CommandOptionType {
 }
 
 /// Command option definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CommandOption {
     /// Option name.
     pub name: String,
@@ -94,14 +94,14 @@ pub struct CommandOption {
 }
 
 /// Request body for registering commands.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RegisterCommandsRequest {
     /// Commands to register.
     pub commands: Vec<RegisterCommandData>,
 }
 
 /// Single command registration data.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RegisterCommandData {
     /// Command name (1-32 characters, alphanumeric with hyphens/underscores).
     pub name: String,
@@ -113,7 +113,7 @@ pub struct RegisterCommandData {
 }
 
 /// Response for a slash command.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CommandResponse {
     /// Command ID.
     pub id: Uuid,
@@ -132,7 +132,7 @@ pub struct CommandResponse {
 }
 
 /// Query parameters for listing commands.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListCommandsQuery {
     /// Guild ID to filter by (omit for global commands).
     pub guild_id: Option<Uuid>,
@@ -163,6 +163,18 @@ const fn validate_command_description(desc: &str) -> Result<(), CommandError> {
 
 /// Register or update slash commands for an application.
 /// This will replace all existing commands for the scope (guild or global).
+#[utoipa::path(
+    put,
+    path = "/api/applications/{id}/commands",
+    tag = "commands",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 200, description = "Commands registered"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn register_commands(
     State(pool): State<PgPool>,
@@ -265,6 +277,18 @@ pub async fn register_commands(
 }
 
 /// List all commands for an application.
+#[utoipa::path(
+    get,
+    path = "/api/applications/{id}/commands",
+    tag = "commands",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 200, description = "List of commands"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn list_commands(
     State(pool): State<PgPool>,
@@ -331,6 +355,19 @@ pub async fn list_commands(
 }
 
 /// Delete a specific command.
+#[utoipa::path(
+    delete,
+    path = "/api/applications/{id}/commands/{command_id}",
+    tag = "commands",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+        ("command_id" = Uuid, Path, description = "Command ID"),
+    ),
+    responses(
+        (status = 204, description = "Command deleted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn delete_command(
     State(pool): State<PgPool>,
@@ -377,6 +414,18 @@ pub async fn delete_command(
 }
 
 /// Delete all commands for a scope (guild or global).
+#[utoipa::path(
+    delete,
+    path = "/api/applications/{id}/commands",
+    tag = "commands",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 204, description = "All commands deleted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn delete_all_commands(
     State(pool): State<PgPool>,

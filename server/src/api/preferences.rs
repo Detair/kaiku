@@ -50,15 +50,17 @@ impl IntoResponse for PreferencesError {
 // ============================================================================
 
 /// Response for preferences endpoints
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PreferencesResponse {
+    #[schema(value_type = Object)]
     pub preferences: serde_json::Value,
     pub updated_at: DateTime<Utc>,
 }
 
 /// Request body for updating preferences
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePreferencesRequest {
+    #[schema(value_type = Object)]
     pub preferences: serde_json::Value,
 }
 
@@ -89,6 +91,15 @@ pub fn router() -> Router<AppState> {
 
 /// GET /api/me/preferences
 /// Returns the current user's preferences
+#[utoipa::path(
+    get,
+    path = "/api/me/preferences",
+    tag = "preferences",
+    responses(
+        (status = 200, description = "User preferences"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
 pub async fn get_preferences(
     State(state): State<AppState>,
@@ -122,6 +133,15 @@ pub async fn get_preferences(
 
 /// PUT /api/me/preferences
 /// Updates the current user's preferences (full replacement)
+#[utoipa::path(
+    put,
+    path = "/api/me/preferences",
+    tag = "preferences",
+    responses(
+        (status = 200, description = "Preferences updated"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, request), fields(user_id = %auth_user.id))]
 pub async fn update_preferences(
     State(state): State<AppState>,

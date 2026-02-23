@@ -2,14 +2,14 @@
 //!
 //! Handles channels, messages, and file uploads.
 
-mod channels;
+pub(crate) mod channels;
 pub mod dm;
 pub mod dm_search;
-mod messages;
+pub(crate) mod messages;
 pub mod overrides;
 pub mod s3;
-mod screenshare;
-mod uploads;
+pub(crate) mod screenshare;
+pub(crate) mod uploads;
 
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;

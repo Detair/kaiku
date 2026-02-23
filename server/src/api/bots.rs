@@ -82,7 +82,7 @@ impl From<BotError> for (StatusCode, String) {
 }
 
 /// Request body for creating a bot application.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateApplicationRequest {
     /// Application name (2-100 characters).
     pub name: String,
@@ -91,7 +91,7 @@ pub struct CreateApplicationRequest {
 }
 
 /// Response for bot application.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApplicationResponse {
     /// Application ID.
     pub id: Uuid,
@@ -110,7 +110,7 @@ pub struct ApplicationResponse {
 }
 
 /// Response for bot token (only returned once on creation/reset).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BotTokenResponse {
     /// The bot token (only shown once).
     pub token: String,
@@ -119,6 +119,16 @@ pub struct BotTokenResponse {
 }
 
 /// Create a new bot application.
+#[utoipa::path(
+    post,
+    path = "/api/applications",
+    tag = "bots",
+    request_body = CreateApplicationRequest,
+    responses(
+        (status = 201, body = ApplicationResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn create_application(
     State(pool): State<PgPool>,
@@ -158,6 +168,15 @@ pub async fn create_application(
 }
 
 /// List all applications owned by the current user.
+#[utoipa::path(
+    get,
+    path = "/api/applications",
+    tag = "bots",
+    responses(
+        (status = 200, body = Vec<ApplicationResponse>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn list_applications(
     State(pool): State<PgPool>,
@@ -180,6 +199,18 @@ pub async fn list_applications(
 }
 
 /// Get a specific application by ID.
+#[utoipa::path(
+    get,
+    path = "/api/applications/{id}",
+    tag = "bots",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 200, body = ApplicationResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn get_application(
     State(pool): State<PgPool>,
@@ -228,6 +259,18 @@ pub async fn get_application(
 }
 
 /// Create a bot user for an application and generate a token.
+#[utoipa::path(
+    post,
+    path = "/api/applications/{id}/bot",
+    tag = "bots",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 201, body = BotTokenResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn create_bot(
     State(pool): State<PgPool>,
@@ -328,6 +371,18 @@ pub async fn create_bot(
 }
 
 /// Reset the bot token for an application.
+#[utoipa::path(
+    post,
+    path = "/api/applications/{id}/reset-token",
+    tag = "bots",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 200, body = BotTokenResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn reset_bot_token(
     State(pool): State<PgPool>,
@@ -405,6 +460,18 @@ pub async fn reset_bot_token(
 }
 
 /// Delete a bot application.
+#[utoipa::path(
+    delete,
+    path = "/api/applications/{id}",
+    tag = "bots",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 204, description = "Application deleted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn delete_application(
     State(pool): State<PgPool>,
@@ -432,7 +499,7 @@ pub async fn delete_application(
 }
 
 /// Request to update gateway intents.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateIntentsRequest {
     /// List of intent names (e.g., `["messages", "members", "commands"]`).
     pub intents: Vec<String>,
@@ -440,6 +507,18 @@ pub struct UpdateIntentsRequest {
 
 /// Update gateway intents for an application.
 /// PUT /api/applications/{id}/intents
+#[utoipa::path(
+    put,
+    path = "/api/applications/{id}/intents",
+    tag = "bots",
+    params(
+        ("id" = Uuid, Path, description = "Application ID"),
+    ),
+    responses(
+        (status = 200, description = "Gateway intents updated"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(pool, claims))]
 pub async fn update_gateway_intents(
     State(pool): State<PgPool>,

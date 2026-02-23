@@ -88,7 +88,7 @@ pub enum CallEventType {
 }
 
 /// Reason for call ending
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EndReason {
     Cancelled,   // Initiator hung up before anyone joined
@@ -98,7 +98,7 @@ pub enum EndReason {
 }
 
 /// Derived call state from event stream
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CallState {
     Ringing {

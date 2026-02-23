@@ -19,7 +19,7 @@ use crate::voice::call_service::{CallError, CallService};
 use crate::ws::{broadcast_to_channel, ServerEvent};
 
 /// Response for call state
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CallStateResponse {
     pub channel_id: Uuid,
     #[serde(flatten)]
@@ -28,7 +28,7 @@ pub struct CallStateResponse {
 }
 
 /// Call API error response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CallApiError {
     pub error: String,
     pub code: String,
@@ -147,6 +147,18 @@ async fn verify_dm_participant(
 }
 
 /// GET /api/dm/{id}/call - Get current call state
+#[utoipa::path(
+    get,
+    path = "/api/dm/{id}/call",
+    tag = "voice",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 200, description = "Current call state (null if no active call)", body = Option<CallStateResponse>),
+        (status = 403, description = "Not a participant of this DM"),
+        (status = 404, description = "DM channel not found"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, auth))]
 pub async fn get_call(
     State(state): State<AppState>,
@@ -175,6 +187,19 @@ async fn get_username(state: &AppState, user_id: Uuid) -> Result<String, CallHan
 }
 
 /// POST /api/dm/{id}/call/start - Start a new call
+#[utoipa::path(
+    post,
+    path = "/api/dm/{id}/call/start",
+    tag = "voice",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 201, description = "Call initiated", body = CallStateResponse),
+        (status = 403, description = "Not a participant or blocked"),
+        (status = 404, description = "DM channel not found"),
+        (status = 409, description = "Call already exists"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, auth))]
 pub async fn start_call(
     State(state): State<AppState>,
@@ -247,6 +272,18 @@ pub async fn start_call(
 }
 
 /// POST /api/dm/{id}/call/join - Join an active call
+#[utoipa::path(
+    post,
+    path = "/api/dm/{id}/call/join",
+    tag = "voice",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 200, description = "Joined call", body = CallStateResponse),
+        (status = 403, description = "Not a participant or blocked"),
+        (status = 404, description = "DM channel or call not found"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, auth))]
 pub async fn join_call(
     State(state): State<AppState>,
@@ -307,6 +344,18 @@ pub async fn join_call(
 }
 
 /// POST /api/dm/{id}/call/decline - Decline a call
+#[utoipa::path(
+    post,
+    path = "/api/dm/{id}/call/decline",
+    tag = "voice",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 200, description = "Call declined", body = CallStateResponse),
+        (status = 403, description = "Not a participant of this DM"),
+        (status = 404, description = "DM channel or call not found"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, auth))]
 pub async fn decline_call(
     State(state): State<AppState>,
@@ -362,6 +411,18 @@ pub async fn decline_call(
 }
 
 /// POST /api/dm/{id}/call/leave - Leave an active call
+#[utoipa::path(
+    post,
+    path = "/api/dm/{id}/call/leave",
+    tag = "voice",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 200, description = "Left call (may end call if last participant)", body = CallStateResponse),
+        (status = 403, description = "Not a participant of this DM"),
+        (status = 404, description = "DM channel or call not found"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, auth))]
 pub async fn leave_call(
     State(state): State<AppState>,

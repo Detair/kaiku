@@ -103,7 +103,7 @@ pub enum AuthError {
 }
 
 /// Error response body for JSON responses.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ErrorResponse {
     /// Machine-readable error code.
     pub error: String,

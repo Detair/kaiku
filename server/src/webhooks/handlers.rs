@@ -90,6 +90,17 @@ fn validate_url(url: &str) -> Result<(), WebhookError> {
 }
 
 /// POST /`api/applications/{app_id}/webhooks`
+#[utoipa::path(
+    post,
+    path = "/api/applications/{app_id}/webhooks",
+    tag = "webhooks",
+    params(("app_id" = Uuid, Path, description = "Application ID")),
+    request_body = CreateWebhookRequest,
+    responses(
+        (status = 201, description = "Webhook created", body = WebhookCreatedResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(state, claims))]
 pub async fn create_webhook(
     State(state): State<AppState>,
@@ -163,6 +174,16 @@ pub async fn create_webhook(
 }
 
 /// GET /`api/applications/{app_id}/webhooks`
+#[utoipa::path(
+    get,
+    path = "/api/applications/{app_id}/webhooks",
+    tag = "webhooks",
+    params(("app_id" = Uuid, Path, description = "Application ID")),
+    responses(
+        (status = 200, description = "List of webhooks", body = Vec<WebhookResponse>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(state, claims))]
 pub async fn list_webhooks(
     State(state): State<AppState>,
@@ -179,6 +200,19 @@ pub async fn list_webhooks(
 }
 
 /// GET /`api/applications/{app_id}/webhooks/{wh_id}`
+#[utoipa::path(
+    get,
+    path = "/api/applications/{app_id}/webhooks/{wh_id}",
+    tag = "webhooks",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID"),
+        ("wh_id" = Uuid, Path, description = "Webhook ID"),
+    ),
+    responses(
+        (status = 200, description = "Webhook details", body = WebhookResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(state, claims))]
 pub async fn get_webhook(
     State(state): State<AppState>,
@@ -196,6 +230,20 @@ pub async fn get_webhook(
 }
 
 /// PATCH /`api/applications/{app_id}/webhooks/{wh_id}`
+#[utoipa::path(
+    patch,
+    path = "/api/applications/{app_id}/webhooks/{wh_id}",
+    tag = "webhooks",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID"),
+        ("wh_id" = Uuid, Path, description = "Webhook ID"),
+    ),
+    request_body = UpdateWebhookRequest,
+    responses(
+        (status = 200, description = "Webhook updated", body = WebhookResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(state, claims))]
 pub async fn update_webhook(
     State(state): State<AppState>,
@@ -258,6 +306,19 @@ pub async fn update_webhook(
 }
 
 /// DELETE /`api/applications/{app_id}/webhooks/{wh_id}`
+#[utoipa::path(
+    delete,
+    path = "/api/applications/{app_id}/webhooks/{wh_id}",
+    tag = "webhooks",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID"),
+        ("wh_id" = Uuid, Path, description = "Webhook ID"),
+    ),
+    responses(
+        (status = 204, description = "Webhook deleted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(state, claims))]
 pub async fn delete_webhook(
     State(state): State<AppState>,
@@ -278,6 +339,19 @@ pub async fn delete_webhook(
 }
 
 /// POST /`api/applications/{app_id}/webhooks/{wh_id}/test`
+#[utoipa::path(
+    post,
+    path = "/api/applications/{app_id}/webhooks/{wh_id}/test",
+    tag = "webhooks",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID"),
+        ("wh_id" = Uuid, Path, description = "Webhook ID"),
+    ),
+    responses(
+        (status = 200, description = "Test result", body = TestDeliveryResult),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(state, claims))]
 pub async fn test_webhook(
     State(state): State<AppState>,
@@ -382,6 +456,19 @@ pub async fn test_webhook(
 }
 
 /// GET /`api/applications/{app_id}/webhooks/{wh_id}/deliveries`
+#[utoipa::path(
+    get,
+    path = "/api/applications/{app_id}/webhooks/{wh_id}/deliveries",
+    tag = "webhooks",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID"),
+        ("wh_id" = Uuid, Path, description = "Webhook ID"),
+    ),
+    responses(
+        (status = 200, description = "Delivery history", body = Vec<DeliveryLogEntry>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[instrument(skip(state, claims))]
 pub async fn list_deliveries(
     State(state): State<AppState>,

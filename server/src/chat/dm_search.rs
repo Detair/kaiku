@@ -54,7 +54,7 @@ impl From<sqlx::Error> for DmSearchError {
 // Request/Response Types
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DmSearchQuery {
     /// Search query string (supports websearch syntax: AND, OR, quotes)
     pub q: String,
@@ -83,7 +83,7 @@ const fn default_limit() -> i64 {
 }
 
 /// Author info for search results.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DmSearchAuthor {
     pub id: Uuid,
     pub username: String,
@@ -92,7 +92,7 @@ pub struct DmSearchAuthor {
 }
 
 /// DM search result item.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DmSearchResult {
     pub id: Uuid,
     pub channel_id: Uuid,
@@ -105,7 +105,7 @@ pub struct DmSearchResult {
 }
 
 /// DM search response with results and pagination.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DmSearchResponse {
     pub results: Vec<DmSearchResult>,
     pub total: i64,
@@ -119,6 +119,15 @@ pub struct DmSearchResponse {
 
 /// Search messages within a user's DM channels.
 /// GET `/api/dm/search?q=...`
+#[utoipa::path(
+    get,
+    path = "/api/dm/search",
+    tag = "search",
+    responses(
+        (status = 200, body = DmSearchResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn search_dm_messages(
     State(state): State<AppState>,

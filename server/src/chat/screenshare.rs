@@ -39,6 +39,16 @@ impl IntoResponse for ScreenShareError {
 }
 
 /// Check if screen sharing is allowed.
+#[utoipa::path(
+    post,
+    path = "/api/channels/{id}/screenshare/check",
+    tag = "screenshare",
+    params(("id" = Uuid, Path, description = "Channel ID")),
+    responses(
+        (status = 200, description = "Screen share availability check"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn check(
     State(state): State<AppState>,
     user: AuthUser,
@@ -115,6 +125,16 @@ pub async fn check(
 }
 
 /// Start screen sharing.
+#[utoipa::path(
+    post,
+    path = "/api/channels/{id}/screenshare/start",
+    tag = "screenshare",
+    params(("id" = Uuid, Path, description = "Channel ID")),
+    responses(
+        (status = 200, description = "Screen share started"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn start(
     State(state): State<AppState>,
     user: AuthUser,
@@ -235,6 +255,16 @@ pub async fn start(
 }
 
 /// Stop screen sharing.
+#[utoipa::path(
+    post,
+    path = "/api/channels/{id}/screenshare/stop",
+    tag = "screenshare",
+    params(("id" = Uuid, Path, description = "Channel ID")),
+    responses(
+        (status = 200, description = "Screen share stopped"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn stop(
     State(state): State<AppState>,
     user: AuthUser,

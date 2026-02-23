@@ -29,7 +29,7 @@ pub struct FavoriteChannelRow {
     pub channel_position: i32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FavoriteChannel {
     pub channel_id: String,
     pub channel_name: String,
@@ -56,7 +56,7 @@ impl From<FavoriteChannelRow> for FavoriteChannel {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FavoritesResponse {
     pub favorites: Vec<FavoriteChannel>,
 }
@@ -69,7 +69,7 @@ pub struct FavoriteRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Favorite {
     pub channel_id: String,
     pub guild_id: String,
@@ -78,13 +78,13 @@ pub struct Favorite {
     pub created_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderChannelsRequest {
     pub guild_id: String,
     pub channel_ids: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderGuildsRequest {
     pub guild_ids: Vec<String>,
 }
@@ -179,6 +179,15 @@ impl IntoResponse for FavoritesError {
 // ============================================================================
 
 /// GET /api/me/favorites - List user's favorite channels
+#[utoipa::path(
+    get,
+    path = "/api/me/favorites",
+    tag = "favorites",
+    responses(
+        (status = 200, description = "List of favorites"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list_favorites(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -212,6 +221,18 @@ pub async fn list_favorites(
 }
 
 /// POST `/api/me/favorites/:channel_id` - Add channel to favorites
+#[utoipa::path(
+    post,
+    path = "/api/me/favorites/{channel_id}",
+    tag = "favorites",
+    params(
+        ("channel_id" = Uuid, Path, description = "Channel ID"),
+    ),
+    responses(
+        (status = 201, description = "Favorite added"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn add_favorite(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -315,6 +336,18 @@ pub async fn add_favorite(
 }
 
 /// DELETE `/api/me/favorites/:channel_id` - Remove channel from favorites
+#[utoipa::path(
+    delete,
+    path = "/api/me/favorites/{channel_id}",
+    tag = "favorites",
+    params(
+        ("channel_id" = Uuid, Path, description = "Channel ID"),
+    ),
+    responses(
+        (status = 204, description = "Favorite removed"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn remove_favorite(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -336,6 +369,15 @@ pub async fn remove_favorite(
 }
 
 /// PUT /api/me/favorites/reorder - Reorder channels within a guild
+#[utoipa::path(
+    put,
+    path = "/api/me/favorites/reorder",
+    tag = "favorites",
+    responses(
+        (status = 200, description = "Favorites reordered"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn reorder_channels(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -385,6 +427,15 @@ pub async fn reorder_channels(
 }
 
 /// PUT /api/me/favorites/reorder-guilds - Reorder guild groups
+#[utoipa::path(
+    put,
+    path = "/api/me/favorites/reorder-guilds",
+    tag = "favorites",
+    responses(
+        (status = 200, description = "Guild favorites reordered"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn reorder_guilds(
     State(state): State<AppState>,
     auth_user: AuthUser,

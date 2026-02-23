@@ -12,6 +12,14 @@ use crate::ws::{broadcast_admin_event, ServerEvent};
 
 /// POST /api/reports
 /// Create a new user report.
+#[utoipa::path(
+    post,
+    path = "/api/reports",
+    tag = "moderation",
+    request_body = CreateReportRequest,
+    responses((status = 201, body = ReportResponse)),
+    security(("bearer_auth" = []))
+)]
 pub async fn create_report(
     State(state): State<AppState>,
     auth: AuthUser,

@@ -11,6 +11,16 @@ use crate::ws::{broadcast_to_user, ServerEvent};
 
 /// POST /api/friends/request
 /// Send a friend request to another user
+#[utoipa::path(
+    post,
+    path = "/api/friends/request",
+    tag = "social",
+    request_body = SendFriendRequestBody,
+    responses(
+        (status = 201, description = "Friend request sent"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn send_friend_request(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -110,6 +120,15 @@ pub async fn send_friend_request(
 
 /// GET /api/friends
 /// List all friends (accepted friendships)
+#[utoipa::path(
+    get,
+    path = "/api/friends",
+    tag = "social",
+    responses(
+        (status = 200, body = Vec<Friend>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list_friends(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -146,6 +165,15 @@ pub async fn list_friends(
 
 /// GET /api/friends/pending
 /// List pending friend requests (both sent and received)
+#[utoipa::path(
+    get,
+    path = "/api/friends/pending",
+    tag = "social",
+    responses(
+        (status = 200, description = "Pending friend requests"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list_pending_requests(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -182,6 +210,15 @@ pub async fn list_pending_requests(
 
 /// GET /api/friends/blocked
 /// List blocked users
+#[utoipa::path(
+    get,
+    path = "/api/friends/blocked",
+    tag = "social",
+    responses(
+        (status = 200, description = "Blocked users"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list_blocked(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -212,6 +249,16 @@ pub async fn list_blocked(
 
 /// POST /api/friends/:id/accept
 /// Accept a friend request
+#[utoipa::path(
+    post,
+    path = "/api/friends/{id}/accept",
+    tag = "social",
+    params(("id" = Uuid, Path, description = "Friendship ID")),
+    responses(
+        (status = 200, description = "Friend request accepted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn accept_friend_request(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -275,6 +322,16 @@ pub async fn accept_friend_request(
 
 /// POST /api/friends/:id/reject
 /// Reject a friend request (deletes the friendship)
+#[utoipa::path(
+    post,
+    path = "/api/friends/{id}/reject",
+    tag = "social",
+    params(("id" = Uuid, Path, description = "Friendship ID")),
+    responses(
+        (status = 204, description = "Friend request rejected"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn reject_friend_request(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -307,6 +364,16 @@ pub async fn reject_friend_request(
 
 /// POST /api/friends/:id/block
 /// Block a user
+#[utoipa::path(
+    post,
+    path = "/api/friends/{id}/block",
+    tag = "social",
+    params(("id" = Uuid, Path, description = "User ID")),
+    responses(
+        (status = 200, description = "User blocked"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn block_user(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -399,6 +466,16 @@ pub async fn block_user(
 
 /// DELETE /api/friends/:id/block
 /// Unblock a user
+#[utoipa::path(
+    delete,
+    path = "/api/friends/{id}/block",
+    tag = "social",
+    params(("id" = Uuid, Path, description = "User ID")),
+    responses(
+        (status = 204, description = "User unblocked"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn unblock_user(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -436,6 +513,16 @@ pub async fn unblock_user(
 
 /// DELETE /api/friends/:id
 /// Remove a friend (delete friendship)
+#[utoipa::path(
+    delete,
+    path = "/api/friends/{id}",
+    tag = "social",
+    params(("id" = Uuid, Path, description = "Friendship ID")),
+    responses(
+        (status = 204, description = "Friend removed"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn remove_friend(
     State(state): State<AppState>,
     auth: AuthUser,

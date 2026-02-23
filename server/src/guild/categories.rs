@@ -20,7 +20,7 @@ use crate::permissions::{require_guild_permission, GuildPermissions, PermissionE
 // ============================================================================
 
 /// Category response model.
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Category {
     pub id: Uuid,
     pub guild_id: Uuid,
@@ -31,7 +31,7 @@ pub struct Category {
 }
 
 /// Request to create a new category.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateCategoryRequest {
     pub name: String,
     #[serde(default)]
@@ -39,7 +39,7 @@ pub struct CreateCategoryRequest {
 }
 
 /// Request to update a category.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateCategoryRequest {
     pub name: Option<String>,
     pub position: Option<i32>,
@@ -48,13 +48,13 @@ pub struct UpdateCategoryRequest {
 }
 
 /// Request to reorder multiple categories.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderRequest {
     pub categories: Vec<CategoryPosition>,
 }
 
 /// Position specification for a category.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CategoryPosition {
     pub id: Uuid,
     pub position: i32,
@@ -132,6 +132,14 @@ impl IntoResponse for CategoryError {
 /// List all categories in a guild.
 ///
 /// `GET /api/guilds/:guild_id/categories`
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/categories",
+    tag = "categories",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, description = "List of categories")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_categories(
     State(state): State<AppState>,
@@ -164,6 +172,14 @@ pub async fn list_categories(
 /// Create a new category.
 ///
 /// `POST /api/guilds/:guild_id/categories`
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/categories",
+    tag = "categories",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 201, description = "Category created")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn create_category(
     State(state): State<AppState>,
@@ -242,6 +258,17 @@ pub async fn create_category(
 /// Update a category.
 ///
 /// `PATCH /api/guilds/:guild_id/categories/:category_id`
+#[utoipa::path(
+    patch,
+    path = "/api/guilds/{id}/categories/{category_id}",
+    tag = "categories",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("category_id" = Uuid, Path, description = "Category ID")
+    ),
+    responses((status = 200, description = "Category updated")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn update_category(
     State(state): State<AppState>,
@@ -340,6 +367,17 @@ pub async fn update_category(
 /// Delete a category.
 ///
 /// `DELETE /api/guilds/:guild_id/categories/:category_id`
+#[utoipa::path(
+    delete,
+    path = "/api/guilds/{id}/categories/{category_id}",
+    tag = "categories",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("category_id" = Uuid, Path, description = "Category ID")
+    ),
+    responses((status = 204, description = "Category deleted")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn delete_category(
     State(state): State<AppState>,
@@ -377,6 +415,14 @@ pub async fn delete_category(
 /// Reorder multiple categories.
 ///
 /// `POST /api/guilds/:guild_id/categories/reorder`
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/categories/reorder",
+    tag = "categories",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, description = "Categories reordered")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn reorder_categories(
     State(state): State<AppState>,

@@ -25,7 +25,7 @@ struct UsernameRecord {
 // Request/Response Types
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateDMRequest {
     /// User ID(s) to create DM with (1 for 1:1, multiple for group DM)
     #[validate(length(min = 1, max = 9, message = "Must have 1-9 other participants"))]
@@ -35,15 +35,16 @@ pub struct CreateDMRequest {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DMResponse {
     #[serde(flatten)]
+    #[schema(inline)]
     pub channel: ChannelResponse,
     pub participants: Vec<DMParticipant>,
 }
 
 /// Last message info for DM list preview
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LastMessagePreview {
     pub id: Uuid,
     pub content: String,
@@ -53,16 +54,17 @@ pub struct LastMessagePreview {
 }
 
 /// Enhanced DM response with unread count and last message
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DMListResponse {
     #[serde(flatten)]
+    #[schema(inline)]
     pub channel: ChannelResponse,
     pub participants: Vec<DMParticipant>,
     pub last_message: Option<LastMessagePreview>,
     pub unread_count: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DMParticipant {
     pub user_id: Uuid,
     pub username: String,
@@ -263,6 +265,16 @@ pub async fn list_user_dms(pool: &sqlx::PgPool, user_id: Uuid) -> sqlx::Result<V
 
 /// Create or get a DM channel
 /// POST /api/dm
+#[utoipa::path(
+    post,
+    path = "/api/dm",
+    tag = "dm",
+    request_body = CreateDMRequest,
+    responses(
+        (status = 201, body = DMResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn create_dm(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -356,6 +368,15 @@ pub async fn create_dm(
 
 /// List all DM channels for the authenticated user
 /// GET /api/dm
+#[utoipa::path(
+    get,
+    path = "/api/dm",
+    tag = "dm",
+    responses(
+        (status = 200, body = Vec<DMListResponse>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list_dms(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -429,6 +450,16 @@ pub async fn list_dms(
 
 /// Get a specific DM channel
 /// GET /api/dm/:id
+#[utoipa::path(
+    get,
+    path = "/api/dm/{id}",
+    tag = "dm",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 200, body = DMResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn get_dm(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -466,6 +497,16 @@ pub async fn get_dm(
 
 /// Leave a group DM
 /// POST /api/dm/:id/leave
+#[utoipa::path(
+    post,
+    path = "/api/dm/{id}/leave",
+    tag = "dm",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 204, description = "Left DM"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn leave_dm(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -515,7 +556,7 @@ pub async fn leave_dm(
 // Update Group DM Name
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdateDMNameRequest {
     #[validate(length(min = 1, max = 100, message = "Name must be 1-100 characters"))]
     pub name: String,
@@ -523,6 +564,17 @@ pub struct UpdateDMNameRequest {
 
 /// Update a group DM's display name
 /// PATCH /api/dm/:id/name
+#[utoipa::path(
+    patch,
+    path = "/api/dm/{id}/name",
+    tag = "dm",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    request_body = UpdateDMNameRequest,
+    responses(
+        (status = 200, body = DMResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn update_dm_name(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -612,13 +664,24 @@ pub async fn update_dm_name(
 // ============================================================================
 
 /// Response for DM icon upload
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DMIconResponse {
     pub icon_url: String,
 }
 
 /// Upload a custom icon for a DM channel
 /// POST /api/dm/:id/icon
+#[utoipa::path(
+    post,
+    path = "/api/dm/{id}/icon",
+    tag = "dm",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    request_body(content = Vec<u8>, content_type = "multipart/form-data"),
+    responses(
+        (status = 200, body = DMIconResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn upload_dm_icon(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -714,6 +777,16 @@ pub async fn upload_dm_icon(
 }
 
 /// Get DM icon (redirects to S3 presigned URL).
+#[utoipa::path(
+    get,
+    path = "/api/dm/{id}/icon",
+    tag = "dm",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    responses(
+        (status = 302, description = "Redirect to icon URL"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn get_dm_icon(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -763,13 +836,13 @@ pub async fn get_dm_icon(
 // ============================================================================
 
 /// Mark DM as read request body
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MarkAsReadRequest {
     pub last_read_message_id: Option<Uuid>,
 }
 
 /// Mark DM as read response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MarkAsReadResponse {
     pub channel_id: Uuid,
     pub last_read_at: chrono::DateTime<chrono::Utc>,
@@ -779,6 +852,17 @@ pub struct MarkAsReadResponse {
 
 /// Mark a DM channel as read
 /// POST /api/dm/:id/read
+#[utoipa::path(
+    post,
+    path = "/api/dm/{id}/read",
+    tag = "dm",
+    params(("id" = Uuid, Path, description = "DM conversation ID")),
+    request_body = MarkAsReadRequest,
+    responses(
+        (status = 200, body = MarkAsReadResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn mark_as_read(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -852,6 +936,15 @@ pub async fn mark_as_read(
 
 /// Mark all DM channels as read.
 /// POST /api/dm/read-all
+#[utoipa::path(
+    post,
+    path = "/api/dm/read-all",
+    tag = "dm",
+    responses(
+        (status = 204, description = "All DMs marked as read"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn mark_all_dms_read(
     State(state): State<AppState>,

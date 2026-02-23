@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each tier defines resolution, frame rate, and bitrate constraints
 /// suitable for different network conditions and use cases.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Quality {
     /// 480p @ 15fps, 0.5-1 Mbps - fallback for poor connections.

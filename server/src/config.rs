@@ -115,6 +115,12 @@ pub struct Config {
 
     /// SMTP TLS mode: "starttls" (default), "tls", or "none"
     pub smtp_tls: String,
+
+    /// Whether to enable API documentation (Swagger UI) at /api/docs
+    ///
+    /// Defaults to `true` in debug builds, `false` in release builds.
+    /// Override via `ENABLE_API_DOCS` env var ("true"/"1" to enable, "false"/"0" to disable).
+    pub enable_api_docs: bool,
 }
 
 impl Config {
@@ -195,6 +201,10 @@ impl Config {
             smtp_password: env::var("SMTP_PASSWORD").ok(),
             smtp_from: env::var("SMTP_FROM").ok(),
             smtp_tls: env::var("SMTP_TLS").unwrap_or_else(|_| "starttls".into()),
+            enable_api_docs: env::var("ENABLE_API_DOCS")
+                .ok()
+                .map(|v| v.to_lowercase() == "true" || v == "1")
+                .unwrap_or(cfg!(debug_assertions)),
         })
     }
 
@@ -266,6 +276,7 @@ impl Config {
             smtp_password: None,
             smtp_from: None,
             smtp_tls: "starttls".into(),
+            enable_api_docs: true,
         }
     }
 }

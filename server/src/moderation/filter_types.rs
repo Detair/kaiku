@@ -15,7 +15,9 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Built-in filter categories.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "filter_category", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum FilterCategory {
@@ -39,7 +41,9 @@ impl std::fmt::Display for FilterCategory {
 }
 
 /// Action to take when a filter matches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "filter_action", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum FilterAction {
@@ -63,7 +67,7 @@ impl std::fmt::Display for FilterAction {
 // ============================================================================
 
 /// Guild filter configuration row.
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct GuildFilterConfig {
     pub id: Uuid,
     pub guild_id: Uuid,
@@ -75,7 +79,7 @@ pub struct GuildFilterConfig {
 }
 
 /// Custom guild filter pattern row.
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct GuildFilterPattern {
     pub id: Uuid,
     pub guild_id: Uuid,
@@ -89,7 +93,7 @@ pub struct GuildFilterPattern {
 }
 
 /// Moderation action log entry.
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct ModerationAction {
     pub id: Uuid,
     pub guild_id: Uuid,
@@ -108,7 +112,7 @@ pub struct ModerationAction {
 // ============================================================================
 
 /// Single category config in bulk update request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct FilterConfigEntry {
     pub category: FilterCategory,
     pub enabled: bool,
@@ -116,13 +120,13 @@ pub struct FilterConfigEntry {
 }
 
 /// Request to update guild filter configs (bulk upsert).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateFilterConfigsRequest {
     pub configs: Vec<FilterConfigEntry>,
 }
 
 /// Request to create a custom filter pattern.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreatePatternRequest {
     pub pattern: String,
     #[serde(default)]
@@ -136,7 +140,7 @@ pub struct CreatePatternRequest {
 /// - Field absent → `None` (don't change)
 /// - `"description": null` → `Some(None)` (clear to null)
 /// - `"description": "text"` → `Some(Some("text"))` (set value)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePatternRequest {
     pub pattern: Option<String>,
     pub is_regex: Option<bool>,
@@ -159,13 +163,13 @@ where
 }
 
 /// Request to test content against active filters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct TestFilterRequest {
     pub content: String,
 }
 
 /// Pagination query parameters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PaginationQuery {
     #[serde(default = "default_limit")]
     pub limit: i64,
@@ -182,7 +186,7 @@ const fn default_limit() -> i64 {
 // ============================================================================
 
 /// Response for moderation log listing.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PaginatedModerationLog {
     pub items: Vec<ModerationAction>,
     pub total: i64,
@@ -191,14 +195,14 @@ pub struct PaginatedModerationLog {
 }
 
 /// Result of testing content against filters.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TestFilterResponse {
     pub blocked: bool,
     pub matches: Vec<FilterMatchResponse>,
 }
 
 /// A single filter match in test results.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FilterMatchResponse {
     pub category: FilterCategory,
     pub action: FilterAction,

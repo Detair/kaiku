@@ -53,7 +53,7 @@ impl IntoResponse for ConnectivityError {
 // ============================================================================
 
 /// Pagination query parameters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PaginationParams {
     /// Maximum number of items to return (default: 20, max: 100).
     #[serde(default = "default_limit")]
@@ -73,7 +73,7 @@ fn default_limit() -> i64 {
 // ============================================================================
 
 /// 30-day connection summary with daily breakdown.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ConnectionSummary {
     /// Number of days in the period.
     pub period_days: i32,
@@ -92,7 +92,7 @@ pub struct ConnectionSummary {
 }
 
 /// Daily connection statistics.
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct DailyStat {
     /// Date of the statistics.
     pub date: NaiveDate,
@@ -107,7 +107,7 @@ pub struct DailyStat {
 }
 
 /// Session summary for list view.
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct SessionSummary {
     /// Session ID.
     pub id: Uuid,
@@ -130,7 +130,7 @@ pub struct SessionSummary {
 }
 
 /// Paginated session list response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SessionListResponse {
     /// List of sessions.
     pub sessions: Vec<SessionSummary>,
@@ -143,10 +143,11 @@ pub struct SessionListResponse {
 }
 
 /// Session detail with metrics.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SessionDetail {
     /// Session summary.
     #[serde(flatten)]
+    #[schema(inline)]
     pub summary: SessionSummary,
     /// Metric data points.
     pub metrics: Vec<MetricPoint>,
@@ -155,7 +156,7 @@ pub struct SessionDetail {
 }
 
 /// Individual metric data point.
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct MetricPoint {
     /// Timestamp of the metric.
     pub time: DateTime<Utc>,
@@ -199,6 +200,15 @@ struct AggregateStats {
 /// GET /api/me/connection/summary
 ///
 /// Returns 30-day aggregate stats and daily breakdown for the authenticated user.
+#[utoipa::path(
+    get,
+    path = "/api/me/connection/summary",
+    tag = "connectivity",
+    responses(
+        (status = 200, description = "Connection summary", body = ConnectionSummary),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn get_summary(
     State(state): State<AppState>,
@@ -259,6 +269,15 @@ pub async fn get_summary(
 /// GET /api/me/connection/sessions
 ///
 /// Returns paginated list of session summaries for the authenticated user.
+#[utoipa::path(
+    get,
+    path = "/api/me/connection/sessions",
+    tag = "connectivity",
+    responses(
+        (status = 200, description = "Active sessions", body = SessionListResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn get_sessions(
     State(state): State<AppState>,
@@ -317,6 +336,16 @@ pub async fn get_sessions(
 /// GET `/api/me/connection/sessions/:session_id`
 ///
 /// Returns session detail with metrics (downsampled if >200 points).
+#[utoipa::path(
+    get,
+    path = "/api/me/connection/sessions/{session_id}",
+    tag = "connectivity",
+    params(("session_id" = String, Path, description = "Session ID")),
+    responses(
+        (status = 200, description = "Session detail", body = SessionDetail),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn get_session_detail(
     State(state): State<AppState>,

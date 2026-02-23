@@ -66,7 +66,7 @@ impl IntoResponse for OverrideError {
 // Types
 // ============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct OverrideResponse {
     pub id: Uuid,
     pub channel_id: Uuid,
@@ -75,7 +75,7 @@ pub struct OverrideResponse {
     pub deny_permissions: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SetOverrideRequest {
     pub allow: Option<u64>,
     pub deny: Option<u64>,
@@ -88,6 +88,16 @@ pub struct SetOverrideRequest {
 /// List all permission overrides for a channel.
 ///
 /// `GET /api/channels/:channel_id/overrides`
+#[utoipa::path(
+    get,
+    path = "/api/channels/{id}/overrides",
+    tag = "overrides",
+    params(("id" = Uuid, Path, description = "Channel ID")),
+    responses(
+        (status = 200, body = Vec<OverrideResponse>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_overrides(
     State(state): State<AppState>,
@@ -137,6 +147,20 @@ pub async fn list_overrides(
 /// Set permission override for a role on a channel.
 ///
 /// `PUT /api/channels/:channel_id/overrides/:role_id`
+#[utoipa::path(
+    put,
+    path = "/api/channels/{id}/overrides/{role_id}",
+    tag = "overrides",
+    params(
+        ("id" = Uuid, Path, description = "Channel ID"),
+        ("role_id" = Uuid, Path, description = "Role ID"),
+    ),
+    request_body = SetOverrideRequest,
+    responses(
+        (status = 200, body = OverrideResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn set_override(
     State(state): State<AppState>,
@@ -223,6 +247,19 @@ pub async fn set_override(
 /// Remove permission override.
 ///
 /// `DELETE /api/channels/:channel_id/overrides/:role_id`
+#[utoipa::path(
+    delete,
+    path = "/api/channels/{id}/overrides/{role_id}",
+    tag = "overrides",
+    params(
+        ("id" = Uuid, Path, description = "Channel ID"),
+        ("role_id" = Uuid, Path, description = "Role ID"),
+    ),
+    responses(
+        (status = 204, description = "Override deleted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn delete_override(
     State(state): State<AppState>,

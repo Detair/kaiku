@@ -63,7 +63,7 @@ impl From<sqlx::Error> for SearchError {
 // Request/Response Types
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SearchQuery {
     /// Search query string (supports websearch syntax: AND, OR, quotes)
     pub q: String,
@@ -92,7 +92,7 @@ const fn default_limit() -> i64 {
 }
 
 /// Author info for search results
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SearchAuthor {
     pub id: Uuid,
     pub username: String,
@@ -101,7 +101,7 @@ pub struct SearchAuthor {
 }
 
 /// Search result item
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SearchResult {
     pub id: Uuid,
     pub channel_id: Uuid,
@@ -114,7 +114,7 @@ pub struct SearchResult {
 }
 
 /// Search response with results and pagination
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SearchResponse {
     pub results: Vec<SearchResult>,
     pub total: i64,
@@ -128,6 +128,14 @@ pub struct SearchResponse {
 
 /// Search messages within a guild.
 /// GET `/api/guilds/:guild_id/search?q=...`
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/search",
+    tag = "search",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, description = "Search results")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn search_messages(
     State(state): State<AppState>,

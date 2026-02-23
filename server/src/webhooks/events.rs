@@ -5,7 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Bot event types matching the `webhook_event_type` `PostgreSQL` enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "webhook_event_type", rename_all = "snake_case")]
 pub enum BotEventType {
     /// A message was created in a guild channel.

@@ -9,8 +9,8 @@ pub mod global_search;
 pub mod pins;
 pub mod preferences;
 pub mod reactions;
-mod settings;
-mod setup;
+pub(crate) mod settings;
+pub(crate) mod setup;
 pub mod unread;
 
 use std::sync::Arc;
@@ -26,6 +26,8 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::auth::oidc::OidcProviderManager;
 use crate::chat::S3Client;
@@ -316,7 +318,7 @@ pub fn create_router(state: AppState) -> Router {
             get(ws::bot_gateway::bot_gateway_handler),
         )
         // API documentation
-        .merge(api_docs())
+        .merge(api_docs(state.config.enable_api_docs))
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
@@ -331,8 +333,8 @@ pub fn create_router(state: AppState) -> Router {
 }
 
 /// Health check response.
-#[derive(Serialize)]
-struct HealthResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct HealthResponse {
     /// Overall service status ("ok" or "degraded")
     status: &'static str,
     /// Database connectivity status
@@ -347,7 +349,15 @@ struct HealthResponse {
 ///
 /// Verifies connectivity to critical dependencies (database, Redis).
 /// Returns "degraded" status if any dependency is unavailable.
-async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "health",
+    responses(
+        (status = 200, description = "Service health status", body = HealthResponse),
+    ),
+)]
+pub(crate) async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
     // Check database connectivity
     let db_ok = sqlx::query("SELECT 1").fetch_one(&state.db).await.is_ok();
 
@@ -366,7 +376,15 @@ async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
 }
 
 /// API documentation routes.
-fn api_docs() -> Router<AppState> {
-    // TODO: Setup utoipa swagger-ui
-    Router::new()
+///
+/// Serves Swagger UI at `/api/docs` when enabled via `ENABLE_API_DOCS` env var.
+/// Defaults to enabled in debug builds, disabled in release builds.
+fn api_docs(enable: bool) -> Router<AppState> {
+    if !enable {
+        return Router::new();
+    }
+    Router::new().merge(
+        SwaggerUi::new("/api/docs/{_:.*}")
+            .url("/api/docs/openapi.json", crate::openapi::ApiDoc::openapi()),
+    )
 }

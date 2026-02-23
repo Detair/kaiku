@@ -150,6 +150,14 @@ pub fn router() -> Router<AppState> {
 /// List guild emojis.
 ///
 /// `GET /api/guilds/{id}/emojis`
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/emojis",
+    tag = "emojis",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = Vec<GuildEmoji>)),
+    security(("bearer_auth" = []))
+)]
 pub async fn list_emojis(
     State(state): State<AppState>,
     Path(guild_id): Path<Uuid>,
@@ -206,6 +214,15 @@ pub async fn get_emoji(
 ///
 /// `POST /api/guilds/{id}/emojis`
 /// Expects multipart form with `name` and `file`.
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/emojis",
+    tag = "emojis",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    request_body = CreateEmojiRequest,
+    responses((status = 201, body = GuildEmoji)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state, auth_user, multipart))]
 pub async fn create_emoji(
     State(state): State<AppState>,
@@ -352,6 +369,18 @@ pub async fn create_emoji(
 /// Update an emoji.
 ///
 /// `PATCH /api/guilds/{id}/emojis/{emoji_id}`
+#[utoipa::path(
+    patch,
+    path = "/api/guilds/{id}/emojis/{emoji_id}",
+    tag = "emojis",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("emoji_id" = Uuid, Path, description = "Emoji ID")
+    ),
+    request_body = UpdateEmojiRequest,
+    responses((status = 200, body = GuildEmoji)),
+    security(("bearer_auth" = []))
+)]
 pub async fn update_emoji(
     State(state): State<AppState>,
     Path((guild_id, emoji_id)): Path<(Uuid, Uuid)>,
@@ -438,6 +467,17 @@ pub async fn update_emoji(
 /// Delete an emoji.
 ///
 /// `DELETE /api/guilds/{id}/emojis/{emoji_id}`
+#[utoipa::path(
+    delete,
+    path = "/api/guilds/{id}/emojis/{emoji_id}",
+    tag = "emojis",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("emoji_id" = Uuid, Path, description = "Emoji ID")
+    ),
+    responses((status = 204, description = "Emoji deleted")),
+    security(("bearer_auth" = []))
+)]
 pub async fn delete_emoji(
     State(state): State<AppState>,
     Path((guild_id, emoji_id)): Path<(Uuid, Uuid)>,

@@ -267,6 +267,16 @@ fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, Uplo
 /// Expects multipart form with:
 /// - `file`: The file data
 /// - `message_id`: UUID of the message to attach to
+#[utoipa::path(
+    post,
+    path = "/api/messages/upload",
+    tag = "uploads",
+    request_body(content = Vec<u8>, content_type = "multipart/form-data"),
+    responses(
+        (status = 201, body = inline(crate::db::FileAttachment)),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, auth_user, multipart))]
 pub async fn upload_file(
     State(state): State<AppState>,
@@ -425,6 +435,17 @@ pub async fn upload_file(
 /// Expects multipart form with:
 /// - `file`: The file data (required)
 /// - `content`: Optional message text content
+#[utoipa::path(
+    post,
+    path = "/api/messages/channel/{channel_id}/upload",
+    tag = "uploads",
+    params(("channel_id" = Uuid, Path, description = "Channel ID")),
+    request_body(content = Vec<u8>, content_type = "multipart/form-data"),
+    responses(
+        (status = 201, body = MessageResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, auth_user, multipart))]
 pub async fn upload_message_with_file(
     State(state): State<AppState>,
@@ -715,6 +736,16 @@ pub async fn upload_message_with_file(
 /// Get attachment metadata.
 ///
 /// GET /api/messages/attachments/:id
+#[utoipa::path(
+    get,
+    path = "/api/messages/attachments/{id}",
+    tag = "messages",
+    params(("id" = Uuid, Path, description = "Attachment ID")),
+    responses(
+        (status = 200, description = "Attachment file"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn get_attachment(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -750,6 +781,16 @@ pub struct DownloadQuery {
 /// Supports two authentication methods:
 /// 1. Authorization header (Bearer token) - standard API auth
 /// 2. `token` query parameter - for browser requests that can't set headers
+#[utoipa::path(
+    get,
+    path = "/api/messages/attachments/{id}/download",
+    tag = "messages",
+    params(("id" = Uuid, Path, description = "Attachment ID")),
+    responses(
+        (status = 200, description = "File download"),
+    ),
+    security(),
+)]
 pub async fn download(
     State(state): State<AppState>,
     auth_user: Option<AuthUser>,

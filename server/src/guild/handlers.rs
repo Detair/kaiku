@@ -24,16 +24,17 @@ use crate::ws::{broadcast_to_user, ServerEvent};
 // ============================================================================
 
 /// Channel with unread message count for the current user.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ChannelWithUnread {
     #[serde(flatten)]
+    #[schema(inline)]
     pub channel: db::Channel,
     /// Number of unread messages (only for text channels).
     pub unread_count: i64,
 }
 
 /// A bot installed in a guild.
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct InstalledBot {
     pub application_id: Uuid,
     pub bot_user_id: Uuid,
@@ -48,7 +49,7 @@ pub struct InstalledBot {
 // ============================================================================
 
 /// Position specification for a channel in reorder request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelPosition {
     pub id: Uuid,
     pub position: i32,
@@ -57,7 +58,7 @@ pub struct ChannelPosition {
 }
 
 /// Request to reorder channels in a guild.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderChannelsRequest {
     pub channels: Vec<ChannelPosition>,
 }
@@ -115,6 +116,14 @@ impl From<sqlx::Error> for GuildError {
 // ============================================================================
 
 /// Create a new guild
+#[utoipa::path(
+    post,
+    path = "/api/guilds",
+    tag = "guilds",
+    request_body = CreateGuildRequest,
+    responses((status = 201, body = GuildWithMemberCount)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn create_guild(
     State(state): State<AppState>,
@@ -159,6 +168,13 @@ pub async fn create_guild(
 }
 
 /// List guilds for the current user with member counts
+#[utoipa::path(
+    get,
+    path = "/api/guilds",
+    tag = "guilds",
+    responses((status = 200, body = Vec<GuildWithMemberCount>)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_guilds(
     State(state): State<AppState>,
@@ -222,6 +238,14 @@ pub async fn list_guilds(
 }
 
 /// Get guild details
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = GuildWithMemberCount)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn get_guild(
     State(state): State<AppState>,
@@ -246,6 +270,15 @@ pub async fn get_guild(
 }
 
 /// Update guild
+#[utoipa::path(
+    patch,
+    path = "/api/guilds/{id}",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    request_body = UpdateGuildRequest,
+    responses((status = 200, body = GuildWithMemberCount)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn update_guild(
     State(state): State<AppState>,
@@ -306,6 +339,14 @@ pub async fn update_guild(
 }
 
 /// Delete guild (owner only)
+#[utoipa::path(
+    delete,
+    path = "/api/guilds/{id}",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 204, description = "Guild deleted")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn delete_guild(
     State(state): State<AppState>,
@@ -354,6 +395,14 @@ pub(super) async fn initialize_channel_read_state(
 }
 
 /// Leave guild
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/leave",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 204, description = "Left guild")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn leave_guild(
     State(state): State<AppState>,
@@ -408,6 +457,14 @@ pub async fn leave_guild(
 }
 
 /// List guild members
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/members",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = Vec<GuildMember>)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_members(
     State(state): State<AppState>,
@@ -443,6 +500,17 @@ pub async fn list_members(
 }
 
 /// Kick a member from guild (owner only)
+#[utoipa::path(
+    delete,
+    path = "/api/guilds/{id}/members/{user_id}",
+    tag = "guilds",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("user_id" = Uuid, Path, description = "User ID")
+    ),
+    responses((status = 204, description = "Member kicked")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn kick_member(
     State(state): State<AppState>,
@@ -502,6 +570,14 @@ pub async fn kick_member(
 }
 
 /// List guild channels with unread counts
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/channels",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = Vec<ChannelWithUnread>)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_channels(
     State(state): State<AppState>,
@@ -588,6 +664,15 @@ pub async fn list_channels(
 /// Reorder channels in a guild.
 ///
 /// `POST /api/guilds/:guild_id/channels/reorder`
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/channels/reorder",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    request_body = ReorderChannelsRequest,
+    responses((status = 200, description = "Channels reordered")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn reorder_channels(
     State(state): State<AppState>,
@@ -639,6 +724,17 @@ pub async fn reorder_channels(
 /// Install a bot into a guild.
 ///
 /// `POST /api/guilds/:guild_id/bots/:bot_id/add`
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/bots/{bot_id}/add",
+    tag = "guilds",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("bot_id" = Uuid, Path, description = "Bot user ID")
+    ),
+    responses((status = 201, description = "Bot added")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn add_bot_to_guild(
     State(state): State<AppState>,
@@ -701,6 +797,14 @@ pub async fn add_bot_to_guild(
 /// List bots installed in a guild.
 ///
 /// `GET /api/guilds/:guild_id/bots`
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/bots",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = Vec<InstalledBot>)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_guild_bots(
     State(state): State<AppState>,
@@ -736,6 +840,17 @@ pub async fn list_guild_bots(
 /// Remove a bot from a guild.
 ///
 /// `DELETE /api/guilds/:guild_id/bots/:bot_id`
+#[utoipa::path(
+    delete,
+    path = "/api/guilds/{id}/bots/{bot_id}",
+    tag = "guilds",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("bot_id" = Uuid, Path, description = "Bot user ID")
+    ),
+    responses((status = 204, description = "Bot removed")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn remove_bot_from_guild(
     State(state): State<AppState>,
@@ -784,6 +899,14 @@ pub async fn remove_bot_from_guild(
 /// Guild-scoped commands take precedence over global commands with the same name.
 ///
 /// `GET /api/guilds/:guild_id/commands`
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/commands",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = Vec<GuildCommandInfo>)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_guild_commands(
     State(state): State<AppState>,
@@ -835,6 +958,14 @@ pub async fn list_guild_commands(
 
 /// Mark all text channels in a guild as read.
 /// POST /api/guilds/{id}/read-all
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/read-all",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 204, description = "All channels marked as read")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn mark_all_channels_read(
     State(state): State<AppState>,
@@ -896,6 +1027,14 @@ pub async fn mark_all_channels_read(
 
 /// Get guild settings.
 /// GET /api/guilds/{id}/settings
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/settings",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = GuildSettings)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn get_guild_settings(
     State(state): State<AppState>,
@@ -922,6 +1061,15 @@ pub async fn get_guild_settings(
 
 /// Update guild settings (requires `MANAGE_GUILD`).
 /// PATCH /api/guilds/{id}/settings
+#[utoipa::path(
+    patch,
+    path = "/api/guilds/{id}/settings",
+    tag = "guilds",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    request_body = UpdateGuildSettingsRequest,
+    responses((status = 200, body = GuildSettings)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn update_guild_settings(
     State(state): State<AppState>,

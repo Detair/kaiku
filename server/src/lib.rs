@@ -14,6 +14,7 @@ pub mod db;
 pub mod email;
 pub mod guild;
 pub mod moderation;
+pub mod openapi;
 pub mod pages;
 pub mod permissions;
 pub mod presence;

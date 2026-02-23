@@ -9,7 +9,7 @@ use validator::Validate;
 // Guild Entity
 // ============================================================================
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
 pub struct Guild {
     pub id: Uuid,
     pub name: String,
@@ -21,9 +21,10 @@ pub struct Guild {
 }
 
 /// Guild with member count for list responses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct GuildWithMemberCount {
     #[serde(flatten)]
+    #[schema(inline)]
     pub guild: Guild,
     /// Total number of members in the guild.
     pub member_count: i64,
@@ -33,7 +34,7 @@ pub struct GuildWithMemberCount {
 // Request Types
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateGuildRequest {
     #[validate(length(min = 2, max = 100, message = "Name must be 2-100 characters"))]
     pub name: String,
@@ -41,7 +42,7 @@ pub struct CreateGuildRequest {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdateGuildRequest {
     #[validate(length(min = 2, max = 100, message = "Name must be 2-100 characters"))]
     pub name: Option<String>,
@@ -50,7 +51,7 @@ pub struct UpdateGuildRequest {
     pub icon_url: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct JoinGuildRequest {
     pub invite_code: String,
 }
@@ -59,7 +60,7 @@ pub struct JoinGuildRequest {
 // Response Types
 // ============================================================================
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
 pub struct GuildMember {
     pub user_id: Uuid,
     pub username: String,
@@ -75,7 +76,7 @@ pub struct GuildMember {
 // Invite Types
 // ============================================================================
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
 pub struct GuildInvite {
     pub id: Uuid,
     pub guild_id: Uuid,
@@ -86,13 +87,13 @@ pub struct GuildInvite {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateInviteRequest {
     /// Expiry duration: "30m", "1h", "1d", "7d", or "never"
     pub expires_in: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct InviteResponse {
     pub id: Uuid,
     pub code: String,
@@ -108,7 +109,7 @@ pub struct InviteResponse {
 // ============================================================================
 
 /// Request to create a guild role.
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateRoleRequest {
     #[validate(length(min = 1, max = 64, message = "Role name must be 1-64 characters"))]
     pub name: String,
@@ -117,7 +118,7 @@ pub struct CreateRoleRequest {
 }
 
 /// Request to update a guild role.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateRoleRequest {
     pub name: Option<String>,
     pub color: Option<String>,
@@ -126,7 +127,7 @@ pub struct UpdateRoleRequest {
 }
 
 /// Guild role response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RoleResponse {
     pub id: Uuid,
     pub guild_id: Uuid,
@@ -142,7 +143,7 @@ pub struct RoleResponse {
 // Emoji Types
 // ============================================================================
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GuildEmoji {
     pub id: Uuid,
     pub guild_id: Uuid,
@@ -153,13 +154,13 @@ pub struct GuildEmoji {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateEmojiRequest {
     #[validate(length(min = 2, max = 32, message = "Name must be 2-32 characters"))]
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdateEmojiRequest {
     #[validate(length(min = 2, max = 32, message = "Name must be 2-32 characters"))]
     pub name: String,
@@ -170,13 +171,13 @@ pub struct UpdateEmojiRequest {
 // ============================================================================
 
 /// Guild settings response (subset of guild-level configuration).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GuildSettings {
     pub threads_enabled: bool,
 }
 
 /// Request to update guild settings.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateGuildSettingsRequest {
     pub threads_enabled: Option<bool>,
 }
@@ -186,7 +187,7 @@ pub struct UpdateGuildSettingsRequest {
 // ============================================================================
 
 /// Available slash command in a guild (from installed bots).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GuildCommandInfo {
     pub name: String,
     pub description: String,

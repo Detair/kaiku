@@ -2,7 +2,7 @@
 //!
 //! Provides endpoints for users to view their voice connection quality history.
 
-mod handlers;
+pub(crate) mod handlers;
 
 use axum::routing::get;
 use axum::Router;

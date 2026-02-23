@@ -14,6 +14,13 @@ use crate::ws::{broadcast_admin_event, ServerEvent};
 
 /// GET /api/admin/reports
 /// List reports with optional status/category filter and pagination.
+#[utoipa::path(
+    get,
+    path = "/api/admin/reports",
+    tag = "moderation",
+    responses((status = 200, body = PaginatedReports)),
+    security(("bearer_auth" = []))
+)]
 pub async fn list_reports(
     State(state): State<AppState>,
     Query(query): Query<ListReportsQuery>,
@@ -56,6 +63,14 @@ pub async fn list_reports(
 
 /// GET /api/admin/reports/:id
 /// Get a single report by ID with full details.
+#[utoipa::path(
+    get,
+    path = "/api/admin/reports/{id}",
+    tag = "moderation",
+    params(("id" = Uuid, Path, description = "Report ID")),
+    responses((status = 200, body = ReportResponse)),
+    security(("bearer_auth" = []))
+)]
 pub async fn get_report(
     State(state): State<AppState>,
     Path(report_id): Path<Uuid>,
@@ -71,6 +86,14 @@ pub async fn get_report(
 
 /// POST /api/admin/reports/:id/claim
 /// Claim a report for review.
+#[utoipa::path(
+    post,
+    path = "/api/admin/reports/{id}/claim",
+    tag = "moderation",
+    params(("id" = Uuid, Path, description = "Report ID")),
+    responses((status = 200, body = ReportResponse)),
+    security(("bearer_auth" = []))
+)]
 pub async fn claim_report(
     State(state): State<AppState>,
     Extension(elevated): Extension<ElevatedAdmin>,
@@ -93,6 +116,15 @@ pub async fn claim_report(
 
 /// POST /api/admin/reports/:id/resolve
 /// Resolve a report with an action.
+#[utoipa::path(
+    post,
+    path = "/api/admin/reports/{id}/resolve",
+    tag = "moderation",
+    params(("id" = Uuid, Path, description = "Report ID")),
+    request_body = ResolveReportRequest,
+    responses((status = 200, body = ReportResponse)),
+    security(("bearer_auth" = []))
+)]
 pub async fn resolve_report(
     State(state): State<AppState>,
     Path(report_id): Path<Uuid>,
@@ -137,6 +169,13 @@ pub async fn resolve_report(
 
 /// GET /api/admin/reports/stats
 /// Get report counts by status.
+#[utoipa::path(
+    get,
+    path = "/api/admin/reports/stats",
+    tag = "moderation",
+    responses((status = 200, body = ReportStatsResponse)),
+    security(("bearer_auth" = []))
+)]
 pub async fn report_stats(
     State(state): State<AppState>,
 ) -> Result<Json<ReportStatsResponse>, ReportError> {

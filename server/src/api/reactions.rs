@@ -19,12 +19,12 @@ use crate::ws::{broadcast_to_channel, ServerEvent};
 // Types
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AddReactionRequest {
     pub emoji: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReactionResponse {
     pub emoji: String,
     pub count: i64,
@@ -94,6 +94,19 @@ impl IntoResponse for ReactionsError {
 
 /// Add a reaction to a message.
 /// PUT `/api/channels/:channel_id/messages/:message_id/reactions`
+#[utoipa::path(
+    put,
+    path = "/api/channels/{channel_id}/messages/{message_id}/reactions",
+    tag = "reactions",
+    params(
+        ("channel_id" = Uuid, Path, description = "Channel ID"),
+        ("message_id" = Uuid, Path, description = "Message ID"),
+    ),
+    responses(
+        (status = 200, description = "Reaction added"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn add_reaction(
     State(state): State<AppState>,
     Path((channel_id, message_id)): Path<(Uuid, Uuid)>,
@@ -178,6 +191,20 @@ pub async fn add_reaction(
 
 /// Remove a reaction from a message.
 /// DELETE `/api/channels/:channel_id/messages/:message_id/reactions/:emoji`
+#[utoipa::path(
+    delete,
+    path = "/api/channels/{channel_id}/messages/{message_id}/reactions/{emoji}",
+    tag = "reactions",
+    params(
+        ("channel_id" = Uuid, Path, description = "Channel ID"),
+        ("message_id" = Uuid, Path, description = "Message ID"),
+        ("emoji" = String, Path, description = "Emoji"),
+    ),
+    responses(
+        (status = 204, description = "Reaction removed"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn remove_reaction(
     State(state): State<AppState>,
     Path((channel_id, message_id, emoji)): Path<(Uuid, Uuid, String)>,
@@ -235,6 +262,19 @@ pub async fn remove_reaction(
 
 /// Get reactions for a message.
 /// GET `/api/channels/:channel_id/messages/:message_id/reactions`
+#[utoipa::path(
+    get,
+    path = "/api/channels/{channel_id}/messages/{message_id}/reactions",
+    tag = "reactions",
+    params(
+        ("channel_id" = Uuid, Path, description = "Channel ID"),
+        ("message_id" = Uuid, Path, description = "Message ID"),
+    ),
+    responses(
+        (status = 200, description = "List of reactions"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn get_reactions(
     State(state): State<AppState>,
     Path((channel_id, message_id)): Path<(Uuid, Uuid)>,

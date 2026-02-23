@@ -6,7 +6,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 /// Full page data including content.
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Page {
     pub id: Uuid,
     pub guild_id: Option<Uuid>,
@@ -24,7 +24,7 @@ pub struct Page {
 }
 
 /// Page metadata for listing (without content for efficiency).
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow, utoipa::ToSchema)]
 pub struct PageListItem {
     pub id: Uuid,
     pub guild_id: Option<Uuid>,
@@ -36,7 +36,7 @@ pub struct PageListItem {
 }
 
 /// Request body for creating a new page.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreatePageRequest {
     /// Page title (required).
     pub title: String,
@@ -49,7 +49,7 @@ pub struct CreatePageRequest {
 }
 
 /// Request body for updating an existing page.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePageRequest {
     /// New title (optional).
     pub title: Option<String>,
@@ -62,14 +62,14 @@ pub struct UpdatePageRequest {
 }
 
 /// Request body for reordering pages.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderRequest {
     /// Ordered list of page IDs representing the new order.
     pub page_ids: Vec<Uuid>,
 }
 
 /// User's acceptance record for a page.
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow, utoipa::ToSchema)]
 pub struct PageAcceptance {
     pub user_id: Uuid,
     pub page_id: Uuid,
@@ -79,7 +79,7 @@ pub struct PageAcceptance {
 }
 
 /// Page audit log entry.
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow, utoipa::ToSchema)]
 pub struct PageAuditEntry {
     pub id: Uuid,
     pub page_id: Uuid,

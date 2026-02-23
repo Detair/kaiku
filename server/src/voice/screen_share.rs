@@ -28,7 +28,7 @@ pub fn validate_source_label(label: &str) -> Result<(), ScreenShareError> {
 }
 
 /// Information about an active screen share session.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ScreenShareInfo {
     /// User who is sharing
     pub user_id: Uuid,
@@ -63,7 +63,7 @@ impl ScreenShareInfo {
 }
 
 /// Request to start a screen share.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, utoipa::ToSchema)]
 pub struct ScreenShareStartRequest {
     /// Requested quality tier
     pub quality: Quality,
@@ -74,7 +74,7 @@ pub struct ScreenShareStartRequest {
 }
 
 /// Response to screen share check/start request.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct ScreenShareCheckResponse {
     /// Whether screen sharing is allowed
     pub allowed: bool,
@@ -87,7 +87,7 @@ pub struct ScreenShareCheckResponse {
 }
 
 /// Screen share error reasons.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenShareError {
     /// User doesn't have `SCREEN_SHARE` permission

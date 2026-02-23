@@ -112,31 +112,31 @@ impl IntoResponse for AdminError {
 }
 
 // Request types
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ElevateRequest {
     pub mfa_code: String,
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ElevateResponse {
     pub elevated: bool,
     pub expires_at: DateTime<Utc>,
     pub session_id: Uuid,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct GlobalBanRequest {
     pub reason: String,
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SuspendGuildRequest {
     pub reason: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateAnnouncementRequest {
     pub title: String,
     pub content: String,
@@ -151,7 +151,7 @@ fn default_severity() -> String {
 }
 
 /// Admin status response for checking current user's admin state.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminStatusResponse {
     pub is_admin: bool,
     pub is_elevated: bool,
@@ -159,7 +159,7 @@ pub struct AdminStatusResponse {
 }
 
 /// Admin statistics response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminStatsResponse {
     pub user_count: i64,
     pub guild_count: i64,
@@ -171,7 +171,7 @@ pub struct AdminStatsResponse {
 // ============================================================================
 
 /// Request to ban multiple users at once.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct BulkBanRequest {
     /// List of user IDs to ban.
     pub user_ids: Vec<Uuid>,
@@ -182,7 +182,7 @@ pub struct BulkBanRequest {
 }
 
 /// Response for bulk ban operation.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BulkBanResponse {
     /// Number of users successfully banned.
     pub banned_count: usize,
@@ -193,7 +193,7 @@ pub struct BulkBanResponse {
 }
 
 /// Request to suspend multiple guilds at once.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct BulkSuspendRequest {
     /// List of guild IDs to suspend.
     pub guild_ids: Vec<Uuid>,
@@ -202,7 +202,7 @@ pub struct BulkSuspendRequest {
 }
 
 /// Response for bulk suspend operation.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BulkSuspendResponse {
     /// Number of guilds successfully suspended.
     pub suspended_count: usize,
@@ -213,7 +213,7 @@ pub struct BulkSuspendResponse {
 }
 
 /// Details about a failed bulk action item.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BulkActionFailure {
     /// ID of the item that failed.
     pub id: Uuid,

@@ -66,13 +66,13 @@ impl IntoResponse for SetupError {
 // ============================================================================
 
 /// Response for GET /api/setup/status
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SetupStatusResponse {
     pub setup_complete: bool,
 }
 
 /// Response for GET /api/setup/config
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SetupConfigResponse {
     pub server_name: String,
     pub registration_policy: String,
@@ -81,7 +81,7 @@ pub struct SetupConfigResponse {
 }
 
 /// Request body for POST /api/setup/complete
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CompleteSetupRequest {
     #[validate(length(min = 1, max = 64, message = "Server name must be 1-64 characters"))]
     pub server_name: String,
@@ -107,6 +107,14 @@ fn validate_registration_policy(policy: &str) -> Result<(), validator::Validatio
 
 /// Check if server setup is complete.
 /// GET /api/setup/status
+#[utoipa::path(
+    get,
+    path = "/api/setup/status",
+    tag = "setup",
+    responses(
+        (status = 200, description = "Setup status"),
+    ),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn status(
     State(state): State<AppState>,
@@ -118,6 +126,14 @@ pub async fn status(
 
 /// Get current server configuration (only if setup is incomplete).
 /// GET /api/setup/config
+#[utoipa::path(
+    get,
+    path = "/api/setup/config",
+    tag = "setup",
+    responses(
+        (status = 200, description = "Setup configuration"),
+    ),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn get_config(
     State(state): State<AppState>,
@@ -252,6 +268,15 @@ pub async fn get_config(
 
 /// Complete server setup (only if admin and setup is incomplete).
 /// POST /api/setup/complete
+#[utoipa::path(
+    post,
+    path = "/api/setup/complete",
+    tag = "setup",
+    responses(
+        (status = 200, description = "Setup completed"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state))]
 pub async fn complete(
     State(state): State<AppState>,

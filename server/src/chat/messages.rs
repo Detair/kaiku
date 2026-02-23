@@ -1,5 +1,7 @@
 //! Message Handlers
 
+use std::collections::HashSet;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -8,6 +10,7 @@ use chrono::{DateTime, Utc};
 use fred::interfaces::{KeysInterface, PubsubInterface};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -89,7 +92,7 @@ impl From<sqlx::Error> for MessageError {
 // ============================================================================
 
 /// Author profile for message responses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AuthorProfile {
     pub id: Uuid,
     pub username: String,
@@ -111,7 +114,7 @@ impl From<db::User> for AuthorProfile {
 }
 
 /// Attachment info for message responses (matches client Attachment type).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AttachmentInfo {
     pub id: Uuid,
     pub filename: String,
@@ -134,7 +137,7 @@ impl AttachmentInfo {
 }
 
 /// Mention type for notification sounds.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MentionType {
     /// Direct @username mention
@@ -146,7 +149,7 @@ pub enum MentionType {
 }
 
 /// Thread info for parent messages (returned alongside message responses).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ThreadInfoResponse {
     pub reply_count: i32,
     pub last_reply_at: Option<DateTime<Utc>>,
@@ -159,7 +162,7 @@ pub struct ThreadInfoResponse {
 }
 
 /// Full message response with author info (matches client Message type).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MessageResponse {
     pub id: Uuid,
     pub channel_id: Uuid,
@@ -185,14 +188,14 @@ pub struct MessageResponse {
     pub thread_info: Option<ThreadInfoResponse>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ReactionInfo {
     pub emoji: String,
     pub count: i64,
     pub me: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListMessagesQuery {
     pub before: Option<Uuid>,
     #[serde(default = "default_limit")]
@@ -212,7 +215,7 @@ const fn default_limit() -> i64 {
 ///
 /// This is more efficient for large datasets where counting total items
 /// is expensive and unnecessary (e.g., chat messages).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CursorPaginatedResponse<T> {
     /// The items for this page.
     pub items: Vec<T>,
@@ -257,7 +260,7 @@ pub fn detect_mention_type(content: &str, author_username: Option<&str>) -> Opti
     None
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateMessageRequest {
     #[validate(length(min = 1, max = 4000, message = "Content must be 1-4000 characters"))]
     pub content: String,
@@ -268,14 +271,14 @@ pub struct CreateMessageRequest {
     pub parent_id: Option<Uuid>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListThreadRepliesQuery {
     pub after: Option<Uuid>,
     #[serde(default = "default_limit")]
     pub limit: i64,
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdateMessageRequest {
     #[validate(length(min = 1, max = 4000, message = "Content must be 1-4000 characters"))]
     pub content: String,
@@ -290,6 +293,16 @@ pub struct UpdateMessageRequest {
 ///
 /// Returns cursor-based pagination with `has_more` indicator.
 /// Use the `next_cursor` value as `before` parameter to fetch the next page.
+#[utoipa::path(
+    get,
+    path = "/api/messages/channel/{channel_id}",
+    tag = "messages",
+    params(("channel_id" = Uuid, Path, description = "Channel ID")),
+    responses(
+        (status = 200, body = CursorPaginatedResponse<MessageResponse>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -311,13 +324,13 @@ pub async fn list(
         .await
         .unwrap_or_else(|e| {
             warn!(user_id = %auth_user.id, error = %e, "Failed to load blocked users, message filtering may be incomplete");
-            Default::default()
+            HashSet::default()
         });
     let blocked_by_ids = block_cache::load_blocked_by(&state.db, &state.redis, auth_user.id)
         .await
         .unwrap_or_else(|e| {
             warn!(user_id = %auth_user.id, error = %e, "Failed to load blocked-by users, message filtering may be incomplete");
-            Default::default()
+            HashSet::default()
         });
     let combined_block_set: std::collections::HashSet<Uuid> =
         blocked_ids.union(&blocked_by_ids).copied().collect();
@@ -358,6 +371,17 @@ pub async fn list(
 
 /// Create a new message.
 /// POST /`api/messages/channel/:channel_id`
+#[utoipa::path(
+    post,
+    path = "/api/messages/channel/{channel_id}",
+    tag = "messages",
+    params(("channel_id" = Uuid, Path, description = "Channel ID")),
+    request_body = CreateMessageRequest,
+    responses(
+        (status = 201, body = MessageResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn create(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1012,6 +1036,17 @@ pub async fn create(
 
 /// Update (edit) a message.
 /// PATCH /api/messages/:id
+#[utoipa::path(
+    patch,
+    path = "/api/messages/{id}",
+    tag = "messages",
+    params(("id" = Uuid, Path, description = "Message ID")),
+    request_body = UpdateMessageRequest,
+    responses(
+        (status = 200, body = MessageResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn update(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1156,6 +1191,16 @@ pub async fn update(
 
 /// Delete a message (soft delete).
 /// DELETE /api/messages/:id
+#[utoipa::path(
+    delete,
+    path = "/api/messages/{id}",
+    tag = "messages",
+    params(("id" = Uuid, Path, description = "Message ID")),
+    responses(
+        (status = 204, description = "Message deleted"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn delete(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1526,6 +1571,16 @@ async fn build_batch_thread_infos(
 
 /// List thread replies for a parent message.
 /// `GET /api/messages/{parent_id}/thread`
+#[utoipa::path(
+    get,
+    path = "/api/messages/{parent_id}/thread",
+    tag = "messages",
+    params(("parent_id" = Uuid, Path, description = "Parent message ID")),
+    responses(
+        (status = 200, body = CursorPaginatedResponse<MessageResponse>),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn list_thread_replies(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1547,13 +1602,13 @@ pub async fn list_thread_replies(
         .await
         .unwrap_or_else(|e| {
             warn!(user_id = %auth_user.id, error = %e, "Failed to load blocked users, message filtering may be incomplete");
-            Default::default()
+            HashSet::default()
         });
     let blocked_by_ids = block_cache::load_blocked_by(&state.db, &state.redis, auth_user.id)
         .await
         .unwrap_or_else(|e| {
             warn!(user_id = %auth_user.id, error = %e, "Failed to load blocked-by users, message filtering may be incomplete");
-            Default::default()
+            HashSet::default()
         });
     let combined_block_set: std::collections::HashSet<Uuid> =
         blocked_ids.union(&blocked_by_ids).copied().collect();
@@ -1589,6 +1644,16 @@ pub async fn list_thread_replies(
 
 /// Mark a thread as read.
 /// `POST /api/messages/{parent_id}/thread/read`
+#[utoipa::path(
+    post,
+    path = "/api/messages/{parent_id}/thread/read",
+    tag = "messages",
+    params(("parent_id" = Uuid, Path, description = "Parent message ID")),
+    responses(
+        (status = 204, description = "Thread marked as read"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn mark_thread_read(
     State(state): State<AppState>,
     auth_user: AuthUser,

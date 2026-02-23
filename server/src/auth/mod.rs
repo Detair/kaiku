@@ -3,8 +3,8 @@
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
 mod backup_codes;
-mod error;
-mod handlers;
+pub(crate) mod error;
+pub(crate) mod handlers;
 pub mod jwt;
 pub mod mfa_crypto;
 mod middleware;

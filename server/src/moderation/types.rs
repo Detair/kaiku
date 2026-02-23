@@ -12,7 +12,9 @@ use validator::Validate;
 // Database Enums
 // ============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "report_category", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ReportCategory {
@@ -23,7 +25,9 @@ pub enum ReportCategory {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "report_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStatus {
@@ -33,7 +37,9 @@ pub enum ReportStatus {
     Dismissed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "report_target_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ReportTargetType {
@@ -45,7 +51,7 @@ pub enum ReportTargetType {
 // Request Types
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateReportRequest {
     pub target_type: ReportTargetType,
     pub target_user_id: Uuid,
@@ -55,14 +61,14 @@ pub struct CreateReportRequest {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ResolveReportRequest {
     /// One of: dismissed, warned, banned, escalated
     pub resolution_action: String,
     pub resolution_note: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListReportsQuery {
     pub status: Option<ReportStatus>,
     pub category: Option<ReportCategory>,
@@ -80,7 +86,7 @@ const fn default_limit() -> i64 {
 // Response Types
 // ============================================================================
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Report {
     pub id: Uuid,
     pub reporter_id: Uuid,
@@ -98,7 +104,7 @@ pub struct Report {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReportResponse {
     pub id: Uuid,
     pub reporter_id: Uuid,
@@ -137,7 +143,7 @@ impl From<Report> for ReportResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReportStatsResponse {
     pub pending: i64,
     pub reviewing: i64,
@@ -145,7 +151,7 @@ pub struct ReportStatsResponse {
     pub dismissed: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PaginatedReports {
     pub items: Vec<ReportResponse>,
     pub total: i64,

@@ -100,6 +100,14 @@ impl IntoResponse for RoleError {
 /// List all roles in a guild.
 ///
 /// `GET /api/guilds/:guild_id/roles`
+#[utoipa::path(
+    get,
+    path = "/api/guilds/{id}/roles",
+    tag = "roles",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    responses((status = 200, body = Vec<RoleResponse>)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn list_roles(
     State(state): State<AppState>,
@@ -162,6 +170,15 @@ pub async fn list_roles(
 /// Create a new role.
 ///
 /// `POST /api/guilds/:guild_id/roles`
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/roles",
+    tag = "roles",
+    params(("id" = Uuid, Path, description = "Guild ID")),
+    request_body = CreateRoleRequest,
+    responses((status = 201, body = RoleResponse)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn create_role(
     State(state): State<AppState>,
@@ -242,6 +259,18 @@ pub async fn create_role(
 /// Update a role.
 ///
 /// `PATCH /api/guilds/:guild_id/roles/:role_id`
+#[utoipa::path(
+    patch,
+    path = "/api/guilds/{id}/roles/{role_id}",
+    tag = "roles",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("role_id" = Uuid, Path, description = "Role ID")
+    ),
+    request_body = UpdateRoleRequest,
+    responses((status = 200, body = RoleResponse)),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn update_role(
     State(state): State<AppState>,
@@ -355,6 +384,17 @@ pub async fn update_role(
 /// Delete a role.
 ///
 /// `DELETE /api/guilds/:guild_id/roles/:role_id`
+#[utoipa::path(
+    delete,
+    path = "/api/guilds/{id}/roles/{role_id}",
+    tag = "roles",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("role_id" = Uuid, Path, description = "Role ID")
+    ),
+    responses((status = 204, description = "Role deleted")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn delete_role(
     State(state): State<AppState>,
@@ -407,6 +447,18 @@ pub async fn delete_role(
 /// Assign a role to a member.
 ///
 /// `POST /api/guilds/:guild_id/members/:user_id/roles/:role_id`
+#[utoipa::path(
+    post,
+    path = "/api/guilds/{id}/members/{user_id}/roles/{role_id}",
+    tag = "roles",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("user_id" = Uuid, Path, description = "User ID"),
+        ("role_id" = Uuid, Path, description = "Role ID")
+    ),
+    responses((status = 201, description = "Role assigned")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn assign_role(
     State(state): State<AppState>,
@@ -483,6 +535,18 @@ pub async fn assign_role(
 /// Remove a role from a member.
 ///
 /// `DELETE /api/guilds/:guild_id/members/:user_id/roles/:role_id`
+#[utoipa::path(
+    delete,
+    path = "/api/guilds/{id}/members/{user_id}/roles/{role_id}",
+    tag = "roles",
+    params(
+        ("id" = Uuid, Path, description = "Guild ID"),
+        ("user_id" = Uuid, Path, description = "User ID"),
+        ("role_id" = Uuid, Path, description = "Role ID")
+    ),
+    responses((status = 204, description = "Role removed")),
+    security(("bearer_auth" = []))
+)]
 #[tracing::instrument(skip(state))]
 pub async fn remove_role(
     State(state): State<AppState>,

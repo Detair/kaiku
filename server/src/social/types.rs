@@ -4,7 +4,9 @@ use uuid::Uuid;
 use validator::Validate;
 
 /// Friendship status enum
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "friendship_status", rename_all = "lowercase")]
 pub enum FriendshipStatus {
     Pending,
@@ -13,7 +15,7 @@ pub enum FriendshipStatus {
 }
 
 /// Friendship record from database
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
 pub struct Friendship {
     pub id: Uuid,
     pub requester_id: Uuid,
@@ -24,7 +26,7 @@ pub struct Friendship {
 }
 
 /// Friend user information (enriched with user details)
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
 pub struct Friend {
     pub user_id: Uuid,
     pub username: String,
@@ -38,7 +40,7 @@ pub struct Friend {
 }
 
 /// Request to send a friend request
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct SendFriendRequestBody {
     /// Username or user ID of the person to add
     #[validate(length(min = 1))]

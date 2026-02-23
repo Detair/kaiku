@@ -41,7 +41,7 @@ use crate::ws::broadcast_user_patch;
 // ============================================================================
 
 /// Registration request.
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct RegisterRequest {
     /// Username (3-32 lowercase alphanumeric + underscore).
     #[validate(length(min = 3, max = 32), regex(path = "USERNAME_REGEX"))]
@@ -58,7 +58,7 @@ pub struct RegisterRequest {
 }
 
 /// Login request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     /// Username.
     pub username: String,
@@ -69,21 +69,21 @@ pub struct LoginRequest {
 }
 
 /// Token refresh request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RefreshRequest {
     /// Refresh token.
     pub refresh_token: String,
 }
 
 /// Logout request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LogoutRequest {
     /// Refresh token to invalidate.
     pub refresh_token: String,
 }
 
 /// Authentication response with tokens.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AuthResponse {
     /// Access token (short-lived).
     pub access_token: String,
@@ -98,7 +98,7 @@ pub struct AuthResponse {
 }
 
 /// User profile response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UserProfile {
     /// User ID.
     pub id: String,
@@ -117,7 +117,7 @@ pub struct UserProfile {
 }
 
 /// MFA setup response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MfaSetupResponse {
     /// TOTP secret (base32-encoded).
     pub secret: String,
@@ -126,14 +126,14 @@ pub struct MfaSetupResponse {
 }
 
 /// MFA backup codes response (shown exactly once upon generation).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MfaBackupCodesResponse {
     /// Plaintext backup codes (shown to user once; store them securely).
     pub codes: Vec<String>,
 }
 
 /// MFA backup code count response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MfaBackupCodeCountResponse {
     /// Number of remaining unused backup codes.
     pub remaining: i64,
@@ -142,14 +142,14 @@ pub struct MfaBackupCodeCountResponse {
 }
 
 /// MFA verification request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MfaVerifyRequest {
     /// 6-digit TOTP code.
     pub code: String,
 }
 
 /// Update profile request.
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdateProfileRequest {
     /// New display name (1-64 characters).
     #[validate(length(min = 1, max = 64))]
@@ -160,7 +160,7 @@ pub struct UpdateProfileRequest {
 }
 
 /// Update profile response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UpdateProfileResponse {
     /// Updated fields.
     pub updated: Vec<String>,
@@ -213,6 +213,18 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
 /// permissions unless explicitly granted by an existing admin.
 ///
 /// POST /auth/register
+#[utoipa::path(
+    post,
+    path = "/auth/register",
+    tag = "auth",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "User registered successfully", body = AuthResponse),
+        (status = 400, description = "Bad request"),
+        (status = 409, description = "Username or email already taken"),
+    ),
+    security(()),
+)]
 #[tracing::instrument(skip(state, body), fields(username = %body.username))]
 pub async fn register(
     State(state): State<AppState>,
@@ -435,6 +447,17 @@ pub async fn register(
 /// Login with username/password.
 ///
 /// POST /auth/login
+#[utoipa::path(
+    post,
+    path = "/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Login successful", body = AuthResponse),
+        (status = 401, description = "Invalid credentials"),
+    ),
+    security(()),
+)]
 #[tracing::instrument(skip(state, body, normalized_ip), fields(username = %body.username))]
 pub async fn login(
     State(state): State<AppState>,
@@ -604,6 +627,17 @@ pub async fn login(
 /// Uses a database transaction with `FOR UPDATE` row locking to prevent
 /// race conditions where concurrent refresh requests could both succeed,
 /// defeating token rotation security.
+#[utoipa::path(
+    post,
+    path = "/auth/refresh",
+    tag = "auth",
+    request_body = RefreshRequest,
+    responses(
+        (status = 200, description = "Token refreshed successfully", body = AuthResponse),
+        (status = 401, description = "Invalid or expired token"),
+    ),
+    security(()),
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn refresh_token(
     State(state): State<AppState>,
@@ -701,6 +735,16 @@ pub async fn refresh_token(
 /// Logout and invalidate session.
 ///
 /// POST /auth/logout
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "auth",
+    request_body = LogoutRequest,
+    responses(
+        (status = 200, description = "Logged out successfully"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state, body), fields(user_id = %auth_user.id))]
 pub async fn logout(
     State(state): State<AppState>,
@@ -727,6 +771,15 @@ pub async fn logout(
 /// Get current user profile.
 ///
 /// GET /auth/me
+#[utoipa::path(
+    get,
+    path = "/auth/me",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Current user profile", body = UserProfile),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
     Json(UserProfile {
         id: auth_user.id.to_string(),
@@ -742,6 +795,16 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
 /// Upload user avatar.
 ///
 /// POST /auth/me/avatar
+#[utoipa::path(
+    post,
+    path = "/auth/me/avatar",
+    tag = "auth",
+    request_body(content = Vec<u8>, content_type = "multipart/form-data"),
+    responses(
+        (status = 200, description = "Avatar uploaded successfully", body = UserProfile),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn upload_avatar(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -892,6 +955,16 @@ pub async fn upload_avatar(
 ///
 /// Updates `display_name` and/or email, then broadcasts a patch event
 /// to all subscribers so they see the changes in real-time.
+#[utoipa::path(
+    post,
+    path = "/auth/me",
+    tag = "auth",
+    request_body = UpdateProfileRequest,
+    responses(
+        (status = 200, description = "Profile updated successfully", body = UpdateProfileResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn update_profile(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -979,6 +1052,15 @@ pub async fn update_profile(
 /// Stores the TOTP secret as pending in Redis (5-minute TTL).
 /// MFA is only activated once the user verifies a valid TOTP code via
 /// `POST /auth/mfa/verify`, which moves the secret to permanent DB storage.
+#[utoipa::path(
+    post,
+    path = "/auth/mfa/setup",
+    tag = "auth",
+    responses(
+        (status = 200, description = "MFA setup initiated", body = MfaSetupResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn mfa_setup(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1049,6 +1131,16 @@ pub async fn mfa_setup(
 /// Verify MFA code (TOTP or backup code).
 ///
 /// POST /auth/mfa/verify
+#[utoipa::path(
+    post,
+    path = "/auth/mfa/verify",
+    tag = "auth",
+    request_body = MfaVerifyRequest,
+    responses(
+        (status = 200, description = "MFA verification successful"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn mfa_verify(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1186,6 +1278,16 @@ pub async fn mfa_verify(
 /// Disable MFA.
 ///
 /// POST /auth/mfa/disable
+#[utoipa::path(
+    post,
+    path = "/auth/mfa/disable",
+    tag = "auth",
+    request_body = MfaVerifyRequest,
+    responses(
+        (status = 200, description = "MFA disabled successfully"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn mfa_disable(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1228,6 +1330,15 @@ pub async fn mfa_disable(
 /// Requires MFA to be enabled on the account.
 ///
 /// POST /auth/mfa/backup-codes
+#[utoipa::path(
+    post,
+    path = "/auth/mfa/backup-codes",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Backup codes generated", body = MfaBackupCodesResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
 pub async fn mfa_generate_backup_codes(
     State(state): State<AppState>,
@@ -1268,6 +1379,15 @@ pub async fn mfa_generate_backup_codes(
 /// Get remaining MFA backup code count.
 ///
 /// GET /auth/mfa/backup-codes/count
+#[utoipa::path(
+    get,
+    path = "/auth/mfa/backup-codes/count",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Backup code count", body = MfaBackupCodeCountResponse),
+    ),
+    security(("bearer_auth" = [])),
+)]
 #[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
 pub async fn mfa_backup_code_count(
     State(state): State<AppState>,
@@ -1294,14 +1414,14 @@ pub async fn mfa_backup_code_count(
 }
 
 /// OIDC callback query parameters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct OidcCallbackQuery {
     pub code: String,
     pub state: String,
 }
 
 /// OIDC authorize query parameters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct OidcAuthorizeQuery {
     /// Optional redirect URI override (for Tauri localhost callback).
     pub redirect_uri: Option<String>,
@@ -1310,6 +1430,15 @@ pub struct OidcAuthorizeQuery {
 /// Get available OIDC providers.
 ///
 /// GET /auth/oidc/providers
+#[utoipa::path(
+    get,
+    path = "/auth/oidc/providers",
+    tag = "auth",
+    responses(
+        (status = 200, description = "List of available OIDC providers"),
+    ),
+    security(()),
+)]
 pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<serde_json::Value>> {
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
 
@@ -1330,6 +1459,19 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
 /// Initiate OIDC authorization.
 ///
 /// GET /auth/oidc/authorize/:provider
+#[utoipa::path(
+    get,
+    path = "/auth/oidc/authorize/{provider}",
+    tag = "auth",
+    params(
+        ("provider" = String, Path, description = "OIDC provider name"),
+        ("redirect_uri" = Option<String>, Query, description = "Optional redirect URI override"),
+    ),
+    responses(
+        (status = 307, description = "Redirect to provider authorization URL"),
+        (status = 400, description = "OIDC not configured or auth method disabled"),
+    ),
+)]
 pub async fn oidc_authorize(
     State(state): State<AppState>,
     Path(provider): Path<String>,
@@ -1429,6 +1571,19 @@ pub async fn oidc_authorize(
 /// Handle OIDC callback.
 ///
 /// GET /auth/oidc/callback
+#[utoipa::path(
+    get,
+    path = "/auth/oidc/callback",
+    tag = "auth",
+    params(
+        ("code" = String, Query, description = "Authorization code from provider"),
+        ("state" = String, Query, description = "CSRF state parameter"),
+    ),
+    responses(
+        (status = 307, description = "Redirect to client with auth token"),
+        (status = 400, description = "Invalid callback parameters"),
+    ),
+)]
 pub async fn oidc_callback(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<OidcCallbackQuery>,
@@ -1693,14 +1848,14 @@ if (window.opener) {{
 // ============================================================================
 
 /// Forgot password request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ForgotPasswordRequest {
     /// Email address of the account.
     pub email: String,
 }
 
 /// Reset password request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ResetPasswordRequest {
     /// The reset token (raw, as received via email).
     pub token: String,
@@ -1714,6 +1869,16 @@ pub struct ResetPasswordRequest {
 /// If SMTP is not configured, returns 503.
 ///
 /// POST /auth/forgot-password
+#[utoipa::path(
+    post,
+    path = "/auth/forgot-password",
+    tag = "auth",
+    request_body = ForgotPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset email sent (always returns success)"),
+    ),
+    security(()),
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn forgot_password(
     State(state): State<AppState>,
@@ -1820,6 +1985,16 @@ pub async fn forgot_password(
 /// Reset password using a reset token.
 ///
 /// POST /auth/reset-password
+#[utoipa::path(
+    post,
+    path = "/auth/reset-password",
+    tag = "auth",
+    request_body = ResetPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset successfully"),
+    ),
+    security(()),
+)]
 #[tracing::instrument(skip(state, body))]
 pub async fn reset_password(
     State(state): State<AppState>,

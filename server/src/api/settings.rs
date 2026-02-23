@@ -10,7 +10,7 @@ use crate::api::AppState;
 use crate::db::{get_auth_methods_allowed, AuthMethodsConfig, PublicOidcProvider};
 
 /// Public server settings response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ServerSettingsResponse {
     /// Whether E2EE setup is required before using the app.
     pub require_e2ee_setup: bool,
@@ -27,6 +27,14 @@ pub struct ServerSettingsResponse {
 /// Get server settings (public endpoint).
 ///
 /// GET /api/settings
+#[utoipa::path(
+    get,
+    path = "/api/settings",
+    tag = "settings",
+    responses(
+        (status = 200, description = "Server settings"),
+    ),
+)]
 pub async fn get_server_settings(State(state): State<AppState>) -> Json<ServerSettingsResponse> {
     let auth_methods = get_auth_methods_allowed(&state.db)
         .await
@@ -58,7 +66,7 @@ pub async fn get_server_settings(State(state): State<AppState>) -> Json<ServerSe
 }
 
 /// File upload size limits response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UploadLimitsResponse {
     /// Maximum avatar size in bytes (user profiles and DM groups).
     pub max_avatar_size: usize,
@@ -74,6 +82,14 @@ pub struct UploadLimitsResponse {
 /// Clients should validate file sizes against these limits before attempting upload.
 ///
 /// GET /api/config/upload-limits
+#[utoipa::path(
+    get,
+    path = "/api/config/upload-limits",
+    tag = "settings",
+    responses(
+        (status = 200, description = "Upload limits"),
+    ),
+)]
 pub async fn get_upload_limits(State(state): State<AppState>) -> Json<UploadLimitsResponse> {
     Json(UploadLimitsResponse {
         max_avatar_size: state.config.max_avatar_size,

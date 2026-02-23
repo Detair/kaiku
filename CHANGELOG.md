@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Production client builds now selectively strip `console.log` and `console.debug` while preserving `console.error` and `console.warn` for diagnostics (TD-09)
 
 ### Added
+- Interactive API documentation (Swagger UI) at `/api/docs` — covers all REST endpoints with schemas, auth requirements, and tag grouping. Controlled via `ENABLE_API_DOCS` env var.
 - Webhook system for bot applications — developers can register up to 5 webhook endpoints per application to receive HTTP POST notifications for `message.created`, `member.joined`, `member.left`, and `command.invoked` events with HMAC-SHA256 signed payloads, automatic retry with exponential backoff (5 attempts), dead-letter storage for failed deliveries, and a delivery log for debugging
 - Bot gateway intents — bot applications can declare `messages`, `members`, and `commands` intents to filter which events they receive over the WebSocket gateway; `commands` is always enabled by default for backward compatibility
 - `MemberJoined` and `MemberLeft` gateway events — bots with the `members` intent now receive real-time notifications when users join, leave, or are kicked from guilds the bot is installed in

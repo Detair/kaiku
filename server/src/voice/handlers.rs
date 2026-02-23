@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::api::AppState;
 
 /// ICE server configuration.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct IceServer {
     /// Server URLs (e.g., "stun:stun.l.google.com:19302")
     pub urls: Vec<String>,
@@ -23,7 +23,7 @@ pub struct IceServer {
 }
 
 /// Response containing ICE server configuration.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct IceServersResponse {
     /// List of ICE servers to use for WebRTC.
     pub ice_servers: Vec<IceServer>,
@@ -35,6 +35,15 @@ pub struct IceServersResponse {
 ///
 /// Returns STUN and TURN server configuration for WebRTC connections.
 /// Clients should use these servers for NAT traversal.
+#[utoipa::path(
+    get,
+    path = "/api/voice/ice-servers",
+    tag = "voice",
+    responses(
+        (status = 200, description = "ICE server configuration"),
+    ),
+    security(("bearer_auth" = [])),
+)]
 pub async fn get_ice_servers(State(state): State<AppState>) -> Json<IceServersResponse> {
     let mut servers = vec![IceServer {
         urls: vec![state.config.stun_server.clone()],
