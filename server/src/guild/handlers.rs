@@ -139,7 +139,7 @@ pub async fn create_guild(
     let guild = sqlx::query_as::<_, Guild>(
         r"INSERT INTO guilds (id, name, owner_id, description)
            VALUES ($1, $2, $3, $4)
-           RETURNING id, name, owner_id, icon_url, description, threads_enabled, created_at",
+           RETURNING id, name, owner_id, icon_url, description, threads_enabled, discoverable, tags, banner_url, created_at",
     )
     .bind(guild_id)
     .bind(&body.name)
@@ -188,17 +188,22 @@ pub async fn list_guilds(
         Option<String>,
         Option<String>,
         bool,
+        bool,
+        Vec<String>,
+        Option<String>,
         chrono::DateTime<chrono::Utc>,
         i64,
     )> = sqlx::query_as(
         r"SELECT
-            g.id, g.name, g.owner_id, g.icon_url, g.description, g.threads_enabled, g.created_at,
+            g.id, g.name, g.owner_id, g.icon_url, g.description, g.threads_enabled,
+            g.discoverable, g.tags, g.banner_url, g.created_at,
             COUNT(gm2.user_id) as member_count
            FROM guilds g
            INNER JOIN guild_members gm ON g.id = gm.guild_id
            LEFT JOIN guild_members gm2 ON g.id = gm2.guild_id
            WHERE gm.user_id = $1
-           GROUP BY g.id, g.name, g.owner_id, g.icon_url, g.description, g.threads_enabled, g.created_at
+           GROUP BY g.id, g.name, g.owner_id, g.icon_url, g.description, g.threads_enabled,
+                    g.discoverable, g.tags, g.banner_url, g.created_at
            ORDER BY g.created_at",
     )
     .bind(auth.id)
@@ -215,6 +220,9 @@ pub async fn list_guilds(
                 icon_url,
                 description,
                 threads_enabled,
+                discoverable,
+                tags,
+                banner_url,
                 created_at,
                 member_count,
             )| {
@@ -226,6 +234,9 @@ pub async fn list_guilds(
                         icon_url,
                         description,
                         threads_enabled,
+                        discoverable,
+                        tags,
+                        banner_url,
                         created_at,
                     },
                     member_count,
@@ -259,7 +270,7 @@ pub async fn get_guild(
     }
 
     let guild = sqlx::query_as::<_, Guild>(
-        "SELECT id, name, owner_id, icon_url, description, threads_enabled, created_at FROM guilds WHERE id = $1",
+        "SELECT id, name, owner_id, icon_url, description, threads_enabled, discoverable, tags, banner_url, created_at FROM guilds WHERE id = $1",
     )
     .bind(guild_id)
     .fetch_optional(&state.db)
@@ -328,7 +339,7 @@ pub async fn update_guild(
     builder.push(" WHERE id = ");
     builder.push_bind(guild_id);
     builder
-        .push(" RETURNING id, name, owner_id, icon_url, description, threads_enabled, created_at");
+        .push(" RETURNING id, name, owner_id, icon_url, description, threads_enabled, discoverable, tags, banner_url, created_at");
 
     let updated_guild = builder
         .build_query_as::<Guild>()
@@ -375,7 +386,7 @@ pub async fn delete_guild(
 
 /// Initialize `channel_read_state` for all text channels in a guild.
 /// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear as unread.
-pub(super) async fn initialize_channel_read_state(
+pub(crate) async fn initialize_channel_read_state(
     db: &sqlx::PgPool,
     guild_id: Uuid,
     user_id: Uuid,
@@ -1047,15 +1058,19 @@ pub async fn get_guild_settings(
         return Err(GuildError::Forbidden);
     }
 
-    let threads_enabled: (bool,) =
-        sqlx::query_as("SELECT threads_enabled FROM guilds WHERE id = $1")
-            .bind(guild_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(GuildError::NotFound)?;
+    let settings: (bool, bool, Vec<String>, Option<String>) = sqlx::query_as(
+        "SELECT threads_enabled, discoverable, tags, banner_url FROM guilds WHERE id = $1",
+    )
+    .bind(guild_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(GuildError::NotFound)?;
 
     Ok(Json(GuildSettings {
-        threads_enabled: threads_enabled.0,
+        threads_enabled: settings.0,
+        discoverable: settings.1,
+        tags: settings.2,
+        banner_url: settings.3,
     }))
 }
 
@@ -1082,6 +1097,26 @@ pub async fn update_guild_settings(
         .await
         .map_err(GuildError::Permission)?;
 
+    // Validate tags if provided
+    if let Some(ref tags) = body.tags {
+        if tags.len() > 5 {
+            return Err(GuildError::Validation("Maximum 5 tags allowed".to_string()));
+        }
+        let tag_regex = regex::Regex::new(r"^[a-zA-Z0-9-]+$").unwrap();
+        for tag in tags {
+            if tag.len() < 2 || tag.len() > 32 {
+                return Err(GuildError::Validation(
+                    "Each tag must be 2-32 characters".to_string(),
+                ));
+            }
+            if !tag_regex.is_match(tag) {
+                return Err(GuildError::Validation(
+                    "Tags may only contain letters, numbers, and hyphens".to_string(),
+                ));
+            }
+        }
+    }
+
     let mut has_changes = false;
     let mut builder = QueryBuilder::new("UPDATE guilds SET ");
     {
@@ -1089,6 +1124,19 @@ pub async fn update_guild_settings(
         if let Some(threads_enabled) = body.threads_enabled {
             sep.push("threads_enabled = ")
                 .push_bind_unseparated(threads_enabled);
+            has_changes = true;
+        }
+        if let Some(discoverable) = body.discoverable {
+            sep.push("discoverable = ")
+                .push_bind_unseparated(discoverable);
+            has_changes = true;
+        }
+        if let Some(tags) = body.tags {
+            sep.push("tags = ").push_bind_unseparated(tags);
+            has_changes = true;
+        }
+        if let Some(banner_url) = body.banner_url {
+            sep.push("banner_url = ").push_bind_unseparated(banner_url);
             has_changes = true;
         }
     }
@@ -1100,12 +1148,17 @@ pub async fn update_guild_settings(
     builder
         .push(" WHERE id = ")
         .push_bind(guild_id)
-        .push(" RETURNING threads_enabled");
+        .push(" RETURNING threads_enabled, discoverable, tags, banner_url");
 
-    let (threads_enabled,) = builder
-        .build_query_as::<(bool,)>()
+    let (threads_enabled, discoverable, tags, banner_url) = builder
+        .build_query_as::<(bool, bool, Vec<String>, Option<String>)>()
         .fetch_one(&state.db)
         .await?;
 
-    Ok(Json(GuildSettings { threads_enabled }))
+    Ok(Json(GuildSettings {
+        threads_enabled,
+        discoverable,
+        tags,
+        banner_url,
+    }))
 }

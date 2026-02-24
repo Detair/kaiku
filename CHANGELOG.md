@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Production client builds now selectively strip `console.log` and `console.debug` while preserving `console.error` and `console.warn` for diagnostics (TD-09)
 
 ### Added
+- Guild discovery — public browsing of discoverable guilds with full-text search, tag filtering, and sort by popularity or newest; guilds opt in via a new "Discoverable" toggle in Server Settings with up to 5 tags and an optional banner URL; unauthenticated users can browse, authenticated users can join directly without an invite code; controlled by `ENABLE_GUILD_DISCOVERY` server config
 - Interactive API documentation (Swagger UI) at `/api/docs` — covers all REST endpoints with schemas, auth requirements, and tag grouping. Controlled via `ENABLE_API_DOCS` env var.
 - Webhook system for bot applications — developers can register up to 5 webhook endpoints per application to receive HTTP POST notifications for `message.created`, `member.joined`, `member.left`, and `command.invoked` events with HMAC-SHA256 signed payloads, automatic retry with exponential backoff (5 attempts), dead-letter storage for failed deliveries, and a delivery log for debugging
 - Bot gateway intents — bot applications can declare `messages`, `members`, and `commands` intents to filter which events they receive over the WebSocket gateway; `commands` is always enabled by default for backward compatibility
