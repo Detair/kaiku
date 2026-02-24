@@ -35,6 +35,9 @@ interface GuildStoreState {
   error: string | null;
 }
 
+// Sentinel value representing the discovery view in activeGuildId
+const DISCOVERY_SENTINEL = "__discovery__";
+
 // Create the store
 const [guildsState, setGuildsState] = createStore<GuildStoreState>({
   guilds: [],
@@ -63,8 +66,8 @@ export async function loadGuilds(): Promise<void> {
     // Prefetch channels for all guilds to populate channel→guild map and unread counts
     await loadAllGuildUnreadCounts(guilds);
 
-    // If a guild was active, reload its data
-    if (guildsState.activeGuildId) {
+    // If a real guild was active (not discovery sentinel), reload its data
+    if (guildsState.activeGuildId && guildsState.activeGuildId !== DISCOVERY_SENTINEL) {
       await loadGuildMembers(guildsState.activeGuildId);
       await loadGuildChannels(guildsState.activeGuildId);
     }
@@ -179,7 +182,7 @@ export async function selectHome(): Promise<void> {
  * Get the currently active guild
  */
 export function getActiveGuild(): Guild | null {
-  if (!guildsState.activeGuildId) return null;
+  if (!guildsState.activeGuildId || guildsState.activeGuildId === DISCOVERY_SENTINEL) return null;
   return guildsState.guilds.find((g) => g.id === guildsState.activeGuildId) ?? null;
 }
 
@@ -354,8 +357,8 @@ export function isGuildOwner(guildId: string, userId: string): boolean {
  * Check if a channel belongs to the active guild
  */
 export function isChannelInActiveGuild(channel: Channel): boolean {
-  if (!guildsState.activeGuildId) {
-    // In home view, show DM channels only
+  if (!guildsState.activeGuildId || guildsState.activeGuildId === DISCOVERY_SENTINEL) {
+    // In home or discovery view, show DM channels only
     return channel.channel_type === "dm";
   }
   return channel.guild_id === guildsState.activeGuildId;
@@ -373,7 +376,7 @@ export function patchGuild(guildId: string, diff: Record<string, unknown>): void
   }
 
   // Filter to only valid Guild fields
-  const validFields: (keyof Guild)[] = ["name", "icon_url", "description", "owner_id", "threads_enabled"];
+  const validFields: (keyof Guild)[] = ["name", "icon_url", "description", "owner_id", "threads_enabled", "discoverable", "tags", "banner_url"];
   const updates: Partial<Guild> = {};
   for (const field of validFields) {
     if (field in diff) {
@@ -450,6 +453,50 @@ export function clearGuildUnread(guildId: string): void {
  */
 export function getGuildIdForChannel(channelId: string): string | undefined {
   return guildsState.channelGuildMap[channelId];
+}
+
+// ============================================================================
+// Discovery Helpers
+// ============================================================================
+
+/**
+ * Select the discovery view (browse public guilds).
+ */
+export async function selectDiscovery(): Promise<void> {
+  const previousGuildId = guildsState.activeGuildId;
+  setGuildsState({ activeGuildId: DISCOVERY_SENTINEL });
+
+  // Disconnect from voice only if in a guild voice channel (preserve DM calls)
+  if (previousGuildId && previousGuildId !== DISCOVERY_SENTINEL) {
+    const { voiceState } = await import("./voice");
+    const { channelsState } = await import("./channels");
+
+    if (voiceState.channelId) {
+      const currentChannel = channelsState.channels.find(
+        (c) => c.id === voiceState.channelId
+      );
+      if (currentChannel && currentChannel.guild_id !== null) {
+        try {
+          const { leaveVoice } = await import("./voice");
+          await leaveVoice();
+        } catch (err) {
+          console.error("Failed to leave voice when switching to discovery:", err);
+          showToast({
+            type: "warning",
+            title: "Voice Disconnect Failed",
+            message: "Could not disconnect from voice. You may still be in the voice channel.",
+          });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Check if discovery view is currently active.
+ */
+export function isDiscoveryActive(): boolean {
+  return guildsState.activeGuildId === DISCOVERY_SENTINEL;
 }
 
 // Export the store for reading and modifying (for members store)

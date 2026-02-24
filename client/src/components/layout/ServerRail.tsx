@@ -15,8 +15,8 @@
  */
 
 import { Component, createSignal, For, Show, lazy, Suspense } from "solid-js";
-import { Home, Plus, UserPlus } from "lucide-solid";
-import { guildsState, selectHome, selectGuild, getGuildUnreadCount } from "@/stores/guilds";
+import { Home, Plus, UserPlus, Compass } from "lucide-solid";
+import { guildsState, selectHome, selectGuild, getGuildUnreadCount, selectDiscovery, isDiscoveryActive } from "@/stores/guilds";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 
 const CreateGuildModal = lazy(() => import("@/components/guilds/CreateGuildModal"));
@@ -134,6 +134,34 @@ const ServerRail: Component = () => {
             );
           }}
         </For>
+      </div>
+
+      {/* Separator before action buttons */}
+      <div class="w-8 h-0.5 bg-white/10 rounded-full my-1" />
+
+      {/* Explore / Discover Servers Button */}
+      <div class="relative">
+        {/* Pill Indicator */}
+        <Show when={isDiscoveryActive()}>
+          <div
+            class="absolute -left-3 top-1/2 -translate-y-1/2 w-1 bg-white rounded-r-full transition-all duration-200"
+            style={{ height: "40px" }}
+          />
+        </Show>
+        <button
+          class="w-12 h-12 flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group"
+          style={{
+            "border-radius": isDiscoveryActive() || isHovered("discover") ? "16px" : "50%",
+            opacity: isDiscoveryActive() || isHovered("discover") ? 1 : 0.8,
+          }}
+          onMouseEnter={() => setHoveredServerId("discover")}
+          onMouseLeave={() => setHoveredServerId(null)}
+          onClick={() => selectDiscovery()}
+          aria-label="Explore Servers"
+          title="Explore Servers"
+        >
+          <Compass class="w-5 h-5 text-accent-primary" />
+        </button>
       </div>
 
       {/* Add Server Button */}

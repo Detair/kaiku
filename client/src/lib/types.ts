@@ -102,11 +102,41 @@ export interface Guild {
   icon_url: string | null;
   description: string | null;
   threads_enabled: boolean;
+  discoverable: boolean;
+  tags: string[];
+  banner_url: string | null;
   created_at: string;
 }
 
 export interface GuildSettings {
   threads_enabled: boolean;
+  discoverable: boolean;
+  tags: string[];
+  banner_url: string | null;
+}
+
+export interface DiscoverableGuild {
+  id: string;
+  name: string;
+  icon_url: string | null;
+  banner_url: string | null;
+  description: string | null;
+  tags: string[];
+  member_count: number;
+  created_at: string;
+}
+
+export interface DiscoverResponse {
+  guilds: DiscoverableGuild[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface JoinDiscoverableResponse {
+  guild_id: string;
+  guild_name: string;
+  already_member: boolean;
 }
 
 export interface GuildMember {

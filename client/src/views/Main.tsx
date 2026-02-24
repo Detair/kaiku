@@ -9,7 +9,7 @@
  * - CommandPalette (Ctrl+K quick actions)
  */
 
-import { Component, Show, onMount, createEffect, onCleanup } from "solid-js";
+import { Component, Show, lazy, Suspense, onMount, createEffect, onCleanup } from "solid-js";
 import { Hash, Volume2 } from "lucide-solid";
 import AppShell from "@/components/layout/AppShell";
 import CommandPalette from "@/components/layout/CommandPalette";
@@ -21,9 +21,11 @@ import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";
 import { selectedChannel } from "@/stores/channels";
-import { loadGuilds, guildsState } from "@/stores/guilds";
+import { loadGuilds, guildsState, isDiscoveryActive } from "@/stores/guilds";
 import { threadsState } from "@/stores/threads";
 import { showGlobalSearch, setShowGlobalSearch, clearSearch } from "@/stores/search";
+
+const DiscoveryView = lazy(() => import("@/components/discovery/DiscoveryView"));
 
 const Main: Component = () => {
   const channel = selectedChannel;
@@ -70,69 +72,78 @@ const Main: Component = () => {
       {/* Main Application Shell */}
       <AppShell
         showServerRail={true}
-        sidebar={guildsState.activeGuildId === null ? <HomeSidebar /> : undefined}
+        sidebar={isDiscoveryActive() ? <></> : guildsState.activeGuildId === null ? <HomeSidebar /> : undefined}
       >
+        {/* Discovery View */}
+        <Show when={isDiscoveryActive()}>
+          <Suspense fallback={<div class="flex-1 bg-surface-layer1" />}>
+            <DiscoveryView />
+          </Suspense>
+        </Show>
+
         {/* Main Content Area */}
-        <Show
-          when={guildsState.activeGuildId === null}
-          fallback={
-            <Show
-              when={channel()}
-              fallback={
-                <div class="flex-1 flex items-center justify-center bg-surface-layer1">
-                  <div class="text-center text-text-secondary">
-                    <Hash class="w-12 h-12 mx-auto mb-4 opacity-30" />
-                    <p class="text-lg font-medium">Select a channel to start chatting</p>
-                    <p class="text-sm mt-2 opacity-60">Or press Ctrl+K to search</p>
+        <Show when={!isDiscoveryActive()}>
+          <Show
+            when={guildsState.activeGuildId === null}
+            fallback={
+              <Show
+                when={channel()}
+                fallback={
+                  <div class="flex-1 flex items-center justify-center bg-surface-layer1">
+                    <div class="text-center text-text-secondary">
+                      <Hash class="w-12 h-12 mx-auto mb-4 opacity-30" />
+                      <p class="text-lg font-medium">Select a channel to start chatting</p>
+                      <p class="text-sm mt-2 opacity-60">Or press Ctrl+K to search</p>
+                    </div>
                   </div>
-                </div>
-              }
-            >
-          <div class="flex flex-1 min-w-0">
-            <div class="flex-1 flex flex-col min-w-0">
-              {/* Channel Header */}
-              <header class="h-12 px-4 flex items-center border-b border-white/5 bg-surface-layer1 shadow-sm">
-                <Show
-                  when={channel()?.channel_type === "voice"}
-                  fallback={<Hash class="w-5 h-5 text-text-secondary mr-2" />}
-                >
-                  <Volume2 class="w-5 h-5 text-text-secondary mr-2" />
-                </Show>
-                <span class="font-semibold text-text-primary">{channel()?.name}</span>
-                <Show when={channel()?.topic}>
-                  <div class="ml-4 pl-4 border-l border-white/10 text-text-secondary text-sm truncate">
-                    {channel()?.topic}
-                  </div>
-                </Show>
-              </header>
+                }
+              >
+            <div class="flex flex-1 min-w-0">
+              <div class="flex-1 flex flex-col min-w-0">
+                {/* Channel Header */}
+                <header class="h-12 px-4 flex items-center border-b border-white/5 bg-surface-layer1 shadow-sm">
+                  <Show
+                    when={channel()?.channel_type === "voice"}
+                    fallback={<Hash class="w-5 h-5 text-text-secondary mr-2" />}
+                  >
+                    <Volume2 class="w-5 h-5 text-text-secondary mr-2" />
+                  </Show>
+                  <span class="font-semibold text-text-primary">{channel()?.name}</span>
+                  <Show when={channel()?.topic}>
+                    <div class="ml-4 pl-4 border-l border-white/10 text-text-secondary text-sm truncate">
+                      {channel()?.topic}
+                    </div>
+                  </Show>
+                </header>
 
-              {/* Messages */}
-              <MessageList channelId={channel()!.id} />
+                {/* Messages */}
+                <MessageList channelId={channel()!.id} />
 
-              {/* Typing Indicator */}
-              <TypingIndicator channelId={channel()!.id} />
+                {/* Typing Indicator */}
+                <TypingIndicator channelId={channel()!.id} />
 
-              {/* Message Input */}
-              <MessageInput
-                channelId={channel()!.id}
-                channelName={channel()!.name}
-                guildId={guildsState.activeGuildId ?? undefined}
-              />
+                {/* Message Input */}
+                <MessageInput
+                  channelId={channel()!.id}
+                  channelName={channel()!.name}
+                  guildId={guildsState.activeGuildId ?? undefined}
+                />
+              </div>
+
+              {/* Thread Sidebar */}
+              <Show when={threadsState.activeThreadId}>
+                <ThreadSidebar
+                  channelId={channel()!.id}
+                  guildId={guildsState.activeGuildId ?? undefined}
+                />
+              </Show>
             </div>
-
-            {/* Thread Sidebar */}
-            <Show when={threadsState.activeThreadId}>
-              <ThreadSidebar
-                channelId={channel()!.id}
-                guildId={guildsState.activeGuildId ?? undefined}
-              />
-            </Show>
-          </div>
-            </Show>
-          }
-        >
-          {/* Home View - DMs and Friends */}
-          <HomeView />
+              </Show>
+            }
+          >
+            {/* Home View - DMs and Friends */}
+            <HomeView />
+          </Show>
         </Show>
       </AppShell>
     </>
