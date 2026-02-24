@@ -10,7 +10,7 @@
  * 5. Done
  */
 
-import { Component, createSignal, createEffect, Show, For, lazy, Suspense } from "solid-js";
+import { Component, createSignal, createEffect, on, Show, For, lazy, Suspense } from "solid-js";
 import { Check, ChevronRight, ChevronLeft, Mic, Compass, Users } from "lucide-solid";
 import { preferences, updatePreference } from "@/stores/preferences";
 import { currentUser, updateUser } from "@/stores/auth";
@@ -51,14 +51,20 @@ const OnboardingWizard: Component = () => {
     }
   });
 
-  // Auto-focus first interactive element when step changes
+  // Reset wizard state when re-shown (e.g. re-run from settings)
   createEffect(() => {
-    const currentStep = step();
-    if (currentStep === 0) {
-      // Focus the display name input after DOM update
-      queueMicrotask(() => displayNameRef?.focus());
+    if (shouldShow()) {
+      setStep(0);
+      setDisplayName(currentUser()?.display_name ?? "");
     }
   });
+
+  // Auto-focus first interactive element on step transitions (defer: skip initial)
+  createEffect(on(step, (currentStep) => {
+    if (currentStep === 0) {
+      queueMicrotask(() => displayNameRef?.focus());
+    }
+  }, { defer: true }));
 
   const complete = () => {
     updatePreference("onboarding_completed", true);
@@ -266,8 +272,10 @@ const OnboardingWizard: Component = () => {
               {/* Tab switcher */}
               <div class="flex rounded-lg border border-white/10 overflow-hidden text-xs mb-4" role="tablist" aria-label="Join method">
                 <button
+                  id="tab-discover"
                   role="tab"
                   aria-selected={joinTab() === "discover"}
+                  aria-controls="tabpanel-discover"
                   onClick={() => setJoinTab("discover")}
                   class="flex-1 px-3 py-2 transition-colors"
                   classList={{
@@ -278,8 +286,10 @@ const OnboardingWizard: Component = () => {
                   Discover
                 </button>
                 <button
+                  id="tab-invite"
                   role="tab"
                   aria-selected={joinTab() === "invite"}
+                  aria-controls="tabpanel-invite"
                   onClick={() => setJoinTab("invite")}
                   class="flex-1 px-3 py-2 transition-colors"
                   classList={{
@@ -293,6 +303,7 @@ const OnboardingWizard: Component = () => {
 
               {/* Discover tab */}
               <Show when={joinTab() === "discover"}>
+                <div id="tabpanel-discover" role="tabpanel" aria-labelledby="tab-discover">
                 <Show when={discoveryLoading()}>
                   <div class="grid grid-cols-2 gap-2">
                     <For each={Array.from({ length: 4 })}>
@@ -320,7 +331,7 @@ const OnboardingWizard: Component = () => {
                     No discoverable servers yet. Try using an invite code instead.
                   </div>
                 </Show>
-                <Show when={!discoveryLoading() && discoveryGuilds().length > 0}>
+                <Show when={!discoveryLoading() && !discoveryError() && discoveryGuilds().length > 0}>
                   <div class="grid grid-cols-2 gap-2">
                     <For each={discoveryGuilds()}>
                       {(guild) => {
@@ -369,11 +380,12 @@ const OnboardingWizard: Component = () => {
                     </For>
                   </div>
                 </Show>
+                </div>
               </Show>
 
               {/* Invite code tab */}
               <Show when={joinTab() === "invite"}>
-                <div class="space-y-3">
+                <div id="tabpanel-invite" role="tabpanel" aria-labelledby="tab-invite" class="space-y-3">
                   <input
                     type="text"
                     value={inviteCode()}

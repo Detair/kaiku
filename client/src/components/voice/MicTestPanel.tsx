@@ -81,8 +81,19 @@ function MicTestPanel(props: MicTestPanelProps) {
     setMicLevel(0);
   };
 
-  const playTestSound = () => {
+  const playTestSound = async () => {
     const ctx = new AudioContext();
+
+    // Route to selected output device if supported
+    const outputId = selectedOutput();
+    if (outputId && "setSinkId" in ctx) {
+      try {
+        await (ctx as AudioContext & { setSinkId(id: string): Promise<void> }).setSinkId(outputId);
+      } catch {
+        // setSinkId not supported or failed — fall back to default output
+      }
+    }
+
     const oscillator = ctx.createOscillator();
     const gainNode = ctx.createGain();
 
@@ -97,7 +108,7 @@ function MicTestPanel(props: MicTestPanelProps) {
 
     setTimeout(() => {
       oscillator.stop();
-      ctx.close();
+      void ctx.close();
     }, 500);
   };
 
