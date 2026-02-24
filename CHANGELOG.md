@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Production client builds now selectively strip `console.log` and `console.debug` while preserving `console.error` and `console.warn` for diagnostics (TD-09)
 
 ### Added
+- Progressive image loading with blurhash placeholders — uploaded images are processed to generate blurhash color previews, thumbnail (256px) and medium (1024px) WebP variants; client displays instant blurhash placeholder while thumbnail loads, with smooth fade-in transition; click opens full-resolution original; aspect-ratio CSS prevents layout shift during load
+- Image variant download support — `GET /api/messages/attachments/{id}/download?variant=thumbnail|medium` serves bandwidth-efficient WebP variants with graceful fallback to original when variants are unavailable
 - Guild resource limits — configurable per-instance limits for guilds per user, members, channels, roles, emojis, bots per guild, and webhooks per app; enforced server-side with `LIMIT_EXCEEDED` (403) errors; limits configurable via environment variables (`MAX_GUILDS_PER_USER`, `MAX_MEMBERS_PER_GUILD`, etc.) with sensible defaults
 - Guild usage stats endpoint (`GET /api/guilds/{id}/usage`) — shows current resource counts vs limits for members, channels, roles, emojis, and bots; requires guild membership
 - Instance limits endpoint (`GET /api/config/limits`) — public endpoint returning all configured resource limits for client display

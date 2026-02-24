@@ -6,6 +6,7 @@ import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
 import CodeBlock from "@/components/ui/CodeBlock";
+import BlurhashPlaceholder from "@/components/ui/BlurhashPlaceholder";
 import ReactionBar from "./ReactionBar";
 import ThreadIndicator from "./ThreadIndicator";
 import MessageActions, { QUICK_EMOJIS } from "./MessageActions";
@@ -215,13 +216,17 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     }
   };
 
-  const getDownloadUrl = (attachment: Attachment) => {
+  const getDownloadUrl = (attachment: Attachment, variant?: string) => {
     // Construct absolute URL for the attachment with token for browser requests
     const baseUrl = getServerUrl().replace(/\/+$/, "");
     const token = getAccessToken();
     const url = `${baseUrl}/api/messages/attachments/${attachment.id}/download`;
-    // Include token as query param since <img> and <a> can't set Authorization headers
-    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    // Include token and optional variant as query params
+    const params = new URLSearchParams();
+    if (token) params.set("token", token);
+    if (variant) params.set("variant", variant);
+    const qs = params.toString();
+    return qs ? `${url}?${qs}` : url;
   };
 
   const isImage = (mimeType: string) => mimeType.startsWith("image/");
@@ -470,19 +475,46 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                     </a>
                   }
                 >
-                  <div class="relative rounded-xl overflow-hidden border border-white/5 bg-surface-layer2 max-w-md">
+                  <div
+                    class="relative rounded-xl overflow-hidden border border-white/5 bg-surface-layer2 max-w-md"
+                    style={attachment.width && attachment.height ? {
+                      "aspect-ratio": `${attachment.width} / ${attachment.height}`,
+                      "max-height": "320px",
+                    } : { "max-height": "320px" }}
+                  >
+                    {/* Blurhash placeholder (visible while image loads) */}
+                    <Show when={attachment.blurhash}>
+                      <BlurhashPlaceholder
+                        hash={attachment.blurhash!}
+                        width={attachment.width ?? 32}
+                        height={attachment.height ?? 32}
+                        class="absolute inset-0 w-full h-full"
+                      />
+                    </Show>
+
+                    {/* Actual image — loads thumbnail first, fades in over placeholder */}
                     <img
-                      src={getDownloadUrl(attachment)}
+                      src={attachment.thumbnail_url
+                        ? getDownloadUrl(attachment, "thumbnail")
+                        : getDownloadUrl(attachment)}
                       alt={attachment.filename}
-                      class="max-h-80 w-auto object-contain block"
+                      class="relative w-full h-full object-contain block opacity-0 transition-opacity duration-300"
                       loading="lazy"
+                      onLoad={(e) => {
+                        (e.target as HTMLImageElement).classList.remove("opacity-0");
+                        (e.target as HTMLImageElement).classList.add("opacity-100");
+                      }}
+                      onClick={() => {
+                        window.open(getDownloadUrl(attachment), "_blank");
+                      }}
+                      style={{ cursor: "pointer" }}
                     />
                     <a
                       href={getDownloadUrl(attachment)}
                       target="_blank"
                       rel="noopener noreferrer"
                       class="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded-lg text-white opacity-0 group-hover/attachment:opacity-100 transition-opacity backdrop-blur-sm"
-                      title="Download"
+                      title="Download original"
                     >
                       <Download class="w-4 h-4" />
                     </a>

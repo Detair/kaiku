@@ -104,8 +104,9 @@ validator = { version = "0.20", features = ["derive"] }
 mime_guess = "2"
 infer = "0.16"
 
-# Image format detection
+# Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+blurhash = "0.2"
 
 # String matching
 aho-corasick = "1"

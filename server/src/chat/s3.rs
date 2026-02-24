@@ -68,11 +68,10 @@ impl S3Client {
             .sleep_impl(Arc::new(TokioSleep::new()))
             .behavior_version_latest();
 
-        // Configure credentials from environment
-        if let (Ok(access_key), Ok(secret_key)) = (
-            std::env::var("AWS_ACCESS_KEY_ID"),
-            std::env::var("AWS_SECRET_ACCESS_KEY"),
-        ) {
+        // Configure credentials from Config fields, falling back to environment variables
+        let access_key = config.s3_access_key.clone().or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok());
+        let secret_key = config.s3_secret_key.clone().or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok());
+        if let (Some(access_key), Some(secret_key)) = (access_key, secret_key) {
             let credentials = Credentials::new(
                 access_key,
                 secret_key,
@@ -196,6 +195,26 @@ impl S3Client {
             .map_err(|e| S3Error::Config(format!("Bucket not accessible: {e}")))?;
 
         Ok(())
+    }
+
+    /// Create the configured bucket if it does not already exist.
+    ///
+    /// Used in tests and development to auto-provision storage.
+    pub async fn create_bucket_if_not_exists(&self) -> Result<(), S3Error> {
+        // Always attempt to create — ignore "already exists" errors to avoid TOCTOU races
+        match self.client.create_bucket().bucket(&self.bucket).send().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("BucketAlreadyOwnedByYou")
+                    || err_str.contains("BucketAlreadyExists")
+                {
+                    Ok(())
+                } else {
+                    Err(S3Error::Config(format!("Failed to create bucket: {e}")))
+                }
+            }
+        }
     }
 
     /// Get the raw object stream for a file (for proxying).
