@@ -54,6 +54,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
     },
   },
   display: DEFAULT_DISPLAY_PREFERENCES,
+  onboarding_completed: false,
 };
 
 // ============================================================================

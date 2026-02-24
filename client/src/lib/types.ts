@@ -604,6 +604,9 @@ export interface UserPreferences {
 
   // Display preferences for UI customization
   display: DisplayPreferences;
+
+  // Onboarding completion flag
+  onboarding_completed: boolean;
 }
 
 export interface PreferencesResponse {

@@ -25,6 +25,7 @@ import { ContextMenuContainer } from "./components/ui/ContextMenu";
 import E2EESetupPrompt from "./components/E2EESetupPrompt";
 import { PageFallback, LazyErrorBoundary } from "./components/ui/LazyFallback";
 import SetupWizard from "./components/SetupWizard";
+import OnboardingWizard from "./components/OnboardingWizard";
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
 import type { ReportTarget } from "./components/modals/ReportModal";
@@ -90,6 +91,7 @@ const ProtectedMain: Component = () => (
   <AuthGuard>
     <SetupWizard />
     <E2EESetupPrompt />
+    <OnboardingWizard />
     <AcceptanceManager />
     <Main />
   </AuthGuard>
