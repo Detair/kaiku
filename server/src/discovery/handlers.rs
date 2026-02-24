@@ -9,12 +9,10 @@ use uuid::Uuid;
 
 use super::types::{
     DiscoverQuery, DiscoverResponse, DiscoverSort, DiscoverableGuild, JoinDiscoverableResponse,
+    TAG_REGEX,
 };
 use crate::api::AppState;
 use crate::auth::AuthUser;
-
-static TAG_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9-]+$").expect("valid tag regex"));
 
 // ============================================================================
 // Error Types
@@ -75,6 +73,7 @@ impl IntoResponse for DiscoveryError {
     params(DiscoverQuery),
     responses(
         (status = 200, description = "List of discoverable guilds", body = DiscoverResponse),
+        (status = 400, description = "Validation error (invalid search query or tags)"),
         (status = 404, description = "Discovery disabled"),
     ),
 )]
@@ -104,9 +103,9 @@ pub async fn browse_guilds(
             ));
         }
         for tag in tags {
-            if tag.len() > 32 {
+            if tag.len() < 2 || tag.len() > 32 {
                 return Err(DiscoveryError::Validation(
-                    "Each filter tag must be at most 32 characters".to_string(),
+                    "Each filter tag must be 2-32 characters".to_string(),
                 ));
             }
             if !TAG_REGEX.is_match(tag) {

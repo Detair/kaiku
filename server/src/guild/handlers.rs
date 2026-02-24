@@ -16,11 +16,9 @@ use super::types::{
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db::{self, ChannelType};
+use crate::discovery::types::TAG_REGEX;
 use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
 use crate::ws::{broadcast_to_user, ServerEvent};
-
-static TAG_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9-]+$").expect("valid tag regex"));
 
 // ============================================================================
 // Response Types

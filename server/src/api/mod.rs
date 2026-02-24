@@ -166,12 +166,17 @@ pub fn create_router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Social)));
 
+    // Discovery join route with Social rate limit (20 req/60s) — frictionless join needs tighter limit
+    let discovery_join_routes = Router::new()
+        .nest("/api/discover", discovery::protected_router())
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+        .layer(from_fn(with_category(RateLimitCategory::Social)));
+
     // Other API routes with Write rate limit category (30 req/60s)
     let api_routes = Router::new()
         .nest("/api/channels", chat::channels_router())
         .nest("/api/messages", chat::messages_router())
         .nest("/api/guilds", guild::router())
-        .nest("/api/discover", discovery::protected_router())
         .nest(
             "/api/guilds/{id}/filters",
             moderation::filter_handlers::router(),
@@ -285,6 +290,7 @@ pub fn create_router(state: AppState) -> Router {
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .merge(api_routes)
+        .merge(discovery_join_routes)
         .merge(search_routes)
         .nest("/api", social_routes)
         .route("/api/reports", post(moderation::handlers::create_report))

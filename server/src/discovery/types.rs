@@ -3,6 +3,11 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Shared tag validation regex: letters, numbers, and hyphens only.
+/// Used by both guild settings (tag creation) and discovery (tag filtering).
+pub static TAG_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9-]+$").expect("valid tag regex"));
+
 /// Sort order for discovery browsing.
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]

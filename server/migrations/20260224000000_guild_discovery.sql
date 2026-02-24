@@ -3,7 +3,7 @@
 ALTER TABLE guilds ADD COLUMN discoverable BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE guilds ADD COLUMN tags TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE guilds ADD COLUMN banner_url TEXT;
-ALTER TABLE guilds ADD COLUMN member_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE guilds ADD COLUMN member_count INTEGER NOT NULL DEFAULT 0 CHECK (member_count >= 0);
 ALTER TABLE guilds ADD COLUMN search_vector tsvector
   GENERATED ALWAYS AS (
     setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
@@ -21,7 +21,7 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     UPDATE guilds SET member_count = member_count + 1 WHERE id = NEW.guild_id;
   ELSIF TG_OP = 'DELETE' THEN
-    UPDATE guilds SET member_count = member_count - 1 WHERE id = OLD.guild_id;
+    UPDATE guilds SET member_count = GREATEST(member_count - 1, 0) WHERE id = OLD.guild_id;
   END IF;
   RETURN NULL;
 END;
