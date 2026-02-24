@@ -2,7 +2,7 @@
  * GeneralTab - General guild settings (threads, discovery, tags, banner)
  */
 
-import { Component, createSignal, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
 import { X } from "lucide-solid";
 import { getGuildSettings, updateGuildSettings } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
@@ -22,6 +22,14 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
   const [bannerUrl, setBannerUrl] = createSignal("");
   const [loading, setLoading] = createSignal(true);
   const [saving, setSaving] = createSignal(false);
+  const [bannerLoadError, setBannerLoadError] = createSignal(false);
+
+  const isValidBannerUrl = createMemo(() => {
+    const url = bannerUrl().trim();
+    if (!url) return false;
+    try { return new URL(url).protocol === "https:"; }
+    catch { return false; }
+  });
 
   onMount(async () => {
     try {
@@ -38,7 +46,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
     }
   });
 
-  const saveSetting = async (patch: Record<string, unknown>) => {
+  const saveSetting = async (patch: Parameters<typeof updateGuildSettings>[1]) => {
     setSaving(true);
     try {
       await updateGuildSettings(props.guildId, patch);
@@ -269,7 +277,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
                 type="url"
                 placeholder="https://example.com/banner.png"
                 value={bannerUrl()}
-                onInput={(e) => setBannerUrl(e.currentTarget.value)}
+                onInput={(e) => { setBannerUrl(e.currentTarget.value); setBannerLoadError(false); }}
                 class="flex-1 px-3 py-1.5 text-sm rounded-lg bg-surface-layer1 border border-white/5 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
               />
               <button
@@ -280,14 +288,24 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
                 Save
               </button>
             </div>
-            <Show when={bannerUrl().trim()}>
+            <Show when={isValidBannerUrl()}>
               <div class="mt-3 h-20 rounded-lg overflow-hidden border border-white/5">
-                <img
-                  src={bannerUrl()}
-                  alt="Banner preview"
-                  class="w-full h-full object-cover"
-                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-                />
+                <Show
+                  when={!bannerLoadError()}
+                  fallback={
+                    <div class="flex items-center justify-center h-full text-xs text-text-secondary">
+                      Image failed to load
+                    </div>
+                  }
+                >
+                  <img
+                    src={bannerUrl()}
+                    alt="Banner preview"
+                    class="w-full h-full object-cover"
+                    onError={() => setBannerLoadError(true)}
+                    onLoad={() => setBannerLoadError(false)}
+                  />
+                </Show>
               </div>
             </Show>
           </div>

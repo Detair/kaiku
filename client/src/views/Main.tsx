@@ -72,7 +72,7 @@ const Main: Component = () => {
       {/* Main Application Shell */}
       <AppShell
         showServerRail={true}
-        sidebar={guildsState.activeGuildId === null ? <HomeSidebar /> : undefined}
+        sidebar={guildsState.activeGuildId === null || isDiscoveryActive() ? <HomeSidebar /> : undefined}
       >
         {/* Discovery View */}
         <Show when={isDiscoveryActive()}>

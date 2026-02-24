@@ -2,7 +2,7 @@
  * DiscoveryView - Browse and search for public guilds.
  */
 
-import { Component, createSignal, createEffect, For, Show, on, onCleanup } from "solid-js";
+import { Component, createSignal, createEffect, For, Show, on, onCleanup, onMount } from "solid-js";
 import { Search, ChevronLeft, ChevronRight } from "lucide-solid";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds } from "@/lib/tauri";
@@ -21,10 +21,12 @@ const DiscoveryView: Component = () => {
   const [error, setError] = createSignal<string | null>(null);
 
   let debounceTimer: ReturnType<typeof setTimeout>;
+  let requestId = 0;
 
   const memberGuildIds = () => new Set(guildsState.guilds.map((g) => g.id));
 
   const fetchGuilds = async () => {
+    const thisRequest = ++requestId;
     setLoading(true);
     setError(null);
     try {
@@ -34,20 +36,25 @@ const DiscoveryView: Component = () => {
         limit: PAGE_SIZE,
         offset: offset(),
       });
+      if (thisRequest !== requestId) return; // stale response
       setGuilds(result.guilds);
       setTotal(result.total);
     } catch (err) {
+      if (thisRequest !== requestId) return;
       console.error("Failed to discover guilds:", err);
       setError("Could not load guilds. Please try again.");
     } finally {
-      setLoading(false);
+      if (thisRequest === requestId) setLoading(false);
     }
   };
 
-  // Fetch on sort or offset change (defer to skip initial run — fetchGuilds is called by query effect)
+  // Initial fetch on mount (no debounce delay)
+  onMount(() => fetchGuilds());
+
+  // Fetch on sort or offset change (defer to skip initial run)
   createEffect(on([sort, offset], () => fetchGuilds(), { defer: true }));
 
-  // Debounce search query
+  // Debounce search query (defer to skip initial run)
   createEffect(
     on(query, () => {
       clearTimeout(debounceTimer);
@@ -55,7 +62,7 @@ const DiscoveryView: Component = () => {
         setOffset(0);
         fetchGuilds();
       }, 300);
-    }),
+    }, { defer: true }),
   );
 
   // Clean up debounce timer on unmount
@@ -79,16 +86,18 @@ const DiscoveryView: Component = () => {
             <input
               type="text"
               placeholder="Search servers..."
+              aria-label="Search servers"
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
               class="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-surface-layer2 border border-white/5 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
             />
           </div>
 
-          <div class="flex rounded-lg border border-white/5 overflow-hidden text-xs">
+          <div class="flex rounded-lg border border-white/5 overflow-hidden text-xs" role="group" aria-label="Sort order">
             <button
               onClick={() => { setSort("members"); setOffset(0); }}
               class="px-3 py-2 transition-colors"
+              aria-pressed={sort() === "members"}
               classList={{
                 "bg-accent-primary text-white": sort() === "members",
                 "bg-surface-layer2 text-text-secondary hover:text-text-primary": sort() !== "members",
@@ -99,6 +108,7 @@ const DiscoveryView: Component = () => {
             <button
               onClick={() => { setSort("newest"); setOffset(0); }}
               class="px-3 py-2 transition-colors"
+              aria-pressed={sort() === "newest"}
               classList={{
                 "bg-accent-primary text-white": sort() === "newest",
                 "bg-surface-layer2 text-text-secondary hover:text-text-primary": sort() !== "newest",
@@ -112,7 +122,7 @@ const DiscoveryView: Component = () => {
         {/* Loading skeleton */}
         <Show when={loading()}>
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            <For each={Array(6)}>
+            <For each={Array.from({ length: 6 })}>
               {() => (
                 <div class="h-52 rounded-xl bg-surface-layer2 animate-pulse border border-white/5" />
               )}

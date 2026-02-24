@@ -1236,7 +1236,7 @@ export async function updateGuildSettings(
     threads_enabled?: boolean;
     discoverable?: boolean;
     tags?: string[];
-    banner_url?: string;
+    banner_url?: string | null;
   },
 ): Promise<GuildSettings> {
   return fetchApi<GuildSettings>(`/api/guilds/${guildId}/settings`, {

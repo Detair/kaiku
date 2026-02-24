@@ -24,6 +24,7 @@ const GuildCard: Component<GuildCardProps> = (props) => {
   const initials = () =>
     props.guild.name
       .split(" ")
+      .filter((w) => w.length > 0)
       .map((w) => w[0])
       .join("")
       .toUpperCase()

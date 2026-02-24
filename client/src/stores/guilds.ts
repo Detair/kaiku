@@ -461,8 +461,18 @@ const DISCOVERY_SENTINEL = "__discovery__";
 /**
  * Select the discovery view (browse public guilds).
  */
-export function selectDiscovery(): void {
+export async function selectDiscovery(): Promise<void> {
+  const previousGuildId = guildsState.activeGuildId;
   setGuildsState({ activeGuildId: DISCOVERY_SENTINEL });
+
+  // Disconnect from voice if in a guild voice channel
+  if (previousGuildId && previousGuildId !== DISCOVERY_SENTINEL) {
+    const { voiceState } = await import("./voice");
+    if (voiceState.channelId) {
+      const { leaveVoice } = await import("./voice");
+      await leaveVoice();
+    }
+  }
 }
 
 /**
