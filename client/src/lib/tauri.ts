@@ -65,10 +65,13 @@ import type {
   AuthMethodsConfig,
   AdminOidcProvider,
   UiState,
+  GuildSettings,
+  DiscoverResponse,
+  JoinDiscoverableResponse,
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, ChannelCategory, ChannelWithUnread, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, GuildEmoji, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse, SearchFilters, GlobalSearchResponse, Pin, CreatePinRequest, UpdatePinRequest, ServerSettings, OidcProvider, OidcLoginResult, AuthSettingsResponse, AuthMethodsConfig, AdminOidcProvider };
+export type { User, Channel, ChannelCategory, ChannelWithUnread, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, GuildEmoji, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse, SearchFilters, GlobalSearchResponse, Pin, CreatePinRequest, UpdatePinRequest, ServerSettings, OidcProvider, OidcLoginResult, AuthSettingsResponse, AuthMethodsConfig, AdminOidcProvider, GuildSettings, DiscoverResponse, JoinDiscoverableResponse };
 
 /**
  * Unread aggregation types
@@ -1220,8 +1223,8 @@ export async function getGuildChannels(guildId: string): Promise<ChannelWithUnre
 /**
  * Get guild settings.
  */
-export async function getGuildSettings(guildId: string): Promise<{ threads_enabled: boolean }> {
-  return fetchApi<{ threads_enabled: boolean }>(`/api/guilds/${guildId}/settings`);
+export async function getGuildSettings(guildId: string): Promise<GuildSettings> {
+  return fetchApi<GuildSettings>(`/api/guilds/${guildId}/settings`);
 }
 
 /**
@@ -1229,11 +1232,45 @@ export async function getGuildSettings(guildId: string): Promise<{ threads_enabl
  */
 export async function updateGuildSettings(
   guildId: string,
-  settings: { threads_enabled?: boolean },
-): Promise<{ threads_enabled: boolean }> {
-  return fetchApi<{ threads_enabled: boolean }>(`/api/guilds/${guildId}/settings`, {
+  settings: {
+    threads_enabled?: boolean;
+    discoverable?: boolean;
+    tags?: string[];
+    banner_url?: string;
+  },
+): Promise<GuildSettings> {
+  return fetchApi<GuildSettings>(`/api/guilds/${guildId}/settings`, {
     method: "PATCH",
     body: settings,
+  });
+}
+
+/**
+ * Browse discoverable guilds (public, no auth required).
+ */
+export async function discoverGuilds(params?: {
+  q?: string;
+  tags?: string[];
+  sort?: "members" | "newest";
+  limit?: number;
+  offset?: number;
+}): Promise<DiscoverResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.q) searchParams.set("q", params.q);
+  if (params?.tags?.length) searchParams.set("tags", params.tags.join(","));
+  if (params?.sort) searchParams.set("sort", params.sort);
+  if (params?.limit) searchParams.set("limit", String(params.limit));
+  if (params?.offset) searchParams.set("offset", String(params.offset));
+  const qs = searchParams.toString();
+  return fetchApi<DiscoverResponse>(`/api/discover/guilds${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * Join a discoverable guild (requires auth).
+ */
+export async function joinDiscoverable(guildId: string): Promise<JoinDiscoverableResponse> {
+  return fetchApi<JoinDiscoverableResponse>(`/api/discover/guilds/${guildId}/join`, {
+    method: "POST",
   });
 }
 
