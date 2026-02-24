@@ -63,8 +63,8 @@ export async function loadGuilds(): Promise<void> {
     // Prefetch channels for all guilds to populate channel→guild map and unread counts
     await loadAllGuildUnreadCounts(guilds);
 
-    // If a guild was active, reload its data
-    if (guildsState.activeGuildId) {
+    // If a real guild was active (not discovery sentinel), reload its data
+    if (guildsState.activeGuildId && guildsState.activeGuildId !== DISCOVERY_SENTINEL) {
       await loadGuildMembers(guildsState.activeGuildId);
       await loadGuildChannels(guildsState.activeGuildId);
     }
@@ -354,8 +354,8 @@ export function isGuildOwner(guildId: string, userId: string): boolean {
  * Check if a channel belongs to the active guild
  */
 export function isChannelInActiveGuild(channel: Channel): boolean {
-  if (!guildsState.activeGuildId) {
-    // In home view, show DM channels only
+  if (!guildsState.activeGuildId || guildsState.activeGuildId === DISCOVERY_SENTINEL) {
+    // In home or discovery view, show DM channels only
     return channel.channel_type === "dm";
   }
   return channel.guild_id === guildsState.activeGuildId;

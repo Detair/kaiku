@@ -2,7 +2,7 @@
  * DiscoveryView - Browse and search for public guilds.
  */
 
-import { Component, createSignal, createEffect, For, Show, on } from "solid-js";
+import { Component, createSignal, createEffect, For, Show, on, onCleanup } from "solid-js";
 import { Search, ChevronLeft, ChevronRight } from "lucide-solid";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds } from "@/lib/tauri";
@@ -44,8 +44,8 @@ const DiscoveryView: Component = () => {
     }
   };
 
-  // Fetch on sort or offset change
-  createEffect(on([sort, offset], () => fetchGuilds()));
+  // Fetch on sort or offset change (defer to skip initial run — fetchGuilds is called by query effect)
+  createEffect(on([sort, offset], () => fetchGuilds(), { defer: true }));
 
   // Debounce search query
   createEffect(
@@ -57,6 +57,9 @@ const DiscoveryView: Component = () => {
       }, 300);
     }),
   );
+
+  // Clean up debounce timer on unmount
+  onCleanup(() => clearTimeout(debounceTimer));
 
   const totalPages = () => Math.max(1, Math.ceil(total() / PAGE_SIZE));
   const currentPage = () => Math.floor(offset() / PAGE_SIZE) + 1;
@@ -156,6 +159,7 @@ const DiscoveryView: Component = () => {
               <button
                 onClick={() => setOffset((prev) => Math.max(0, prev - PAGE_SIZE))}
                 disabled={offset() === 0}
+                aria-label="Previous page"
                 class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-30 disabled:cursor-default transition-colors"
               >
                 <ChevronLeft class="w-4 h-4" />
@@ -166,6 +170,7 @@ const DiscoveryView: Component = () => {
               <button
                 onClick={() => setOffset((prev) => prev + PAGE_SIZE)}
                 disabled={offset() + PAGE_SIZE >= total()}
+                aria-label="Next page"
                 class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-30 disabled:cursor-default transition-colors"
               >
                 <ChevronRight class="w-4 h-4" />

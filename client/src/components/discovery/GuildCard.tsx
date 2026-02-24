@@ -2,7 +2,7 @@
  * GuildCard - Display card for a discoverable guild.
  */
 
-import { Component, Show, createSignal } from "solid-js";
+import { Component, Show, For, createSignal } from "solid-js";
 import { Users } from "lucide-solid";
 import type { DiscoverableGuild } from "@/lib/types";
 import { joinDiscoverable } from "@/lib/tauri";
@@ -16,7 +16,10 @@ interface GuildCardProps {
 
 const GuildCard: Component<GuildCardProps> = (props) => {
   const [joining, setJoining] = createSignal(false);
-  const [joined, setJoined] = createSignal(props.isMember ?? false);
+  const [localJoined, setLocalJoined] = createSignal(false);
+
+  // Derive joined state reactively from prop + local state (Issue #19)
+  const joined = () => localJoined() || (props.isMember ?? false);
 
   const initials = () =>
     props.guild.name
@@ -37,13 +40,24 @@ const GuildCard: Component<GuildCardProps> = (props) => {
     try {
       const result = await joinDiscoverable(props.guild.id);
       if (result.already_member) {
-        setJoined(true);
+        setLocalJoined(true);
         showToast({ type: "info", title: "Already a Member", message: `You're already in ${result.guild_name}.` });
       } else {
-        setJoined(true);
+        setLocalJoined(true);
         showToast({ type: "success", title: "Joined!", message: `You've joined ${result.guild_name}.` });
-        await loadGuilds();
-        await selectGuild(result.guild_id);
+        // Post-join UI refresh in separate try/catch (Issue #4)
+        try {
+          await loadGuilds();
+          await selectGuild(result.guild_id);
+        } catch (refreshErr) {
+          console.error("Failed to refresh guild list after join:", refreshErr);
+          showToast({
+            type: "warning",
+            title: "Refresh Needed",
+            message: "You've joined the server but the sidebar didn't update. Try restarting the app.",
+            duration: 10000,
+          });
+        }
       }
     } catch (err) {
       console.error("Failed to join guild:", err);
@@ -98,14 +112,16 @@ const GuildCard: Component<GuildCardProps> = (props) => {
           <p class="text-xs text-text-secondary mt-1 line-clamp-2">{truncatedDescription()}</p>
         </Show>
 
-        {/* Tags */}
+        {/* Tags (Issue #17: use <For> instead of .map) */}
         <Show when={props.guild.tags.length > 0}>
           <div class="flex flex-wrap gap-1 mt-2">
-            {props.guild.tags.map((tag) => (
-              <span class="px-1.5 py-0.5 text-[10px] rounded bg-white/5 text-text-secondary">
-                {tag}
-              </span>
-            ))}
+            <For each={props.guild.tags}>
+              {(tag) => (
+                <span class="px-1.5 py-0.5 text-[10px] rounded bg-white/5 text-text-secondary">
+                  {tag}
+                </span>
+              )}
+            </For>
           </div>
         </Show>
 

@@ -56,7 +56,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
     try {
       await saveSetting({ threads_enabled: newValue });
       setThreadsEnabled(newValue);
-    } catch {
+    } catch (_: unknown) {
       // error already shown by saveSetting
     }
   };
@@ -66,7 +66,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
     try {
       await saveSetting({ discoverable: newValue });
       setDiscoverable(newValue);
-    } catch {
+    } catch (_: unknown) {
       // error already shown by saveSetting
     }
   };
@@ -96,7 +96,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
       await saveSetting({ tags: newTags });
       setTags(newTags);
       setTagInput("");
-    } catch {
+    } catch (_: unknown) {
       // error already shown
     }
   };
@@ -106,7 +106,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
     try {
       await saveSetting({ tags: newTags });
       setTags(newTags);
-    } catch {
+    } catch (_: unknown) {
       // error already shown
     }
   };
@@ -123,7 +123,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
     try {
       await saveSetting({ banner_url: url });
       showToast({ type: "success", title: "Saved", message: "Banner URL updated." });
-    } catch {
+    } catch (_: unknown) {
       // error already shown
     }
   };
