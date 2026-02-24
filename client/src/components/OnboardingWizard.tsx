@@ -10,7 +10,7 @@
  * 5. Done
  */
 
-import { Component, createSignal, createEffect, on, Show, For, lazy, Suspense } from "solid-js";
+import { Component, createSignal, createEffect, on, onCleanup, Show, For, lazy, Suspense } from "solid-js";
 import { Check, ChevronRight, ChevronLeft, Mic, Compass, Users } from "lucide-solid";
 import { preferences, updatePreference } from "@/stores/preferences";
 import { currentUser, updateUser } from "@/stores/auth";
@@ -40,18 +40,13 @@ const OnboardingWizard: Component = () => {
   const [discoveryError, setDiscoveryError] = createSignal(false);
   const [discoveryPermanent, setDiscoveryPermanent] = createSignal(false);
   const [joinTab, setJoinTab] = createSignal<"discover" | "invite">("discover");
+  const [joinedIds, setJoinedIds] = createSignal<Set<string>>(new Set());
 
   let displayNameRef: HTMLInputElement | undefined;
+  let dialogRef: HTMLDivElement | undefined;
 
-  // Sync display name when user data becomes available
-  createEffect(() => {
-    const name = currentUser()?.display_name;
-    if (name && !displayName()) {
-      setDisplayName(name);
-    }
-  });
-
-  // Reset wizard state when re-shown (e.g. re-run from settings)
+  // Reset wizard state when re-shown (e.g. re-run from settings).
+  // Also handles initial display name sync when user data loads.
   createEffect(() => {
     if (shouldShow()) {
       setStep(0);
@@ -59,12 +54,48 @@ const OnboardingWizard: Component = () => {
     }
   });
 
+  // Sync display name if user data loads asynchronously after wizard is already showing
+  createEffect(on(
+    () => currentUser()?.display_name,
+    (name) => {
+      if (name && step() === 0 && displayName() === "") {
+        setDisplayName(name);
+      }
+    },
+    { defer: true },
+  ));
+
   // Auto-focus first interactive element on step transitions (defer: skip initial)
   createEffect(on(step, (currentStep) => {
     if (currentStep === 0) {
       queueMicrotask(() => displayNameRef?.focus());
     }
   }, { defer: true }));
+
+  // Focus trap: constrain Tab cycling within the dialog (aria-modal="true" contract)
+  const handleFocusTrap = (e: KeyboardEvent) => {
+    if (e.key !== "Tab" || !dialogRef) return;
+    const focusable = dialogRef.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  createEffect(() => {
+    if (shouldShow()) {
+      document.addEventListener("keydown", handleFocusTrap);
+      onCleanup(() => document.removeEventListener("keydown", handleFocusTrap));
+    }
+  });
 
   const complete = () => {
     updatePreference("onboarding_completed", true);
@@ -136,7 +167,15 @@ const OnboardingWizard: Component = () => {
         showToast({ type: "info", title: "Already a Member", message: `You're already in ${result.guild_name}.` });
       } else {
         showToast({ type: "success", title: "Joined!", message: `You've joined ${result.guild_name}.` });
+        // Refresh guild list so sidebar shows the new guild after wizard closes
+        try {
+          const { loadGuilds } = await import("@/stores/guilds");
+          await loadGuilds();
+        } catch (refreshErr) {
+          console.error("Failed to refresh guild list after onboarding join:", refreshErr);
+        }
       }
+      setJoinedIds((prev) => new Set([...prev, guildId]));
       return true;
     } catch (err: unknown) {
       console.error("Failed to join discoverable guild:", err);
@@ -163,7 +202,7 @@ const OnboardingWizard: Component = () => {
   return (
     <Show when={shouldShow()}>
       <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50" role="dialog" aria-modal="true" aria-label="Onboarding wizard">
-        <div class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden" style="background-color: var(--color-surface-layer2)">
+        <div ref={dialogRef} class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden" style="background-color: var(--color-surface-layer2)">
           {/* Progress dots */}
           <div class="flex justify-center gap-2 pt-5 pb-2" role="progressbar" aria-valuenow={step() + 1} aria-valuemin={1} aria-valuemax={TOTAL_STEPS} aria-label={`Step ${step() + 1} of ${TOTAL_STEPS}`}>
             <For each={Array.from({ length: TOTAL_STEPS })}>
@@ -190,10 +229,11 @@ const OnboardingWizard: Component = () => {
                 </p>
               </div>
               <div>
-                <label class="block text-sm font-medium text-text-secondary mb-2">
+                <label for="onboarding-display-name" class="block text-sm font-medium text-text-secondary mb-2">
                   Display Name
                 </label>
                 <input
+                  id="onboarding-display-name"
                   ref={displayNameRef}
                   type="text"
                   value={displayName()}
@@ -335,13 +375,13 @@ const OnboardingWizard: Component = () => {
                   <div class="grid grid-cols-2 gap-2">
                     <For each={discoveryGuilds()}>
                       {(guild) => {
-                        const [joined, setJoined] = createSignal(false);
                         const initials = guild.name
                           .split(" ")
                           .map((w) => w[0])
                           .join("")
                           .toUpperCase()
                           .slice(0, 2);
+                        const isJoined = () => joinedIds().has(guild.id);
 
                         return (
                           <div class="flex items-center gap-2 p-2.5 rounded-lg bg-surface-layer1 border border-white/5">
@@ -361,18 +401,15 @@ const OnboardingWizard: Component = () => {
                               </div>
                             </div>
                             <button
-                              onClick={async () => {
-                                const success = await handleJoinDiscoverable(guild.id);
-                                if (success) setJoined(true);
-                              }}
-                              disabled={joined()}
+                              onClick={() => handleJoinDiscoverable(guild.id)}
+                              disabled={isJoined()}
                               class="px-2 py-1 text-[10px] font-medium rounded transition-colors flex-shrink-0"
                               classList={{
-                                "bg-accent-primary text-white hover:bg-accent-hover": !joined(),
-                                "bg-white/10 text-text-secondary cursor-default": joined(),
+                                "bg-accent-primary text-white hover:bg-accent-hover": !isJoined(),
+                                "bg-white/10 text-text-secondary cursor-default": isJoined(),
                               }}
                             >
-                              {joined() ? "Joined" : "Join"}
+                              {isJoined() ? "Joined" : "Join"}
                             </button>
                           </div>
                         );

@@ -89,8 +89,8 @@ function MicTestPanel(props: MicTestPanelProps) {
     if (outputId && "setSinkId" in ctx) {
       try {
         await (ctx as AudioContext & { setSinkId(id: string): Promise<void> }).setSinkId(outputId);
-      } catch {
-        // setSinkId not supported or failed — fall back to default output
+      } catch (err) {
+        console.warn("Could not route test sound to selected output device:", err);
       }
     }
 
@@ -146,10 +146,11 @@ function MicTestPanel(props: MicTestPanelProps) {
     <div class={spacing()}>
       {/* Device Selection */}
       <div>
-        <label class="block text-sm font-medium text-text-secondary mb-1">
+        <label for="mic-input-device" class="block text-sm font-medium text-text-secondary mb-1">
           Input Device:
         </label>
         <select
+          id="mic-input-device"
           value={selectedInput()}
           onChange={(e) => setSelectedInput(e.target.value)}
           disabled={isTesting()}
@@ -164,10 +165,11 @@ function MicTestPanel(props: MicTestPanelProps) {
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-text-secondary mb-1">
+        <label for="mic-output-device" class="block text-sm font-medium text-text-secondary mb-1">
           Output Device:
         </label>
         <select
+          id="mic-output-device"
           value={selectedOutput()}
           onChange={(e) => setSelectedOutput(e.target.value)}
           class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-sm"
