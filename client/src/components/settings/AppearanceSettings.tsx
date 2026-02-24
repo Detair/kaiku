@@ -5,8 +5,10 @@
  */
 
 import { Component, For } from "solid-js";
-import { Check } from "lucide-solid";
+import { Check, RotateCcw } from "lucide-solid";
 import { themeState, setTheme, type ThemeDefinition } from "@/stores/theme";
+import { updatePreference } from "@/stores/preferences";
+import { showToast } from "@/components/ui/Toast";
 
 const AppearanceSettings: Component = () => {
   return (
@@ -75,6 +77,24 @@ const AppearanceSettings: Component = () => {
             </button>
           )}
         </For>
+      </div>
+
+      {/* Re-run Onboarding */}
+      <div class="mt-8 pt-6 border-t border-white/5">
+        <h3 class="text-lg font-semibold mb-2 text-text-primary">Setup</h3>
+        <p class="text-sm text-text-secondary mb-4">
+          Re-run the onboarding wizard to reconfigure your initial settings.
+        </p>
+        <button
+          onClick={() => {
+            updatePreference("onboarding_completed", false);
+            showToast({ type: "info", title: "Onboarding Reset", message: "Close settings to start the onboarding wizard." });
+          }}
+          class="flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-surface-layer2 border border-white/10 text-text-secondary hover:text-text-primary hover:border-white/20 transition-colors"
+        >
+          <RotateCcw class="w-4 h-4" />
+          Re-run Setup Wizard
+        </button>
       </div>
     </div>
   );
