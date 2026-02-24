@@ -37,7 +37,8 @@ use crate::moderation::filter_cache::FilterCache;
 use crate::ratelimit::{rate_limit_by_user, with_category, RateLimitCategory, RateLimiter};
 use crate::voice::SfuServer;
 use crate::{
-    admin, auth, chat, connectivity, crypto, guild, moderation, pages, social, voice, webhooks, ws,
+    admin, auth, chat, connectivity, crypto, discovery, guild, moderation, pages, social, voice,
+    webhooks, ws,
 };
 
 /// Shared application state.
@@ -168,6 +169,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/channels", chat::channels_router())
         .nest("/api/messages", chat::messages_router())
         .nest("/api/guilds", guild::router())
+        .nest("/api/discover", discovery::protected_router())
         .nest(
             "/api/guilds/{id}/filters",
             moderation::filter_handlers::router(),
@@ -290,6 +292,8 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(health_check))
+        // Public guild discovery (browsing, no auth required)
+        .nest("/api/discover", discovery::public_router())
         // Public server settings
         .route("/api/settings", get(settings::get_server_settings))
         .route(

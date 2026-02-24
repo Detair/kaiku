@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 
 /// Server configuration loaded from environment variables.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     /// Server bind address (e.g., "0.0.0.0:8080")
     pub bind_address: String,
@@ -121,6 +122,11 @@ pub struct Config {
     /// Defaults to `true` in debug builds, `false` in release builds.
     /// Override via `ENABLE_API_DOCS` env var ("true"/"1" to enable, "false"/"0" to disable).
     pub enable_api_docs: bool,
+
+    /// Whether to enable the guild discovery endpoint for browsing public guilds.
+    ///
+    /// Defaults to `true`. Override via `ENABLE_GUILD_DISCOVERY` env var.
+    pub enable_guild_discovery: bool,
 }
 
 impl Config {
@@ -205,6 +211,10 @@ impl Config {
                 .ok()
                 .map(|v| v.to_lowercase() == "true" || v == "1")
                 .unwrap_or(cfg!(debug_assertions)),
+            enable_guild_discovery: env::var("ENABLE_GUILD_DISCOVERY")
+                .ok()
+                .map(|v| v.to_lowercase() == "true" || v == "1")
+                .unwrap_or(true),
         })
     }
 
@@ -277,6 +287,7 @@ impl Config {
             smtp_from: None,
             smtp_tls: "starttls".into(),
             enable_api_docs: true,
+            enable_guild_discovery: true,
         }
     }
 }
