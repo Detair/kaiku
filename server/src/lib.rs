@@ -11,6 +11,7 @@ pub mod config;
 pub mod connectivity;
 pub mod crypto;
 pub mod db;
+pub mod discovery;
 pub mod email;
 pub mod guild;
 pub mod moderation;

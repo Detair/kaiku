@@ -17,6 +17,9 @@ pub struct Guild {
     pub icon_url: Option<String>,
     pub description: Option<String>,
     pub threads_enabled: bool,
+    pub discoverable: bool,
+    pub tags: Vec<String>,
+    pub banner_url: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -174,12 +177,18 @@ pub struct UpdateEmojiRequest {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GuildSettings {
     pub threads_enabled: bool,
+    pub discoverable: bool,
+    pub tags: Vec<String>,
+    pub banner_url: Option<String>,
 }
 
 /// Request to update guild settings.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateGuildSettingsRequest {
     pub threads_enabled: Option<bool>,
+    pub discoverable: Option<bool>,
+    pub tags: Option<Vec<String>>,
+    pub banner_url: Option<String>,
 }
 
 // ============================================================================

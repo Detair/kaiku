@@ -34,10 +34,13 @@ use crate::chat::S3Client;
 use crate::config::Config;
 use crate::email::EmailService;
 use crate::moderation::filter_cache::FilterCache;
-use crate::ratelimit::{rate_limit_by_user, with_category, RateLimitCategory, RateLimiter};
+use crate::ratelimit::{
+    rate_limit_by_ip, rate_limit_by_user, with_category, RateLimitCategory, RateLimiter,
+};
 use crate::voice::SfuServer;
 use crate::{
-    admin, auth, chat, connectivity, crypto, guild, moderation, pages, social, voice, webhooks, ws,
+    admin, auth, chat, connectivity, crypto, discovery, guild, moderation, pages, social, voice,
+    webhooks, ws,
 };
 
 /// Shared application state.
@@ -163,6 +166,12 @@ pub fn create_router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Social)));
 
+    // Discovery join route with Social rate limit (20 req/60s) — frictionless join needs tighter limit
+    let discovery_join_routes = Router::new()
+        .nest("/api/discover", discovery::protected_router())
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+        .layer(from_fn(with_category(RateLimitCategory::Social)));
+
     // Other API routes with Write rate limit category (30 req/60s)
     let api_routes = Router::new()
         .nest("/api/channels", chat::channels_router())
@@ -281,6 +290,7 @@ pub fn create_router(state: AppState) -> Router {
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .merge(api_routes)
+        .merge(discovery_join_routes)
         .merge(search_routes)
         .nest("/api", social_routes)
         .route("/api/reports", post(moderation::handlers::create_report))
@@ -290,6 +300,13 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(health_check))
+        // Public guild discovery (browsing, no auth required, IP rate limited)
+        .nest(
+            "/api/discover",
+            discovery::public_router()
+                .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
+                .layer(from_fn(with_category(RateLimitCategory::Search))),
+        )
         // Public server settings
         .route("/api/settings", get(settings::get_server_settings))
         .route(

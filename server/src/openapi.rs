@@ -46,6 +46,7 @@ use utoipa::{Modify, OpenApi};
         (name = "preferences", description = "User preferences"),
         (name = "pages", description = "Platform and guild pages"),
         (name = "connectivity", description = "Connection and session info"),
+        (name = "discovery", description = "Public guild discovery and browsing"),
         (name = "settings", description = "Server settings and configuration"),
         (name = "setup", description = "Initial server setup"),
         (name = "uploads", description = "File upload operations"),
@@ -156,6 +157,9 @@ use utoipa::{Modify, OpenApi};
         crate::guild::emojis::delete_emoji,
         // Guild Search
         crate::guild::search::search_messages,
+        // Discovery
+        crate::discovery::handlers::browse_guilds,
+        crate::discovery::handlers::join_discoverable,
         // Guild Pages
         crate::pages::handlers::list_guild_pages,
         crate::pages::handlers::create_guild_page,
@@ -403,6 +407,11 @@ use utoipa::{Modify, OpenApi};
         crate::guild::categories::UpdateCategoryRequest,
         crate::guild::categories::ReorderRequest,
         crate::guild::categories::CategoryPosition,
+        // Discovery
+        crate::discovery::types::DiscoverSort,
+        crate::discovery::types::DiscoverableGuild,
+        crate::discovery::types::DiscoverResponse,
+        crate::discovery::types::JoinDiscoverableResponse,
         // Guild - Search
         crate::guild::search::SearchQuery,
         crate::guild::search::SearchAuthor,
