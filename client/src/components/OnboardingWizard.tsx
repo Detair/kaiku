@@ -26,9 +26,9 @@ const MicTestPanel = lazy(() => import("@/components/voice/MicTestPanel"));
 const TOTAL_STEPS = 5;
 
 const OnboardingWizard: Component = () => {
-  // Don't render if onboarding is complete or setup wizard is showing
+  // Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
   const shouldShow = () =>
-    !preferences().onboarding_completed && !authState.setupRequired;
+    authState.isInitialized && !preferences().onboarding_completed && !authState.setupRequired;
 
   const [step, setStep] = createSignal(0);
   const [displayName, setDisplayName] = createSignal(currentUser()?.display_name ?? "");
@@ -61,12 +61,13 @@ const OnboardingWizard: Component = () => {
     if (name && name !== currentUser()?.display_name) {
       try {
         const { fetchApi } = await import("@/lib/tauri");
-        await fetchApi("/api/me", {
-          method: "PATCH",
+        await fetchApi("/auth/me", {
+          method: "POST",
           body: { display_name: name },
         });
         updateUser({ display_name: name });
-      } catch {
+      } catch (err: unknown) {
+        console.error("Failed to save display name:", err);
         // Non-critical, continue anyway
       }
     }
@@ -78,14 +79,15 @@ const OnboardingWizard: Component = () => {
     try {
       const result = await discoverGuilds({ sort: "members", limit: 6, offset: 0 });
       setDiscoveryGuilds(result.guilds);
-    } catch {
-      // Silently fail — user can still use invite code tab
+    } catch (err: unknown) {
+      console.error("Failed to load discovery guilds:", err);
+      // Non-fatal — user can still use invite code tab
     } finally {
       setDiscoveryLoading(false);
     }
   };
 
-  const handleJoinDiscoverable = async (guildId: string) => {
+  const handleJoinDiscoverable = async (guildId: string): Promise<boolean> => {
     try {
       const result = await joinDiscoverable(guildId);
       if (result.already_member) {
@@ -93,8 +95,11 @@ const OnboardingWizard: Component = () => {
       } else {
         showToast({ type: "success", title: "Joined!", message: `You've joined ${result.guild_name}.` });
       }
-    } catch {
+      return true;
+    } catch (err: unknown) {
+      console.error("Failed to join discoverable guild:", err);
       showToast({ type: "error", title: "Join Failed", message: "Could not join this server." });
+      return false;
     }
   };
 
@@ -105,7 +110,8 @@ const OnboardingWizard: Component = () => {
     try {
       await joinViaInviteCode(code);
       setInviteCode("");
-    } catch {
+    } catch (err: unknown) {
+      console.error("Failed to join via invite code:", err);
       showToast({ type: "error", title: "Invalid Invite", message: "Could not join with this invite code." });
     } finally {
       setJoiningInvite(false);
@@ -289,8 +295,8 @@ const OnboardingWizard: Component = () => {
                             </div>
                             <button
                               onClick={async () => {
-                                await handleJoinDiscoverable(guild.id);
-                                setJoined(true);
+                                const success = await handleJoinDiscoverable(guild.id);
+                                if (success) setJoined(true);
                               }}
                               disabled={joined()}
                               class="px-2 py-1 text-[10px] font-medium rounded transition-colors flex-shrink-0"

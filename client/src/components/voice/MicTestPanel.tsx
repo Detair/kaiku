@@ -42,6 +42,7 @@ function MicTestPanel(props: MicTestPanelProps) {
       }
     } catch (err) {
       console.error("Failed to initialize mic test:", err);
+      setError({ type: "unknown", message: "Failed to initialize audio system." } as VoiceError);
     }
   });
 
