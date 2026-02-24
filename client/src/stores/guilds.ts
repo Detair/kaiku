@@ -35,6 +35,9 @@ interface GuildStoreState {
   error: string | null;
 }
 
+// Sentinel value representing the discovery view in activeGuildId
+const DISCOVERY_SENTINEL = "__discovery__";
+
 // Create the store
 const [guildsState, setGuildsState] = createStore<GuildStoreState>({
   guilds: [],
@@ -455,8 +458,6 @@ export function getGuildIdForChannel(channelId: string): string | undefined {
 // ============================================================================
 // Discovery Helpers
 // ============================================================================
-
-const DISCOVERY_SENTINEL = "__discovery__";
 
 /**
  * Select the discovery view (browse public guilds).

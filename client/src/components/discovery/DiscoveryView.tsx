@@ -2,7 +2,7 @@
  * DiscoveryView - Browse and search for public guilds.
  */
 
-import { Component, createSignal, createEffect, For, Show, on, onCleanup, onMount } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, For, Show, on, onCleanup, onMount } from "solid-js";
 import { Search, ChevronLeft, ChevronRight } from "lucide-solid";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds } from "@/lib/tauri";
@@ -24,7 +24,7 @@ const DiscoveryView: Component = () => {
   let debounceTimer: ReturnType<typeof setTimeout>;
   let requestId = 0;
 
-  const memberGuildIds = () => new Set(guildsState.guilds.map((g) => g.id));
+  const memberGuildIds = createMemo(() => new Set(guildsState.guilds.map((g) => g.id)));
 
   const fetchGuilds = async () => {
     const thisRequest = ++requestId;

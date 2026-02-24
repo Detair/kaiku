@@ -25,8 +25,9 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
   const saving = () => savingCount() > 0;
   const [bannerLoadError, setBannerLoadError] = createSignal(false);
 
+  const trimmedBannerUrl = createMemo(() => bannerUrl().trim());
   const isValidBannerUrl = createMemo(() => {
-    const url = bannerUrl().trim();
+    const url = trimmedBannerUrl();
     if (!url) return false;
     try { return new URL(url).protocol === "https:"; }
     catch { return false; }
@@ -300,7 +301,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
                   }
                 >
                   <img
-                    src={bannerUrl()}
+                    src={trimmedBannerUrl()}
                     alt="Banner preview"
                     class="w-full h-full object-cover"
                     onError={() => setBannerLoadError(true)}
