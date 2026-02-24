@@ -46,9 +46,9 @@ function MicTestPanel(props: MicTestPanelProps) {
     }
   });
 
-  onCleanup(async () => {
+  onCleanup(() => {
     if (levelInterval) clearInterval(levelInterval);
-    if (adapter) await adapter.stopMicTest();
+    if (adapter) void adapter.stopMicTest(); // fire-and-forget; SolidJS doesn't await cleanup
   });
 
   const startTest = async () => {

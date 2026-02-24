@@ -36,6 +36,7 @@ const OnboardingWizard: Component = () => {
   const [joiningInvite, setJoiningInvite] = createSignal(false);
   const [discoveryGuilds, setDiscoveryGuilds] = createSignal<DiscoverableGuild[]>([]);
   const [discoveryLoading, setDiscoveryLoading] = createSignal(false);
+  const [discoveryError, setDiscoveryError] = createSignal(false);
   const [joinTab, setJoinTab] = createSignal<"discover" | "invite">("discover");
 
   const complete = () => {
@@ -68,7 +69,12 @@ const OnboardingWizard: Component = () => {
         updateUser({ display_name: name });
       } catch (err: unknown) {
         console.error("Failed to save display name:", err);
-        // Non-critical, continue anyway
+        showToast({
+          type: "warning",
+          title: "Could Not Save Name",
+          message: "Your display name wasn't saved. You can update it later in settings.",
+          duration: 8000,
+        });
       }
     }
     next();
@@ -76,12 +82,13 @@ const OnboardingWizard: Component = () => {
 
   const loadDiscoveryGuilds = async () => {
     setDiscoveryLoading(true);
+    setDiscoveryError(false);
     try {
       const result = await discoverGuilds({ sort: "members", limit: 6, offset: 0 });
       setDiscoveryGuilds(result.guilds);
     } catch (err: unknown) {
       console.error("Failed to load discovery guilds:", err);
-      // Non-fatal — user can still use invite code tab
+      setDiscoveryError(true);
     } finally {
       setDiscoveryLoading(false);
     }
@@ -120,10 +127,10 @@ const OnboardingWizard: Component = () => {
 
   return (
     <Show when={shouldShow()}>
-      <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+      <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50" role="dialog" aria-modal="true" aria-label="Onboarding wizard">
         <div class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden" style="background-color: var(--color-surface-layer2)">
           {/* Progress dots */}
-          <div class="flex justify-center gap-2 pt-5 pb-2">
+          <div class="flex justify-center gap-2 pt-5 pb-2" role="progressbar" aria-valuenow={step() + 1} aria-valuemin={1} aria-valuemax={TOTAL_STEPS} aria-label={`Step ${step() + 1} of ${TOTAL_STEPS}`}>
             <For each={Array.from({ length: TOTAL_STEPS })}>
               {(_, i) => (
                 <div
@@ -254,12 +261,23 @@ const OnboardingWizard: Component = () => {
               <Show when={joinTab() === "discover"}>
                 <Show when={discoveryLoading()}>
                   <div class="grid grid-cols-2 gap-2">
-                    <For each={Array(4)}>
+                    <For each={Array.from({ length: 4 })}>
                       {() => <div class="h-20 rounded-lg bg-surface-layer1 animate-pulse" />}
                     </For>
                   </div>
                 </Show>
-                <Show when={!discoveryLoading() && discoveryGuilds().length === 0}>
+                <Show when={!discoveryLoading() && discoveryError()}>
+                  <div class="text-center py-8 text-text-secondary text-sm">
+                    <p>Could not load servers. Check your connection.</p>
+                    <button
+                      onClick={loadDiscoveryGuilds}
+                      class="mt-2 px-3 py-1 text-xs bg-accent-primary text-white rounded-lg hover:bg-accent-hover"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </Show>
+                <Show when={!discoveryLoading() && !discoveryError() && discoveryGuilds().length === 0}>
                   <div class="text-center py-8 text-text-secondary text-sm">
                     No discoverable servers yet. Try using an invite code instead.
                   </div>
@@ -391,7 +409,7 @@ const OnboardingWizard: Component = () => {
                 }
               >
                 <button
-                  onClick={step() === 0 ? handleSaveDisplayName : next}
+                  onClick={() => (step() === 0 ? handleSaveDisplayName() : next())}
                   class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover transition-colors"
                 >
                   {step() === 0 ? "Continue" : "Next"}
