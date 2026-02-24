@@ -5,7 +5,7 @@
  * (e.g. in onboarding wizard) or wrapped in a modal.
  */
 
-import { createSignal, onMount, onCleanup, Show, For } from "solid-js";
+import { createSignal, createUniqueId, onMount, onCleanup, Show, For } from "solid-js";
 import { createVoiceAdapter, type AudioDevice, type VoiceError } from "@/lib/webrtc";
 
 interface MicTestPanelProps {
@@ -14,6 +14,8 @@ interface MicTestPanelProps {
 }
 
 function MicTestPanel(props: MicTestPanelProps) {
+  const inputId = createUniqueId();
+  const outputId = createUniqueId();
   const [inputDevices, setInputDevices] = createSignal<AudioDevice[]>([]);
   const [outputDevices, setOutputDevices] = createSignal<AudioDevice[]>([]);
   const [selectedInput, setSelectedInput] = createSignal<string>("");
@@ -82,34 +84,39 @@ function MicTestPanel(props: MicTestPanelProps) {
   };
 
   const playTestSound = async () => {
-    const ctx = new AudioContext();
+    try {
+      const ctx = new AudioContext();
 
-    // Route to selected output device if supported
-    const outputId = selectedOutput();
-    if (outputId && "setSinkId" in ctx) {
-      try {
-        await (ctx as AudioContext & { setSinkId(id: string): Promise<void> }).setSinkId(outputId);
-      } catch (err) {
-        console.warn("Could not route test sound to selected output device:", err);
+      // Route to selected output device if supported
+      const devId = selectedOutput();
+      if (devId && "setSinkId" in ctx) {
+        try {
+          await (ctx as AudioContext & { setSinkId(id: string): Promise<void> }).setSinkId(devId);
+        } catch (err) {
+          console.warn("Could not route test sound to selected output device:", err);
+        }
       }
+
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.frequency.value = 440;
+      gainNode.gain.value = 0.3;
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      oscillator.start();
+      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+
+      setTimeout(() => {
+        oscillator.stop();
+        void ctx.close();
+      }, 500);
+    } catch (err) {
+      console.error("Failed to play test sound:", err);
+      setError({ type: "unknown", message: "Could not play test sound. Check your audio settings." } as VoiceError);
     }
-
-    const oscillator = ctx.createOscillator();
-    const gainNode = ctx.createGain();
-
-    oscillator.frequency.value = 440;
-    gainNode.gain.value = 0.3;
-
-    oscillator.connect(gainNode);
-    gainNode.connect(ctx.destination);
-
-    oscillator.start();
-    gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
-
-    setTimeout(() => {
-      oscillator.stop();
-      void ctx.close();
-    }, 500);
   };
 
   const getErrorMessage = (err: VoiceError): string => {
@@ -146,11 +153,11 @@ function MicTestPanel(props: MicTestPanelProps) {
     <div class={spacing()}>
       {/* Device Selection */}
       <div>
-        <label for="mic-input-device" class="block text-sm font-medium text-text-secondary mb-1">
+        <label for={inputId} class="block text-sm font-medium text-text-secondary mb-1">
           Input Device:
         </label>
         <select
-          id="mic-input-device"
+          id={inputId}
           value={selectedInput()}
           onChange={(e) => setSelectedInput(e.target.value)}
           disabled={isTesting()}
@@ -165,11 +172,11 @@ function MicTestPanel(props: MicTestPanelProps) {
       </div>
 
       <div>
-        <label for="mic-output-device" class="block text-sm font-medium text-text-secondary mb-1">
+        <label for={outputId} class="block text-sm font-medium text-text-secondary mb-1">
           Output Device:
         </label>
         <select
-          id="mic-output-device"
+          id={outputId}
           value={selectedOutput()}
           onChange={(e) => setSelectedOutput(e.target.value)}
           class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-sm"
