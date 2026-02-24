@@ -19,6 +19,9 @@ use crate::db::{self, ChannelType};
 use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
 use crate::ws::{broadcast_to_user, ServerEvent};
 
+static TAG_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9-]+$").expect("valid tag regex"));
+
 // ============================================================================
 // Response Types
 // ============================================================================
@@ -1102,16 +1105,31 @@ pub async fn update_guild_settings(
         if tags.len() > 5 {
             return Err(GuildError::Validation("Maximum 5 tags allowed".to_string()));
         }
-        let tag_regex = regex::Regex::new(r"^[a-zA-Z0-9-]+$").unwrap();
         for tag in tags {
             if tag.len() < 2 || tag.len() > 32 {
                 return Err(GuildError::Validation(
                     "Each tag must be 2-32 characters".to_string(),
                 ));
             }
-            if !tag_regex.is_match(tag) {
+            if !TAG_REGEX.is_match(tag) {
                 return Err(GuildError::Validation(
                     "Tags may only contain letters, numbers, and hyphens".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Validate banner_url if provided (empty string clears the banner)
+    if let Some(ref url) = body.banner_url {
+        if !url.is_empty() {
+            if url.len() > 2048 {
+                return Err(GuildError::Validation(
+                    "Banner URL too long (max 2048 characters)".to_string(),
+                ));
+            }
+            if !url.starts_with("https://") {
+                return Err(GuildError::Validation(
+                    "Banner URL must use HTTPS".to_string(),
                 ));
             }
         }

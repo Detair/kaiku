@@ -10,18 +10,21 @@ use uuid::Uuid;
 use super::types::{DiscoverQuery, DiscoverResponse, DiscoverableGuild, JoinDiscoverableResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::db;
 
 // ============================================================================
 // Error Types
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
+    #[error("Guild discovery is not enabled on this server")]
     Disabled,
+    #[error("Guild not found or not discoverable")]
     NotFound,
+    #[error("Validation error: {0}")]
     Validation(String),
-    Database(sqlx::Error),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 impl IntoResponse for DiscoveryError {
@@ -38,23 +41,20 @@ impl IntoResponse for DiscoveryError {
                 "Guild not found or not discoverable".to_string(),
             ),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "Database error".to_string(),
-            ),
+            Self::Database(err) => {
+                tracing::error!(%err, "Discovery endpoint database error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Database error".to_string(),
+                )
+            }
         };
         (
             status,
             Json(serde_json::json!({ "error": code, "message": message })),
         )
             .into_response()
-    }
-}
-
-impl From<sqlx::Error> for DiscoveryError {
-    fn from(err: sqlx::Error) -> Self {
-        Self::Database(err)
     }
 }
 
@@ -80,6 +80,24 @@ pub async fn browse_guilds(
 ) -> Result<Json<DiscoverResponse>, DiscoveryError> {
     if !state.config.enable_guild_discovery {
         return Err(DiscoveryError::Disabled);
+    }
+
+    // Validate search query length (Issue #6)
+    if let Some(ref q) = query.q {
+        if q.len() > 200 {
+            return Err(DiscoveryError::Validation(
+                "Search query too long (max 200 characters)".to_string(),
+            ));
+        }
+    }
+
+    // Validate tag filter count (Issue #6)
+    if let Some(ref tags) = query.tags {
+        if tags.len() > 10 {
+            return Err(DiscoveryError::Validation(
+                "Maximum 10 tags for filtering".to_string(),
+            ));
+        }
     }
 
     let limit = query.limit.unwrap_or(20).clamp(1, 50);
@@ -220,9 +238,17 @@ pub async fn join_discoverable(
 
     let guild_name = guild.ok_or(DiscoveryError::NotFound)?.0;
 
-    // Check if already a member
-    let is_member = db::is_guild_member(&state.db, guild_id, auth.id).await?;
-    if is_member {
+    // Atomic insert with ON CONFLICT to avoid TOCTOU race (Issue #3)
+    let result = sqlx::query(
+        "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(guild_id)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
+
+    // If no rows affected, user was already a member
+    if result.rows_affected() == 0 {
         return Ok(Json(JoinDiscoverableResponse {
             guild_id,
             guild_name,
@@ -230,21 +256,18 @@ pub async fn join_discoverable(
         }));
     }
 
-    // Add as member
-    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
-        .bind(guild_id)
-        .bind(auth.id)
-        .execute(&state.db)
-        .await?;
-
     // Initialize read state for all text channels
-    crate::guild::handlers::initialize_channel_read_state(&state.db, guild_id, auth.id)
-        .await
-        .map_err(|_| {
-            DiscoveryError::Database(sqlx::Error::Protocol(
-                "Failed to initialize read state".into(),
-            ))
-        })?;
+    if let Err(err) =
+        crate::guild::handlers::initialize_channel_read_state(&state.db, guild_id, auth.id).await
+    {
+        tracing::error!(
+            ?err,
+            guild_id = %guild_id,
+            user_id = %auth.id,
+            "Failed to initialize channel read state after discovery join"
+        );
+        // Non-fatal: member was already inserted, read state can be retried on channel access
+    }
 
     // Broadcast MemberJoined to bot ecosystem (non-blocking)
     {
@@ -253,14 +276,23 @@ pub async fn join_discoverable(
         let gid = guild_id;
         let uid = auth.id;
         tokio::spawn(async move {
-            // Look up user info for bot event
             let user_info: Option<(String, String)> =
-                sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
+                match sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
                     .bind(uid)
                     .fetch_optional(&db)
                     .await
-                    .ok()
-                    .flatten();
+                {
+                    Ok(info) => info,
+                    Err(err) => {
+                        tracing::error!(
+                            user_id = %uid,
+                            guild_id = %gid,
+                            %err,
+                            "Failed to look up user for MemberJoined event"
+                        );
+                        return;
+                    }
+                };
 
             if let Some((username, display_name)) = user_info {
                 crate::ws::bot_events::publish_member_joined(
@@ -285,6 +317,12 @@ pub async fn join_discoverable(
                     }),
                 )
                 .await;
+            } else {
+                tracing::warn!(
+                    user_id = %uid,
+                    guild_id = %gid,
+                    "Skipping MemberJoined broadcast: user not found"
+                );
             }
         });
     }
