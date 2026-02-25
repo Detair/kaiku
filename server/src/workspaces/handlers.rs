@@ -68,7 +68,7 @@ pub async fn create_workspace(
     .bind(state.config.max_workspaces_per_user)
     .fetch_optional(&state.db)
     .await?
-    .ok_or(WorkspaceError::LimitExceeded)?;
+    .ok_or(WorkspaceError::WorkspaceLimitExceeded)?;
 
     let response = WorkspaceResponse::from(row);
 
@@ -154,7 +154,7 @@ pub async fn get_workspace(
     let entries = sqlx::query_as::<_, WorkspaceEntryRow>(
         r"
         SELECT we.id, we.workspace_id, we.guild_id, we.channel_id, we.position,
-               g.name AS guild_name, g.icon AS guild_icon,
+               g.name AS guild_name, g.icon_url AS guild_icon,
                c.name AS channel_name, c.channel_type AS channel_type,
                we.created_at
         FROM workspace_entries we
@@ -323,18 +323,7 @@ pub async fn add_entry(
         return Err(WorkspaceError::NotFound);
     }
 
-    // 2. Check entries limit
-    let entry_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM workspace_entries WHERE workspace_id = $1")
-            .bind(workspace_id)
-            .fetch_one(&state.db)
-            .await?;
-
-    if entry_count.0 >= MAX_ENTRIES_PER_WORKSPACE {
-        return Err(WorkspaceError::LimitExceeded);
-    }
-
-    // 3. Verify channel belongs to the claimed guild
+    // 2. Verify channel belongs to the claimed guild
     let channel_guild: Option<(Option<Uuid>,)> =
         sqlx::query_as("SELECT guild_id FROM channels WHERE id = $1")
             .bind(request.channel_id)
@@ -346,7 +335,7 @@ pub async fn add_entry(
         _ => return Err(WorkspaceError::ChannelNotFound),
     }
 
-    // 4. Verify guild membership
+    // 3. Verify guild membership
     let is_member = sqlx::query("SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2")
         .bind(request.guild_id)
         .bind(auth_user.id)
@@ -358,38 +347,41 @@ pub async fn add_entry(
         return Err(WorkspaceError::ChannelNotFound);
     }
 
-    // 5. Verify channel access (VIEW_CHANNEL permission)
+    // 4. Verify channel access (VIEW_CHANNEL permission)
     crate::permissions::require_channel_access(&state.db, auth_user.id, request.channel_id)
         .await
         .map_err(|_| WorkspaceError::ChannelNotFound)?;
 
-    // 6. Insert entry
-    let result = sqlx::query_as::<_, (Uuid, i32, chrono::DateTime<chrono::Utc>)>(
+    // 5. Atomic insert with entry limit check (prevents TOCTOU race)
+    let result = sqlx::query_as::<_, (Uuid,)>(
         r"
         INSERT INTO workspace_entries (workspace_id, guild_id, channel_id, position)
-        VALUES ($1, $2, $3, COALESCE((SELECT MAX(position) + 1 FROM workspace_entries WHERE workspace_id = $1), 0))
-        RETURNING id, position, created_at
+        SELECT $1, $2, $3, COALESCE((SELECT MAX(position) + 1 FROM workspace_entries WHERE workspace_id = $1), 0)
+        WHERE (SELECT COUNT(*) FROM workspace_entries WHERE workspace_id = $1) < $4
+        RETURNING id
         ",
     )
     .bind(workspace_id)
     .bind(request.guild_id)
     .bind(request.channel_id)
-    .fetch_one(&state.db)
+    .bind(MAX_ENTRIES_PER_WORKSPACE)
+    .fetch_optional(&state.db)
     .await;
 
-    let (entry_id, position, created_at) = match result {
-        Ok(row) => row,
+    let entry_id = match result {
+        Ok(Some((id,))) => id,
+        Ok(None) => return Err(WorkspaceError::EntryLimitExceeded),
         Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
             return Err(WorkspaceError::DuplicateEntry);
         }
         Err(e) => return Err(WorkspaceError::Database(e)),
     };
 
-    // 7. Fetch guild/channel names for the response
+    // 6. Fetch guild/channel names for the response
     let entry_row = sqlx::query_as::<_, WorkspaceEntryRow>(
         r"
         SELECT we.id, we.workspace_id, we.guild_id, we.channel_id, we.position,
-               g.name AS guild_name, g.icon AS guild_icon,
+               g.name AS guild_name, g.icon_url AS guild_icon,
                c.name AS channel_name, c.channel_type AS channel_type,
                we.created_at
         FROM workspace_entries we
@@ -413,9 +405,6 @@ pub async fn add_entry(
         },
     )
     .await;
-
-    // Suppress unused variable warnings
-    let _ = (position, created_at);
 
     Ok((StatusCode::CREATED, Json(response)))
 }

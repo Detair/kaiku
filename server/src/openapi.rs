@@ -506,6 +506,16 @@ use utoipa::{Modify, OpenApi};
         crate::api::bots::CreateApplicationRequest,
         crate::api::bots::ApplicationResponse,
         crate::api::bots::BotTokenResponse,
+        // Workspaces
+        crate::workspaces::types::WorkspaceResponse,
+        crate::workspaces::types::WorkspaceListItem,
+        crate::workspaces::types::WorkspaceEntryResponse,
+        crate::workspaces::types::WorkspaceDetailResponse,
+        crate::workspaces::types::CreateWorkspaceRequest,
+        crate::workspaces::types::UpdateWorkspaceRequest,
+        crate::workspaces::types::AddEntryRequest,
+        crate::workspaces::types::ReorderEntriesRequest,
+        crate::workspaces::types::ReorderWorkspacesRequest,
         // Settings
         crate::api::settings::InstanceLimitsResponse,
         // Data Governance

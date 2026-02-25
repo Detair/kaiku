@@ -13,7 +13,10 @@ pub enum WorkspaceError {
     EntryNotFound,
 
     #[error("Maximum workspaces limit reached")]
-    LimitExceeded,
+    WorkspaceLimitExceeded,
+
+    #[error("Maximum entries per workspace limit reached")]
+    EntryLimitExceeded,
 
     #[error("Workspace name is required")]
     NameRequired,
@@ -50,10 +53,15 @@ impl IntoResponse for WorkspaceError {
                 "entry_not_found",
                 "Workspace entry not found",
             ),
-            Self::LimitExceeded => (
+            Self::WorkspaceLimitExceeded => (
                 StatusCode::BAD_REQUEST,
-                "limit_exceeded",
+                "workspace_limit_exceeded",
                 "Maximum workspaces limit reached",
+            ),
+            Self::EntryLimitExceeded => (
+                StatusCode::BAD_REQUEST,
+                "entry_limit_exceeded",
+                "Maximum entries per workspace limit reached",
             ),
             Self::NameRequired => (
                 StatusCode::BAD_REQUEST,

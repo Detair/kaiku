@@ -93,6 +93,44 @@ async fn test_create_workspace_empty_name() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
+async fn test_create_workspace_limit_exceeded() {
+    let app = helpers::fresh_test_app().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    let mut guard = app.cleanup_guard();
+    guard.delete_user(user_id);
+
+    // Fill up to the limit via direct DB inserts
+    let limit = app.config.max_workspaces_per_user;
+    for i in 0..limit {
+        sqlx::query("INSERT INTO workspaces (owner_user_id, name, sort_order) VALUES ($1, $2, $3)")
+            .bind(user_id)
+            .bind(format!("WS-{i}"))
+            .bind(i as i32)
+            .execute(&app.pool)
+            .await
+            .unwrap();
+    }
+
+    // Next creation should fail
+    let req = TestApp::request(Method::POST, "/api/me/workspaces")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(&serde_json::json!({ "name": "One Too Many" })).unwrap(),
+        ))
+        .unwrap();
+
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 400, "Should reject when limit reached");
+
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "workspace_limit_exceeded");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn test_list_workspaces() {
     let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
