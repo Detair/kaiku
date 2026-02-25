@@ -508,16 +508,21 @@ pub async fn reorder_entries(
 
     let mut tx = state.db.begin().await?;
 
-    // Verify all entry IDs belong to this workspace
-    let existing_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM workspace_entries WHERE workspace_id = $1 AND id = ANY($2)",
+    // Verify all entry IDs belong to this workspace AND cover the full set
+    let (matched_count, total_count): (i64, i64) = sqlx::query_as(
+        r"
+        SELECT
+            COUNT(*) FILTER (WHERE id = ANY($2)),
+            COUNT(*)
+        FROM workspace_entries WHERE workspace_id = $1
+        ",
     )
     .bind(workspace_id)
     .bind(&request.entry_ids)
     .fetch_one(&mut *tx)
     .await?;
 
-    if existing_count.0 != request.entry_ids.len() as i64 {
+    if matched_count != request.entry_ids.len() as i64 || total_count != matched_count {
         return Err(WorkspaceError::InvalidEntries);
     }
 
@@ -577,15 +582,21 @@ pub async fn reorder_workspaces(
 ) -> Result<StatusCode, WorkspaceError> {
     let mut tx = state.db.begin().await?;
 
-    // Verify all workspace IDs belong to this user
-    let existing_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM workspaces WHERE owner_user_id = $1 AND id = ANY($2)")
-            .bind(auth_user.id)
-            .bind(&request.workspace_ids)
-            .fetch_one(&mut *tx)
-            .await?;
+    // Verify all workspace IDs belong to this user AND cover the full set
+    let (matched_count, total_count): (i64, i64) = sqlx::query_as(
+        r"
+        SELECT
+            COUNT(*) FILTER (WHERE id = ANY($2)),
+            COUNT(*)
+        FROM workspaces WHERE owner_user_id = $1
+        ",
+    )
+    .bind(auth_user.id)
+    .bind(&request.workspace_ids)
+    .fetch_one(&mut *tx)
+    .await?;
 
-    if existing_count.0 != request.workspace_ids.len() as i64 {
+    if matched_count != request.workspace_ids.len() as i64 || total_count != matched_count {
         return Err(WorkspaceError::InvalidWorkspaces);
     }
 

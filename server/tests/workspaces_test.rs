@@ -522,6 +522,65 @@ async fn test_add_entry_no_guild_membership() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
+async fn test_add_entry_limit_exceeded() {
+    let app = helpers::fresh_test_app().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+    let guild_id = create_guild(&app.pool, user_id).await;
+
+    let mut guard = app.cleanup_guard();
+    guard.delete_user(user_id);
+
+    // Create workspace
+    let req = TestApp::request(Method::POST, "/api/me/workspaces")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(&serde_json::json!({ "name": "Full WS" })).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let ws_json = body_to_json(resp).await;
+    let ws_id = ws_json["id"].as_str().unwrap();
+    let ws_uuid: uuid::Uuid = ws_id.parse().unwrap();
+
+    // Fill 50 entries via direct DB inserts (creating channels for each)
+    for i in 0..50 {
+        let ch_id = create_channel(&app.pool, guild_id, &format!("ch-{i}")).await;
+        sqlx::query(
+            "INSERT INTO workspace_entries (workspace_id, guild_id, channel_id, position) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(ws_uuid)
+        .bind(guild_id)
+        .bind(ch_id)
+        .bind(i)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    }
+
+    // 51st entry via API should fail
+    let extra_ch = create_channel(&app.pool, guild_id, "ch-overflow").await;
+    let req = TestApp::request(Method::POST, &format!("/api/me/workspaces/{ws_id}/entries"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(&serde_json::json!({
+                "guild_id": guild_id,
+                "channel_id": extra_ch
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 400, "Should reject when entry limit reached");
+
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "entry_limit_exceeded");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn test_remove_entry() {
     let app = helpers::fresh_test_app().await;
     let (user_id, _) = create_test_user(&app.pool).await;
