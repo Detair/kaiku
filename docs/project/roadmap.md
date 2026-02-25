@@ -2,7 +2,7 @@
 
 This roadmap outlines the development path from the current prototype to a production-ready, multi-tenant SaaS platform.
 
-**Current Phase:** Phase 5 (Ecosystem & SaaS Readiness) - In Progress
+**Current Phase:** Phase 6 (Competitive Differentiators & Mastery) - In Progress
 
 **Last Updated:** 2026-02-25
 
@@ -15,8 +15,8 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
-| **Expansion** | **Phase 5** | 🔄 In Progress | 94% (16/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
-| **Expansion** | **Phase 6** | 📋 Planned | 0% | Mobile, personal workspaces, sovereign guild model, live session toolkits |
+| **Expansion** | **Phase 5** | ✅ Complete | 100% (17/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
+| **Expansion** | **Phase 6** | 🔄 In Progress | 0% (0/6) | Mobile, personal workspaces, sovereign guild model, live session toolkits |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing |
 | **Scale and Trust** | **Phase 10** | 📋 Planned | 0% | SaaS scaling architecture |
@@ -53,12 +53,13 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - Productivity UX (command palette, favorites, unread sync, context menus, search, threads).
 - Admin and governance baseline (admin tooling, reporting workflows, audit-oriented controls).
 
-### Expansion (In Progress / Next)
-- Developer ecosystem growth (bot platform maturation, webhooks, gateway improvements).
-- Safety maturity (✅ advanced moderation filters, policy tooling, operator workflows).
-- Growth and onboarding (✅ guild discovery, ✅ first-time experience, activation/retention UX).
-- Voice/media maturity (multi-stream completion, simulcast, advanced media processing).
+### Expansion (Delivered / In Progress)
+- ✅ Developer ecosystem growth (bot platform, webhooks, gateway, slash commands).
+- ✅ Safety maturity (advanced moderation filters, content policy tooling, data governance).
+- ✅ Growth and onboarding (guild discovery, first-time experience, activation/retention UX).
+- ✅ Voice/media maturity (multi-stream, advanced media processing, progressive image loading).
 - Mobile strategy execution (Android-first path and shared Rust core evolution).
+- Personal workspaces, sovereign guild model, live session toolkits, focus engine, digital library.
 
 ### Scale and Trust (Planned)
 - SRE foundations (SLOs, observability standards, alerting, incident playbooks) ([Design](../plans/2026-02-15-sre-foundations-design.md), [OTel Reference](../plans/2026-02-15-opentelemetry-grafana-reference-design.md), [Implementation](../plans/2026-02-15-operational-safety-implementation-plan.md)).
@@ -378,7 +379,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
   - 17 HTTP integration tests covering user reports (6) and admin report management (11).
 ---
 
-## Phase 5: Ecosystem & SaaS Readiness 🔄 **IN PROGRESS**
+## Phase 5: Ecosystem & SaaS Readiness ✅ **COMPLETED**
 *Goal: Open the platform to developers and prepare for massive scale.*
 - Implementation coverage for remaining open items is tracked per checklist item via dedicated Design and Implementation links.
 
@@ -565,7 +566,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 
 ---
 
-## Phase 6: Competitive Differentiators & Mastery 📋 **PLANNED**
+## Phase 6: Competitive Differentiators & Mastery 🔄 **IN PROGRESS**
 *Goal: Surpass industry leaders with unique utility and sovereignty features.*
 - Implementation coverage: [Mobile + Workspaces](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md), [Sovereign + Live Toolkit](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md), [Focus + Library](../plans/2026-02-15-phase-6-focus-library-implementation.md).
 
@@ -654,6 +655,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 ## Recent Changes
 
 ### 2026-02-25
+- **Phase 5 Complete** — All 17 Ecosystem & SaaS Readiness items delivered (str0m evaluation deferred as trigger-based). Phase 6 (Competitive Differentiators & Mastery) now in progress.
 - **SaaS Trust & Data Governance** (PR #249) — GDPR-style data export and account deletion lifecycle. Users can request a full data export (profile, messages, guilds, friends, preferences) as a ZIP archive via `POST /api/me/data-export`; background worker gathers data, uploads to S3, and sends email notification when ready (7-day expiry). Account deletion via `POST /api/me/delete-account` with password verification and 30-day grace period; cancellation via `POST /api/me/delete-account/cancel`. Guild ownership must be transferred first. After grace period, hourly worker permanently deletes the user with messages anonymized (author removed via SET NULL FK). Database migration adds `data_export_jobs` table, user deletion columns, and fixes 13 bare FK constraints. New `DataGovernance` rate limit category (2 req/60s). 11 integration tests. Two code review rounds addressed AuthUser test compilation, cancel_deletion rate limit scope, email template, and comment accuracy.
 - **Advanced Media Processing** (PR #248) — Progressive image loading with blurhash placeholders, thumbnail (256px) and medium (1024px) WebP variant generation, aspect-ratio CSS to prevent layout shift, and variant download endpoint with graceful fallback.
 
