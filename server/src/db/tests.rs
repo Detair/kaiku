@@ -586,7 +586,7 @@ mod postgres_tests {
 
         assert_eq!(message.content, "Hello, World!");
         assert_eq!(message.channel_id, channel.id);
-        assert_eq!(message.user_id, user.id);
+        assert_eq!(message.user_id, Some(user.id));
         assert!(!message.encrypted);
 
         // Find message by ID

@@ -297,7 +297,7 @@ pub async fn search_all(
     );
 
     // 5. Bulk fetch users
-    let user_ids: Vec<Uuid> = messages.iter().map(|m| m.user_id).collect();
+    let user_ids: Vec<Uuid> = messages.iter().filter_map(|m| m.user_id).collect();
     let users = db::find_users_by_ids(&state.db, &user_ids).await?;
     let user_map: std::collections::HashMap<Uuid, db::User> =
         users.into_iter().map(|u| (u.id, u)).collect();
@@ -329,8 +329,9 @@ pub async fn search_all(
     let results: Vec<GlobalSearchResult> = messages
         .into_iter()
         .map(|msg| {
-            let author = user_map
-                .get(&msg.user_id)
+            let author = msg
+                .user_id
+                .and_then(|uid| user_map.get(&uid))
                 .map(|u| GlobalSearchAuthor {
                     id: u.id,
                     username: u.username.clone(),
@@ -338,7 +339,7 @@ pub async fn search_all(
                     avatar_url: u.avatar_url.clone(),
                 })
                 .unwrap_or_else(|| GlobalSearchAuthor {
-                    id: msg.user_id,
+                    id: msg.user_id.unwrap_or(Uuid::nil()),
                     username: "deleted".to_string(),
                     display_name: "Deleted User".to_string(),
                     avatar_url: None,

@@ -44,6 +44,8 @@ pub struct RateLimits {
     pub voice_join: LimitConfig,
     /// Search operations
     pub search: LimitConfig,
+    /// Data governance operations (export, deletion)
+    pub data_governance: LimitConfig,
     /// Failed authentication tracking
     pub failed_auth: FailedAuthConfig,
     /// Failed auth as `LimitConfig` (for consistency in `get_limit_config`)
@@ -136,6 +138,10 @@ impl Default for RateLimits {
             },
             search: LimitConfig {
                 requests: 15,
+                window_secs: 60,
+            },
+            data_governance: LimitConfig {
+                requests: 2,
                 window_secs: 60,
             },
             failed_auth_as_limit: LimitConfig {

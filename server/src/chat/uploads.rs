@@ -373,8 +373,8 @@ pub async fn upload_file(
         .await?
         .ok_or(UploadError::MessageNotFound)?;
 
-    // Only message author can attach files
-    if message.user_id != auth_user.id {
+    // Only message author can attach files (anonymized messages cannot have files added)
+    if message.user_id != Some(auth_user.id) {
         return Err(UploadError::Forbidden);
     }
 

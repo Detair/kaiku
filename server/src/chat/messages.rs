@@ -367,7 +367,10 @@ pub async fn list(
 
     // Filter out messages from blocked users (application-layer filtering)
     if !combined_block_set.is_empty() {
-        messages.retain(|m| !combined_block_set.contains(&m.user_id));
+        messages.retain(|m| {
+            m.user_id
+                .is_none_or(|uid| !combined_block_set.contains(&uid))
+        });
     }
 
     // Check if there are more messages beyond the requested limit
@@ -1240,8 +1243,8 @@ pub async fn delete(
         .await
         .map_err(|_| MessageError::Forbidden)?;
 
-    // Check ownership
-    if message.user_id != auth_user.id {
+    // Check ownership (deleted/anonymized messages cannot be modified)
+    if message.user_id != Some(auth_user.id) {
         return Err(MessageError::Forbidden);
     }
 
@@ -1313,8 +1316,8 @@ async fn build_message_responses(
         return Ok(vec![]);
     }
 
-    // Bulk fetch users
-    let user_ids: Vec<Uuid> = messages.iter().map(|m| m.user_id).collect();
+    // Bulk fetch users (skip messages with no author)
+    let user_ids: Vec<Uuid> = messages.iter().filter_map(|m| m.user_id).collect();
     let users = db::find_users_by_ids(pool, &user_ids).await?;
     let user_map: std::collections::HashMap<Uuid, db::User> =
         users.into_iter().map(|u| (u.id, u)).collect();
@@ -1382,11 +1385,12 @@ async fn build_message_responses(
     let response = messages
         .into_iter()
         .map(|msg| {
-            let author = user_map
-                .get(&msg.user_id)
+            let author = msg
+                .user_id
+                .and_then(|uid| user_map.get(&uid))
                 .map(|u| AuthorProfile::from(u.clone()))
                 .unwrap_or_else(|| AuthorProfile {
-                    id: msg.user_id,
+                    id: msg.user_id.unwrap_or(Uuid::nil()),
                     username: "deleted".to_string(),
                     display_name: "Deleted User".to_string(),
                     avatar_url: None,
@@ -1642,7 +1646,10 @@ pub async fn list_thread_replies(
         db::list_thread_replies(&state.db, parent_id, query.after, limit + 1).await?;
 
     if !combined_block_set.is_empty() {
-        messages.retain(|m| !combined_block_set.contains(&m.user_id));
+        messages.retain(|m| {
+            m.user_id
+                .is_none_or(|uid| !combined_block_set.contains(&uid))
+        });
     }
 
     let has_more = messages.len() as i64 > limit;
@@ -1742,6 +1749,7 @@ mod tests {
             email: user.email.clone(),
             avatar_url: user.avatar_url.clone(),
             mfa_enabled: false,
+            deletion_scheduled_at: None,
         }
     }
 

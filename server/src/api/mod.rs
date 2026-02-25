@@ -39,8 +39,8 @@ use crate::ratelimit::{
 };
 use crate::voice::SfuServer;
 use crate::{
-    admin, auth, chat, connectivity, crypto, discovery, guild, moderation, pages, social, voice,
-    webhooks, ws,
+    admin, auth, chat, connectivity, crypto, discovery, governance, guild, moderation, pages,
+    social, voice, webhooks, ws,
 };
 
 /// Shared application state.
@@ -186,6 +186,18 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/dm", chat::dm_router())
         .nest("/api/dm", voice::call_handlers::call_router())
         .nest("/api/voice", voice::router())
+        .route(
+            "/api/me/data-export",
+            get(governance::handlers::get_export_status),
+        )
+        .route(
+            "/api/me/data-export/download",
+            get(governance::handlers::download_export),
+        )
+        .route(
+            "/api/me/delete-account/cancel",
+            post(governance::handlers::cancel_deletion),
+        )
         .nest("/api/me/connection", connectivity::router())
         .nest("/api/me/preferences", preferences::router())
         .route("/api/me/pins", get(pins::list_pins).post(pins::create_pin))
@@ -283,6 +295,19 @@ pub fn create_router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Search)));
 
+    // Data governance routes with DataGovernance rate limit (2 req/60s for mutations)
+    let governance_routes = Router::new()
+        .route(
+            "/api/me/data-export",
+            post(governance::handlers::request_export),
+        )
+        .route(
+            "/api/me/delete-account",
+            post(governance::handlers::request_deletion),
+        )
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+        .layer(from_fn(with_category(RateLimitCategory::DataGovernance)));
+
     // Admin routes (requires auth + system admin)
     // Auth middleware first, then admin router applies require_system_admin internally
     let admin_routes = admin::router(state.clone());
@@ -290,6 +315,7 @@ pub fn create_router(state: AppState) -> Router {
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .merge(api_routes)
+        .merge(governance_routes)
         .merge(discovery_join_routes)
         .merge(search_routes)
         .nest("/api", social_routes)

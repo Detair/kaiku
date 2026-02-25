@@ -108,8 +108,9 @@ async fn main() -> Result<()> {
     // Start background cleanup task for voice stats rate limiter to prevent memory leaks
     let voice_cleanup_handle = sfu.start_cleanup_task();
 
-    // Start background cleanup task for database (sessions, prekeys, device transfers)
+    // Start background cleanup task for database (sessions, prekeys, device transfers, governance)
     let db_pool_clone = db_pool.clone();
+    let s3_clone = s3.clone();
     let db_cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Every hour
         loop {
@@ -179,6 +180,22 @@ async fn main() -> Result<()> {
                     tracing::warn!(error = %e, "Failed to cleanup webhook dead letters");
                 }
                 _ => {}
+            }
+
+            // Process pending account deletions (30-day grace period expired)
+            if let Err(e) =
+                vc_server::governance::deletion::process_pending_deletions(&db_pool_clone, &s3_clone)
+                    .await
+            {
+                tracing::error!(error = %e, "Failed to process pending account deletions");
+            }
+
+            // Cleanup expired data export archives
+            if let Err(e) =
+                vc_server::governance::export::cleanup_expired_exports(&db_pool_clone, &s3_clone)
+                    .await
+            {
+                tracing::error!(error = %e, "Failed to cleanup expired data exports");
             }
         }
     });

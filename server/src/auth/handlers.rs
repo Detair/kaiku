@@ -114,6 +114,9 @@ pub struct UserProfile {
     pub status: String,
     /// Whether MFA is enabled.
     pub mfa_enabled: bool,
+    /// When the account is scheduled for permanent deletion (if requested).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deletion_scheduled_at: Option<String>,
 }
 
 /// MFA setup response.
@@ -326,19 +329,15 @@ pub async fn register(
     let is_first_user = user_count == 0;
 
     // Create user (inline to use transaction)
-    let user = sqlx::query_as!(
-        crate::db::User,
-        r#"INSERT INTO users (username, display_name, email, password_hash, auth_method)
-           VALUES ($1, $2, $3, $4, 'local')
-           RETURNING id, username, display_name, email, password_hash,
-                     auth_method as "auth_method: _", external_id, avatar_url,
-                     status as "status: _", mfa_secret, is_bot, bot_owner_id,
-                     created_at, updated_at"#,
-        body.username,
-        display_name,
-        body.email,
-        password_hash
+    let user = sqlx::query_as::<_, crate::db::User>(
+        "INSERT INTO users (username, display_name, email, password_hash, auth_method)
+         VALUES ($1, $2, $3, $4, 'local')
+         RETURNING *",
     )
+    .bind(&body.username)
+    .bind(display_name)
+    .bind(&body.email)
+    .bind(password_hash)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -790,6 +789,7 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
         avatar_url: auth_user.avatar_url,
         status: "online".to_string(),
         mfa_enabled: auth_user.mfa_enabled,
+        deletion_scheduled_at: auth_user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
     })
 }
 
@@ -943,6 +943,7 @@ pub async fn upload_avatar(
         avatar_url: user.avatar_url,
         status: status_str.to_string(),
         mfa_enabled: user.mfa_secret.is_some(),
+        deletion_scheduled_at: user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
     }))
 }
 
@@ -1723,20 +1724,16 @@ pub async fn oidc_callback(
                 .map_err(AuthError::Database)?;
             let is_first_user = user_count == 0;
 
-            let insert_result = sqlx::query_as!(
-                crate::db::User,
-                r#"INSERT INTO users (username, display_name, email, auth_method, external_id, avatar_url)
-                   VALUES ($1, $2, $3, 'oidc', $4, $5)
-                   RETURNING id, username, display_name, email, password_hash,
-                             auth_method as "auth_method: _", external_id, avatar_url,
-                             status as "status: _", mfa_secret, is_bot, bot_owner_id,
-                             created_at, updated_at"#,
-                username,
-                display_name,
-                user_info.email,
-                external_id,
-                user_info.avatar_url,
+            let insert_result = sqlx::query_as::<_, crate::db::User>(
+                "INSERT INTO users (username, display_name, email, auth_method, external_id, avatar_url)
+                 VALUES ($1, $2, $3, 'oidc', $4, $5)
+                 RETURNING *",
             )
+            .bind(&username)
+            .bind(&display_name)
+            .bind(&user_info.email)
+            .bind(&external_id)
+            .bind(&user_info.avatar_url)
             .fetch_one(&mut *tx)
             .await;
 

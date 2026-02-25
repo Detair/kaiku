@@ -47,6 +47,7 @@ use utoipa::{Modify, OpenApi};
         (name = "pages", description = "Platform and guild pages"),
         (name = "connectivity", description = "Connection and session info"),
         (name = "discovery", description = "Public guild discovery and browsing"),
+        (name = "governance", description = "Data export and account deletion"),
         (name = "settings", description = "Server settings and configuration"),
         (name = "setup", description = "Initial server setup"),
         (name = "uploads", description = "File upload operations"),
@@ -306,6 +307,12 @@ use utoipa::{Modify, OpenApi};
         crate::api::setup::complete,
         // Global Search
         crate::api::global_search::search_all,
+        // Data Governance
+        crate::governance::handlers::request_export,
+        crate::governance::handlers::get_export_status,
+        crate::governance::handlers::download_export,
+        crate::governance::handlers::request_deletion,
+        crate::governance::handlers::cancel_deletion,
     ),
     components(schemas(
         // Health
@@ -490,6 +497,11 @@ use utoipa::{Modify, OpenApi};
         crate::api::bots::BotTokenResponse,
         // Settings
         crate::api::settings::InstanceLimitsResponse,
+        // Data Governance
+        crate::governance::types::ExportJobResponse,
+        crate::governance::types::DeleteAccountRequest,
+        crate::governance::types::DeleteAccountResponse,
+        crate::governance::types::CancelDeletionResponse,
     ))
 )]
 pub struct ApiDoc;

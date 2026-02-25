@@ -13,6 +13,7 @@ pub mod crypto;
 pub mod db;
 pub mod discovery;
 pub mod email;
+pub mod governance;
 pub mod guild;
 pub mod moderation;
 pub mod openapi;

@@ -44,12 +44,12 @@ pub struct DMResponse {
 }
 
 /// Last message info for DM list preview
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct LastMessagePreview {
     pub id: Uuid,
     pub content: String,
-    pub user_id: Uuid,
-    pub username: String,
+    pub user_id: Option<Uuid>,
+    pub username: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -388,16 +388,15 @@ pub async fn list_dms(
         let participants = get_dm_participants(&state.db, channel.id).await?;
 
         // Get last message
-        let last_message = sqlx::query_as!(
-            LastMessagePreview,
-            r#"SELECT m.id, m.content, m.user_id, u.username, m.created_at
-               FROM messages m
-               JOIN users u ON u.id = m.user_id
-               WHERE m.channel_id = $1
-               ORDER BY m.created_at DESC
-               LIMIT 1"#,
-            channel.id
+        let last_message = sqlx::query_as::<_, LastMessagePreview>(
+            "SELECT m.id, m.content, m.user_id, u.username, m.created_at
+             FROM messages m
+             LEFT JOIN users u ON u.id = m.user_id
+             WHERE m.channel_id = $1
+             ORDER BY m.created_at DESC
+             LIMIT 1",
         )
+        .bind(channel.id)
         .fetch_optional(&state.db)
         .await?;
 

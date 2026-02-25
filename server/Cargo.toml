@@ -98,6 +98,9 @@ dashmap.workspace = true
 # Bitflags
 bitflags.workspace = true
 
+# Archive
+zip.workspace = true
+
 # HTTP client (matching openidconnect's reqwest version)
 reqwest = { version = "0.11", features = ["json"] }
 

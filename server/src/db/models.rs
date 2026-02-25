@@ -32,6 +32,10 @@ pub struct User {
     pub is_bot: bool,
     /// The user who owns this bot (only set for bot users).
     pub bot_owner_id: Option<Uuid>,
+    /// When the user requested account deletion.
+    pub deletion_requested_at: Option<DateTime<Utc>>,
+    /// When the account is scheduled to be hard-deleted.
+    pub deletion_scheduled_at: Option<DateTime<Utc>>,
     /// When the user was created.
     pub created_at: DateTime<Utc>,
     /// When the user was last updated.
@@ -117,8 +121,8 @@ pub struct Message {
     pub id: Uuid,
     /// Channel this message belongs to.
     pub channel_id: Uuid,
-    /// User who sent the message.
-    pub user_id: Uuid,
+    /// User who sent the message (None if user was deleted/anonymized).
+    pub user_id: Option<Uuid>,
     /// Message content (plaintext or encrypted).
     pub content: String,
     /// Whether the message is E2EE encrypted.
@@ -356,6 +360,29 @@ pub struct UnreadAggregate {
     pub dms: Vec<ChannelUnread>,
     /// Total unread count across everything.
     pub total: i64,
+}
+
+/// Data export job model.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct DataExportJob {
+    /// Unique job ID.
+    pub id: Uuid,
+    /// User who requested the export.
+    pub user_id: Uuid,
+    /// Job status: pending, processing, completed, failed, expired.
+    pub status: String,
+    /// S3 object key for the export archive.
+    pub s3_key: Option<String>,
+    /// Export archive size in bytes.
+    pub file_size_bytes: Option<i64>,
+    /// Error message if the job failed.
+    pub error_message: Option<String>,
+    /// When the export download expires.
+    pub expires_at: Option<DateTime<Utc>>,
+    /// When the job was created.
+    pub created_at: DateTime<Utc>,
+    /// When the job completed.
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// Bot application model.

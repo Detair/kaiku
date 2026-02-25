@@ -29,6 +29,8 @@ pub struct AuthUser {
     pub avatar_url: Option<String>,
     /// Whether MFA is enabled.
     pub mfa_enabled: bool,
+    /// When the account is scheduled for permanent deletion (if requested).
+    pub deletion_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl From<User> for AuthUser {
@@ -40,6 +42,7 @@ impl From<User> for AuthUser {
             email: user.email,
             avatar_url: user.avatar_url,
             mfa_enabled: user.mfa_secret.is_some(),
+            deletion_scheduled_at: user.deletion_scheduled_at,
         }
     }
 }

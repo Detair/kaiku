@@ -111,6 +111,9 @@ blurhash = "0.2"
 # String matching
 aho-corasick = "1"
 
+# Archive
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # Lock-free concurrent data structures
 dashmap = "6"
 

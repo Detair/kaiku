@@ -1286,7 +1286,7 @@ pub struct SearchFilters {
 pub struct SearchMessageRow {
     pub id: Uuid,
     pub channel_id: Uuid,
-    pub user_id: Uuid,
+    pub user_id: Option<Uuid>,
     pub content: String,
     pub created_at: DateTime<Utc>,
     pub rank: f32,

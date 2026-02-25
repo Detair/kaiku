@@ -277,7 +277,7 @@ pub async fn search_messages(
     );
 
     // Get user IDs and channel IDs for bulk lookup
-    let user_ids: Vec<Uuid> = messages.iter().map(|m| m.user_id).collect();
+    let user_ids: Vec<Uuid> = messages.iter().filter_map(|m| m.user_id).collect();
     let channel_ids: Vec<Uuid> = messages.iter().map(|m| m.channel_id).collect();
 
     // Bulk fetch users
@@ -297,8 +297,9 @@ pub async fn search_messages(
     let results: Vec<SearchResult> = messages
         .into_iter()
         .map(|msg| {
-            let author = user_map
-                .get(&msg.user_id)
+            let author = msg
+                .user_id
+                .and_then(|uid| user_map.get(&uid))
                 .map(|u| SearchAuthor {
                     id: u.id,
                     username: u.username.clone(),
@@ -306,7 +307,7 @@ pub async fn search_messages(
                     avatar_url: u.avatar_url.clone(),
                 })
                 .unwrap_or_else(|| SearchAuthor {
-                    id: msg.user_id,
+                    id: msg.user_id.unwrap_or(Uuid::nil()),
                     username: "deleted".to_string(),
                     display_name: "Deleted User".to_string(),
                     avatar_url: None,

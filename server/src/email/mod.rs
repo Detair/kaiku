@@ -113,6 +113,41 @@ impl EmailService {
 
         Ok(())
     }
+
+    /// Send a notification that the user's data export is ready for download.
+    pub async fn send_data_export_ready(
+        &self,
+        to_email: &str,
+        username: &str,
+    ) -> Result<()> {
+        let to_mailbox: Mailbox = to_email
+            .parse()
+            .context("Invalid recipient email address")?;
+
+        let body = format!(
+            "Hello {username},\n\
+             \n\
+             Your data export is ready for download.\n\
+             \n\
+             You can download it from your account settings.\n\
+             \n\
+             The download link will expire in 7 days.\n"
+        );
+
+        let email = Message::builder()
+            .from(self.from_address.clone())
+            .to(to_mailbox)
+            .subject("Your Data Export is Ready")
+            .body(body)
+            .context("Failed to build email message")?;
+
+        self.mailer
+            .send(email)
+            .await
+            .context("Failed to send export notification email")?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

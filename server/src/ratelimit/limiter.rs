@@ -407,6 +407,7 @@ impl RateLimiter {
             RateLimitCategory::WsMessage => &self.config.limits.ws_message,
             RateLimitCategory::VoiceJoin => &self.config.limits.voice_join,
             RateLimitCategory::Search => &self.config.limits.search,
+            RateLimitCategory::DataGovernance => &self.config.limits.data_governance,
             RateLimitCategory::FailedAuth => {
                 // FailedAuth uses max_failures as requests and window_secs from failed_auth config.
                 // Note: This category should not be used with check() - use record_failed_auth()

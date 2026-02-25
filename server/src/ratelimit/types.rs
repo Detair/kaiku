@@ -29,6 +29,8 @@ pub enum RateLimitCategory {
     VoiceJoin,
     /// Search operations
     Search,
+    /// Data governance operations (export, deletion)
+    DataGovernance,
 }
 
 impl RateLimitCategory {
@@ -47,6 +49,7 @@ impl RateLimitCategory {
             Self::FailedAuth => "failed_auth",
             Self::VoiceJoin => "voice_join",
             Self::Search => "search",
+            Self::DataGovernance => "data_governance",
         }
     }
 
@@ -64,6 +67,7 @@ impl RateLimitCategory {
             Self::WsMessage,
             Self::VoiceJoin,
             Self::Search,
+            Self::DataGovernance,
         ]
     }
 }
