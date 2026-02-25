@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 5 (Ecosystem & SaaS Readiness) - In Progress
 
-**Last Updated:** 2026-02-24
+**Last Updated:** 2026-02-25
 
 ## Quick Status Overview
 
@@ -15,7 +15,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 2** | ✅ Complete | 100% | Voice Island, VAD, Speaking Indicators, Command Palette, File Attachments, Theme System, Code Highlighting |
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
-| **Expansion** | **Phase 5** | 🔄 In Progress | 82% (14/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits |
+| **Expansion** | **Phase 5** | 🔄 In Progress | 94% (16/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
 | **Expansion** | **Phase 6** | 📋 Planned | 0% | Mobile, personal workspaces, sovereign guild model, live session toolkits |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing |
@@ -533,22 +533,15 @@ This section is the canonical high-level roadmap view. Detailed implementation c
     - ✅ **UI:** Global "Mark everything as read" button in UnreadModule
     - ✅ **UI:** Per-channel "Mark as Read" in context menu
     - ✅ Cross-device sync via `ChannelRead`/`DmRead` WebSocket events
-- [ ] **[Compliance] SaaS Trust & Data Governance** ([Design](../plans/2026-02-15-phase-5-trust-governance-design.md), [Implementation](../plans/2026-02-15-phase-5-trust-governance-implementation.md))
-  - **Implementation:**
-    - **Data Export (GDPR/CCPA):**
-      - Create data export aggregator that generates JSON/ZIP of all user data
-      - Include: messages, DMs, profile data, guild memberships, attachments
-      - Queue export jobs to prevent resource exhaustion
-      - Email download link when export is ready
-      - Add "Export My Data" button in Settings > Privacy
-    - **Account Erasure:**
-      - Implement "Delete Account" workflow with confirmation
-      - Soft-delete for 30 days with option to cancel
-      - Hard-delete after grace period: anonymize messages, delete profile
-      - Notify guild owners when admin users delete accounts
-    - **Rate Limiting:**
-      - Add per-guild rate limiting to prevent resource exhaustion
-      - Protect export endpoints from abuse
+- [x] **[Compliance] SaaS Trust & Data Governance** ✅ (PR #249) ([Design](../plans/2026-02-15-phase-5-trust-governance-design.md), [Implementation](../plans/2026-02-15-phase-5-trust-governance-implementation.md))
+  - ✅ Data export pipeline: background worker gathers user data (profile, messages, guilds, friends, preferences) into versioned JSON ZIP archive, uploads to S3, sends email notification; downloads expire after 7 days
+  - ✅ Account deletion lifecycle: 30-day grace period with cancellation support, password verification for local auth, guild ownership transfer required before deletion
+  - ✅ Message anonymization: `messages.user_id` FK changed from CASCADE to SET NULL — deleted users' messages preserved with author removed
+  - ✅ Database migration: `data_export_jobs` table, user deletion columns, 13 bare FK constraints fixed (SET NULL for audit/attribution, CASCADE for user-specific data)
+  - ✅ Rate limiting: `DataGovernance` category (2 req/60s) for export and deletion mutation endpoints
+  - ✅ Background cleanup workers in hourly loop: process expired deletions, clean up expired export archives and S3 objects
+  - ✅ UserProfile includes `deletion_scheduled_at` for client-side cancellation banner
+  - ✅ 11 integration tests covering deletion flows, password validation, guild ownership blocking, cancellation
 - [x] **[Chat] Slack-style Message Threads** ✅
   - **Context:** Keep channel conversations organized by allowing side-discussions without cluttering the main feed.
   - **Completed:**
@@ -560,21 +553,11 @@ This section is the canonical high-level roadmap view. Detailed implementation c
     - ✅ 11+ server integration tests
   - **Remaining:**
     - [x] Guild-level toggle to enable/disable threads ✅ (migration `20260211000000_guild_threads_enabled.sql`, backend GET/PATCH `/api/guilds/{id}/settings`, frontend GeneralTab toggle, enforcement in message creation)
-- [ ] **[Media] Advanced Media Processing** ([Design](../plans/2026-02-15-phase-5-media-processing-design.md), [Implementation](../plans/2026-02-15-phase-5-media-processing-implementation.md))
-  - **Context:** Improve perceived performance and bandwidth efficiency.
-  - **Implementation:**
-    - **Backend:**
-      - Integrate `blurhash` crate for placeholder generation
-      - Use `image` crate to generate lower-resolution thumbnails (preview quality)
-      - Process images during S3 upload phase (async job)
-      - Store blurhash string and thumbnail URL in database
-    - **Frontend:**
-      - Display blurhash placeholders while images load
-      - Progressive loading: blurhash → thumbnail → full image
-      - Smart image loading based on viewport visibility
-    - **Storage:**
-      - Store multiple resolutions: thumbnail (256px), medium (1024px), full
-      - Serve appropriate resolution based on context (list vs detail view)
+- [x] **[Media] Advanced Media Processing** ✅ (PR #248) ([Design](../plans/2026-02-15-phase-5-media-processing-design.md), [Implementation](../plans/2026-02-15-phase-5-media-processing-implementation.md))
+  - ✅ Progressive image loading with blurhash placeholders — uploaded images processed to generate blurhash color previews, thumbnail (256px) and medium (1024px) WebP variants
+  - ✅ Client displays instant blurhash placeholder while thumbnail loads, with smooth fade-in transition; click opens full-resolution original
+  - ✅ Aspect-ratio CSS prevents layout shift during load
+  - ✅ Image variant download support — `GET /api/messages/attachments/{id}/download?variant=thumbnail|medium` serves bandwidth-efficient WebP variants with graceful fallback
 - [x] **[Branding] Visual Identity & Mascot** ✅
   - **Context:** Establish a recognizable and friendly brand for the platform.
   - **Strategy:** The project mascot is a **Finnish Lapphund**. Generated a premium suite of Solarized Dark assets (Hero, Icon, Monochrome).
@@ -669,6 +652,10 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 ---
 
 ## Recent Changes
+
+### 2026-02-25
+- **SaaS Trust & Data Governance** (PR #249) — GDPR-style data export and account deletion lifecycle. Users can request a full data export (profile, messages, guilds, friends, preferences) as a ZIP archive via `POST /api/me/data-export`; background worker gathers data, uploads to S3, and sends email notification when ready (7-day expiry). Account deletion via `POST /api/me/delete-account` with password verification and 30-day grace period; cancellation via `POST /api/me/delete-account/cancel`. Guild ownership must be transferred first. After grace period, hourly worker permanently deletes the user with messages anonymized (author removed via SET NULL FK). Database migration adds `data_export_jobs` table, user deletion columns, and fixes 13 bare FK constraints. New `DataGovernance` rate limit category (2 req/60s). 11 integration tests. Two code review rounds addressed AuthUser test compilation, cancel_deletion rate limit scope, email template, and comment accuracy.
+- **Advanced Media Processing** (PR #248) — Progressive image loading with blurhash placeholders, thumbnail (256px) and medium (1024px) WebP variant generation, aspect-ratio CSS to prevent layout shift, and variant download endpoint with graceful fallback.
 
 ### 2026-02-24
 - **Guild Resource Limits & Usage Stats** (PR #247) — Configurable per-instance resource limits enforced server-side at 8 code points (guild creation, member join via invite/discovery, channel/role/emoji/bot/webhook creation) with `LIMIT_EXCEEDED` (403) errors. Limits loaded from environment variables with sensible defaults, clamped to >= 1. New endpoints: `GET /api/guilds/{id}/usage` (member-only usage stats with parallel count queries via `tokio::join!`) and `GET /api/config/limits` (public instance limits). Database migration adds `plan` column to guilds (default: "free") for future tier/boost system. Frontend Usage tab in guild settings with progress bars and color-coded thresholds (green <70%, yellow 70-90%, red >90%). 10 integration tests. Two code review rounds addressed TOCTOU race on invite join (switched to `ON CONFLICT DO NOTHING`), config validation (`.max(1)` clamp), and missing test coverage (emoji limit, discovery join limit).
