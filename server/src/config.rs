@@ -160,6 +160,9 @@ pub struct Config {
 
     /// Maximum number of personal workspaces per user (default: 20)
     pub max_workspaces_per_user: i64,
+
+    /// Maximum number of entries per workspace (default: 50)
+    pub max_entries_per_workspace: i64,
 }
 
 impl Config {
@@ -290,6 +293,11 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(20)
                 .max(1),
+            max_entries_per_workspace: env::var("MAX_ENTRIES_PER_WORKSPACE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50)
+                .max(1),
         })
     }
 
@@ -373,6 +381,7 @@ impl Config {
             max_bots_per_guild: 10,
             max_webhooks_per_app: 5,
             max_workspaces_per_user: 20,
+            max_entries_per_workspace: 50,
         }
     }
 }

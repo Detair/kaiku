@@ -1,9 +1,12 @@
 //! Workspace Request/Response Types
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
+use validator::Validate;
+
+use crate::db::ChannelType;
 
 // ============================================================================
 // Database Row Types
@@ -41,7 +44,7 @@ pub struct WorkspaceEntryRow {
     pub guild_name: String,
     pub guild_icon: Option<String>,
     pub channel_name: String,
-    pub channel_type: String,
+    pub channel_type: ChannelType,
     pub created_at: DateTime<Utc>,
 }
 
@@ -120,7 +123,11 @@ impl From<WorkspaceEntryRow> for WorkspaceEntryResponse {
             guild_name: row.guild_name,
             guild_icon: row.guild_icon,
             channel_name: row.channel_name,
-            channel_type: row.channel_type,
+            channel_type: match row.channel_type {
+                ChannelType::Text => "text".to_string(),
+                ChannelType::Voice => "voice".to_string(),
+                ChannelType::Dm => "dm".to_string(),
+            },
             created_at: row.created_at,
         }
     }
@@ -129,6 +136,7 @@ impl From<WorkspaceEntryRow> for WorkspaceEntryResponse {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WorkspaceDetailResponse {
     #[serde(flatten)]
+    #[schema(inline)]
     pub workspace: WorkspaceResponse,
     pub entries: Vec<WorkspaceEntryResponse>,
 }
@@ -137,16 +145,21 @@ pub struct WorkspaceDetailResponse {
 // API Request Types
 // ============================================================================
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateWorkspaceRequest {
+    #[validate(length(min = 1, max = 100, message = "Name must be 1-100 characters"))]
     pub name: String,
     pub icon: Option<String>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdateWorkspaceRequest {
+    #[validate(length(min = 1, max = 100, message = "Name must be 1-100 characters"))]
     pub name: Option<String>,
-    pub icon: Option<String>,
+    /// Icon value. Send a string to set, `null` to clear, or omit to leave unchanged.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[schema(value_type = Option<String>)]
+    pub icon: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -163,4 +176,17 @@ pub struct ReorderEntriesRequest {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderWorkspacesRequest {
     pub workspace_ids: Vec<Uuid>,
+}
+
+/// Deserialize a field that distinguishes between absent, null, and present.
+///
+/// - Field absent in JSON → `#[serde(default)]` yields `None` (skip calling this)
+/// - `"field": null` → `Some(None)` (clear the value)
+/// - `"field": "text"` → `Some(Some("text"))` (set value)
+#[allow(clippy::option_option)]
+fn deserialize_double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }

@@ -18,11 +18,8 @@ pub enum WorkspaceError {
     #[error("Maximum entries per workspace limit reached")]
     EntryLimitExceeded,
 
-    #[error("Workspace name is required")]
-    NameRequired,
-
-    #[error("Workspace name exceeds maximum length")]
-    NameTooLong,
+    #[error("Validation error: {0}")]
+    Validation(String),
 
     #[error("Channel not found or no access")]
     ChannelNotFound,
@@ -45,60 +42,51 @@ impl IntoResponse for WorkspaceError {
         let (status, code, message) = match &self {
             Self::NotFound => (
                 StatusCode::NOT_FOUND,
-                "workspace_not_found",
-                "Workspace not found",
+                "WORKSPACE_NOT_FOUND",
+                "Workspace not found".to_string(),
             ),
             Self::EntryNotFound => (
                 StatusCode::NOT_FOUND,
-                "entry_not_found",
-                "Workspace entry not found",
+                "ENTRY_NOT_FOUND",
+                "Workspace entry not found".to_string(),
             ),
             Self::WorkspaceLimitExceeded => (
-                StatusCode::BAD_REQUEST,
-                "workspace_limit_exceeded",
-                "Maximum workspaces limit reached",
+                StatusCode::FORBIDDEN,
+                "LIMIT_EXCEEDED",
+                "Maximum workspaces limit reached".to_string(),
             ),
             Self::EntryLimitExceeded => (
-                StatusCode::BAD_REQUEST,
-                "entry_limit_exceeded",
-                "Maximum entries per workspace limit reached",
+                StatusCode::FORBIDDEN,
+                "LIMIT_EXCEEDED",
+                "Maximum entries per workspace limit reached".to_string(),
             ),
-            Self::NameRequired => (
-                StatusCode::BAD_REQUEST,
-                "name_required",
-                "Workspace name is required",
-            ),
-            Self::NameTooLong => (
-                StatusCode::BAD_REQUEST,
-                "name_too_long",
-                "Workspace name exceeds maximum length (100 characters)",
-            ),
+            Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::ChannelNotFound => (
                 StatusCode::NOT_FOUND,
-                "channel_not_found",
-                "Channel not found or you don't have access",
+                "CHANNEL_NOT_FOUND",
+                "Channel not found or you don't have access".to_string(),
             ),
             Self::DuplicateEntry => (
                 StatusCode::CONFLICT,
-                "duplicate_entry",
-                "Channel already in this workspace",
+                "DUPLICATE_ENTRY",
+                "Channel already in this workspace".to_string(),
             ),
             Self::InvalidEntries => (
                 StatusCode::BAD_REQUEST,
-                "invalid_entries",
-                "Reorder contains invalid entry IDs",
+                "VALIDATION_ERROR",
+                "Reorder contains invalid entry IDs".to_string(),
             ),
             Self::InvalidWorkspaces => (
                 StatusCode::BAD_REQUEST,
-                "invalid_workspaces",
-                "Reorder contains invalid workspace IDs",
+                "VALIDATION_ERROR",
+                "Reorder contains invalid workspace IDs".to_string(),
             ),
             Self::Database(err) => {
-                tracing::error!("Database error in workspaces: {}", err);
+                tracing::error!(%err, "Workspaces endpoint database error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "database_error",
-                    "Database error",
+                    "INTERNAL_ERROR",
+                    "Database error".to_string(),
                 )
             }
         };

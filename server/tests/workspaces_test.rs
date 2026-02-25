@@ -123,10 +123,10 @@ async fn test_create_workspace_limit_exceeded() {
         .unwrap();
 
     let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 400, "Should reject when limit reached");
+    assert_eq!(resp.status(), 403, "Should reject when limit reached");
 
     let json = body_to_json(resp).await;
-    assert_eq!(json["error"], "workspace_limit_exceeded");
+    assert_eq!(json["error"], "LIMIT_EXCEEDED");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -573,10 +573,10 @@ async fn test_add_entry_limit_exceeded() {
         ))
         .unwrap();
     let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 400, "Should reject when entry limit reached");
+    assert_eq!(resp.status(), 403, "Should reject when entry limit reached");
 
     let json = body_to_json(resp).await;
-    assert_eq!(json["error"], "entry_limit_exceeded");
+    assert_eq!(json["error"], "LIMIT_EXCEEDED");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -703,7 +703,7 @@ async fn test_reorder_entries() {
     ))
     .unwrap();
     let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 200, "Should reorder entries");
+    assert_eq!(resp.status(), 204, "Should reorder entries");
 
     // Verify new order
     let req = TestApp::request(Method::GET, &format!("/api/me/workspaces/{ws_id}"))
@@ -752,7 +752,7 @@ async fn test_reorder_workspaces() {
         ))
         .unwrap();
     let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 200, "Should reorder workspaces");
+    assert_eq!(resp.status(), 204, "Should reorder workspaces");
 
     // Verify new order
     let req = TestApp::request(Method::GET, "/api/me/workspaces")

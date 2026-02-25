@@ -9,13 +9,18 @@ CREATE TABLE workspaces (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(100) NOT NULL,
-    icon VARCHAR(255),
+    icon TEXT,
     sort_order INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_workspaces_owner ON workspaces(owner_user_id);
+
+CREATE TRIGGER workspaces_updated_at
+    BEFORE UPDATE ON workspaces
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at();
 
 -- ==========================================================================
 -- 2. Workspace entries table
@@ -38,3 +43,8 @@ CREATE UNIQUE INDEX idx_workspace_entries_unique
 -- Efficient position-based ordering
 CREATE INDEX idx_workspace_entries_position
     ON workspace_entries(workspace_id, position);
+
+CREATE TRIGGER workspace_entries_updated_at
+    BEFORE UPDATE ON workspace_entries
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at();

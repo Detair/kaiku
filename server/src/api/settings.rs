@@ -76,6 +76,7 @@ pub struct InstanceLimitsResponse {
     pub max_bots_per_guild: i64,
     pub max_webhooks_per_app: i64,
     pub max_workspaces_per_user: i64,
+    pub max_entries_per_workspace: i64,
     pub max_upload_size: usize,
 }
 
@@ -102,6 +103,7 @@ pub async fn get_instance_limits(State(state): State<AppState>) -> Json<Instance
         max_bots_per_guild: state.config.max_bots_per_guild,
         max_webhooks_per_app: state.config.max_webhooks_per_app,
         max_workspaces_per_user: state.config.max_workspaces_per_user,
+        max_entries_per_workspace: state.config.max_entries_per_workspace,
         max_upload_size: state.config.max_upload_size,
     })
 }

@@ -615,9 +615,7 @@ pub enum ServerEvent {
     },
     /// Workspace updated (name/icon).
     WorkspaceUpdated {
-        /// Workspace ID.
-        workspace_id: Uuid,
-        /// Updated workspace fields.
+        /// Updated workspace.
         workspace: serde_json::Value,
     },
     /// Workspace deleted.

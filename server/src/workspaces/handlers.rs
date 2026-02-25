@@ -6,6 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use uuid::Uuid;
+use validator::Validate;
 
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -17,9 +18,6 @@ use super::types::{
     UpdateWorkspaceRequest, WorkspaceDetailResponse, WorkspaceEntryResponse, WorkspaceEntryRow,
     WorkspaceListItem, WorkspaceListRow, WorkspaceResponse, WorkspaceRow,
 };
-
-const MAX_WORKSPACE_NAME_LENGTH: usize = 100;
-const MAX_ENTRIES_PER_WORKSPACE: i64 = 50;
 
 // ============================================================================
 // Workspace CRUD
@@ -35,7 +33,8 @@ const MAX_ENTRIES_PER_WORKSPACE: i64 = 50;
     request_body = CreateWorkspaceRequest,
     responses(
         (status = 201, body = WorkspaceResponse),
-        (status = 400, description = "Invalid name or limit exceeded"),
+        (status = 400, description = "Invalid name"),
+        (status = 403, description = "Workspace limit exceeded"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -46,12 +45,15 @@ pub async fn create_workspace(
     Json(request): Json<CreateWorkspaceRequest>,
 ) -> Result<(StatusCode, Json<WorkspaceResponse>), WorkspaceError> {
     let name = request.name.trim().to_string();
-    if name.is_empty() {
-        return Err(WorkspaceError::NameRequired);
-    }
-    if name.len() > MAX_WORKSPACE_NAME_LENGTH {
-        return Err(WorkspaceError::NameTooLong);
-    }
+
+    // Validate using the validator crate (checks length including Unicode chars)
+    let trimmed_request = CreateWorkspaceRequest {
+        name: name.clone(),
+        icon: request.icon.clone(),
+    };
+    trimmed_request
+        .validate()
+        .map_err(|e| WorkspaceError::Validation(e.to_string()))?;
 
     // Atomic count check + insert to prevent TOCTOU race
     let row = sqlx::query_as::<_, WorkspaceRow>(
@@ -72,14 +74,17 @@ pub async fn create_workspace(
 
     let response = WorkspaceResponse::from(row);
 
-    let _ = broadcast_to_user(
+    if let Err(e) = broadcast_to_user(
         &state.redis,
         auth_user.id,
         &ServerEvent::WorkspaceCreated {
             workspace: serde_json::to_value(&response).unwrap_or_default(),
         },
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to broadcast WorkspaceCreated event: {}", e);
+    }
 
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -188,6 +193,7 @@ pub async fn get_workspace(
     request_body = UpdateWorkspaceRequest,
     responses(
         (status = 200, body = WorkspaceResponse),
+        (status = 400, description = "Invalid name"),
         (status = 404, description = "Workspace not found"),
     ),
     security(("bearer_auth" = [])),
@@ -199,46 +205,56 @@ pub async fn update_workspace(
     Path(workspace_id): Path<Uuid>,
     Json(request): Json<UpdateWorkspaceRequest>,
 ) -> Result<Json<WorkspaceResponse>, WorkspaceError> {
-    if let Some(ref name) = request.name {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(WorkspaceError::NameRequired);
+    // Validate name if provided (trim first, then validate length as chars)
+    let trimmed_name = request.name.as_deref().map(str::trim);
+    if let Some(name) = trimmed_name {
+        if name.is_empty() {
+            return Err(WorkspaceError::Validation(
+                "Workspace name is required".to_string(),
+            ));
         }
-        if trimmed.len() > MAX_WORKSPACE_NAME_LENGTH {
-            return Err(WorkspaceError::NameTooLong);
+        if name.chars().count() > 100 {
+            return Err(WorkspaceError::Validation(
+                "Name must be 1-100 characters".to_string(),
+            ));
         }
     }
+
+    // icon: None = no change, Some(None) = clear, Some(Some(val)) = set
+    let should_update_icon = request.icon.is_some();
+    let new_icon_value: Option<&str> = request.icon.as_ref().and_then(|v| v.as_deref());
 
     let row = sqlx::query_as::<_, WorkspaceRow>(
         r"
         UPDATE workspaces
         SET name = COALESCE($3, name),
-            icon = CASE WHEN $4 THEN $5 ELSE icon END,
-            updated_at = NOW()
+            icon = CASE WHEN $4 THEN $5 ELSE icon END
         WHERE id = $1 AND owner_user_id = $2
         RETURNING id, owner_user_id, name, icon, sort_order, created_at, updated_at
         ",
     )
     .bind(workspace_id)
     .bind(auth_user.id)
-    .bind(request.name.as_deref().map(str::trim))
-    .bind(request.icon.is_some())
-    .bind(&request.icon)
+    .bind(trimmed_name)
+    .bind(should_update_icon)
+    .bind(new_icon_value)
     .fetch_optional(&state.db)
     .await?
     .ok_or(WorkspaceError::NotFound)?;
 
     let response = WorkspaceResponse::from(row);
 
-    let _ = broadcast_to_user(
+    if let Err(e) = broadcast_to_user(
         &state.redis,
         auth_user.id,
         &ServerEvent::WorkspaceUpdated {
-            workspace_id,
             workspace: serde_json::to_value(&response).unwrap_or_default(),
         },
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to broadcast WorkspaceUpdated event: {}", e);
+    }
 
     Ok(Json(response))
 }
@@ -273,12 +289,15 @@ pub async fn delete_workspace(
         return Err(WorkspaceError::NotFound);
     }
 
-    let _ = broadcast_to_user(
+    if let Err(e) = broadcast_to_user(
         &state.redis,
         auth_user.id,
         &ServerEvent::WorkspaceDeleted { workspace_id },
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to broadcast WorkspaceDeleted event: {}", e);
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -298,6 +317,7 @@ pub async fn delete_workspace(
     request_body = AddEntryRequest,
     responses(
         (status = 201, body = WorkspaceEntryResponse),
+        (status = 403, description = "Entry limit exceeded"),
         (status = 404, description = "Workspace or channel not found"),
         (status = 409, description = "Channel already in workspace"),
     ),
@@ -364,7 +384,7 @@ pub async fn add_entry(
     .bind(workspace_id)
     .bind(request.guild_id)
     .bind(request.channel_id)
-    .bind(MAX_ENTRIES_PER_WORKSPACE)
+    .bind(state.config.max_entries_per_workspace)
     .fetch_optional(&state.db)
     .await;
 
@@ -396,7 +416,7 @@ pub async fn add_entry(
 
     let response = WorkspaceEntryResponse::from(entry_row);
 
-    let _ = broadcast_to_user(
+    if let Err(e) = broadcast_to_user(
         &state.redis,
         auth_user.id,
         &ServerEvent::WorkspaceEntryAdded {
@@ -404,7 +424,10 @@ pub async fn add_entry(
             entry: serde_json::to_value(&response).unwrap_or_default(),
         },
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to broadcast WorkspaceEntryAdded event: {}", e);
+    }
 
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -453,7 +476,7 @@ pub async fn remove_entry(
         return Err(WorkspaceError::EntryNotFound);
     }
 
-    let _ = broadcast_to_user(
+    if let Err(e) = broadcast_to_user(
         &state.redis,
         auth_user.id,
         &ServerEvent::WorkspaceEntryRemoved {
@@ -461,7 +484,10 @@ pub async fn remove_entry(
             entry_id,
         },
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to broadcast WorkspaceEntryRemoved event: {}", e);
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -480,7 +506,7 @@ pub async fn remove_entry(
     params(("id" = Uuid, Path, description = "Workspace ID")),
     request_body = ReorderEntriesRequest,
     responses(
-        (status = 200, description = "Entries reordered"),
+        (status = 204, description = "Entries reordered"),
         (status = 400, description = "Invalid entry IDs"),
         (status = 404, description = "Workspace not found"),
     ),
@@ -526,10 +552,10 @@ pub async fn reorder_entries(
         return Err(WorkspaceError::InvalidEntries);
     }
 
-    // Update positions
+    // Update positions (trigger handles updated_at)
     for (position, entry_id) in request.entry_ids.iter().enumerate() {
         sqlx::query(
-            "UPDATE workspace_entries SET position = $1, updated_at = NOW() WHERE id = $2 AND workspace_id = $3",
+            "UPDATE workspace_entries SET position = $1 WHERE id = $2 AND workspace_id = $3",
         )
         .bind(position as i32)
         .bind(entry_id)
@@ -547,7 +573,7 @@ pub async fn reorder_entries(
         .map(|(pos, id)| serde_json::json!({ "id": id, "position": pos }))
         .collect();
 
-    let _ = broadcast_to_user(
+    if let Err(e) = broadcast_to_user(
         &state.redis,
         auth_user.id,
         &ServerEvent::WorkspaceEntriesReordered {
@@ -555,9 +581,12 @@ pub async fn reorder_entries(
             entries,
         },
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to broadcast WorkspaceEntriesReordered event: {}", e);
+    }
 
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Reorder workspaces.
@@ -569,7 +598,7 @@ pub async fn reorder_entries(
     tag = "workspaces",
     request_body = ReorderWorkspacesRequest,
     responses(
-        (status = 200, description = "Workspaces reordered"),
+        (status = 204, description = "Workspaces reordered"),
         (status = 400, description = "Invalid workspace IDs"),
     ),
     security(("bearer_auth" = [])),
@@ -600,16 +629,14 @@ pub async fn reorder_workspaces(
         return Err(WorkspaceError::InvalidWorkspaces);
     }
 
-    // Update sort_order
+    // Update sort_order (trigger handles updated_at)
     for (sort_order, workspace_id) in request.workspace_ids.iter().enumerate() {
-        sqlx::query(
-            "UPDATE workspaces SET sort_order = $1, updated_at = NOW() WHERE id = $2 AND owner_user_id = $3",
-        )
-        .bind(sort_order as i32)
-        .bind(workspace_id)
-        .bind(auth_user.id)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE workspaces SET sort_order = $1 WHERE id = $2 AND owner_user_id = $3")
+            .bind(sort_order as i32)
+            .bind(workspace_id)
+            .bind(auth_user.id)
+            .execute(&mut *tx)
+            .await?;
     }
 
     tx.commit().await?;
@@ -621,12 +648,15 @@ pub async fn reorder_workspaces(
         .map(|(order, id)| serde_json::json!({ "id": id, "sort_order": order }))
         .collect();
 
-    let _ = broadcast_to_user(
+    if let Err(e) = broadcast_to_user(
         &state.redis,
         auth_user.id,
         &ServerEvent::WorkspaceReordered { workspaces },
     )
-    .await;
+    .await
+    {
+        tracing::warn!("Failed to broadcast WorkspaceReordered event: {}", e);
+    }
 
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
