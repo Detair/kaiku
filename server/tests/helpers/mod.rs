@@ -34,6 +34,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 use vc_server::api::{create_router, AppState, AppStateConfig};
 use vc_server::auth::jwt;
+use vc_server::chat::S3Client;
 use vc_server::config::Config;
 use vc_server::db;
 use vc_server::permissions::GuildPermissions;
@@ -315,6 +316,62 @@ pub async fn fresh_test_app() -> TestApp {
         pool,
         config: Arc::new(config),
     }
+}
+
+/// Build a [`TestApp`] with S3 connected to a local RustFS instance.
+///
+/// Requires `canis-dev-rustfs` running on `localhost:9000`.
+/// Creates a unique test bucket per invocation and cleans it up on drop
+/// (via `CleanupGuard`).
+///
+/// Environment variables must be set before calling:
+/// - `AWS_ACCESS_KEY_ID=rustfsdev`
+/// - `AWS_SECRET_ACCESS_KEY=rustfsdev_secret`
+pub async fn fresh_test_app_with_s3() -> (TestApp, String) {
+    let mut config = shared_config().await.clone();
+    let bucket = format!("test-{}", Uuid::now_v7());
+    config.s3_endpoint = Some("http://localhost:9000".to_string());
+    config.s3_bucket = bucket.clone();
+    config.s3_access_key = Some("rustfsdev".to_string());
+    config.s3_secret_key = Some("rustfsdev_secret".to_string());
+
+    let s3 = S3Client::new(&config)
+        .await
+        .expect("Failed to create S3 client for test");
+
+    // Create the test bucket
+    s3.create_bucket_if_not_exists()
+        .await
+        .expect("Failed to create test bucket");
+
+    let pool = db::create_pool(&config.database_url)
+        .await
+        .expect("Failed to connect to test DB");
+    let redis = db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Failed to connect to test Redis");
+    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
+
+    let state = AppState::new(AppStateConfig {
+        db: pool.clone(),
+        redis,
+        config: config.clone(),
+        s3: Some(s3),
+        sfu,
+        rate_limiter: None,
+        email: None,
+        oidc_manager: None,
+    });
+    let router = create_router(state);
+
+    (
+        TestApp {
+            router,
+            pool,
+            config: Arc::new(config),
+        },
+        bucket,
+    )
 }
 
 // ============================================================================

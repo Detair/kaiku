@@ -121,17 +121,41 @@ pub struct AttachmentInfo {
     pub mime_type: String,
     pub size: i64,
     pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blurhash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub medium_url: Option<String>,
 }
 
 impl AttachmentInfo {
     /// Create from a `FileAttachment` database model.
     pub fn from_db(attachment: &db::FileAttachment) -> Self {
+        let base_url = format!("/api/messages/attachments/{}/download", attachment.id);
+        let thumbnail_url = attachment
+            .thumbnail_s3_key
+            .as_ref()
+            .map(|_| format!("{base_url}?variant=thumbnail"));
+        let medium_url = attachment
+            .medium_s3_key
+            .as_ref()
+            .map(|_| format!("{base_url}?variant=medium"));
         Self {
             id: attachment.id,
             filename: attachment.filename.clone(),
             mime_type: attachment.mime_type.clone(),
             size: attachment.size_bytes,
-            url: format!("/api/messages/attachments/{}/download", attachment.id),
+            url: base_url,
+            width: attachment.width,
+            height: attachment.height,
+            blurhash: attachment.blurhash.clone(),
+            thumbnail_url,
+            medium_url,
         }
     }
 }

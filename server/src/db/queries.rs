@@ -1418,7 +1418,8 @@ pub async fn count_search_messages_filtered(
 // File Attachment Queries
 // ============================================================================
 
-/// Create a new file attachment record.
+/// Create a new file attachment record with optional media metadata.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_file_attachment(
     pool: &PgPool,
     message_id: Uuid,
@@ -1426,11 +1427,19 @@ pub async fn create_file_attachment(
     mime_type: &str,
     size_bytes: i64,
     s3_key: &str,
+    width: Option<i32>,
+    height: Option<i32>,
+    blurhash: Option<&str>,
+    thumbnail_s3_key: Option<&str>,
+    medium_s3_key: Option<&str>,
+    processing_status: &str,
 ) -> sqlx::Result<FileAttachment> {
     sqlx::query_as::<_, FileAttachment>(
         r"
-        INSERT INTO file_attachments (message_id, filename, mime_type, size_bytes, s3_key)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO file_attachments (message_id, filename, mime_type, size_bytes, s3_key,
+                                      width, height, blurhash, thumbnail_s3_key, medium_s3_key,
+                                      processing_status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *
         ",
     )
@@ -1439,6 +1448,12 @@ pub async fn create_file_attachment(
     .bind(mime_type)
     .bind(size_bytes)
     .bind(s3_key)
+    .bind(width)
+    .bind(height)
+    .bind(blurhash)
+    .bind(thumbnail_s3_key)
+    .bind(medium_s3_key)
+    .bind(processing_status)
     .fetch_one(pool)
     .await
 }

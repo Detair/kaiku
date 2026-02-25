@@ -402,7 +402,7 @@ fn api_docs(enable: bool) -> Router<AppState> {
         return Router::new();
     }
     Router::new().merge(
-        SwaggerUi::new("/api/docs/{_:.*}")
+        SwaggerUi::new("/api/docs")
             .url("/api/docs/openapi.json", crate::openapi::ApiDoc::openapi()),
     )
 }

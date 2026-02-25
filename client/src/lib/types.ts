@@ -234,6 +234,11 @@ export interface Attachment {
   mime_type: string;
   size: number;
   url: string;
+  width?: number;
+  height?: number;
+  blurhash?: string;
+  thumbnail_url?: string;
+  medium_url?: string;
 }
 
 export interface Reaction {

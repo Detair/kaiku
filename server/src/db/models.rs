@@ -190,6 +190,18 @@ pub struct FileAttachment {
     pub s3_key: String,
     /// When the attachment was uploaded.
     pub created_at: DateTime<Utc>,
+    /// Image width in pixels (if image).
+    pub width: Option<i32>,
+    /// Image height in pixels (if image).
+    pub height: Option<i32>,
+    /// Blurhash placeholder string (if image).
+    pub blurhash: Option<String>,
+    /// S3 key for 256px thumbnail variant (if image).
+    pub thumbnail_s3_key: Option<String>,
+    /// S3 key for 1024px medium variant (if image).
+    pub medium_s3_key: Option<String>,
+    /// Processing status: pending, processed, failed, skipped.
+    pub processing_status: String,
 }
 
 /// Session model for refresh token tracking.

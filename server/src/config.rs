@@ -40,6 +40,12 @@ pub struct Config {
     /// S3 presigned URL expiry in seconds (default: 3600 = 1 hour)
     pub s3_presign_expiry: i64,
 
+    /// S3 access key ID (optional, falls back to `AWS_ACCESS_KEY_ID` env var)
+    pub s3_access_key: Option<String>,
+
+    /// S3 secret access key (optional, falls back to `AWS_SECRET_ACCESS_KEY` env var)
+    pub s3_secret_key: Option<String>,
+
     /// Allowed MIME types for file uploads (comma-separated)
     pub allowed_mime_types: Option<Vec<String>>,
 
@@ -179,6 +185,8 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3600), // 1 hour
+            s3_access_key: env::var("AWS_ACCESS_KEY_ID").ok(),
+            s3_secret_key: env::var("AWS_SECRET_ACCESS_KEY").ok(),
             allowed_mime_types: env::var("ALLOWED_MIME_TYPES").ok().map(|s| {
                 s.split(',')
                     .map(|t| t.trim().to_string())
@@ -325,6 +333,8 @@ impl Config {
             s3_endpoint: None,
             s3_bucket: "test-bucket".into(),
             s3_presign_expiry: 3600,
+            s3_access_key: None,
+            s3_secret_key: None,
             allowed_mime_types: None,
             max_upload_size: 50 * 1024 * 1024,
             max_avatar_size: 5 * 1024 * 1024,

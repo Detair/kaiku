@@ -11,6 +11,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::messages::{detect_mention_type, AttachmentInfo, AuthorProfile, MessageResponse};
+use super::s3::S3Client;
 use crate::api::AppState;
 use crate::auth::jwt::validate_access_token;
 use crate::auth::AuthUser;
@@ -388,11 +389,25 @@ pub async fn upload_file(
         message.channel_id, message_id, file_id, extension
     );
 
-    // Upload to S3
+    // Process image before S3 upload (clones data internally for spawn_blocking)
     let file_size = file_data.len() as i64;
-    s3.upload(&s3_key, file_data, &content_type)
-        .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?;
+    let media = process_and_upload_variants(s3, &file_data, &content_type, &s3_key).await;
+
+    // Upload original to S3
+    if let Err(e) = s3.upload(&s3_key, file_data, &content_type).await {
+        // Clean up orphaned variant objects
+        let mut keys = Vec::new();
+        if let Some(k) = media.thumb_key {
+            keys.push(k);
+        }
+        if let Some(k) = media.medium_key {
+            keys.push(k);
+        }
+        if !keys.is_empty() {
+            cleanup_s3_objects(s3.clone(), keys);
+        }
+        return Err(UploadError::Storage(e.to_string()));
+    }
 
     // Save metadata to database
     let attachment = db::create_file_attachment(
@@ -402,8 +417,30 @@ pub async fn upload_file(
         &content_type,
         file_size,
         &s3_key,
+        media.width,
+        media.height,
+        media.blurhash.as_deref(),
+        media.thumb_key.as_deref(),
+        media.medium_key.as_deref(),
+        media.processing_status,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        // Clean up orphaned S3 objects (original + variants)
+        let mut keys = vec![s3_key.clone()];
+        if let Some(k) = media.thumb_key.clone() {
+            keys.push(k);
+        }
+        if let Some(k) = media.medium_key.clone() {
+            keys.push(k);
+        }
+        cleanup_s3_objects(s3.clone(), keys);
+        tracing::error!(
+            message_id = %message_id,
+            "Failed to create attachment record, cleaning up S3 objects: {e}"
+        );
+        e
+    })?;
 
     // Generate download URL
     let url = format!("/api/messages/attachments/{}", attachment.id);
@@ -627,9 +664,23 @@ pub async fn upload_message_with_file(
         channel_id, message.id, file_id, extension
     );
 
-    // Upload to S3 - if this fails, message is already created (acceptable trade-off)
+    // Process image before S3 upload (clones data internally for spawn_blocking)
     let file_size = file_data.len() as i64;
+    let media = process_and_upload_variants(s3, &file_data, &file_content_type, &s3_key).await;
+
+    // Upload original to S3 - if this fails, message is already created (acceptable trade-off)
     if let Err(e) = s3.upload(&s3_key, file_data, &file_content_type).await {
+        // Clean up orphaned variant objects
+        let mut keys = Vec::new();
+        if let Some(k) = media.thumb_key {
+            keys.push(k);
+        }
+        if let Some(k) = media.medium_key {
+            keys.push(k);
+        }
+        if !keys.is_empty() {
+            cleanup_s3_objects(s3.clone(), keys);
+        }
         tracing::error!(
             "S3 upload failed for message {}: {}. Message exists without attachment.",
             message.id,
@@ -646,22 +697,24 @@ pub async fn upload_message_with_file(
         &file_content_type,
         file_size,
         &s3_key,
+        media.width,
+        media.height,
+        media.blurhash.as_deref(),
+        media.thumb_key.as_deref(),
+        media.medium_key.as_deref(),
+        media.processing_status,
     )
     .await
     .map_err(|e| {
-        // If attachment record creation fails after S3 upload, we have an orphaned S3 object
-        // Clean it up in the background
-        let s3_cleanup = s3.clone();
-        let key_cleanup = s3_key.clone();
-        tokio::spawn(async move {
-            if let Err(cleanup_err) = s3_cleanup.delete(&key_cleanup).await {
-                tracing::error!(
-                    "Failed to cleanup orphaned S3 object {}: {}",
-                    key_cleanup,
-                    cleanup_err
-                );
-            }
-        });
+        // If attachment record creation fails after S3 upload, we have orphaned S3 objects
+        let mut keys = vec![s3_key.clone()];
+        if let Some(k) = media.thumb_key.clone() {
+            keys.push(k);
+        }
+        if let Some(k) = media.medium_key.clone() {
+            keys.push(k);
+        }
+        cleanup_s3_objects(s3.clone(), keys);
         tracing::error!(
             "Failed to create attachment record for message {}: {}",
             message.id,
@@ -772,6 +825,8 @@ pub struct DownloadQuery {
     /// Optional JWT token for authentication (alternative to Authorization header).
     /// Used for browser requests like <img src="..."> that can't set headers.
     pub token: Option<String>,
+    /// Optional variant to download: "thumbnail" (256px) or "medium" (1024px).
+    pub variant: Option<String>,
 }
 
 /// Download a file (stream from S3).
@@ -829,9 +884,38 @@ pub async fn download(
         .await?
         .ok_or(UploadError::NotFound)?;
 
+    // Determine S3 key and content type based on requested variant
+    let (s3_key, content_type) = match query.variant.as_deref() {
+        Some("thumbnail") => {
+            let key = attachment
+                .thumbnail_s3_key
+                .as_deref()
+                .unwrap_or(&attachment.s3_key);
+            let ct = if attachment.thumbnail_s3_key.is_some() {
+                "image/webp".to_string()
+            } else {
+                attachment.mime_type.clone()
+            };
+            (key.to_string(), ct)
+        }
+        Some("medium") => {
+            let key = attachment
+                .medium_s3_key
+                .as_deref()
+                .unwrap_or(&attachment.s3_key);
+            let ct = if attachment.medium_s3_key.is_some() {
+                "image/webp".to_string()
+            } else {
+                attachment.mime_type.clone()
+            };
+            (key.to_string(), ct)
+        }
+        _ => (attachment.s3_key.clone(), attachment.mime_type.clone()),
+    };
+
     // Fetch from S3
     let stream = s3
-        .get_object_stream(&attachment.s3_key)
+        .get_object_stream(&s3_key)
         .await
         .map_err(|e| UploadError::Storage(e.to_string()))?;
 
@@ -840,12 +924,23 @@ pub async fn download(
     let sdk_body = stream.into_inner();
     let body = axum::body::Body::new(sdk_body);
 
+    // Adjust filename extension when serving a WebP variant
+    let display_filename = if content_type == "image/webp" && content_type != attachment.mime_type {
+        let stem = attachment
+            .filename
+            .rsplit_once('.')
+            .map_or(attachment.filename.as_str(), |(stem, _)| stem);
+        format!("{stem}.webp")
+    } else {
+        attachment.filename.clone()
+    };
+
     // Set headers
     let headers = [
-        (axum::http::header::CONTENT_TYPE, attachment.mime_type),
+        (axum::http::header::CONTENT_TYPE, content_type),
         (
             axum::http::header::CONTENT_DISPOSITION,
-            format!("inline; filename=\"{}\"", attachment.filename),
+            format!("inline; filename=\"{display_filename}\""),
         ),
         (
             axum::http::header::CACHE_CONTROL,
@@ -859,6 +954,131 @@ pub async fn download(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Output of image processing + variant S3 upload pipeline.
+struct MediaProcessingOutput {
+    width: Option<i32>,
+    height: Option<i32>,
+    blurhash: Option<String>,
+    thumb_key: Option<String>,
+    medium_key: Option<String>,
+    processing_status: &'static str,
+}
+
+/// Process an image and upload thumbnail/medium variants to S3.
+///
+/// Returns metadata for storing in the database. Processing failures are
+/// logged and result in `processing_status = "failed"` — they never propagate
+/// as errors to avoid blocking the upload.
+async fn process_and_upload_variants(
+    s3: &S3Client,
+    file_data: &[u8],
+    content_type: &str,
+    base_s3_key: &str,
+) -> MediaProcessingOutput {
+    if !content_type.starts_with("image/") {
+        return MediaProcessingOutput {
+            width: None,
+            height: None,
+            blurhash: None,
+            thumb_key: None,
+            medium_key: None,
+            processing_status: "skipped",
+        };
+    }
+
+    // process_image takes &[u8] but spawn_blocking needs 'static
+    let data = file_data.to_vec();
+    let mime = content_type.to_string();
+    let meta = match tokio::task::spawn_blocking(move || {
+        super::media_processing::process_image(&data, &mime)
+    })
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "Image processing failed, storing without variants");
+            return MediaProcessingOutput {
+                width: None,
+                height: None,
+                blurhash: None,
+                thumb_key: None,
+                medium_key: None,
+                processing_status: "failed",
+            };
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Image processing task panicked");
+            return MediaProcessingOutput {
+                width: None,
+                height: None,
+                blurhash: None,
+                thumb_key: None,
+                medium_key: None,
+                processing_status: "failed",
+            };
+        }
+    };
+
+    // Upload variants to S3
+    let base_key = base_s3_key
+        .rsplit_once('.')
+        .map_or(base_s3_key, |(base, _)| base);
+
+    let thumb_key = if let Some(ref thumb) = meta.thumbnail {
+        let key = format!("{base_key}_thumb.webp");
+        if let Err(e) = s3.upload(&key, thumb.data.clone(), &thumb.content_type).await {
+            tracing::warn!(error = %e, "Failed to upload thumbnail variant");
+            None
+        } else {
+            tracing::debug!(width = thumb.width, height = thumb.height, "Uploaded thumbnail variant");
+            Some(key)
+        }
+    } else {
+        None
+    };
+
+    let medium_key = if let Some(ref medium) = meta.medium {
+        let key = format!("{base_key}_medium.webp");
+        if let Err(e) = s3.upload(&key, medium.data.clone(), &medium.content_type).await {
+            tracing::warn!(error = %e, "Failed to upload medium variant");
+            None
+        } else {
+            tracing::debug!(width = medium.width, height = medium.height, "Uploaded medium variant");
+            Some(key)
+        }
+    } else {
+        None
+    };
+
+    // Determine processing status: "processed" if all expected variants uploaded,
+    // "partial" if some variant uploads failed
+    let expected_thumb = meta.thumbnail.is_some();
+    let expected_medium = meta.medium.is_some();
+    let all_uploaded = (!expected_thumb || thumb_key.is_some())
+        && (!expected_medium || medium_key.is_some());
+    let processing_status = if all_uploaded { "processed" } else { "partial" };
+
+    MediaProcessingOutput {
+        width: Some(meta.width.min(i32::MAX as u32) as i32),
+        height: Some(meta.height.min(i32::MAX as u32) as i32),
+        blurhash: Some(meta.blurhash),
+        thumb_key,
+        medium_key,
+        processing_status,
+    }
+}
+
+/// Clean up S3 objects in the background (used when DB insert fails).
+fn cleanup_s3_objects(s3: S3Client, keys: Vec<String>) {
+    tokio::spawn(async move {
+        for key in keys {
+            if let Err(e) = s3.delete(&key).await {
+                tracing::error!("Failed to cleanup orphaned S3 object {}: {}", key, e);
+            }
+        }
+    });
+}
 
 /// Sanitize a filename to prevent path traversal and other issues.
 fn sanitize_filename(filename: &str) -> String {

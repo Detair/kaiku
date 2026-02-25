@@ -5,6 +5,7 @@
 pub(crate) mod channels;
 pub mod dm;
 pub mod dm_search;
+pub(crate) mod media_processing;
 pub(crate) mod messages;
 pub mod overrides;
 pub mod s3;

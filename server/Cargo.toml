@@ -85,8 +85,9 @@ validator.workspace = true
 mime_guess.workspace = true
 infer.workspace = true
 
-# Image format detection
+# Image processing
 image.workspace = true
+blurhash.workspace = true
 
 # String matching
 aho-corasick.workspace = true

@@ -810,6 +810,12 @@ mod postgres_tests {
             "application/pdf",
             1024000,
             "uploads/abc123/document.pdf",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "skipped",
         )
         .await
         .expect("Failed to create attachment");
@@ -874,10 +880,10 @@ mod postgres_tests {
         .expect("Failed to create message");
 
         // Create multiple attachments
-        create_file_attachment(&pool, message.id, "file1.txt", "text/plain", 100, "path1")
+        create_file_attachment(&pool, message.id, "file1.txt", "text/plain", 100, "path1", None, None, None, None, None, "skipped")
             .await
             .expect("Failed to create attachment 1");
-        create_file_attachment(&pool, message.id, "file2.txt", "text/plain", 200, "path2")
+        create_file_attachment(&pool, message.id, "file2.txt", "text/plain", 200, "path2", None, None, None, None, None, "skipped")
             .await
             .expect("Failed to create attachment 2");
 
