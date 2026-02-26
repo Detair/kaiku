@@ -38,7 +38,7 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
  * Called on every evaluateFocusPolicy to stay in sync with live preferences.
  * Lists are capped at 50 entries so construction cost is negligible.
  */
-function buildVipSet(ids: string[]): Set<string> {
+function buildVipSet(ids: string[]): ReadonlySet<string> {
   return ids.length > 0 ? new Set(ids) : EMPTY_SET;
 }
 
@@ -154,7 +154,7 @@ export function handleActivityChange(
  * based on the current focus state.
  *
  * Priority:
- * 1. DND active → suppress (absolute, no overrides)
+ * 1. DND/quiet hours active → suppress (absolute, no overrides)
  * 2. No focus mode → allow
  * 3. VIP user → allow
  * 4. VIP channel → allow

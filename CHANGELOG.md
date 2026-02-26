@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Focus modes for intelligent notification routing — suppress notifications during gaming, coding, or streaming sessions with VIP contact overrides and emergency keyword bypass (#253)
-- Auto-activation of focus modes when matching apps are detected (games, IDEs, media players) (#253)
+- Auto-activation of focus modes when matching apps are detected (games, IDEs) with support for custom triggers (#253)
 - Focus settings UI with per-mode configuration: suppression level, VIP users/channels, emergency keywords, and trigger categories (#253)
 
 ### Fixed

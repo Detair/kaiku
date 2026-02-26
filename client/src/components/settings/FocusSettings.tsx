@@ -18,8 +18,7 @@ import type {
   FocusSuppressionLevel,
   FocusTriggerCategory,
 } from "@/lib/types";
-import { preferences, updatePreference } from "@/stores/preferences";
-import { DEFAULT_FOCUS_PREFERENCES } from "@/stores/preferences";
+import { preferences, updatePreference, DEFAULT_FOCUS_PREFERENCES } from "@/stores/preferences";
 import {
   focusState,
   activateFocusMode,
@@ -538,7 +537,7 @@ const FocusSettings: Component = () => {
 
       {/* Info text */}
       <p class="text-xs text-text-muted">
-        DND status always suppresses all notifications regardless of focus mode.
+        DND status and quiet hours always suppress all notifications regardless of focus mode.
         Focus modes add intelligent filtering on top of existing notification settings.
       </p>
     </div>
