@@ -48,6 +48,8 @@ function generateId(): string {
   return crypto.randomUUID();
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const FocusSettings: Component = () => {
   const [keywordInput, setKeywordInput] = createSignal("");
   const [vipUserInput, setVipUserInput] = createSignal("");
@@ -127,7 +129,7 @@ const FocusSettings: Component = () => {
 
   const handleAddKeyword = (modeId: string) => {
     const keyword = keywordInput().trim();
-    if (!keyword) return;
+    if (!keyword || keyword.length < 3) return;
 
     const mode = modes().find((m) => m.id === modeId);
     if (!mode || mode.emergencyKeywords.length >= MAX_KEYWORDS) return;
@@ -145,7 +147,7 @@ const FocusSettings: Component = () => {
 
   const handleAddVipUser = (modeId: string) => {
     const userId = vipUserInput().trim();
-    if (!userId) return;
+    if (!userId || !UUID_RE.test(userId)) return;
 
     const mode = modes().find((m) => m.id === modeId);
     if (!mode || mode.vipUserIds.length >= MAX_VIP_USERS) return;
@@ -163,7 +165,7 @@ const FocusSettings: Component = () => {
 
   const handleAddVipChannel = (modeId: string) => {
     const channelId = vipChannelInput().trim();
-    if (!channelId) return;
+    if (!channelId || !UUID_RE.test(channelId)) return;
 
     const mode = modes().find((m) => m.id === modeId);
     if (!mode || mode.vipChannelIds.length >= MAX_VIP_CHANNELS) return;
@@ -391,11 +393,12 @@ const FocusSettings: Component = () => {
                           <input
                             type="text"
                             value={keywordInput()}
+                            maxLength={30}
                             onInput={(e) => setKeywordInput(e.currentTarget.value)}
                             onKeyDown={(e) => {
                               if (e.key === "Enter") handleAddKeyword(mode.id);
                             }}
-                            placeholder="Add keyword..."
+                            placeholder="Add keyword (min 3 chars)..."
                             class="flex-1 px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-xs focus:outline-none focus:border-accent-primary transition-colors"
                           />
                           <button

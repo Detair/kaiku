@@ -58,10 +58,14 @@ export async function initPresence(): Promise<void> {
     );
 
     // Listen for local activity changes from presence service
+    const VALID_TRIGGER_CATEGORIES: ReadonlySet<string> = new Set(["game", "coding", "listening", "watching"]);
     activityUnlistener = await listen<Activity | null>("presence:activity_changed", async (event) => {
       // Notify focus engine of activity category change for auto-activation
       const { handleActivityChange } = await import("./focus");
-      const category = (event.payload?.type as FocusTriggerCategory) ?? null;
+      const rawType = event.payload?.type;
+      const category = (typeof rawType === "string" && VALID_TRIGGER_CATEGORIES.has(rawType))
+        ? rawType as FocusTriggerCategory
+        : null;
       handleActivityChange(category);
 
       // Send activity to server via WebSocket command
