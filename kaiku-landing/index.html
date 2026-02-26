@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kaiku - The Echo of Victory</title>
+    <meta name="description" content="Kaiku: A modern, high-performance voice chat built for gamers.">
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700;800;900&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="noise-overlay"></div>
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+
+    <nav class="navbar">
+        <div class="container nav-content">
+            <div class="logo">
+                <span class="logo-text">KAIKU</span>
+            </div>
+            <ul class="nav-links">
+                <li><a href="#features">Features</a></li>
+                <li><a href="#how">How it Works</a></li>
+                <li><a href="#download" class="btn btn-primary btn-small">Download</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <header class="hero" id="home">
+        <div class="container hero-content">
+            <div class="hero-text fade-in-up">
+                <div class="badge">Next Gen Voice Chat</div>
+                <h1 class="hero-title">The <span class="text-gradient">Echo</span> of Victory.</h1>
+                <p class="hero-subtitle">Experience crystal clear, zero-latency communication built exclusively for
+                    modern gamers and esports teams. Don't let your voice get lost in the noise.</p>
+                <div class="hero-actions">
+                    <a href="#download" class="btn btn-primary">Download for Linux</a>
+                    <a href="#features" class="btn btn-secondary">Explore Features</a>
+                </div>
+            </div>
+            <div class="hero-image fade-in-up delay-2">
+                <div class="mascot-container">
+                    <img src="assets/images/logo.png" alt="Kaiku Echo Logo" class="mascot floating">
+                    <div class="mascot-glow"></div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <section class="features" id="features">
+        <div class="container">
+            <div class="section-header fade-in-up scroll-trigger">
+                <h2>Engineered for <span class="text-gradient">Performance</span></h2>
+                <p>Built from the ground up to be lightweight, secure, and incredibly fast.</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card glass scroll-trigger stagger-1">
+                    <div class="feature-icon icon-speed"></div>
+                    <h3>Low Latency Audio</h3>
+                    <p>Optimized WebRTC packet routing with automatic conflict recovery ensures your tactical callouts
+                        hit fast.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-2">
+                    <div class="feature-icon icon-island"></div>
+                    <h3>Personal Workspaces</h3>
+                    <p>Organize your favorite channels across multiple servers into dedicated tactical folders for
+                        immediate access.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-3">
+                    <div class="feature-icon icon-presence"></div>
+                    <h3>Rich Game Presence</h3>
+                    <p>Automatic process detection so you always know exactly what your pack is playing in real-time.
+                    </p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-1">
+                    <div class="feature-icon icon-screen"></div>
+                    <h3>Multi-Stream Tactics</h3>
+                    <p>Share multiple video and game streams simultaneously for deep strategy breakdown and VOD reviews.
+                    </p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-2">
+                    <div class="feature-icon icon-secure"></div>
+                    <h3>End-to-End Encryption</h3>
+                    <p>Your team's strategy stays yours. Military-grade Olm encryption for direct messages and key
+                        backup.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-3">
+                    <div class="feature-icon icon-resource"></div>
+                    <h3>Minimal Footprint</h3>
+                    <p>Native Rust/Tauri architecture utilizing minimal CPU usage. Play your games without stutter or
+                        frame pacing issues.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="platform" id="download">
+        <div class="container">
+            <div class="platform-content glass scroll-trigger">
+                <div class="platform-text">
+                    <h2>Ready to join the <span class="text-gradient">Pack</span>?</h2>
+                    <p>Download Kaiku today and experience the next evolution of tactical voice communication.</p>
+                </div>
+                <div class="platform-downloads">
+                    <a href="#" class="btn btn-primary btn-large">
+                        <span class="btn-icon linux-icon"></span>
+                        Download for Linux
+                    </a>
+                    <p class="sys-req">Windows and macOS coming soon.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container footer-content">
+            <div class="footer-brand">
+                <span class="logo-text">KAIKU</span>
+                <p>The premium voice chat for the modern gamer.</p>
+            </div>
+            <div class="footer-links">
+                <a href="#">Github</a>
+                <a href="#">Documentation</a>
+                <a href="#">Privacy</a>
+            </div>
+        </div>
+    </footer>
+
+    <script src="main.js"></script>
+</body>
+
+</html>
