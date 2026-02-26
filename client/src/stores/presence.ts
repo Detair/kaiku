@@ -6,7 +6,7 @@
  */
 
 import { createStore, produce } from "solid-js/store";
-import type { Activity, UserPresence, UserStatus } from "@/lib/types";
+import type { Activity, FocusTriggerCategory, UserPresence, UserStatus } from "@/lib/types";
 import {
   startIdleDetection,
   stopIdleDetection,
@@ -59,6 +59,11 @@ export async function initPresence(): Promise<void> {
 
     // Listen for local activity changes from presence service
     activityUnlistener = await listen<Activity | null>("presence:activity_changed", async (event) => {
+      // Notify focus engine of activity category change for auto-activation
+      const { handleActivityChange } = await import("./focus");
+      const category = (event.payload?.type as FocusTriggerCategory) ?? null;
+      handleActivityChange(category);
+
       // Send activity to server via WebSocket command
       try {
         const { invoke } = await import("@tauri-apps/api/core");

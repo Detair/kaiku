@@ -11,6 +11,8 @@ import type {
   UserPreferences,
   PreferencesResponse,
   StoredPreferences,
+  FocusMode,
+  FocusPreferences,
 } from "@/lib/types";
 import { DEFAULT_DISPLAY_PREFERENCES, THEME_NAMES } from "@/lib/types";
 
@@ -23,6 +25,54 @@ const DEBOUNCE_MS = 500;
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+
+// ============================================================================
+// Default Focus Modes
+// ============================================================================
+
+export const DEFAULT_FOCUS_MODES: FocusMode[] = [
+  {
+    id: "builtin-gaming",
+    name: "Gaming",
+    icon: "gamepad-2",
+    builtin: true,
+    triggerCategories: ["game"],
+    autoActivateEnabled: true,
+    suppressionLevel: "all",
+    vipUserIds: [],
+    vipChannelIds: [],
+    emergencyKeywords: [],
+  },
+  {
+    id: "builtin-deep-work",
+    name: "Deep Work",
+    icon: "brain",
+    builtin: true,
+    triggerCategories: ["coding"],
+    autoActivateEnabled: true,
+    suppressionLevel: "all",
+    vipUserIds: [],
+    vipChannelIds: [],
+    emergencyKeywords: ["urgent", "emergency"],
+  },
+  {
+    id: "builtin-streaming",
+    name: "Streaming",
+    icon: "radio",
+    builtin: true,
+    triggerCategories: null,
+    autoActivateEnabled: false,
+    suppressionLevel: "all",
+    vipUserIds: [],
+    vipChannelIds: [],
+    emergencyKeywords: [],
+  },
+];
+
+export const DEFAULT_FOCUS_PREFERENCES: FocusPreferences = {
+  modes: DEFAULT_FOCUS_MODES,
+  autoActivateGlobal: false,
+};
 
 // ============================================================================
 // Default Preferences
@@ -54,6 +104,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
     },
   },
   display: DEFAULT_DISPLAY_PREFERENCES,
+  focus: DEFAULT_FOCUS_PREFERENCES,
   onboarding_completed: false,
 };
 

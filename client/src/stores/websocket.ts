@@ -114,6 +114,7 @@ function handleMessageNotification(message: Message): void {
     isDm,
     mentionType: message.mention_type as MentionType,
     authorId: message.author.id,
+    content: message.content,
   });
 }
 
@@ -1614,6 +1615,7 @@ function handleThreadNotification(message: Message): void {
     isDm,
     mentionType: message.mention_type as MentionType,
     authorId: message.author.id,
+    content: message.content,
   });
 }
 

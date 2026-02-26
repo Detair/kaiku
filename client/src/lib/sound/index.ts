@@ -15,8 +15,8 @@ import {
   getSelectedSound,
   getChannelNotificationLevel,
   isChannelMuted,
-  isDndActive,
 } from "@/stores/sound";
+import { evaluateFocusPolicy } from "@/stores/focus";
 import { currentUser } from "@/stores/auth";
 
 // ============================================================================
@@ -104,9 +104,8 @@ export function cleanupSoundService(): void {
  * Handles eligibility checking, cooldown, and platform routing.
  */
 export async function playNotification(event: SoundEvent): Promise<void> {
-  // Quick exit: DND active (user status "dnd" or quiet hours)
-  if (isDndActive()) {
-    console.log("[Sound] Suppressed by DND");
+  // Quick exit: focus policy (handles DND, focus mode, VIP overrides)
+  if (evaluateFocusPolicy(event) === "suppress") {
     return;
   }
 

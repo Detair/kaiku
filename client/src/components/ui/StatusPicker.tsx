@@ -1,7 +1,9 @@
-import { Component, For, Show } from "solid-js";
+import { Component, For, Show, createMemo } from "solid-js";
+import { Crosshair } from "lucide-solid";
 import { UserStatus } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { markManualStatusChange } from "@/stores/presence";
+import { focusState, getActiveFocusMode, deactivateFocusMode } from "@/stores/focus";
 import StatusIndicator from "./StatusIndicator";
 
 interface StatusPickerProps {
@@ -18,6 +20,8 @@ const STATUS_OPTIONS: { value: UserStatus; label: string }[] = [
 ];
 
 const StatusPicker: Component<StatusPickerProps> = (props) => {
+  const activeMode = createMemo(() => getActiveFocusMode());
+
   const handleSelect = async (status: UserStatus) => {
     try {
       markManualStatusChange(status);
@@ -65,6 +69,30 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
               <span>Set Custom Status...</span>
             </button>
           </div>
+        </Show>
+        <Show when={activeMode()}>
+          {(mode) => (
+            <div class="border-t border-white/10 mt-2 pt-2">
+              <div class="flex items-center justify-between px-3 py-2">
+                <div class="flex items-center gap-2">
+                  <Crosshair class="w-3.5 h-3.5 text-accent-primary" />
+                  <span class="text-xs text-accent-primary font-medium">
+                    {mode().name}
+                    {focusState().autoActivated ? " (auto)" : ""}
+                  </span>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deactivateFocusMode();
+                  }}
+                  class="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-text-secondary transition-colors"
+                >
+                  End
+                </button>
+              </div>
+            </div>
+          )}
         </Show>
       </div>
     </div>

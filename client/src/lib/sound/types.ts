@@ -38,6 +38,8 @@ export interface SoundEvent {
   mentionType?: MentionType;
   /** User ID of the message author (to skip own messages) */
   authorId?: string;
+  /** Message content (for emergency keyword matching in focus mode) */
+  content?: string;
 }
 
 /**

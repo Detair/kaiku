@@ -22,7 +22,7 @@ pub fn start_presence_service(app: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         let mut scanner = ProcessScanner::new();
-        let mut last_activity: Option<String> = None;
+        let mut last_activity: Option<(String, String)> = None; // (name, activity_type)
         let mut ticker = interval(Duration::from_secs(15));
 
         loop {
@@ -42,14 +42,16 @@ pub fn start_presence_service(app: AppHandle) {
                 continue;
             }
 
-            let current = scanner.scan().map(|g| g.name);
+            let current = scanner
+                .scan()
+                .map(|g| (g.name.clone(), g.activity_type));
 
             // Only emit if activity changed
             if current != last_activity {
-                let payload = current.as_ref().map(|name| {
+                let payload = current.as_ref().map(|(name, activity_type)| {
                     serde_json::json!({
                         "name": name,
-                        "type": "game",
+                        "type": activity_type,
                         "started_at": chrono::Utc::now().to_rfc3339()
                     })
                 });

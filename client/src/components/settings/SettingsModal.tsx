@@ -6,7 +6,7 @@
 
 import { Component, createSignal, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Palette, Volume2, Mic, Shield, Eye, User, Bell } from "lucide-solid";
+import { X, Palette, Volume2, Mic, Shield, Eye, User, Bell, Crosshair } from "lucide-solid";
 import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
 import AccountSettings from "./AccountSettings";
@@ -14,13 +14,14 @@ import AppearanceSettings from "./AppearanceSettings";
 import NotificationSettings from "./NotificationSettings";
 import SecuritySettings from "./SecuritySettings";
 import PrivacySettings from "./PrivacySettings";
+import FocusSettings from "./FocusSettings";
 import RecoveryKeyModal from "./RecoveryKeyModal";
 
 interface SettingsModalProps {
   onClose: () => void;
 }
 
-type TabId = "account" | "appearance" | "notifications" | "audio" | "voice" | "privacy" | "security";
+type TabId = "account" | "appearance" | "notifications" | "focus" | "audio" | "voice" | "privacy" | "security";
 
 interface TabDefinition {
   id: TabId;
@@ -32,6 +33,7 @@ const tabs: TabDefinition[] = [
   { id: "account", label: "My Account", icon: User },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "focus", label: "Focus", icon: Crosshair },
   { id: "audio", label: "Audio", icon: Volume2 },
   { id: "voice", label: "Voice", icon: Mic },
   { id: "privacy", label: "Privacy", icon: Eye },
@@ -168,6 +170,10 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
 
               <Show when={activeTab() === "notifications"}>
                 <NotificationSettings />
+              </Show>
+
+              <Show when={activeTab() === "focus"}>
+                <FocusSettings />
               </Show>
 
               <Show when={activeTab() === "audio"}>

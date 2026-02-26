@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Milestone: Phase 6 - Competitive Differentiators & Mastery
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
+### Added
+- Focus modes for intelligent notification routing — suppress notifications during gaming, coding, or streaming sessions with VIP contact overrides and emergency keyword bypass
+- Auto-activation of focus modes when matching apps are detected (games, IDEs, media players)
+- Focus settings UI with per-mode configuration: suppression level, VIP users/channels, emergency keywords, and trigger categories
+
+### Fixed
+- Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game"
+
 ### Security
 - Channel creation, member operations, and file uploads now enforce guild membership and permission checks — previously these endpoints could be accessed without proper authorization (#217, #218)
 - Guild join endpoint now requires a valid invite — previously any authenticated user could join any guild directly (#219)

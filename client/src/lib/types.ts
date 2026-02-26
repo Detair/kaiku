@@ -588,6 +588,37 @@ export const DEFAULT_DISPLAY_PREFERENCES: DisplayPreferences = {
   idleTimeoutMinutes: 5,
 };
 
+// Focus Mode Types
+
+export type FocusTriggerCategory = "game" | "coding" | "listening" | "watching";
+
+export type FocusSuppressionLevel = "all" | "except_mentions" | "except_dms";
+
+export interface FocusMode {
+  id: string;
+  name: string;
+  icon: string;
+  builtin: boolean;
+  triggerCategories: FocusTriggerCategory[] | null;
+  autoActivateEnabled: boolean;
+  suppressionLevel: FocusSuppressionLevel;
+  vipUserIds: string[];
+  vipChannelIds: string[];
+  emergencyKeywords: string[];
+}
+
+export interface FocusPreferences {
+  modes: FocusMode[];
+  autoActivateGlobal: boolean;
+}
+
+export interface FocusState {
+  activeModeId: string | null;
+  autoActivated: boolean;
+  activatedAt: string | null;
+  triggeringCategory: FocusTriggerCategory | null;
+}
+
 // User Preferences (synced across devices)
 export interface UserPreferences {
   // Theme
@@ -626,6 +657,9 @@ export interface UserPreferences {
 
   // Display preferences for UI customization
   display: DisplayPreferences;
+
+  // Focus mode preferences
+  focus: FocusPreferences;
 
   // Onboarding completion flag
   onboarding_completed: boolean;
