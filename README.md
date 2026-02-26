@@ -1,80 +1,63 @@
 <div align="center">
-  <img src="kaiku-landing/assets/images/logo.png" alt="Kaiku Logo" width="250" />
-  <h1>Kaiku</h1>
-  <p><b>The Echo of Victory — Next-Gen Voice Chat for Gamers</b></p>
+  <img src="kaiku-landing/assets/images/extracted/floki_logo_circle.png" alt="Kaiku Logo" width="250" />
+  <h1 style="color: #88C0D0;">Kaiku</h1>
+  <p><b style="color: #B48EAD;">The Echo of Victory — Next-Gen Voice Chat for Gamers</b></p>
   <p>
-    <a href="https://github.com/detair/canis/releases"><img alt="Platform" src="https://img.shields.io/badge/platform-linux-blue.svg?style=flat-square" /></a>
-    <a href="https://github.com/detair/canis/issues"><img alt="Issues" src="https://img.shields.io/github/issues/detair/canis?style=flat-square&color=88C0D0" /></a>
-    <a href="https://github.com/detair/canis/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-B48EAD.svg?style=flat-square" /></a>
+    <a href="https://github.com/detair/canis/releases"><img alt="Platform" src="https://img.shields.io/badge/platform-linux-2E3440.svg?style=flat-square&logo=linux&logoColor=88C0D0" /></a>
+    <a href="https://github.com/detair/canis/issues"><img alt="Issues" src="https://img.shields.io/github/issues/detair/canis?style=flat-square&color=88C0D0&labelColor=2E3440" /></a>
+    <a href="https://github.com/detair/canis/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-B48EAD.svg?style=flat-square&labelColor=2E3440" /></a>
   </p>
 </div>
 
 ---
 
-## 🐺 What is Kaiku?
+> [!WARNING]
+> **Early Development Stage!** Kaiku is currently an active work-in-progress and is **not yet ready for production usage**. Architecture, codebase, and features are subject to significant changes. 
 
-**Kaiku** (Finnish for *Echo*) is a modern, high-performance voice chat and Server-Centric overlay built specifically for gamers and esports teams who demand low-latency, reliable communication without system bloat.
+## <span style="color: #88C0D0;">🐺 What is Kaiku?</span>
 
-Echoing the quiet precision of the North, Kaiku ensures your pack stays connected no matter the conditions, pulling inspiration from the sleek aesthetics of CachyOS Nordic combined with a robust and scalable WebRTC and Tauri-powered architecture.
+**Kaiku** (Finnish for *Echo*) is a modern, high-performance voice chat and Server-Centric overlay built specifically for gamers and esports teams who demand low-latency, reliable communication without system bloat. 
 
-## ✨ Features
+Echoing the quiet precision of the North, Kaiku ensures your pack stays connected, pulling inspiration from the sleek aesthetics of CachyOS Nordic combined with a robust WebRTC and Tauri-powered architecture.
 
-- ⚡ **Low Latency Audio**: Optimized routing for immediate delivery of your callouts.
-- 🛡️ **Military-Grade Encryption**: End-to-end encrypted by default. Your team's tactics stay yours.
-- 💻 **Minimal Resource Footprint**: Uses minimal CPU. Play your games without FPS drops or frame pacing issues.
-- 🎨 **Nordic UI/UX**: Premium, glassmorphic design inspired by the Northern Lights (CachyOS Nordic colors).
-- 🐧 **Linux-First**: Native support out of the box for Linux gamers. (Windows & macOS arriving soon)
+## <span style="color: #88C0D0;">✨ Key Capabilities</span>
 
-## 🚀 Getting Started
+- ⚡ <b style="color: #B48EAD;">Low Latency Audio</b>: Optimized routing for immediate delivery of your callouts.
+- 🛡️ <b style="color: #B48EAD;">Absolute Data Freedom</b>: Stop paying with your data. Self-hosted and End-to-End Encrypted so your team's strategy and conversations stay strictly yours.
+- 💻 <b style="color: #B48EAD;">Minimal Resource Footprint</b>: Uses minimal CPU. Play your games without FPS drops or frame pacing issues.
 
-### Prerequisites
+## <span style="color: #88C0D0;">🖥️ Deploying Your Pack (Self-Hosting)</span>
 
-Ensure you have the following installed to run Kaiku locally:
-- Node.js (v22+)
-- Rust (Latest Stable)
-- Tauri CLI
+Kaiku is designed from the ground up for **self-hosting**, giving you absolute sovereignty over your community's data and communication infrastructure. Unlike corporate alternatives that harvest your conversations, Kaiku ensures true freedom. Whether you are running a casual guild server or a massive esports organization, Kaiku scales with you.
 
-### Installation
+👉 **[Read the Official Self-Hosting Guide](docs/self-hosting.md)** to learn how to deploy Kaiku using Docker, configure your TURN/STUN servers, and manage user access.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/detair/canis.git
-   cd canis
-   ```
+## <span style="color: #88C0D0;">🏗️ Architecture</span>
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+Built for maximum performance and minimum bloat:
+- **Frontend**: Solid.js for extreme reactivity and a premium glassmorphic UI.
+- **Backend/Desktop Integration**: Tauri (Rust) for native OS-level performance with a tiny memory footprint.
+- **Audio Engine**: Fine-tuned WebRTC for flawless real-time communication.
 
-3. Run the development environment:
-   ```bash
-   npm run tauri dev
-   ```
+👉 **[Explore the Architecture Overview](docs/architecture.md)**
 
-## 🌐 The Landing Page
+## <span style="color: #88C0D0;">🔒 Security & Privacy</span>
 
-You can find the new promotional Landing Page in the `kaiku-landing` directory! It is a pure, ultra-fast vanilla HTML/CSS implementation focusing on modern aesthetics and high performance.
+We don't want your data. All direct messages and private group calls utilize **Olm cryptographic ratchet** (similar to Signal) for true end-to-end encryption. 
 
-To preview the landing page:
-```bash
-# Using python:
-cd kaiku-landing
-python3 -m http.server 8080
+👉 **[Review our Security & Encryption Protocols](docs/security.md)**
 
-# Or your preferred simple server
-```
+## <span style="color: #88C0D0;">🚀 Quick Start (Development)</span>
 
-## 🤝 Contributing
+1. Clone the repository: `git clone https://github.com/detair/canis.git`
+2. Install dependencies: `npm install`
+3. Run the development environment: `npm run tauri dev`
 
-We welcome contributions to make Kaiku the definitive voice chat for gamers.
-Please read our `CONTRIBUTING.md` (coming soon) for details on our code of conduct, and the process for submitting pull requests to us.
+## <span style="color: #88C0D0;">🤝 Contributing & License</span>
 
-## 📝 License
-
-This project is licensed under the MIT License - see the `LICENSE` file for details.
+We welcome contributions! Please read our `CONTRIBUTING.md` (coming soon). Kaiku is released under the **MIT License**.
 
 ---
 <div align="center">
-  <i>"Don't let your voice get lost in the noise. Join the Pack."</i>
+  <i style="color: #D8DEE9;">"Don't let your voice get lost in the noise. Join the Pack."</i>
 </div>

@@ -560,3 +560,17 @@ footer {
         margin-bottom: 2rem;
     }
 }
+/* Custom Feature Illustrations Styling */
+.feature-image {
+    width: 100%;
+    max-height: 180px;
+    object-fit: contain;
+    margin-bottom: 1.5rem;
+    filter: drop-shadow(0 0 15px rgba(136, 192, 208, 0.4));
+    transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), filter 0.4s ease;
+}
+
+.feature-card:hover .feature-image {
+    transform: translateY(-8px) scale(1.05);
+    filter: drop-shadow(0 10px 25px rgba(180, 142, 173, 0.8));
+}
