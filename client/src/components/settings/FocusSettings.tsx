@@ -128,7 +128,7 @@ const FocusSettings: Component = () => {
 
   const handleAddKeyword = (modeId: string) => {
     const keyword = keywordInput().trim();
-    if (!keyword || keyword.length < 3) return;
+    if (!keyword || keyword.length < 3 || keyword.length > 30) return;
 
     const mode = modes().find((m) => m.id === modeId);
     if (!mode || mode.emergencyKeywords.length >= MAX_KEYWORDS) return;
@@ -213,9 +213,9 @@ const FocusSettings: Component = () => {
 
       {/* Active mode indicator */}
       <Show when={focusState().activeModeId}>
-        {(_modeId) => {
+        {(modeId) => {
           const activeMode = createMemo(() =>
-            modes().find((m) => m.id === focusState().activeModeId)
+            modes().find((m) => m.id === modeId())
           );
           return (
             <Show when={activeMode()}>
@@ -299,7 +299,12 @@ const FocusSettings: Component = () => {
                           type="text"
                           value={mode.name}
                           maxLength={30}
-                          onInput={(e) => updateMode(mode.id, { name: e.currentTarget.value })}
+                          onInput={(e) => {
+                            const name = e.currentTarget.value;
+                            if (name.trim().length > 0) {
+                              updateMode(mode.id, { name });
+                            }
+                          }}
                           class="w-full px-3 py-2 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary transition-colors"
                         />
                       </div>
