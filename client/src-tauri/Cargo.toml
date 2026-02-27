@@ -10,6 +10,10 @@ description = "VoiceChat Desktop Client"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = ["megolm"]
+megolm = []
+
 [dependencies]
 # Internal
 vc-common.workspace = true
