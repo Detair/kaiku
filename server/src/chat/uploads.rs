@@ -910,7 +910,12 @@ pub async fn download(
             };
             (key.to_string(), ct)
         }
-        _ => (attachment.s3_key.clone(), attachment.mime_type.clone()),
+        Some(invalid) => {
+            return Err(UploadError::Validation(format!(
+                "Invalid variant '{invalid}'. Supported values are 'thumbnail' and 'medium'"
+            )));
+        }
+        None => (attachment.s3_key.clone(), attachment.mime_type.clone()),
     };
 
     // Fetch from S3

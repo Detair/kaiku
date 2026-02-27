@@ -7,9 +7,9 @@
 //!
 //! Run with: `cargo test --test integration media_processing -- --nocapture`
 
+use super::helpers::{create_test_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
-use super::helpers::{create_test_user, generate_access_token, TestApp};
 use http_body_util::BodyExt;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
@@ -342,5 +342,68 @@ async fn test_variant_fallback_to_original() {
         resp.headers().get("content-type").unwrap(),
         "image/png",
         "Fallback should serve original PNG content type"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_invalid_variant_returns_validation_error() {
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
+    let channel_id =
+        super::helpers::create_channel(&app.pool, guild_id, "media-test-invalid-variant").await;
+
+    let mut guard = app.cleanup_guard();
+    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
+    guard.delete_user(user_id);
+
+    let png_data = create_test_png(500, 400);
+    let (boundary, body) =
+        build_upload_multipart("photo.png", "image/png", &png_data, "variant validation");
+
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{channel_id}/upload"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
+    .body(Body::from(body))
+    .unwrap();
+
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 201);
+
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    let attachment_id = json["attachments"][0]["id"].as_str().unwrap();
+
+    let req = TestApp::request(
+        Method::GET,
+        &format!(
+            "/api/messages/attachments/{attachment_id}/download?variant=original&token={token}"
+        ),
+    )
+    .body(Body::empty())
+    .unwrap();
+
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 400);
+
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let error: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(error["error"], "VALIDATION_ERROR");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Invalid variant"),
+        "Unexpected validation message: {}",
+        error
     );
 }

@@ -26,8 +26,8 @@ const BLURHASH_COMPONENTS_Y: u32 = 3;
 const BLURHASH_SAMPLE_SIZE: u32 = 32;
 
 /// Maximum image dimension (width or height) to prevent decompression bombs.
-/// A 16384x16384 RGBA image is ~1 GB in memory — acceptable for processing.
-const MAX_IMAGE_DIMENSION: u32 = 16384;
+/// An 8192x8192 RGBA image is ~256 MB in memory.
+const MAX_IMAGE_DIMENSION: u32 = 8192;
 
 #[derive(Error, Debug)]
 pub enum ProcessingError {

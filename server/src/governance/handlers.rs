@@ -36,6 +36,21 @@ pub async fn request_export(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<impl IntoResponse, GovError> {
+    // Recover stale jobs that may have been left behind by crash/restart so
+    // users are not blocked forever by the active-job uniqueness constraint.
+    sqlx::query(
+        "UPDATE data_export_jobs
+         SET status = 'failed',
+             error_message = COALESCE(error_message, 'Job stale after restart; please retry'),
+             completed_at = NOW()
+         WHERE user_id = $1
+           AND status IN ('pending', 'processing')
+           AND created_at < NOW() - INTERVAL '1 hour'",
+    )
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
+
     // Check for existing pending/processing export
     let existing = sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM data_export_jobs

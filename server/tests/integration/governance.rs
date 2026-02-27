@@ -4,9 +4,9 @@
 //!
 //! Run with: `cargo test --test integration governance -- --nocapture`
 
+use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
-use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use vc_server::auth::hash_password;
 
 // ============================================================================
@@ -76,6 +76,47 @@ async fn test_get_export_status_none() {
         404,
         "Should return 404 when no export job exists"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_request_export_recovers_stale_pending_job() {
+    let app = TestApp::new().await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    let mut guard = app.cleanup_guard();
+    guard.delete_user(user_id);
+
+    let stale_job_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO data_export_jobs (id, user_id, status, created_at)
+         VALUES ($1, $2, 'pending', NOW() - INTERVAL '2 hours')",
+    )
+    .bind(stale_job_id)
+    .bind(user_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let req = TestApp::request(Method::POST, "/api/me/data-export")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await;
+    assert_eq!(
+        resp.status(),
+        503,
+        "Stale active job should be recovered first; without S3 this then returns 503"
+    );
+
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM data_export_jobs WHERE id = $1")
+            .bind(stale_job_id)
+            .fetch_optional(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(status.as_deref(), Some("failed"));
 }
 
 // ============================================================================
