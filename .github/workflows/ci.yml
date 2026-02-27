@@ -167,6 +167,75 @@ jobs:
         continue-on-error: true
 
   # ===========================================================================
+  # Observability Contract Checks
+  # ===========================================================================
+  observability-contract:
+    name: Observability Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Metric name convention (kaiku_* prefix)
+        run: |
+          echo "Checking that all metric names in metrics.rs start with kaiku_..."
+          VIOLATIONS=$(grep -Eo '"[a-z][a-z0-9_]+"' server/src/observability/metrics.rs \
+            | grep -v '^"kaiku_' || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "ERROR: Metric name convention check failed -- names not starting with 'kaiku_':"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "OK: All metric names use the kaiku_* prefix."
+
+      - name: No sensitive fields in tracing instrumentation
+        run: |
+          echo "Checking for sensitive field names in tracing fields() or .record() calls..."
+          VIOLATIONS=$(grep -rn --include="*.rs" \
+            -E '(fields|record)\s*\([^)]*\b(password|token|secret|key|email)\b' \
+            server/src/ || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "ERROR: Sensitive field names found in tracing instrumentation (must be in skip()):"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "OK: No sensitive field names in tracing fields/record calls."
+
+      - name: Required observability contract files present
+        run: |
+          echo "Checking required observability contract files..."
+          FAILED=0
+          for f in \
+            docs/ops/observability-contract.md \
+            server/src/observability/mod.rs \
+            server/src/observability/tracing.rs \
+            server/src/observability/metrics.rs; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: Missing required file: $f"
+              FAILED=1
+            fi
+          done
+          [ "$FAILED" -eq 1 ] && exit 1
+          echo "OK: All required observability contract files are present."
+
+      - name: OTel resource attributes present in tracing.rs
+        run: |
+          echo "Checking OTel resource attribute keys in server/src/observability/tracing.rs..."
+          FAILED=0
+          if ! grep -qE '"service\.name"|with_service_name' server/src/observability/tracing.rs; then
+            echo "ERROR: Missing resource attribute key: service.name"
+            FAILED=1
+          fi
+          if ! grep -q '"service.version"' server/src/observability/tracing.rs; then
+            echo "ERROR: Missing resource attribute key: service.version"
+            FAILED=1
+          fi
+          if ! grep -q '"deployment.environment"' server/src/observability/tracing.rs; then
+            echo "ERROR: Missing resource attribute key: deployment.environment"
+            FAILED=1
+          fi
+          [ "$FAILED" -eq 1 ] && exit 1
+          echo "OK: All required OTel resource attribute keys are present."
+  # ===========================================================================
   # Frontend Checks
   # ===========================================================================
   frontend:
