@@ -334,7 +334,7 @@ export function validateFileSize(file: File, type: UploadType): string | null {
 
 // Browser state (when not in Tauri)
 const browserState = {
-  serverUrl: "http://localhost:8080",
+  serverUrl: typeof window !== "undefined" ? window.location.origin : "",
   accessToken: null as string | null,
   refreshToken: null as string | null,
   tokenExpiresAt: null as number | null,
@@ -912,7 +912,7 @@ async function getUploadAuth(): Promise<{
   }
   return {
     token: browserState.accessToken || localStorage.getItem("accessToken"),
-    baseUrl: (browserState.serverUrl || "http://localhost:8080").replace(
+    baseUrl: (browserState.serverUrl || window.location.origin).replace(
       /\/+$/,
       "",
     ),

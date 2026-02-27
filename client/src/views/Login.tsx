@@ -26,7 +26,7 @@ function providerIcon(hint: string | null) {
 
 const Login: Component = () => {
   const navigate = useNavigate();
-  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
+  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl, setServerUrl] = createSignal(defaultServerUrl);
   const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");

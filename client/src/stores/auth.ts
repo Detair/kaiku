@@ -151,6 +151,7 @@ export async function login(
       user: result.user,
       serverUrl,
       isLoading: false,
+      isInitialized: true,
       error: null,
       setupRequired: result.setup_required,
       mfaRequired: false,
@@ -231,6 +232,7 @@ export async function register(
       user: result.user,
       serverUrl,
       isLoading: false,
+      isInitialized: true,
       error: null,
       setupRequired: result.setup_required,
     });
@@ -296,6 +298,7 @@ export async function loginWithOidc(
       user,
       serverUrl,
       isLoading: false,
+      isInitialized: true,
       error: null,
       setupRequired,
     });

@@ -32,9 +32,9 @@ function getServerUrl(): string {
     return authState.serverUrl;
   }
   if (typeof localStorage !== "undefined") {
-    return localStorage.getItem("serverUrl") || "http://localhost:8080";
+    return localStorage.getItem("serverUrl") || window.location.origin;
   }
-  return "http://localhost:8080";
+  return window.location.origin;
 }
 
 // Fetch setup config from server
