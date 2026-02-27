@@ -2,7 +2,7 @@
  * Bot Applications Management Page
  */
 
-import { Component, createSignal, For, Show, onMount } from 'solid-js';
+import { Component, createSignal, For, Show, onMount } from "solid-js";
 import {
   createBotApplication,
   createBotUser,
@@ -11,18 +11,20 @@ import {
   resetBotToken,
   type BotApplication,
   type BotTokenResponse,
-} from '../../lib/api/bots';
-import { A } from '@solidjs/router';
-import { showToast } from '../../components/ui/Toast';
+} from "../../lib/api/bots";
+import { A } from "@solidjs/router";
+import { showToast } from "../../components/ui/Toast";
 
 const BotApplications: Component = () => {
   const [applications, setApplications] = createSignal<BotApplication[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [showCreateModal, setShowCreateModal] = createSignal(false);
   const [showTokenModal, setShowTokenModal] = createSignal(false);
-  const [currentToken, setCurrentToken] = createSignal<BotTokenResponse | null>(null);
-  const [newAppName, setNewAppName] = createSignal('');
-  const [newAppDescription, setNewAppDescription] = createSignal('');
+  const [currentToken, setCurrentToken] = createSignal<BotTokenResponse | null>(
+    null,
+  );
+  const [newAppName, setNewAppName] = createSignal("");
+  const [newAppDescription, setNewAppDescription] = createSignal("");
 
   onMount(() => {
     loadApplications();
@@ -35,9 +37,12 @@ const BotApplications: Component = () => {
       setApplications(apps);
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to load applications',
-        message: error instanceof Error ? error.message : 'Failed to load applications',
+        type: "error",
+        title: "Failed to load applications",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Failed to load applications",
         duration: 8000,
       });
     } finally {
@@ -48,7 +53,12 @@ const BotApplications: Component = () => {
   async function handleCreateApplication() {
     const name = newAppName().trim();
     if (!name || name.length < 2 || name.length > 100) {
-      showToast({ type: 'error', title: 'Invalid application name', message: 'Name must be 2-100 characters', duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Invalid application name",
+        message: "Name must be 2-100 characters",
+        duration: 8000,
+      });
       return;
     }
 
@@ -58,22 +68,30 @@ const BotApplications: Component = () => {
         description: newAppDescription().trim() || undefined,
       });
       setShowCreateModal(false);
-      setNewAppName('');
-      setNewAppDescription('');
-      showToast({ type: 'success', title: 'Application created', message: 'Application created successfully', duration: 3000 });
+      setNewAppName("");
+      setNewAppDescription("");
+      showToast({
+        type: "success",
+        title: "Application created",
+        message: "Application created successfully",
+        duration: 3000,
+      });
       loadApplications();
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to create application',
-        message: error instanceof Error ? error.message : 'Failed to create application',
+        type: "error",
+        title: "Failed to create application",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Failed to create application",
         duration: 8000,
       });
     }
   }
 
   async function handleCreateBotUser(appId: string) {
-    if (!confirm('Create bot user? The token will only be shown once!')) return;
+    if (!confirm("Create bot user? The token will only be shown once!")) return;
 
     try {
       const tokenData = await createBotUser(appId);
@@ -82,44 +100,63 @@ const BotApplications: Component = () => {
       loadApplications();
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to create bot user',
-        message: error instanceof Error ? error.message : 'Failed to create bot user',
+        type: "error",
+        title: "Failed to create bot user",
+        message:
+          error instanceof Error ? error.message : "Failed to create bot user",
         duration: 8000,
       });
     }
   }
 
   async function handleResetToken(appId: string) {
-    if (!confirm('Reset bot token? The old token will stop working immediately!')) return;
+    if (
+      !confirm("Reset bot token? The old token will stop working immediately!")
+    )
+      return;
 
     try {
       const tokenData = await resetBotToken(appId);
       setCurrentToken(tokenData);
       setShowTokenModal(true);
-      showToast({ type: 'success', title: 'Token reset', message: 'Token reset successfully', duration: 3000 });
+      showToast({
+        type: "success",
+        title: "Token reset",
+        message: "Token reset successfully",
+        duration: 3000,
+      });
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to reset token',
-        message: error instanceof Error ? error.message : 'Failed to reset token',
+        type: "error",
+        title: "Failed to reset token",
+        message:
+          error instanceof Error ? error.message : "Failed to reset token",
         duration: 8000,
       });
     }
   }
 
   async function handleDeleteApplication(appId: string, appName: string) {
-    if (!confirm(`Delete application "${appName}"? This cannot be undone!`)) return;
+    if (!confirm(`Delete application "${appName}"? This cannot be undone!`))
+      return;
 
     try {
       await deleteBotApplication(appId);
-      showToast({ type: 'success', title: 'Application deleted', message: 'Application deleted successfully', duration: 3000 });
+      showToast({
+        type: "success",
+        title: "Application deleted",
+        message: "Application deleted successfully",
+        duration: 3000,
+      });
       loadApplications();
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to delete application',
-        message: error instanceof Error ? error.message : 'Failed to delete application',
+        type: "error",
+        title: "Failed to delete application",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Failed to delete application",
         duration: 8000,
       });
     }
@@ -129,7 +166,12 @@ const BotApplications: Component = () => {
     const token = currentToken()?.token;
     if (token) {
       navigator.clipboard.writeText(token);
-      showToast({ type: 'success', title: 'Token copied', message: 'Token copied to clipboard', duration: 3000 });
+      showToast({
+        type: "success",
+        title: "Token copied",
+        message: "Token copied to clipboard",
+        duration: 3000,
+      });
     }
   }
 
@@ -152,7 +194,9 @@ const BotApplications: Component = () => {
       </div>
 
       <Show when={loading()}>
-        <div class="text-center py-8 text-surface-400">Loading applications...</div>
+        <div class="text-center py-8 text-surface-400">
+          Loading applications...
+        </div>
       </Show>
 
       <Show when={!loading() && applications().length === 0}>
@@ -169,7 +213,9 @@ const BotApplications: Component = () => {
                 <div>
                   <h3 class="text-lg font-semibold">{app.name}</h3>
                   <Show when={app.description}>
-                    <p class="text-sm text-surface-400 mt-1">{app.description}</p>
+                    <p class="text-sm text-surface-400 mt-1">
+                      {app.description}
+                    </p>
                   </Show>
                   <p class="text-xs text-surface-500 mt-1">
                     Created: {new Date(app.created_at).toLocaleDateString()}
@@ -221,12 +267,18 @@ const BotApplications: Component = () => {
                     Webhooks
                   </A>
                 </div>
-                <Show when={app.gateway_intents && app.gateway_intents.length > 0}>
+                <Show
+                  when={app.gateway_intents && app.gateway_intents.length > 0}
+                >
                   <div class="mt-2 flex items-center gap-1.5">
-                    <span class="text-xs text-[var(--text-secondary)]">Intents:</span>
+                    <span class="text-xs text-[var(--text-secondary)]">
+                      Intents:
+                    </span>
                     <For each={app.gateway_intents}>
                       {(intent) => (
-                        <span class="text-xs px-1.5 py-0.5 bg-surface-700 rounded">{intent}</span>
+                        <span class="text-xs px-1.5 py-0.5 bg-surface-700 rounded">
+                          {intent}
+                        </span>
                       )}
                     </For>
                   </div>
@@ -262,7 +314,9 @@ const BotApplications: Component = () => {
                 <p class="text-xs text-surface-500 mt-1">2-100 characters</p>
               </div>
               <div>
-                <label class="block text-sm font-medium mb-1">Description</label>
+                <label class="block text-sm font-medium mb-1">
+                  Description
+                </label>
                 <textarea
                   class="w-full px-3 py-2 bg-surface-900 border border-surface-700 rounded focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
                   placeholder="What does your bot do?"
@@ -271,7 +325,9 @@ const BotApplications: Component = () => {
                   onInput={(e) => setNewAppDescription(e.currentTarget.value)}
                   maxLength={1000}
                 />
-                <p class="text-xs text-surface-500 mt-1">Optional, max 1000 characters</p>
+                <p class="text-xs text-surface-500 mt-1">
+                  Optional, max 1000 characters
+                </p>
               </div>
               <div class="flex gap-2 justify-end">
                 <button
@@ -305,13 +361,15 @@ const BotApplications: Component = () => {
             <h2 class="text-xl font-bold mb-4">Bot Token</h2>
             <div class="bg-yellow-900/20 border border-yellow-600 rounded p-3 mb-4">
               <p class="text-yellow-200 text-sm">
-                ⚠️ <strong>Save this token now!</strong> It will only be shown once and cannot
-                be retrieved later.
+                ⚠️ <strong>Save this token now!</strong> It will only be shown
+                once and cannot be retrieved later.
               </p>
             </div>
             <div class="space-y-4">
               <div>
-                <label class="block text-sm font-medium mb-1">Bot User ID</label>
+                <label class="block text-sm font-medium mb-1">
+                  Bot User ID
+                </label>
                 <code class="block w-full px-3 py-2 bg-surface-900 border border-surface-700 rounded text-sm">
                   {currentToken()?.bot_user_id}
                 </code>

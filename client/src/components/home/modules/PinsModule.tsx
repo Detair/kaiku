@@ -5,7 +5,15 @@
  */
 
 import { Component, Show, For, createSignal, onMount } from "solid-js";
-import { Pin, FileText, Link, MessageSquare, Plus, Trash2, ExternalLink } from "lucide-solid";
+import {
+  Pin,
+  FileText,
+  Link,
+  MessageSquare,
+  Plus,
+  Trash2,
+  ExternalLink,
+} from "lucide-solid";
 import { pins, loadPins, createPin, deletePin, updatePin } from "@/stores/pins";
 import type { Pin as PinItem, PinType } from "@/lib/types";
 import CollapsibleModule from "./CollapsibleModule";

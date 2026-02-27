@@ -57,7 +57,7 @@ const FriendsList: Component = () => {
     return list.filter(
       (f) =>
         f.display_name.toLowerCase().includes(query) ||
-        f.username.toLowerCase().includes(query)
+        f.username.toLowerCase().includes(query),
     );
   };
 
@@ -66,7 +66,11 @@ const FriendsList: Component = () => {
       await acceptFriendRequest(friendshipId);
     } catch (err) {
       console.error("Failed to accept friend request:", err);
-      showToast({ type: "error", title: "Could not accept friend request. Please try again.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Could not accept friend request. Please try again.",
+        duration: 8000,
+      });
     }
   };
 
@@ -75,7 +79,11 @@ const FriendsList: Component = () => {
       await rejectFriendRequest(friendshipId);
     } catch (err) {
       console.error("Failed to reject friend request:", err);
-      showToast({ type: "error", title: "Could not decline friend request. Please try again.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Could not decline friend request. Please try again.",
+        duration: 8000,
+      });
     }
   };
 
@@ -86,7 +94,11 @@ const FriendsList: Component = () => {
       }
     } catch (err) {
       console.error("Failed to remove friend:", err);
-      showToast({ type: "error", title: "Could not remove friend. Please try again.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Could not remove friend. Please try again.",
+        duration: 8000,
+      });
     }
   };
 
@@ -95,7 +107,11 @@ const FriendsList: Component = () => {
       await unblockUser(userId);
     } catch (err) {
       console.error("Failed to unblock user:", err);
-      showToast({ type: "error", title: "Could not unblock user. Please try again.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Could not unblock user. Please try again.",
+        duration: 8000,
+      });
     }
   };
 
@@ -163,16 +179,16 @@ const FriendsList: Component = () => {
         <div class="flex-1" />
 
         <Show when={tab() !== "pending" && tab() !== "blocked"}>
-           <div class="relative w-48">
-             <input
-               type="text"
-               placeholder="Search friends..."
-               value={filterQuery()}
-               onInput={(e) => setFilterQuery(e.currentTarget.value)}
-               class="w-full pl-8 pr-3 py-1 bg-surface-base rounded-md text-sm text-text-input outline-none border border-white/5 focus:border-accent-primary/50 transition-colors"
-             />
-             <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" />
-           </div>
+          <div class="relative w-48">
+            <input
+              type="text"
+              placeholder="Search friends..."
+              value={filterQuery()}
+              onInput={(e) => setFilterQuery(e.currentTarget.value)}
+              class="w-full pl-8 pr-3 py-1 bg-surface-base rounded-md text-sm text-text-input outline-none border border-white/5 focus:border-accent-primary/50 transition-colors"
+            />
+            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" />
+          </div>
         </Show>
 
         <button
@@ -198,21 +214,21 @@ const FriendsList: Component = () => {
                   <Ghost class="w-12 h-12" />
                 </div>
                 <div class="text-lg font-medium mb-1">
-                  {tab() === "online" 
+                  {tab() === "online"
                     ? "No one's online right now."
-                    : tab() === "pending" 
-                    ? "There are no pending friend requests." 
-                    : tab() === "blocked"
-                    ? "You haven't blocked anyone."
-                    : "You don't have any friends yet."}
+                    : tab() === "pending"
+                      ? "There are no pending friend requests."
+                      : tab() === "blocked"
+                        ? "You haven't blocked anyone."
+                        : "You don't have any friends yet."}
                 </div>
                 <Show when={tab() === "all" || tab() === "online"}>
-                   <button 
-                     onClick={() => setShowAddFriend(true)}
-                     class="text-accent-primary hover:underline text-sm mt-2"
-                   >
-                     Add someone to get started!
-                   </button>
+                  <button
+                    onClick={() => setShowAddFriend(true)}
+                    class="text-accent-primary hover:underline text-sm mt-2"
+                  >
+                    Add someone to get started!
+                  </button>
                 </Show>
               </Show>
             </div>

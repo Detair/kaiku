@@ -14,24 +14,40 @@
 
 /* Syntax colors — earth-tone palette */
 [data-theme^="pixel-"] .hljs-keyword,
-[data-theme^="pixel-"] .hljs-selector-tag { color: #C06050; }
+[data-theme^="pixel-"] .hljs-selector-tag {
+  color: #c06050;
+}
 
 [data-theme^="pixel-"] .hljs-string,
-[data-theme^="pixel-"] .hljs-addition { color: #8DB87E; }
+[data-theme^="pixel-"] .hljs-addition {
+  color: #8db87e;
+}
 
 [data-theme^="pixel-"] .hljs-number,
-[data-theme^="pixel-"] .hljs-literal { color: #D4A854; }
+[data-theme^="pixel-"] .hljs-literal {
+  color: #d4a854;
+}
 
 [data-theme^="pixel-"] .hljs-comment,
-[data-theme^="pixel-"] .hljs-quote { color: #8A7A62; }
+[data-theme^="pixel-"] .hljs-quote {
+  color: #8a7a62;
+}
 
 [data-theme^="pixel-"] .hljs-function,
-[data-theme^="pixel-"] .hljs-title { color: #7BAE7F; }
+[data-theme^="pixel-"] .hljs-title {
+  color: #7bae7f;
+}
 
 [data-theme^="pixel-"] .hljs-type,
-[data-theme^="pixel-"] .hljs-built_in { color: #BEB09A; }
+[data-theme^="pixel-"] .hljs-built_in {
+  color: #beb09a;
+}
 
 [data-theme^="pixel-"] .hljs-attr,
-[data-theme^="pixel-"] .hljs-attribute { color: #D4A854; }
+[data-theme^="pixel-"] .hljs-attribute {
+  color: #d4a854;
+}
 
-[data-theme^="pixel-"] .hljs-deletion { color: #C06050; }
+[data-theme^="pixel-"] .hljs-deletion {
+  color: #c06050;
+}

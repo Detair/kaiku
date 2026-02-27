@@ -65,7 +65,9 @@ const ThreadIndicator: Component<ThreadIndicatorProps> = (props) => {
           <span class="w-2 h-2 rounded-full bg-accent-primary flex-shrink-0" />
         </Show>
 
-        <span class={`text-sm text-accent-primary group-hover/thread:underline ${hasUnread() ? "font-bold" : "font-medium"}`}>
+        <span
+          class={`text-sm text-accent-primary group-hover/thread:underline ${hasUnread() ? "font-bold" : "font-medium"}`}
+        >
           {replyCount()} {replyCount() === 1 ? "reply" : "replies"}
         </span>
         <Show when={lastReplyAt()}>

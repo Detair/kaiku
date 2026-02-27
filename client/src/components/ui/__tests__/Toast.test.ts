@@ -134,7 +134,11 @@ describe("Toast System", () => {
 
     it("cleans up timeout when manually dismissed", () => {
       vi.useFakeTimers();
-      const id = showToast({ type: "info", title: "Manual dismiss", duration: 5000 });
+      const id = showToast({
+        type: "info",
+        title: "Manual dismiss",
+        duration: 5000,
+      });
       expect(toasts()).toHaveLength(1);
 
       dismissToast(id);

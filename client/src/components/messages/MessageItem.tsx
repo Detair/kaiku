@@ -1,7 +1,24 @@
-import { Component, Show, createMemo, For, onMount, onCleanup, createSignal } from "solid-js";
+import {
+  Component,
+  Show,
+  createMemo,
+  For,
+  onMount,
+  onCleanup,
+  createSignal,
+} from "solid-js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { File, Download, Copy, Link, Hash, Trash2, Flag, MessageSquareMore } from "lucide-solid";
+import {
+  File,
+  Download,
+  Copy,
+  Link,
+  Hash,
+  Trash2,
+  Flag,
+  MessageSquareMore,
+} from "lucide-solid";
 import type { Message, Attachment } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
@@ -10,8 +27,17 @@ import BlurhashPlaceholder from "@/components/ui/BlurhashPlaceholder";
 import ReactionBar from "./ReactionBar";
 import ThreadIndicator from "./ThreadIndicator";
 import MessageActions, { QUICK_EMOJIS } from "./MessageActions";
-import { getServerUrl, getAccessToken, addReaction, removeReaction, deleteMessage } from "@/lib/tauri";
-import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
+import {
+  getServerUrl,
+  getAccessToken,
+  addReaction,
+  removeReaction,
+  deleteMessage,
+} from "@/lib/tauri";
+import {
+  showContextMenu,
+  type ContextMenuEntry,
+} from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
 import { showUserContextMenu, triggerReport } from "@/lib/contextMenuBuilders";
 import { spoilerExtension } from "@/lib/markdown/spoilerExtension";
@@ -41,17 +67,53 @@ marked.use({ extensions: [spoilerExtension] });
 
 // Configure DOMPurify for safe HTML rendering (XSS prevention)
 const PURIFY_CONFIG = {
-  ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'code', 'pre', 'a', 'ul', 'ol', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'del', 's', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'span', 'mark'],
-  ALLOWED_ATTR: ['href', 'target', 'rel', 'class', 'data-spoiler'],
+  ALLOWED_TAGS: [
+    "p",
+    "br",
+    "strong",
+    "em",
+    "code",
+    "pre",
+    "a",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "del",
+    "s",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "span",
+    "mark",
+  ],
+  ALLOWED_ATTR: ["href", "target", "rel", "class", "data-spoiler"],
   ALLOW_DATA_ATTR: false,
   RETURN_TRUSTED_TYPE: false as const,
 };
 
 // Restrict class attribute values to prevent CSS-based UI spoofing
-const ALLOWED_CLASSES = new Set(['mention-everyone', 'mention-user', 'spoiler']);
-DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-  if (data.attrName === 'class') {
-    const filtered = data.attrValue.split(/\s+/).filter(cls => ALLOWED_CLASSES.has(cls)).join(' ');
+const ALLOWED_CLASSES = new Set([
+  "mention-everyone",
+  "mention-user",
+  "spoiler",
+]);
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "class") {
+    const filtered = data.attrValue
+      .split(/\s+/)
+      .filter((cls) => ALLOWED_CLASSES.has(cls))
+      .join(" ");
     data.attrValue = filtered;
     if (!filtered) data.keepAttr = false;
   }
@@ -76,13 +138,13 @@ function highlightMentions(text: string): string {
 
   // Escape any existing mark/span tags to prevent injection via user HTML
   processed = processed.replace(/<\/?(?:mark|span)\b[^>]*>/gi, (match) =>
-    match.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    match.replace(/</g, "&lt;").replace(/>/g, "&gt;"),
   );
 
   // @everyone and @here -- high-visibility (only after whitespace or start of string)
   processed = processed.replace(
     /(?<=\s|^)@(everyone|here)\b/g,
-    '<mark class="mention-everyone">@$1</mark>'
+    '<mark class="mention-everyone">@$1</mark>',
   );
 
   // @username -- normal mention (2-32 chars, alphanumeric + underscore only)
@@ -91,22 +153,25 @@ function highlightMentions(text: string): string {
     (match, username) => {
       if (username === "everyone" || username === "here") return match;
       return `<mark class="mention-user">@${username}</mark>`;
-    }
+    },
   );
 
   // Restore inline code spans
-  processed = processed.replace(/\x00CODE(\d+)\x00/g, (_, idx) => codeSpans[parseInt(idx)]);
+  processed = processed.replace(
+    /\x00CODE(\d+)\x00/g,
+    (_, idx) => codeSpans[parseInt(idx)],
+  );
   return processed;
 }
 
 interface CodeBlockData {
-  type: 'code';
+  type: "code";
   language: string;
   code: string;
 }
 
 interface TextBlock {
-  type: 'text';
+  type: "text";
   html: string;
 }
 
@@ -115,7 +180,9 @@ type ContentBlock = CodeBlockData | TextBlock;
 // ---- Module-level spoiler reveal state ----
 // Persists revealed spoilers across component remounts (e.g. virtual scroll).
 // Key format: `${messageId}:${spoilerIndex}` (0-based index within a message).
-const [revealedSpoilers, setRevealedSpoilers] = createSignal<Set<string>>(new Set());
+const [revealedSpoilers, setRevealedSpoilers] = createSignal<Set<string>>(
+  new Set(),
+);
 
 /**
  * Mark a spoiler as revealed and persist it in the session-scoped set.
@@ -162,7 +229,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
   const author = () => props.message.author;
   const isEdited = () => !!props.message.edited_at;
-  const hasReactions = () => props.message.reactions && props.message.reactions.length > 0;
+  const hasReactions = () =>
+    props.message.reactions && props.message.reactions.length > 0;
 
   // Register the singleton keydown listener once
   onMount(() => ensureReactionShortcutListener());
@@ -173,26 +241,28 @@ const MessageItem: Component<MessageItemProps> = (props) => {
   onMount(() => {
     if (contentRef) {
       const messageId = props.message.id;
-      const spoilerEls = contentRef.querySelectorAll('.spoiler[data-spoiler="true"]');
+      const spoilerEls = contentRef.querySelectorAll(
+        '.spoiler[data-spoiler="true"]',
+      );
       const listeners: Array<{ element: Element; handler: EventListener }> = [];
 
       spoilerEls.forEach((spoiler, index) => {
         // Restore previously revealed state
         if (isSpoilerRevealed(messageId, index)) {
-          (spoiler as HTMLElement).classList.add('revealed');
+          (spoiler as HTMLElement).classList.add("revealed");
         }
 
-        const handler: EventListener = function(this: HTMLElement) {
-          this.classList.add('revealed');
+        const handler: EventListener = function (this: HTMLElement) {
+          this.classList.add("revealed");
           revealSpoiler(messageId, index);
         };
-        spoiler.addEventListener('click', handler);
+        spoiler.addEventListener("click", handler);
         listeners.push({ element: spoiler, handler });
       });
 
       onCleanup(() => {
         listeners.forEach(({ element, handler }) => {
-          element.removeEventListener('click', handler);
+          element.removeEventListener("click", handler);
         });
       });
     }
@@ -203,7 +273,12 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       await addReaction(props.message.channel_id, props.message.id, emoji);
     } catch (err) {
       console.error("Failed to add reaction:", err);
-      showToast({ type: "error", title: "Reaction Failed", message: "Could not add reaction.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Reaction Failed",
+        message: "Could not add reaction.",
+        duration: 8000,
+      });
     }
   };
 
@@ -212,7 +287,12 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       await removeReaction(props.message.channel_id, props.message.id, emoji);
     } catch (err) {
       console.error("Failed to remove reaction:", err);
-      showToast({ type: "error", title: "Reaction Failed", message: "Could not remove reaction.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Reaction Failed",
+        message: "Could not remove reaction.",
+        duration: 8000,
+      });
     }
   };
 
@@ -247,14 +327,16 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         if (match.index > lastIndex) {
           const text = content.substring(lastIndex, match.index);
           if (text.trim()) {
-            const html = sanitizeHtml(marked.parse(highlightMentions(text), { async: false }) as string);
-            blocks.push({ type: 'text', html });
+            const html = sanitizeHtml(
+              marked.parse(highlightMentions(text), { async: false }) as string,
+            );
+            blocks.push({ type: "text", html });
           }
         }
 
         blocks.push({
-          type: 'code',
-          language: match[1] || 'plaintext',
+          type: "code",
+          language: match[1] || "plaintext",
           code: match[2].trim(),
         });
 
@@ -264,22 +346,29 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       if (lastIndex < content.length) {
         const text = content.substring(lastIndex);
         if (text.trim()) {
-          const html = sanitizeHtml(marked.parse(highlightMentions(text), { async: false }) as string);
-          blocks.push({ type: 'text', html });
+          const html = sanitizeHtml(
+            marked.parse(highlightMentions(text), { async: false }) as string,
+          );
+          blocks.push({ type: "text", html });
         }
       }
 
       if (blocks.length === 0) {
-        const html = sanitizeHtml(marked.parse(highlightMentions(content), { async: false }) as string);
-        blocks.push({ type: 'text', html });
+        const html = sanitizeHtml(
+          marked.parse(highlightMentions(content), { async: false }) as string,
+        );
+        blocks.push({ type: "text", html });
       }
 
       return blocks;
     } catch (err) {
       console.error("Failed to parse message content:", err);
       // Fallback: render plain text safely
-      const safeText = DOMPurify.sanitize(content, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }) as string;
-      return [{ type: 'text', html: safeText }];
+      const safeText = DOMPurify.sanitize(content, {
+        ALLOWED_TAGS: [],
+        ALLOWED_ATTR: [],
+      }) as string;
+      return [{ type: "text", html: safeText }];
     }
   });
 
@@ -297,7 +386,10 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       {
         label: "Copy Message Link",
         icon: Link,
-        action: () => navigator.clipboard.writeText(`${window.location.origin}/channels/${msg.channel_id}/${msg.id}`),
+        action: () =>
+          navigator.clipboard.writeText(
+            `${window.location.origin}/channels/${msg.channel_id}/${msg.id}`,
+          ),
       },
       {
         label: "Copy ID",
@@ -307,7 +399,11 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     ];
 
     // Only show "Reply in Thread" for top-level messages, not inside ThreadSidebar, and only when threads are enabled
-    if (!msg.parent_id && !props.isInsideThread && props.threadsEnabled !== false) {
+    if (
+      !msg.parent_id &&
+      !props.isInsideThread &&
+      props.threadsEnabled !== false
+    ) {
       items.push(
         { separator: true },
         {
@@ -363,8 +459,12 @@ const MessageItem: Component<MessageItemProps> = (props) => {
   return (
     <div
       onContextMenu={handleContextMenu}
-      onMouseEnter={() => { reactionShortcutHandler = handleAddReaction; }}
-      onMouseLeave={() => { reactionShortcutHandler = null; }}
+      onMouseEnter={() => {
+        reactionShortcutHandler = handleAddReaction;
+      }}
+      onMouseLeave={() => {
+        reactionShortcutHandler = null;
+      }}
       class={`group relative flex gap-4 px-4 py-0.5 hover:bg-white/3 transition-colors ${
         props.compact ? "mt-0" : "mt-4"
       }`}
@@ -375,7 +475,11 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           <div
             onContextMenu={(e: MouseEvent) => {
               e.stopPropagation();
-              showUserContextMenu(e, { id: author().id, username: author().username, display_name: author().display_name });
+              showUserContextMenu(e, {
+                id: author().id,
+                username: author().username,
+                display_name: author().display_name,
+              });
             }}
           >
             <Avatar
@@ -403,7 +507,9 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         onShowContextMenu={handleContextMenu}
         guildId={props.guildId}
         isThreadReply={!!props.message.parent_id || !!props.isInsideThread}
-        onReplyInThread={props.isInsideThread ? undefined : () => openThread(props.message)}
+        onReplyInThread={
+          props.isInsideThread ? undefined : () => openThread(props.message)
+        }
         threadsEnabled={props.threadsEnabled}
       />
 
@@ -415,7 +521,11 @@ const MessageItem: Component<MessageItemProps> = (props) => {
               class="font-semibold text-text-primary hover:underline cursor-pointer transition-colors"
               onContextMenu={(e: MouseEvent) => {
                 e.stopPropagation();
-                showUserContextMenu(e, { id: author().id, username: author().username, display_name: author().display_name });
+                showUserContextMenu(e, {
+                  id: author().id,
+                  username: author().username,
+                  display_name: author().display_name,
+                });
               }}
             >
               {author().display_name}
@@ -426,11 +536,14 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           </div>
         </Show>
 
-        <div ref={contentRef} class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none">
+        <div
+          ref={contentRef}
+          class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none"
+        >
           <For each={contentBlocks()}>
             {(block) => (
               <Show
-                when={block.type === 'code'}
+                when={block.type === "code"}
                 fallback={<div innerHTML={(block as TextBlock).html} />}
               >
                 <CodeBlock language={(block as CodeBlockData).language}>
@@ -440,7 +553,10 @@ const MessageItem: Component<MessageItemProps> = (props) => {
             )}
           </For>
           <Show when={isEdited()}>
-            <span class="text-xs text-text-secondary/70 ml-1.5 align-super" title={`Edited ${formatTimestamp(props.message.edited_at!)}`}>
+            <span
+              class="text-xs text-text-secondary/70 ml-1.5 align-super"
+              title={`Edited ${formatTimestamp(props.message.edited_at!)}`}
+            >
               (edited)
             </span>
           </Show>
@@ -477,10 +593,14 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                 >
                   <div
                     class="relative rounded-xl overflow-hidden border border-white/5 bg-surface-layer2 max-w-md"
-                    style={attachment.width && attachment.height ? {
-                      "aspect-ratio": `${attachment.width} / ${attachment.height}`,
-                      "max-height": "320px",
-                    } : { "max-height": "320px" }}
+                    style={
+                      attachment.width && attachment.height
+                        ? {
+                            "aspect-ratio": `${attachment.width} / ${attachment.height}`,
+                            "max-height": "320px",
+                          }
+                        : { "max-height": "320px" }
+                    }
                   >
                     {/* Blurhash placeholder (visible while image loads) */}
                     <Show when={attachment.blurhash}>
@@ -494,15 +614,21 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
                     {/* Actual image — loads thumbnail first, fades in over placeholder */}
                     <img
-                      src={attachment.thumbnail_url
-                        ? getDownloadUrl(attachment, "thumbnail")
-                        : getDownloadUrl(attachment)}
+                      src={
+                        attachment.thumbnail_url
+                          ? getDownloadUrl(attachment, "thumbnail")
+                          : getDownloadUrl(attachment)
+                      }
                       alt={attachment.filename}
                       class="relative w-full h-full object-contain block opacity-0 transition-opacity duration-300"
                       loading="lazy"
                       onLoad={(e) => {
-                        (e.target as HTMLImageElement).classList.remove("opacity-0");
-                        (e.target as HTMLImageElement).classList.add("opacity-100");
+                        (e.target as HTMLImageElement).classList.remove(
+                          "opacity-0",
+                        );
+                        (e.target as HTMLImageElement).classList.add(
+                          "opacity-100",
+                        );
                       }}
                       onClick={() => {
                         window.open(getDownloadUrl(attachment), "_blank");
@@ -536,7 +662,13 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         </Show>
 
         {/* Thread indicator (only on top-level messages with replies, not inside ThreadSidebar) */}
-        <Show when={!props.isInsideThread && !props.message.parent_id && props.message.thread_reply_count > 0}>
+        <Show
+          when={
+            !props.isInsideThread &&
+            !props.message.parent_id &&
+            props.message.thread_reply_count > 0
+          }
+        >
           <ThreadIndicator message={props.message} />
         </Show>
       </div>
@@ -550,7 +682,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 

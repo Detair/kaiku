@@ -8,8 +8,17 @@
  */
 
 import type { SoundEvent, SoundOption } from "./types";
-import { playSound, preloadSounds, isWebAudioSupported, playNotificationFallback } from "./browser";
-import { initTabLeader, isTabLeader, cleanup as cleanupTabLeader } from "./tab-leader";
+import {
+  playSound,
+  preloadSounds,
+  isWebAudioSupported,
+  playNotificationFallback,
+} from "./browser";
+import {
+  initTabLeader,
+  isTabLeader,
+  cleanup as cleanupTabLeader,
+} from "./tab-leader";
 import { preloadRingSound, stopRinging } from "./ring";
 import {
   getSoundEnabled,
@@ -183,7 +192,10 @@ async function playSoundInternal(_event: SoundEvent): Promise<void> {
     // Use Tauri native audio
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("play_sound", { soundId, volume: Math.round(getSoundVolume()) });
+      await invoke("play_sound", {
+        soundId,
+        volume: Math.round(getSoundVolume()),
+      });
     } catch (error) {
       console.warn("Failed to play sound via Tauri:", error);
     }
@@ -206,7 +218,10 @@ export async function testSound(soundId?: SoundOption): Promise<void> {
   if (isTauri()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("play_sound", { soundId: id, volume: Math.round(getSoundVolume()) });
+      await invoke("play_sound", {
+        soundId: id,
+        volume: Math.round(getSoundVolume()),
+      });
     } catch (error) {
       console.warn("Failed to test sound via Tauri:", error);
     }

@@ -176,7 +176,9 @@ const ToastItem: Component<{ toast: ToastInstance }> = (props) => {
       `}
       role="alert"
     >
-      <span class={`${typeIcons[props.toast.type]} w-5 h-5 flex-shrink-0 mt-0.5`} />
+      <span
+        class={`${typeIcons[props.toast.type]} w-5 h-5 flex-shrink-0 mt-0.5`}
+      />
       <div class="flex-1 min-w-0">
         <p class="font-medium text-sm">{props.toast.title}</p>
         {props.toast.message && (

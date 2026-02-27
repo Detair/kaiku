@@ -21,7 +21,9 @@ interface PositionedEmojiPickerProps {
   guildId?: string;
 }
 
-const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (props) => {
+const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
+  props,
+) => {
   let pickerRef: HTMLDivElement | undefined;
   const [position, setPosition] = createSignal({ x: 0, y: 0 });
   const [maxHeight, setMaxHeight] = createSignal<number | undefined>(undefined);
@@ -79,7 +81,10 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (props) => 
   onMount(() => {
     // Calculate initial position
     updatePosition().catch((err) => {
-      console.error("[PositionedEmojiPicker] Failed to calculate position:", err);
+      console.error(
+        "[PositionedEmojiPicker] Failed to calculate position:",
+        err,
+      );
     });
 
     // Add event listeners after a small delay to avoid immediate close

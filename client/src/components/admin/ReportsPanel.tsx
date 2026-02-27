@@ -5,8 +5,23 @@
  * Actions require session elevation (two-tier privilege model).
  */
 
-import { Component, Show, For, onMount, createSignal, createMemo } from "solid-js";
-import { Flag, ChevronLeft, ChevronRight, Loader2, UserCheck, CheckCircle, XCircle } from "lucide-solid";
+import {
+  Component,
+  Show,
+  For,
+  onMount,
+  createSignal,
+  createMemo,
+} from "solid-js";
+import {
+  Flag,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  UserCheck,
+  CheckCircle,
+  XCircle,
+} from "lucide-solid";
 import * as tauri from "@/lib/tauri";
 import { adminState } from "@/stores/admin";
 import { showToast } from "@/components/ui/Toast";
@@ -35,16 +50,22 @@ const ReportsPanel: Component = () => {
   const [isLoading, setIsLoading] = createSignal(false);
   const [statusFilter, setStatusFilter] = createSignal<string>("");
   const [categoryFilter, setCategoryFilter] = createSignal<string>("");
-  const [stats, setStats] = createSignal<tauri.ReportStatsResponse | null>(null);
+  const [stats, setStats] = createSignal<tauri.ReportStatsResponse | null>(
+    null,
+  );
   const [statsLoading, setStatsLoading] = createSignal(false);
 
   // Resolve dialog state
-  const [resolveReportId, setResolveReportId] = createSignal<string | null>(null);
+  const [resolveReportId, setResolveReportId] = createSignal<string | null>(
+    null,
+  );
   const [resolveAction, setResolveAction] = createSignal("dismissed");
   const [resolveNote, setResolveNote] = createSignal("");
   const [actionLoading, setActionLoading] = createSignal(false);
 
-  const totalPages = createMemo(() => Math.max(1, Math.ceil(total() / PAGE_SIZE)));
+  const totalPages = createMemo(() =>
+    Math.max(1, Math.ceil(total() / PAGE_SIZE)),
+  );
 
   const loadReports = async () => {
     setIsLoading(true);
@@ -72,7 +93,11 @@ const ReportsPanel: Component = () => {
       setStats(s);
     } catch (err) {
       console.error("[Admin] Failed to load report stats:", err);
-      showToast({ type: "error", title: "Failed to load report stats", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Failed to load report stats",
+        duration: 8000,
+      });
     } finally {
       setStatsLoading(false);
     }
@@ -101,7 +126,12 @@ const ReportsPanel: Component = () => {
       await loadReports();
       await loadStats();
     } catch (err) {
-      showToast({ type: "error", title: "Failed to claim report", message: err instanceof Error ? err.message : undefined, duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Failed to claim report",
+        message: err instanceof Error ? err.message : undefined,
+        duration: 8000,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -113,14 +143,23 @@ const ReportsPanel: Component = () => {
 
     setActionLoading(true);
     try {
-      await tauri.adminResolveReport(id, resolveAction(), resolveNote() || undefined);
+      await tauri.adminResolveReport(
+        id,
+        resolveAction(),
+        resolveNote() || undefined,
+      );
       showToast({ type: "success", title: "Report resolved", duration: 3000 });
       setResolveReportId(null);
       setResolveNote("");
       await loadReports();
       await loadStats();
     } catch (err) {
-      showToast({ type: "error", title: "Failed to resolve report", message: err instanceof Error ? err.message : undefined, duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Failed to resolve report",
+        message: err instanceof Error ? err.message : undefined,
+        duration: 8000,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -128,7 +167,11 @@ const ReportsPanel: Component = () => {
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
-    return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return (
+      d.toLocaleDateString() +
+      " " +
+      d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    );
   };
 
   return (
@@ -168,7 +211,10 @@ const ReportsPanel: Component = () => {
         <div class="flex gap-3">
           <select
             value={statusFilter()}
-            onChange={(e) => { setStatusFilter(e.currentTarget.value); handleFilterChange(); }}
+            onChange={(e) => {
+              setStatusFilter(e.currentTarget.value);
+              handleFilterChange();
+            }}
             class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary"
           >
             <option value="">All Statuses</option>
@@ -180,7 +226,10 @@ const ReportsPanel: Component = () => {
 
           <select
             value={categoryFilter()}
-            onChange={(e) => { setCategoryFilter(e.currentTarget.value); handleFilterChange(); }}
+            onChange={(e) => {
+              setCategoryFilter(e.currentTarget.value);
+              handleFilterChange();
+            }}
             class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary"
           >
             <option value="">All Categories</option>
@@ -227,7 +276,9 @@ const ReportsPanel: Component = () => {
                   {(report) => (
                     <tr class="border-b border-white/5 hover:bg-white/3 transition-colors">
                       <td class="px-4 py-3">
-                        <span class={`px-2 py-0.5 rounded-full text-xs font-medium border ${STATUS_COLORS[report.status] ?? "text-text-secondary"}`}>
+                        <span
+                          class={`px-2 py-0.5 rounded-full text-xs font-medium border ${STATUS_COLORS[report.status] ?? "text-text-secondary"}`}
+                        >
                           {report.status}
                         </span>
                       </td>
@@ -235,7 +286,9 @@ const ReportsPanel: Component = () => {
                         {report.category.replace(/_/g, " ")}
                       </td>
                       <td class="px-4 py-3 text-text-primary">
-                        <span class="capitalize text-text-secondary">{report.target_type}</span>
+                        <span class="capitalize text-text-secondary">
+                          {report.target_type}
+                        </span>
                         <br />
                         <span class="text-xs text-text-secondary/50 font-mono">
                           {report.target_user_id.slice(0, 8)}...
@@ -252,17 +305,29 @@ const ReportsPanel: Component = () => {
                           <Show when={report.status === "pending"}>
                             <button
                               onClick={() => handleClaim(report.id)}
-                              disabled={!adminState.isElevated || actionLoading()}
+                              disabled={
+                                !adminState.isElevated || actionLoading()
+                              }
                               title="Claim"
                               class="p-1.5 rounded-lg text-text-secondary hover:text-blue-400 hover:bg-blue-400/10 transition-colors disabled:opacity-30"
                             >
                               <UserCheck class="w-4 h-4" />
                             </button>
                           </Show>
-                          <Show when={report.status === "pending" || report.status === "reviewing"}>
+                          <Show
+                            when={
+                              report.status === "pending" ||
+                              report.status === "reviewing"
+                            }
+                          >
                             <button
-                              onClick={() => { setResolveReportId(report.id); setResolveAction("dismissed"); }}
-                              disabled={!adminState.isElevated || actionLoading()}
+                              onClick={() => {
+                                setResolveReportId(report.id);
+                                setResolveAction("dismissed");
+                              }}
+                              disabled={
+                                !adminState.isElevated || actionLoading()
+                              }
                               title="Resolve"
                               class="p-1.5 rounded-lg text-text-secondary hover:text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-30"
                             >
@@ -283,9 +348,7 @@ const ReportsPanel: Component = () => {
       {/* Pagination */}
       <Show when={totalPages() > 1}>
         <div class="flex items-center justify-between px-4 py-3 border-t border-white/10">
-          <div class="text-xs text-text-secondary">
-            {total()} total reports
-          </div>
+          <div class="text-xs text-text-secondary">{total()} total reports</div>
           <div class="flex items-center gap-2">
             <button
               onClick={() => handlePageChange(page() - 1)}
@@ -320,7 +383,9 @@ const ReportsPanel: Component = () => {
             style="background-color: var(--color-surface-layer1)"
           >
             <div class="flex items-center justify-between px-5 py-4 border-b border-white/10">
-              <h3 class="text-lg font-bold text-text-primary">Resolve Report</h3>
+              <h3 class="text-lg font-bold text-text-primary">
+                Resolve Report
+              </h3>
               <button
                 onClick={() => setResolveReportId(null)}
                 class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
@@ -330,7 +395,9 @@ const ReportsPanel: Component = () => {
             </div>
             <div class="p-5 space-y-4">
               <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">Action</label>
+                <label class="text-sm font-medium text-text-secondary">
+                  Action
+                </label>
                 <select
                   value={resolveAction()}
                   onChange={(e) => setResolveAction(e.currentTarget.value)}
@@ -343,7 +410,9 @@ const ReportsPanel: Component = () => {
               </div>
 
               <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">Note (optional)</label>
+                <label class="text-sm font-medium text-text-secondary">
+                  Note (optional)
+                </label>
                 <textarea
                   value={resolveNote()}
                   onInput={(e) => setResolveNote(e.currentTarget.value)}

@@ -100,7 +100,7 @@ function getBrowserTimeout(sensitivity: Sensitivity): number | null {
  */
 export async function secureCopy(
   content: string,
-  context: CopyContext
+  context: CopyContext,
 ): Promise<CopyResult> {
   if (isTauri) {
     return invoke<CopyResult>("secure_copy", { content, context });
@@ -191,7 +191,7 @@ export async function clearClipboard(): Promise<void> {
  * Extend the auto-clear timeout.
  */
 export async function extendClipboardTimeout(
-  additionalSecs: number = 30
+  additionalSecs: number = 30,
 ): Promise<number> {
   if (isTauri) {
     return invoke<number>("extend_clipboard_timeout", {
@@ -226,7 +226,7 @@ export async function getClipboardStatus(): Promise<ClipboardStatusEvent> {
  * Update clipboard protection settings.
  */
 export async function updateClipboardSettings(
-  settings: ClipboardSettings
+  settings: ClipboardSettings,
 ): Promise<void> {
   if (isTauri) {
     return invoke("update_clipboard_settings", { settings });
@@ -255,7 +255,7 @@ export async function getClipboardSettings(): Promise<ClipboardSettings> {
  * Listen for clipboard status events.
  */
 export async function onClipboardStatus(
-  callback: (event: ClipboardStatusEvent) => void
+  callback: (event: ClipboardStatusEvent) => void,
 ): Promise<UnlistenFn> {
   if (isTauri) {
     return listen<ClipboardStatusEvent>("clipboard-status", (event) => {
@@ -271,12 +271,15 @@ export async function onClipboardStatus(
  * Listen for tamper detection events.
  */
 export async function onClipboardTamper(
-  callback: (context: CopyContext) => void
+  callback: (context: CopyContext) => void,
 ): Promise<UnlistenFn> {
   if (isTauri) {
-    return listen<{ context: CopyContext }>("clipboard-tamper-detected", (event) => {
-      callback(event.payload.context);
-    });
+    return listen<{ context: CopyContext }>(
+      "clipboard-tamper-detected",
+      (event) => {
+        callback(event.payload.context);
+      },
+    );
   }
 
   // Browser mode - no events

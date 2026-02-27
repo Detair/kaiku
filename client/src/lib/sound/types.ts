@@ -11,13 +11,13 @@ export type { SoundOption, NotificationLevel } from "@/stores/sound";
  * Sound event categories that can trigger notifications.
  */
 export type SoundEventType =
-  | "message_dm"      // Direct message received
+  | "message_dm" // Direct message received
   | "message_mention" // Message with @mention
   | "message_channel" // Regular channel message (when enabled)
-  | "message_thread"  // Thread reply received
-  | "call_incoming"   // Incoming call (future)
-  | "user_join"       // User joined voice (future)
-  | "user_leave";     // User left voice (future)
+  | "message_thread" // Thread reply received
+  | "call_incoming" // Incoming call (future)
+  | "user_join" // User joined voice (future)
+  | "user_leave"; // User left voice (future)
 
 /**
  * Mention types that can appear in messages.

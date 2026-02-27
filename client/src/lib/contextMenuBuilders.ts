@@ -5,7 +5,10 @@
  */
 
 import { User, MessageSquare, UserPlus, Ban, Copy, Flag } from "lucide-solid";
-import { showContextMenu, type ContextMenuEntry } from "@/components/ui/ContextMenu";
+import {
+  showContextMenu,
+  type ContextMenuEntry,
+} from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
 import { createDM } from "@/lib/tauri";
 import { selectDM, loadDMs, dmsState } from "@/stores/dms";
@@ -20,19 +23,29 @@ interface UserMenuTarget {
 // Block confirm state (used by BlockConfirmModal)
 let pendingBlockTarget: UserMenuTarget | null = null;
 let showBlockConfirmCallback: ((target: UserMenuTarget) => void) | null = null;
-let showReportCallback: ((target: { userId: string; username: string; messageId?: string }) => void) | null = null;
+let showReportCallback:
+  | ((target: { userId: string; username: string; messageId?: string }) => void)
+  | null = null;
 
 /**
  * Register callback to show the block confirmation modal.
  */
-export function onShowBlockConfirm(callback: (target: UserMenuTarget) => void): void {
+export function onShowBlockConfirm(
+  callback: (target: UserMenuTarget) => void,
+): void {
   showBlockConfirmCallback = callback;
 }
 
 /**
  * Register callback to show the report modal.
  */
-export function onShowReport(callback: (target: { userId: string; username: string; messageId?: string }) => void): void {
+export function onShowReport(
+  callback: (target: {
+    userId: string;
+    username: string;
+    messageId?: string;
+  }) => void,
+): void {
   showReportCallback = callback;
 }
 
@@ -46,7 +59,11 @@ export function getPendingBlockTarget(): UserMenuTarget | null {
 /**
  * Trigger the report modal programmatically (e.g. from message context menu).
  */
-export function triggerReport(target: { userId: string; username: string; messageId?: string }): void {
+export function triggerReport(target: {
+  userId: string;
+  username: string;
+  messageId?: string;
+}): void {
   if (showReportCallback) {
     showReportCallback(target);
   }
@@ -55,7 +72,10 @@ export function triggerReport(target: { userId: string; username: string; messag
 /**
  * Show a context menu for a user (member list, message author, etc.).
  */
-export function showUserContextMenu(event: MouseEvent, user: UserMenuTarget): void {
+export function showUserContextMenu(
+  event: MouseEvent,
+  user: UserMenuTarget,
+): void {
   const me = currentUser();
   const isSelf = me?.id === user.id;
 
@@ -66,8 +86,10 @@ export function showUserContextMenu(event: MouseEvent, user: UserMenuTarget): vo
       action: async () => {
         // Navigate to DM with this user to see their profile info
         try {
-          const existing = dmsState.dms.find((dm) =>
-            dm.participants?.some((p) => p.user_id === user.id) && dm.participants.length <= 2
+          const existing = dmsState.dms.find(
+            (dm) =>
+              dm.participants?.some((p) => p.user_id === user.id) &&
+              dm.participants.length <= 2,
           );
           if (existing) {
             selectHome();
@@ -92,8 +114,10 @@ export function showUserContextMenu(event: MouseEvent, user: UserMenuTarget): vo
         icon: MessageSquare,
         action: async () => {
           try {
-            const existing = dmsState.dms.find((dm) =>
-              dm.participants?.some((p) => p.user_id === user.id) && dm.participants.length <= 2
+            const existing = dmsState.dms.find(
+              (dm) =>
+                dm.participants?.some((p) => p.user_id === user.id) &&
+                dm.participants.length <= 2,
             );
             if (existing) {
               selectHome();

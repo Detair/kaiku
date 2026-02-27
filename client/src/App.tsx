@@ -1,4 +1,13 @@
-import { Component, ParentProps, JSX, onMount, createSignal, Show, lazy, Suspense } from "solid-js";
+import {
+  Component,
+  ParentProps,
+  JSX,
+  onMount,
+  createSignal,
+  Show,
+  lazy,
+  Suspense,
+} from "solid-js";
 import { Route } from "@solidjs/router";
 
 // Views (eager: first views users see)
@@ -13,8 +22,12 @@ const ThemeDemo = lazy(() => import("./pages/ThemeDemo"));
 const InviteJoin = lazy(() => import("./views/InviteJoin"));
 const PageViewRoute = lazy(() => import("./views/PageViewRoute"));
 const AdminDashboard = lazy(() => import("./views/AdminDashboard"));
-const ConnectionHistory = lazy(() => import("./pages/settings/ConnectionHistory"));
-const BotSlashCommands = lazy(() => import("./pages/settings/BotSlashCommands"));
+const ConnectionHistory = lazy(
+  () => import("./pages/settings/ConnectionHistory"),
+);
+const BotSlashCommands = lazy(
+  () => import("./pages/settings/BotSlashCommands"),
+);
 const BotWebhooks = lazy(() => import("./pages/settings/BotWebhooks"));
 const LibraryViewRoute = lazy(() => import("./views/LibraryViewRoute"));
 
@@ -40,12 +53,28 @@ import { fetchUploadLimits } from "./lib/tauri";
 import { initDrafts } from "./stores/drafts";
 
 // Global modal state
-const [blockTarget, setBlockTarget] = createSignal<{ id: string; username: string; display_name?: string } | null>(null);
+const [blockTarget, setBlockTarget] = createSignal<{
+  id: string;
+  username: string;
+  display_name?: string;
+} | null>(null);
 const [reportTarget, setReportTarget] = createSignal<ReportTarget | null>(null);
 
 // Register context menu callbacks
-onShowBlockConfirm((target) => setBlockTarget({ id: target.id, username: target.username, display_name: target.display_name }));
-onShowReport((target) => setReportTarget({ userId: target.userId, username: target.username, messageId: target.messageId }));
+onShowBlockConfirm((target) =>
+  setBlockTarget({
+    id: target.id,
+    username: target.username,
+    display_name: target.display_name,
+  }),
+);
+onShowReport((target) =>
+  setReportTarget({
+    userId: target.userId,
+    username: target.username,
+    messageId: target.messageId,
+  }),
+);
 
 // Layout wrapper
 const Layout: Component<ParentProps> = (props) => {
@@ -53,8 +82,8 @@ const Layout: Component<ParentProps> = (props) => {
     await initTheme();
     initDrafts();
     // Fetch upload size limits from server (non-blocking)
-    fetchUploadLimits().catch(err =>
-      console.warn('[App] Failed to fetch upload limits:', err)
+    fetchUploadLimits().catch((err) =>
+      console.warn("[App] Failed to fetch upload limits:", err),
     );
   });
 
@@ -165,18 +194,78 @@ const ProtectedBotWebhooks: Component = () => (
 );
 
 // Wrapped components for routes
-const LoginPage = () => <Layout><Login /></Layout>;
-const RegisterPage = () => <Layout><Register /></Layout>;
-const ForgotPasswordPage = () => <Layout><LazyErrorBoundary name="ForgotPassword"><Suspense fallback={<PageFallback />}><ForgotPassword /></Suspense></LazyErrorBoundary></Layout>;
-const ResetPasswordPage = () => <Layout><LazyErrorBoundary name="ResetPassword"><Suspense fallback={<PageFallback />}><ResetPassword /></Suspense></LazyErrorBoundary></Layout>;
-const MainPage = () => <Layout><ProtectedMain /></Layout>;
-const ThemeDemoPage = () => <Layout><LazyErrorBoundary name="ThemeDemo"><Suspense fallback={<PageFallback />}><ThemeDemo /></Suspense></LazyErrorBoundary></Layout>;
-const InvitePage = () => <Layout><ProtectedInvite /></Layout>;
-const PagePage = () => <Layout><ProtectedPageView /></Layout>;
-const AdminPage = () => <Layout><ProtectedAdmin /></Layout>;
-const ConnectionHistoryPage = () => <Layout><ProtectedConnectionHistory /></Layout>;
-const BotCommandsPage = () => <Layout><ProtectedBotCommands /></Layout>;
-const BotWebhooksPage = () => <Layout><ProtectedBotWebhooks /></Layout>;
+const LoginPage = () => (
+  <Layout>
+    <Login />
+  </Layout>
+);
+const RegisterPage = () => (
+  <Layout>
+    <Register />
+  </Layout>
+);
+const ForgotPasswordPage = () => (
+  <Layout>
+    <LazyErrorBoundary name="ForgotPassword">
+      <Suspense fallback={<PageFallback />}>
+        <ForgotPassword />
+      </Suspense>
+    </LazyErrorBoundary>
+  </Layout>
+);
+const ResetPasswordPage = () => (
+  <Layout>
+    <LazyErrorBoundary name="ResetPassword">
+      <Suspense fallback={<PageFallback />}>
+        <ResetPassword />
+      </Suspense>
+    </LazyErrorBoundary>
+  </Layout>
+);
+const MainPage = () => (
+  <Layout>
+    <ProtectedMain />
+  </Layout>
+);
+const ThemeDemoPage = () => (
+  <Layout>
+    <LazyErrorBoundary name="ThemeDemo">
+      <Suspense fallback={<PageFallback />}>
+        <ThemeDemo />
+      </Suspense>
+    </LazyErrorBoundary>
+  </Layout>
+);
+const InvitePage = () => (
+  <Layout>
+    <ProtectedInvite />
+  </Layout>
+);
+const PagePage = () => (
+  <Layout>
+    <ProtectedPageView />
+  </Layout>
+);
+const AdminPage = () => (
+  <Layout>
+    <ProtectedAdmin />
+  </Layout>
+);
+const ConnectionHistoryPage = () => (
+  <Layout>
+    <ProtectedConnectionHistory />
+  </Layout>
+);
+const BotCommandsPage = () => (
+  <Layout>
+    <ProtectedBotCommands />
+  </Layout>
+);
+const BotWebhooksPage = () => (
+  <Layout>
+    <ProtectedBotWebhooks />
+  </Layout>
+);
 
 // Protected library wrapper
 const ProtectedLibrary: Component = () => (
@@ -188,7 +277,11 @@ const ProtectedLibrary: Component = () => (
     </LazyErrorBoundary>
   </AuthGuard>
 );
-const LibraryPage = () => <Layout><ProtectedLibrary /></Layout>;
+const LibraryPage = () => (
+  <Layout>
+    <ProtectedLibrary />
+  </Layout>
+);
 
 // Export routes as JSX Route elements
 export const AppRoutes = (): JSX.Element => (

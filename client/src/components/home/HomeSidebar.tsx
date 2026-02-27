@@ -1,4 +1,11 @@
-import { Component, For, Show, createMemo, createSignal, onMount } from "solid-js";
+import {
+  Component,
+  For,
+  Show,
+  createMemo,
+  createSignal,
+  onMount,
+} from "solid-js";
 import { Users, Plus, ChevronDown } from "lucide-solid";
 import { dmsState, loadDMs, selectFriendsTab } from "@/stores/dms";
 import DMItem from "./DMItem";
@@ -30,7 +37,9 @@ const HomeSidebar: Component = () => {
   let dmListRef: HTMLDivElement | undefined;
 
   const virtualizer = createVirtualizer({
-    get count() { return sortedDMs().length; },
+    get count() {
+      return sortedDMs().length;
+    },
     getScrollElement: () => dmListRef ?? null,
     estimateSize: () => 56,
     overscan: 3,
@@ -64,7 +73,8 @@ const HomeSidebar: Component = () => {
           class="flex-1 flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
           classList={{
             "bg-white/10 text-text-primary": dmsState.isShowingFriends,
-            "hover:bg-white/5 text-text-secondary hover:text-text-primary": !dmsState.isShowingFriends,
+            "hover:bg-white/5 text-text-secondary hover:text-text-primary":
+              !dmsState.isShowingFriends,
           }}
         >
           <Users class="w-5 h-5 transition-colors" />
@@ -126,7 +136,9 @@ const HomeSidebar: Component = () => {
               when={dmsState.dms.length > 0}
               fallback={
                 <div class="text-center py-8 px-4">
-                  <p class="text-text-secondary text-sm">No conversations yet</p>
+                  <p class="text-text-secondary text-sm">
+                    No conversations yet
+                  </p>
                   <button
                     onClick={() => setShowNewMessage(true)}
                     class="mt-2 text-accent-primary text-sm hover:underline"
@@ -136,7 +148,12 @@ const HomeSidebar: Component = () => {
                 </div>
               }
             >
-              <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
+              <div
+                style={{
+                  height: `${virtualizer.getTotalSize()}px`,
+                  position: "relative",
+                }}
+              >
                 <For each={virtualizer.getVirtualItems()}>
                   {(virtualItem) => {
                     const dm = () => sortedDMs()[virtualItem.index];

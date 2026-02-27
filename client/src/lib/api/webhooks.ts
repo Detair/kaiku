@@ -2,15 +2,15 @@
  * Webhook Management API
  */
 
-import { getAccessToken } from '../tauri';
+import { getAccessToken } from "../tauri";
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 export type WebhookEventType =
-  | 'message.created'
-  | 'member.joined'
-  | 'member.left'
-  | 'command.invoked';
+  | "message.created"
+  | "member.joined"
+  | "member.left"
+  | "command.invoked";
 
 export interface Webhook {
   id: string;
@@ -66,24 +66,24 @@ export interface TestDeliveryResult {
  */
 export async function createWebhook(
   applicationId: string,
-  data: CreateWebhookRequest
+  data: CreateWebhookRequest,
 ): Promise<WebhookCreated> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/webhooks`,
     {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(data),
-    }
+    },
   );
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Failed to create webhook');
+    throw new Error(error || "Failed to create webhook");
   }
 
   return response.json();
@@ -97,15 +97,15 @@ export async function listWebhooks(applicationId: string): Promise<Webhook[]> {
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/webhooks`,
     {
-      method: 'GET',
+      method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
-    throw new Error('Failed to list webhooks');
+    throw new Error("Failed to list webhooks");
   }
 
   return response.json();
@@ -116,21 +116,21 @@ export async function listWebhooks(applicationId: string): Promise<Webhook[]> {
  */
 export async function getWebhook(
   applicationId: string,
-  webhookId: string
+  webhookId: string,
 ): Promise<Webhook> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}`,
     {
-      method: 'GET',
+      method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
-    throw new Error('Failed to get webhook');
+    throw new Error("Failed to get webhook");
   }
 
   return response.json();
@@ -142,24 +142,24 @@ export async function getWebhook(
 export async function updateWebhook(
   applicationId: string,
   webhookId: string,
-  data: UpdateWebhookRequest
+  data: UpdateWebhookRequest,
 ): Promise<Webhook> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}`,
     {
-      method: 'PATCH',
+      method: "PATCH",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(data),
-    }
+    },
   );
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Failed to update webhook');
+    throw new Error(error || "Failed to update webhook");
   }
 
   return response.json();
@@ -170,21 +170,21 @@ export async function updateWebhook(
  */
 export async function deleteWebhook(
   applicationId: string,
-  webhookId: string
+  webhookId: string,
 ): Promise<void> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}`,
     {
-      method: 'DELETE',
+      method: "DELETE",
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
-    throw new Error('Failed to delete webhook');
+    throw new Error("Failed to delete webhook");
   }
 }
 
@@ -193,22 +193,22 @@ export async function deleteWebhook(
  */
 export async function testWebhook(
   applicationId: string,
-  webhookId: string
+  webhookId: string,
 ): Promise<TestDeliveryResult> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}/test`,
     {
-      method: 'POST',
+      method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Failed to test webhook');
+    throw new Error(error || "Failed to test webhook");
   }
 
   return response.json();
@@ -219,21 +219,21 @@ export async function testWebhook(
  */
 export async function listDeliveries(
   applicationId: string,
-  webhookId: string
+  webhookId: string,
 ): Promise<DeliveryLogEntry[]> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}/deliveries`,
     {
-      method: 'GET',
+      method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
-    throw new Error('Failed to list deliveries');
+    throw new Error("Failed to list deliveries");
   }
 
   return response.json();

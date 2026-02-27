@@ -62,7 +62,9 @@ const AdminSettings: Component = () => {
   });
 
   const [showAddProvider, setShowAddProvider] = createSignal(false);
-  const [deletingProvider, setDeletingProvider] = createSignal<string | null>(null);
+  const [deletingProvider, setDeletingProvider] = createSignal<string | null>(
+    null,
+  );
 
   // Add provider form state
   const [addForm, setAddForm] = createStore({
@@ -101,7 +103,7 @@ const AdminSettings: Component = () => {
 
   const saveAuthSettings = async (
     methods?: AuthMethodsConfig,
-    policy?: string
+    policy?: string,
   ) => {
     setState({ isSaving: true, error: null, success: null });
     try {
@@ -125,7 +127,10 @@ const AdminSettings: Component = () => {
   };
 
   const handleToggleLocal = () => {
-    const newMethods = { ...state.authMethods, local: !state.authMethods.local };
+    const newMethods = {
+      ...state.authMethods,
+      local: !state.authMethods.local,
+    };
     // Prevent disabling all methods
     if (!newMethods.local && !newMethods.oidc) {
       setState({ error: "At least one auth method must be enabled" });
@@ -258,7 +263,8 @@ const AdminSettings: Component = () => {
         <div>
           <h2 class="text-lg font-bold text-text-primary">Server Settings</h2>
           <p class="text-sm text-text-secondary mt-1">
-            Configure authentication methods, registration policy, and identity providers.
+            Configure authentication methods, registration policy, and identity
+            providers.
           </p>
         </div>
 
@@ -268,7 +274,8 @@ const AdminSettings: Component = () => {
             <div class="flex items-center gap-3">
               <AlertTriangle class="w-5 h-5 text-accent-warning" />
               <p class="text-sm text-text-primary">
-                Settings require an elevated session. Elevate your session to make changes.
+                Settings require an elevated session. Elevate your session to
+                make changes.
               </p>
             </div>
           </div>
@@ -283,7 +290,10 @@ const AdminSettings: Component = () => {
 
         {/* Error / Success messages */}
         <Show when={state.error}>
-          <div class="p-3 rounded-lg text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+          <div
+            class="p-3 rounded-lg text-sm"
+            style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+          >
             {state.error}
           </div>
         </Show>
@@ -304,7 +314,9 @@ const AdminSettings: Component = () => {
               {/* Local Auth Toggle */}
               <div class="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/10">
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Local Authentication</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Local Authentication
+                  </div>
                   <div class="text-xs text-text-muted mt-0.5">
                     Username/password registration and login
                   </div>
@@ -331,9 +343,12 @@ const AdminSettings: Component = () => {
               {/* OIDC Toggle */}
               <div class="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/10">
                 <div>
-                  <div class="text-sm font-medium text-text-primary">SSO / OIDC</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    SSO / OIDC
+                  </div>
                   <div class="text-xs text-text-muted mt-0.5">
-                    Login with external identity providers (GitHub, Google, etc.)
+                    Login with external identity providers (GitHub, Google,
+                    etc.)
                   </div>
                 </div>
                 <button
@@ -363,23 +378,39 @@ const AdminSettings: Component = () => {
               Registration Policy
             </h3>
             <div class="flex gap-3">
-              <For each={[
-                { value: "open", label: "Open", desc: "Anyone can register" },
-                { value: "invite_only", label: "Invite Only", desc: "Requires invitation" },
-                { value: "closed", label: "Closed", desc: "No new registrations" },
-              ]}>
+              <For
+                each={[
+                  { value: "open", label: "Open", desc: "Anyone can register" },
+                  {
+                    value: "invite_only",
+                    label: "Invite Only",
+                    desc: "Requires invitation",
+                  },
+                  {
+                    value: "closed",
+                    label: "Closed",
+                    desc: "No new registrations",
+                  },
+                ]}
+              >
                 {(option) => (
                   <button
                     onClick={() => handlePolicyChange(option.value)}
                     class="flex-1 p-3 rounded-xl border text-left transition-colors"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10": state.registrationPolicy === option.value,
-                      "border-white/10 bg-white/5 hover:bg-white/10": state.registrationPolicy !== option.value,
+                      "border-accent-primary bg-accent-primary/10":
+                        state.registrationPolicy === option.value,
+                      "border-white/10 bg-white/5 hover:bg-white/10":
+                        state.registrationPolicy !== option.value,
                     }}
                     disabled={!adminState.isElevated || state.isSaving}
                   >
-                    <div class="text-sm font-medium text-text-primary">{option.label}</div>
-                    <div class="text-xs text-text-muted mt-0.5">{option.desc}</div>
+                    <div class="text-sm font-medium text-text-primary">
+                      {option.label}
+                    </div>
+                    <div class="text-xs text-text-muted mt-0.5">
+                      {option.desc}
+                    </div>
                   </button>
                 )}
               </For>
@@ -436,7 +467,8 @@ const AdminSettings: Component = () => {
                           <span
                             class="text-xs px-2 py-0.5 rounded-full"
                             classList={{
-                              "bg-status-success/20 text-status-success": provider.enabled,
+                              "bg-status-success/20 text-status-success":
+                                provider.enabled,
                               "bg-white/10 text-text-muted": !provider.enabled,
                             }}
                           >
@@ -444,11 +476,16 @@ const AdminSettings: Component = () => {
                           </span>
                           <Show when={adminState.isElevated}>
                             <button
-                              onClick={() => handleToggleProviderEnabled(provider)}
+                              onClick={() =>
+                                handleToggleProviderEnabled(provider)
+                              }
                               class="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-white/10 transition-colors"
                               title={provider.enabled ? "Disable" : "Enable"}
                             >
-                              <Show when={provider.enabled} fallback={<Check class="w-4 h-4" />}>
+                              <Show
+                                when={provider.enabled}
+                                fallback={<Check class="w-4 h-4" />}
+                              >
                                 <X class="w-4 h-4" />
                               </Show>
                             </button>
@@ -474,7 +511,8 @@ const AdminSettings: Component = () => {
             <Show when={deletingProvider()}>
               <div class="p-4 rounded-xl bg-status-error/10 border border-status-error/30">
                 <p class="text-sm text-text-primary mb-3">
-                  Delete this provider? Users who registered via this provider will need to use a different login method.
+                  Delete this provider? Users who registered via this provider
+                  will need to use a different login method.
                 </p>
                 <div class="flex gap-2">
                   <button
@@ -496,7 +534,9 @@ const AdminSettings: Component = () => {
             {/* Add Provider Form */}
             <Show when={showAddProvider()}>
               <div class="p-5 rounded-xl bg-white/5 border border-white/10 space-y-4">
-                <h4 class="text-sm font-medium text-text-primary">Add Identity Provider</h4>
+                <h4 class="text-sm font-medium text-text-primary">
+                  Add Identity Provider
+                </h4>
 
                 {/* Preset selector */}
                 <div class="flex gap-2">
@@ -504,8 +544,10 @@ const AdminSettings: Component = () => {
                     onClick={() => applyPreset("github")}
                     class="flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10 text-text-primary": addForm.preset === "github",
-                      "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10": addForm.preset !== "github",
+                      "border-accent-primary bg-accent-primary/10 text-text-primary":
+                        addForm.preset === "github",
+                      "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10":
+                        addForm.preset !== "github",
                     }}
                   >
                     <Github class="w-4 h-4" /> GitHub
@@ -514,8 +556,10 @@ const AdminSettings: Component = () => {
                     onClick={() => applyPreset("google")}
                     class="flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10 text-text-primary": addForm.preset === "google",
-                      "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10": addForm.preset !== "google",
+                      "border-accent-primary bg-accent-primary/10 text-text-primary":
+                        addForm.preset === "google",
+                      "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10":
+                        addForm.preset !== "google",
                     }}
                   >
                     <Chrome class="w-4 h-4" /> Google
@@ -524,8 +568,10 @@ const AdminSettings: Component = () => {
                     onClick={() => applyPreset("custom")}
                     class="flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10 text-text-primary": addForm.preset === "custom",
-                      "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10": addForm.preset !== "custom",
+                      "border-accent-primary bg-accent-primary/10 text-text-primary":
+                        addForm.preset === "custom",
+                      "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10":
+                        addForm.preset !== "custom",
                     }}
                   >
                     <KeyRound class="w-4 h-4" /> Custom
@@ -535,51 +581,72 @@ const AdminSettings: Component = () => {
                 {/* Form fields */}
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block text-xs text-text-muted mb-1">Slug</label>
+                    <label class="block text-xs text-text-muted mb-1">
+                      Slug
+                    </label>
                     <input
                       type="text"
                       class="input-field text-sm"
                       placeholder="my-provider"
                       value={addForm.slug}
                       onInput={(e) => setAddForm("slug", e.currentTarget.value)}
-                      disabled={addForm.preset === "github" || addForm.preset === "google"}
+                      disabled={
+                        addForm.preset === "github" ||
+                        addForm.preset === "google"
+                      }
                     />
                   </div>
                   <div>
-                    <label class="block text-xs text-text-muted mb-1">Display Name</label>
+                    <label class="block text-xs text-text-muted mb-1">
+                      Display Name
+                    </label>
                     <input
                       type="text"
                       class="input-field text-sm"
                       placeholder="My Provider"
                       value={addForm.display_name}
-                      onInput={(e) => setAddForm("display_name", e.currentTarget.value)}
+                      onInput={(e) =>
+                        setAddForm("display_name", e.currentTarget.value)
+                      }
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label class="block text-xs text-text-muted mb-1">Client ID</label>
+                  <label class="block text-xs text-text-muted mb-1">
+                    Client ID
+                  </label>
                   <input
                     type="text"
                     class="input-field text-sm"
                     placeholder="OAuth client ID"
                     value={addForm.client_id}
-                    onInput={(e) => setAddForm("client_id", e.currentTarget.value)}
+                    onInput={(e) =>
+                      setAddForm("client_id", e.currentTarget.value)
+                    }
                   />
                 </div>
 
                 <div>
-                  <label class="block text-xs text-text-muted mb-1">Client Secret</label>
+                  <label class="block text-xs text-text-muted mb-1">
+                    Client Secret
+                  </label>
                   <input
                     type="password"
                     class="input-field text-sm"
                     placeholder="OAuth client secret"
                     value={addForm.client_secret}
-                    onInput={(e) => setAddForm("client_secret", e.currentTarget.value)}
+                    onInput={(e) =>
+                      setAddForm("client_secret", e.currentTarget.value)
+                    }
                   />
                 </div>
 
-                <Show when={addForm.preset === "custom" || addForm.preset === "google"}>
+                <Show
+                  when={
+                    addForm.preset === "custom" || addForm.preset === "google"
+                  }
+                >
                   <div>
                     <label class="block text-xs text-text-muted mb-1">
                       Issuer URL (OIDC Discovery)
@@ -589,13 +656,17 @@ const AdminSettings: Component = () => {
                       class="input-field text-sm"
                       placeholder="https://accounts.google.com"
                       value={addForm.issuer_url}
-                      onInput={(e) => setAddForm("issuer_url", e.currentTarget.value)}
+                      onInput={(e) =>
+                        setAddForm("issuer_url", e.currentTarget.value)
+                      }
                     />
                   </div>
                 </Show>
 
                 <div>
-                  <label class="block text-xs text-text-muted mb-1">Scopes</label>
+                  <label class="block text-xs text-text-muted mb-1">
+                    Scopes
+                  </label>
                   <input
                     type="text"
                     class="input-field text-sm"
@@ -609,9 +680,17 @@ const AdminSettings: Component = () => {
                   <button
                     onClick={handleCreateProvider}
                     class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-primary text-white text-sm font-medium hover:bg-accent-primary/90 transition-colors"
-                    disabled={state.isSaving || !addForm.slug || !addForm.client_id || !addForm.client_secret}
+                    disabled={
+                      state.isSaving ||
+                      !addForm.slug ||
+                      !addForm.client_id ||
+                      !addForm.client_secret
+                    }
                   >
-                    <Show when={state.isSaving} fallback={<Plus class="w-4 h-4" />}>
+                    <Show
+                      when={state.isSaving}
+                      fallback={<Plus class="w-4 h-4" />}
+                    >
                       <Loader2 class="w-4 h-4 animate-spin" />
                     </Show>
                     Create

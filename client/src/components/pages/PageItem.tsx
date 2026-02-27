@@ -33,7 +33,9 @@ export default function PageItem(props: PageItemProps) {
 
       <FileText class="w-4 h-4 flex-shrink-0 text-zinc-400" />
 
-      <span class="flex-1 truncate text-sm" title={props.page.title}>{props.page.title}</span>
+      <span class="flex-1 truncate text-sm" title={props.page.title}>
+        {props.page.title}
+      </span>
 
       <Show when={props.isPending}>
         <span

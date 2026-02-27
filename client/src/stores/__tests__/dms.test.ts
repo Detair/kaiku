@@ -46,7 +46,15 @@ function createDM(overrides: Partial<DMListItem> = {}): DMListItem {
     user_limit: null,
     position: 0,
     created_at: "2025-01-01T00:00:00Z",
-    participants: [{ user_id: "user-1", username: "alice", display_name: "Alice", avatar_url: null, joined_at: "2025-01-01T00:00:00Z" }],
+    participants: [
+      {
+        user_id: "user-1",
+        username: "alice",
+        display_name: "Alice",
+        avatar_url: null,
+        joined_at: "2025-01-01T00:00:00Z",
+      },
+    ],
     last_message: null,
     unread_count: 0,
     ...overrides,
@@ -57,7 +65,13 @@ function createMessage(overrides: Partial<Message> = {}): Message {
   return {
     id: "msg-1",
     channel_id: "dm-1",
-    author: { id: "user-1", username: "alice", display_name: "Alice", avatar_url: null, status: "online" },
+    author: {
+      id: "user-1",
+      username: "alice",
+      display_name: "Alice",
+      avatar_url: null,
+      status: "online",
+    },
     content: "hello",
     encrypted: false,
     attachments: [],
@@ -115,7 +129,9 @@ describe("dms store", () => {
       try {
         const dms = [createDM()];
         vi.mocked(tauri.getDMList).mockResolvedValue(dms);
-        vi.mocked(tauri.wsStatus).mockResolvedValue({ type: "disconnected" } as any);
+        vi.mocked(tauri.wsStatus).mockResolvedValue({
+          type: "disconnected",
+        } as any);
 
         const promise = loadDMs();
         // Advance past the 5s polling timeout
@@ -190,7 +206,19 @@ describe("dms store", () => {
   describe("markDMAsRead", () => {
     it("marks DM as read on success", async () => {
       setDmsState({
-        dms: [createDM({ id: "dm-1", unread_count: 5, last_message: { id: "msg-1", content: "hi", user_id: "u1", username: "alice", created_at: "2025-01-01T00:00:00Z" } })],
+        dms: [
+          createDM({
+            id: "dm-1",
+            unread_count: 5,
+            last_message: {
+              id: "msg-1",
+              content: "hi",
+              user_id: "u1",
+              username: "alice",
+              created_at: "2025-01-01T00:00:00Z",
+            },
+          }),
+        ],
       });
       vi.mocked(tauri.markDMAsRead).mockResolvedValue(undefined);
 
@@ -210,7 +238,19 @@ describe("dms store", () => {
 
     it("shows toast on error", async () => {
       setDmsState({
-        dms: [createDM({ id: "dm-1", unread_count: 3, last_message: { id: "msg-1", content: "hi", user_id: "u1", username: "alice", created_at: "2025-01-01T00:00:00Z" } })],
+        dms: [
+          createDM({
+            id: "dm-1",
+            unread_count: 3,
+            last_message: {
+              id: "msg-1",
+              content: "hi",
+              user_id: "u1",
+              username: "alice",
+              created_at: "2025-01-01T00:00:00Z",
+            },
+          }),
+        ],
       });
       vi.mocked(tauri.markDMAsRead).mockRejectedValue(new Error("fail"));
 

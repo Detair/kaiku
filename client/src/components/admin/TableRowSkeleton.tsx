@@ -24,7 +24,9 @@ const TableRowSkeleton: Component<TableRowSkeletonProps> = (props) => {
       {() => (
         <div
           class="grid gap-4 px-4 py-3 border-b border-white/5"
-          style={{ "grid-template-columns": `repeat(${props.columns}, minmax(0, 1fr))` }}
+          style={{
+            "grid-template-columns": `repeat(${props.columns}, minmax(0, 1fr))`,
+          }}
         >
           <For each={Array(props.columns).fill(0)}>
             {(_, colIndex) => (
@@ -33,7 +35,13 @@ const TableRowSkeleton: Component<TableRowSkeletonProps> = (props) => {
                   <Skeleton width="32px" height="32px" circle />
                 )}
                 <Skeleton
-                  width={colIndex() === 0 ? "60%" : colIndex() === props.columns - 1 ? "50px" : "70%"}
+                  width={
+                    colIndex() === 0
+                      ? "60%"
+                      : colIndex() === props.columns - 1
+                        ? "50px"
+                        : "70%"
+                  }
                   height="16px"
                 />
               </div>

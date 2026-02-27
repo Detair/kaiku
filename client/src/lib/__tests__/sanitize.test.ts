@@ -19,9 +19,34 @@ marked.setOptions({
 // DOMPurify config matching MessageItem.tsx
 const PURIFY_CONFIG = {
   ALLOWED_TAGS: [
-    "p", "br", "strong", "em", "code", "pre", "a", "ul", "ol", "li",
-    "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "del", "s",
-    "table", "thead", "tbody", "tr", "th", "td", "span", "mark",
+    "p",
+    "br",
+    "strong",
+    "em",
+    "code",
+    "pre",
+    "a",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "del",
+    "s",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "span",
+    "mark",
   ],
   ALLOWED_ATTR: ["href", "target", "rel", "class", "data-spoiler"],
   ALLOW_DATA_ATTR: false,
@@ -29,10 +54,17 @@ const PURIFY_CONFIG = {
 };
 
 // Restrict class values to an allowlist (matching MessageItem.tsx hook)
-const ALLOWED_CLASSES = new Set(["mention-everyone", "mention-user", "spoiler"]);
+const ALLOWED_CLASSES = new Set([
+  "mention-everyone",
+  "mention-user",
+  "spoiler",
+]);
 DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
   if (data.attrName === "class") {
-    const filtered = data.attrValue.split(/\s+/).filter(cls => ALLOWED_CLASSES.has(cls)).join(" ");
+    const filtered = data.attrValue
+      .split(/\s+/)
+      .filter((cls) => ALLOWED_CLASSES.has(cls))
+      .join(" ");
     data.attrValue = filtered;
     if (!filtered) data.keepAttr = false;
   }
@@ -123,7 +155,7 @@ describe("XSS Prevention", () => {
 
   describe("Forbidden Tags", () => {
     it("should remove style tags", () => {
-      const malicious = '<style>body { background: red; }</style>';
+      const malicious = "<style>body { background: red; }</style>";
       const result = sanitizeHtml(malicious);
       expect(result).not.toContain("<style");
       expect(result).not.toContain("background");
@@ -197,7 +229,7 @@ describe("XSS Prevention", () => {
       expect(result).not.toContain("evil");
       expect(result).not.toContain("admin-panel");
       // class attribute removed entirely since no allowed classes remain
-      expect(result).not.toContain('class=');
+      expect(result).not.toContain("class=");
     });
 
     it("should preserve allowed class values", () => {
@@ -337,8 +369,7 @@ describe("XSS Prevention", () => {
 
   describe("Complex XSS Payloads", () => {
     it("should handle SVG XSS", () => {
-      const malicious =
-        '<svg/onload=alert("XSS")>';
+      const malicious = '<svg/onload=alert("XSS")>';
       const result = sanitizeHtml(malicious);
       expect(result).not.toContain("<svg");
       expect(result).not.toContain("alert");
@@ -352,14 +383,15 @@ describe("XSS Prevention", () => {
     });
 
     it("should handle nested tags XSS", () => {
-      const malicious = '<p><script>alert(1)</script></p>';
+      const malicious = "<p><script>alert(1)</script></p>";
       const result = sanitizeHtml(malicious);
       expect(result).not.toContain("<script");
       expect(result).toContain("<p>");
     });
 
     it("should handle URL encoding XSS", () => {
-      const malicious = '<a href="&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;alert(1)">Click</a>';
+      const malicious =
+        '<a href="&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;alert(1)">Click</a>';
       const result = sanitizeHtml(malicious);
       // DOMPurify handles HTML entity decoding and blocks javascript:
       expect(result).not.toContain("alert(1)");

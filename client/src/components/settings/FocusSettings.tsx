@@ -6,19 +6,17 @@
  */
 
 import { Component, For, Show, createSignal, createMemo } from "solid-js";
-import {
-  Crosshair,
-  Plus,
-  Trash2,
-  ChevronDown,
-  ChevronUp,
-} from "lucide-solid";
+import { Crosshair, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-solid";
 import type {
   FocusMode,
   FocusSuppressionLevel,
   FocusTriggerCategory,
 } from "@/lib/types";
-import { preferences, updatePreference, DEFAULT_FOCUS_PREFERENCES } from "@/stores/preferences";
+import {
+  preferences,
+  updatePreference,
+  DEFAULT_FOCUS_PREFERENCES,
+} from "@/stores/preferences";
 import {
   focusState,
   activateFocusMode,
@@ -29,11 +27,26 @@ const MAX_MODES = 10;
 const MAX_VIP_USERS = 50;
 const MAX_VIP_CHANNELS = 50;
 const MAX_KEYWORDS = 5;
+const MAX_MODE_NAME_LEN = 30;
+const MIN_KEYWORD_LEN = 3;
+const MAX_KEYWORD_LEN = 30;
 
-const SUPPRESSION_OPTIONS: { value: FocusSuppressionLevel; label: string; desc: string }[] = [
+const SUPPRESSION_OPTIONS: {
+  value: FocusSuppressionLevel;
+  label: string;
+  desc: string;
+}[] = [
   { value: "all", label: "Suppress all", desc: "Block all notifications" },
-  { value: "except_mentions", label: "Except mentions", desc: "Allow @mentions through" },
-  { value: "except_dms", label: "Except DMs", desc: "Allow direct messages through" },
+  {
+    value: "except_mentions",
+    label: "Except mentions",
+    desc: "Allow @mentions through",
+  },
+  {
+    value: "except_dms",
+    label: "Except DMs",
+    desc: "Allow direct messages through",
+  },
 ];
 
 const TRIGGER_OPTIONS: { value: FocusTriggerCategory; label: string }[] = [
@@ -47,14 +60,21 @@ function generateId(): string {
   return crypto.randomUUID();
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function unicodeLen(value: string): number {
+  return Array.from(value).length;
+}
 
 const FocusSettings: Component = () => {
   const [keywordInput, setKeywordInput] = createSignal("");
   const [vipUserInput, setVipUserInput] = createSignal("");
   const [vipChannelInput, setVipChannelInput] = createSignal("");
 
-  const [expandedModeId, _setExpandedModeId] = createSignal<string | null>(null);
+  const [expandedModeId, _setExpandedModeId] = createSignal<string | null>(
+    null,
+  );
   const setExpandedModeId = (id: string | null) => {
     _setExpandedModeId(id);
     setKeywordInput("");
@@ -62,7 +82,9 @@ const FocusSettings: Component = () => {
     setVipChannelInput("");
   };
 
-  const focusPrefs = createMemo(() => preferences().focus ?? DEFAULT_FOCUS_PREFERENCES);
+  const focusPrefs = createMemo(
+    () => preferences().focus ?? DEFAULT_FOCUS_PREFERENCES,
+  );
   const modes = createMemo(() => focusPrefs().modes);
   const canAddMode = createMemo(() => modes().length < MAX_MODES);
 
@@ -72,7 +94,7 @@ const FocusSettings: Component = () => {
 
   const updateMode = (modeId: string, changes: Partial<FocusMode>) => {
     const updatedModes = modes().map((m) =>
-      m.id === modeId ? { ...m, ...changes } : m
+      m.id === modeId ? { ...m, ...changes } : m,
     );
     updateModes(updatedModes);
   };
@@ -114,7 +136,10 @@ const FocusSettings: Component = () => {
     updatePreference("focus", { ...focusPrefs(), autoActivateGlobal: enabled });
   };
 
-  const handleToggleTriggerCategory = (modeId: string, category: FocusTriggerCategory) => {
+  const handleToggleTriggerCategory = (
+    modeId: string,
+    category: FocusTriggerCategory,
+  ) => {
     const mode = modes().find((m) => m.id === modeId);
     if (!mode) return;
 
@@ -123,34 +148,46 @@ const FocusSettings: Component = () => {
       ? current.filter((c) => c !== category)
       : [...current, category];
 
-    updateMode(modeId, { triggerCategories: updated.length > 0 ? updated : null });
+    updateMode(modeId, {
+      triggerCategories: updated.length > 0 ? updated : null,
+    });
   };
 
   const handleAddKeyword = (modeId: string) => {
     const keyword = keywordInput().trim();
-    if (!keyword || keyword.length < 3 || keyword.length > 30) return;
+    const keywordLen = unicodeLen(keyword);
+    if (
+      !keyword ||
+      keywordLen < MIN_KEYWORD_LEN ||
+      keywordLen > MAX_KEYWORD_LEN
+    )
+      return;
 
     const mode = modes().find((m) => m.id === modeId);
     if (!mode || mode.emergencyKeywords.length >= MAX_KEYWORDS) return;
     if (mode.emergencyKeywords.includes(keyword)) return;
 
-    updateMode(modeId, { emergencyKeywords: [...mode.emergencyKeywords, keyword] });
+    updateMode(modeId, {
+      emergencyKeywords: [...mode.emergencyKeywords, keyword],
+    });
     setKeywordInput("");
   };
 
   const handleRemoveKeyword = (modeId: string, keyword: string) => {
     const mode = modes().find((m) => m.id === modeId);
     if (!mode) return;
-    updateMode(modeId, { emergencyKeywords: mode.emergencyKeywords.filter((k) => k !== keyword) });
+    updateMode(modeId, {
+      emergencyKeywords: mode.emergencyKeywords.filter((k) => k !== keyword),
+    });
   };
 
   const handleAddVipUser = (modeId: string) => {
-    const userId = vipUserInput().trim();
+    const userId = vipUserInput().trim().toLowerCase();
     if (!userId || !UUID_RE.test(userId)) return;
 
     const mode = modes().find((m) => m.id === modeId);
     if (!mode || mode.vipUserIds.length >= MAX_VIP_USERS) return;
-    if (mode.vipUserIds.includes(userId)) return;
+    if (mode.vipUserIds.some(id => id.toLowerCase().trim() === userId)) return;
 
     updateMode(modeId, { vipUserIds: [...mode.vipUserIds, userId] });
     setVipUserInput("");
@@ -159,16 +196,18 @@ const FocusSettings: Component = () => {
   const handleRemoveVipUser = (modeId: string, userId: string) => {
     const mode = modes().find((m) => m.id === modeId);
     if (!mode) return;
-    updateMode(modeId, { vipUserIds: mode.vipUserIds.filter((id) => id !== userId) });
+    updateMode(modeId, {
+      vipUserIds: mode.vipUserIds.filter((id) => id !== userId),
+    });
   };
 
   const handleAddVipChannel = (modeId: string) => {
-    const channelId = vipChannelInput().trim();
+    const channelId = vipChannelInput().trim().toLowerCase();
     if (!channelId || !UUID_RE.test(channelId)) return;
 
     const mode = modes().find((m) => m.id === modeId);
     if (!mode || mode.vipChannelIds.length >= MAX_VIP_CHANNELS) return;
-    if (mode.vipChannelIds.includes(channelId)) return;
+    if (mode.vipChannelIds.some(id => id.toLowerCase().trim() === channelId)) return;
 
     updateMode(modeId, { vipChannelIds: [...mode.vipChannelIds, channelId] });
     setVipChannelInput("");
@@ -177,7 +216,9 @@ const FocusSettings: Component = () => {
   const handleRemoveVipChannel = (modeId: string, channelId: string) => {
     const mode = modes().find((m) => m.id === modeId);
     if (!mode) return;
-    updateMode(modeId, { vipChannelIds: mode.vipChannelIds.filter((id) => id !== channelId) });
+    updateMode(modeId, {
+      vipChannelIds: mode.vipChannelIds.filter((id) => id !== channelId),
+    });
   };
 
   return (
@@ -189,7 +230,8 @@ const FocusSettings: Component = () => {
           Focus Modes
         </h3>
         <p class="text-sm text-text-secondary">
-          Suppress notifications during focused sessions. VIP contacts and emergency keywords can bypass suppression.
+          Suppress notifications during focused sessions. VIP contacts and
+          emergency keywords can bypass suppression.
         </p>
       </div>
 
@@ -199,11 +241,15 @@ const FocusSettings: Component = () => {
           <input
             type="checkbox"
             checked={focusPrefs().autoActivateGlobal}
-            onChange={(e) => handleToggleAutoActivateGlobal(e.currentTarget.checked)}
+            onChange={(e) =>
+              handleToggleAutoActivateGlobal(e.currentTarget.checked)
+            }
             class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
           />
           <div>
-            <span class="text-text-primary font-medium">Auto-activate focus modes</span>
+            <span class="text-text-primary font-medium">
+              Auto-activate focus modes
+            </span>
             <p class="text-xs text-text-secondary mt-0.5">
               Automatically enable focus mode when a matching app is detected
             </p>
@@ -215,7 +261,7 @@ const FocusSettings: Component = () => {
       <Show when={focusState().activeModeId}>
         {(modeId) => {
           const activeMode = createMemo(() =>
-            modes().find((m) => m.id === modeId())
+            modes().find((m) => m.id === modeId()),
           );
           return (
             <Show when={activeMode()}>
@@ -246,17 +292,23 @@ const FocusSettings: Component = () => {
         <For each={modes()}>
           {(mode) => {
             const isExpanded = createMemo(() => expandedModeId() === mode.id);
-            const isActive = createMemo(() => focusState().activeModeId === mode.id);
+            const isActive = createMemo(
+              () => focusState().activeModeId === mode.id,
+            );
 
             return (
               <div class="rounded-xl border border-white/10 overflow-hidden">
                 {/* Mode header */}
                 <button
-                  onClick={() => setExpandedModeId(isExpanded() ? null : mode.id)}
+                  onClick={() =>
+                    setExpandedModeId(isExpanded() ? null : mode.id)
+                  }
                   class="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors text-left"
                 >
                   <div class="flex-1 flex items-center gap-3">
-                    <span class="text-text-primary font-medium">{mode.name}</span>
+                    <span class="text-text-primary font-medium">
+                      {mode.name}
+                    </span>
                     <Show when={mode.builtin}>
                       <span class="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-text-muted uppercase tracking-wide">
                         built-in
@@ -294,14 +346,19 @@ const FocusSettings: Component = () => {
                     {/* Name */}
                     <Show when={!mode.builtin}>
                       <div class="pt-4">
-                        <label class="text-sm text-text-secondary mb-1 block">Name</label>
+                        <label class="text-sm text-text-secondary mb-1 block">
+                          Name
+                        </label>
                         <input
                           type="text"
                           value={mode.name}
-                          maxLength={30}
+                          maxLength={MAX_MODE_NAME_LEN}
                           onInput={(e) => {
                             const name = e.currentTarget.value;
-                            if (name.trim().length > 0) {
+                            if (
+                              unicodeLen(name.trim()) > 0 &&
+                              unicodeLen(name) <= MAX_MODE_NAME_LEN
+                            ) {
                               updateMode(mode.id, { name });
                             }
                           }}
@@ -312,7 +369,9 @@ const FocusSettings: Component = () => {
 
                     {/* Suppression level */}
                     <div class={mode.builtin ? "pt-4" : ""}>
-                      <label class="text-sm text-text-secondary mb-2 block">Suppression level</label>
+                      <label class="text-sm text-text-secondary mb-2 block">
+                        Suppression level
+                      </label>
                       <div class="space-y-1">
                         <For each={SUPPRESSION_OPTIONS}>
                           {(option) => (
@@ -321,12 +380,20 @@ const FocusSettings: Component = () => {
                                 type="radio"
                                 name={`suppression-${mode.id}`}
                                 checked={mode.suppressionLevel === option.value}
-                                onChange={() => updateMode(mode.id, { suppressionLevel: option.value })}
+                                onChange={() =>
+                                  updateMode(mode.id, {
+                                    suppressionLevel: option.value,
+                                  })
+                                }
                                 class="accent-accent-primary"
                               />
                               <div>
-                                <span class="text-sm text-text-primary">{option.label}</span>
-                                <p class="text-xs text-text-muted">{option.desc}</p>
+                                <span class="text-sm text-text-primary">
+                                  {option.label}
+                                </span>
+                                <p class="text-xs text-text-muted">
+                                  {option.desc}
+                                </p>
                               </div>
                             </label>
                           )}
@@ -336,20 +403,32 @@ const FocusSettings: Component = () => {
 
                     {/* Trigger categories */}
                     <div>
-                      <label class="text-sm text-text-secondary mb-2 block">Auto-activate triggers</label>
+                      <label class="text-sm text-text-secondary mb-2 block">
+                        Auto-activate triggers
+                      </label>
                       <div class="flex flex-wrap gap-2">
                         <For each={TRIGGER_OPTIONS}>
                           {(option) => {
-                            const isSelected = createMemo(() =>
-                              mode.triggerCategories?.includes(option.value) ?? false
+                            const isSelected = createMemo(
+                              () =>
+                                mode.triggerCategories?.includes(
+                                  option.value,
+                                ) ?? false,
                             );
                             return (
                               <button
-                                onClick={() => handleToggleTriggerCategory(mode.id, option.value)}
+                                onClick={() =>
+                                  handleToggleTriggerCategory(
+                                    mode.id,
+                                    option.value,
+                                  )
+                                }
                                 class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
                                 classList={{
-                                  "border-accent-primary bg-accent-primary/10 text-accent-primary": isSelected(),
-                                  "border-white/10 text-text-secondary hover:border-white/20": !isSelected(),
+                                  "border-accent-primary bg-accent-primary/10 text-accent-primary":
+                                    isSelected(),
+                                  "border-white/10 text-text-secondary hover:border-white/20":
+                                    !isSelected(),
                                 }}
                               >
                                 {option.label}
@@ -362,17 +441,24 @@ const FocusSettings: Component = () => {
                         <input
                           type="checkbox"
                           checked={mode.autoActivateEnabled}
-                          onChange={(e) => updateMode(mode.id, { autoActivateEnabled: e.currentTarget.checked })}
+                          onChange={(e) =>
+                            updateMode(mode.id, {
+                              autoActivateEnabled: e.currentTarget.checked,
+                            })
+                          }
                           class="w-4 h-4 rounded border border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary accent-accent-primary"
                         />
-                        <span class="text-xs text-text-secondary">Enable auto-activation for this mode</span>
+                        <span class="text-xs text-text-secondary">
+                          Enable auto-activation for this mode
+                        </span>
                       </label>
                     </div>
 
                     {/* Emergency keywords */}
                     <div>
                       <label class="text-sm text-text-secondary mb-2 block">
-                        Emergency keywords ({mode.emergencyKeywords.length}/{MAX_KEYWORDS})
+                        Emergency keywords ({mode.emergencyKeywords.length}/
+                        {MAX_KEYWORDS})
                       </label>
                       <p class="text-xs text-text-muted mb-2">
                         Messages containing these words bypass suppression
@@ -383,7 +469,9 @@ const FocusSettings: Component = () => {
                             <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-white/10 text-text-primary">
                               {keyword}
                               <button
-                                onClick={() => handleRemoveKeyword(mode.id, keyword)}
+                                onClick={() =>
+                                  handleRemoveKeyword(mode.id, keyword)
+                                }
                                 class="text-text-muted hover:text-red-400 transition-colors"
                               >
                                 &times;
@@ -394,11 +482,15 @@ const FocusSettings: Component = () => {
                       </div>
                       <Show when={mode.emergencyKeywords.length < MAX_KEYWORDS}>
                         <div class="flex gap-2">
+                          {/* NOTE: maxLength counts UTF-16 code units; server counts Unicode code points.
+                              Emoji (surrogate pairs) count as 2 here but 1 on server. This is conservative. */}
                           <input
                             type="text"
                             value={keywordInput()}
-                            maxLength={30}
-                            onInput={(e) => setKeywordInput(e.currentTarget.value)}
+                            maxLength={MAX_KEYWORD_LEN}
+                            onInput={(e) =>
+                              setKeywordInput(e.currentTarget.value)
+                            }
                             onKeyDown={(e) => {
                               if (e.key === "Enter") handleAddKeyword(mode.id);
                             }}
@@ -430,7 +522,9 @@ const FocusSettings: Component = () => {
                               <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-white/10 text-text-primary">
                                 {userId.substring(0, 8)}...
                                 <button
-                                  onClick={() => handleRemoveVipUser(mode.id, userId)}
+                                  onClick={() =>
+                                    handleRemoveVipUser(mode.id, userId)
+                                  }
                                   class="text-text-muted hover:text-red-400 transition-colors"
                                 >
                                   &times;
@@ -445,7 +539,9 @@ const FocusSettings: Component = () => {
                           <input
                             type="text"
                             value={vipUserInput()}
-                            onInput={(e) => setVipUserInput(e.currentTarget.value)}
+                            onInput={(e) =>
+                              setVipUserInput(e.currentTarget.value)
+                            }
                             onKeyDown={(e) => {
                               if (e.key === "Enter") handleAddVipUser(mode.id);
                             }}
@@ -465,7 +561,8 @@ const FocusSettings: Component = () => {
                     {/* VIP Channels */}
                     <div>
                       <label class="text-sm text-text-secondary mb-2 block">
-                        VIP Channels ({mode.vipChannelIds.length}/{MAX_VIP_CHANNELS})
+                        VIP Channels ({mode.vipChannelIds.length}/
+                        {MAX_VIP_CHANNELS})
                       </label>
                       <p class="text-xs text-text-muted mb-2">
                         Messages from these channels bypass focus suppression
@@ -477,7 +574,9 @@ const FocusSettings: Component = () => {
                               <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-white/10 text-text-primary">
                                 {channelId.substring(0, 8)}...
                                 <button
-                                  onClick={() => handleRemoveVipChannel(mode.id, channelId)}
+                                  onClick={() =>
+                                    handleRemoveVipChannel(mode.id, channelId)
+                                  }
                                   class="text-text-muted hover:text-red-400 transition-colors"
                                 >
                                   &times;
@@ -492,9 +591,12 @@ const FocusSettings: Component = () => {
                           <input
                             type="text"
                             value={vipChannelInput()}
-                            onInput={(e) => setVipChannelInput(e.currentTarget.value)}
+                            onInput={(e) =>
+                              setVipChannelInput(e.currentTarget.value)
+                            }
                             onKeyDown={(e) => {
-                              if (e.key === "Enter") handleAddVipChannel(mode.id);
+                              if (e.key === "Enter")
+                                handleAddVipChannel(mode.id);
                             }}
                             placeholder="Channel ID..."
                             class="flex-1 px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-xs focus:outline-none focus:border-accent-primary transition-colors"
@@ -536,14 +638,17 @@ const FocusSettings: Component = () => {
           class="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-dashed border-white/20 hover:border-accent-primary/50 text-text-secondary hover:text-accent-primary transition-colors"
         >
           <Plus class="w-4 h-4" />
-          <span class="text-sm">Add custom mode ({modes().length}/{MAX_MODES})</span>
+          <span class="text-sm">
+            Add custom mode ({modes().length}/{MAX_MODES})
+          </span>
         </button>
       </Show>
 
       {/* Info text */}
       <p class="text-xs text-text-muted">
-        DND status and quiet hours always suppress all notifications regardless of focus mode.
-        Focus modes add intelligent filtering on top of existing notification settings.
+        DND status and quiet hours always suppress all notifications regardless
+        of focus mode. Focus modes add intelligent filtering on top of existing
+        notification settings.
       </p>
     </div>
   );

@@ -25,7 +25,9 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
   const [currentPage, setCurrentPage] = createSignal<Page | null>(null);
   const [isLoading, setIsLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const [deferredPageIds, setDeferredPageIds] = createSignal<Set<string>>(new Set());
+  const [deferredPageIds, setDeferredPageIds] = createSignal<Set<string>>(
+    new Set(),
+  );
 
   // Load pending pages on mount
   onMount(async () => {
@@ -39,11 +41,15 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
     const deferred = deferredPageIds();
 
     // First, check for platform pages (blocking)
-    const platformPage = pending.find((p) => p.guild_id === null && !deferred.has(p.id));
+    const platformPage = pending.find(
+      (p) => p.guild_id === null && !deferred.has(p.id),
+    );
     if (platformPage) return platformPage;
 
     // Then, check for guild pages (non-blocking, can be deferred)
-    const guildPage = pending.find((p) => p.guild_id !== null && !deferred.has(p.id));
+    const guildPage = pending.find(
+      (p) => p.guild_id !== null && !deferred.has(p.id),
+    );
     return guildPage || null;
   };
 
@@ -60,7 +66,10 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
     try {
       // Load the full page content
       const fullPage = nextPageListItem.guild_id
-        ? await tauri.getGuildPage(nextPageListItem.guild_id, nextPageListItem.slug)
+        ? await tauri.getGuildPage(
+            nextPageListItem.guild_id,
+            nextPageListItem.slug,
+          )
         : await tauri.getPlatformPage(nextPageListItem.slug);
 
       setCurrentPage(fullPage);

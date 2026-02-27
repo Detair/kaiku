@@ -31,7 +31,10 @@ export function createVirtualizer(options: VirtualizerOptions) {
     getVirtualItems: (): VirtualItem[] => virtualizer.getVirtualItems(),
     getTotalSize: (): number => virtualizer.getTotalSize(),
     getScrollElement: options.getScrollElement,
-    scrollToIndex: (index: number, scrollOptions: ScrollToIndexOptions = {}) => {
+    scrollToIndex: (
+      index: number,
+      scrollOptions: ScrollToIndexOptions = {},
+    ) => {
       virtualizer.scrollToIndex(index, scrollOptions);
     },
     measureElement: (node: Element | null | undefined) => {

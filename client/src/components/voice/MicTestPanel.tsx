@@ -5,8 +5,19 @@
  * (e.g. in onboarding wizard) or wrapped in a modal.
  */
 
-import { createSignal, createUniqueId, onMount, onCleanup, Show, For } from "solid-js";
-import { createVoiceAdapter, type AudioDevice, type VoiceError } from "@/lib/webrtc";
+import {
+  createSignal,
+  createUniqueId,
+  onMount,
+  onCleanup,
+  Show,
+  For,
+} from "solid-js";
+import {
+  createVoiceAdapter,
+  type AudioDevice,
+  type VoiceError,
+} from "@/lib/webrtc";
 
 interface MicTestPanelProps {
   /** Reduced spacing for embedding in compact layouts */
@@ -44,7 +55,10 @@ function MicTestPanel(props: MicTestPanelProps) {
       }
     } catch (err) {
       console.error("Failed to initialize mic test:", err);
-      setError({ type: "unknown", message: "Failed to initialize audio system." } as VoiceError);
+      setError({
+        type: "unknown",
+        message: "Failed to initialize audio system.",
+      } as VoiceError);
     }
   });
 
@@ -91,9 +105,14 @@ function MicTestPanel(props: MicTestPanelProps) {
       const devId = selectedOutput();
       if (devId && "setSinkId" in ctx) {
         try {
-          await (ctx as AudioContext & { setSinkId(id: string): Promise<void> }).setSinkId(devId);
+          await (
+            ctx as AudioContext & { setSinkId(id: string): Promise<void> }
+          ).setSinkId(devId);
         } catch (err) {
-          console.warn("Could not route test sound to selected output device:", err);
+          console.warn(
+            "Could not route test sound to selected output device:",
+            err,
+          );
         }
       }
 
@@ -115,7 +134,10 @@ function MicTestPanel(props: MicTestPanelProps) {
       }, 500);
     } catch (err) {
       console.error("Failed to play test sound:", err);
-      setError({ type: "unknown", message: "Could not play test sound. Check your audio settings." } as VoiceError);
+      setError({
+        type: "unknown",
+        message: "Could not play test sound. Check your audio settings.",
+      } as VoiceError);
     }
   };
 
@@ -153,7 +175,10 @@ function MicTestPanel(props: MicTestPanelProps) {
     <div class={spacing()}>
       {/* Device Selection */}
       <div>
-        <label for={inputId} class="block text-sm font-medium text-text-secondary mb-1">
+        <label
+          for={inputId}
+          class="block text-sm font-medium text-text-secondary mb-1"
+        >
           Input Device:
         </label>
         <select
@@ -172,7 +197,10 @@ function MicTestPanel(props: MicTestPanelProps) {
       </div>
 
       <div>
-        <label for={outputId} class="block text-sm font-medium text-text-secondary mb-1">
+        <label
+          for={outputId}
+          class="block text-sm font-medium text-text-secondary mb-1"
+        >
           Output Device:
         </label>
         <select
@@ -232,7 +260,10 @@ function MicTestPanel(props: MicTestPanelProps) {
 
       {/* Status Messages */}
       <Show when={error()}>
-        <div class="p-3 rounded-lg text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+        <div
+          class="p-3 rounded-lg text-sm"
+          style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+        >
           {getErrorMessage(error()!)}
         </div>
       </Show>

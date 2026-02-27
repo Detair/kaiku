@@ -11,7 +11,9 @@ interface ScreenShareSourcePickerProps {
  * Source picker modal for native screen sharing.
  * Shows available monitors and windows as clickable cards.
  */
-const ScreenShareSourcePicker: Component<ScreenShareSourcePickerProps> = (props) => {
+const ScreenShareSourcePicker: Component<ScreenShareSourcePickerProps> = (
+  props,
+) => {
   const [sources, setSources] = createSignal<CaptureSource[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);

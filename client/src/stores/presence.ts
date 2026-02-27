@@ -6,7 +6,12 @@
  */
 
 import { createStore, produce } from "solid-js/store";
-import type { Activity, FocusTriggerCategory, UserPresence, UserStatus } from "@/lib/types";
+import type {
+  Activity,
+  FocusTriggerCategory,
+  UserPresence,
+  UserStatus,
+} from "@/lib/types";
 import {
   startIdleDetection,
   stopIdleDetection,
@@ -54,28 +59,37 @@ export async function initPresence(): Promise<void> {
       (event) => {
         const { user_id, status } = event.payload;
         updateUserPresence(user_id, status);
-      }
+      },
     );
 
     // Listen for local activity changes from presence service
-    const VALID_TRIGGER_CATEGORIES: ReadonlySet<string> = new Set(["game", "coding", "listening", "watching"]);
-    activityUnlistener = await listen<Activity | null>("presence:activity_changed", async (event) => {
-      // Notify focus engine of activity category change for auto-activation
-      const { handleActivityChange } = await import("./focus");
-      const rawType = event.payload?.type;
-      const category = (typeof rawType === "string" && VALID_TRIGGER_CATEGORIES.has(rawType))
-        ? rawType as FocusTriggerCategory
-        : null;
-      handleActivityChange(category);
+    const VALID_TRIGGER_CATEGORIES: ReadonlySet<string> = new Set([
+      "game",
+      "coding",
+      "listening",
+      "watching",
+    ]);
+    activityUnlistener = await listen<Activity | null>(
+      "presence:activity_changed",
+      async (event) => {
+        // Notify focus engine of activity category change for auto-activation
+        const { handleActivityChange } = await import("./focus");
+        const rawType = event.payload?.type;
+        const category =
+          typeof rawType === "string" && VALID_TRIGGER_CATEGORIES.has(rawType)
+            ? (rawType as FocusTriggerCategory)
+            : null;
+        handleActivityChange(category);
 
-      // Send activity to server via WebSocket command
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("ws_send_activity", { activity: event.payload });
-      } catch (e) {
-        console.error("Failed to send activity to server:", e);
-      }
-    });
+        // Send activity to server via WebSocket command
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("ws_send_activity", { activity: event.payload });
+        } catch (e) {
+          console.error("Failed to send activity to server:", e);
+        }
+      },
+    );
   }
 }
 
@@ -108,23 +122,27 @@ export function cleanupPresence(): void {
 export function updateUserPresence(
   userId: string,
   status: UserStatus,
-  activity?: Activity | null
+  activity?: Activity | null,
 ): void {
   setPresenceState(
     produce((state) => {
       state.users[userId] = {
         status,
-        activity: activity !== undefined ? activity : state.users[userId]?.activity,
+        activity:
+          activity !== undefined ? activity : state.users[userId]?.activity,
         lastSeen: status === "offline" ? new Date().toISOString() : undefined,
       };
-    })
+    }),
   );
 }
 
 /**
  * Update only the activity for a user (keeps status unchanged).
  */
-export function updateUserActivity(userId: string, activity: Activity | null): void {
+export function updateUserActivity(
+  userId: string,
+  activity: Activity | null,
+): void {
   setPresenceState(
     produce((state) => {
       if (state.users[userId]) {
@@ -135,20 +153,22 @@ export function updateUserActivity(userId: string, activity: Activity | null): v
           activity,
         };
       }
-    })
+    }),
   );
 }
 
 /**
  * Set initial presence for multiple users.
  */
-export function setInitialPresence(users: Array<{ id: string; status: UserStatus }>): void {
+export function setInitialPresence(
+  users: Array<{ id: string; status: UserStatus }>,
+): void {
   setPresenceState(
     produce((state) => {
       for (const user of users) {
         state.users[user.id] = { status: user.status };
       }
-    })
+    }),
   );
 }
 
@@ -290,10 +310,13 @@ export function patchUser(userId: string, diff: Record<string, unknown>): void {
             state.users[userId].status = diff.status as UserStatus;
           }
           if ("activity" in diff) {
-            state.users[userId].activity = diff.activity as Activity | null | undefined;
+            state.users[userId].activity = diff.activity as
+              | Activity
+              | null
+              | undefined;
           }
         }
-      })
+      }),
     );
   }
 
@@ -304,7 +327,11 @@ export function patchUser(userId: string, diff: Record<string, unknown>): void {
     import("./auth").then(({ updateUser }) => {
       // Filter to only valid User fields
       const validFields: (keyof import("@/lib/types").User)[] = [
-        "username", "display_name", "avatar_url", "email", "mfa_enabled"
+        "username",
+        "display_name",
+        "avatar_url",
+        "email",
+        "mfa_enabled",
       ];
       const updates: Partial<import("@/lib/types").User> = {};
       for (const field of validFields) {

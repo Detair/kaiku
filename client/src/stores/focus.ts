@@ -7,11 +7,7 @@
  */
 
 import { createSignal } from "solid-js";
-import type {
-  FocusMode,
-  FocusState,
-  FocusTriggerCategory,
-} from "@/lib/types";
+import type { FocusMode, FocusState, FocusTriggerCategory } from "@/lib/types";
 import type { SoundEvent } from "@/lib/sound/types";
 import { isDndActive } from "@/stores/sound";
 import { preferences } from "./preferences";
@@ -33,13 +29,65 @@ const [focusState, setFocusState] = createSignal<FocusState>({
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
+type VipSetCache = {
+  modeId: string | null;
+  userIdsHash: string | null;
+  channelIdsHash: string | null;
+  userSet: ReadonlySet<string>;
+  channelSet: ReadonlySet<string>;
+};
+
+const vipSetCache: VipSetCache = {
+  modeId: null,
+  userIdsHash: null,
+  channelIdsHash: null,
+  userSet: EMPTY_SET,
+  channelSet: EMPTY_SET,
+};
+
 /**
  * Build a Set from a mode's VIP list for O(1) lookups.
  * Called on every evaluateFocusPolicy to stay in sync with live preferences.
  * Lists are capped at 50 entries so construction cost is negligible.
  */
 function buildVipSet(ids: string[]): ReadonlySet<string> {
-  return ids.length > 0 ? new Set(ids) : EMPTY_SET;
+  return ids.length > 0
+    ? new Set(ids.map((id) => id.toLowerCase()))
+    : EMPTY_SET;
+}
+
+function hashVipIds(ids: string[]): string {
+  return JSON.stringify([...ids].map((id) => id.toLowerCase()).sort());
+}
+
+function getCachedVipSets(mode: FocusMode): {
+  userSet: ReadonlySet<string>;
+  channelSet: ReadonlySet<string>;
+} {
+  if (vipSetCache.modeId !== mode.id) {
+    vipSetCache.modeId = mode.id;
+    vipSetCache.userIdsHash = null;
+    vipSetCache.channelIdsHash = null;
+    vipSetCache.userSet = EMPTY_SET;
+    vipSetCache.channelSet = EMPTY_SET;
+  }
+
+  const userIdsHash = hashVipIds(mode.vipUserIds);
+  if (vipSetCache.userIdsHash !== userIdsHash) {
+    vipSetCache.userIdsHash = userIdsHash;
+    vipSetCache.userSet = buildVipSet(mode.vipUserIds);
+  }
+
+  const channelIdsHash = hashVipIds(mode.vipChannelIds);
+  if (vipSetCache.channelIdsHash !== channelIdsHash) {
+    vipSetCache.channelIdsHash = channelIdsHash;
+    vipSetCache.channelSet = buildVipSet(mode.vipChannelIds);
+  }
+
+  return {
+    userSet: vipSetCache.userSet,
+    channelSet: vipSetCache.channelSet,
+  };
 }
 
 // ============================================================================
@@ -99,7 +147,7 @@ export function deactivateFocusMode(): void {
  * per-mode toggle are both enabled.
  */
 export function handleActivityChange(
-  category: FocusTriggerCategory | null
+  category: FocusTriggerCategory | null,
 ): void {
   const state = focusState();
   const focusPrefs = preferences().focus;
@@ -126,7 +174,7 @@ export function handleActivityChange(
     (m) =>
       m.autoActivateEnabled &&
       m.triggerCategories !== null &&
-      m.triggerCategories.includes(category)
+      m.triggerCategories.includes(category),
   );
 
   if (matchingMode) {
@@ -161,9 +209,7 @@ export function handleActivityChange(
  * 5. Emergency keyword match → allow
  * 6. Apply suppression level
  */
-export function evaluateFocusPolicy(
-  event: SoundEvent
-): "suppress" | "allow" {
+export function evaluateFocusPolicy(event: SoundEvent): "suppress" | "allow" {
   // 1. DND is absolute — no overrides
   if (isDndActive()) {
     return "suppress";
@@ -175,21 +221,20 @@ export function evaluateFocusPolicy(
     return "allow";
   }
 
-  // 3. VIP user check (O(1) Set lookup, rebuilt from live preferences)
-  if (event.authorId && buildVipSet(mode.vipUserIds).has(event.authorId)) {
+  const vipSets = getCachedVipSets(mode);
+
+  // 3. VIP user check (O(1) Set lookup)
+  if (event.authorId && vipSets.userSet.has(event.authorId.toLowerCase())) {
     return "allow";
   }
 
-  // 4. VIP channel check (O(1) Set lookup, rebuilt from live preferences)
-  if (buildVipSet(mode.vipChannelIds).has(event.channelId)) {
+  // 4. VIP channel check (O(1) Set lookup)
+  if (vipSets.channelSet.has(event.channelId.toLowerCase())) {
     return "allow";
   }
 
   // 5. Emergency keyword check (linear scan, max 5 keywords)
-  if (
-    event.content &&
-    mode.emergencyKeywords.length > 0
-  ) {
+  if (event.content && mode.emergencyKeywords.length > 0) {
     const lowerContent = event.content.toLowerCase();
     for (const keyword of mode.emergencyKeywords) {
       if (lowerContent.includes(keyword.toLowerCase())) {

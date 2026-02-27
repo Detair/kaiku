@@ -19,7 +19,9 @@ import VoiceIsland from "./VoiceIsland";
 import { voiceState } from "@/stores/voice";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 
-const ScreenShareViewer = lazy(() => import("@/components/voice/ScreenShareViewer"));
+const ScreenShareViewer = lazy(
+  () => import("@/components/voice/ScreenShareViewer"),
+);
 
 interface AppShellProps extends ParentProps {
   /**

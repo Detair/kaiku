@@ -84,7 +84,7 @@ const Register: Component = () => {
         username(),
         password(),
         email() || undefined,
-        displayName() || undefined
+        displayName() || undefined,
       );
       navigate("/", { replace: true });
     } catch (err) {
@@ -107,7 +107,7 @@ const Register: Component = () => {
           result.tokens.access_token,
           result.tokens.refresh_token,
           result.tokens.expires_in || 900,
-          result.tokens.setup_required ?? false
+          result.tokens.setup_required ?? false,
         );
         navigate("/", { replace: true });
         setOidcLoading(null);
@@ -126,19 +126,26 @@ const Register: Component = () => {
             event.data.access_token,
             event.data.refresh_token,
             event.data.expires_in || 900,
-            event.data.setup_required ?? false
-          ).then(() => {
-            navigate("/", { replace: true });
-          }).catch(() => {
-            // Error is set in auth store
-          }).finally(() => {
-            setOidcLoading(null);
-          });
+            event.data.setup_required ?? false,
+          )
+            .then(() => {
+              navigate("/", { replace: true });
+            })
+            .catch(() => {
+              // Error is set in auth store
+            })
+            .finally(() => {
+              setOidcLoading(null);
+            });
         }
       };
       window.addEventListener("message", messageHandler);
 
-      const popup = window.open(result.authUrl, "oidc-register", "width=600,height=700");
+      const popup = window.open(
+        result.authUrl,
+        "oidc-register",
+        "width=600,height=700",
+      );
 
       const checkClosed = setInterval(() => {
         if (popup?.closed) {
@@ -166,7 +173,11 @@ const Register: Component = () => {
 
   const showOidc = () => {
     const s = settings();
-    return s?.oidc_enabled && s.oidc_providers.length > 0 && s.registration_policy !== "closed";
+    return (
+      s?.oidc_enabled &&
+      s.oidc_providers.length > 0 &&
+      s.registration_policy !== "closed"
+    );
   };
 
   const error = () => localError() || authState.error;
@@ -202,9 +213,12 @@ const Register: Component = () => {
           <div class="flex items-center gap-3 p-4 rounded-lg border border-white/10 bg-white/5 text-text-secondary">
             <ShieldAlert class="w-5 h-5 flex-shrink-0" />
             <div>
-              <p class="font-medium text-text-primary">Registration is closed</p>
+              <p class="font-medium text-text-primary">
+                Registration is closed
+              </p>
               <p class="text-sm mt-1">
-                This server is not accepting new registrations. Contact the server admin for an invite.
+                This server is not accepting new registrations. Contact the
+                server admin for an invite.
               </p>
             </div>
           </div>
@@ -244,7 +258,9 @@ const Register: Component = () => {
                 <div class="w-full border-t border-white/10" />
               </div>
               <div class="relative flex justify-center text-xs">
-                <span class="bg-background-secondary px-3 text-text-muted">or</span>
+                <span class="bg-background-secondary px-3 text-text-muted">
+                  or
+                </span>
               </div>
             </div>
           </Show>
@@ -267,7 +283,8 @@ const Register: Component = () => {
                 required
               />
               <p class="text-xs text-text-muted mt-1">
-                3-32 characters, lowercase letters, numbers, and underscores only
+                3-32 characters, lowercase letters, numbers, and underscores
+                only
               </p>
             </div>
 
@@ -312,9 +329,7 @@ const Register: Component = () => {
                 disabled={authState.isLoading}
                 required
               />
-              <p class="text-xs text-text-muted mt-1">
-                At least 8 characters
-              </p>
+              <p class="text-xs text-text-muted mt-1">At least 8 characters</p>
             </div>
 
             <div>
@@ -333,7 +348,10 @@ const Register: Component = () => {
             </div>
 
             <Show when={error()}>
-              <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+              <div
+                class="p-3 rounded-md text-sm"
+                style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+              >
                 {error()}
               </div>
             </Show>
@@ -360,7 +378,10 @@ const Register: Component = () => {
 
         {/* Error display when no local form */}
         <Show when={!showLocalRegister() && !isClosed() && error()}>
-          <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+          <div
+            class="p-3 rounded-md text-sm"
+            style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+          >
             {error()}
           </div>
         </Show>

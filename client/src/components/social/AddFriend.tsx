@@ -40,7 +40,9 @@ const AddFriend: Component<AddFriendProps> = (props) => {
         props.onClose();
       }, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send friend request");
+      setError(
+        err instanceof Error ? err.message : "Failed to send friend request",
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -109,7 +111,10 @@ const AddFriend: Component<AddFriendProps> = (props) => {
 
             {/* Error Message */}
             {error() && (
-              <div class="p-3 rounded-lg text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+              <div
+                class="p-3 rounded-lg text-sm"
+                style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+              >
                 {error()}
               </div>
             )}

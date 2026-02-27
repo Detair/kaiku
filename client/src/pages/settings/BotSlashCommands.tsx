@@ -2,9 +2,9 @@
  * Bot Slash Commands Management Page
  */
 
-import { Component, createSignal, For, Show, onMount } from 'solid-js';
-import { A, useParams } from '@solidjs/router';
-import { ArrowLeft, Plus, Trash2, Terminal } from 'lucide-solid';
+import { Component, createSignal, For, Show, onMount } from "solid-js";
+import { A, useParams } from "@solidjs/router";
+import { ArrowLeft, Plus, Trash2, Terminal } from "lucide-solid";
 import {
   getBotApplication,
   listSlashCommands,
@@ -14,10 +14,17 @@ import {
   type BotApplication,
   type SlashCommand,
   type CommandOption,
-} from '../../lib/api/bots';
-import { showToast } from '../../components/ui/Toast';
+} from "../../lib/api/bots";
+import { showToast } from "../../components/ui/Toast";
 
-const OPTION_TYPES: CommandOption['type'][] = ['string', 'integer', 'boolean', 'user', 'channel', 'role'];
+const OPTION_TYPES: CommandOption["type"][] = [
+  "string",
+  "integer",
+  "boolean",
+  "user",
+  "channel",
+  "role",
+];
 
 const BotSlashCommands: Component = () => {
   const params = useParams<{ id: string }>();
@@ -27,8 +34,8 @@ const BotSlashCommands: Component = () => {
   const [showCreateModal, setShowCreateModal] = createSignal(false);
 
   // Create form state
-  const [newName, setNewName] = createSignal('');
-  const [newDescription, setNewDescription] = createSignal('');
+  const [newName, setNewName] = createSignal("");
+  const [newDescription, setNewDescription] = createSignal("");
   const [newOptions, setNewOptions] = createSignal<CommandOption[]>([]);
 
   onMount(() => {
@@ -46,9 +53,9 @@ const BotSlashCommands: Component = () => {
       setCommands(cmds);
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to load data',
-        message: error instanceof Error ? error.message : 'Failed to load data',
+        type: "error",
+        title: "Failed to load data",
+        message: error instanceof Error ? error.message : "Failed to load data",
         duration: 8000,
       });
     } finally {
@@ -62,33 +69,41 @@ const BotSlashCommands: Component = () => {
       setCommands(cmds);
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to load commands',
-        message: error instanceof Error ? error.message : 'Failed to load commands',
+        type: "error",
+        title: "Failed to load commands",
+        message:
+          error instanceof Error ? error.message : "Failed to load commands",
         duration: 8000,
       });
     }
   }
 
   function addOption() {
-    setNewOptions([...newOptions(), { name: '', description: '', type: 'string', required: false }]);
+    setNewOptions([
+      ...newOptions(),
+      { name: "", description: "", type: "string", required: false },
+    ]);
   }
 
   function removeOption(index: number) {
     setNewOptions(newOptions().filter((_, i) => i !== index));
   }
 
-  function updateOption(index: number, field: keyof CommandOption, value: string | boolean) {
+  function updateOption(
+    index: number,
+    field: keyof CommandOption,
+    value: string | boolean,
+  ) {
     setNewOptions(
       newOptions().map((opt, i) =>
-        i === index ? { ...opt, [field]: value } : opt
-      )
+        i === index ? { ...opt, [field]: value } : opt,
+      ),
     );
   }
 
   function resetForm() {
-    setNewName('');
-    setNewDescription('');
+    setNewName("");
+    setNewDescription("");
     setNewOptions([]);
   }
 
@@ -97,11 +112,21 @@ const BotSlashCommands: Component = () => {
     const description = newDescription().trim();
 
     if (!name) {
-      showToast({ type: 'error', title: 'Invalid command', message: 'Command name is required', duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Invalid command",
+        message: "Command name is required",
+        duration: 8000,
+      });
       return;
     }
     if (!description) {
-      showToast({ type: 'error', title: 'Invalid command', message: 'Command description is required', duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Invalid command",
+        message: "Command description is required",
+        duration: 8000,
+      });
       return;
     }
 
@@ -111,63 +136,89 @@ const BotSlashCommands: Component = () => {
       const hasName = opt.name.trim().length > 0;
       const hasDesc = opt.description.trim().length > 0;
       if (hasName !== hasDesc) {
-        showToast({ type: 'error', title: 'Invalid option', message: 'All options must have both a name and description', duration: 8000 });
+        showToast({
+          type: "error",
+          title: "Invalid option",
+          message: "All options must have both a name and description",
+          duration: 8000,
+        });
         return;
       }
     }
-    const options = opts.filter(o => o.name.trim() && o.description.trim());
+    const options = opts.filter((o) => o.name.trim() && o.description.trim());
 
     try {
       await registerSlashCommands(params.id, {
-        commands: [{
-          name,
-          description,
-          options: options.length > 0 ? options : undefined,
-        }],
+        commands: [
+          {
+            name,
+            description,
+            options: options.length > 0 ? options : undefined,
+          },
+        ],
       });
       setShowCreateModal(false);
       resetForm();
-      showToast({ type: 'success', title: 'Command registered', message: 'Command registered successfully', duration: 3000 });
+      showToast({
+        type: "success",
+        title: "Command registered",
+        message: "Command registered successfully",
+        duration: 3000,
+      });
       loadCommands();
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to register command',
-        message: error instanceof Error ? error.message : 'Failed to register command',
+        type: "error",
+        title: "Failed to register command",
+        message:
+          error instanceof Error ? error.message : "Failed to register command",
         duration: 8000,
       });
     }
   }
 
   async function handleDeleteCommand(commandId: string, commandName: string) {
-    if (!confirm(`Delete command "/${commandName}"? This cannot be undone!`)) return;
+    if (!confirm(`Delete command "/${commandName}"? This cannot be undone!`))
+      return;
 
     try {
       await deleteSlashCommand(params.id, commandId);
-      showToast({ type: 'success', title: 'Command deleted', message: 'Command deleted successfully', duration: 3000 });
+      showToast({
+        type: "success",
+        title: "Command deleted",
+        message: "Command deleted successfully",
+        duration: 3000,
+      });
       loadCommands();
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to delete command',
-        message: error instanceof Error ? error.message : 'Failed to delete command',
+        type: "error",
+        title: "Failed to delete command",
+        message:
+          error instanceof Error ? error.message : "Failed to delete command",
         duration: 8000,
       });
     }
   }
 
   async function handleDeleteAll() {
-    if (!confirm('Delete ALL commands? This cannot be undone!')) return;
+    if (!confirm("Delete ALL commands? This cannot be undone!")) return;
 
     try {
       await deleteAllSlashCommands(params.id);
-      showToast({ type: 'success', title: 'All commands deleted', message: 'All commands deleted successfully', duration: 3000 });
+      showToast({
+        type: "success",
+        title: "All commands deleted",
+        message: "All commands deleted successfully",
+        duration: 3000,
+      });
       loadCommands();
     } catch (error) {
       showToast({
-        type: 'error',
-        title: 'Failed to delete commands',
-        message: error instanceof Error ? error.message : 'Failed to delete commands',
+        type: "error",
+        title: "Failed to delete commands",
+        message:
+          error instanceof Error ? error.message : "Failed to delete commands",
         duration: 8000,
       });
     }
@@ -183,18 +234,21 @@ const BotSlashCommands: Component = () => {
           </A>
           <div class="flex-1">
             <h1 class="text-xl font-semibold">
-              {app()?.name ?? 'Bot'} — Slash Commands
+              {app()?.name ?? "Bot"} — Slash Commands
             </h1>
             <Show when={!loading()}>
               <p class="text-sm text-text-secondary">
-                {commands().length} command{commands().length !== 1 ? 's' : ''} registered
+                {commands().length} command{commands().length !== 1 ? "s" : ""}{" "}
+                registered
               </p>
             </Show>
           </div>
         </div>
 
         <Show when={loading()}>
-          <div class="text-center py-8 text-text-secondary">Loading commands...</div>
+          <div class="text-center py-8 text-text-secondary">
+            Loading commands...
+          </div>
         </Show>
 
         <Show when={!loading()}>
@@ -237,7 +291,9 @@ const BotSlashCommands: Component = () => {
                   <div class="flex justify-between items-start">
                     <div>
                       <h3 class="text-lg font-semibold">/{cmd.name}</h3>
-                      <p class="text-sm text-surface-400 mt-1">{cmd.description}</p>
+                      <p class="text-sm text-surface-400 mt-1">
+                        {cmd.description}
+                      </p>
                       <p class="text-xs text-surface-500 mt-1">
                         Created: {new Date(cmd.created_at).toLocaleDateString()}
                       </p>
@@ -254,7 +310,9 @@ const BotSlashCommands: Component = () => {
                   {/* Options */}
                   <Show when={cmd.options && cmd.options.length > 0}>
                     <div class="mt-3 pt-3 border-t border-surface-700">
-                      <p class="text-xs font-medium text-surface-400 mb-2">Options</p>
+                      <p class="text-xs font-medium text-surface-400 mb-2">
+                        Options
+                      </p>
                       <div class="flex flex-wrap gap-2">
                         <For each={cmd.options}>
                           {(opt) => (
@@ -280,7 +338,10 @@ const BotSlashCommands: Component = () => {
         <Show when={showCreateModal()}>
           <div
             class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-            onClick={() => { setShowCreateModal(false); resetForm(); }}
+            onClick={() => {
+              setShowCreateModal(false);
+              resetForm();
+            }}
           >
             <div
               class="bg-surface-800 rounded-lg p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto"
@@ -297,10 +358,14 @@ const BotSlashCommands: Component = () => {
                     value={newName()}
                     onInput={(e) => setNewName(e.currentTarget.value)}
                   />
-                  <p class="text-xs text-surface-500 mt-1">Lowercase, no spaces (e.g. "ping", "roll-dice")</p>
+                  <p class="text-xs text-surface-500 mt-1">
+                    Lowercase, no spaces (e.g. "ping", "roll-dice")
+                  </p>
                 </div>
                 <div>
-                  <label class="block text-sm font-medium mb-1">Description *</label>
+                  <label class="block text-sm font-medium mb-1">
+                    Description *
+                  </label>
                   <input
                     type="text"
                     class="w-full px-3 py-2 bg-surface-900 border border-surface-700 rounded focus:outline-none focus:ring-2 focus:ring-primary-500"
@@ -309,7 +374,9 @@ const BotSlashCommands: Component = () => {
                     onInput={(e) => setNewDescription(e.currentTarget.value)}
                     maxLength={100}
                   />
-                  <p class="text-xs text-surface-500 mt-1">Max 100 characters</p>
+                  <p class="text-xs text-surface-500 mt-1">
+                    Max 100 characters
+                  </p>
                 </div>
 
                 {/* Options */}
@@ -329,7 +396,9 @@ const BotSlashCommands: Component = () => {
                       {(opt, index) => (
                         <div class="bg-surface-900 rounded p-3 border border-surface-700">
                           <div class="flex justify-between items-start mb-2">
-                            <span class="text-xs text-surface-400">Option {index() + 1}</span>
+                            <span class="text-xs text-surface-400">
+                              Option {index() + 1}
+                            </span>
                             <button
                               class="p-1 text-surface-400 hover:text-red-400 rounded transition-colors"
                               onClick={() => removeOption(index())}
@@ -343,12 +412,24 @@ const BotSlashCommands: Component = () => {
                               class="px-2 py-1 text-sm bg-surface-800 border border-surface-700 rounded focus:outline-none focus:ring-1 focus:ring-primary-500"
                               placeholder="Name"
                               value={opt.name}
-                              onInput={(e) => updateOption(index(), 'name', e.currentTarget.value)}
+                              onInput={(e) =>
+                                updateOption(
+                                  index(),
+                                  "name",
+                                  e.currentTarget.value,
+                                )
+                              }
                             />
                             <select
                               class="px-2 py-1 text-sm bg-surface-800 border border-surface-700 rounded focus:outline-none focus:ring-1 focus:ring-primary-500"
                               value={opt.type}
-                              onChange={(e) => updateOption(index(), 'type', e.currentTarget.value)}
+                              onChange={(e) =>
+                                updateOption(
+                                  index(),
+                                  "type",
+                                  e.currentTarget.value,
+                                )
+                              }
                             >
                               <For each={OPTION_TYPES}>
                                 {(t) => <option value={t}>{t}</option>}
@@ -360,13 +441,25 @@ const BotSlashCommands: Component = () => {
                             class="w-full px-2 py-1 text-sm bg-surface-800 border border-surface-700 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 mb-2"
                             placeholder="Description"
                             value={opt.description}
-                            onInput={(e) => updateOption(index(), 'description', e.currentTarget.value)}
+                            onInput={(e) =>
+                              updateOption(
+                                index(),
+                                "description",
+                                e.currentTarget.value,
+                              )
+                            }
                           />
                           <label class="flex items-center gap-2 text-sm">
                             <input
                               type="checkbox"
                               checked={opt.required}
-                              onChange={(e) => updateOption(index(), 'required', e.currentTarget.checked)}
+                              onChange={(e) =>
+                                updateOption(
+                                  index(),
+                                  "required",
+                                  e.currentTarget.checked,
+                                )
+                              }
                               class="rounded"
                             />
                             Required
@@ -380,7 +473,10 @@ const BotSlashCommands: Component = () => {
                 <div class="flex gap-2 justify-end">
                   <button
                     class="px-4 py-2 bg-surface-700 hover:bg-surface-600 rounded transition-colors"
-                    onClick={() => { setShowCreateModal(false); resetForm(); }}
+                    onClick={() => {
+                      setShowCreateModal(false);
+                      resetForm();
+                    }}
                   >
                     Cancel
                   </button>

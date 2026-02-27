@@ -216,7 +216,8 @@ export async function checkAdminStatus(): Promise<void> {
   } catch (err) {
     console.error("[Admin] Failed to check admin status:", err);
     setAdminState({
-      error: err instanceof Error ? err.message : "Failed to check admin status",
+      error:
+        err instanceof Error ? err.message : "Failed to check admin status",
       isStatusLoading: false,
     });
   }
@@ -248,7 +249,7 @@ export async function loadAdminStats(): Promise<void> {
  */
 export async function elevateSession(
   mfaCode: string,
-  reason?: string
+  reason?: string,
 ): Promise<boolean> {
   setAdminState({ isElevating: true, error: null });
 
@@ -290,7 +291,8 @@ export async function deElevateSession(): Promise<void> {
   } catch (err) {
     console.error("[Admin] Failed to de-elevate session:", err);
     setAdminState({
-      error: err instanceof Error ? err.message : "Failed to de-elevate session",
+      error:
+        err instanceof Error ? err.message : "Failed to de-elevate session",
     });
   }
 }
@@ -327,7 +329,10 @@ export function getElevationTimeRemaining(): string {
 /**
  * Load users list with pagination and optional search
  */
-export async function loadUsers(page: number = 1, search?: string): Promise<void> {
+export async function loadUsers(
+  page: number = 1,
+  search?: string,
+): Promise<void> {
   // Update search state if provided
   if (search !== undefined) {
     setAdminState({ usersSearch: search });
@@ -341,7 +346,7 @@ export async function loadUsers(page: number = 1, search?: string): Promise<void
     const response: PaginatedResponse<UserSummary> = await tauri.adminListUsers(
       adminState.usersPagination.pageSize,
       offset,
-      searchQuery || undefined
+      searchQuery || undefined,
     );
 
     setAdminState({
@@ -379,14 +384,17 @@ export async function searchUsers(query: string): Promise<void> {
 /**
  * Ban a user
  */
-export async function banUser(userId: string, reason: string): Promise<boolean> {
+export async function banUser(
+  userId: string,
+  reason: string,
+): Promise<boolean> {
   try {
     const result = await tauri.adminBanUser(userId, reason);
 
     // Update user in local state
     if (result.banned) {
       setAdminState("users", (users) =>
-        users.map((u) => (u.id === userId ? { ...u, is_banned: true } : u))
+        users.map((u) => (u.id === userId ? { ...u, is_banned: true } : u)),
       );
 
       // Update stats
@@ -453,7 +461,7 @@ export async function unbanUser(userId: string): Promise<boolean> {
     // Update user in local state
     if (!result.banned) {
       setAdminState("users", (users) =>
-        users.map((u) => (u.id === userId ? { ...u, is_banned: false } : u))
+        users.map((u) => (u.id === userId ? { ...u, is_banned: false } : u)),
       );
 
       // Update stats
@@ -556,7 +564,9 @@ export async function exportUsersCsv(): Promise<void> {
   setAdminState({ isExporting: true, error: null });
 
   try {
-    const blob = await tauri.adminExportUsersCsv(adminState.usersSearch || undefined);
+    const blob = await tauri.adminExportUsersCsv(
+      adminState.usersSearch || undefined,
+    );
 
     // Create download link
     const url = window.URL.createObjectURL(blob);
@@ -581,7 +591,9 @@ export async function exportUsersCsv(): Promise<void> {
 /**
  * Bulk ban selected users
  */
-export async function bulkBanUsers(reason: string): Promise<BulkBanResponse | null> {
+export async function bulkBanUsers(
+  reason: string,
+): Promise<BulkBanResponse | null> {
   if (adminState.selectedUserIds.size === 0) {
     setAdminState({ error: "No users selected" });
     return null;
@@ -598,8 +610,8 @@ export async function bulkBanUsers(reason: string): Promise<BulkBanResponse | nu
       users.map((u) =>
         userIds.includes(u.id) && !result.failed.some((f) => f.id === u.id)
           ? { ...u, is_banned: true }
-          : u
-      )
+          : u,
+      ),
     );
 
     // Update stats
@@ -631,7 +643,10 @@ export async function bulkBanUsers(reason: string): Promise<BulkBanResponse | nu
 /**
  * Load guilds list with pagination and optional search
  */
-export async function loadGuilds(page: number = 1, search?: string): Promise<void> {
+export async function loadGuilds(
+  page: number = 1,
+  search?: string,
+): Promise<void> {
   // Update search state if provided
   if (search !== undefined) {
     setAdminState({ guildsSearch: search });
@@ -642,11 +657,12 @@ export async function loadGuilds(page: number = 1, search?: string): Promise<voi
   try {
     const offset = (page - 1) * adminState.guildsPagination.pageSize;
     const searchQuery = search !== undefined ? search : adminState.guildsSearch;
-    const response: PaginatedResponse<GuildSummary> = await tauri.adminListGuilds(
-      adminState.guildsPagination.pageSize,
-      offset,
-      searchQuery || undefined
-    );
+    const response: PaginatedResponse<GuildSummary> =
+      await tauri.adminListGuilds(
+        adminState.guildsPagination.pageSize,
+        offset,
+        searchQuery || undefined,
+      );
 
     setAdminState({
       guilds: response.items,
@@ -685,7 +701,7 @@ export async function searchGuilds(query: string): Promise<void> {
  */
 export async function suspendGuild(
   guildId: string,
-  reason: string
+  reason: string,
 ): Promise<boolean> {
   try {
     const result = await tauri.adminSuspendGuild(guildId, reason);
@@ -696,8 +712,8 @@ export async function suspendGuild(
         guilds.map((g) =>
           g.id === guildId
             ? { ...g, suspended_at: new Date().toISOString() }
-            : g
-        )
+            : g,
+        ),
       );
     }
 
@@ -721,7 +737,9 @@ export async function unsuspendGuild(guildId: string): Promise<boolean> {
     // Update guild in local state
     if (!result.suspended) {
       setAdminState("guilds", (guilds) =>
-        guilds.map((g) => (g.id === guildId ? { ...g, suspended_at: null } : g))
+        guilds.map((g) =>
+          g.id === guildId ? { ...g, suspended_at: null } : g,
+        ),
       );
     }
 
@@ -744,7 +762,9 @@ export async function deleteGuild(guildId: string): Promise<boolean> {
 
     if (result.deleted) {
       // Remove guild from local state
-      setAdminState("guilds", (guilds) => guilds.filter((g) => g.id !== guildId));
+      setAdminState("guilds", (guilds) =>
+        guilds.filter((g) => g.id !== guildId),
+      );
 
       // Update stats
       if (adminState.stats) {
@@ -792,7 +812,8 @@ export async function loadGuildDetails(guildId: string): Promise<void> {
   } catch (err) {
     console.error("[Admin] Failed to load guild details:", err);
     setAdminState({
-      error: err instanceof Error ? err.message : "Failed to load guild details",
+      error:
+        err instanceof Error ? err.message : "Failed to load guild details",
       isGuildDetailsLoading: false,
     });
   }
@@ -851,7 +872,9 @@ export async function exportGuildsCsv(): Promise<void> {
   setAdminState({ isExporting: true, error: null });
 
   try {
-    const blob = await tauri.adminExportGuildsCsv(adminState.guildsSearch || undefined);
+    const blob = await tauri.adminExportGuildsCsv(
+      adminState.guildsSearch || undefined,
+    );
 
     // Create download link
     const url = window.URL.createObjectURL(blob);
@@ -877,7 +900,7 @@ export async function exportGuildsCsv(): Promise<void> {
  * Bulk suspend selected guilds
  */
 export async function bulkSuspendGuilds(
-  reason: string
+  reason: string,
 ): Promise<BulkSuspendResponse | null> {
   if (adminState.selectedGuildIds.size === 0) {
     setAdminState({ error: "No guilds selected" });
@@ -895,8 +918,8 @@ export async function bulkSuspendGuilds(
       guilds.map((g) =>
         guildIds.includes(g.id) && !result.failed.some((f) => f.id === g.id)
           ? { ...g, suspended_at: new Date().toISOString() }
-          : g
-      )
+          : g,
+      ),
     );
 
     // Clear selection
@@ -906,7 +929,8 @@ export async function bulkSuspendGuilds(
   } catch (err) {
     console.error("[Admin] Failed to bulk suspend guilds:", err);
     setAdminState({
-      error: err instanceof Error ? err.message : "Failed to bulk suspend guilds",
+      error:
+        err instanceof Error ? err.message : "Failed to bulk suspend guilds",
       isBulkActionLoading: false,
     });
     return null;
@@ -922,7 +946,7 @@ export async function bulkSuspendGuilds(
  */
 export async function loadAuditLog(
   page: number = 1,
-  filters?: AuditLogFilters | string
+  filters?: AuditLogFilters | string,
 ): Promise<void> {
   setAdminState({ isAuditLogLoading: true, error: null });
 
@@ -950,7 +974,7 @@ export async function loadAuditLog(
       await tauri.adminGetAuditLog(
         adminState.auditLogPagination.pageSize,
         offset,
-        filterObj
+        filterObj,
       );
 
     setAdminState({
@@ -981,7 +1005,9 @@ export async function loadAuditLog(
 /**
  * Set audit log filters and reload
  */
-export async function setAuditLogFilters(filters: AuditLogFilters): Promise<void> {
+export async function setAuditLogFilters(
+  filters: AuditLogFilters,
+): Promise<void> {
   await loadAuditLog(1, filters);
 }
 
@@ -1098,7 +1124,7 @@ export function handleUserBannedEvent(userId: string, username: string): void {
 
   // Update user in local state if present
   setAdminState("users", (users) =>
-    users.map((u) => (u.id === userId ? { ...u, is_banned: true } : u))
+    users.map((u) => (u.id === userId ? { ...u, is_banned: true } : u)),
   );
 
   // Update stats
@@ -1113,12 +1139,15 @@ export function handleUserBannedEvent(userId: string, username: string): void {
 /**
  * Handle user unbanned event from WebSocket
  */
-export function handleUserUnbannedEvent(userId: string, username: string): void {
+export function handleUserUnbannedEvent(
+  userId: string,
+  username: string,
+): void {
   console.log(`[Admin] User unbanned event: ${username} (${userId})`);
 
   // Update user in local state if present
   setAdminState("users", (users) =>
-    users.map((u) => (u.id === userId ? { ...u, is_banned: false } : u))
+    users.map((u) => (u.id === userId ? { ...u, is_banned: false } : u)),
   );
 
   // Update stats
@@ -1133,26 +1162,32 @@ export function handleUserUnbannedEvent(userId: string, username: string): void 
 /**
  * Handle guild suspended event from WebSocket
  */
-export function handleGuildSuspendedEvent(guildId: string, guildName: string): void {
+export function handleGuildSuspendedEvent(
+  guildId: string,
+  guildName: string,
+): void {
   console.log(`[Admin] Guild suspended event: ${guildName} (${guildId})`);
 
   // Update guild in local state if present
   setAdminState("guilds", (guilds) =>
     guilds.map((g) =>
-      g.id === guildId ? { ...g, suspended_at: new Date().toISOString() } : g
-    )
+      g.id === guildId ? { ...g, suspended_at: new Date().toISOString() } : g,
+    ),
   );
 }
 
 /**
  * Handle guild unsuspended event from WebSocket
  */
-export function handleGuildUnsuspendedEvent(guildId: string, guildName: string): void {
+export function handleGuildUnsuspendedEvent(
+  guildId: string,
+  guildName: string,
+): void {
   console.log(`[Admin] Guild unsuspended event: ${guildName} (${guildId})`);
 
   // Update guild in local state if present
   setAdminState("guilds", (guilds) =>
-    guilds.map((g) => (g.id === guildId ? { ...g, suspended_at: null } : g))
+    guilds.map((g) => (g.id === guildId ? { ...g, suspended_at: null } : g)),
   );
 }
 
@@ -1182,7 +1217,10 @@ export function handleUserDeletedEvent(userId: string, username: string): void {
 /**
  * Handle guild deleted event from WebSocket
  */
-export function handleGuildDeletedEvent(guildId: string, guildName: string): void {
+export function handleGuildDeletedEvent(
+  guildId: string,
+  guildName: string,
+): void {
   console.log(`[Admin] Guild deleted event: ${guildName} (${guildId})`);
 
   // Remove guild from local state
@@ -1209,8 +1247,14 @@ export function handleGuildDeletedEvent(guildId: string, guildName: string): voi
 /**
  * Handle new report created event from WebSocket
  */
-export function handleReportCreatedEvent(reportId: string, category: string, targetType: string): void {
-  console.log(`[Admin] Report created: ${reportId} (${category}, ${targetType})`);
+export function handleReportCreatedEvent(
+  reportId: string,
+  category: string,
+  targetType: string,
+): void {
+  console.log(
+    `[Admin] Report created: ${reportId} (${category}, ${targetType})`,
+  );
   // The admin dashboard will reload reports when the panel is active
 }
 
@@ -1250,7 +1294,7 @@ export function scheduleBanWithUndo(
   username: string,
   reason: string,
   onExecute: () => void,
-  _onUndo: () => void
+  _onUndo: () => void,
 ): string {
   const undoId = `ban-${userId}-${Date.now()}`;
 
@@ -1284,7 +1328,7 @@ export function scheduleSuspendWithUndo(
   guildName: string,
   reason: string,
   onExecute: () => void,
-  _onUndo: () => void
+  _onUndo: () => void,
 ): string {
   const undoId = `suspend-${guildId}-${Date.now()}`;
 
@@ -1318,7 +1362,9 @@ export function cancelPendingAction(undoId: string): boolean {
 
   clearTimeout(pending.timer);
   pendingUndos.delete(undoId);
-  console.log(`[Admin] Cancelled pending ${pending.type} for ${pending.targetName}`);
+  console.log(
+    `[Admin] Cancelled pending ${pending.type} for ${pending.targetName}`,
+  );
   return true;
 }
 

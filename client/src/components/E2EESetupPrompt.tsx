@@ -8,7 +8,13 @@
  * - If require_e2ee_setup is false: Modal can be skipped
  */
 
-import { Component, createSignal, createResource, createEffect, Show } from "solid-js";
+import {
+  Component,
+  createSignal,
+  createResource,
+  createEffect,
+  Show,
+} from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
 import RecoveryKeyModal from "./settings/RecoveryKeyModal";
@@ -82,7 +88,9 @@ const E2EESetupPrompt: Component = () => {
 
     // Skip if there's an error loading data
     if (serverSettings.error || backupStatus.error) {
-      console.error("[E2EESetupPrompt] Failed to load settings or backup status");
+      console.error(
+        "[E2EESetupPrompt] Failed to load settings or backup status",
+      );
       return;
     }
 
@@ -100,7 +108,7 @@ const E2EESetupPrompt: Component = () => {
 
     try {
       const key = await invoke<{ full_key: string; chunks: string[] }>(
-        "generate_recovery_key"
+        "generate_recovery_key",
       );
       setRecoveryKey({ fullKey: key.full_key, chunks: key.chunks });
       setShowModal(true);

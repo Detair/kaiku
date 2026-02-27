@@ -19,7 +19,11 @@ const ActiveNowModule: Component = () => {
   };
 
   return (
-    <CollapsibleModule id="activeNow" title="Active Now" badge={activeFriends().length}>
+    <CollapsibleModule
+      id="activeNow"
+      title="Active Now"
+      badge={activeFriends().length}
+    >
       <Show
         when={activeFriends().length > 0}
         fallback={

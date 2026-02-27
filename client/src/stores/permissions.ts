@@ -78,7 +78,10 @@ export function getGuildRoles(guildId: string): GuildRole[] {
 /**
  * Get a specific role by ID
  */
-export function getRole(guildId: string, roleId: string): GuildRole | undefined {
+export function getRole(
+  guildId: string,
+  roleId: string,
+): GuildRole | undefined {
   return getGuildRoles(guildId).find((r) => r.id === roleId);
 }
 
@@ -94,7 +97,7 @@ export function getEveryoneRole(guildId: string): GuildRole | undefined {
  */
 export async function createRole(
   guildId: string,
-  request: CreateRoleRequest
+  request: CreateRoleRequest,
 ): Promise<GuildRole> {
   const role = await tauri.createGuildRole(guildId, request);
   setPermissionsState("roles", guildId, (prev) => {
@@ -110,7 +113,7 @@ export async function createRole(
 export async function updateRole(
   guildId: string,
   roleId: string,
-  request: UpdateRoleRequest
+  request: UpdateRoleRequest,
 ): Promise<GuildRole> {
   const updated = await tauri.updateGuildRole(guildId, roleId, request);
   setPermissionsState("roles", guildId, (prev) => {
@@ -123,10 +126,13 @@ export async function updateRole(
 /**
  * Delete a role
  */
-export async function deleteRole(guildId: string, roleId: string): Promise<void> {
+export async function deleteRole(
+  guildId: string,
+  roleId: string,
+): Promise<void> {
   await tauri.deleteGuildRole(guildId, roleId);
   setPermissionsState("roles", guildId, (prev) =>
-    (prev || []).filter((r) => r.id !== roleId)
+    (prev || []).filter((r) => r.id !== roleId),
   );
 }
 
@@ -137,7 +143,7 @@ export async function deleteRole(guildId: string, roleId: string): Promise<void>
 export async function reorderRole(
   guildId: string,
   roleId: string,
-  newPosition: number
+  newPosition: number,
 ): Promise<void> {
   // Optimistically update the UI first
   const roles = getGuildRoles(guildId);
@@ -228,7 +234,7 @@ export function getMemberRoles(guildId: string, userId: string): GuildRole[] {
 export async function assignMemberRole(
   guildId: string,
   userId: string,
-  roleId: string
+  roleId: string,
 ): Promise<void> {
   await tauri.assignMemberRole(guildId, userId, roleId);
   setPermissionsState("memberRoles", guildId, userId, (prev) => {
@@ -244,11 +250,11 @@ export async function assignMemberRole(
 export async function removeMemberRole(
   guildId: string,
   userId: string,
-  roleId: string
+  roleId: string,
 ): Promise<void> {
   await tauri.removeMemberRole(guildId, userId, roleId);
   setPermissionsState("memberRoles", guildId, userId, (prev) =>
-    (prev || []).filter((id) => id !== roleId)
+    (prev || []).filter((id) => id !== roleId),
   );
 }
 
@@ -285,7 +291,7 @@ export function getChannelOverrides(channelId: string): ChannelOverride[] {
 export async function setChannelOverride(
   channelId: string,
   roleId: string,
-  request: SetChannelOverrideRequest
+  request: SetChannelOverrideRequest,
 ): Promise<ChannelOverride> {
   const override = await tauri.setChannelOverride(channelId, roleId, request);
   setPermissionsState("channelOverrides", channelId, (prev) => {
@@ -300,11 +306,11 @@ export async function setChannelOverride(
  */
 export async function deleteChannelOverride(
   channelId: string,
-  roleId: string
+  roleId: string,
 ): Promise<void> {
   await tauri.deleteChannelOverride(channelId, roleId);
   setPermissionsState("channelOverrides", channelId, (prev) =>
-    (prev || []).filter((o) => o.role_id !== roleId)
+    (prev || []).filter((o) => o.role_id !== roleId),
   );
 }
 
@@ -319,7 +325,7 @@ export async function deleteChannelOverride(
 export function computeMemberPermissions(
   guildId: string,
   userId: string,
-  isOwner: boolean
+  isOwner: boolean,
 ): number {
   // Owner has all permissions
   if (isOwner) {
@@ -352,7 +358,7 @@ export function computeChannelPermissions(
   guildId: string,
   channelId: string,
   userId: string,
-  isOwner: boolean
+  isOwner: boolean,
 ): number {
   // Owner bypasses all permission checks
   if (isOwner) {
@@ -367,7 +373,7 @@ export function computeChannelPermissions(
   const everyoneRole = getEveryoneRole(guildId);
   if (everyoneRole) {
     const everyoneOverride = overrides.find(
-      (o) => o.role_id === everyoneRole.id
+      (o) => o.role_id === everyoneRole.id,
     );
     if (everyoneOverride) {
       permissions &= ~everyoneOverride.deny_permissions;
@@ -394,7 +400,7 @@ export function memberHasPermission(
   guildId: string,
   userId: string,
   isOwner: boolean,
-  permission: number
+  permission: number,
 ): boolean {
   const permissions = computeMemberPermissions(guildId, userId, isOwner);
   return hasPermission(permissions, permission);
@@ -408,19 +414,14 @@ export function canManageRole(
   guildId: string,
   userId: string,
   isOwner: boolean,
-  targetRolePosition: number
+  targetRolePosition: number,
 ): boolean {
   // Owner can manage all roles
   if (isOwner) return true;
 
   // Must have MANAGE_ROLES permission
   if (
-    !memberHasPermission(
-      guildId,
-      userId,
-      isOwner,
-      PermissionBits.MANAGE_ROLES
-    )
+    !memberHasPermission(guildId, userId, isOwner, PermissionBits.MANAGE_ROLES)
   ) {
     return false;
   }
@@ -441,7 +442,7 @@ export function canManageRole(
  */
 export function getUserHighestRolePosition(
   guildId: string,
-  userId: string
+  userId: string,
 ): number {
   const userRoles = getMemberRoles(guildId, userId);
   if (userRoles.length === 0) return Infinity;
@@ -457,12 +458,14 @@ export function canModerateMember(
   actorUserId: string,
   targetUserId: string,
   actorIsOwner: boolean,
-  requiredPermission: number
+  requiredPermission: number,
 ): boolean {
   if (!actorUserId || actorUserId === targetUserId) return false;
   if (actorIsOwner) return true;
 
-  if (!memberHasPermission(guildId, actorUserId, actorIsOwner, requiredPermission)) {
+  if (
+    !memberHasPermission(guildId, actorUserId, actorIsOwner, requiredPermission)
+  ) {
     return false;
   }
 

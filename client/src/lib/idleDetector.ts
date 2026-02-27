@@ -38,7 +38,7 @@ const events = ["mousedown", "mousemove", "keydown", "scroll", "touchstart"];
  */
 export function startIdleDetection(
   onIdleChange: IdleCallback,
-  timeoutMinutes = 5
+  timeoutMinutes = 5,
 ): void {
   callback = onIdleChange;
   timeoutMs = timeoutMinutes * 60 * 1000;

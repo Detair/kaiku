@@ -6,7 +6,17 @@
 
 import { Component, createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Link, Users, Shield, ShieldAlert, Smile, Bot, Settings, BarChart3 } from "lucide-solid";
+import {
+  X,
+  Link,
+  Users,
+  Shield,
+  ShieldAlert,
+  Smile,
+  Bot,
+  Settings,
+  BarChart3,
+} from "lucide-solid";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import GeneralTab from "./GeneralTab";
@@ -27,7 +37,15 @@ interface GuildSettingsModalProps {
   onClose: () => void;
 }
 
-type TabId = "general" | "invites" | "members" | "roles" | "emojis" | "bots" | "safety" | "usage";
+type TabId =
+  | "general"
+  | "invites"
+  | "members"
+  | "roles"
+  | "emojis"
+  | "bots"
+  | "safety"
+  | "usage";
 
 const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   const guild = () => guildsState.guilds.find((g) => g.id === props.guildId);
@@ -36,7 +54,15 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   // Default tab: general for managers, invites for owner-only, members for everyone else
   const defaultTab = (): TabId => {
     if (isOwner()) return "general";
-    if (memberHasPermission(props.guildId, authState.user?.id || "", false, PermissionBits.MANAGE_GUILD)) return "general";
+    if (
+      memberHasPermission(
+        props.guildId,
+        authState.user?.id || "",
+        false,
+        PermissionBits.MANAGE_GUILD,
+      )
+    )
+      return "general";
     return "members";
   };
   const [activeTab, setActiveTab] = createSignal<TabId>(defaultTab());
@@ -49,7 +75,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       props.guildId,
       authState.user?.id || "",
       isOwner(),
-      PermissionBits.MANAGE_ROLES
+      PermissionBits.MANAGE_ROLES,
     );
 
   const canManageEmojis = () =>
@@ -58,7 +84,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       props.guildId,
       authState.user?.id || "",
       isOwner(),
-      PermissionBits.MANAGE_EMOJIS_AND_STICKERS
+      PermissionBits.MANAGE_EMOJIS_AND_STICKERS,
     );
 
   const canManageGuild = () =>
@@ -67,7 +93,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       props.guildId,
       authState.user?.id || "",
       isOwner(),
-      PermissionBits.MANAGE_GUILD
+      PermissionBits.MANAGE_GUILD,
     );
 
   const canManageBots = () => canManageGuild();
@@ -105,7 +131,9 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 </span>
               </div>
               <div>
-                <h2 class="text-lg font-bold text-text-primary">{guild()?.name}</h2>
+                <h2 class="text-lg font-bold text-text-primary">
+                  {guild()?.name}
+                </h2>
                 <p class="text-sm text-text-secondary">Server Settings</p>
               </div>
             </div>
@@ -124,8 +152,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 onClick={() => setActiveTab("general")}
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
                 classList={{
-                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "general",
-                  "text-text-secondary hover:text-text-primary": activeTab() !== "general",
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "general",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "general",
                 }}
               >
                 <Settings class="w-4 h-4" />
@@ -137,8 +167,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 onClick={() => setActiveTab("invites")}
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
                 classList={{
-                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "invites",
-                  "text-text-secondary hover:text-text-primary": activeTab() !== "invites",
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "invites",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "invites",
                 }}
               >
                 <Link class="w-4 h-4" />
@@ -149,8 +181,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               onClick={() => setActiveTab("members")}
               class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
               classList={{
-                "text-accent-primary border-b-2 border-accent-primary": activeTab() === "members",
-                "text-text-secondary hover:text-text-primary": activeTab() !== "members",
+                "text-accent-primary border-b-2 border-accent-primary":
+                  activeTab() === "members",
+                "text-text-secondary hover:text-text-primary":
+                  activeTab() !== "members",
               }}
             >
               <Users class="w-4 h-4" />
@@ -160,8 +194,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               onClick={() => setActiveTab("usage")}
               class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
               classList={{
-                "text-accent-primary border-b-2 border-accent-primary": activeTab() === "usage",
-                "text-text-secondary hover:text-text-primary": activeTab() !== "usage",
+                "text-accent-primary border-b-2 border-accent-primary":
+                  activeTab() === "usage",
+                "text-text-secondary hover:text-text-primary":
+                  activeTab() !== "usage",
               }}
             >
               <BarChart3 class="w-4 h-4" />
@@ -172,8 +208,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 onClick={() => setActiveTab("emojis")}
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
                 classList={{
-                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "emojis",
-                  "text-text-secondary hover:text-text-primary": activeTab() !== "emojis",
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "emojis",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "emojis",
                 }}
               >
                 <Smile class="w-4 h-4" />
@@ -185,8 +223,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 onClick={() => setActiveTab("bots")}
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
                 classList={{
-                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "bots",
-                  "text-text-secondary hover:text-text-primary": activeTab() !== "bots",
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "bots",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "bots",
                 }}
               >
                 <Bot class="w-4 h-4" />
@@ -198,8 +238,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 onClick={() => setActiveTab("safety")}
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
                 classList={{
-                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "safety",
-                  "text-text-secondary hover:text-text-primary": activeTab() !== "safety",
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "safety",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "safety",
                 }}
               >
                 <ShieldAlert class="w-4 h-4" />
@@ -211,8 +253,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 onClick={() => setActiveTab("roles")}
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
                 classList={{
-                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "roles",
-                  "text-text-secondary hover:text-text-primary": activeTab() !== "roles",
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "roles",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "roles",
                 }}
               >
                 <Shield class="w-4 h-4" />

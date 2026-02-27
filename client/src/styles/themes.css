@@ -41,25 +41,25 @@
 
 /* Focused Hybrid - Modern dark theme with high contrast */
 :root[data-theme="focused-hybrid"] {
-  --color-surface-base: #1E1E2E;
+  --color-surface-base: #1e1e2e;
   --color-surface-layer1: #252535;
-  --color-surface-layer2: #2A2A3C;
-  --color-surface-highlight: #36364D;
-  --color-text-primary: #ECEFF4;
-  --color-text-secondary: #9CA3AF;
-  --color-text-input: #FFFFFF;
-  --color-accent-primary: #88C0D0;
-  --color-accent-primary-hover: #7AB0C0;
-  --color-accent-danger: #BF616A;
-  --color-accent-success: #A3BE8C;
-  --color-accent-warning: #EBCB8B;
+  --color-surface-layer2: #2a2a3c;
+  --color-surface-highlight: #36364d;
+  --color-text-primary: #eceff4;
+  --color-text-secondary: #9ca3af;
+  --color-text-input: #ffffff;
+  --color-accent-primary: #88c0d0;
+  --color-accent-primary-hover: #7ab0c0;
+  --color-accent-danger: #bf616a;
+  --color-accent-success: #a3be8c;
+  --color-accent-warning: #ebcb8b;
   --color-border-subtle: rgba(255, 255, 255, 0.05);
   --color-border-default: rgba(255, 255, 255, 0.1);
-  --color-selection-bg: #88C0D0;
-  --color-selection-text: #1E1E2E;
+  --color-selection-bg: #88c0d0;
+  --color-selection-text: #1e1e2e;
   --color-error-bg: rgba(191, 97, 106, 0.15);
   --color-error-border: rgba(191, 97, 106, 0.4);
-  --color-error-text: #F0A0A8;
+  --color-error-text: #f0a0a8;
 }
 
 /* Solarized Dark - Precision colors for machines and people */
@@ -120,54 +120,54 @@
  */
 :root[data-theme="pixel-cozy"] {
   /* Surfaces — warm parchment/wood tones */
-  --color-surface-base: #2C2418;
-  --color-surface-layer1: #3A3024;
-  --color-surface-layer2: #4A3E30;
-  --color-surface-highlight: #5C4E3E;
+  --color-surface-base: #2c2418;
+  --color-surface-layer1: #3a3024;
+  --color-surface-layer2: #4a3e30;
+  --color-surface-highlight: #5c4e3e;
 
   /* Text — cream/ivory for readability */
-  --color-text-primary: #E8D8C4;
-  --color-text-secondary: #BEB09A;
-  --color-text-input: #F5EDE0;
+  --color-text-primary: #e8d8c4;
+  --color-text-secondary: #beb09a;
+  --color-text-input: #f5ede0;
 
   /* Accents — muted jewel tones */
-  --color-accent-primary: #7BAE7F;
-  --color-accent-primary-hover: #6B9E6F;
-  --color-accent-danger: #C06050;
-  --color-accent-success: #8DB87E;
-  --color-accent-warning: #D4A854;
+  --color-accent-primary: #7bae7f;
+  --color-accent-primary-hover: #6b9e6f;
+  --color-accent-danger: #c06050;
+  --color-accent-success: #8db87e;
+  --color-accent-warning: #d4a854;
 
   /* Borders — subtle wood grain feel */
   --color-border-subtle: rgba(232, 216, 196, 0.08);
   --color-border-default: rgba(232, 216, 196, 0.15);
 
   /* Selection & Errors */
-  --color-selection-bg: #7BAE7F;
-  --color-selection-text: #2C2418;
+  --color-selection-bg: #7bae7f;
+  --color-selection-text: #2c2418;
   --color-error-bg: rgba(192, 96, 80, 0.15);
   --color-error-border: rgba(192, 96, 80, 0.4);
-  --color-error-text: #E8A090;
+  --color-error-text: #e8a090;
 }
 
 /* Default theme fallback (same as focused-hybrid) */
 :root {
-  --color-surface-base: #1E1E2E;
+  --color-surface-base: #1e1e2e;
   --color-surface-layer1: #252535;
-  --color-surface-layer2: #2A2A3C;
-  --color-surface-highlight: #36364D;
-  --color-text-primary: #ECEFF4;
-  --color-text-secondary: #9CA3AF;
-  --color-text-input: #FFFFFF;
-  --color-accent-primary: #88C0D0;
-  --color-accent-primary-hover: #7AB0C0;
-  --color-accent-danger: #BF616A;
-  --color-accent-success: #A3BE8C;
-  --color-accent-warning: #EBCB8B;
+  --color-surface-layer2: #2a2a3c;
+  --color-surface-highlight: #36364d;
+  --color-text-primary: #eceff4;
+  --color-text-secondary: #9ca3af;
+  --color-text-input: #ffffff;
+  --color-accent-primary: #88c0d0;
+  --color-accent-primary-hover: #7ab0c0;
+  --color-accent-danger: #bf616a;
+  --color-accent-success: #a3be8c;
+  --color-accent-warning: #ebcb8b;
   --color-border-subtle: rgba(255, 255, 255, 0.05);
   --color-border-default: rgba(255, 255, 255, 0.1);
-  --color-selection-bg: #88C0D0;
-  --color-selection-text: #1E1E2E;
+  --color-selection-bg: #88c0d0;
+  --color-selection-text: #1e1e2e;
   --color-error-bg: rgba(191, 97, 106, 0.15);
   --color-error-border: rgba(191, 97, 106, 0.4);
-  --color-error-text: #F0A0A8;
+  --color-error-text: #f0a0a8;
 }

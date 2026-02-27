@@ -2,7 +2,14 @@
  * GeneralTab - General guild settings (threads, discovery, tags, banner)
  */
 
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
+import {
+  Component,
+  createSignal,
+  createMemo,
+  For,
+  Show,
+  onMount,
+} from "solid-js";
 import { X } from "lucide-solid";
 import { getGuildSettings, updateGuildSettings } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
@@ -29,8 +36,11 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
   const isValidBannerUrl = createMemo(() => {
     const url = trimmedBannerUrl();
     if (!url) return false;
-    try { return new URL(url).protocol === "https:"; }
-    catch { return false; }
+    try {
+      return new URL(url).protocol === "https:";
+    } catch {
+      return false;
+    }
   });
 
   onMount(async () => {
@@ -42,19 +52,31 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
       setBannerUrl(settings.banner_url ?? "");
     } catch (err) {
       console.error("Failed to load guild settings:", err);
-      showToast({ type: "error", title: "Settings Error", message: "Could not load guild settings.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Settings Error",
+        message: "Could not load guild settings.",
+        duration: 8000,
+      });
     } finally {
       setLoading(false);
     }
   });
 
-  const saveSetting = async (patch: Parameters<typeof updateGuildSettings>[1]) => {
+  const saveSetting = async (
+    patch: Parameters<typeof updateGuildSettings>[1],
+  ) => {
     setSavingCount((c) => c + 1);
     try {
       await updateGuildSettings(props.guildId, patch);
     } catch (err) {
       console.error("Failed to update guild settings:", err);
-      showToast({ type: "error", title: "Update Failed", message: "Could not update settings.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Update Failed",
+        message: "Could not update settings.",
+        duration: 8000,
+      });
       throw err;
     } finally {
       setSavingCount((c) => c - 1);
@@ -85,19 +107,35 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
     const raw = tagInput().trim().toLowerCase();
     if (!raw) return;
     if (raw.length < 2 || raw.length > 32) {
-      showToast({ type: "error", title: "Invalid Tag", message: "Tags must be 2-32 characters." });
+      showToast({
+        type: "error",
+        title: "Invalid Tag",
+        message: "Tags must be 2-32 characters.",
+      });
       return;
     }
     if (!TAG_REGEX.test(raw)) {
-      showToast({ type: "error", title: "Invalid Tag", message: "Tags may only contain letters, numbers, and hyphens." });
+      showToast({
+        type: "error",
+        title: "Invalid Tag",
+        message: "Tags may only contain letters, numbers, and hyphens.",
+      });
       return;
     }
     if (tags().includes(raw)) {
-      showToast({ type: "info", title: "Duplicate Tag", message: "This tag already exists." });
+      showToast({
+        type: "info",
+        title: "Duplicate Tag",
+        message: "This tag already exists.",
+      });
       return;
     }
     if (tags().length >= MAX_TAGS) {
-      showToast({ type: "error", title: "Tag Limit", message: `Maximum ${MAX_TAGS} tags allowed.` });
+      showToast({
+        type: "error",
+        title: "Tag Limit",
+        message: `Maximum ${MAX_TAGS} tags allowed.`,
+      });
       return;
     }
 
@@ -131,12 +169,20 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
   const handleBannerSave = async () => {
     const url = bannerUrl().trim() || null;
     if (url && !isValidBannerUrl()) {
-      showToast({ type: "error", title: "Invalid URL", message: "Banner URL must use HTTPS." });
+      showToast({
+        type: "error",
+        title: "Invalid URL",
+        message: "Banner URL must use HTTPS.",
+      });
       return;
     }
     try {
       await saveSetting({ banner_url: url });
-      showToast({ type: "success", title: "Saved", message: "Banner URL updated." });
+      showToast({
+        type: "success",
+        title: "Saved",
+        message: "Banner URL updated.",
+      });
     } catch (_: unknown) {
       // error already shown
     }
@@ -156,7 +202,9 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
               Enable Message Threads
             </div>
             <div class="text-xs text-text-secondary mt-1">
-              Allow members to create threaded replies on messages. Disabling this hides the "Reply in Thread" option but keeps existing threads readable.
+              Allow members to create threaded replies on messages. Disabling
+              this hides the "Reply in Thread" option but keeps existing threads
+              readable.
             </div>
           </div>
           <button
@@ -195,7 +243,8 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
               Make Server Discoverable
             </div>
             <div class="text-xs text-text-secondary mt-1">
-              Allow this server to appear in the public server browser. Anyone can find and join without an invite code.
+              Allow this server to appear in the public server browser. Anyone
+              can find and join without an invite code.
             </div>
           </div>
           <button
@@ -225,7 +274,8 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
           <div class="mt-4 p-4 bg-surface-layer2 rounded-xl border border-white/5">
             <div class="text-sm font-medium text-text-primary mb-1">Tags</div>
             <div class="text-xs text-text-secondary mb-3">
-              Add up to {MAX_TAGS} tags to help people find your server. Letters, numbers, and hyphens only.
+              Add up to {MAX_TAGS} tags to help people find your server.
+              Letters, numbers, and hyphens only.
             </div>
 
             {/* Existing tags */}
@@ -274,7 +324,9 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
 
           {/* Banner URL */}
           <div class="mt-4 p-4 bg-surface-layer2 rounded-xl border border-white/5">
-            <div class="text-sm font-medium text-text-primary mb-1">Banner Image</div>
+            <div class="text-sm font-medium text-text-primary mb-1">
+              Banner Image
+            </div>
             <div class="text-xs text-text-secondary mb-3">
               URL to a banner image displayed on your server's discovery card.
             </div>
@@ -283,7 +335,10 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
                 type="url"
                 placeholder="https://example.com/banner.png"
                 value={bannerUrl()}
-                onInput={(e) => { setBannerUrl(e.currentTarget.value); setBannerLoadError(false); }}
+                onInput={(e) => {
+                  setBannerUrl(e.currentTarget.value);
+                  setBannerLoadError(false);
+                }}
                 class="flex-1 px-3 py-1.5 text-sm rounded-lg bg-surface-layer1 border border-white/5 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
               />
               <button

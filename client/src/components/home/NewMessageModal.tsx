@@ -33,7 +33,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
     return friendsState.friends.filter(
       (f) =>
         f.username.toLowerCase().includes(searchLower) ||
-        f.display_name.toLowerCase().includes(searchLower)
+        f.display_name.toLowerCase().includes(searchLower),
     );
   });
 
@@ -41,7 +41,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
     setSelectedIds((prev) =>
       prev.includes(userId)
         ? prev.filter((id) => id !== userId)
-        : [...prev, userId]
+        : [...prev, userId],
     );
   };
 
@@ -57,7 +57,9 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
       selectDM(dm.channel.id);
       props.onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create conversation");
+      setError(
+        err instanceof Error ? err.message : "Failed to create conversation",
+      );
     } finally {
       setIsCreating(false);
     }
@@ -100,7 +102,8 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
             </div>
             <Show when={selectedIds().length > 0}>
               <p class="mt-2 text-sm text-text-secondary">
-                {selectedIds().length} friend{selectedIds().length > 1 ? "s" : ""} selected
+                {selectedIds().length} friend
+                {selectedIds().length > 1 ? "s" : ""} selected
                 {selectedIds().length > 1 && " (Group DM)"}
               </p>
             </Show>
@@ -130,7 +133,10 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
 
           {/* Error */}
           <Show when={error()}>
-            <div class="mx-4 mb-2 p-3 rounded-lg text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+            <div
+              class="mx-4 mb-2 p-3 rounded-lg text-sm"
+              style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+            >
               {error()}
             </div>
           </Show>
@@ -145,8 +151,8 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
               {isCreating()
                 ? "Creating..."
                 : selectedIds().length > 1
-                ? "Create Group DM"
-                : "Create DM"}
+                  ? "Create Group DM"
+                  : "Create DM"}
             </button>
           </div>
         </div>
@@ -189,7 +195,9 @@ const FriendSelectItem: Component<FriendSelectItemProps> = (props) => {
 
       {/* Name */}
       <div class="flex-1 text-left">
-        <div class="font-medium text-text-primary">{props.friend.display_name}</div>
+        <div class="font-medium text-text-primary">
+          {props.friend.display_name}
+        </div>
         <div class="text-sm text-text-secondary">@{props.friend.username}</div>
       </div>
     </button>

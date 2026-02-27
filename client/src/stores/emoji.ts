@@ -74,7 +74,7 @@ const [emojiState, setEmojiState] = createStore<EmojiState>({
 export function addEmojiToRecentsArray(
   recents: Emoji[],
   emoji: Emoji,
-  maxRecents: number = MAX_RECENTS
+  maxRecents: number = MAX_RECENTS,
 ): Emoji[] {
   // Filter out existing instance of this emoji
   const filtered = recents.filter((e) => e.id !== emoji.id);
@@ -86,10 +86,7 @@ export function addEmojiToRecentsArray(
  * Search emojis by name or keywords (pure function for testing).
  * Returns emojis that match the query.
  */
-export function searchEmojisInArray(
-  emojis: Emoji[],
-  query: string
-): Emoji[] {
+export function searchEmojisInArray(emojis: Emoji[], query: string): Emoji[] {
   if (!query.trim()) {
     return emojis;
   }
@@ -102,7 +99,9 @@ export function searchEmojisInArray(
       return true;
     }
     // Check keywords
-    if (emoji.keywords?.some((kw) => kw.toLowerCase().includes(normalizedQuery))) {
+    if (
+      emoji.keywords?.some((kw) => kw.toLowerCase().includes(normalizedQuery))
+    ) {
       return true;
     }
     return false;
@@ -143,7 +142,11 @@ function saveRecentsToStorage(recents: Emoji[]): void {
  * Add an emoji to recents.
  */
 export function addToRecents(emoji: Emoji): void {
-  const newRecents = addEmojiToRecentsArray(emojiState.recents, emoji, MAX_RECENTS);
+  const newRecents = addEmojiToRecentsArray(
+    emojiState.recents,
+    emoji,
+    MAX_RECENTS,
+  );
   setEmojiState("recents", newRecents);
   saveRecentsToStorage(newRecents);
 }
@@ -225,7 +228,7 @@ export async function loadGuildEmojis(guildId: string): Promise<void> {
 export async function uploadEmoji(
   guildId: string,
   name: string,
-  file: File
+  file: File,
 ): Promise<void> {
   const emoji = await tauri.uploadGuildEmoji(guildId, name, file);
   setEmojiState("guildEmojis", guildId, (prev) => [emoji, ...(prev || [])]);
@@ -237,21 +240,24 @@ export async function uploadEmoji(
 export async function updateEmoji(
   guildId: string,
   emojiId: string,
-  name: string
+  name: string,
 ): Promise<void> {
   const updated = await tauri.updateGuildEmoji(guildId, emojiId, name);
   setEmojiState("guildEmojis", guildId, (prev) =>
-    (prev || []).map(e => e.id === emojiId ? updated : e)
+    (prev || []).map((e) => (e.id === emojiId ? updated : e)),
   );
 }
 
 /**
  * Delete a guild emoji
  */
-export async function deleteEmoji(guildId: string, emojiId: string): Promise<void> {
+export async function deleteEmoji(
+  guildId: string,
+  emojiId: string,
+): Promise<void> {
   await tauri.deleteGuildEmoji(guildId, emojiId);
   setEmojiState("guildEmojis", guildId, (prev) =>
-    (prev || []).filter((e) => e.id !== emojiId)
+    (prev || []).filter((e) => e.id !== emojiId),
   );
 }
 

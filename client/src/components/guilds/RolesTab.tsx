@@ -3,7 +3,14 @@
  */
 
 import { Component, createSignal, For, Show, onMount } from "solid-js";
-import { Plus, Settings, MoreVertical, Trash2, Users, GripVertical } from "lucide-solid";
+import {
+  Plus,
+  Settings,
+  MoreVertical,
+  Trash2,
+  Users,
+  GripVertical,
+} from "lucide-solid";
 import {
   permissionsState,
   loadGuildRoles,
@@ -44,12 +51,14 @@ const RolesTab: Component<RolesTabProps> = (props) => {
       props.guildId,
       authState.user?.id || "",
       isOwner(),
-      PermissionBits.MANAGE_ROLES
+      PermissionBits.MANAGE_ROLES,
     );
 
   // Get user's highest role position (lower = higher rank)
   const userHighestPosition = () =>
-    isOwner() ? -1 : getUserHighestRolePosition(props.guildId, authState.user?.id || "");
+    isOwner()
+      ? -1
+      : getUserHighestRolePosition(props.guildId, authState.user?.id || "");
 
   // Check if user can reorder a specific role (must be below their highest role)
   const canReorderRole = (role: GuildRole) => {
@@ -172,8 +181,10 @@ const RolesTab: Component<RolesTabProps> = (props) => {
               <div
                 class="flex items-center gap-3 p-3 rounded-lg border transition-colors group"
                 classList={{
-                  "border-white/10 hover:bg-white/5": dropTargetId() !== role.id,
-                  "border-accent-primary bg-accent-primary/10": dropTargetId() === role.id,
+                  "border-white/10 hover:bg-white/5":
+                    dropTargetId() !== role.id,
+                  "border-accent-primary bg-accent-primary/10":
+                    dropTargetId() === role.id,
                   "opacity-50": draggedRoleId() === role.id,
                 }}
                 style="background-color: var(--color-surface-layer1)"
@@ -196,7 +207,9 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                   class="w-3 h-3 rounded-full flex-shrink-0"
                   style={{
                     "background-color": role.color || "transparent",
-                    border: role.color ? "none" : "2px solid var(--color-text-secondary)",
+                    border: role.color
+                      ? "none"
+                      : "2px solid var(--color-text-secondary)",
                   }}
                 />
 
@@ -225,7 +238,9 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                     <Show when={!role.is_default}>
                       <div class="relative">
                         <button
-                          onClick={() => setMenuOpen(menuOpen() === role.id ? null : role.id)}
+                          onClick={() =>
+                            setMenuOpen(menuOpen() === role.id ? null : role.id)
+                          }
                           class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
                         >
                           <MoreVertical class="w-4 h-4" />
@@ -249,12 +264,16 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                               onClick={() => handleDelete(role.id)}
                               class="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors"
                               classList={{
-                                "text-accent-danger bg-accent-danger/10": deleteConfirm() === role.id,
-                                "text-text-primary hover:bg-white/10": deleteConfirm() !== role.id,
+                                "text-accent-danger bg-accent-danger/10":
+                                  deleteConfirm() === role.id,
+                                "text-text-primary hover:bg-white/10":
+                                  deleteConfirm() !== role.id,
                               }}
                             >
                               <Trash2 class="w-4 h-4" />
-                              {deleteConfirm() === role.id ? "Confirm Delete" : "Delete Role"}
+                              {deleteConfirm() === role.id
+                                ? "Confirm Delete"
+                                : "Delete Role"}
                             </button>
                           </div>
                         </Show>

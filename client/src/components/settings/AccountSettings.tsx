@@ -20,7 +20,7 @@ const AccountSettings: Component = () => {
     setError(null);
 
     // Frontend validation before attempting upload
-    const validationError = validateFileSize(file, 'avatar');
+    const validationError = validateFileSize(file, "avatar");
     if (validationError) {
       setError(validationError);
       return;
@@ -45,7 +45,8 @@ const AccountSettings: Component = () => {
       });
     } catch (err) {
       console.error("Failed to upload avatar:", err);
-      const errorMsg = err instanceof Error ? err.message : "Failed to upload avatar";
+      const errorMsg =
+        err instanceof Error ? err.message : "Failed to upload avatar";
       setError(errorMsg);
       showToast({
         type: "error",
@@ -80,7 +81,7 @@ const AccountSettings: Component = () => {
             status={user()?.status}
             showStatus
           />
-          <div 
+          <div
             class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
             onClick={() => fileInput?.click()}
           >
@@ -111,20 +112,26 @@ const AccountSettings: Component = () => {
             </button>
           </div>
           <p class="text-xs text-text-secondary">
-            Maximum size: {getUploadLimitText('avatar')}
+            Maximum size: {getUploadLimitText("avatar")}
           </p>
           <div class="space-y-1">
             <div class="flex items-center gap-2 text-sm">
               <span class="text-text-secondary w-20">Username:</span>
-              <span class="text-text-primary font-mono">@{user()?.username}</span>
+              <span class="text-text-primary font-mono">
+                @{user()?.username}
+              </span>
             </div>
             <div class="flex items-center gap-2 text-sm">
               <span class="text-text-secondary w-20">Email:</span>
-              <span class="text-text-primary">{user()?.email || "Not set"}</span>
+              <span class="text-text-primary">
+                {user()?.email || "Not set"}
+              </span>
             </div>
             <div class="flex items-center gap-2 text-sm">
               <span class="text-text-secondary w-20">User ID:</span>
-              <span class="text-text-secondary text-xs font-mono select-all">{user()?.id}</span>
+              <span class="text-text-secondary text-xs font-mono select-all">
+                {user()?.id}
+              </span>
             </div>
           </div>
         </div>

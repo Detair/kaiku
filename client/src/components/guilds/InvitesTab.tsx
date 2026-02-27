@@ -92,14 +92,23 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
   return (
     <div class="p-6">
       {/* Create Invite */}
-      <div class="p-4 rounded-xl border border-white/10" style="background-color: var(--color-surface-layer1)">
-        <h3 class="text-sm font-semibold text-text-primary mb-3">Create New Invite</h3>
+      <div
+        class="p-4 rounded-xl border border-white/10"
+        style="background-color: var(--color-surface-layer1)"
+      >
+        <h3 class="text-sm font-semibold text-text-primary mb-3">
+          Create New Invite
+        </h3>
         <div class="flex items-center gap-3">
           <div class="flex-1">
-            <label class="text-xs text-text-secondary mb-1 block">Expires after</label>
+            <label class="text-xs text-text-secondary mb-1 block">
+              Expires after
+            </label>
             <select
               value={expiresIn()}
-              onChange={(e) => setExpiresIn(e.currentTarget.value as InviteExpiry)}
+              onChange={(e) =>
+                setExpiresIn(e.currentTarget.value as InviteExpiry)
+              }
               class="w-full px-3 py-2 rounded-lg border border-white/10 text-text-primary"
               style="background-color: var(--color-surface-layer2)"
             >
@@ -145,7 +154,8 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                       {window.location.origin}/invite/{invite.code}
                     </code>
                     <div class="text-xs text-text-secondary mt-1">
-                      {formatExpiry(invite.expires_at)} &bull; {invite.use_count} use{invite.use_count !== 1 ? "s" : ""}
+                      {formatExpiry(invite.expires_at)} &bull;{" "}
+                      {invite.use_count} use{invite.use_count !== 1 ? "s" : ""}
                     </div>
                   </div>
                   <div class="flex items-center gap-2 ml-3">
@@ -154,7 +164,10 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                       class="p-2 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-colors"
                       title="Copy invite link"
                     >
-                      <Show when={copiedCode() === invite.code} fallback={<Copy class="w-4 h-4" />}>
+                      <Show
+                        when={copiedCode() === invite.code}
+                        fallback={<Copy class="w-4 h-4" />}
+                      >
                         <span class="text-xs text-accent-primary">Copied!</span>
                       </Show>
                     </button>
@@ -162,10 +175,16 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                       onClick={() => handleDelete(invite.code)}
                       class="p-2 rounded-lg transition-colors"
                       classList={{
-                        "bg-accent-danger text-white": deletingCode() === invite.code,
-                        "text-text-secondary hover:text-accent-danger hover:bg-white/10": deletingCode() !== invite.code,
+                        "bg-accent-danger text-white":
+                          deletingCode() === invite.code,
+                        "text-text-secondary hover:text-accent-danger hover:bg-white/10":
+                          deletingCode() !== invite.code,
                       }}
-                      title={deletingCode() === invite.code ? "Click again to confirm" : "Delete invite"}
+                      title={
+                        deletingCode() === invite.code
+                          ? "Click again to confirm"
+                          : "Delete invite"
+                      }
                     >
                       <Show
                         when={deletingCode() === invite.code}
@@ -184,7 +203,9 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
 
       {/* Loading state */}
       <Show when={guildsState.isInvitesLoading}>
-        <div class="text-center py-4 text-text-secondary">Loading invites...</div>
+        <div class="text-center py-4 text-text-secondary">
+          Loading invites...
+        </div>
       </Show>
     </div>
   );

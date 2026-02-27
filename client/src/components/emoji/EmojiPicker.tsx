@@ -35,7 +35,9 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
     <div
       class="bg-surface-layer2 rounded-lg shadow-xl w-80 overflow-hidden flex flex-col border border-white/10"
       style={{
-        ...(props.maxHeight ? { "max-height": `${props.maxHeight}px` } : { "max-height": "384px" }),
+        ...(props.maxHeight
+          ? { "max-height": `${props.maxHeight}px` }
+          : { "max-height": "384px" }),
         "background-color": "var(--color-surface-layer2, #2A2A3C)", // Fallback to focused-hybrid color
       }}
     >
@@ -75,7 +77,9 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
           {/* Recents */}
           <Show when={emojiState.recents.length > 0}>
             <div>
-              <div class="text-xs text-text-secondary uppercase mb-1 px-1">Recent</div>
+              <div class="text-xs text-text-secondary uppercase mb-1 px-1">
+                Recent
+              </div>
               <div class="flex flex-wrap gap-1">
                 <For each={emojiState.recents}>
                   {(emoji) => (
@@ -94,7 +98,9 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
           {/* Guild Emojis */}
           <Show when={guildEmojis().length > 0}>
             <div>
-              <div class="text-xs text-text-secondary uppercase mb-1 px-1">Server Emojis</div>
+              <div class="text-xs text-text-secondary uppercase mb-1 px-1">
+                Server Emojis
+              </div>
               <div class="flex flex-wrap gap-1">
                 <For each={guildEmojis()}>
                   {(emoji) => (
@@ -103,7 +109,11 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
                       onClick={() => handleSelect(`:${emoji.name}:`)}
                       title={`:${emoji.name}:`}
                     >
-                      <img src={emoji.image_url} alt={emoji.name} class="w-6 h-6" />
+                      <img
+                        src={emoji.image_url}
+                        alt={emoji.name}
+                        class="w-6 h-6"
+                      />
                     </button>
                   )}
                 </For>
@@ -115,7 +125,9 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
           <For each={EMOJI_CATEGORIES}>
             {(category) => (
               <div>
-                <div class="text-xs text-text-secondary uppercase mb-1 px-1">{category.name}</div>
+                <div class="text-xs text-text-secondary uppercase mb-1 px-1">
+                  {category.name}
+                </div>
                 <div class="flex flex-wrap gap-1">
                   <For each={category.emojis.slice(0, 32)}>
                     {(emoji) => (

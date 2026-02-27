@@ -4,16 +4,37 @@
  * Shows E2EE backup status, MFA (TOTP) management, and clipboard protection settings.
  */
 
-import { Component, createResource, createSignal, Show, createEffect, lazy } from "solid-js";
+import {
+  Component,
+  createResource,
+  createSignal,
+  Show,
+  createEffect,
+  lazy,
+} from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Check, Eye, Shield, Clipboard, ShieldCheck, ShieldOff, RefreshCw, KeyRound } from "lucide-solid";
+import {
+  AlertTriangle,
+  Check,
+  Eye,
+  Shield,
+  Clipboard,
+  ShieldCheck,
+  ShieldOff,
+  RefreshCw,
+  KeyRound,
+} from "lucide-solid";
 import {
   getClipboardSettings,
   updateClipboardSettings,
   type ClipboardSettings,
   type ProtectionLevel,
 } from "@/lib/clipboard";
-import { mfaDisable, mfaGenerateBackupCodes, mfaBackupCodeCount } from "@/lib/tauri";
+import {
+  mfaDisable,
+  mfaGenerateBackupCodes,
+  mfaBackupCodeCount,
+} from "@/lib/tauri";
 import type { MfaBackupCodeCountResponse } from "@/lib/tauri";
 import { authState } from "@/stores/auth";
 import { updateUser } from "@/stores/auth";
@@ -48,7 +69,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
   const [disableCode, setDisableCode] = createSignal("");
   const [isDisabling, setIsDisabling] = createSignal(false);
   const [disableError, setDisableError] = createSignal("");
-  const [backupCodeCount, setBackupCodeCount] = createSignal<MfaBackupCodeCountResponse | null>(null);
+  const [backupCodeCount, setBackupCodeCount] =
+    createSignal<MfaBackupCodeCountResponse | null>(null);
   const [showRegenCodes, setShowRegenCodes] = createSignal(false);
   const [regenCodes, setRegenCodes] = createSignal<string[]>([]);
   const [isRegenerating, setIsRegenerating] = createSignal(false);
@@ -94,7 +116,9 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         duration: 5000,
       });
     } catch (err) {
-      setDisableError(err instanceof Error ? err.message : "Invalid code. Please try again.");
+      setDisableError(
+        err instanceof Error ? err.message : "Invalid code. Please try again.",
+      );
     } finally {
       setIsDisabling(false);
     }
@@ -117,7 +141,10 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
       showToast({
         type: "error",
         title: "Regeneration Failed",
-        message: err instanceof Error ? err.message : "Could not regenerate backup codes.",
+        message:
+          err instanceof Error
+            ? err.message
+            : "Could not regenerate backup codes.",
         duration: 8000,
       });
     } finally {
@@ -131,7 +158,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
   };
 
   // Clipboard protection settings
-  const [clipboardSettings, setClipboardSettings] = createSignal<ClipboardSettings | null>(null);
+  const [clipboardSettings, setClipboardSettings] =
+    createSignal<ClipboardSettings | null>(null);
   const [isSavingClipboard, setIsSavingClipboard] = createSignal(false);
 
   // Load clipboard settings on mount
@@ -244,7 +272,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 when={backupStatus()?.has_backup}
                 fallback="Your encryption keys are not backed up. If you lose all devices, you won't be able to read old messages."
               >
-                Last backup: {formatDate(backupStatus()?.backup_created_at ?? null)}
+                Last backup:{" "}
+                {formatDate(backupStatus()?.backup_created_at ?? null)}
               </Show>
             </p>
           </div>
@@ -257,9 +286,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
             class="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary"
           >
             <Eye class="w-4 h-4" />
-            {backupStatus()?.has_backup
-              ? "View Recovery Key"
-              : "Set Up Backup"}
+            {backupStatus()?.has_backup ? "View Recovery Key" : "Set Up Backup"}
           </button>
         </div>
       </div>
@@ -279,7 +306,9 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
       <div class="pt-6 border-t border-white/10">
         <div class="flex items-center gap-3 mb-4">
           <ShieldCheck class="w-5 h-5 text-text-secondary" />
-          <h3 class="text-lg font-semibold text-text-primary">Two-Factor Authentication</h3>
+          <h3 class="text-lg font-semibold text-text-primary">
+            Two-Factor Authentication
+          </h3>
         </div>
 
         <div class="bg-surface-base rounded-xl p-4 space-y-4">
@@ -309,7 +338,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                   when={isMfaEnabled()}
                   fallback="Add an extra layer of security to your account with an authenticator app."
                 >
-                  Your account is protected with TOTP-based two-factor authentication.
+                  Your account is protected with TOTP-based two-factor
+                  authentication.
                 </Show>
               </p>
             </div>
@@ -320,13 +350,17 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
             <div class="flex items-center justify-between p-3 bg-white/5 rounded-lg">
               <div class="flex items-center gap-2">
                 <KeyRound class="w-4 h-4 text-text-secondary" />
-                <span class="text-sm text-text-secondary">Backup codes remaining</span>
+                <span class="text-sm text-text-secondary">
+                  Backup codes remaining
+                </span>
               </div>
               <span
                 class="text-sm font-mono font-medium"
                 classList={{
                   "text-green-400": (backupCodeCount()?.remaining ?? 0) > 3,
-                  "text-yellow-400": (backupCodeCount()?.remaining ?? 0) > 0 && (backupCodeCount()?.remaining ?? 0) <= 3,
+                  "text-yellow-400":
+                    (backupCodeCount()?.remaining ?? 0) > 0 &&
+                    (backupCodeCount()?.remaining ?? 0) <= 3,
                   "text-red-400": (backupCodeCount()?.remaining ?? 0) === 0,
                 }}
               >
@@ -364,12 +398,21 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 disabled={isRegenerating()}
                 class="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary text-sm disabled:opacity-50"
               >
-                <RefreshCw class="w-4 h-4" classList={{ "animate-spin": isRegenerating() }} />
-                {isRegenerating() ? "Regenerating..." : "Regenerate Backup Codes"}
+                <RefreshCw
+                  class="w-4 h-4"
+                  classList={{ "animate-spin": isRegenerating() }}
+                />
+                {isRegenerating()
+                  ? "Regenerating..."
+                  : "Regenerate Backup Codes"}
               </button>
 
               <button
-                onClick={() => { setShowDisableConfirm(true); setDisableCode(""); setDisableError(""); }}
+                onClick={() => {
+                  setShowDisableConfirm(true);
+                  setDisableCode("");
+                  setDisableError("");
+                }}
                 class="flex items-center gap-2 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg transition-colors text-red-400 text-sm"
               >
                 <ShieldOff class="w-4 h-4" />
@@ -390,14 +433,20 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
 
       {/* Disable MFA Confirmation Modal */}
       <Show when={showDisableConfirm()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowDisableConfirm(false)}>
+        <div
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => setShowDisableConfirm(false)}
+        >
           <div
             class="bg-background-secondary rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 class="text-lg font-semibold text-text-primary mb-2">Disable MFA</h3>
+            <h3 class="text-lg font-semibold text-text-primary mb-2">
+              Disable MFA
+            </h3>
             <p class="text-sm text-text-secondary mb-4">
-              Enter your current MFA code to confirm disabling two-factor authentication.
+              Enter your current MFA code to confirm disabling two-factor
+              authentication.
             </p>
 
             <form onSubmit={handleDisableMfa}>
@@ -406,7 +455,9 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 class="input-field font-mono text-center text-lg tracking-widest mb-3"
                 placeholder="000000"
                 value={disableCode()}
-                onInput={(e) => setDisableCode(e.currentTarget.value.replace(/\s/g, ""))}
+                onInput={(e) =>
+                  setDisableCode(e.currentTarget.value.replace(/\s/g, ""))
+                }
                 disabled={isDisabling()}
                 maxLength={20}
                 autofocus
@@ -414,7 +465,10 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
               />
 
               <Show when={disableError()}>
-                <div class="p-2 mb-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+                <div
+                  class="p-2 mb-3 rounded-md text-sm"
+                  style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+                >
                   {disableError()}
                 </div>
               </Show>
@@ -442,12 +496,17 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
 
       {/* Regenerated Backup Codes Modal */}
       <Show when={showRegenCodes()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowRegenCodes(false)}>
+        <div
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => setShowRegenCodes(false)}
+        >
           <div
             class="bg-background-secondary rounded-xl shadow-2xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 class="text-lg font-semibold text-text-primary mb-4">New Backup Codes</h3>
+            <h3 class="text-lg font-semibold text-text-primary mb-4">
+              New Backup Codes
+            </h3>
             <BackupCodesDisplay codes={regenCodes()} />
             <button
               onClick={() => setShowRegenCodes(false)}
@@ -463,7 +522,9 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
       <div class="pt-6 border-t border-white/10">
         <div class="flex items-center gap-3 mb-4">
           <Clipboard class="w-5 h-5 text-text-secondary" />
-          <h3 class="text-lg font-semibold text-text-primary">Clipboard Protection</h3>
+          <h3 class="text-lg font-semibold text-text-primary">
+            Clipboard Protection
+          </h3>
         </div>
 
         <div class="bg-surface-base rounded-xl p-4 space-y-4">
@@ -473,7 +534,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
               Protection Level
             </label>
             <p class="text-xs text-text-secondary mb-3">
-              Controls how aggressively sensitive data is cleared from your clipboard.
+              Controls how aggressively sensitive data is cleared from your
+              clipboard.
             </p>
             <div class="flex gap-2">
               <button
@@ -481,8 +543,10 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 disabled={isSavingClipboard()}
                 class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                 classList={{
-                  "bg-accent-primary text-white": clipboardSettings()?.protection_level === "minimal",
-                  "bg-white/10 text-text-secondary hover:bg-white/20": clipboardSettings()?.protection_level !== "minimal",
+                  "bg-accent-primary text-white":
+                    clipboardSettings()?.protection_level === "minimal",
+                  "bg-white/10 text-text-secondary hover:bg-white/20":
+                    clipboardSettings()?.protection_level !== "minimal",
                 }}
               >
                 Minimal
@@ -492,8 +556,10 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 disabled={isSavingClipboard()}
                 class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                 classList={{
-                  "bg-accent-primary text-white": clipboardSettings()?.protection_level === "standard",
-                  "bg-white/10 text-text-secondary hover:bg-white/20": clipboardSettings()?.protection_level !== "standard",
+                  "bg-accent-primary text-white":
+                    clipboardSettings()?.protection_level === "standard",
+                  "bg-white/10 text-text-secondary hover:bg-white/20":
+                    clipboardSettings()?.protection_level !== "standard",
                 }}
               >
                 Standard
@@ -503,8 +569,10 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 disabled={isSavingClipboard()}
                 class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                 classList={{
-                  "bg-accent-primary text-white": clipboardSettings()?.protection_level === "strict",
-                  "bg-white/10 text-text-secondary hover:bg-white/20": clipboardSettings()?.protection_level !== "strict",
+                  "bg-accent-primary text-white":
+                    clipboardSettings()?.protection_level === "strict",
+                  "bg-white/10 text-text-secondary hover:bg-white/20":
+                    clipboardSettings()?.protection_level !== "strict",
                 }}
               >
                 Strict
@@ -512,10 +580,12 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
             </div>
             <p class="text-xs text-text-secondary mt-2">
               <Show when={clipboardSettings()?.protection_level === "minimal"}>
-                Only critical data (recovery phrases) is auto-cleared after 60 seconds.
+                Only critical data (recovery phrases) is auto-cleared after 60
+                seconds.
               </Show>
               <Show when={clipboardSettings()?.protection_level === "standard"}>
-                Sensitive data (invites, recovery phrases) auto-cleared. Recommended.
+                Sensitive data (invites, recovery phrases) auto-cleared.
+                Recommended.
               </Show>
               <Show when={clipboardSettings()?.protection_level === "strict"}>
                 All copied data is auto-cleared, with tamper detection enabled.
@@ -531,16 +601,21 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                   Paranoid Mode
                 </label>
                 <p class="text-xs text-text-secondary mt-1">
-                  Reduces auto-clear timeout to 30 seconds for all sensitive content.
-                  Enables clipboard tamper detection.
+                  Reduces auto-clear timeout to 30 seconds for all sensitive
+                  content. Enables clipboard tamper detection.
                 </p>
               </div>
               <button
-                onClick={() => handleParanoidModeChange(!clipboardSettings()?.paranoid_mode_enabled)}
+                onClick={() =>
+                  handleParanoidModeChange(
+                    !clipboardSettings()?.paranoid_mode_enabled,
+                  )
+                }
                 disabled={isSavingClipboard()}
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50"
                 classList={{
-                  "bg-accent-primary": clipboardSettings()?.paranoid_mode_enabled,
+                  "bg-accent-primary":
+                    clipboardSettings()?.paranoid_mode_enabled,
                   "bg-white/20": !clipboardSettings()?.paranoid_mode_enabled,
                 }}
               >
@@ -548,7 +623,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                   class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
                   classList={{
                     "translate-x-6": clipboardSettings()?.paranoid_mode_enabled,
-                    "translate-x-1": !clipboardSettings()?.paranoid_mode_enabled,
+                    "translate-x-1":
+                      !clipboardSettings()?.paranoid_mode_enabled,
                   }}
                 />
               </button>
@@ -559,8 +635,9 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
           <div class="flex items-start gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg mt-4">
             <Shield class="w-4 h-4 text-accent-primary flex-shrink-0 mt-0.5" />
             <p class="text-xs text-text-secondary">
-              Clipboard protection helps prevent clipboard hijacking attacks where malware
-              replaces copied addresses or recovery phrases with attacker-controlled values.
+              Clipboard protection helps prevent clipboard hijacking attacks
+              where malware replaces copied addresses or recovery phrases with
+              attacker-controlled values.
             </p>
           </div>
         </div>

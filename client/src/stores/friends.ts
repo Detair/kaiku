@@ -96,7 +96,12 @@ export async function sendFriendRequest(username: string): Promise<void> {
     await loadPendingRequests();
   } catch (err) {
     console.error("Failed to send friend request:", err);
-    showToast({ type: "error", title: "Friend Request Failed", message: "Could not send request. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Friend Request Failed",
+      message: "Could not send request. Please try again.",
+      duration: 8000,
+    });
     throw err;
   }
 }
@@ -111,7 +116,12 @@ export async function acceptFriendRequest(friendshipId: string): Promise<void> {
     await Promise.all([loadFriends(), loadPendingRequests()]);
   } catch (err) {
     console.error("Failed to accept friend request:", err);
-    showToast({ type: "error", title: "Accept Failed", message: "Could not accept friend request. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Accept Failed",
+      message: "Could not accept friend request. Please try again.",
+      duration: 8000,
+    });
     throw err;
   }
 }
@@ -126,7 +136,12 @@ export async function rejectFriendRequest(friendshipId: string): Promise<void> {
     await loadPendingRequests();
   } catch (err) {
     console.error("Failed to reject friend request:", err);
-    showToast({ type: "error", title: "Reject Failed", message: "Could not reject friend request. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Reject Failed",
+      message: "Could not reject friend request. Please try again.",
+      duration: 8000,
+    });
     throw err;
   }
 }
@@ -139,11 +154,18 @@ export async function removeFriend(friendshipId: string): Promise<void> {
     await tauri.removeFriend(friendshipId);
     // Remove from friends list
     setFriendsState({
-      friends: friendsState.friends.filter((f) => f.friendship_id !== friendshipId),
+      friends: friendsState.friends.filter(
+        (f) => f.friendship_id !== friendshipId,
+      ),
     });
   } catch (err) {
     console.error("Failed to remove friend:", err);
-    showToast({ type: "error", title: "Remove Failed", message: "Could not remove friend. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Remove Failed",
+      message: "Could not remove friend. Please try again.",
+      duration: 8000,
+    });
     throw err;
   }
 }
@@ -158,7 +180,12 @@ export async function blockUser(userId: string): Promise<void> {
     await Promise.all([loadFriends(), loadPendingRequests(), loadBlocked()]);
   } catch (err) {
     console.error("Failed to block user:", err);
-    showToast({ type: "error", title: "Block Failed", message: "Could not block user. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Block Failed",
+      message: "Could not block user. Please try again.",
+      duration: 8000,
+    });
     throw err;
   }
 }
@@ -175,7 +202,12 @@ export async function unblockUser(userId: string): Promise<void> {
     });
   } catch (err) {
     console.error("Failed to unblock user:", err);
-    showToast({ type: "error", title: "Unblock Failed", message: "Could not unblock user. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Unblock Failed",
+      message: "Could not unblock user. Please try again.",
+      duration: 8000,
+    });
     throw err;
   }
 }
@@ -187,7 +219,9 @@ export function handleUserBlocked(userId: string): void {
   // Remove from friends list if present
   setFriendsState({
     friends: friendsState.friends.filter((f) => f.user_id !== userId),
-    pendingRequests: friendsState.pendingRequests.filter((f) => f.user_id !== userId),
+    pendingRequests: friendsState.pendingRequests.filter(
+      (f) => f.user_id !== userId,
+    ),
   });
   // Reload blocked list to show new entry
   loadBlocked();

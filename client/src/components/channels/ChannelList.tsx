@@ -14,7 +14,15 @@
  * - Nesting categories (2-level max)
  */
 
-import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup } from "solid-js";
+import {
+  Component,
+  For,
+  Show,
+  createSignal,
+  createEffect,
+  createMemo,
+  onCleanup,
+} from "solid-js";
 import { Plus, Mic, GripVertical } from "lucide-solid";
 import {
   channelsState,
@@ -60,9 +68,15 @@ import {
 const ChannelList: Component = () => {
   const [showMicTest, setShowMicTest] = createSignal(false);
   const [showCreateModal, setShowCreateModal] = createSignal(false);
-  const [createModalType, setCreateModalType] = createSignal<"text" | "voice">("text");
-  const [createModalCategoryId, setCreateModalCategoryId] = createSignal<string | null>(null);
-  const [settingsChannelId, setSettingsChannelId] = createSignal<string | null>(null);
+  const [createModalType, setCreateModalType] = createSignal<"text" | "voice">(
+    "text",
+  );
+  const [createModalCategoryId, setCreateModalCategoryId] = createSignal<
+    string | null
+  >(null);
+  const [settingsChannelId, setSettingsChannelId] = createSignal<string | null>(
+    null,
+  );
 
   // Load categories when guild changes
   createEffect(() => {
@@ -97,7 +111,15 @@ const ChannelList: Component = () => {
     if (!guildId || !userId) return false;
 
     const isOwner = isGuildOwner(guildId, userId);
-    return isOwner || memberHasPermission(guildId, userId, isOwner, PermissionBits.MANAGE_CHANNELS);
+    return (
+      isOwner ||
+      memberHasPermission(
+        guildId,
+        userId,
+        isOwner,
+        PermissionBits.MANAGE_CHANNELS,
+      )
+    );
   };
 
   // Get top-level categories for active guild
@@ -143,7 +165,9 @@ const ChannelList: Component = () => {
   // Check if a category has any unread channels
   const categoryHasUnread = (categoryId: string): boolean => {
     const channels = getChannelsForCategory(categoryId);
-    return channels.some((c) => c.channel_type === "text" && c.unread_count > 0);
+    return channels.some(
+      (c) => c.channel_type === "text" && c.unread_count > 0,
+    );
   };
 
   const handleVoiceChannelClick = async (channelId: string) => {
@@ -154,12 +178,19 @@ const ChannelList: Component = () => {
         await joinVoice(channelId);
       } catch (err) {
         console.error("Failed to join voice:", err);
-        showToast({ type: "error", title: "Could not join voice channel. Please try again.", duration: 8000 });
+        showToast({
+          type: "error",
+          title: "Could not join voice channel. Please try again.",
+          duration: 8000,
+        });
       }
     }
   };
 
-  const openCreateModal = (type: "text" | "voice", categoryId: string | null = null) => {
+  const openCreateModal = (
+    type: "text" | "voice",
+    categoryId: string | null = null,
+  ) => {
     setCreateModalType(type);
     setCreateModalCategoryId(categoryId);
     setShowCreateModal(true);
@@ -199,27 +230,35 @@ const ChannelList: Component = () => {
   const handleChannelDragOver = (
     e: DragEvent,
     channelId: string,
-    _categoryId: string | null
+    _categoryId: string | null,
   ) => {
     e.preventDefault();
     if (!canManageChannels()) return;
     if (!dragState.isDragging) return;
 
-    const position = calculateDropPosition(e, e.currentTarget as HTMLElement, "channel");
+    const position = calculateDropPosition(
+      e,
+      e.currentTarget as HTMLElement,
+      "channel",
+    );
     setDropTarget(channelId, "channel", position);
   };
 
   const handleCategoryDragOver = (
     e: DragEvent,
     categoryId: string,
-    isSubcat: boolean
+    isSubcat: boolean,
   ) => {
     e.preventDefault();
     if (!canManageChannels()) return;
     if (!dragState.isDragging) return;
 
     // For categories, allow "inside" only for non-subcategories
-    let position = calculateDropPosition(e, e.currentTarget as HTMLElement, "category");
+    let position = calculateDropPosition(
+      e,
+      e.currentTarget as HTMLElement,
+      "category",
+    );
 
     // Can't drop inside a subcategory (2-level max)
     if (position === "inside" && isSubcat) {
@@ -269,7 +308,7 @@ const ChannelList: Component = () => {
         moveChannel(
           result.sourceId,
           result.targetId,
-          result.position as "before" | "after"
+          result.position as "before" | "after",
         );
       } else if (result.targetType === "category") {
         // Channel dropped on category - move to that category
@@ -284,7 +323,7 @@ const ChannelList: Component = () => {
           guildId,
           result.sourceId,
           result.targetId,
-          result.position
+          result.position,
         );
       }
     }
@@ -305,10 +344,7 @@ const ChannelList: Component = () => {
   };
 
   // Get drop indicator classes
-  const getDropIndicatorClasses = (
-    id: string,
-    type: DraggableType
-  ): string => {
+  const getDropIndicatorClasses = (id: string, type: DraggableType): string => {
     if (dragState.dropTargetId !== id || dragState.dropTargetType !== type) {
       return "";
     }
@@ -335,7 +371,10 @@ const ChannelList: Component = () => {
   // ============================================================================
 
   // Render a single channel (text or voice) with drag support
-  const renderChannel = (channel: ChannelWithUnread, categoryId: string | null) => {
+  const renderChannel = (
+    channel: ChannelWithUnread,
+    categoryId: string | null,
+  ) => {
     const isVoice = channel.channel_type === "voice";
     const draggable = canManageChannels();
 
@@ -360,9 +399,19 @@ const ChannelList: Component = () => {
           <div class="flex-1">
             <ChannelItem
               channel={channel}
-              isSelected={!isVoice && channelsState.selectedChannelId === channel.id}
-              onClick={isVoice ? () => handleVoiceChannelClick(channel.id) : () => selectChannel(channel.id)}
-              onSettings={canManageChannels() ? () => setSettingsChannelId(channel.id) : undefined}
+              isSelected={
+                !isVoice && channelsState.selectedChannelId === channel.id
+              }
+              onClick={
+                isVoice
+                  ? () => handleVoiceChannelClick(channel.id)
+                  : () => selectChannel(channel.id)
+              }
+              onSettings={
+                canManageChannels()
+                  ? () => setSettingsChannelId(channel.id)
+                  : undefined
+              }
               guildId={activeGuild()?.id}
               guildName={activeGuild()?.name}
               guildIcon={activeGuild()?.icon_url}
@@ -421,7 +470,11 @@ const ChannelList: Component = () => {
               hasUnread={categoryHasUnread(subcategory.id)}
               isSubcategory={true}
               onToggle={() => toggleCategoryCollapse(subcategory.id)}
-              onCreateChannel={canManageChannels() ? () => openCreateModal("text", subcategory.id) : undefined}
+              onCreateChannel={
+                canManageChannels()
+                  ? () => openCreateModal("text", subcategory.id)
+                  : undefined
+              }
             />
           </div>
         </div>
@@ -467,7 +520,11 @@ const ChannelList: Component = () => {
               hasUnread={categoryHasUnread(category.id)}
               isSubcategory={false}
               onToggle={() => toggleCategoryCollapse(category.id)}
-              onCreateChannel={canManageChannels() ? () => openCreateModal("text", category.id) : undefined}
+              onCreateChannel={
+                canManageChannels()
+                  ? () => openCreateModal("text", category.id)
+                  : undefined
+              }
             />
           </div>
         </div>
@@ -544,7 +601,12 @@ const ChannelList: Component = () => {
       </Show>
 
       {/* Show mic test and create buttons when there are no categories */}
-      <Show when={topLevelCategories().length === 0 && uncategorizedChannels().length === 0}>
+      <Show
+        when={
+          topLevelCategories().length === 0 &&
+          uncategorizedChannels().length === 0
+        }
+      >
         <div class="flex items-center justify-center gap-2 py-4">
           <button
             class="p-2 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
@@ -582,7 +644,10 @@ const ChannelList: Component = () => {
 
       {/* Error state */}
       <Show when={channelsState.error}>
-        <div class="px-2 py-4 text-center text-sm" style="color: var(--color-error-text)">
+        <div
+          class="px-2 py-4 text-center text-sm"
+          style="color: var(--color-error-text)"
+        >
           {channelsState.error}
         </div>
       </Show>

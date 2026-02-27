@@ -42,6 +42,7 @@ This directory contains the Solid.js frontend application source code for the Vo
 ### Solid.js Patterns
 
 **Reactive State:**
+
 ```typescript
 import { createSignal, createStore } from "solid-js/store";
 
@@ -50,10 +51,11 @@ const [count, setCount] = createSignal(0);
 
 // Stores for complex objects (auto-tracked fine-grained reactivity)
 const [state, setState] = createStore({ messages: [], loading: false });
-setState("messages", msgs => [...msgs, newMsg]);
+setState("messages", (msgs) => [...msgs, newMsg]);
 ```
 
 **Lifecycle & Effects:**
+
 ```typescript
 import { onMount, onCleanup, createEffect } from "solid-js";
 
@@ -72,6 +74,7 @@ createEffect(() => {
 ```
 
 **Control Flow (avoid .map, use <For>):**
+
 ```typescript
 import { For, Show } from "solid-js";
 
@@ -87,6 +90,7 @@ import { For, Show } from "solid-js";
 ### Component Conventions
 
 1. **Type-safe Props:**
+
    ```typescript
    interface MyComponentProps {
      title: string;
@@ -97,6 +101,7 @@ import { For, Show } from "solid-js";
    ```
 
 2. **ParentProps for Layout Components:**
+
    ```typescript
    import { ParentProps } from "solid-js";
 
@@ -106,6 +111,7 @@ import { For, Show } from "solid-js";
    ```
 
 3. **Avoid Destructuring Props:**
+
    ```typescript
    // BAD (breaks reactivity)
    const { value } = props;
@@ -201,7 +207,7 @@ formData.append("message_id", messageId);
 
 await fetch(`${baseUrl}/api/messages/upload`, {
   method: "POST",
-  headers: { "Authorization": `Bearer ${token}` },
+  headers: { Authorization: `Bearer ${token}` },
   body: formData,
 });
 ```
@@ -212,7 +218,9 @@ HTTP errors throw with structured messages:
 
 ```typescript
 if (!response.ok) {
-  const error = await response.json().catch(() => ({ message: response.statusText }));
+  const error = await response
+    .json()
+    .catch(() => ({ message: response.statusText }));
   throw new Error(error.message || error.error || "Request failed");
 }
 ```
@@ -228,6 +236,7 @@ Catch errors in components and display via UI state or notifications.
 ### Common Patterns
 
 **API Call with Loading State:**
+
 ```typescript
 const [loading, setLoading] = createSignal(false);
 
@@ -244,6 +253,7 @@ async function handleSubmit() {
 ```
 
 **Reactive Derived State:**
+
 ```typescript
 const isAdmin = () => user()?.role === "admin";
 
@@ -269,11 +279,13 @@ Browser mode automatically schedules token refresh 60 seconds before expiration.
 - Avoid creating new objects/functions in render (breaks memoization)
 
 **Example (avoid):**
+
 ```typescript
 <Button onClick={() => handleClick(id)} />  // Creates new function every render
 ```
 
 **Better:**
+
 ```typescript
 const handleClick = () => handle(id);
 <Button onClick={handleClick} />

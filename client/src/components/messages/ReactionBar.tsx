@@ -37,7 +37,11 @@ const ReactionBar: Component<ReactionBarProps> = (props) => {
                 : "bg-surface-layer2 border border-transparent hover:bg-white/10"
             }`}
             onClick={() => handleReactionClick(reaction)}
-            title={(reaction.users ?? []).length > 0 ? (reaction.users ?? []).join(", ") : undefined}
+            title={
+              (reaction.users ?? []).length > 0
+                ? (reaction.users ?? []).join(", ")
+                : undefined
+            }
           >
             <span class="text-base">{reaction.emoji}</span>
             <span class="text-xs text-text-secondary">{reaction.count}</span>
@@ -53,7 +57,13 @@ const ReactionBar: Component<ReactionBarProps> = (props) => {
           onClick={() => setShowPicker(!showPicker())}
           title="Add reaction"
         >
-          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg
+            class="w-4 h-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
             <circle cx="12" cy="12" r="10" />
             <path d="M8 14s1.5 2 4 2 4-2 4-2" />
             <line x1="9" y1="9" x2="9.01" y2="9" />

@@ -121,7 +121,10 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
                     <span>{formatDate(revision.created_at)}</span>
                     <Show when={revision.created_by}>
                       <span class="text-zinc-600">by</span>
-                      <span class="font-mono text-zinc-400" title={revision.created_by!}>
+                      <span
+                        class="font-mono text-zinc-400"
+                        title={revision.created_by!}
+                      >
                         {revision.created_by!.slice(0, 8)}
                       </span>
                     </Show>
@@ -146,9 +149,7 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
                     <Show when={props.canRestore && !isLatest()}>
                       <button
                         type="button"
-                        onClick={() =>
-                          handleRestore(revision.revision_number)
-                        }
+                        onClick={() => handleRestore(revision.revision_number)}
                         class="flex items-center gap-1 text-sm text-amber-400 hover:text-amber-300 transition-colors"
                       >
                         <RotateCcw class="size-3.5" />

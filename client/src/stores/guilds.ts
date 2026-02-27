@@ -67,7 +67,10 @@ export async function loadGuilds(): Promise<void> {
     await loadAllGuildUnreadCounts(guilds);
 
     // If a real guild was active (not discovery sentinel), reload its data
-    if (guildsState.activeGuildId && guildsState.activeGuildId !== DISCOVERY_SENTINEL) {
+    if (
+      guildsState.activeGuildId &&
+      guildsState.activeGuildId !== DISCOVERY_SENTINEL
+    ) {
       await loadGuildMembers(guildsState.activeGuildId);
       await loadGuildChannels(guildsState.activeGuildId);
     }
@@ -137,7 +140,7 @@ export async function selectGuild(guildId: string): Promise<void> {
 
     if (voiceState.channelId) {
       const currentChannel = channelsState.channels.find(
-        (c) => c.id === voiceState.channelId
+        (c) => c.id === voiceState.channelId,
       );
       if (currentChannel && currentChannel.guild_id !== guildId) {
         const { leaveVoice } = await import("./voice");
@@ -167,7 +170,7 @@ export async function selectHome(): Promise<void> {
 
     if (voiceState.channelId) {
       const currentChannel = channelsState.channels.find(
-        (c) => c.id === voiceState.channelId
+        (c) => c.id === voiceState.channelId,
       );
       // If the voice channel belongs to a guild, disconnect
       if (currentChannel && currentChannel.guild_id !== null) {
@@ -182,8 +185,14 @@ export async function selectHome(): Promise<void> {
  * Get the currently active guild
  */
 export function getActiveGuild(): Guild | null {
-  if (!guildsState.activeGuildId || guildsState.activeGuildId === DISCOVERY_SENTINEL) return null;
-  return guildsState.guilds.find((g) => g.id === guildsState.activeGuildId) ?? null;
+  if (
+    !guildsState.activeGuildId ||
+    guildsState.activeGuildId === DISCOVERY_SENTINEL
+  )
+    return null;
+  return (
+    guildsState.guilds.find((g) => g.id === guildsState.activeGuildId) ?? null
+  );
 }
 
 /**
@@ -205,7 +214,7 @@ export function getGuildChannels(guildId: string): Channel[] {
  */
 export async function createGuild(
   name: string,
-  description?: string
+  description?: string,
 ): Promise<Guild> {
   const guild = await tauri.createGuild(name, description);
   setGuildsState("guilds", (prev) => [...prev, guild]);
@@ -219,14 +228,10 @@ export async function updateGuild(
   guildId: string,
   name?: string,
   description?: string,
-  icon_url?: string
+  icon_url?: string,
 ): Promise<Guild> {
   const updated = await tauri.updateGuild(guildId, name, description, icon_url);
-  setGuildsState(
-    "guilds",
-    (g) => g.id === guildId,
-    updated
-  );
+  setGuildsState("guilds", (g) => g.id === guildId, updated);
   return updated;
 }
 
@@ -246,7 +251,10 @@ export async function deleteGuild(guildId: string): Promise<void> {
 /**
  * Join a guild with an invite code
  */
-export async function joinGuild(guildId: string, inviteCode: string): Promise<void> {
+export async function joinGuild(
+  guildId: string,
+  inviteCode: string,
+): Promise<void> {
   await tauri.joinGuild(guildId, inviteCode);
   await loadGuilds(); // Reload guilds to include the newly joined one
 }
@@ -289,7 +297,7 @@ export async function loadGuildInvites(guildId: string): Promise<void> {
  */
 export async function createInvite(
   guildId: string,
-  expiresIn: tauri.InviteExpiry = "7d"
+  expiresIn: tauri.InviteExpiry = "7d",
 ): Promise<tauri.GuildInvite> {
   const invite = await tauri.createGuildInvite(guildId, expiresIn);
   setGuildsState("invites", guildId, (prev) => [invite, ...(prev || [])]);
@@ -299,10 +307,13 @@ export async function createInvite(
 /**
  * Delete an invite
  */
-export async function deleteInvite(guildId: string, code: string): Promise<void> {
+export async function deleteInvite(
+  guildId: string,
+  code: string,
+): Promise<void> {
   await tauri.deleteGuildInvite(guildId, code);
   setGuildsState("invites", guildId, (prev) =>
-    (prev || []).filter((i) => i.code !== code)
+    (prev || []).filter((i) => i.code !== code),
   );
 }
 
@@ -322,7 +333,8 @@ export async function joinViaInviteCode(code: string): Promise<void> {
     showToast({
       type: "warning",
       title: "Joined Guild",
-      message: "Guild joined successfully. Refresh the page if it doesn't appear.",
+      message:
+        "Guild joined successfully. Refresh the page if it doesn't appear.",
     });
     // Don't rethrow — the join worked, guild will appear on next load
   }
@@ -331,10 +343,13 @@ export async function joinViaInviteCode(code: string): Promise<void> {
 /**
  * Kick a member from a guild
  */
-export async function kickMember(guildId: string, userId: string): Promise<void> {
+export async function kickMember(
+  guildId: string,
+  userId: string,
+): Promise<void> {
   await tauri.kickGuildMember(guildId, userId);
   setGuildsState("members", guildId, (prev) =>
-    (prev || []).filter((m) => m.user_id !== userId)
+    (prev || []).filter((m) => m.user_id !== userId),
   );
 }
 
@@ -357,7 +372,10 @@ export function isGuildOwner(guildId: string, userId: string): boolean {
  * Check if a channel belongs to the active guild
  */
 export function isChannelInActiveGuild(channel: Channel): boolean {
-  if (!guildsState.activeGuildId || guildsState.activeGuildId === DISCOVERY_SENTINEL) {
+  if (
+    !guildsState.activeGuildId ||
+    guildsState.activeGuildId === DISCOVERY_SENTINEL
+  ) {
     // In home or discovery view, show DM channels only
     return channel.channel_type === "dm";
   }
@@ -368,7 +386,10 @@ export function isChannelInActiveGuild(channel: Channel): boolean {
  * Apply a partial patch to a guild's data.
  * Updates the guild in the store if it exists.
  */
-export function patchGuild(guildId: string, diff: Record<string, unknown>): void {
+export function patchGuild(
+  guildId: string,
+  diff: Record<string, unknown>,
+): void {
   const guildIndex = guildsState.guilds.findIndex((g) => g.id === guildId);
   if (guildIndex === -1) {
     // Guild not in store, ignore patch
@@ -376,7 +397,16 @@ export function patchGuild(guildId: string, diff: Record<string, unknown>): void
   }
 
   // Filter to only valid Guild fields
-  const validFields: (keyof Guild)[] = ["name", "icon_url", "description", "owner_id", "threads_enabled", "discoverable", "tags", "banner_url"];
+  const validFields: (keyof Guild)[] = [
+    "name",
+    "icon_url",
+    "description",
+    "owner_id",
+    "threads_enabled",
+    "discoverable",
+    "tags",
+    "banner_url",
+  ];
   const updates: Partial<Guild> = {};
   for (const field of validFields) {
     if (field in diff) {
@@ -423,7 +453,7 @@ async function loadAllGuildUnreadCounts(guilds: Guild[]): Promise<void> {
       } catch (err) {
         console.error(`Failed to load channels for guild ${guild.id}:`, err);
       }
-    })
+    }),
   );
 }
 
@@ -473,18 +503,22 @@ export async function selectDiscovery(): Promise<void> {
 
     if (voiceState.channelId) {
       const currentChannel = channelsState.channels.find(
-        (c) => c.id === voiceState.channelId
+        (c) => c.id === voiceState.channelId,
       );
       if (currentChannel && currentChannel.guild_id !== null) {
         try {
           const { leaveVoice } = await import("./voice");
           await leaveVoice();
         } catch (err) {
-          console.error("Failed to leave voice when switching to discovery:", err);
+          console.error(
+            "Failed to leave voice when switching to discovery:",
+            err,
+          );
           showToast({
             type: "warning",
             title: "Voice Disconnect Failed",
-            message: "Could not disconnect from voice. You may still be in the voice channel.",
+            message:
+              "Could not disconnect from voice. You may still be in the voice channel.",
           });
         }
       }

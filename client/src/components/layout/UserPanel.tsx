@@ -7,7 +7,14 @@
  * Voice controls are in VoiceIsland (appears when connected to voice).
  */
 
-import { Component, Show, createSignal, onMount, lazy, Suspense } from "solid-js";
+import {
+  Component,
+  Show,
+  createSignal,
+  onMount,
+  lazy,
+  Suspense,
+} from "solid-js";
 import { Settings, Shield, LogOut } from "lucide-solid";
 import { authState, logout } from "@/stores/auth";
 import { adminState, checkAdminStatus } from "@/stores/admin";
@@ -19,7 +26,9 @@ import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { CustomStatus } from "@/lib/types";
 
 const SettingsModal = lazy(() => import("@/components/settings/SettingsModal"));
-const AdminQuickModal = lazy(() => import("@/components/admin/AdminQuickModal"));
+const AdminQuickModal = lazy(
+  () => import("@/components/admin/AdminQuickModal"),
+);
 
 const UserPanel: Component = () => {
   const user = () => authState.user;
@@ -48,9 +57,9 @@ const UserPanel: Component = () => {
     <>
       <div class="mt-auto p-3 bg-surface-base/50 border-t border-white/10 relative">
         <Show when={showStatusPicker()}>
-          <div 
-            class="fixed inset-0 z-40 cursor-default" 
-            onClick={() => setShowStatusPicker(false)} 
+          <div
+            class="fixed inset-0 z-40 cursor-default"
+            onClick={() => setShowStatusPicker(false)}
           />
           <StatusPicker
             currentStatus={user()?.status || "online"}
@@ -62,7 +71,7 @@ const UserPanel: Component = () => {
         <div class="flex items-center gap-3">
           {/* User info - Click to change status */}
           <Show when={user()}>
-            <button 
+            <button
               class="flex items-center gap-2.5 flex-1 min-w-0 text-left hover:bg-white/5 p-1 rounded-lg transition-colors -ml-1"
               onClick={() => setShowStatusPicker(!showStatusPicker())}
               title="Change Status"
@@ -91,9 +100,12 @@ const UserPanel: Component = () => {
               class="p-1.5 hover:bg-white/10 rounded-lg transition-all duration-200"
               classList={{
                 "text-accent-success": adminState.isElevated,
-                "text-text-secondary hover:text-accent-primary": !adminState.isElevated,
+                "text-text-secondary hover:text-accent-primary":
+                  !adminState.isElevated,
               }}
-              title={adminState.isElevated ? "Admin Panel (Elevated)" : "Admin Panel"}
+              title={
+                adminState.isElevated ? "Admin Panel (Elevated)" : "Admin Panel"
+              }
               onClick={() => setShowAdmin(true)}
             >
               <Shield class="w-4 h-4" />

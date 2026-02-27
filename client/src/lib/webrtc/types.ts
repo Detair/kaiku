@@ -4,15 +4,15 @@
  * Defines the interface that both browser and Tauri voice implementations must follow.
  */
 
-import type { QualityLevel } from '../types';
+import type { QualityLevel } from "../types";
 
 /**
  * Voice connection states
  */
 export type VoiceConnectionState =
   | "disconnected"
-  | "requesting_media"    // Getting microphone access
-  | "connecting"          // WebRTC handshake in progress
+  | "requesting_media" // Getting microphone access
+  | "connecting" // WebRTC handshake in progress
   | "connected"
   | "reconnecting";
 
@@ -46,10 +46,10 @@ export type VoiceResult<T> =
  * Remote audio track info
  */
 export interface RemoteTrack {
-  trackId: string;     // Unique track identifier
-  userId: string;      // Who this track belongs to
+  trackId: string; // Unique track identifier
+  userId: string; // Who this track belongs to
   stream: MediaStream; // Audio stream for playback
-  muted: boolean;      // Remote user's mute state
+  muted: boolean; // Remote user's mute state
 }
 
 /**
@@ -85,8 +85,8 @@ export interface AudioDevice {
 }
 
 export interface AudioDeviceList {
-  inputs: AudioDevice[];   // Microphones
-  outputs: AudioDevice[];  // Speakers/Headphones
+  inputs: AudioDevice[]; // Microphones
+  outputs: AudioDevice[]; // Speakers/Headphones
 }
 
 /**
@@ -124,7 +124,10 @@ export interface CaptureSource {
  */
 export type ScreenShareResult =
   | { approved: true; stream: MediaStream }
-  | { approved: false; reason: "user_cancelled" | "permission_denied" | "no_source" };
+  | {
+      approved: false;
+      reason: "user_cancelled" | "permission_denied" | "no_source";
+    };
 
 /**
  * Information about an active screen share
@@ -156,15 +159,15 @@ export interface WebcamOptions {
 }
 
 // Re-export QualityLevel from shared types for convenience
-export type { QualityLevel } from '../types';
+export type { QualityLevel } from "../types";
 
 /**
  * Connection metrics from WebRTC stats
  */
 export interface ConnectionMetrics {
-  latency: number;      // RTT in ms
-  packetLoss: number;   // 0-100 percentage
-  jitter: number;       // ms
+  latency: number; // RTT in ms
+  packetLoss: number; // 0-100 percentage
+  jitter: number; // ms
   quality: QualityLevel;
   timestamp: number;
 }
@@ -198,7 +201,10 @@ export interface VoiceAdapter {
 
   // Signaling (called by WebSocket store)
   handleOffer(channelId: string, sdp: string): Promise<VoiceResult<string>>; // Returns answer SDP
-  handleIceCandidate(channelId: string, candidate: string): Promise<VoiceResult<void>>;
+  handleIceCandidate(
+    channelId: string,
+    candidate: string,
+  ): Promise<VoiceResult<void>>;
 
   // State
   getState(): VoiceConnectionState;

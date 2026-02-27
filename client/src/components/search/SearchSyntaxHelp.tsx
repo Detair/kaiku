@@ -5,7 +5,13 @@
  * Uses websearch_to_tsquery syntax (AND, OR, "exact phrase", -exclude).
  */
 
-import { Component, Show, createSignal, onCleanup, createEffect } from "solid-js";
+import {
+  Component,
+  Show,
+  createSignal,
+  onCleanup,
+  createEffect,
+} from "solid-js";
 import { HelpCircle } from "lucide-solid";
 
 const SearchSyntaxHelp: Component = () => {
@@ -22,7 +28,9 @@ const SearchSyntaxHelp: Component = () => {
   createEffect(() => {
     if (isOpen()) {
       document.addEventListener("mousedown", handleClickOutside);
-      onCleanup(() => document.removeEventListener("mousedown", handleClickOutside));
+      onCleanup(() =>
+        document.removeEventListener("mousedown", handleClickOutside),
+      );
     }
   });
 
@@ -42,23 +50,33 @@ const SearchSyntaxHelp: Component = () => {
 
       <Show when={isOpen()}>
         <div class="absolute right-0 top-full mt-1 w-64 rounded-lg border border-white/10 bg-surface-layer2 shadow-xl z-60 p-3">
-          <h4 class="text-xs font-semibold text-text-primary mb-2">Search Syntax</h4>
+          <h4 class="text-xs font-semibold text-text-primary mb-2">
+            Search Syntax
+          </h4>
           <table class="w-full text-xs">
             <tbody>
               <tr class="border-b border-white/5">
-                <td class="py-1 pr-2 text-accent-primary font-mono">hello world</td>
+                <td class="py-1 pr-2 text-accent-primary font-mono">
+                  hello world
+                </td>
                 <td class="py-1 text-text-secondary">Both words (AND)</td>
               </tr>
               <tr class="border-b border-white/5">
-                <td class="py-1 pr-2 text-accent-primary font-mono">hello OR world</td>
+                <td class="py-1 pr-2 text-accent-primary font-mono">
+                  hello OR world
+                </td>
                 <td class="py-1 text-text-secondary">Either word</td>
               </tr>
               <tr class="border-b border-white/5">
-                <td class="py-1 pr-2 text-accent-primary font-mono">"exact phrase"</td>
+                <td class="py-1 pr-2 text-accent-primary font-mono">
+                  "exact phrase"
+                </td>
                 <td class="py-1 text-text-secondary">Exact match</td>
               </tr>
               <tr>
-                <td class="py-1 pr-2 text-accent-primary font-mono">hello -world</td>
+                <td class="py-1 pr-2 text-accent-primary font-mono">
+                  hello -world
+                </td>
                 <td class="py-1 text-text-secondary">Exclude word</td>
               </tr>
             </tbody>

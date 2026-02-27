@@ -32,8 +32,18 @@ vi.mock("@/stores/drafts", () => ({
 }));
 
 import * as tauri from "@/lib/tauri";
-import { initWebSocket, connect as wsConnect, disconnect as wsDisconnect, cleanupWebSocket } from "@/stores/websocket";
-import { initPresence, cleanupPresence, initIdleDetection, stopIdleDetectionCleanup } from "@/stores/presence";
+import {
+  initWebSocket,
+  connect as wsConnect,
+  disconnect as wsDisconnect,
+  cleanupWebSocket,
+} from "@/stores/websocket";
+import {
+  initPresence,
+  cleanupPresence,
+  initIdleDetection,
+  stopIdleDetectionCleanup,
+} from "@/stores/presence";
 import { initPreferences } from "@/stores/preferences";
 import { clearAllDrafts, cleanupDrafts } from "@/stores/drafts";
 import type { User } from "@/lib/types";
@@ -149,7 +159,9 @@ describe("auth store", () => {
       await initAuth();
 
       expect(authState.user).not.toBeNull();
-      expect(authState.error).toContain("Real-time messaging temporarily unavailable");
+      expect(authState.error).toContain(
+        "Real-time messaging temporarily unavailable",
+      );
     });
 
     it("skips if already initialized", async () => {
@@ -174,7 +186,9 @@ describe("auth store", () => {
     });
 
     it("handles session restore failure gracefully", async () => {
-      vi.mocked(tauri.getCurrentUser).mockRejectedValue(new Error("no session"));
+      vi.mocked(tauri.getCurrentUser).mockRejectedValue(
+        new Error("no session"),
+      );
 
       await initAuth();
 
@@ -203,7 +217,10 @@ describe("auth store", () => {
     });
 
     it("sets setupRequired from response", async () => {
-      vi.mocked(tauri.login).mockResolvedValue({ user: createUser(), setup_required: true });
+      vi.mocked(tauri.login).mockResolvedValue({
+        user: createUser(),
+        setup_required: true,
+      });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
@@ -215,9 +232,13 @@ describe("auth store", () => {
     });
 
     it("sets error and re-throws on failure", async () => {
-      vi.mocked(tauri.login).mockRejectedValue(new Error("Invalid credentials"));
+      vi.mocked(tauri.login).mockRejectedValue(
+        new Error("Invalid credentials"),
+      );
 
-      await expect(login("https://server.com", "alice", "wrong")).rejects.toThrow("Invalid credentials");
+      await expect(
+        login("https://server.com", "alice", "wrong"),
+      ).rejects.toThrow("Invalid credentials");
       expect(authState.error).toBe("Invalid credentials");
       expect(authState.isLoading).toBe(false);
     });
@@ -226,7 +247,10 @@ describe("auth store", () => {
   describe("register", () => {
     it("registers and inits subsystems", async () => {
       const user = createUser();
-      vi.mocked(tauri.register).mockResolvedValue({ user, setup_required: false });
+      vi.mocked(tauri.register).mockResolvedValue({
+        user,
+        setup_required: false,
+      });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
@@ -239,7 +263,10 @@ describe("auth store", () => {
     });
 
     it("passes setupRequired flag", async () => {
-      vi.mocked(tauri.register).mockResolvedValue({ user: createUser(), setup_required: true });
+      vi.mocked(tauri.register).mockResolvedValue({
+        user: createUser(),
+        setup_required: true,
+      });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
@@ -253,7 +280,9 @@ describe("auth store", () => {
     it("sets error and re-throws on failure", async () => {
       vi.mocked(tauri.register).mockRejectedValue(new Error("Username taken"));
 
-      await expect(register("https://server.com", "alice", "password")).rejects.toThrow("Username taken");
+      await expect(
+        register("https://server.com", "alice", "password"),
+      ).rejects.toThrow("Username taken");
       expect(authState.error).toBe("Username taken");
     });
   });
@@ -277,8 +306,9 @@ describe("auth store", () => {
       vi.mocked(tauri.oidcCompleteLogin).mockResolvedValue(undefined);
       vi.mocked(tauri.getCurrentUser).mockResolvedValue(null);
 
-      await expect(loginWithOidc("https://server.com", "token", "refresh", 3600))
-        .rejects.toThrow("Failed to fetch user after OIDC login");
+      await expect(
+        loginWithOidc("https://server.com", "token", "refresh", 3600),
+      ).rejects.toThrow("Failed to fetch user after OIDC login");
     });
   });
 

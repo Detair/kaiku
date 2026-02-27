@@ -31,7 +31,8 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
 
     const { scrollTop, scrollHeight, clientHeight } = contentRef;
     // Consider "bottom" reached if within SCROLL_TOLERANCE of the end
-    const isAtBottom = scrollTop + clientHeight >= scrollHeight - SCROLL_TOLERANCE;
+    const isAtBottom =
+      scrollTop + clientHeight >= scrollHeight - SCROLL_TOLERANCE;
 
     if (isAtBottom) {
       setHasScrolledToBottom(true);
@@ -77,7 +78,11 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
   const canAccept = () => hasScrolledToBottom() && !isAccepting();
 
   return (
-    <div class="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+    >
       {/* Backdrop */}
       <div
         class="absolute inset-0 bg-black/70"

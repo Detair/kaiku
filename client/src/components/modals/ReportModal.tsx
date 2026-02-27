@@ -20,7 +20,10 @@ interface ReportModalProps {
   onClose: () => void;
 }
 
-const CATEGORIES: { value: tauri.CreateReportRequest["category"]; label: string }[] = [
+const CATEGORIES: {
+  value: tauri.CreateReportRequest["category"];
+  label: string;
+}[] = [
   { value: "harassment", label: "Harassment" },
   { value: "spam", label: "Spam" },
   { value: "inappropriate_content", label: "Inappropriate Content" },
@@ -29,13 +32,15 @@ const CATEGORIES: { value: tauri.CreateReportRequest["category"]; label: string 
 ];
 
 const ReportModal: Component<ReportModalProps> = (props) => {
-  const [category, setCategory] = createSignal<tauri.CreateReportRequest["category"]>("harassment");
+  const [category, setCategory] =
+    createSignal<tauri.CreateReportRequest["category"]>("harassment");
   const [description, setDescription] = createSignal("");
   const [isSubmitting, setIsSubmitting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [success, setSuccess] = createSignal(false);
 
-  const targetType = () => (props.target.messageId ? "message" : "user") as "user" | "message";
+  const targetType = () =>
+    (props.target.messageId ? "message" : "user") as "user" | "message";
 
   const handleSubmit = async () => {
     setIsSubmitting(true);
@@ -115,15 +120,19 @@ const ReportModal: Component<ReportModalProps> = (props) => {
               <>
                 {/* Category */}
                 <div class="space-y-2">
-                  <label class="text-sm font-medium text-text-secondary">Reason</label>
+                  <label class="text-sm font-medium text-text-secondary">
+                    Reason
+                  </label>
                   <div class="space-y-1">
                     <For each={CATEGORIES}>
                       {(cat) => (
                         <label
                           class="flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors hover:bg-white/5"
                           classList={{
-                            "bg-white/10 border border-white/20": category() === cat.value,
-                            "border border-transparent": category() !== cat.value,
+                            "bg-white/10 border border-white/20":
+                              category() === cat.value,
+                            "border border-transparent":
+                              category() !== cat.value,
                           }}
                         >
                           <input
@@ -134,7 +143,9 @@ const ReportModal: Component<ReportModalProps> = (props) => {
                             onChange={() => setCategory(cat.value)}
                             class="accent-accent-primary"
                           />
-                          <span class="text-sm text-text-primary">{cat.label}</span>
+                          <span class="text-sm text-text-primary">
+                            {cat.label}
+                          </span>
                         </label>
                       )}
                     </For>
@@ -144,11 +155,16 @@ const ReportModal: Component<ReportModalProps> = (props) => {
                 {/* Description */}
                 <div class="space-y-2">
                   <label class="text-sm font-medium text-text-secondary">
-                    Details <span class="text-text-secondary/50">(optional, max 500 chars)</span>
+                    Details{" "}
+                    <span class="text-text-secondary/50">
+                      (optional, max 500 chars)
+                    </span>
                   </label>
                   <textarea
                     value={description()}
-                    onInput={(e) => setDescription(e.currentTarget.value.slice(0, 500))}
+                    onInput={(e) =>
+                      setDescription(e.currentTarget.value.slice(0, 500))
+                    }
                     placeholder="Provide additional context..."
                     class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary resize-none text-sm"
                     rows={3}

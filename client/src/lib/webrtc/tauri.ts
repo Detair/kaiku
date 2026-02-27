@@ -124,7 +124,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     } catch (err) {
       // Noise suppression might not be implemented in Tauri backend yet
       // Fall back to just storing the state locally
-      console.warn("[TauriVoiceAdapter] Noise suppression not implemented in backend");
+      console.warn(
+        "[TauriVoiceAdapter] Noise suppression not implemented in backend",
+      );
       this.noiseSuppression = enabled;
       return { ok: true, value: undefined };
     }
@@ -134,7 +136,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   async handleOffer(
     channelId: string,
-    sdp: string
+    sdp: string,
   ): Promise<VoiceResult<string>> {
     console.log(`[TauriVoiceAdapter] Handling offer for channel: ${channelId}`);
 
@@ -149,7 +151,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   async handleIceCandidate(
     channelId: string,
-    candidate: string
+    candidate: string,
   ): Promise<VoiceResult<void>> {
     const startTime = performance.now();
 
@@ -157,12 +159,17 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       await invoke("handle_voice_ice_candidate", { channelId, candidate });
 
       const elapsed = performance.now() - startTime;
-      console.log(`[TauriVoiceAdapter] ICE candidate processed (${elapsed.toFixed(2)}ms)`);
+      console.log(
+        `[TauriVoiceAdapter] ICE candidate processed (${elapsed.toFixed(2)}ms)`,
+      );
 
       return { ok: true, value: undefined };
     } catch (err) {
       const elapsed = performance.now() - startTime;
-      console.error(`[TauriVoiceAdapter] ICE candidate failed after ${elapsed.toFixed(2)}ms:`, err);
+      console.error(
+        `[TauriVoiceAdapter] ICE candidate failed after ${elapsed.toFixed(2)}ms:`,
+        err,
+      );
 
       return { ok: false, error: this.mapTauriError(err) };
     }
@@ -291,20 +298,31 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     try {
       return await invoke<CaptureSource[]>("enumerate_capture_sources");
     } catch (err) {
-      console.error("[TauriVoiceAdapter] Failed to enumerate capture sources:", err);
+      console.error(
+        "[TauriVoiceAdapter] Failed to enumerate capture sources:",
+        err,
+      );
       return null;
     }
   }
 
-  async startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>> {
+  async startScreenShare(
+    options?: ScreenShareOptions,
+  ): Promise<VoiceResult<void>> {
     console.log("[TauriVoiceAdapter] Starting native screen share", options);
 
     if (this.screenSharing) {
-      return { ok: false, error: { type: "unknown", message: "Already sharing screen" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Already sharing screen" },
+      };
     }
 
     if (!options?.sourceId) {
-      return { ok: false, error: { type: "unknown", message: "No source selected" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "No source selected" },
+      };
     }
 
     try {
@@ -318,7 +336,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       this.screenShareWithAudio = options.withAudio ?? false;
       // Fetch source name from status
       try {
-        const status = await invoke<{ source_name: string } | null>("get_screen_share_status");
+        const status = await invoke<{ source_name: string } | null>(
+          "get_screen_share_status",
+        );
         this.screenShareSourceName = status?.source_name ?? "Screen";
       } catch {
         this.screenShareSourceName = "Screen";
@@ -336,7 +356,10 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     console.log("[TauriVoiceAdapter] Stopping native screen share");
 
     if (!this.screenSharing) {
-      return { ok: false, error: { type: "unknown", message: "Not sharing screen" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Not sharing screen" },
+      };
     }
 
     try {
@@ -364,7 +387,10 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     console.log("[TauriVoiceAdapter] Starting webcam", options);
 
     if (this.webcamActive) {
-      return { ok: false, error: { type: "unknown", message: "Webcam already active" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Webcam already active" },
+      };
     }
 
     try {
@@ -385,7 +411,10 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     console.log("[TauriVoiceAdapter] Stopping webcam");
 
     if (!this.webcamActive) {
-      return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Webcam not active" },
+      };
     }
 
     try {
@@ -438,7 +467,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
         };
         const newState = stateMap[event.payload] || "disconnected";
         this.setState(newState);
-      })
+      }),
     );
 
     // Listen for remote tracks
@@ -446,7 +475,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       await listen<string>("voice:remote_track", (event) => {
         console.log(`[TauriVoiceAdapter] Remote track: ${event.payload}`);
         // Remote track handling is done in Rust, just log here
-      })
+      }),
     );
   }
 
@@ -487,7 +516,10 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       };
     }
 
-    if (message.includes("Not connected") || message.includes("not initialized")) {
+    if (
+      message.includes("Not connected") ||
+      message.includes("not initialized")
+    ) {
       return {
         type: "not_connected",
       };

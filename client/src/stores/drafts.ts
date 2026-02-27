@@ -73,8 +73,10 @@ function saveToLocalStorage(data: DraftsMap): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     isDirty = false;
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'QuotaExceededError') {
-      console.warn("[Drafts] localStorage quota exceeded, reducing to 25 drafts");
+    if (e instanceof DOMException && e.name === "QuotaExceededError") {
+      console.warn(
+        "[Drafts] localStorage quota exceeded, reducing to 25 drafts",
+      );
       // Force evict to half the limit and retry
       const entries = Object.entries(data);
       entries.sort((a, b) => a[1].updatedAt - b[1].updatedAt);
@@ -87,7 +89,10 @@ function saveToLocalStorage(data: DraftsMap): void {
         // Update signal to reflect reduced drafts
         setDrafts(reducedMap);
       } catch (retryError) {
-        console.error("[Drafts] Failed to save even after reduction:", retryError);
+        console.error(
+          "[Drafts] Failed to save even after reduction:",
+          retryError,
+        );
       }
     } else {
       console.error("[Drafts] Failed to save to localStorage:", e);
@@ -133,7 +138,11 @@ function evictOldest(data: DraftsMap): DraftsMap {
 export function initDrafts(): void {
   const loaded = loadFromLocalStorage();
   setDrafts(loaded);
-  console.log("[Drafts] Loaded", Object.keys(loaded).length, "drafts from localStorage");
+  console.log(
+    "[Drafts] Loaded",
+    Object.keys(loaded).length,
+    "drafts from localStorage",
+  );
 
   // Register beforeunload handler for flush
   if (typeof window !== "undefined") {
@@ -158,7 +167,11 @@ export function getDraft(channelId: string): string {
  * @param content - Draft content
  * @param isE2EE - Skip saving if true (no plaintext leak)
  */
-export function saveDraft(channelId: string, content: string, isE2EE = false): void {
+export function saveDraft(
+  channelId: string,
+  content: string,
+  isE2EE = false,
+): void {
   // Skip E2EE channels to prevent plaintext leak
   if (isE2EE) return;
 

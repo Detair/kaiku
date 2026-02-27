@@ -4,7 +4,13 @@
  * Displays a DM conversation in the Home view.
  */
 
-import { Component, Show, onCleanup, createEffect, createSignal } from "solid-js";
+import {
+  Component,
+  Show,
+  onCleanup,
+  createEffect,
+  createSignal,
+} from "solid-js";
 import { Phone, Lock, Unlock, Check, X } from "lucide-solid";
 import { e2eeStatus } from "@/stores/e2ee";
 import { getSelectedDM, markDMAsRead, updateDMIconUrl } from "@/stores/dms";
@@ -14,7 +20,14 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { CallBanner } from "@/components/call";
 import { callState, startCall, isInCallForChannel } from "@/stores/call";
-import { startDMCall, joinVoice, uploadDMAvatar, updateDMName, validateFileSize, getUploadLimitText } from "@/lib/tauri";
+import {
+  startDMCall,
+  joinVoice,
+  uploadDMAvatar,
+  updateDMName,
+  validateFileSize,
+  getUploadLimitText,
+} from "@/lib/tauri";
 
 const DMConversation: Component = () => {
   const dm = () => getSelectedDM();
@@ -70,7 +83,7 @@ const DMConversation: Component = () => {
     const currentDM = dm();
     if (!currentDM) return [];
     const me = currentUser();
-    return currentDM.participants.filter(p => p.user_id !== me?.id);
+    return currentDM.participants.filter((p) => p.user_id !== me?.id);
   };
 
   const displayName = () => {
@@ -139,7 +152,7 @@ const DMConversation: Component = () => {
                   setUploadError(null);
 
                   // Frontend validation
-                  const validationError = validateFileSize(file, 'avatar');
+                  const validationError = validateFileSize(file, "avatar");
                   if (validationError) {
                     setUploadError(validationError);
                     setTimeout(() => setUploadError(null), 5000);
@@ -172,7 +185,7 @@ const DMConversation: Component = () => {
               "bg-accent-primary": !dm()?.icon_url,
               "bg-surface-layer2": !!dm()?.icon_url,
             }}
-            title={`Change icon (Max ${getUploadLimitText('avatar')})`}
+            title={`Change icon (Max ${getUploadLimitText("avatar")})`}
           >
             <Show
               when={dm()?.icon_url}
@@ -180,15 +193,31 @@ const DMConversation: Component = () => {
                 <span class="text-sm font-semibold text-white">
                   {isGroupDM()
                     ? displayName().charAt(0).toUpperCase()
-                    : otherParticipants()[0]?.display_name?.charAt(0).toUpperCase()}
+                    : otherParticipants()[0]
+                        ?.display_name?.charAt(0)
+                        .toUpperCase()}
                 </span>
               }
             >
-              <img src={dm()!.icon_url!} alt="DM Icon" class="w-full h-full object-cover" />
+              <img
+                src={dm()!.icon_url!}
+                alt="DM Icon"
+                class="w-full h-full object-cover"
+              />
             </Show>
             <div class="absolute inset-0 bg-black/40 hidden group-hover:flex items-center justify-center rounded-full">
-              <svg class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+              <svg
+                class="w-3 h-3 text-white"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+                />
               </svg>
             </div>
           </label>
@@ -276,7 +305,8 @@ const DMConversation: Component = () => {
                         Not Encrypted
                       </p>
                       <p class="text-xs text-text-muted mt-1">
-                        E2EE is not set up. Messages are not end-to-end encrypted.
+                        E2EE is not set up. Messages are not end-to-end
+                        encrypted.
                       </p>
                     </>
                   }
@@ -285,7 +315,8 @@ const DMConversation: Component = () => {
                     End-to-End Encrypted
                   </p>
                   <p class="text-xs text-text-muted mt-1">
-                    Messages are secured with end-to-end encryption. Only you and the recipient can read them.
+                    Messages are secured with end-to-end encryption. Only you
+                    and the recipient can read them.
                   </p>
                 </Show>
               </div>
@@ -306,7 +337,9 @@ const DMConversation: Component = () => {
             onClick={handleStartCall}
             disabled={!canStartCall() || isStartingCall()}
             title={canStartCall() ? "Start voice call" : "Call in progress"}
-            aria-label={canStartCall() ? "Start voice call" : "Call in progress"}
+            aria-label={
+              canStartCall() ? "Start voice call" : "Call in progress"
+            }
             class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-layer2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Phone class="w-5 h-5" />
@@ -327,7 +360,7 @@ const DMConversation: Component = () => {
           channelId={dm()!.id}
           channelName={displayName()}
           isE2EE={isEncrypted()}
-          dmParticipants={dm()!.participants.map(p => ({
+          dmParticipants={dm()!.participants.map((p) => ({
             user_id: p.user_id,
             username: p.username,
             display_name: p.display_name,

@@ -2,7 +2,13 @@
  * ClipboardToast - Shows copy confirmation with auto-clear countdown
  */
 
-import { Component, Show, createSignal, createEffect, onCleanup } from "solid-js";
+import {
+  Component,
+  Show,
+  createSignal,
+  createEffect,
+  onCleanup,
+} from "solid-js";
 import { Shield, Clock, X, Plus } from "lucide-solid";
 import {
   clearClipboard,
@@ -49,10 +55,10 @@ function getSensitivityColor(sensitivity: Sensitivity): string {
 
 const ClipboardToast: Component<ClipboardToastProps> = (props) => {
   const [status, setStatus] = createSignal<ClipboardStatusEvent | null>(
-    props.initialEvent ?? null
+    props.initialEvent ?? null,
   );
   const [remainingSecs, setRemainingSecs] = createSignal<number | null>(
-    props.initialEvent?.clear_in_secs ?? null
+    props.initialEvent?.clear_in_secs ?? null,
   );
   const [extending, setExtending] = createSignal(false);
 
@@ -162,7 +168,10 @@ const ClipboardToast: Component<ClipboardToastProps> = (props) => {
             </div>
 
             {/* Progress bar */}
-            <div class="h-1.5 rounded-full overflow-hidden" style="background-color: var(--color-surface-base)">
+            <div
+              class="h-1.5 rounded-full overflow-hidden"
+              style="background-color: var(--color-surface-base)"
+            >
               <div
                 class="h-full rounded-full transition-all duration-1000"
                 classList={{

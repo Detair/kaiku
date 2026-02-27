@@ -5,7 +5,13 @@
  */
 
 import { createStore } from "solid-js/store";
-import type { Page, PageCategory, PageListItem, PageRevision, RevisionListItem } from "@/lib/types";
+import type {
+  Page,
+  PageCategory,
+  PageListItem,
+  PageRevision,
+  RevisionListItem,
+} from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 
 // ============================================================================
@@ -112,14 +118,19 @@ export async function createPlatformPage(
   title: string,
   content: string,
   slug?: string,
-  requiresAcceptance?: boolean
+  requiresAcceptance?: boolean,
 ): Promise<Page | null> {
   setPagesState({ isLoading: true, error: null });
 
   try {
-    const page = await tauri.createPlatformPage(title, content, slug, requiresAcceptance);
+    const page = await tauri.createPlatformPage(
+      title,
+      content,
+      slug,
+      requiresAcceptance,
+    );
     setPagesState("platformPages", (prev) =>
-      sortByPosition([...prev, toListItem(page)])
+      sortByPosition([...prev, toListItem(page)]),
     );
     setPagesState({ isLoading: false, error: null });
     return page;
@@ -139,14 +150,20 @@ export async function updatePlatformPage(
   title?: string,
   slug?: string,
   content?: string,
-  requiresAcceptance?: boolean
+  requiresAcceptance?: boolean,
 ): Promise<Page | null> {
   setPagesState({ isLoading: true, error: null });
 
   try {
-    const page = await tauri.updatePlatformPage(pageId, title, slug, content, requiresAcceptance);
+    const page = await tauri.updatePlatformPage(
+      pageId,
+      title,
+      slug,
+      content,
+      requiresAcceptance,
+    );
     setPagesState("platformPages", (prev) =>
-      prev.map((p) => (p.id === pageId ? toListItem(page) : p))
+      prev.map((p) => (p.id === pageId ? toListItem(page) : p)),
     );
     if (pagesState.currentPage?.id === pageId) {
       setPagesState({ currentPage: page });
@@ -169,7 +186,9 @@ export async function deletePlatformPage(pageId: string): Promise<boolean> {
 
   try {
     await tauri.deletePlatformPage(pageId);
-    setPagesState("platformPages", (prev) => prev.filter((p) => p.id !== pageId));
+    setPagesState("platformPages", (prev) =>
+      prev.filter((p) => p.id !== pageId),
+    );
     if (pagesState.currentPage?.id === pageId) {
       setPagesState({ currentPage: null });
     }
@@ -186,7 +205,9 @@ export async function deletePlatformPage(pageId: string): Promise<boolean> {
 /**
  * Reorder platform pages.
  */
-export async function reorderPlatformPages(pageIds: string[]): Promise<boolean> {
+export async function reorderPlatformPages(
+  pageIds: string[],
+): Promise<boolean> {
   try {
     await tauri.reorderPlatformPages(pageIds);
     // Update local state to reflect new order
@@ -196,7 +217,7 @@ export async function reorderPlatformPages(pageIds: string[]): Promise<boolean> 
           const page = prev.find((p) => p.id === id);
           return page ? { ...page, position: index } : null;
         })
-        .filter((p): p is PageListItem => p !== null)
+        .filter((p): p is PageListItem => p !== null),
     );
     return true;
   } catch (err) {
@@ -231,7 +252,10 @@ export async function loadGuildPages(guildId: string): Promise<void> {
 /**
  * Get a guild page by slug.
  */
-export async function loadGuildPage(guildId: string, slug: string): Promise<Page | null> {
+export async function loadGuildPage(
+  guildId: string,
+  slug: string,
+): Promise<Page | null> {
   setPagesState({ isLoading: true, error: null });
 
   try {
@@ -259,14 +283,21 @@ export async function createGuildPage(
   content: string,
   slug?: string,
   requiresAcceptance?: boolean,
-  categoryId?: string
+  categoryId?: string,
 ): Promise<Page | null> {
   setPagesState({ isLoading: true, error: null });
 
   try {
-    const page = await tauri.createGuildPage(guildId, title, content, slug, requiresAcceptance, categoryId);
+    const page = await tauri.createGuildPage(
+      guildId,
+      title,
+      content,
+      slug,
+      requiresAcceptance,
+      categoryId,
+    );
     setPagesState("guildPages", guildId, (prev) =>
-      sortByPosition([...(prev || []), toListItem(page)])
+      sortByPosition([...(prev || []), toListItem(page)]),
     );
     setPagesState({ isLoading: false, error: null });
     return page;
@@ -288,14 +319,22 @@ export async function updateGuildPage(
   slug?: string,
   content?: string,
   requiresAcceptance?: boolean,
-  categoryId?: string | null
+  categoryId?: string | null,
 ): Promise<Page | null> {
   setPagesState({ isLoading: true, error: null });
 
   try {
-    const page = await tauri.updateGuildPage(guildId, pageId, title, slug, content, requiresAcceptance, categoryId);
+    const page = await tauri.updateGuildPage(
+      guildId,
+      pageId,
+      title,
+      slug,
+      content,
+      requiresAcceptance,
+      categoryId,
+    );
     setPagesState("guildPages", guildId, (prev) =>
-      (prev || []).map((p) => (p.id === pageId ? toListItem(page) : p))
+      (prev || []).map((p) => (p.id === pageId ? toListItem(page) : p)),
     );
     if (pagesState.currentPage?.id === pageId) {
       setPagesState({ currentPage: page });
@@ -313,13 +352,16 @@ export async function updateGuildPage(
 /**
  * Delete a guild page.
  */
-export async function deleteGuildPage(guildId: string, pageId: string): Promise<boolean> {
+export async function deleteGuildPage(
+  guildId: string,
+  pageId: string,
+): Promise<boolean> {
   setPagesState({ isLoading: true, error: null });
 
   try {
     await tauri.deleteGuildPage(guildId, pageId);
     setPagesState("guildPages", guildId, (prev) =>
-      (prev || []).filter((p) => p.id !== pageId)
+      (prev || []).filter((p) => p.id !== pageId),
     );
     if (pagesState.currentPage?.id === pageId) {
       setPagesState({ currentPage: null });
@@ -337,7 +379,10 @@ export async function deleteGuildPage(guildId: string, pageId: string): Promise<
 /**
  * Reorder guild pages.
  */
-export async function reorderGuildPages(guildId: string, pageIds: string[]): Promise<boolean> {
+export async function reorderGuildPages(
+  guildId: string,
+  pageIds: string[],
+): Promise<boolean> {
   try {
     await tauri.reorderGuildPages(guildId, pageIds);
     setPagesState("guildPages", guildId, (prev) =>
@@ -346,7 +391,7 @@ export async function reorderGuildPages(guildId: string, pageIds: string[]): Pro
           const page = (prev || []).find((p) => p.id === id);
           return page ? { ...page, position: index } : null;
         })
-        .filter((p): p is PageListItem => p !== null)
+        .filter((p): p is PageListItem => p !== null),
     );
     return true;
   } catch (err) {
@@ -382,7 +427,7 @@ export async function acceptPage(pageId: string): Promise<boolean> {
   try {
     await tauri.acceptPage(pageId);
     setPagesState("pendingAcceptance", (prev) =>
-      prev.filter((p) => p.id !== pageId)
+      prev.filter((p) => p.id !== pageId),
     );
     return true;
   } catch (err) {
@@ -416,12 +461,12 @@ export async function loadGuildCategories(guildId: string): Promise<void> {
  */
 export async function createCategory(
   guildId: string,
-  name: string
+  name: string,
 ): Promise<PageCategory | null> {
   try {
     const category = await tauri.createPageCategory(guildId, name);
     setPagesState("guildCategories", guildId, (prev) =>
-      sortByPosition([...(prev || []), category])
+      sortByPosition([...(prev || []), category]),
     );
     return category;
   } catch (err) {
@@ -438,12 +483,12 @@ export async function createCategory(
 export async function updateCategory(
   guildId: string,
   categoryId: string,
-  name: string
+  name: string,
 ): Promise<PageCategory | null> {
   try {
     const category = await tauri.updatePageCategory(guildId, categoryId, name);
     setPagesState("guildCategories", guildId, (prev) =>
-      (prev || []).map((c) => (c.id === categoryId ? category : c))
+      (prev || []).map((c) => (c.id === categoryId ? category : c)),
     );
     return category;
   } catch (err) {
@@ -459,18 +504,18 @@ export async function updateCategory(
  */
 export async function deleteCategory(
   guildId: string,
-  categoryId: string
+  categoryId: string,
 ): Promise<boolean> {
   try {
     await tauri.deletePageCategory(guildId, categoryId);
     setPagesState("guildCategories", guildId, (prev) =>
-      (prev || []).filter((c) => c.id !== categoryId)
+      (prev || []).filter((c) => c.id !== categoryId),
     );
     // Pages in this category become uncategorized
     setPagesState("guildPages", guildId, (prev) =>
       (prev || []).map((p) =>
-        p.category_id === categoryId ? { ...p, category_id: null } : p
-      )
+        p.category_id === categoryId ? { ...p, category_id: null } : p,
+      ),
     );
     return true;
   } catch (err) {
@@ -486,7 +531,7 @@ export async function deleteCategory(
  */
 export async function reorderCategories(
   guildId: string,
-  categoryIds: string[]
+  categoryIds: string[],
 ): Promise<boolean> {
   try {
     await tauri.reorderPageCategories(guildId, categoryIds);
@@ -496,7 +541,7 @@ export async function reorderCategories(
           const cat = (prev || []).find((c) => c.id === id);
           return cat ? { ...cat, position: index } : null;
         })
-        .filter((c): c is PageCategory => c !== null)
+        .filter((c): c is PageCategory => c !== null),
     );
     return true;
   } catch (err) {
@@ -516,7 +561,7 @@ export async function reorderCategories(
  */
 export async function loadRevisions(
   guildId: string,
-  pageId: string
+  pageId: string,
 ): Promise<void> {
   try {
     const revisions = await tauri.listPageRevisions(guildId, pageId);
@@ -534,10 +579,14 @@ export async function loadRevisions(
 export async function loadRevision(
   guildId: string,
   pageId: string,
-  revisionNumber: number
+  revisionNumber: number,
 ): Promise<PageRevision | null> {
   try {
-    const revision = await tauri.getPageRevision(guildId, pageId, revisionNumber);
+    const revision = await tauri.getPageRevision(
+      guildId,
+      pageId,
+      revisionNumber,
+    );
     setPagesState({ currentRevision: revision });
     return revision;
   } catch (err) {
@@ -554,13 +603,17 @@ export async function loadRevision(
 export async function restoreRevision(
   guildId: string,
   pageId: string,
-  revisionNumber: number
+  revisionNumber: number,
 ): Promise<Page | null> {
   try {
-    const page = await tauri.restorePageRevision(guildId, pageId, revisionNumber);
+    const page = await tauri.restorePageRevision(
+      guildId,
+      pageId,
+      revisionNumber,
+    );
     // Update the page in guild pages list
     setPagesState("guildPages", guildId, (prev) =>
-      (prev || []).map((p) => (p.id === pageId ? toListItem(page) : p))
+      (prev || []).map((p) => (p.id === pageId ? toListItem(page) : p)),
     );
     if (pagesState.currentPage?.id === pageId) {
       setPagesState({ currentPage: page });

@@ -16,7 +16,12 @@ interface SkeletonProps extends JSX.HTMLAttributes<HTMLDivElement> {
 }
 
 const Skeleton: Component<SkeletonProps> = (props) => {
-  const [local, others] = splitProps(props, ["width", "height", "circle", "class"]);
+  const [local, others] = splitProps(props, [
+    "width",
+    "height",
+    "circle",
+    "class",
+  ]);
 
   const style = () => ({
     width: local.width,

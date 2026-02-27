@@ -30,28 +30,71 @@ function initMermaid() {
 
 // DOMPurify configuration - allowlist approach (passed inline, not via setConfig)
 const ALLOWED_TAGS = [
-  "p", "br", "strong", "em", "b", "i", "u", "s", "del",
-  "code", "pre", "kbd", "samp", "var",
-  "h1", "h2", "h3", "h4", "h5", "h6",
-  "ul", "ol", "li", "dl", "dt", "dd",
-  "blockquote", "hr",
-  "a", "img",
-  "table", "thead", "tbody", "tfoot", "tr", "th", "td",
-  "div", "span",
-  "sup", "sub",
-  "details", "summary",
+  "p",
+  "br",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "u",
+  "s",
+  "del",
+  "code",
+  "pre",
+  "kbd",
+  "samp",
+  "var",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "ul",
+  "ol",
+  "li",
+  "dl",
+  "dt",
+  "dd",
+  "blockquote",
+  "hr",
+  "a",
+  "img",
+  "table",
+  "thead",
+  "tbody",
+  "tfoot",
+  "tr",
+  "th",
+  "td",
+  "div",
+  "span",
+  "sup",
+  "sub",
+  "details",
+  "summary",
 ];
 
 const ALLOWED_ATTR = [
-  "href", "src", "alt", "title", "class", "id",
-  "target", "rel",
-  "width", "height",
-  "colspan", "rowspan", "align",
+  "href",
+  "src",
+  "alt",
+  "title",
+  "class",
+  "id",
+  "target",
+  "rel",
+  "width",
+  "height",
+  "colspan",
+  "rowspan",
+  "align",
   "open",
 ];
 
 // URL protocol allowlist
-const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
+const ALLOWED_URI_REGEXP =
+  /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
 
 /** Generate a GitHub-style slug from heading text, handling duplicates. */
 function slugify(text: string, seen: Map<string, number>): string {
@@ -72,7 +115,9 @@ function slugify(text: string, seen: Map<string, number>): string {
 
 /** Add hover anchor links to headings in the rendered DOM. */
 function addHeadingAnchors(container: HTMLElement): void {
-  const headings = container.querySelectorAll("h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]");
+  const headings = container.querySelectorAll(
+    "h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]",
+  );
   for (const heading of headings) {
     // Skip if anchor already added
     if (heading.querySelector(".heading-anchor")) continue;
@@ -85,7 +130,8 @@ function addHeadingAnchors(container: HTMLElement): void {
     anchor.href = `#${id}`;
     anchor.textContent = "#";
     anchor.setAttribute("aria-label", `Link to ${heading.textContent}`);
-    anchor.style.cssText = "margin-left:0.5em;color:#71717a;text-decoration:none;opacity:0;transition:opacity 0.15s;font-weight:normal;";
+    anchor.style.cssText =
+      "margin-left:0.5em;color:#71717a;text-decoration:none;opacity:0;transition:opacity 0.15s;font-weight:normal;";
     anchor.addEventListener("click", (e) => {
       e.preventDefault();
       const url = new URL(window.location.href);
@@ -96,8 +142,12 @@ function addHeadingAnchors(container: HTMLElement): void {
       history.replaceState(null, "", url.toString());
       heading.scrollIntoView({ behavior: "smooth" });
     });
-    (heading as HTMLElement).addEventListener("mouseenter", () => { anchor.style.opacity = "1"; });
-    (heading as HTMLElement).addEventListener("mouseleave", () => { anchor.style.opacity = "0"; });
+    (heading as HTMLElement).addEventListener("mouseenter", () => {
+      anchor.style.opacity = "1";
+    });
+    (heading as HTMLElement).addEventListener("mouseleave", () => {
+      anchor.style.opacity = "0";
+    });
     heading.appendChild(anchor);
   }
 }
@@ -131,8 +181,58 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 // UI redressing via position:fixed). Mermaid diagrams render via inline SVG
 // presentation attributes instead.
 const MERMAID_SVG_CONFIG = {
-  ALLOWED_TAGS: ["svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "tspan", "defs", "marker", "clipPath", "title", "desc"],
-  ALLOWED_ATTR: ["viewBox", "d", "fill", "stroke", "stroke-width", "transform", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "points", "font-size", "font-family", "text-anchor", "dominant-baseline", "marker-end", "marker-start", "xmlns", "preserveAspectRatio", "class", "id", "width", "height", "clip-path", "opacity"],
+  ALLOWED_TAGS: [
+    "svg",
+    "g",
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "text",
+    "tspan",
+    "defs",
+    "marker",
+    "clipPath",
+    "title",
+    "desc",
+  ],
+  ALLOWED_ATTR: [
+    "viewBox",
+    "d",
+    "fill",
+    "stroke",
+    "stroke-width",
+    "transform",
+    "x",
+    "y",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "cx",
+    "cy",
+    "r",
+    "rx",
+    "ry",
+    "points",
+    "font-size",
+    "font-family",
+    "text-anchor",
+    "dominant-baseline",
+    "marker-end",
+    "marker-start",
+    "xmlns",
+    "preserveAspectRatio",
+    "class",
+    "id",
+    "width",
+    "height",
+    "clip-path",
+    "opacity",
+  ],
   FORBID_TAGS: ["foreignObject", "script", "style"],
   ALLOW_DATA_ATTR: false,
 };
@@ -210,7 +310,9 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
     if (!currentHtml || !containerRef) return;
 
     // Find and render mermaid code blocks
-    const codeBlocks = containerRef.querySelectorAll("pre code.language-mermaid, pre code.mermaid");
+    const codeBlocks = containerRef.querySelectorAll(
+      "pre code.language-mermaid, pre code.mermaid",
+    );
 
     codeBlocks.forEach(async (block, index) => {
       const code = block.textContent || "";
@@ -240,7 +342,8 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
         console.error("Mermaid rendering error:", err);
         // Leave the code block as-is if mermaid fails
         const errorDiv = document.createElement("div");
-        errorDiv.className = "mermaid-error text-red-400 text-sm p-2 bg-red-900/20 rounded";
+        errorDiv.className =
+          "mermaid-error text-red-400 text-sm p-2 bg-red-900/20 rounded";
         errorDiv.textContent = "Failed to render diagram";
         pre.appendChild(errorDiv);
       }

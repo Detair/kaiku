@@ -5,7 +5,14 @@
  */
 
 import { createStore, produce } from "solid-js/store";
-import { createVoiceAdapter, getVoiceAdapter, type VoiceError, type ConnectionMetrics, type ParticipantMetrics, type QualityLevel } from "@/lib/webrtc";
+import {
+  createVoiceAdapter,
+  getVoiceAdapter,
+  type VoiceError,
+  type ConnectionMetrics,
+  type ParticipantMetrics,
+  type QualityLevel,
+} from "@/lib/webrtc";
 import type { ScreenShareInfo, ScreenShareQuality } from "@/lib/webrtc/types";
 import type { VoiceParticipant, WebcamServerInfo } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
@@ -74,7 +81,7 @@ interface VoiceStoreState {
   sessionId: string | null;
   connectedAt: number | null;
   // Local connection metrics
-  localMetrics: ConnectionMetrics | 'unknown' | null;
+  localMetrics: ConnectionMetrics | "unknown" | null;
   // Per-participant metrics from server
   participantMetrics: Map<string, ParticipantMetrics>;
 }
@@ -116,10 +123,14 @@ const INCIDENT_RECOVERY_THRESHOLD = 10_000; // 10s of good quality to clear inci
  */
 function qualityToNumber(quality: QualityLevel): number {
   switch (quality) {
-    case 'good': return 3;
-    case 'warning': return 2;
-    case 'poor': return 1;
-    case 'unknown': return 0;
+    case "good":
+      return 3;
+    case "warning":
+      return 2;
+    case "poor":
+      return 1;
+    case "unknown":
+      return 0;
   }
 }
 
@@ -129,10 +140,14 @@ function qualityToNumber(quality: QualityLevel): number {
  */
 function numberToQuality(n: number): QualityLevel {
   switch (n) {
-    case 3: return 'good';
-    case 2: return 'warning';
-    case 1: return 'poor';
-    default: return 'unknown';
+    case 3:
+      return "good";
+    case 2:
+      return "warning";
+    case 1:
+      return "poor";
+    default:
+      return "unknown";
   }
 }
 
@@ -157,31 +172,31 @@ function checkPacketLossThresholds(metrics: ConnectionMetrics): void {
       if (metrics.packetLoss >= 7) {
         // Critical packet loss - persistent error toast
         showToast({
-          type: 'error',
-          title: 'Connection severely degraded',
+          type: "error",
+          title: "Connection severely degraded",
           message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
           duration: 0,
-          id: 'connection-critical',
+          id: "connection-critical",
         });
       } else {
         // Warning level packet loss
         showToast({
-          type: 'warning',
-          title: 'Your connection is unstable',
+          type: "warning",
+          title: "Your connection is unstable",
           message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
           duration: 5000,
-          id: 'connection-warning',
+          id: "connection-warning",
         });
       }
     } else if (metrics.packetLoss >= 7) {
       // Escalate from warning to critical
-      dismissToast('connection-warning');
+      dismissToast("connection-warning");
       showToast({
-        type: 'error',
-        title: 'Connection severely degraded',
+        type: "error",
+        title: "Connection severely degraded",
         message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
         duration: 0,
-        id: 'connection-critical',
+        id: "connection-critical",
       });
     }
   } else {
@@ -191,11 +206,14 @@ function checkPacketLossThresholds(metrics: ConnectionMetrics): void {
     }
 
     // Check if we should clear the incident (quality good for 10s)
-    if (currentIncidentStart && now - goodQualityStartTime > INCIDENT_RECOVERY_THRESHOLD) {
+    if (
+      currentIncidentStart &&
+      now - goodQualityStartTime > INCIDENT_RECOVERY_THRESHOLD
+    ) {
       currentIncidentStart = null;
       goodQualityStartTime = null;
-      dismissToast('connection-critical');
-      dismissToast('connection-warning');
+      dismissToast("connection-critical");
+      dismissToast("connection-warning");
     }
   }
 }
@@ -216,7 +234,7 @@ function startMetricsLoop(): void {
     try {
       const metrics = await adapter.getConnectionMetrics();
       if (metrics) {
-        setVoiceState('localMetrics', metrics);
+        setVoiceState("localMetrics", metrics);
 
         // Check packet loss thresholds and show notifications
         checkPacketLossThresholds(metrics);
@@ -225,7 +243,7 @@ function startMetricsLoop(): void {
         const sessionId = voiceState.sessionId;
         if (sessionId && voiceState.channelId) {
           tauri.wsSend({
-            type: 'VoiceStats',
+            type: "VoiceStats",
             channel_id: voiceState.channelId,
             session_id: sessionId,
             latency: metrics.latency,
@@ -236,10 +254,10 @@ function startMetricsLoop(): void {
           });
         }
       } else {
-        setVoiceState('localMetrics', 'unknown');
+        setVoiceState("localMetrics", "unknown");
       }
     } catch (err) {
-      console.warn('Failed to collect metrics:', err);
+      console.warn("Failed to collect metrics:", err);
     }
   }, 3000);
 }
@@ -255,11 +273,11 @@ function stopMetricsLoop(): void {
 }
 
 // Tab visibility handling - pause metrics when tab is hidden to save resources
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopMetricsLoop();
-    } else if (voiceState.state === 'connected' && !metricsInterval) {
+    } else if (voiceState.state === "connected" && !metricsInterval) {
       startMetricsLoop();
     }
   });
@@ -282,39 +300,51 @@ export async function initVoice(): Promise<void> {
 
   // Voice user events
   unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>("ws:voice_user_joined", (event) => {
-      const { channel_id, user_id } = event.payload;
-      if (channel_id === voiceState.channelId) {
-        addParticipant(user_id);
-      }
-    })
+    await listen<{ channel_id: string; user_id: string }>(
+      "ws:voice_user_joined",
+      (event) => {
+        const { channel_id, user_id } = event.payload;
+        if (channel_id === voiceState.channelId) {
+          addParticipant(user_id);
+        }
+      },
+    ),
   );
 
   unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>("ws:voice_user_left", (event) => {
-      const { channel_id, user_id } = event.payload;
-      if (channel_id === voiceState.channelId) {
-        removeParticipant(user_id);
-      }
-    })
+    await listen<{ channel_id: string; user_id: string }>(
+      "ws:voice_user_left",
+      (event) => {
+        const { channel_id, user_id } = event.payload;
+        if (channel_id === voiceState.channelId) {
+          removeParticipant(user_id);
+        }
+      },
+    ),
   );
 
   unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>("ws:voice_user_muted", (event) => {
-      const { channel_id, user_id } = event.payload;
-      if (channel_id === voiceState.channelId) {
-        updateParticipant(user_id, { muted: true });
-      }
-    })
+    await listen<{ channel_id: string; user_id: string }>(
+      "ws:voice_user_muted",
+      (event) => {
+        const { channel_id, user_id } = event.payload;
+        if (channel_id === voiceState.channelId) {
+          updateParticipant(user_id, { muted: true });
+        }
+      },
+    ),
   );
 
   unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>("ws:voice_user_unmuted", (event) => {
-      const { channel_id, user_id } = event.payload;
-      if (channel_id === voiceState.channelId) {
-        updateParticipant(user_id, { muted: false });
-      }
-    })
+    await listen<{ channel_id: string; user_id: string }>(
+      "ws:voice_user_unmuted",
+      (event) => {
+        const { channel_id, user_id } = event.payload;
+        if (channel_id === voiceState.channelId) {
+          updateParticipant(user_id, { muted: false });
+        }
+      },
+    ),
   );
 
   unlisteners.push(
@@ -325,20 +355,23 @@ export async function initVoice(): Promise<void> {
         if (channel_id === voiceState.channelId) {
           setParticipants(participants);
         }
-      }
-    )
+      },
+    ),
   );
 
   unlisteners.push(
-    await listen<{ code: string; message: string }>("ws:voice_error", (event) => {
-      console.error("Voice error:", event.payload);
-      const error: VoiceError = {
-        type: "server_rejected",
-        code: event.payload.code,
-        message: event.payload.message,
-      };
-      setVoiceState({ error });
-    })
+    await listen<{ code: string; message: string }>(
+      "ws:voice_error",
+      (event) => {
+        console.error("Voice error:", event.payload);
+        const error: VoiceError = {
+          type: "server_rejected",
+          code: event.payload.code,
+          message: event.payload.message,
+        };
+        setVoiceState({ error });
+      },
+    ),
   );
 }
 
@@ -423,13 +456,17 @@ export async function joinVoice(channelId: string): Promise<void> {
 
   const result = await adapter.join(channelId);
   if (!result.ok) {
-    setVoiceState({ state: "disconnected", channelId: null, error: result.error });
+    setVoiceState({
+      state: "disconnected",
+      channelId: null,
+      error: result.error,
+    });
     throw new Error(getErrorMessage(result.error));
   }
 
   // Start session tracking and metrics collection
-  setVoiceState('sessionId', crypto.randomUUID());
-  setVoiceState('connectedAt', Date.now());
+  setVoiceState("sessionId", crypto.randomUUID());
+  setVoiceState("connectedAt", Date.now());
   startMetricsLoop();
 }
 
@@ -445,8 +482,8 @@ export async function leaveVoice(): Promise<void> {
   // Reset notification state and dismiss any active connection toasts
   currentIncidentStart = null;
   goodQualityStartTime = null;
-  dismissToast('connection-critical');
-  dismissToast('connection-warning');
+  dismissToast("connection-critical");
+  dismissToast("connection-warning");
 
   const adapter = await createVoiceAdapter();
   const result = await adapter.leave();
@@ -584,7 +621,7 @@ export async function startScreenShare(
       voiceState.channelId,
       quality || "medium",
       hasAudio,
-      sourceLabel
+      sourceLabel,
     );
   } catch (err) {
     console.error("Failed to notify server of screen share start:", err);
@@ -713,7 +750,7 @@ function addParticipant(userId: string): void {
         speaking: false,
         screen_sharing: false,
       };
-    })
+    }),
   );
 }
 
@@ -721,17 +758,20 @@ function removeParticipant(userId: string): void {
   setVoiceState(
     produce((state) => {
       delete state.participants[userId];
-    })
+    }),
   );
 }
 
-function updateParticipant(userId: string, update: Partial<VoiceParticipant>): void {
+function updateParticipant(
+  userId: string,
+  update: Partial<VoiceParticipant>,
+): void {
   setVoiceState(
     produce((state) => {
       if (state.participants[userId]) {
         Object.assign(state.participants[userId], update);
       }
-    })
+    }),
   );
 }
 
@@ -742,7 +782,7 @@ function setParticipants(participants: VoiceParticipant[]): void {
       for (const p of participants) {
         state.participants[p.user_id] = p;
       }
-    })
+    }),
   );
 }
 
@@ -779,7 +819,7 @@ export function getVoiceChannelInfo(): { id: string; name: string } | null {
   if (!voiceState.channelId) return null;
 
   const channel = channelsState.channels.find(
-    (c: { id: string }) => c.id === voiceState.channelId
+    (c: { id: string }) => c.id === voiceState.channelId,
   );
 
   if (!channel) {
@@ -793,14 +833,16 @@ export function getVoiceChannelInfo(): { id: string; name: string } | null {
  * Get local connection metrics.
  * Returns null if not connected, 'unknown' if metrics unavailable.
  */
-export function getLocalMetrics(): ConnectionMetrics | 'unknown' | null {
+export function getLocalMetrics(): ConnectionMetrics | "unknown" | null {
   return voiceState.localMetrics;
 }
 
 /**
  * Get metrics for a specific participant.
  */
-export function getParticipantMetrics(userId: string): ParticipantMetrics | undefined {
+export function getParticipantMetrics(
+  userId: string,
+): ParticipantMetrics | undefined {
   return voiceState.participantMetrics.get(userId);
 }
 
@@ -829,7 +871,7 @@ export function handleVoiceUserStats(data: {
     jitter,
     quality: numberToQuality(quality),
   });
-  setVoiceState('participantMetrics', newMetrics);
+  setVoiceState("participantMetrics", newMetrics);
 }
 
 // Export the store for reading and writing

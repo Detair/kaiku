@@ -43,7 +43,12 @@ export const STATUS_COLORS = {
 } as const;
 
 /** Type of activity the user is engaged in. */
-export type ActivityType = "game" | "listening" | "watching" | "coding" | "custom";
+export type ActivityType =
+  | "game"
+  | "listening"
+  | "watching"
+  | "coding"
+  | "custom";
 
 /** Rich presence activity data. */
 export interface Activity {
@@ -245,8 +250,8 @@ export interface Attachment {
 export interface Reaction {
   emoji: string;
   count: number;
-  users?: string[];  // User IDs (for tooltip, optional)
-  me: boolean;      // Did current user react
+  users?: string[]; // User IDs (for tooltip, optional)
+  me: boolean; // Did current user react
 }
 
 export interface GuildEmoji {
@@ -426,12 +431,12 @@ export type ServerEvent =
   | { type: "unsubscribed"; channel_id: string }
   | { type: "message_new"; channel_id: string; message: Message }
   | {
-    type: "message_edit";
-    channel_id: string;
-    message_id: string;
-    content: string;
-    edited_at: string;
-  }
+      type: "message_edit";
+      channel_id: string;
+      message_id: string;
+      content: string;
+      edited_at: string;
+    }
   | { type: "message_delete"; channel_id: string; message_id: string }
   | { type: "typing_start"; channel_id: string; user_id: string }
   | { type: "typing_stop"; channel_id: string; user_id: string }
@@ -439,65 +444,94 @@ export type ServerEvent =
   | { type: "rich_presence_update"; user_id: string; activity: Activity | null }
   | { type: "voice_offer"; channel_id: string; sdp: string }
   | { type: "voice_ice_candidate"; channel_id: string; candidate: string }
-  | { type: "voice_user_joined"; channel_id: string; user_id: string; username: string; display_name: string }
+  | {
+      type: "voice_user_joined";
+      channel_id: string;
+      user_id: string;
+      username: string;
+      display_name: string;
+    }
   | { type: "voice_user_left"; channel_id: string; user_id: string }
   | { type: "voice_user_muted"; channel_id: string; user_id: string }
   | { type: "voice_user_unmuted"; channel_id: string; user_id: string }
   | {
-    type: "voice_room_state";
-    channel_id: string;
-    participants: VoiceParticipant[];
-    screen_shares?: ScreenShareServerInfo[];
-    webcams?: WebcamServerInfo[];
-  }
+      type: "voice_room_state";
+      channel_id: string;
+      participants: VoiceParticipant[];
+      screen_shares?: ScreenShareServerInfo[];
+      webcams?: WebcamServerInfo[];
+    }
   | { type: "voice_error"; code: string; message: string }
   // Screen share events
   | {
-    type: "screen_share_started";
-    channel_id: string;
-    user_id: string;
-    username: string;
-    source_label: string;
-    has_audio: boolean;
-    quality: "low" | "medium" | "high" | "premium";
-    started_at?: string;
-  }
+      type: "screen_share_started";
+      channel_id: string;
+      user_id: string;
+      username: string;
+      source_label: string;
+      has_audio: boolean;
+      quality: "low" | "medium" | "high" | "premium";
+      started_at?: string;
+    }
   | {
-    type: "screen_share_stopped";
-    channel_id: string;
-    user_id: string;
-    reason: string;
-  }
+      type: "screen_share_stopped";
+      channel_id: string;
+      user_id: string;
+      reason: string;
+    }
   | {
-    type: "screen_share_quality_changed";
-    channel_id: string;
-    user_id: string;
-    new_quality: "low" | "medium" | "high" | "premium";
-  }
+      type: "screen_share_quality_changed";
+      channel_id: string;
+      user_id: string;
+      new_quality: "low" | "medium" | "high" | "premium";
+    }
   // Webcam events
   | {
-    type: "webcam_started";
-    channel_id: string;
-    user_id: string;
-    username: string;
-    quality: "low" | "medium" | "high" | "premium";
-  }
+      type: "webcam_started";
+      channel_id: string;
+      user_id: string;
+      username: string;
+      quality: "low" | "medium" | "high" | "premium";
+    }
   | {
-    type: "webcam_stopped";
-    channel_id: string;
-    user_id: string;
-    reason: string;
-  }
+      type: "webcam_stopped";
+      channel_id: string;
+      user_id: string;
+      reason: string;
+    }
   | { type: "error"; code: string; message: string }
   // Call events
-  | { type: "incoming_call"; channel_id: string; initiator: string; initiator_name: string }
+  | {
+      type: "incoming_call";
+      channel_id: string;
+      initiator: string;
+      initiator_name: string;
+    }
   | { type: "call_started"; channel_id: string }
-  | { type: "call_ended"; channel_id: string; reason: string; duration_secs: number | null }
-  | { type: "call_participant_joined"; channel_id: string; user_id: string; username: string }
+  | {
+      type: "call_ended";
+      channel_id: string;
+      reason: string;
+      duration_secs: number | null;
+    }
+  | {
+      type: "call_participant_joined";
+      channel_id: string;
+      user_id: string;
+      username: string;
+    }
   | { type: "call_participant_left"; channel_id: string; user_id: string }
   | { type: "call_declined"; channel_id: string; user_id: string }
   // Voice metrics events
-  | { type: "voice_user_stats"; channel_id: string; user_id: string; latency: number; packet_loss: number; jitter: number; quality: number }
+  | {
+      type: "voice_user_stats";
+      channel_id: string;
+      user_id: string;
+      latency: number;
+      packet_loss: number;
+      jitter: number;
+      quality: number;
+    }
   // Admin events
   | { type: "admin_user_banned"; user_id: string; username: string }
   | { type: "admin_user_unbanned"; user_id: string; username: string }
@@ -510,32 +544,106 @@ export type ServerEvent =
   // Guild channel read sync event
   | { type: "channel_read"; channel_id: string; last_read_message_id?: string }
   // Preferences events
-  | { type: "preferences_updated"; preferences: Partial<UserPreferences>; updated_at: string }
+  | {
+      type: "preferences_updated";
+      preferences: Partial<UserPreferences>;
+      updated_at: string;
+    }
   // Reaction events
-  | { type: "reaction_add"; channel_id: string; message_id: string; user_id: string; emoji: string }
-  | { type: "reaction_remove"; channel_id: string; message_id: string; user_id: string; emoji: string }
+  | {
+      type: "reaction_add";
+      channel_id: string;
+      message_id: string;
+      user_id: string;
+      emoji: string;
+    }
+  | {
+      type: "reaction_remove";
+      channel_id: string;
+      message_id: string;
+      user_id: string;
+      emoji: string;
+    }
   // Guild emoji events
   | { type: "guild_emoji_updated"; guild_id: string; emojis: GuildEmoji[] }
   // Friend events
-  | { type: "friend_request_received"; friendship_id: string; from_user_id: string; from_username: string; from_display_name: string; from_avatar_url: string | null }
-  | { type: "friend_request_accepted"; friendship_id: string; user_id: string; username: string; display_name: string; avatar_url: string | null }
+  | {
+      type: "friend_request_received";
+      friendship_id: string;
+      from_user_id: string;
+      from_username: string;
+      from_display_name: string;
+      from_avatar_url: string | null;
+    }
+  | {
+      type: "friend_request_accepted";
+      friendship_id: string;
+      user_id: string;
+      username: string;
+      display_name: string;
+      avatar_url: string | null;
+    }
   // DM metadata events
-  | { type: "dm_name_updated"; channel_id: string; name: string; updated_by: string }
+  | {
+      type: "dm_name_updated";
+      channel_id: string;
+      name: string;
+      updated_by: string;
+    }
   // Block events
   | { type: "user_blocked"; user_id: string }
   | { type: "user_unblocked"; user_id: string }
   // Admin report events
-  | { type: "admin_report_created"; report_id: string; category: string; target_type: string }
+  | {
+      type: "admin_report_created";
+      report_id: string;
+      category: string;
+      target_type: string;
+    }
   | { type: "admin_report_resolved"; report_id: string }
   // Thread events
-  | { type: "thread_reply_new"; channel_id: string; parent_id: string; message: Message; thread_info: ThreadInfo }
-  | { type: "thread_reply_delete"; channel_id: string; parent_id: string; message_id: string; thread_info: ThreadInfo }
-  | { type: "thread_read"; thread_parent_id: string; last_read_message_id: string | null }
+  | {
+      type: "thread_reply_new";
+      channel_id: string;
+      parent_id: string;
+      message: Message;
+      thread_info: ThreadInfo;
+    }
+  | {
+      type: "thread_reply_delete";
+      channel_id: string;
+      parent_id: string;
+      message_id: string;
+      thread_info: ThreadInfo;
+    }
+  | {
+      type: "thread_read";
+      thread_parent_id: string;
+      last_read_message_id: string | null;
+    }
   // State sync events
-  | { type: "patch"; entity_type: string; entity_id: string; diff: Record<string, unknown> }
+  | {
+      type: "patch";
+      entity_type: string;
+      entity_id: string;
+      diff: Record<string, unknown>;
+    }
   // Bot command response events
-  | { type: "command_response"; interaction_id: string; content: string; command_name: string; bot_name: string; channel_id: string; ephemeral: boolean }
-  | { type: "command_response_timeout"; interaction_id: string; command_name: string; channel_id: string };
+  | {
+      type: "command_response";
+      interaction_id: string;
+      content: string;
+      command_name: string;
+      bot_name: string;
+      channel_id: string;
+      ephemeral: boolean;
+    }
+  | {
+      type: "command_response_timeout";
+      interaction_id: string;
+      command_name: string;
+      channel_id: string;
+    };
 
 // Settings Types
 
@@ -1204,7 +1312,11 @@ export interface ClaimedPrekeyInput {
 
 // Call State Types
 
-export type CallEndReason = "cancelled" | "all_declined" | "no_answer" | "last_left";
+export type CallEndReason =
+  | "cancelled"
+  | "all_declined"
+  | "no_answer"
+  | "last_left";
 
 export interface CallStateResponse {
   channel_id: string;

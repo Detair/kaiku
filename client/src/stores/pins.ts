@@ -31,7 +31,9 @@ export async function loadPins(): Promise<void> {
   }
 }
 
-export async function createPin(request: CreatePinRequest): Promise<Pin | null> {
+export async function createPin(
+  request: CreatePinRequest,
+): Promise<Pin | null> {
   try {
     const pin = await tauri.createPin(request);
     setPins((prev) => [...prev, pin]);
@@ -44,7 +46,7 @@ export async function createPin(request: CreatePinRequest): Promise<Pin | null> 
 
 export async function updatePin(
   pinId: string,
-  request: UpdatePinRequest
+  request: UpdatePinRequest,
 ): Promise<Pin | null> {
   try {
     const pin = await tauri.updatePin(pinId, request);

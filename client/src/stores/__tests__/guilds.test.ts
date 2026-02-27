@@ -134,7 +134,10 @@ describe("guilds store", () => {
 
   describe("loadGuilds", () => {
     it("loads guilds and prefetches unread counts", async () => {
-      const guilds = [createGuildObj({ id: "g1" }), createGuildObj({ id: "g2" })];
+      const guilds = [
+        createGuildObj({ id: "g1" }),
+        createGuildObj({ id: "g2" }),
+      ];
       vi.mocked(tauri.getGuilds).mockResolvedValue(guilds);
       vi.mocked(tauri.getGuildChannels).mockResolvedValue([]);
 
@@ -215,7 +218,10 @@ describe("guilds store", () => {
     });
 
     it("selects home if deleted guild was active", async () => {
-      setGuildsState({ guilds: [createGuildObj({ id: "g1" })], activeGuildId: "g1" });
+      setGuildsState({
+        guilds: [createGuildObj({ id: "g1" })],
+        activeGuildId: "g1",
+      });
       vi.mocked(tauri.deleteGuild).mockResolvedValue(undefined);
 
       await deleteGuild("g1");
@@ -297,13 +303,17 @@ describe("guilds store", () => {
 
   describe("isGuildOwner", () => {
     it("returns true for owner", () => {
-      setGuildsState({ guilds: [createGuildObj({ id: "g1", owner_id: "owner-1" })] });
+      setGuildsState({
+        guilds: [createGuildObj({ id: "g1", owner_id: "owner-1" })],
+      });
 
       expect(isGuildOwner("g1", "owner-1")).toBe(true);
     });
 
     it("returns false for non-owner", () => {
-      setGuildsState({ guilds: [createGuildObj({ id: "g1", owner_id: "owner-1" })] });
+      setGuildsState({
+        guilds: [createGuildObj({ id: "g1", owner_id: "owner-1" })],
+      });
 
       expect(isGuildOwner("g1", "other")).toBe(false);
     });
@@ -342,7 +352,9 @@ describe("guilds store", () => {
     });
 
     it("returns guild's threads_enabled setting", () => {
-      setGuildsState({ guilds: [createGuildObj({ id: "g1", threads_enabled: false })] });
+      setGuildsState({
+        guilds: [createGuildObj({ id: "g1", threads_enabled: false })],
+      });
 
       expect(areThreadsEnabled("g1")).toBe(false);
     });
@@ -387,8 +399,12 @@ describe("guilds store", () => {
 
   describe("joinViaInviteCode", () => {
     it("joins via invite code, reloads guilds and selects the joined guild", async () => {
-      vi.mocked(tauri.joinViaInvite).mockResolvedValue({ guild_id: "g1" } as any);
-      vi.mocked(tauri.getGuilds).mockResolvedValue([createGuildObj({ id: "g1" })]);
+      vi.mocked(tauri.joinViaInvite).mockResolvedValue({
+        guild_id: "g1",
+      } as any);
+      vi.mocked(tauri.getGuilds).mockResolvedValue([
+        createGuildObj({ id: "g1" }),
+      ]);
       vi.mocked(tauri.getGuildChannels).mockResolvedValue([]);
       vi.mocked(tauri.getGuildMembers).mockResolvedValue([]);
 
@@ -400,7 +416,7 @@ describe("guilds store", () => {
 
   describe("selectGuild", () => {
     it("sets active guild and clears unread", async () => {
-      setGuildsState({ guildUnreadCounts: { "g1": 5 } });
+      setGuildsState({ guildUnreadCounts: { g1: 5 } });
       vi.mocked(tauri.getGuildChannels).mockResolvedValue([]);
       vi.mocked(tauri.getGuildMembers).mockResolvedValue([]);
 

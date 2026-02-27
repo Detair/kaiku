@@ -138,8 +138,18 @@ describe("voice store", () => {
 
     it("returns array of participants", () => {
       setVoiceState("participants", {
-        "u1": { user_id: "u1", muted: false, speaking: false, screen_sharing: false },
-        "u2": { user_id: "u2", muted: true, speaking: false, screen_sharing: false },
+        u1: {
+          user_id: "u1",
+          muted: false,
+          speaking: false,
+          screen_sharing: false,
+        },
+        u2: {
+          user_id: "u2",
+          muted: true,
+          speaking: false,
+          screen_sharing: false,
+        },
       });
 
       expect(getParticipants()).toHaveLength(2);
@@ -221,7 +231,13 @@ describe("voice store", () => {
     });
 
     it("returns stored metrics", () => {
-      const metrics = { latency: 20, packetLoss: 0, jitter: 1, quality: "good" as const, timestamp: Date.now() };
+      const metrics = {
+        latency: 20,
+        packetLoss: 0,
+        jitter: 1,
+        quality: "good" as const,
+        timestamp: Date.now(),
+      };
       setVoiceState({ localMetrics: metrics });
 
       expect(getLocalMetrics()).toEqual(metrics);
@@ -257,7 +273,14 @@ describe("voice store", () => {
       setVoiceState({
         state: "connected",
         channelId: "ch-1",
-        participants: { u1: { user_id: "u1", muted: false, speaking: false, screen_sharing: false } },
+        participants: {
+          u1: {
+            user_id: "u1",
+            muted: false,
+            speaking: false,
+            screen_sharing: false,
+          },
+        },
         sessionId: "sess-1",
         connectedAt: Date.now(),
       });

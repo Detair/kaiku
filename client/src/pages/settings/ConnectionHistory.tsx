@@ -1,9 +1,9 @@
-import { Component, createResource, Show } from 'solid-js';
-import { A } from '@solidjs/router';
-import { ArrowLeft } from 'lucide-solid';
-import { fetchApi } from '../../lib/tauri';
-import { ConnectionChart } from '../../components/settings/ConnectionChart';
-import { SessionList } from '../../components/settings/SessionList';
+import { Component, createResource, Show } from "solid-js";
+import { A } from "@solidjs/router";
+import { ArrowLeft } from "lucide-solid";
+import { fetchApi } from "../../lib/tauri";
+import { ConnectionChart } from "../../components/settings/ConnectionChart";
+import { SessionList } from "../../components/settings/SessionList";
 
 interface DailyStat {
   date: string;
@@ -24,7 +24,7 @@ interface ConnectionSummary {
 }
 
 async function fetchSummary(): Promise<ConnectionSummary> {
-  return fetchApi('/api/me/connection/summary');
+  return fetchApi("/api/me/connection/summary");
 }
 
 export const ConnectionHistory: Component = () => {
@@ -56,9 +56,12 @@ export const ConnectionHistory: Component = () => {
             fallback={
               <div class="text-center py-16">
                 <div class="text-4xl mb-4">No Data</div>
-                <div class="text-lg font-medium mb-2">No voice sessions yet</div>
+                <div class="text-lg font-medium mb-2">
+                  No voice sessions yet
+                </div>
                 <div class="text-text-secondary">
-                  Join a voice channel to start tracking your connection quality over time.
+                  Join a voice channel to start tracking your connection quality
+                  over time.
                 </div>
               </div>
             }
@@ -72,19 +75,19 @@ export const ConnectionHistory: Component = () => {
                 <div class="grid grid-cols-4 gap-4 text-center">
                   <div>
                     <div class="text-2xl font-semibold">
-                      {summary()!.avg_latency ?? '-'}ms
+                      {summary()!.avg_latency ?? "-"}ms
                     </div>
                     <div class="text-xs text-text-secondary">Avg Latency</div>
                   </div>
                   <div>
                     <div class="text-2xl font-semibold">
-                      {summary()!.avg_packet_loss?.toFixed(1) ?? '-'}%
+                      {summary()!.avg_packet_loss?.toFixed(1) ?? "-"}%
                     </div>
                     <div class="text-xs text-text-secondary">Avg Loss</div>
                   </div>
                   <div>
                     <div class="text-2xl font-semibold">
-                      {summary()!.avg_jitter ?? '-'}ms
+                      {summary()!.avg_jitter ?? "-"}ms
                     </div>
                     <div class="text-xs text-text-secondary">Avg Jitter</div>
                   </div>

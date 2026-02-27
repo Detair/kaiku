@@ -6,7 +6,17 @@
 
 import { Component, createSignal, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, Palette, Volume2, Mic, Shield, Eye, User, Bell, Crosshair } from "lucide-solid";
+import {
+  X,
+  Palette,
+  Volume2,
+  Mic,
+  Shield,
+  Eye,
+  User,
+  Bell,
+  Crosshair,
+} from "lucide-solid";
 import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
 import AccountSettings from "./AccountSettings";
@@ -21,7 +31,15 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type TabId = "account" | "appearance" | "notifications" | "focus" | "audio" | "voice" | "privacy" | "security";
+type TabId =
+  | "account"
+  | "appearance"
+  | "notifications"
+  | "focus"
+  | "audio"
+  | "voice"
+  | "privacy"
+  | "security";
 
 interface TabDefinition {
   id: TabId;
@@ -54,7 +72,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
     setBackupError(null);
     try {
       const key = await invoke<{ full_key: string; chunks: string[] }>(
-        "generate_recovery_key"
+        "generate_recovery_key",
       );
       setRecoveryKey({ fullKey: key.full_key, chunks: key.chunks });
       setShowRecoveryKey(true);
@@ -121,7 +139,10 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
         onKeyDown={handleKeyDown}
         tabIndex={-1}
       >
-        <div class="border border-white/10 rounded-2xl w-[700px] max-h-[600px] flex flex-col shadow-2xl animate-[fadeIn_0.15s_ease-out]" style="background-color: var(--color-surface-layer1)">
+        <div
+          class="border border-white/10 rounded-2xl w-[700px] max-h-[600px] flex flex-col shadow-2xl animate-[fadeIn_0.15s_ease-out]"
+          style="background-color: var(--color-surface-layer1)"
+        >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
             <h2 class="text-xl font-bold text-text-primary">Settings</h2>
@@ -150,7 +171,12 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
                           activeTab() !== tab.id,
                       }}
                     >
-                      <Icon class="w-4 h-4" classList={{ "text-accent-primary": activeTab() === tab.id }} />
+                      <Icon
+                        class="w-4 h-4"
+                        classList={{
+                          "text-accent-primary": activeTab() === tab.id,
+                        }}
+                      />
                       <span class="font-medium">{tab.label}</span>
                     </button>
                   );

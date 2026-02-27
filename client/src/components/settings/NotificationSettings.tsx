@@ -32,7 +32,10 @@ const NotificationSettings: Component = () => {
     if (isWithinQuietHours()) {
       return { active: true, text: "Quiet hours active" };
     }
-    return { active: false, text: `Next quiet period: ${quietHours.startTime}` };
+    return {
+      active: false,
+      text: `Next quiet period: ${quietHours.startTime}`,
+    };
   });
 
   const handleTestSound = async () => {
@@ -211,7 +214,10 @@ const NotificationSettings: Component = () => {
                 type="time"
                 value={getQuietHours().startTime}
                 onChange={(e) =>
-                  setQuietHoursTime(e.currentTarget.value, getQuietHours().endTime)
+                  setQuietHoursTime(
+                    e.currentTarget.value,
+                    getQuietHours().endTime,
+                  )
                 }
                 class="px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary transition-colors"
               />
@@ -223,7 +229,10 @@ const NotificationSettings: Component = () => {
                 type="time"
                 value={getQuietHours().endTime}
                 onChange={(e) =>
-                  setQuietHoursTime(getQuietHours().startTime, e.currentTarget.value)
+                  setQuietHoursTime(
+                    getQuietHours().startTime,
+                    e.currentTarget.value,
+                  )
                 }
                 class="px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-sm focus:outline-none focus:border-accent-primary transition-colors"
               />
@@ -235,8 +244,10 @@ const NotificationSettings: Component = () => {
             <div
               class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
               classList={{
-                "bg-accent-primary/10 text-accent-primary": quietHoursStatus()?.active,
-                "bg-surface-highlight text-text-secondary": !quietHoursStatus()?.active,
+                "bg-accent-primary/10 text-accent-primary":
+                  quietHoursStatus()?.active,
+                "bg-surface-highlight text-text-secondary":
+                  !quietHoursStatus()?.active,
               }}
             >
               <Moon class="w-4 h-4" />

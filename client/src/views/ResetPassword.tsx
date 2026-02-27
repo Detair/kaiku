@@ -4,9 +4,10 @@ import { A, useSearchParams } from "@solidjs/router";
 const ResetPassword: Component = () => {
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
-  const storedUrl = typeof localStorage !== "undefined"
-    ? localStorage.getItem("serverUrl") || ""
-    : "";
+  const storedUrl =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("serverUrl") || ""
+      : "";
   const initialUrl = searchParams.serverUrl || storedUrl || defaultServerUrl;
   const [serverUrl, setServerUrl] = createSignal(initialUrl);
   const [token, setToken] = createSignal("");
@@ -40,11 +41,14 @@ const ResetPassword: Component = () => {
 
     setIsLoading(true);
     try {
-      const res = await fetch(`${serverUrl().replace(/\/+$/, "")}/auth/reset-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token(), new_password: newPassword() }),
-      });
+      const res = await fetch(
+        `${serverUrl().replace(/\/+$/, "")}/auth/reset-password`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: token(), new_password: newPassword() }),
+        },
+      );
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
@@ -73,7 +77,10 @@ const ResetPassword: Component = () => {
         <Show when={!success()}>
           <form onSubmit={handleSubmit} class="space-y-4">
             <div>
-              <label for="rp-server-url" class="block text-sm font-medium text-text-secondary mb-1">
+              <label
+                for="rp-server-url"
+                class="block text-sm font-medium text-text-secondary mb-1"
+              >
                 Server URL
               </label>
               <input
@@ -89,7 +96,10 @@ const ResetPassword: Component = () => {
             </div>
 
             <div>
-              <label for="rp-token" class="block text-sm font-medium text-text-secondary mb-1">
+              <label
+                for="rp-token"
+                class="block text-sm font-medium text-text-secondary mb-1"
+              >
                 Reset Code
               </label>
               <input
@@ -106,7 +116,10 @@ const ResetPassword: Component = () => {
             </div>
 
             <div>
-              <label for="rp-new-password" class="block text-sm font-medium text-text-secondary mb-1">
+              <label
+                for="rp-new-password"
+                class="block text-sm font-medium text-text-secondary mb-1"
+              >
                 New Password
               </label>
               <input
@@ -124,7 +137,10 @@ const ResetPassword: Component = () => {
             </div>
 
             <div>
-              <label for="rp-confirm-password" class="block text-sm font-medium text-text-secondary mb-1">
+              <label
+                for="rp-confirm-password"
+                class="block text-sm font-medium text-text-secondary mb-1"
+              >
                 Confirm Password
               </label>
               <input
@@ -140,7 +156,11 @@ const ResetPassword: Component = () => {
             </div>
 
             <Show when={error()}>
-              <div role="alert" class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+              <div
+                role="alert"
+                class="p-3 rounded-md text-sm"
+                style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+              >
                 {error()}
               </div>
             </Show>
@@ -172,8 +192,12 @@ const ResetPassword: Component = () => {
         </Show>
 
         <Show when={success()}>
-          <div class="p-4 rounded-md text-sm mb-4" style="background-color: var(--color-success-bg, rgba(34,197,94,0.1)); border: 1px solid var(--color-success-border, rgba(34,197,94,0.3)); color: var(--color-success-text, #22c55e)">
-            Password has been reset successfully. You can now log in with your new password.
+          <div
+            class="p-4 rounded-md text-sm mb-4"
+            style="background-color: var(--color-success-bg, rgba(34,197,94,0.1)); border: 1px solid var(--color-success-border, rgba(34,197,94,0.3)); color: var(--color-success-text, #22c55e)"
+          >
+            Password has been reset successfully. You can now log in with your
+            new password.
           </div>
           <A
             href="/login"

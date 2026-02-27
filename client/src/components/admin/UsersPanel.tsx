@@ -5,8 +5,31 @@
  * Actions require session elevation (two-tier privilege model).
  */
 
-import { Component, Show, For, onMount, createSignal, createMemo, onCleanup, createEffect } from "solid-js";
-import { Search, Ban, CheckCircle, ChevronLeft, ChevronRight, X, Clock, Crown, Loader2, Download, Square, CheckSquare, Trash2 } from "lucide-solid";
+import {
+  Component,
+  Show,
+  For,
+  onMount,
+  createSignal,
+  createMemo,
+  onCleanup,
+  createEffect,
+} from "solid-js";
+import {
+  Search,
+  Ban,
+  CheckCircle,
+  ChevronLeft,
+  ChevronRight,
+  X,
+  Clock,
+  Crown,
+  Loader2,
+  Download,
+  Square,
+  CheckSquare,
+  Trash2,
+} from "lucide-solid";
 import {
   adminState,
   loadUsers,
@@ -97,13 +120,14 @@ const UsersPanel: Component = () => {
   };
 
   // Calculate total pages
-  const totalPages = createMemo(() =>
-    Math.ceil(adminState.usersPagination.total / PAGE_SIZE) || 1
+  const totalPages = createMemo(
+    () => Math.ceil(adminState.usersPagination.total / PAGE_SIZE) || 1,
   );
 
   // Get currently selected user
-  const selectedUser = createMemo(() =>
-    adminState.users.find((u) => u.id === adminState.selectedUserId) ?? null
+  const selectedUser = createMemo(
+    () =>
+      adminState.users.find((u) => u.id === adminState.selectedUserId) ?? null,
   );
 
   // Load user details when a user is selected
@@ -298,42 +322,50 @@ const UsersPanel: Component = () => {
           tabIndex={0}
           onKeyDown={handleKeyDown}
         >
-        {/* Bulk Action Bar */}
-        <Show when={getSelectedUserCount() > 0}>
-          <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
-            <div class="flex items-center gap-3">
-              <span class="text-sm font-medium text-text-primary">
-                {getSelectedUserCount()} user{getSelectedUserCount() !== 1 ? "s" : ""} selected
-              </span>
-              <button
-                onClick={clearUserSelection}
-                class="text-sm text-text-secondary hover:text-text-primary transition-colors"
-              >
-                Clear selection
-              </button>
+          {/* Bulk Action Bar */}
+          <Show when={getSelectedUserCount() > 0}>
+            <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
+              <div class="flex items-center gap-3">
+                <span class="text-sm font-medium text-text-primary">
+                  {getSelectedUserCount()} user
+                  {getSelectedUserCount() !== 1 ? "s" : ""} selected
+                </span>
+                <button
+                  onClick={clearUserSelection}
+                  class="text-sm text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  Clear selection
+                </button>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  onClick={() => setShowBulkBanDialog(true)}
+                  disabled={
+                    !adminState.isElevated || adminState.isBulkActionLoading
+                  }
+                  class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-white text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Ban class="w-4 h-4" />
+                  Bulk Ban
+                </button>
+              </div>
             </div>
-            <div class="flex items-center gap-2">
-              <button
-                onClick={() => setShowBulkBanDialog(true)}
-                disabled={!adminState.isElevated || adminState.isBulkActionLoading}
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-white text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Ban class="w-4 h-4" />
-                Bulk Ban
-              </button>
-            </div>
-          </div>
-        </Show>
+          </Show>
 
           {/* Table Header */}
           <div class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/10 bg-white/5 text-xs font-medium text-text-secondary uppercase tracking-wide sticky top-0">
             <div class="flex items-center">
               <button
-                onClick={() => allSelected() ? clearUserSelection() : selectAllUsers()}
+                onClick={() =>
+                  allSelected() ? clearUserSelection() : selectAllUsers()
+                }
                 class="p-1 text-text-secondary hover:text-text-primary transition-colors"
                 title={allSelected() ? "Deselect all" : "Select all"}
               >
-                <Show when={allSelected()} fallback={<Square class="w-4 h-4" />}>
+                <Show
+                  when={allSelected()}
+                  fallback={<Square class="w-4 h-4" />}
+                >
                   <CheckSquare class="w-4 h-4 text-accent-primary" />
                 </Show>
               </button>
@@ -367,9 +399,12 @@ const UsersPanel: Component = () => {
                   }}
                   class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/5 cursor-pointer transition-colors"
                   classList={{
-                    "bg-accent-primary/20": adminState.selectedUserId === user.id,
+                    "bg-accent-primary/20":
+                      adminState.selectedUserId === user.id,
                     "hover:bg-white/5": adminState.selectedUserId !== user.id,
-                    "ring-2 ring-accent-primary/50 ring-inset": focusedIndex() === index() && adminState.selectedUserId !== user.id,
+                    "ring-2 ring-accent-primary/50 ring-inset":
+                      focusedIndex() === index() &&
+                      adminState.selectedUserId !== user.id,
                   }}
                 >
                   {/* Checkbox */}
@@ -381,7 +416,10 @@ const UsersPanel: Component = () => {
                       }}
                       class="p-1 text-text-secondary hover:text-text-primary transition-colors"
                     >
-                      <Show when={isUserSelected(user.id)} fallback={<Square class="w-4 h-4" />}>
+                      <Show
+                        when={isUserSelected(user.id)}
+                        fallback={<Square class="w-4 h-4" />}
+                      >
                         <CheckSquare class="w-4 h-4 text-accent-primary" />
                       </Show>
                     </button>
@@ -401,8 +439,10 @@ const UsersPanel: Component = () => {
                       <div
                         class="text-xs truncate"
                         classList={{
-                          "text-text-primary": adminState.selectedUserId === user.id,
-                          "text-text-secondary": adminState.selectedUserId !== user.id,
+                          "text-text-primary":
+                            adminState.selectedUserId === user.id,
+                          "text-text-secondary":
+                            adminState.selectedUserId !== user.id,
                         }}
                       >
                         @{user.username}
@@ -414,8 +454,10 @@ const UsersPanel: Component = () => {
                   <div
                     class="flex items-center text-sm truncate"
                     classList={{
-                      "text-text-primary": adminState.selectedUserId === user.id,
-                      "text-text-secondary": adminState.selectedUserId !== user.id,
+                      "text-text-primary":
+                        adminState.selectedUserId === user.id,
+                      "text-text-secondary":
+                        adminState.selectedUserId !== user.id,
                     }}
                   >
                     {user.email || "-"}
@@ -425,8 +467,10 @@ const UsersPanel: Component = () => {
                   <div
                     class="flex items-center text-sm"
                     classList={{
-                      "text-text-primary": adminState.selectedUserId === user.id,
-                      "text-text-secondary": adminState.selectedUserId !== user.id,
+                      "text-text-primary":
+                        adminState.selectedUserId === user.id,
+                      "text-text-secondary":
+                        adminState.selectedUserId !== user.id,
                     }}
                   >
                     {formatDate(user.created_at)}
@@ -512,7 +556,9 @@ const UsersPanel: Component = () => {
                   <div class="text-lg font-bold text-text-primary">
                     {user().display_name}
                   </div>
-                  <div class="text-sm text-text-secondary">@{user().username}</div>
+                  <div class="text-sm text-text-secondary">
+                    @{user().username}
+                  </div>
                 </div>
               </div>
 
@@ -567,7 +613,9 @@ const UsersPanel: Component = () => {
                     <Clock class="w-4 h-4 text-text-secondary" />
                     <Show
                       when={!adminState.isUserDetailsLoading}
-                      fallback={<Loader2 class="w-4 h-4 animate-spin text-text-secondary" />}
+                      fallback={
+                        <Loader2 class="w-4 h-4 animate-spin text-text-secondary" />
+                      }
                     >
                       {adminState.selectedUserDetails?.last_login
                         ? formatDate(adminState.selectedUserDetails.last_login)
@@ -579,16 +627,21 @@ const UsersPanel: Component = () => {
                 {/* Guild Memberships - from user details */}
                 <div class="space-y-2">
                   <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                    Guilds ({adminState.selectedUserDetails?.guild_count ?? "-"})
+                    Guilds ({adminState.selectedUserDetails?.guild_count ?? "-"}
+                    )
                   </div>
                   <Show
                     when={!adminState.isUserDetailsLoading}
-                    fallback={<Loader2 class="w-4 h-4 animate-spin text-text-secondary" />}
+                    fallback={
+                      <Loader2 class="w-4 h-4 animate-spin text-text-secondary" />
+                    }
                   >
                     <Show
                       when={adminState.selectedUserDetails?.guilds.length}
                       fallback={
-                        <div class="text-sm text-text-secondary">No guild memberships</div>
+                        <div class="text-sm text-text-secondary">
+                          No guild memberships
+                        </div>
                       }
                     >
                       <div class="space-y-2 max-h-32 overflow-y-auto">
@@ -686,9 +739,7 @@ const UsersPanel: Component = () => {
             style="background-color: var(--color-surface-layer1)"
           >
             <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-text-primary">
-                Ban User
-              </h3>
+              <h3 class="text-lg font-bold text-text-primary">Ban User</h3>
 
               <p class="text-sm text-text-secondary">
                 Are you sure you want to ban{" "}
@@ -756,7 +807,8 @@ const UsersPanel: Component = () => {
               <p class="text-sm text-text-secondary">
                 Are you sure you want to ban{" "}
                 <span class="font-medium text-text-primary">
-                  {getSelectedUserCount()} user{getSelectedUserCount() !== 1 ? "s" : ""}
+                  {getSelectedUserCount()} user
+                  {getSelectedUserCount() !== 1 ? "s" : ""}
                 </span>
                 ? They will be unable to access the platform.
               </p>
@@ -789,7 +841,9 @@ const UsersPanel: Component = () => {
                   disabled={!bulkBanReason().trim() || actionLoading()}
                   class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {actionLoading() ? "Banning..." : `Ban ${getSelectedUserCount()} Users`}
+                  {actionLoading()
+                    ? "Banning..."
+                    : `Ban ${getSelectedUserCount()} Users`}
                 </button>
               </div>
             </div>
@@ -803,7 +857,10 @@ const UsersPanel: Component = () => {
           {/* Backdrop */}
           <div
             class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => { setShowDeleteDialog(false); setDeleteConfirmText(""); }}
+            onClick={() => {
+              setShowDeleteDialog(false);
+              setDeleteConfirmText("");
+            }}
           />
 
           {/* Dialog */}
@@ -812,21 +869,26 @@ const UsersPanel: Component = () => {
             style="background-color: var(--color-surface-layer1)"
           >
             <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-status-error">
-                Delete User
-              </h3>
+              <h3 class="text-lg font-bold text-status-error">Delete User</h3>
 
               <p class="text-sm text-text-secondary">
                 Are you sure you want to permanently delete{" "}
                 <span class="font-medium text-text-primary">
                   @{selectedUser()?.username}
                 </span>
-                ? This action is <span class="font-bold text-status-error">irreversible</span> and will remove all their data including messages, guild memberships, and sessions.
+                ? This action is{" "}
+                <span class="font-bold text-status-error">irreversible</span>{" "}
+                and will remove all their data including messages, guild
+                memberships, and sessions.
               </p>
 
               <div class="space-y-2">
                 <label class="text-sm font-medium text-text-secondary">
-                  Type <span class="font-mono text-text-primary">{selectedUser()?.username}</span> to confirm
+                  Type{" "}
+                  <span class="font-mono text-text-primary">
+                    {selectedUser()?.username}
+                  </span>{" "}
+                  to confirm
                 </label>
                 <input
                   type="text"
@@ -839,14 +901,20 @@ const UsersPanel: Component = () => {
 
               <div class="flex gap-3 pt-2">
                 <button
-                  onClick={() => { setShowDeleteDialog(false); setDeleteConfirmText(""); }}
+                  onClick={() => {
+                    setShowDeleteDialog(false);
+                    setDeleteConfirmText("");
+                  }}
                   class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleDelete}
-                  disabled={deleteConfirmText() !== selectedUser()?.username || actionLoading()}
+                  disabled={
+                    deleteConfirmText() !== selectedUser()?.username ||
+                    actionLoading()
+                  }
                   class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading() ? "Deleting..." : "Delete Permanently"}

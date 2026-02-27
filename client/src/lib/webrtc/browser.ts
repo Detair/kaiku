@@ -20,7 +20,9 @@ import type {
 } from "./types";
 
 /** HTMLAudioElement extended with the non-standard setSinkId API (Chrome/Edge). */
-type AudioElementWithSinkId = HTMLAudioElement & { setSinkId(id: string): Promise<void> };
+type AudioElementWithSinkId = HTMLAudioElement & {
+  setSinkId(id: string): Promise<void>;
+};
 
 export class BrowserVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
@@ -61,7 +63,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   // Output device selection implemented via setSinkId API (no need to store deviceId)
 
   // Metrics tracking for delta calculation
-  private prevStats: { lost: number; received: number; timestamp: number } | null = null;
+  private prevStats: {
+    lost: number;
+    received: number;
+    timestamp: number;
+  } | null = null;
 
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
@@ -85,7 +91,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Get microphone access
       const constraints: MediaStreamConstraints = {
         audio: {
-          deviceId: this.inputDeviceId ? { exact: this.inputDeviceId } : undefined,
+          deviceId: this.inputDeviceId
+            ? { exact: this.inputDeviceId }
+            : undefined,
           noiseSuppression: this.noiseSuppression,
           echoCancellation: true,
           autoGainControl: true,
@@ -110,7 +118,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.peerConnection!.addTrack(track, this.localStream!);
       });
 
-      console.log("[BrowserVoiceAdapter] Peer connection created, sending voice_join");
+      console.log(
+        "[BrowserVoiceAdapter] Peer connection created, sending voice_join",
+      );
 
       // Ensure WebSocket is connected before sending
       const { wsSend, wsStatus, wsConnect } = await import("@/lib/tauri");
@@ -121,14 +131,21 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // If disconnected, try to connect
       if (status.type === "disconnected") {
-        console.log("[BrowserVoiceAdapter] WebSocket disconnected, attempting to connect...");
+        console.log(
+          "[BrowserVoiceAdapter] WebSocket disconnected, attempting to connect...",
+        );
         try {
           await wsConnect();
           status = await wsStatus();
           console.log("[BrowserVoiceAdapter] WebSocket reconnected:", status);
         } catch (err) {
-          console.error("[BrowserVoiceAdapter] Failed to connect WebSocket:", err);
-          throw new Error("Failed to connect to server. Please refresh the page.");
+          console.error(
+            "[BrowserVoiceAdapter] Failed to connect WebSocket:",
+            err,
+          );
+          throw new Error(
+            "Failed to connect to server. Please refresh the page.",
+          );
         }
       }
 
@@ -139,7 +156,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         if (status.type === "disconnected") {
           throw new Error("WebSocket disconnected unexpectedly.");
         }
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
         status = await wsStatus();
         attempts++;
       }
@@ -257,9 +274,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
             echoCancellation: true, // Keep echo cancellation on
             autoGainControl: true,
           });
-          console.log("[BrowserVoiceAdapter] Applied constraints to active track");
+          console.log(
+            "[BrowserVoiceAdapter] Applied constraints to active track",
+          );
         } catch (err) {
-          console.warn("[BrowserVoiceAdapter] Failed to apply constraints, restarting stream needed:", err);
+          console.warn(
+            "[BrowserVoiceAdapter] Failed to apply constraints, restarting stream needed:",
+            err,
+          );
           // If applyConstraints fails (some browsers), we might need to restart the stream
           // For now, we accept best-effort or require rejoin/device switch
         }
@@ -273,9 +295,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   async handleOffer(
     channelId: string,
-    sdp: string
+    sdp: string,
   ): Promise<VoiceResult<string>> {
-    console.log(`[BrowserVoiceAdapter] Handling offer for channel: ${channelId}`);
+    console.log(
+      `[BrowserVoiceAdapter] Handling offer for channel: ${channelId}`,
+    );
 
     if (!this.peerConnection) {
       return {
@@ -323,12 +347,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   async handleIceCandidate(
     channelId: string,
-    candidate: string
+    candidate: string,
   ): Promise<VoiceResult<void>> {
     const startTime = performance.now();
 
     if (!this.peerConnection) {
-      console.warn("[BrowserVoiceAdapter] No peer connection for ICE candidate");
+      console.warn(
+        "[BrowserVoiceAdapter] No peer connection for ICE candidate",
+      );
       return {
         ok: false,
         error: { type: "not_connected" },
@@ -336,7 +362,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     if (this.channelId !== channelId) {
-      console.warn(`[BrowserVoiceAdapter] ICE candidate for wrong channel: ${channelId}`);
+      console.warn(
+        `[BrowserVoiceAdapter] ICE candidate for wrong channel: ${channelId}`,
+      );
       return {
         ok: false,
         error: {
@@ -351,16 +379,21 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Parse and add ICE candidate immediately (critical for NAT traversal)
       const candidateInit = JSON.parse(candidate);
       await this.peerConnection.addIceCandidate(
-        new RTCIceCandidate(candidateInit)
+        new RTCIceCandidate(candidateInit),
       );
 
       const elapsed = performance.now() - startTime;
-      console.log(`[BrowserVoiceAdapter] ICE candidate added successfully (${elapsed.toFixed(2)}ms)`);
+      console.log(
+        `[BrowserVoiceAdapter] ICE candidate added successfully (${elapsed.toFixed(2)}ms)`,
+      );
 
       return { ok: true, value: undefined };
     } catch (err) {
       const elapsed = performance.now() - startTime;
-      console.error(`[BrowserVoiceAdapter] Failed to add ICE candidate after ${elapsed.toFixed(2)}ms:`, err);
+      console.error(
+        `[BrowserVoiceAdapter] Failed to add ICE candidate after ${elapsed.toFixed(2)}ms:`,
+        err,
+      );
 
       return {
         ok: false,
@@ -394,11 +427,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return this.noiseSuppression;
   }
 
-  private calculateQuality(latency: number, loss: number, jitter: number): QualityLevel {
+  private calculateQuality(
+    latency: number,
+    loss: number,
+    jitter: number,
+  ): QualityLevel {
     // Semantic quality levels: good > warning > poor > unknown
-    if (latency > 200 || loss > 3 || jitter > 50) return 'poor';
-    if (latency > 100 || loss > 1 || jitter > 30) return 'warning';
-    return 'good';
+    if (latency > 200 || loss > 3 || jitter > 50) return "poor";
+    if (latency > 100 || loss > 1 || jitter > 30) return "warning";
+    return "good";
   }
 
   async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
@@ -412,10 +449,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       let totalReceived = 0;
 
       stats.forEach((report) => {
-        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+        if (report.type === "candidate-pair" && report.state === "succeeded") {
           latency = (report.currentRoundTripTime ?? 0) * 1000;
         }
-        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+        if (report.type === "inbound-rtp" && report.kind === "audio") {
           totalLost += report.packetsLost ?? 0;
           totalReceived += report.packetsReceived ?? 0;
           jitter = Math.max(jitter, (report.jitter ?? 0) * 1000);
@@ -436,7 +473,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         }
       }
 
-      this.prevStats = { lost: totalLost, received: totalReceived, timestamp: now };
+      this.prevStats = {
+        lost: totalLost,
+        received: totalReceived,
+        timestamp: now,
+      };
 
       return {
         latency: Math.round(latency),
@@ -446,7 +487,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         timestamp: now,
       };
     } catch (err) {
-      console.warn('Failed to extract metrics:', err);
+      console.warn("Failed to extract metrics:", err);
       return null;
     }
   }
@@ -468,14 +509,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const constraints: MediaStreamConstraints = {
         audio: deviceId ? { deviceId: { exact: deviceId } } : true,
       };
-      this.micTestStream = await navigator.mediaDevices.getUserMedia(
-        constraints
-      );
+      this.micTestStream =
+        await navigator.mediaDevices.getUserMedia(constraints);
 
       // Set up audio analysis for level metering
       this.audioContext = new AudioContext();
       const source = this.audioContext.createMediaStreamSource(
-        this.micTestStream
+        this.micTestStream,
       );
       this.micTestAnalyser = this.audioContext.createAnalyser();
       this.micTestAnalyser.fftSize = 256;
@@ -567,9 +607,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
             autoGainControl: true,
           },
         };
-        this.localStream = await navigator.mediaDevices.getUserMedia(
-          constraints
-        );
+        this.localStream =
+          await navigator.mediaDevices.getUserMedia(constraints);
 
         // Replace tracks in peer connection
         const sender = this.peerConnection
@@ -597,7 +636,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     try {
       for (const stream of this.remoteStreams.values()) {
         const audioElements = document.querySelectorAll(
-          `audio[data-stream-id="${stream.id}"]`
+          `audio[data-stream-id="${stream.id}"]`,
         );
         audioElements.forEach((audio) => {
           if ("setSinkId" in audio) {
@@ -641,18 +680,25 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return { hasAudio, sourceLabel };
   }
 
-  async startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>> {
+  async startScreenShare(
+    options?: ScreenShareOptions,
+  ): Promise<VoiceResult<void>> {
     if (!this.peerConnection) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
     if (this.screenShareStream) {
-      return { ok: false, error: { type: "unknown", message: "Already sharing screen" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Already sharing screen" },
+      };
     }
 
     try {
       // Request display media with quality constraints
-      const constraints = this.getDisplayMediaConstraints(options?.quality ?? "medium");
+      const constraints = this.getDisplayMediaConstraints(
+        options?.quality ?? "medium",
+      );
 
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: constraints.video,
@@ -662,8 +708,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Get the video track
       const videoTrack = stream.getVideoTracks()[0];
       if (!videoTrack) {
-        stream.getTracks().forEach(t => t.stop());
-        return { ok: false, error: { type: "unknown", message: "No video track in stream" } };
+        stream.getTracks().forEach((t) => t.stop());
+        return {
+          ok: false,
+          error: { type: "unknown", message: "No video track in stream" },
+        };
       }
 
       // Listen for track ending (user clicked "Stop sharing" in browser UI)
@@ -678,7 +727,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // If audio track present, add it too
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
-        this.screenShareAudioTrack = this.peerConnection.addTrack(audioTrack, stream);
+        this.screenShareAudioTrack = this.peerConnection.addTrack(
+          audioTrack,
+          stream,
+        );
       }
 
       this.screenShareStream = stream;
@@ -700,7 +752,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
               ok: false,
               error: {
                 type: "permission_denied",
-                message: "Screen share permission denied. Please allow screen sharing in your browser.",
+                message:
+                  "Screen share permission denied. Please allow screen sharing in your browser.",
               },
             };
           case "AbortError":
@@ -724,7 +777,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
               ok: false,
               error: {
                 type: "hardware_error",
-                message: "Could not access screen. Another app may be blocking screen capture.",
+                message:
+                  "Could not access screen. Another app may be blocking screen capture.",
               },
             };
           case "OverconstrainedError":
@@ -732,7 +786,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
               ok: false,
               error: {
                 type: "constraint_error",
-                message: "Screen share quality settings not supported by your system",
+                message:
+                  "Screen share quality settings not supported by your system",
               },
             };
           default:
@@ -762,13 +817,19 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         };
       }
 
-      return { ok: false, error: { type: "unknown", message: "Screen share failed unexpectedly" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Screen share failed unexpectedly" },
+      };
     }
   }
 
   async stopScreenShare(): Promise<VoiceResult<void>> {
     if (!this.screenShareStream) {
-      return { ok: false, error: { type: "unknown", message: "Not sharing screen" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Not sharing screen" },
+      };
     }
 
     try {
@@ -793,7 +854,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     if (this.webcamStream) {
-      return { ok: false, error: { type: "unknown", message: "Webcam already active" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Webcam already active" },
+      };
     }
 
     try {
@@ -809,8 +873,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const videoTrack = stream.getVideoTracks()[0];
       if (!videoTrack) {
-        stream.getTracks().forEach(t => t.stop());
-        return { ok: false, error: { type: "unknown", message: "No video track in webcam stream" } };
+        stream.getTracks().forEach((t) => t.stop());
+        return {
+          ok: false,
+          error: {
+            type: "unknown",
+            message: "No video track in webcam stream",
+          },
+        };
       }
 
       // Listen for track ending (e.g., user revokes camera permission)
@@ -833,7 +903,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   async stopWebcam(): Promise<VoiceResult<void>> {
     if (!this.webcamStream) {
-      return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
+      return {
+        ok: false,
+        error: { type: "unknown", message: "Webcam not active" },
+      };
     }
 
     try {
@@ -860,7 +933,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.eventHandlers.onStateChange?.(state);
   }
 
-  private getDisplayMediaConstraints(quality: ScreenShareQuality): DisplayMediaStreamOptions {
+  private getDisplayMediaConstraints(
+    quality: ScreenShareQuality,
+  ): DisplayMediaStreamOptions {
     const qualitySettings = {
       low: { width: 854, height: 480, frameRate: 15 },
       medium: { width: 1280, height: 720, frameRate: 30 },
@@ -900,7 +975,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Stop the stream tracks
     if (this.screenShareStream) {
-      this.screenShareStream.getTracks().forEach(track => track.stop());
+      this.screenShareStream.getTracks().forEach((track) => track.stop());
     }
 
     // Clear state
@@ -917,7 +992,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Stop the stream tracks
     if (this.webcamStream) {
-      this.webcamStream.getTracks().forEach(track => track.stop());
+      this.webcamStream.getTracks().forEach((track) => track.stop());
     }
 
     // Clear state
@@ -967,7 +1042,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Server-driven renegotiation: suppress browser-initiated negotiation
     this.peerConnection.onnegotiationneeded = () => {
-      console.log("[BrowserVoiceAdapter] Negotiation needed (server-driven, ignoring)");
+      console.log(
+        "[BrowserVoiceAdapter] Negotiation needed (server-driven, ignoring)",
+      );
     };
 
     // Remote track handler
@@ -978,7 +1055,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Parse stream ID format: "{userId}:{sourceType}" (e.g. "uuid:Webcam", "uuid:ScreenVideo")
       const [userId, sourceType] = stream.id.split(":");
 
-      console.log(`[BrowserVoiceAdapter] Remote ${track.kind} track received, source: ${sourceType}, from: ${userId}`);
+      console.log(
+        `[BrowserVoiceAdapter] Remote ${track.kind} track received, source: ${sourceType}, from: ${userId}`,
+      );
 
       if (track.kind === "video") {
         if (sourceType === "Webcam") {
@@ -987,12 +1066,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           this.eventHandlers.onWebcamTrack?.(userId, track);
 
           track.onended = () => {
-            console.log("[BrowserVoiceAdapter] Webcam track ended for:", userId);
+            console.log(
+              "[BrowserVoiceAdapter] Webcam track ended for:",
+              userId,
+            );
             this.eventHandlers.onWebcamTrackRemoved?.(userId);
           };
         } else {
           // Screen share video track (ScreenVideo or fallback)
-          console.log("[BrowserVoiceAdapter] Screen share video track from:", userId);
+          console.log(
+            "[BrowserVoiceAdapter] Screen share video track from:",
+            userId,
+          );
           this.eventHandlers.onScreenShareTrack?.(userId, track);
 
           track.onended = () => {
@@ -1030,7 +1115,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     try {
       // Create audio context for VAD
       this.vadAudioContext = new AudioContext();
-      const source = this.vadAudioContext.createMediaStreamSource(this.localStream);
+      const source = this.vadAudioContext.createMediaStreamSource(
+        this.localStream,
+      );
       this.vadAnalyser = this.vadAudioContext.createAnalyser();
       this.vadAnalyser.fftSize = 256;
       source.connect(this.vadAnalyser);

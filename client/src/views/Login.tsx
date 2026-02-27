@@ -1,6 +1,12 @@
 import { Component, createSignal, createResource, Show, For } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
-import { login, loginWithOidc, authState, clearError, setAuthState } from "@/stores/auth";
+import {
+  login,
+  loginWithOidc,
+  authState,
+  clearError,
+  setAuthState,
+} from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { Github, Chrome, KeyRound, ShieldCheck } from "lucide-solid";
@@ -76,7 +82,7 @@ const Login: Component = () => {
         serverUrl(),
         username(),
         password(),
-        authState.mfaRequired ? mfaCode() : undefined
+        authState.mfaRequired ? mfaCode() : undefined,
       );
       navigate("/", { replace: true });
     } catch (err) {
@@ -111,7 +117,7 @@ const Login: Component = () => {
           result.tokens.access_token,
           result.tokens.refresh_token,
           result.tokens.expires_in || 900,
-          result.tokens.setup_required ?? false
+          result.tokens.setup_required ?? false,
         );
         navigate("/", { replace: true });
         setOidcLoading(null);
@@ -130,19 +136,26 @@ const Login: Component = () => {
             event.data.access_token,
             event.data.refresh_token,
             event.data.expires_in || 900,
-            event.data.setup_required ?? false
-          ).then(() => {
-            navigate("/", { replace: true });
-          }).catch(() => {
-            // Error is set in auth store
-          }).finally(() => {
-            setOidcLoading(null);
-          });
+            event.data.setup_required ?? false,
+          )
+            .then(() => {
+              navigate("/", { replace: true });
+            })
+            .catch(() => {
+              // Error is set in auth store
+            })
+            .finally(() => {
+              setOidcLoading(null);
+            });
         }
       };
       window.addEventListener("message", messageHandler);
 
-      const popup = window.open(result.authUrl, "oidc-login", "width=600,height=700");
+      const popup = window.open(
+        result.authUrl,
+        "oidc-login",
+        "width=600,height=700",
+      );
 
       // Cleanup if popup is closed without completing
       const checkClosed = setInterval(() => {
@@ -193,7 +206,9 @@ const Login: Component = () => {
             placeholder="https://chat.example.com"
             value={serverUrl()}
             onInput={(e) => handleServerUrlChange(e.currentTarget.value)}
-            disabled={authState.isLoading || !!oidcLoading() || authState.mfaRequired}
+            disabled={
+              authState.isLoading || !!oidcLoading() || authState.mfaRequired
+            }
             required
           />
         </div>
@@ -204,7 +219,8 @@ const Login: Component = () => {
             <div class="flex items-center gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg">
               <ShieldCheck class="w-5 h-5 text-accent-primary flex-shrink-0" />
               <p class="text-sm text-text-secondary">
-                Two-factor authentication is enabled. Enter a code from your authenticator app or a backup code.
+                Two-factor authentication is enabled. Enter a code from your
+                authenticator app or a backup code.
               </p>
             </div>
 
@@ -217,7 +233,9 @@ const Login: Component = () => {
                 class="input-field font-mono text-center text-lg tracking-widest"
                 placeholder="000000"
                 value={mfaCode()}
-                onInput={(e) => setMfaCode(e.currentTarget.value.replace(/\s/g, ""))}
+                onInput={(e) =>
+                  setMfaCode(e.currentTarget.value.replace(/\s/g, ""))
+                }
                 disabled={authState.isLoading}
                 maxLength={20}
                 autofocus
@@ -229,7 +247,10 @@ const Login: Component = () => {
             </div>
 
             <Show when={error()}>
-              <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+              <div
+                class="p-3 rounded-md text-sm"
+                style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+              >
                 {error()}
               </div>
             </Show>
@@ -298,7 +319,9 @@ const Login: Component = () => {
                   <div class="w-full border-t border-white/10" />
                 </div>
                 <div class="relative flex justify-center text-xs">
-                  <span class="bg-background-secondary px-3 text-text-muted">or</span>
+                  <span class="bg-background-secondary px-3 text-text-muted">
+                    or
+                  </span>
                 </div>
               </div>
             </Show>
@@ -338,13 +361,19 @@ const Login: Component = () => {
               </div>
 
               <div class="text-right">
-                <A href="/forgot-password" class="text-sm text-primary hover:underline">
+                <A
+                  href="/forgot-password"
+                  class="text-sm text-primary hover:underline"
+                >
                   Forgot password?
                 </A>
               </div>
 
               <Show when={error()}>
-                <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+                <div
+                  class="p-3 rounded-md text-sm"
+                  style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+                >
                   {error()}
                 </div>
               </Show>
@@ -371,7 +400,10 @@ const Login: Component = () => {
 
           {/* Error display when no local login form */}
           <Show when={!showLocalLogin() && error()}>
-            <div class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+            <div
+              class="p-3 rounded-md text-sm"
+              style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+            >
               {error()}
             </div>
           </Show>

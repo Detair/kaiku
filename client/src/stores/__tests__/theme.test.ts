@@ -47,7 +47,7 @@ describe("theme store", () => {
         expect(typeof theme.description).toBe("string");
 
         expect(typeof theme.isDark).toBe("boolean");
-      }
+      },
     );
 
     it.each(availableThemes)(
@@ -55,7 +55,7 @@ describe("theme store", () => {
       (theme) => {
         const validFamilies: ThemeFamily[] = ["standard", "pixel"];
         expect(validFamilies).toContain(theme.family);
-      }
+      },
     );
 
     it.each(availableThemes)(
@@ -71,7 +71,7 @@ describe("theme store", () => {
         expect(theme.preview.surface).toMatch(hexPattern);
         expect(theme.preview.accent).toMatch(hexPattern);
         expect(theme.preview.text).toMatch(hexPattern);
-      }
+      },
     );
   });
 
@@ -102,7 +102,7 @@ describe("theme store", () => {
 
     it("standard themes should not have IDs starting with 'pixel-'", () => {
       const standardThemes = availableThemes.filter(
-        (t) => t.family === "standard"
+        (t) => t.family === "standard",
       );
       for (const theme of standardThemes) {
         expect(theme.id).not.toMatch(/^pixel-/);

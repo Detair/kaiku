@@ -5,7 +5,16 @@
  * Actions require session elevation (two-tier privilege model).
  */
 
-import { Component, Show, For, onMount, createSignal, createMemo, onCleanup, createEffect } from "solid-js";
+import {
+  Component,
+  Show,
+  For,
+  onMount,
+  createSignal,
+  createMemo,
+  onCleanup,
+  createEffect,
+} from "solid-js";
 import {
   Search,
   Ban,
@@ -110,13 +119,15 @@ const GuildsPanel: Component = () => {
   };
 
   // Calculate total pages
-  const totalPages = createMemo(() =>
-    Math.ceil(adminState.guildsPagination.total / PAGE_SIZE) || 1
+  const totalPages = createMemo(
+    () => Math.ceil(adminState.guildsPagination.total / PAGE_SIZE) || 1,
   );
 
   // Get currently selected guild
-  const selectedGuild = createMemo(() =>
-    adminState.guilds.find((g) => g.id === adminState.selectedGuildId) ?? null
+  const selectedGuild = createMemo(
+    () =>
+      adminState.guilds.find((g) => g.id === adminState.selectedGuildId) ??
+      null,
   );
 
   // Load guild details when a guild is selected
@@ -316,42 +327,50 @@ const GuildsPanel: Component = () => {
           tabIndex={0}
           onKeyDown={handleKeyDown}
         >
-        {/* Bulk Action Bar */}
-        <Show when={getSelectedGuildCount() > 0}>
-          <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
-            <div class="flex items-center gap-3">
-              <span class="text-sm font-medium text-text-primary">
-                {getSelectedGuildCount()} guild{getSelectedGuildCount() !== 1 ? "s" : ""} selected
-              </span>
-              <button
-                onClick={clearGuildSelection}
-                class="text-sm text-text-secondary hover:text-text-primary transition-colors"
-              >
-                Clear selection
-              </button>
+          {/* Bulk Action Bar */}
+          <Show when={getSelectedGuildCount() > 0}>
+            <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
+              <div class="flex items-center gap-3">
+                <span class="text-sm font-medium text-text-primary">
+                  {getSelectedGuildCount()} guild
+                  {getSelectedGuildCount() !== 1 ? "s" : ""} selected
+                </span>
+                <button
+                  onClick={clearGuildSelection}
+                  class="text-sm text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  Clear selection
+                </button>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  onClick={() => setShowBulkSuspendDialog(true)}
+                  disabled={
+                    !adminState.isElevated || adminState.isBulkActionLoading
+                  }
+                  class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-white text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Ban class="w-4 h-4" />
+                  Bulk Suspend
+                </button>
+              </div>
             </div>
-            <div class="flex items-center gap-2">
-              <button
-                onClick={() => setShowBulkSuspendDialog(true)}
-                disabled={!adminState.isElevated || adminState.isBulkActionLoading}
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-white text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Ban class="w-4 h-4" />
-                Bulk Suspend
-              </button>
-            </div>
-          </div>
-        </Show>
+          </Show>
 
           {/* Table Header */}
           <div class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/10 bg-surface-layer1 text-xs font-medium text-text-secondary uppercase tracking-wide sticky top-0 z-10">
             <div class="flex items-center">
               <button
-                onClick={() => allSelected() ? clearGuildSelection() : selectAllGuilds()}
+                onClick={() =>
+                  allSelected() ? clearGuildSelection() : selectAllGuilds()
+                }
                 class="p-1 text-text-secondary hover:text-text-primary transition-colors"
                 title={allSelected() ? "Deselect all" : "Select all"}
               >
-                <Show when={allSelected()} fallback={<Square class="w-4 h-4" />}>
+                <Show
+                  when={allSelected()}
+                  fallback={<Square class="w-4 h-4" />}
+                >
                   <CheckSquare class="w-4 h-4 text-accent-primary" />
                 </Show>
               </button>
@@ -385,9 +404,12 @@ const GuildsPanel: Component = () => {
                   }}
                   class="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/5 cursor-pointer transition-colors"
                   classList={{
-                    "bg-accent-primary/20": adminState.selectedGuildId === guild.id,
+                    "bg-accent-primary/20":
+                      adminState.selectedGuildId === guild.id,
                     "hover:bg-white/5": adminState.selectedGuildId !== guild.id,
-                    "ring-2 ring-accent-primary/50 ring-inset": focusedIndex() === index() && adminState.selectedGuildId !== guild.id,
+                    "ring-2 ring-accent-primary/50 ring-inset":
+                      focusedIndex() === index() &&
+                      adminState.selectedGuildId !== guild.id,
                   }}
                 >
                   {/* Checkbox */}
@@ -399,7 +421,10 @@ const GuildsPanel: Component = () => {
                       }}
                       class="p-1 text-text-secondary hover:text-text-primary transition-colors"
                     >
-                      <Show when={isGuildSelected(guild.id)} fallback={<Square class="w-4 h-4" />}>
+                      <Show
+                        when={isGuildSelected(guild.id)}
+                        fallback={<Square class="w-4 h-4" />}
+                      >
                         <CheckSquare class="w-4 h-4 text-accent-primary" />
                       </Show>
                     </button>
@@ -407,11 +432,7 @@ const GuildsPanel: Component = () => {
 
                   {/* Name */}
                   <div class="flex items-center gap-3 min-w-0">
-                    <Avatar
-                      src={guild.icon_url}
-                      alt={guild.name}
-                      size="sm"
-                    />
+                    <Avatar src={guild.icon_url} alt={guild.name} size="sm" />
                     <div class="text-sm font-medium text-text-primary truncate">
                       {guild.name}
                     </div>
@@ -421,8 +442,10 @@ const GuildsPanel: Component = () => {
                   <div
                     class="flex items-center gap-2 text-sm"
                     classList={{
-                      "text-text-primary": adminState.selectedGuildId === guild.id,
-                      "text-text-secondary": adminState.selectedGuildId !== guild.id,
+                      "text-text-primary":
+                        adminState.selectedGuildId === guild.id,
+                      "text-text-secondary":
+                        adminState.selectedGuildId !== guild.id,
                     }}
                   >
                     <Users class="w-4 h-4" />
@@ -433,8 +456,10 @@ const GuildsPanel: Component = () => {
                   <div
                     class="flex items-center text-sm"
                     classList={{
-                      "text-text-primary": adminState.selectedGuildId === guild.id,
-                      "text-text-secondary": adminState.selectedGuildId !== guild.id,
+                      "text-text-primary":
+                        adminState.selectedGuildId === guild.id,
+                      "text-text-secondary":
+                        adminState.selectedGuildId !== guild.id,
                     }}
                   >
                     {formatDate(guild.created_at)}
@@ -511,11 +536,7 @@ const GuildsPanel: Component = () => {
             <div class="flex-1 p-4 space-y-6 overflow-auto">
               {/* Profile Section */}
               <div class="flex flex-col items-center text-center space-y-3">
-                <Avatar
-                  src={guild().icon_url}
-                  alt={guild().name}
-                  size="lg"
-                />
+                <Avatar src={guild().icon_url} alt={guild().name} size="lg" />
                 <div class="text-lg font-bold text-text-primary">
                   {guild().name}
                 </div>
@@ -539,7 +560,10 @@ const GuildsPanel: Component = () => {
                     Owner
                   </div>
                   <Show
-                    when={!adminState.isGuildDetailsLoading && adminState.selectedGuildDetails?.owner}
+                    when={
+                      !adminState.isGuildDetailsLoading &&
+                      adminState.selectedGuildDetails?.owner
+                    }
                     fallback={
                       <Show
                         when={adminState.isGuildDetailsLoading}
@@ -556,13 +580,18 @@ const GuildsPanel: Component = () => {
                     <div class="flex items-center gap-2 p-2 rounded-lg bg-white/5">
                       <Avatar
                         src={adminState.selectedGuildDetails!.owner.avatar_url}
-                        alt={adminState.selectedGuildDetails!.owner.display_name}
+                        alt={
+                          adminState.selectedGuildDetails!.owner.display_name
+                        }
                         size="sm"
                       />
                       <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-1.5">
                           <span class="text-sm font-medium text-text-primary truncate">
-                            {adminState.selectedGuildDetails!.owner.display_name}
+                            {
+                              adminState.selectedGuildDetails!.owner
+                                .display_name
+                            }
                           </span>
                           <Crown class="w-3 h-3 text-amber-400 flex-shrink-0" />
                         </div>
@@ -623,7 +652,9 @@ const GuildsPanel: Component = () => {
                   </div>
                   <Show
                     when={!adminState.isGuildDetailsLoading}
-                    fallback={<Loader2 class="w-4 h-4 animate-spin text-text-secondary" />}
+                    fallback={
+                      <Loader2 class="w-4 h-4 animate-spin text-text-secondary" />
+                    }
                   >
                     {/* Stacked Avatars */}
                     <div class="flex items-center">
@@ -634,13 +665,24 @@ const GuildsPanel: Component = () => {
                             title={`${adminState.selectedGuildDetails!.owner.display_name} (@${adminState.selectedGuildDetails!.owner.username}) - Owner`}
                           >
                             <Avatar
-                              src={adminState.selectedGuildDetails!.owner.avatar_url}
-                              alt={adminState.selectedGuildDetails!.owner.display_name}
+                              src={
+                                adminState.selectedGuildDetails!.owner
+                                  .avatar_url
+                              }
+                              alt={
+                                adminState.selectedGuildDetails!.owner
+                                  .display_name
+                              }
                               size="sm"
                             />
                           </div>
                         </Show>
-                        <For each={adminState.selectedGuildDetails?.top_members.slice(0, 5)}>
+                        <For
+                          each={adminState.selectedGuildDetails?.top_members.slice(
+                            0,
+                            5,
+                          )}
+                        >
                           {(member) => (
                             <div
                               class="relative ring-2 ring-[var(--color-surface-layer1)] rounded-full"
@@ -655,9 +697,12 @@ const GuildsPanel: Component = () => {
                           )}
                         </For>
                       </div>
-                      <Show when={adminState.selectedGuildDetails!.member_count > 6}>
+                      <Show
+                        when={adminState.selectedGuildDetails!.member_count > 6}
+                      >
                         <span class="ml-2 text-xs text-text-secondary">
-                          +{adminState.selectedGuildDetails!.member_count - 6} more
+                          +{adminState.selectedGuildDetails!.member_count - 6}{" "}
+                          more
                         </span>
                       </Show>
                     </div>
@@ -752,9 +797,7 @@ const GuildsPanel: Component = () => {
             style="background-color: var(--color-surface-layer1)"
           >
             <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-text-primary">
-                Suspend Guild
-              </h3>
+              <h3 class="text-lg font-bold text-text-primary">Suspend Guild</h3>
 
               <p class="text-sm text-text-secondary">
                 Are you sure you want to suspend{" "}
@@ -822,7 +865,8 @@ const GuildsPanel: Component = () => {
               <p class="text-sm text-text-secondary">
                 Are you sure you want to suspend{" "}
                 <span class="font-medium text-text-primary">
-                  {getSelectedGuildCount()} guild{getSelectedGuildCount() !== 1 ? "s" : ""}
+                  {getSelectedGuildCount()} guild
+                  {getSelectedGuildCount() !== 1 ? "s" : ""}
                 </span>
                 ? All members will be unable to access these guilds.
               </p>
@@ -855,7 +899,9 @@ const GuildsPanel: Component = () => {
                   disabled={!bulkSuspendReason().trim() || actionLoading()}
                   class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {actionLoading() ? "Suspending..." : `Suspend ${getSelectedGuildCount()} Guilds`}
+                  {actionLoading()
+                    ? "Suspending..."
+                    : `Suspend ${getSelectedGuildCount()} Guilds`}
                 </button>
               </div>
             </div>
@@ -869,7 +915,10 @@ const GuildsPanel: Component = () => {
           {/* Backdrop */}
           <div
             class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => { setShowDeleteDialog(false); setDeleteConfirmText(""); }}
+            onClick={() => {
+              setShowDeleteDialog(false);
+              setDeleteConfirmText("");
+            }}
           />
 
           {/* Dialog */}
@@ -878,21 +927,25 @@ const GuildsPanel: Component = () => {
             style="background-color: var(--color-surface-layer1)"
           >
             <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-status-error">
-                Delete Guild
-              </h3>
+              <h3 class="text-lg font-bold text-status-error">Delete Guild</h3>
 
               <p class="text-sm text-text-secondary">
                 Are you sure you want to permanently delete{" "}
                 <span class="font-medium text-text-primary">
                   {selectedGuild()?.name}
                 </span>
-                ? This action is <span class="font-bold text-status-error">irreversible</span> and will remove all channels, messages, roles, and member data.
+                ? This action is{" "}
+                <span class="font-bold text-status-error">irreversible</span>{" "}
+                and will remove all channels, messages, roles, and member data.
               </p>
 
               <div class="space-y-2">
                 <label class="text-sm font-medium text-text-secondary">
-                  Type <span class="font-mono text-text-primary">{selectedGuild()?.name}</span> to confirm
+                  Type{" "}
+                  <span class="font-mono text-text-primary">
+                    {selectedGuild()?.name}
+                  </span>{" "}
+                  to confirm
                 </label>
                 <input
                   type="text"
@@ -905,14 +958,20 @@ const GuildsPanel: Component = () => {
 
               <div class="flex gap-3 pt-2">
                 <button
-                  onClick={() => { setShowDeleteDialog(false); setDeleteConfirmText(""); }}
+                  onClick={() => {
+                    setShowDeleteDialog(false);
+                    setDeleteConfirmText("");
+                  }}
                   class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleDelete}
-                  disabled={deleteConfirmText() !== selectedGuild()?.name || actionLoading()}
+                  disabled={
+                    deleteConfirmText() !== selectedGuild()?.name ||
+                    actionLoading()
+                  }
                   class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading() ? "Deleting..." : "Delete Permanently"}

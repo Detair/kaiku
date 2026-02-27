@@ -2,17 +2,17 @@ import type { TokenizerAndRendererExtension } from "marked";
 
 /** Token produced by the spoiler tokenizer for ||text|| syntax. */
 export interface SpoilerToken {
-  type: 'spoiler';
+  type: "spoiler";
   raw: string;
   text: string;
 }
 
 /** Custom marked extension for ||spoiler|| syntax. */
 export const spoilerExtension: TokenizerAndRendererExtension = {
-  name: 'spoiler',
-  level: 'inline' as const,
+  name: "spoiler",
+  level: "inline" as const,
   start(src: string) {
-    const index = src.indexOf('||');
+    const index = src.indexOf("||");
     return index >= 0 ? index : undefined;
   },
   tokenizer(src: string) {
@@ -20,7 +20,7 @@ export const spoilerExtension: TokenizerAndRendererExtension = {
     const match = /^\|\|(.{1,500}?)\|\|/.exec(src);
     if (match) {
       return {
-        type: 'spoiler',
+        type: "spoiler",
         raw: match[0],
         text: match[1],
       };

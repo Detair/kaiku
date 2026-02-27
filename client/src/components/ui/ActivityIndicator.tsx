@@ -57,7 +57,9 @@ const ActivityIndicator: Component<ActivityIndicatorProps> = (props) => {
       <Show when={!props.compact}>
         <span class="text-text-tertiary">{label()}</span>
       </Show>
-      <span class="font-medium truncate max-w-[120px]">{props.activity.name}</span>
+      <span class="font-medium truncate max-w-[120px]">
+        {props.activity.name}
+      </span>
     </div>
   );
 };

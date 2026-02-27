@@ -17,7 +17,8 @@ interface CollapsibleModuleProps {
 
 const CollapsibleModule: Component<CollapsibleModuleProps> = (props) => {
   // Get collapsed state from preferences
-  const isCollapsed = () => preferences().homeSidebar?.collapsed?.[props.id] ?? false;
+  const isCollapsed = () =>
+    preferences().homeSidebar?.collapsed?.[props.id] ?? false;
 
   const toggleCollapse = () => {
     const currentCollapsed = preferences().homeSidebar?.collapsed ?? {};
@@ -35,7 +36,10 @@ const CollapsibleModule: Component<CollapsibleModuleProps> = (props) => {
         class="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
       >
         <div class="flex items-center gap-2">
-          <Show when={isCollapsed()} fallback={<ChevronDown class="w-4 h-4 text-text-secondary" />}>
+          <Show
+            when={isCollapsed()}
+            fallback={<ChevronDown class="w-4 h-4 text-text-secondary" />}
+          >
             <ChevronRight class="w-4 h-4 text-text-secondary" />
           </Show>
           <span class="font-semibold text-text-primary">{props.title}</span>

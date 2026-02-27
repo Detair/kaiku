@@ -17,7 +17,15 @@
  * - List of results with icons
  */
 
-import { Component, createSignal, createEffect, createMemo, For, Show, onCleanup } from "solid-js";
+import {
+  Component,
+  createSignal,
+  createEffect,
+  createMemo,
+  For,
+  Show,
+  onCleanup,
+} from "solid-js";
 import { Hash, Volume2, Search, Mic, MicOff, VolumeX } from "lucide-solid";
 import { channelsState, selectChannel } from "@/stores/channels";
 import { setShowGlobalSearch } from "@/stores/search";
@@ -101,12 +109,14 @@ const CommandPalette: Component = () => {
   // Filter items based on query (optimized: only filters, doesn't rebuild list)
   const filteredItems = createMemo(() => {
     const items = allCommandItems();
-    const searchQuery = query().toLowerCase().replace(/^[>#@]/, "");
+    const searchQuery = query()
+      .toLowerCase()
+      .replace(/^[>#@]/, "");
 
     if (!searchQuery) return items;
 
     return items.filter((item) =>
-      item.label.toLowerCase().includes(searchQuery)
+      item.label.toLowerCase().includes(searchQuery),
     );
   });
 
@@ -134,7 +144,7 @@ const CommandPalette: Component = () => {
       case "ArrowDown":
         e.preventDefault();
         setSelectedIndex((prev) =>
-          prev < filteredItems().length - 1 ? prev + 1 : prev
+          prev < filteredItems().length - 1 ? prev + 1 : prev,
         );
         break;
 
@@ -180,7 +190,10 @@ const CommandPalette: Component = () => {
         onClick={handleBackdropClick}
       >
         {/* Command Palette Dialog */}
-        <div class="w-[600px] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up" style="background-color: var(--color-surface-layer2)">
+        <div
+          class="w-[600px] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up"
+          style="background-color: var(--color-surface-layer2)"
+        >
           {/* Input */}
           <div class="border-b border-white/5">
             <input
@@ -209,7 +222,8 @@ const CommandPalette: Component = () => {
                     class="w-full px-6 py-3 flex items-center gap-3 transition-colors text-left"
                     classList={{
                       "bg-surface-highlight": index() === selectedIndex(),
-                      "hover:bg-surface-highlight/50": index() !== selectedIndex(),
+                      "hover:bg-surface-highlight/50":
+                        index() !== selectedIndex(),
                     }}
                     onClick={() => item.action()}
                     onMouseEnter={() => setSelectedIndex(index())}
@@ -217,9 +231,13 @@ const CommandPalette: Component = () => {
                     <div class="w-5 h-5 text-text-secondary flex-shrink-0">
                       <item.icon />
                     </div>
-                    <span class="text-text-primary font-medium">{item.label}</span>
+                    <span class="text-text-primary font-medium">
+                      {item.label}
+                    </span>
                     <Show when={item.type === "command"}>
-                      <span class="ml-auto text-xs text-text-secondary">Command</span>
+                      <span class="ml-auto text-xs text-text-secondary">
+                        Command
+                      </span>
                     </Show>
                   </button>
                 )}
@@ -231,15 +249,21 @@ const CommandPalette: Component = () => {
           <div class="px-6 py-2 border-t border-white/5 bg-surface-base">
             <div class="flex items-center gap-4 text-xs text-text-secondary">
               <div>
-                <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">↑↓</kbd>
+                <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
+                  ↑↓
+                </kbd>
                 <span class="ml-1">Navigate</span>
               </div>
               <div>
-                <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">Enter</kbd>
+                <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
+                  Enter
+                </kbd>
                 <span class="ml-1">Select</span>
               </div>
               <div>
-                <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">Esc</kbd>
+                <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
+                  Esc
+                </kbd>
                 <span class="ml-1">Close</span>
               </div>
             </div>

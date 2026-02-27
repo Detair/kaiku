@@ -20,11 +20,11 @@ describe("sendMessageWithStatus", () => {
         statusText: "Bad Request",
         text: textMock,
         json: jsonMock,
-      })
+      }),
     );
 
     await expect(sendMessageWithStatus("channel-1", "hello")).rejects.toThrow(
-      "Command is ambiguous"
+      "Command is ambiguous",
     );
 
     expect(textMock).toHaveBeenCalledTimes(1);

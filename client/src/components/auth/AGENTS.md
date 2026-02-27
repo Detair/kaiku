@@ -9,37 +9,41 @@ Authentication and route protection components. Manages auth flow, guards protec
 ## Key Files
 
 ### AuthGuard.tsx
+
 Route guard component that protects authenticated routes.
 
 **Responsibilities:**
+
 - Initialize auth state on mount
 - Redirect to login if not authenticated
 - Preserve return URL for post-login redirect
 - Show loading screen during auth initialization
 
 **Usage:**
+
 ```tsx
 import AuthGuard from "@/components/auth/AuthGuard";
 
 // Wrap protected routes
 <AuthGuard>
-  <AppShell>
-    {/* Protected content */}
-  </AppShell>
-</AuthGuard>
+  <AppShell>{/* Protected content */}</AppShell>
+</AuthGuard>;
 ```
 
 **State Dependencies:**
+
 - `authState.isInitialized` - Auth system ready
 - `isAuthenticated()` - User logged in
 
 **Redirect Logic:**
+
 - Stores `returnUrl` query param for post-login redirect
 - Uses `navigate(..., { replace: true })` to avoid back button issues
 
 ## Future Components
 
 Expected auth components (not yet implemented):
+
 - `LoginForm.tsx` - Email/password login
 - `RegisterForm.tsx` - New account creation
 - `MFAPrompt.tsx` - TOTP/WebAuthn verification
@@ -48,9 +52,11 @@ Expected auth components (not yet implemented):
 ## Integration Points
 
 ### Stores
+
 - `@/stores/auth` - Auth state, token management, user info
 
 ### Routes
+
 - Redirects to `/login` when unauthenticated
 - Supports `?returnUrl=` for post-login navigation
 
@@ -64,6 +70,7 @@ Expected auth components (not yet implemented):
 ## Styling
 
 Uses design system variables:
+
 - `bg-background-primary` - Loading screen background
 - `text-text-secondary` - Loading text
 - `border-primary` - Spinner colors

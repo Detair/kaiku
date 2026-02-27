@@ -1,4 +1,11 @@
-import { Component, Show, createEffect, createSignal, onMount, onCleanup } from "solid-js";
+import {
+  Component,
+  Show,
+  createEffect,
+  createSignal,
+  onMount,
+  onCleanup,
+} from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Minimize2, Maximize2, Volume2, VolumeX, Play } from "lucide-solid";
 import {
@@ -35,9 +42,12 @@ const ScreenShareViewer: Component = () => {
   // Handle manual play when autoplay is blocked
   const handleClickToPlay = () => {
     if (videoRef) {
-      videoRef.play().then(() => {
-        setAutoplayBlocked(false);
-      }).catch(console.error);
+      videoRef
+        .play()
+        .then(() => {
+          setAutoplayBlocked(false);
+        })
+        .catch(console.error);
     }
   };
 
@@ -59,7 +69,9 @@ const ScreenShareViewer: Component = () => {
     const userId = viewerState.viewingUserId;
     if (!userId) return "Unknown";
     const participant = voiceState.participants[userId];
-    return participant?.display_name || participant?.username || userId.slice(0, 8);
+    return (
+      participant?.display_name || participant?.username || userId.slice(0, 8)
+    );
   };
 
   const handleClose = () => {
@@ -187,7 +199,9 @@ const SpotlightView: Component<{
       {/* Header bar */}
       <div class="flex items-center justify-between p-4 bg-black/50">
         <div class="flex items-center gap-2">
-          <span class="text-white font-medium">{props.sharerName}'s Screen</span>
+          <span class="text-white font-medium">
+            {props.sharerName}'s Screen
+          </span>
         </div>
         <div class="flex items-center gap-2">
           <VolumeControl />
@@ -291,7 +305,9 @@ const TheaterView: Component<{
     <div class="fixed top-0 left-[312px] right-0 bottom-0 z-40 bg-black/95 flex flex-col">
       {/* Header bar */}
       <div class="flex items-center justify-between p-3 bg-black/50">
-        <span class="text-white font-medium text-sm">{props.sharerName}'s Screen</span>
+        <span class="text-white font-medium text-sm">
+          {props.sharerName}'s Screen
+        </span>
         <div class="flex items-center gap-2">
           <VolumeControl />
           <button

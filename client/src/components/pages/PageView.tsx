@@ -47,7 +47,9 @@ export default function PageView(props: PageViewProps) {
       await props.onDelete?.();
     } catch (err) {
       console.error("Failed to delete page:", err);
-      setDeleteError(err instanceof Error ? err.message : "Failed to delete page");
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete page",
+      );
     } finally {
       setIsDeleting(false);
     }

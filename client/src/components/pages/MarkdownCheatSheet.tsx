@@ -64,13 +64,18 @@ export default function MarkdownCheatSheet(props: MarkdownCheatSheetProps) {
     {
       title: "Diagrams",
       items: [
-        { syntax: "```mermaid\\ngraph LR\\n  A --> B\\n```", description: "Mermaid diagram" },
+        {
+          syntax: "```mermaid\\ngraph LR\\n  A --> B\\n```",
+          description: "Mermaid diagram",
+        },
       ],
     },
   ];
 
   return (
-    <div class={`bg-zinc-800 rounded-lg border border-zinc-700 ${props.class || ""}`}>
+    <div
+      class={`bg-zinc-800 rounded-lg border border-zinc-700 ${props.class || ""}`}
+    >
       <button
         type="button"
         class="w-full px-4 py-2 flex items-center justify-between text-sm text-zinc-300 hover:bg-zinc-700/50 rounded-lg transition-colors"

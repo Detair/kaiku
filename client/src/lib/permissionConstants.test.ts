@@ -17,10 +17,16 @@ describe("channel override permission constants", () => {
   });
 
   it("maps all override keys to known permission bits", () => {
-    const bits = CHANNEL_OVERRIDE_PERMISSION_KEYS.map((key) => PermissionBits[key]);
+    const bits = CHANNEL_OVERRIDE_PERMISSION_KEYS.map(
+      (key) => PermissionBits[key],
+    );
     expect(bits.every((bit) => typeof bit === "number")).toBe(true);
 
     const keysInPermissions = new Set(PERMISSIONS.map((perm) => perm.key));
-    expect(CHANNEL_OVERRIDE_PERMISSION_KEYS.every((key) => keysInPermissions.has(key))).toBe(true);
+    expect(
+      CHANNEL_OVERRIDE_PERMISSION_KEYS.every((key) =>
+        keysInPermissions.has(key),
+      ),
+    ).toBe(true);
   });
 });

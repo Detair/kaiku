@@ -23,18 +23,49 @@
  * - Decoupled channel name resolution via getVoiceChannelInfo()
  */
 
-import { Component, createSignal, createEffect, onMount, onCleanup, Show, lazy, Suspense } from "solid-js";
-import { Mic, MicOff, Headphones, Monitor, PhoneOff, Settings, GripVertical } from "lucide-solid";
-import { voiceState, setMute, setDeafen, leaveVoice, getVoiceChannelInfo, getLocalMetrics, stopScreenShare } from "@/stores/voice";
+import {
+  Component,
+  createSignal,
+  createEffect,
+  onMount,
+  onCleanup,
+  Show,
+  lazy,
+  Suspense,
+} from "solid-js";
+import {
+  Mic,
+  MicOff,
+  Headphones,
+  Monitor,
+  PhoneOff,
+  Settings,
+  GripVertical,
+} from "lucide-solid";
+import {
+  voiceState,
+  setMute,
+  setDeafen,
+  leaveVoice,
+  getVoiceChannelInfo,
+  getLocalMetrics,
+  stopScreenShare,
+} from "@/stores/voice";
 import { formatElapsedTime } from "@/lib/utils";
 import { QualityIndicator } from "@/components/voice/QualityIndicator";
 import { QualityTooltip } from "@/components/voice/QualityTooltip";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { ConnectionMetrics } from "@/lib/webrtc/types";
 
-const AudioDeviceSettings = lazy(() => import("@/components/voice/AudioDeviceSettings"));
-const ScreenShareQualityPicker = lazy(() => import("@/components/voice/ScreenShareQualityPicker"));
-const ScreenShareSourcePicker = lazy(() => import("@/components/voice/ScreenShareSourcePicker"));
+const AudioDeviceSettings = lazy(
+  () => import("@/components/voice/AudioDeviceSettings"),
+);
+const ScreenShareQualityPicker = lazy(
+  () => import("@/components/voice/ScreenShareQualityPicker"),
+);
+const ScreenShareSourcePicker = lazy(
+  () => import("@/components/voice/ScreenShareSourcePicker"),
+);
 
 const VoiceIsland: Component = () => {
   const [elapsedTime, setElapsedTime] = createSignal<string>("00:00");
@@ -42,7 +73,9 @@ const VoiceIsland: Component = () => {
   const [showQualityTooltip, setShowQualityTooltip] = createSignal(false);
   const [showScreenSharePicker, setShowScreenSharePicker] = createSignal(false);
   const [showSourcePicker, setShowSourcePicker] = createSignal(false);
-  const [selectedSourceId, setSelectedSourceId] = createSignal<string | undefined>(undefined);
+  const [selectedSourceId, setSelectedSourceId] = createSignal<
+    string | undefined
+  >(undefined);
 
   // Detect if running in Tauri (native source picker available)
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -54,7 +87,7 @@ const VoiceIsland: Component = () => {
     const centerX = (window.innerWidth - estimatedWidth) / 2;
     return {
       x: Math.max(0, centerX), // Ensure not negative
-      y: 20 // 20px from top
+      y: 20, // 20px from top
     };
   };
 
@@ -87,7 +120,7 @@ const VoiceIsland: Component = () => {
 
       setPosition({
         x: Math.max(0, Math.min(currentPos.x, maxX)),
-        y: Math.max(0, Math.min(currentPos.y, maxY))
+        y: Math.max(0, Math.min(currentPos.y, maxY)),
       });
     }
   });
@@ -186,7 +219,7 @@ const VoiceIsland: Component = () => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setDragOffset({
       x: e.clientX - rect.left,
-      y: e.clientY - rect.top
+      y: e.clientY - rect.top,
     });
     e.preventDefault(); // Prevent text selection
   };
@@ -214,7 +247,7 @@ const VoiceIsland: Component = () => {
 
       setPosition({
         x: Math.max(0, Math.min(newX, maxX)),
-        y: Math.max(0, Math.min(newY, maxY))
+        y: Math.max(0, Math.min(newY, maxY)),
       });
     });
   };
@@ -252,7 +285,8 @@ const VoiceIsland: Component = () => {
       class="flex items-center gap-4 px-6 py-3 bg-black/60 backdrop-blur-md border rounded-full shadow-2xl relative select-none"
       classList={{
         "border-accent-primary/30": !voiceState.speaking,
-        "border-accent-primary border-2 shadow-[0_0_20px_rgba(136,192,208,0.4)]": voiceState.speaking,
+        "border-accent-primary border-2 shadow-[0_0_20px_rgba(136,192,208,0.4)]":
+          voiceState.speaking,
         "cursor-move": !isDragging(),
         "cursor-grabbing": isDragging(),
         "transition-none": isDragging(), // Disable transitions while dragging for better performance
@@ -283,7 +317,9 @@ const VoiceIsland: Component = () => {
           }}
         />
 
-        <span class="text-text-primary text-sm font-medium">{channelName()}</span>
+        <span class="text-text-primary text-sm font-medium">
+          {channelName()}
+        </span>
       </div>
 
       {/* Timer */}
@@ -295,11 +331,10 @@ const VoiceIsland: Component = () => {
         onMouseEnter={() => setShowQualityTooltip(true)}
         onMouseLeave={() => setShowQualityTooltip(false)}
       >
-        <QualityIndicator
-          metrics={getLocalMetrics()}
-          mode={'circle'}
-        />
-        <Show when={showQualityTooltip() && typeof getLocalMetrics() === 'object'}>
+        <QualityIndicator metrics={getLocalMetrics()} mode={"circle"} />
+        <Show
+          when={showQualityTooltip() && typeof getLocalMetrics() === "object"}
+        >
           <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50">
             <QualityTooltip metrics={getLocalMetrics() as ConnectionMetrics} />
           </div>
@@ -315,19 +350,23 @@ const VoiceIsland: Component = () => {
         <button
           class="w-10 h-10 flex items-center justify-center rounded-full transition-all duration-200 hover:bg-white/10 relative"
           classList={{
-            "text-accent-primary bg-accent-primary/20": !voiceState.muted && voiceState.speaking,
+            "text-accent-primary bg-accent-primary/20":
+              !voiceState.muted && voiceState.speaking,
             "text-text-primary": !voiceState.muted && !voiceState.speaking,
             "text-accent-danger": voiceState.muted,
             "bg-accent-danger/20": voiceState.muted,
           }}
           onClick={toggleMute}
-          title={voiceState.muted ? "Unmute (Ctrl+Shift+M)" : "Mute (Ctrl+Shift+M)"}
+          title={
+            voiceState.muted ? "Unmute (Ctrl+Shift+M)" : "Mute (Ctrl+Shift+M)"
+          }
         >
           <Show when={!voiceState.muted} fallback={<MicOff class="w-5 h-5" />}>
             <Mic
               class="w-5 h-5 transition-all duration-200"
               classList={{
-                "drop-shadow-[0_0_8px_rgba(136,192,208,0.8)]": voiceState.speaking,
+                "drop-shadow-[0_0_8px_rgba(136,192,208,0.8)]":
+                  voiceState.speaking,
               }}
             />
           </Show>
@@ -342,22 +381,38 @@ const VoiceIsland: Component = () => {
             "bg-accent-danger/20": voiceState.deafened,
           }}
           onClick={toggleDeafen}
-          title={voiceState.deafened ? "Undeafen (Ctrl+Shift+D)" : "Deafen (Ctrl+Shift+D)"}
+          title={
+            voiceState.deafened
+              ? "Undeafen (Ctrl+Shift+D)"
+              : "Deafen (Ctrl+Shift+D)"
+          }
         >
-          <Headphones class="w-5 h-5" classList={{ "opacity-50": voiceState.deafened }} />
+          <Headphones
+            class="w-5 h-5"
+            classList={{ "opacity-50": voiceState.deafened }}
+          />
         </button>
 
         {/* Screen Share */}
         <button
           class="w-10 h-10 flex items-center justify-center rounded-full transition-all duration-200 hover:bg-white/10"
           classList={{
-            "text-accent-primary bg-accent-primary/20": voiceState.screenSharing,
+            "text-accent-primary bg-accent-primary/20":
+              voiceState.screenSharing,
             "text-text-primary": !voiceState.screenSharing,
           }}
           onClick={toggleScreenShare}
-          title={voiceState.screenSharing ? "Stop Screen Share" : "Share Screen"}
+          title={
+            voiceState.screenSharing ? "Stop Screen Share" : "Share Screen"
+          }
         >
-          <Monitor class="w-5 h-5" classList={{ "drop-shadow-[0_0_8px_rgba(136,192,208,0.8)]": voiceState.screenSharing }} />
+          <Monitor
+            class="w-5 h-5"
+            classList={{
+              "drop-shadow-[0_0_8px_rgba(136,192,208,0.8)]":
+                voiceState.screenSharing,
+            }}
+          />
         </button>
 
         {/* Settings */}

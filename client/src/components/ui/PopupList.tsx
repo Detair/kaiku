@@ -5,9 +5,23 @@
  * Used for autocomplete suggestions, command palette, etc.
  */
 
-import { Component, For, JSX, createSignal, onMount, createEffect } from "solid-js";
+import {
+  Component,
+  For,
+  JSX,
+  createSignal,
+  onMount,
+  createEffect,
+} from "solid-js";
 import { Portal } from "solid-js/web";
-import { computePosition, flip, shift, offset, size, autoUpdate } from "@floating-ui/dom";
+import {
+  computePosition,
+  flip,
+  shift,
+  offset,
+  size,
+  autoUpdate,
+} from "@floating-ui/dom";
 
 export interface PopupListItem {
   id: string;
@@ -100,7 +114,9 @@ const PopupList: Component<PopupListProps> = (props) => {
         break;
       case "ArrowUp":
         e.preventDefault();
-        props.onSelectionChange((props.selectedIndex - 1 + itemCount) % itemCount);
+        props.onSelectionChange(
+          (props.selectedIndex - 1 + itemCount) % itemCount,
+        );
         break;
       case "Enter":
       case "Tab":
@@ -153,7 +169,11 @@ const PopupList: Component<PopupListProps> = (props) => {
         ref={listRef}
         role="listbox"
         aria-label="Suggestions"
-        aria-activedescendant={props.items[props.selectedIndex] ? `suggestion-${props.selectedIndex}` : undefined}
+        aria-activedescendant={
+          props.items[props.selectedIndex]
+            ? `suggestion-${props.selectedIndex}`
+            : undefined
+        }
         style={{
           position: "fixed",
           left: `${pos.x}px`,
@@ -168,7 +188,9 @@ const PopupList: Component<PopupListProps> = (props) => {
           <For each={props.items}>
             {(item, index) => (
               <div
-                ref={index() === props.selectedIndex ? selectedItemRef : undefined}
+                ref={
+                  index() === props.selectedIndex ? selectedItemRef : undefined
+                }
                 role="option"
                 id={`suggestion-${index()}`}
                 aria-selected={index() === props.selectedIndex}

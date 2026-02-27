@@ -29,8 +29,12 @@ const VoicePanel: Component = () => {
           <div class="flex items-center gap-2 min-w-0">
             <Signal class="w-4 h-4 text-success flex-shrink-0" />
             <div class="min-w-0">
-              <div class="text-xs font-medium text-success">Voice Connected</div>
-              <div class="text-xs text-text-muted truncate">{channel()?.name}</div>
+              <div class="text-xs font-medium text-success">
+                Voice Connected
+              </div>
+              <div class="text-xs text-text-muted truncate">
+                {channel()?.name}
+              </div>
             </div>
           </div>
           <button
@@ -57,7 +61,9 @@ const VoicePanel: Component = () => {
                     title={participant.muted ? "Muted" : undefined}
                   >
                     <div class="w-4 h-4 rounded-full bg-primary/50" />
-                    <span class="truncate max-w-20">{participant.user_id.slice(0, 8)}</span>
+                    <span class="truncate max-w-20">
+                      {participant.user_id.slice(0, 8)}
+                    </span>
                     {participant.screen_sharing && (
                       <button
                         onClick={(e) => {
@@ -93,7 +99,8 @@ const VoicePanel: Component = () => {
                       {share.username || share.user_id.slice(0, 8)}
                     </div>
                     <div class="text-xs text-text-muted">
-                      {share.quality} • {share.has_audio ? "With audio" : "No audio"}
+                      {share.quality} •{" "}
+                      {share.has_audio ? "With audio" : "No audio"}
                     </div>
                   </div>
                 </div>

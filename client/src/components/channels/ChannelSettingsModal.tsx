@@ -39,7 +39,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
       props.guildId,
       authState.user?.id || "",
       isOwner(),
-      PermissionBits.MANAGE_CHANNELS
+      PermissionBits.MANAGE_CHANNELS,
     );
 
   const handleBackdropClick = (e: MouseEvent) => {
@@ -63,7 +63,9 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
             <div class="flex items-center gap-3">
               <Hash class="w-5 h-5 text-text-secondary" />
               <div>
-                <h2 class="text-lg font-bold text-text-primary">{channel()?.name}</h2>
+                <h2 class="text-lg font-bold text-text-primary">
+                  {channel()?.name}
+                </h2>
                 <p class="text-sm text-text-secondary">Channel Settings</p>
               </div>
             </div>
@@ -81,8 +83,10 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
               onClick={() => setActiveTab("overview")}
               class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
               classList={{
-                "text-accent-primary border-b-2 border-accent-primary": activeTab() === "overview",
-                "text-text-secondary hover:text-text-primary": activeTab() !== "overview",
+                "text-accent-primary border-b-2 border-accent-primary":
+                  activeTab() === "overview",
+                "text-text-secondary hover:text-text-primary":
+                  activeTab() !== "overview",
               }}
             >
               <Settings class="w-4 h-4" />
@@ -93,8 +97,10 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
                 onClick={() => setActiveTab("permissions")}
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
                 classList={{
-                  "text-accent-primary border-b-2 border-accent-primary": activeTab() === "permissions",
-                  "text-text-secondary hover:text-text-primary": activeTab() !== "permissions",
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "permissions",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "permissions",
                 }}
               >
                 <Shield class="w-4 h-4" />
@@ -112,7 +118,10 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
                   <label class="block text-sm font-medium text-text-secondary mb-2">
                     Channel Name
                   </label>
-                  <div class="px-3 py-2 rounded-lg border border-white/10 text-text-primary" style="background-color: var(--color-surface-layer1)">
+                  <div
+                    class="px-3 py-2 rounded-lg border border-white/10 text-text-primary"
+                    style="background-color: var(--color-surface-layer1)"
+                  >
                     {channel()?.name}
                   </div>
                 </div>
@@ -176,7 +185,8 @@ const NotificationOption: Component<{
   label: string;
   description: string;
 }> = (props) => {
-  const currentLevel = () => getChannelNotificationLevel(props.channelId, props.isDm);
+  const currentLevel = () =>
+    getChannelNotificationLevel(props.channelId, props.isDm);
   const isSelected = () => currentLevel() === props.level;
 
   return (
@@ -185,7 +195,8 @@ const NotificationOption: Component<{
       class="w-full text-left p-3 rounded-xl border-2 transition-all duration-200"
       classList={{
         "border-accent-primary bg-accent-primary/10": isSelected(),
-        "border-white/10 hover:border-accent-primary/50 hover:bg-white/5": !isSelected(),
+        "border-white/10 hover:border-accent-primary/50 hover:bg-white/5":
+          !isSelected(),
       }}
     >
       <div class="flex items-start gap-3">
@@ -203,7 +214,9 @@ const NotificationOption: Component<{
         {/* Content */}
         <div class="flex-1">
           <span class="font-semibold text-text-primary">{props.label}</span>
-          <div class="text-sm text-text-secondary mt-0.5">{props.description}</div>
+          <div class="text-sm text-text-secondary mt-0.5">
+            {props.description}
+          </div>
         </div>
 
         {/* Icon for muted */}

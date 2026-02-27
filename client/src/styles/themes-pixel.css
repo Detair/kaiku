@@ -80,7 +80,9 @@
   /* Pixel font for UI chrome, system font for content */
   /* VT323 renders crisper than Press Start 2P on modern displays */
   --font-ui: "VT323", "Press Start 2P", monospace;
-  --font-content: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-content:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
 }
 
 /*

@@ -84,7 +84,7 @@ export function shouldGroupWithPrevious(
   currentTimestamp: string,
   previousTimestamp: string,
   currentAuthorId: string,
-  previousAuthorId: string
+  previousAuthorId: string,
 ): boolean {
   if (currentAuthorId !== previousAuthorId) return false;
 

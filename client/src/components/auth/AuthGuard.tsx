@@ -33,13 +33,8 @@ const AuthGuard: Component<AuthGuardProps> = (props) => {
   });
 
   return (
-    <Show
-      when={authState.isInitialized}
-      fallback={<LoadingScreen />}
-    >
-      <Show when={isAuthenticated()}>
-        {props.children}
-      </Show>
+    <Show when={authState.isInitialized} fallback={<LoadingScreen />}>
+      <Show when={isAuthenticated()}>{props.children}</Show>
     </Show>
   );
 };

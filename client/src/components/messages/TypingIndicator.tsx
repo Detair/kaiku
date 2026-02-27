@@ -27,9 +27,18 @@ const TypingIndicator: Component<TypingIndicatorProps> = (props) => {
         <div class="flex items-center gap-2">
           {/* Animated typing dots */}
           <div class="flex gap-0.5">
-            <span class="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style="animation-delay: 0ms" />
-            <span class="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style="animation-delay: 150ms" />
-            <span class="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style="animation-delay: 300ms" />
+            <span
+              class="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce"
+              style="animation-delay: 0ms"
+            />
+            <span
+              class="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce"
+              style="animation-delay: 150ms"
+            />
+            <span
+              class="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce"
+              style="animation-delay: 300ms"
+            />
           </div>
           <span>{typingText()}</span>
         </div>

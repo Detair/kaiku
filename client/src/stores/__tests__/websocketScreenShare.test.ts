@@ -57,7 +57,7 @@ describe("WebSocket screen share event handlers", () => {
             muted: false,
             screen_sharing: false,
           } as any;
-        })
+        }),
       );
 
       await handleScreenShareStarted({
@@ -99,7 +99,7 @@ describe("WebSocket screen share event handlers", () => {
             quality: "high" as any,
             started_at: new Date().toISOString(),
           });
-        })
+        }),
       );
 
       expect(voiceState.screenShares.length).toBe(1);
@@ -131,7 +131,7 @@ describe("WebSocket screen share event handlers", () => {
             quality: "high" as any,
             started_at: new Date().toISOString(),
           });
-        })
+        }),
       );
 
       await handleScreenShareStopped({
@@ -154,7 +154,7 @@ describe("WebSocket screen share event handlers", () => {
             quality: "high" as any,
             started_at: new Date().toISOString(),
           });
-        })
+        }),
       );
 
       await handleScreenShareStopped({

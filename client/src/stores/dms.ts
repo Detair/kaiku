@@ -49,13 +49,15 @@ export async function loadDMs(): Promise<void> {
       if (status.type === "connected") {
         break;
       }
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       waited += pollIntervalMs;
     }
 
     const finalStatus = await tauri.wsStatus();
     if (finalStatus.type !== "connected") {
-      console.warn("[DMs] WebSocket not connected after waiting, skipping subscriptions");
+      console.warn(
+        "[DMs] WebSocket not connected after waiting, skipping subscriptions",
+      );
       return;
     }
 

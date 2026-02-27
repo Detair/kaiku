@@ -5,9 +5,23 @@
  * Provides quick navigation to channels with unread messages.
  */
 
-import { Component, Show, For, createSignal, createEffect, onMount, onCleanup } from "solid-js";
+import {
+  Component,
+  Show,
+  For,
+  createSignal,
+  createEffect,
+  onMount,
+  onCleanup,
+} from "solid-js";
 import { Inbox, Hash, CheckCheck } from "lucide-solid";
-import { getUnreadAggregate, markAllGuildChannelsRead, markAllDMsRead, markAllRead, type UnreadAggregate } from "@/lib/tauri";
+import {
+  getUnreadAggregate,
+  markAllGuildChannelsRead,
+  markAllDMsRead,
+  markAllRead,
+  type UnreadAggregate,
+} from "@/lib/tauri";
 import { selectGuild } from "@/stores/guilds";
 import { selectChannel, markAllGuildChannelsAsRead } from "@/stores/channels";
 import { selectDM, markAllDMsAsRead } from "@/stores/dms";
@@ -16,7 +30,9 @@ import Skeleton from "@/components/ui/Skeleton";
 import CollapsibleModule from "./CollapsibleModule";
 
 const UnreadModule: Component = () => {
-  const [unreadData, setUnreadData] = createSignal<UnreadAggregate | null>(null);
+  const [unreadData, setUnreadData] = createSignal<UnreadAggregate | null>(
+    null,
+  );
   const [loading, setLoading] = createSignal(true);
 
   // Fetch unread data
@@ -29,7 +45,8 @@ const UnreadModule: Component = () => {
       showToast({
         type: "error",
         title: "Failed to Load Unreads",
-        message: "Could not fetch unread messages. Will retry when window gains focus.",
+        message:
+          "Could not fetch unread messages. Will retry when window gains focus.",
         duration: 8000,
       });
     } finally {
@@ -107,7 +124,12 @@ const UnreadModule: Component = () => {
       setUnreadData(null);
     } catch (error) {
       console.error("Failed to mark all as read:", error);
-      showToast({ type: "error", title: "Mark All Read Failed", message: "Could not mark all as read.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Mark All Read Failed",
+        message: "Could not mark all as read.",
+        duration: 8000,
+      });
     }
   };
 
@@ -119,12 +141,22 @@ const UnreadModule: Component = () => {
       const current = unreadData();
       if (current) {
         const guilds = current.guilds.filter((g) => g.guild_id !== guildId);
-        const removedTotal = current.guilds.find((g) => g.guild_id === guildId)?.total_unread ?? 0;
-        setUnreadData({ ...current, guilds, total: current.total - removedTotal });
+        const removedTotal =
+          current.guilds.find((g) => g.guild_id === guildId)?.total_unread ?? 0;
+        setUnreadData({
+          ...current,
+          guilds,
+          total: current.total - removedTotal,
+        });
       }
     } catch (error) {
       console.error("Failed to mark guild as read:", error);
-      showToast({ type: "error", title: "Mark All Read Failed", message: "Could not mark guild channels as read.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Mark All Read Failed",
+        message: "Could not mark guild channels as read.",
+        duration: 8000,
+      });
     }
   };
 
@@ -140,7 +172,12 @@ const UnreadModule: Component = () => {
       }
     } catch (error) {
       console.error("Failed to mark DMs as read:", error);
-      showToast({ type: "error", title: "Mark All Read Failed", message: "Could not mark DMs as read.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Mark All Read Failed",
+        message: "Could not mark DMs as read.",
+        duration: 8000,
+      });
     }
   };
 
@@ -214,9 +251,7 @@ const UnreadModule: Component = () => {
             <div class="flex flex-col items-center justify-center py-4 text-center">
               <Inbox class="w-8 h-8 text-text-secondary mb-2 opacity-50" />
               <p class="text-sm text-text-secondary">All caught up!</p>
-              <p class="text-xs text-text-muted mt-1">
-                No unread messages
-              </p>
+              <p class="text-xs text-text-muted mt-1">No unread messages</p>
             </div>
           </Show>
         }
@@ -244,7 +279,12 @@ const UnreadModule: Component = () => {
                       <For each={guild.channels}>
                         {(channel) => (
                           <button
-                            onClick={() => navigateToChannel(guild.guild_id, channel.channel_id)}
+                            onClick={() =>
+                              navigateToChannel(
+                                guild.guild_id,
+                                channel.channel_id,
+                              )
+                            }
                             class="w-full flex items-center justify-between px-2 py-1.5 rounded hover:bg-white/5 transition-colors group"
                           >
                             <div class="flex items-center gap-2 min-w-0">

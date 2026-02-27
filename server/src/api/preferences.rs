@@ -41,11 +41,7 @@ impl IntoResponse for PreferencesError {
                     "Database error".to_string(),
                 )
             }
-            Self::Validation(msg) => (
-                StatusCode::BAD_REQUEST,
-                "VALIDATION_ERROR",
-                msg.clone(),
-            ),
+            Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
         };
 
         (status, Json(json!({ "error": code, "message": message }))).into_response()
@@ -111,6 +107,10 @@ const MAX_KEYWORD_LEN: usize = 30;
 const MIN_KEYWORD_LEN: usize = 3;
 const MAX_MODE_NAME_LEN: usize = 30;
 
+fn unicode_len(s: &str) -> usize {
+    s.chars().count()
+}
+
 const VALID_SUPPRESSION_LEVELS: &[&str] = &["all", "except_mentions", "except_dms"];
 const VALID_TRIGGER_CATEGORIES: &[&str] = &["game", "coding", "listening", "watching"];
 
@@ -165,11 +165,12 @@ fn validate_focus_mode(mode: &serde_json::Value, index: usize) -> Result<(), Pre
                 ctx("name")
             )));
         }
-        if name.len() > MAX_MODE_NAME_LEN {
+        let name_len = unicode_len(name);
+        if name_len > MAX_MODE_NAME_LEN {
             return Err(PreferencesError::Validation(format!(
                 "{} too long ({}, max {MAX_MODE_NAME_LEN})",
                 ctx("name"),
-                name.len()
+                name_len
             )));
         }
     }
@@ -214,10 +215,20 @@ fn validate_focus_mode(mode: &serde_json::Value, index: usize) -> Result<(), Pre
     validate_uuid_array(mode, "vipUserIds", MAX_VIP_ENTRIES, &ctx("vipUserIds"))?;
 
     // VIP channel IDs (must be valid UUIDs)
-    validate_uuid_array(mode, "vipChannelIds", MAX_VIP_ENTRIES, &ctx("vipChannelIds"))?;
+    validate_uuid_array(
+        mode,
+        "vipChannelIds",
+        MAX_VIP_ENTRIES,
+        &ctx("vipChannelIds"),
+    )?;
 
     // Emergency keywords (min 3 chars, max 30 chars)
-    validate_keyword_array(mode, "emergencyKeywords", MAX_KEYWORDS, &ctx("emergencyKeywords"))?;
+    validate_keyword_array(
+        mode,
+        "emergencyKeywords",
+        MAX_KEYWORDS,
+        &ctx("emergencyKeywords"),
+    )?;
 
     Ok(())
 }
@@ -242,9 +253,9 @@ fn validate_uuid_array(
         }
 
         for entry in arr {
-            let s = entry
-                .as_str()
-                .ok_or_else(|| PreferencesError::Validation(format!("{ctx} entries must be strings")))?;
+            let s = entry.as_str().ok_or_else(|| {
+                PreferencesError::Validation(format!("{ctx} entries must be strings"))
+            })?;
             if s.len() > MAX_ID_LEN {
                 return Err(PreferencesError::Validation(format!(
                     "{ctx} entry too long ({}, max {MAX_ID_LEN})",
@@ -281,19 +292,18 @@ fn validate_keyword_array(
         }
 
         for entry in arr {
-            let s = entry
-                .as_str()
-                .ok_or_else(|| PreferencesError::Validation(format!("{ctx} entries must be strings")))?;
-            if s.len() < MIN_KEYWORD_LEN {
+            let s = entry.as_str().ok_or_else(|| {
+                PreferencesError::Validation(format!("{ctx} entries must be strings"))
+            })?;
+            let keyword_len = unicode_len(s);
+            if keyword_len < MIN_KEYWORD_LEN {
                 return Err(PreferencesError::Validation(format!(
-                    "{ctx} entry too short ({}, min {MIN_KEYWORD_LEN})",
-                    s.len()
+                    "{ctx} entry too short ({keyword_len}, min {MIN_KEYWORD_LEN})"
                 )));
             }
-            if s.len() > MAX_KEYWORD_LEN {
+            if keyword_len > MAX_KEYWORD_LEN {
                 return Err(PreferencesError::Validation(format!(
-                    "{ctx} entry too long ({}, max {MAX_KEYWORD_LEN})",
-                    s.len()
+                    "{ctx} entry too long ({keyword_len}, max {MAX_KEYWORD_LEN})"
                 )));
             }
         }

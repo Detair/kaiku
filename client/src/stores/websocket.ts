@@ -6,9 +6,20 @@
 
 import { createStore } from "solid-js/store";
 import * as tauri from "@/lib/tauri";
-import type { Activity, Message, ServerEvent, ThreadInfo, UserStatus } from "@/lib/types";
+import type {
+  Activity,
+  Message,
+  ServerEvent,
+  ThreadInfo,
+  UserStatus,
+} from "@/lib/types";
 import { updateUserActivity, updateUserPresence } from "./presence";
-import { addMessage, removeMessage, messagesState, setMessagesState } from "./messages";
+import {
+  addMessage,
+  removeMessage,
+  messagesState,
+  setMessagesState,
+} from "./messages";
 import {
   addThreadReply,
   removeThreadReply,
@@ -28,11 +39,25 @@ import {
   participantLeft,
   type EndReason,
 } from "./call";
-import { loadFriends, loadPendingRequests, handleUserBlocked, handleUserUnblocked } from "./friends";
+import {
+  loadFriends,
+  loadPendingRequests,
+  handleUserBlocked,
+  handleUserUnblocked,
+} from "./friends";
 import { playNotification } from "@/lib/sound";
-import { getChannel, channelsState, handleChannelReadEvent, incrementUnreadCount } from "./channels";
+import {
+  getChannel,
+  channelsState,
+  handleChannelReadEvent,
+  incrementUnreadCount,
+} from "./channels";
 import { currentUser } from "./auth";
-import { guildsState, getGuildIdForChannel, incrementGuildUnread } from "./guilds";
+import {
+  guildsState,
+  getGuildIdForChannel,
+  incrementGuildUnread,
+} from "./guilds";
 import type { MentionType, SoundEventType } from "@/lib/sound/types";
 import { handleDMReadEvent, handleDMNameUpdated } from "./dms";
 
@@ -43,7 +68,11 @@ const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 type UnlistenFn = () => void;
 
 // Connection state
-type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting";
+type ConnectionState =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "reconnecting";
 
 interface WebSocketState {
   status: ConnectionState;
@@ -89,7 +118,10 @@ function handleMessageNotification(message: Message): void {
   }
 
   // Don't notify for currently focused channel when the window is visible
-  if (channelsState.selectedChannelId === message.channel_id && !document.hidden) {
+  if (
+    channelsState.selectedChannelId === message.channel_id &&
+    !document.hidden
+  ) {
     return;
   }
 
@@ -101,7 +133,11 @@ function handleMessageNotification(message: Message): void {
   let eventType: SoundEventType;
   if (isDm) {
     eventType = "message_dm";
-  } else if (message.mention_type === "direct" || message.mention_type === "everyone" || message.mention_type === "here") {
+  } else if (
+    message.mention_type === "direct" ||
+    message.mention_type === "everyone" ||
+    message.mention_type === "here"
+  ) {
     eventType = "message_mention";
   } else {
     eventType = "message_channel";
@@ -134,91 +170,124 @@ export async function initWebSocket(): Promise<void> {
     unlisteners.push(
       await listen("ws:connecting", () => {
         setWsState({ status: "connecting", error: null });
-      })
+      }),
     );
 
     unlisteners.push(
       await listen("ws:connected", () => {
         setWsState({ status: "connected", reconnectAttempt: 0, error: null });
-      })
+      }),
     );
 
     unlisteners.push(
       await listen("ws:disconnected", () => {
         setWsState({ status: "disconnected" });
-      })
+      }),
     );
 
     unlisteners.push(
       await listen<number>("ws:reconnecting", (event) => {
         setWsState({ status: "reconnecting", reconnectAttempt: event.payload });
-      })
+      }),
     );
 
     // Message events
     unlisteners.push(
-      await listen<{ channel_id: string; message: Message }>("ws:message_new", async (event) => {
-        await addMessage(event.payload.message);
-        handleMessageNotification(event.payload.message);
-        // Increment unread count if message is not in the selected channel
-        if (event.payload.channel_id !== channelsState.selectedChannelId) {
-          const channel = getChannel(event.payload.channel_id);
-          if (channel && channel.guild_id && channel.channel_type === "text") {
-            incrementUnreadCount(event.payload.channel_id);
-          }
-          const guildId = getGuildIdForChannel(event.payload.channel_id);
-          if (guildId && guildId !== guildsState.activeGuildId) {
-            incrementGuildUnread(guildId);
-          }
-          // Notify unread module of new message
-          window.dispatchEvent(new CustomEvent("unread-update"));
-        }
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ channel_id: string; message_id: string; content: string; edited_at: string }>(
-        "ws:message_edit",
-        (event) => {
-          const { channel_id, message_id, content, edited_at } = event.payload;
-          const messages = messagesState.byChannel[channel_id];
-          if (messages) {
-            const index = messages.findIndex((m) => m.id === message_id);
-            if (index !== -1) {
-              setMessagesState("byChannel", channel_id, index, "content", content);
-              setMessagesState("byChannel", channel_id, index, "edited_at", edited_at);
+      await listen<{ channel_id: string; message: Message }>(
+        "ws:message_new",
+        async (event) => {
+          await addMessage(event.payload.message);
+          handleMessageNotification(event.payload.message);
+          // Increment unread count if message is not in the selected channel
+          if (event.payload.channel_id !== channelsState.selectedChannelId) {
+            const channel = getChannel(event.payload.channel_id);
+            if (
+              channel &&
+              channel.guild_id &&
+              channel.channel_type === "text"
+            ) {
+              incrementUnreadCount(event.payload.channel_id);
             }
+            const guildId = getGuildIdForChannel(event.payload.channel_id);
+            if (guildId && guildId !== guildsState.activeGuildId) {
+              incrementGuildUnread(guildId);
+            }
+            // Notify unread module of new message
+            window.dispatchEvent(new CustomEvent("unread-update"));
           }
-        }
-      )
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; message_id: string }>("ws:message_delete", (event) => {
-        removeMessage(event.payload.channel_id, event.payload.message_id);
-      })
+      await listen<{
+        channel_id: string;
+        message_id: string;
+        content: string;
+        edited_at: string;
+      }>("ws:message_edit", (event) => {
+        const { channel_id, message_id, content, edited_at } = event.payload;
+        const messages = messagesState.byChannel[channel_id];
+        if (messages) {
+          const index = messages.findIndex((m) => m.id === message_id);
+          if (index !== -1) {
+            setMessagesState(
+              "byChannel",
+              channel_id,
+              index,
+              "content",
+              content,
+            );
+            setMessagesState(
+              "byChannel",
+              channel_id,
+              index,
+              "edited_at",
+              edited_at,
+            );
+          }
+        }
+      }),
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; message_id: string }>(
+        "ws:message_delete",
+        (event) => {
+          removeMessage(event.payload.channel_id, event.payload.message_id);
+        },
+      ),
     );
 
     // Typing events
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string }>("ws:typing_start", (event) => {
-        const { channel_id, user_id } = event.payload;
-        addTypingUser(channel_id, user_id);
-      })
+      await listen<{ channel_id: string; user_id: string }>(
+        "ws:typing_start",
+        (event) => {
+          const { channel_id, user_id } = event.payload;
+          addTypingUser(channel_id, user_id);
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string }>("ws:typing_stop", (event) => {
-        const { channel_id, user_id } = event.payload;
-        removeTypingUser(channel_id, user_id);
-      })
+      await listen<{ channel_id: string; user_id: string }>(
+        "ws:typing_stop",
+        (event) => {
+          const { channel_id, user_id } = event.payload;
+          removeTypingUser(channel_id, user_id);
+        },
+      ),
     );
 
     // Presence events
     unlisteners.push(
-      await listen<{ user_id: string; status: UserStatus }>("ws:presence_update", (event) => {
-        updateUserPresence(event.payload.user_id, event.payload.status);
-      })
+      await listen<{ user_id: string; status: UserStatus }>(
+        "ws:presence_update",
+        (event) => {
+          updateUserPresence(event.payload.user_id, event.payload.status);
+        },
+      ),
     );
 
     // Rich presence events
@@ -226,10 +295,14 @@ export async function initWebSocket(): Promise<void> {
       await listen<{ user_id: string; activity: Activity | null }>(
         "ws:rich_presence_update",
         (event) => {
-          console.log("Rich presence update:", event.payload.user_id, event.payload.activity);
+          console.log(
+            "Rich presence update:",
+            event.payload.user_id,
+            event.payload.activity,
+          );
           updateUserActivity(event.payload.user_id, event.payload.activity);
-        }
-      )
+        },
+      ),
     );
 
     // Error events
@@ -237,34 +310,36 @@ export async function initWebSocket(): Promise<void> {
       await listen<{ code: string; message: string }>("ws:error", (event) => {
         console.error("WebSocket error:", event.payload);
         setWsState({ error: event.payload.message });
-      })
+      }),
     );
 
     // Call events
     unlisteners.push(
-      await listen<{ channel_id: string; initiator: string; initiator_name: string }>(
-        "ws:incoming_call",
-        (event) => {
-          receiveIncomingCall(
-            event.payload.channel_id,
-            event.payload.initiator,
-            event.payload.initiator_name
-          );
-        }
-      )
+      await listen<{
+        channel_id: string;
+        initiator: string;
+        initiator_name: string;
+      }>("ws:incoming_call", (event) => {
+        receiveIncomingCall(
+          event.payload.channel_id,
+          event.payload.initiator,
+          event.payload.initiator_name,
+        );
+      }),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; reason: string; duration_secs: number | null }>(
-        "ws:call_ended",
-        (event) => {
-          callEndedExternally(
-            event.payload.channel_id,
-            event.payload.reason as EndReason,
-            event.payload.duration_secs ?? undefined
-          );
-        }
-      )
+      await listen<{
+        channel_id: string;
+        reason: string;
+        duration_secs: number | null;
+      }>("ws:call_ended", (event) => {
+        callEndedExternally(
+          event.payload.channel_id,
+          event.payload.reason as EndReason,
+          event.payload.duration_secs ?? undefined,
+        );
+      }),
     );
 
     unlisteners.push(
@@ -273,8 +348,8 @@ export async function initWebSocket(): Promise<void> {
         (event) => {
           participantJoined(event.payload.channel_id, event.payload.user_id);
           callConnected(event.payload.channel_id, [event.payload.user_id]);
-        }
-      )
+        },
+      ),
     );
 
     unlisteners.push(
@@ -282,101 +357,142 @@ export async function initWebSocket(): Promise<void> {
         "ws:call_participant_left",
         (event) => {
           participantLeft(event.payload.channel_id, event.payload.user_id);
-        }
-      )
+        },
+      ),
     );
 
     // Voice events (Tauri → frontend parity with browser mode)
     unlisteners.push(
-      await listen<{ channel_id: string; sdp: string }>("ws:voice_offer", async (event) => {
-        await handleVoiceOffer(event.payload.channel_id, event.payload.sdp);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ channel_id: string; candidate: string }>("ws:voice_ice_candidate", async (event) => {
-        await handleVoiceIceCandidate(event.payload.channel_id, event.payload.candidate);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ channel_id: string; user_id: string; username: string; display_name: string }>(
-        "ws:voice_user_joined",
+      await listen<{ channel_id: string; sdp: string }>(
+        "ws:voice_offer",
         async (event) => {
-          await handleVoiceUserJoined(
+          await handleVoiceOffer(event.payload.channel_id, event.payload.sdp);
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; candidate: string }>(
+        "ws:voice_ice_candidate",
+        async (event) => {
+          await handleVoiceIceCandidate(
+            event.payload.channel_id,
+            event.payload.candidate,
+          );
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<{
+        channel_id: string;
+        user_id: string;
+        username: string;
+        display_name: string;
+      }>("ws:voice_user_joined", async (event) => {
+        await handleVoiceUserJoined(
+          event.payload.channel_id,
+          event.payload.user_id,
+          event.payload.username,
+          event.payload.display_name,
+        );
+      }),
+    );
+
+    unlisteners.push(
+      await listen<{ channel_id: string; user_id: string }>(
+        "ws:voice_user_left",
+        async (event) => {
+          await handleVoiceUserLeft(
             event.payload.channel_id,
             event.payload.user_id,
-            event.payload.username,
-            event.payload.display_name,
           );
-        }
-      )
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string }>("ws:voice_user_left", async (event) => {
-        await handleVoiceUserLeft(event.payload.channel_id, event.payload.user_id);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ channel_id: string; user_id: string }>("ws:voice_user_muted", async (event) => {
-        await handleVoiceUserMuted(event.payload.channel_id, event.payload.user_id);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ channel_id: string; user_id: string }>("ws:voice_user_unmuted", async (event) => {
-        await handleVoiceUserUnmuted(event.payload.channel_id, event.payload.user_id);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ channel_id: string; participants: any[]; screen_shares: any[] }>(
-        "ws:voice_room_state",
+      await listen<{ channel_id: string; user_id: string }>(
+        "ws:voice_user_muted",
         async (event) => {
-          await handleVoiceRoomState(
+          await handleVoiceUserMuted(
             event.payload.channel_id,
-            event.payload.participants,
-            event.payload.screen_shares,
+            event.payload.user_id,
           );
-        }
-      )
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ code: string; message: string }>("ws:voice_error", (event) => {
-        console.error("Voice error:", event.payload.code, event.payload.message);
-      })
+      await listen<{ channel_id: string; user_id: string }>(
+        "ws:voice_user_unmuted",
+        async (event) => {
+          await handleVoiceUserUnmuted(
+            event.payload.channel_id,
+            event.payload.user_id,
+          );
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<{
+        channel_id: string;
+        participants: any[];
+        screen_shares: any[];
+      }>("ws:voice_room_state", async (event) => {
+        await handleVoiceRoomState(
+          event.payload.channel_id,
+          event.payload.participants,
+          event.payload.screen_shares,
+        );
+      }),
+    );
+
+    unlisteners.push(
+      await listen<{ code: string; message: string }>(
+        "ws:voice_error",
+        (event) => {
+          console.error(
+            "Voice error:",
+            event.payload.code,
+            event.payload.message,
+          );
+        },
+      ),
     );
 
     // Reaction events (Tauri → frontend parity with browser mode)
     unlisteners.push(
-      await listen<{ channel_id: string; message_id: string; user_id: string; emoji: string }>(
-        "ws:reaction_add",
-        (event) => {
-          handleReactionAdd(
-            event.payload.channel_id,
-            event.payload.message_id,
-            event.payload.user_id,
-            event.payload.emoji
-          );
-        }
-      )
+      await listen<{
+        channel_id: string;
+        message_id: string;
+        user_id: string;
+        emoji: string;
+      }>("ws:reaction_add", (event) => {
+        handleReactionAdd(
+          event.payload.channel_id,
+          event.payload.message_id,
+          event.payload.user_id,
+          event.payload.emoji,
+        );
+      }),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; message_id: string; user_id: string; emoji: string }>(
-        "ws:reaction_remove",
-        (event) => {
-          handleReactionRemove(
-            event.payload.channel_id,
-            event.payload.message_id,
-            event.payload.user_id,
-            event.payload.emoji
-          );
-        }
-      )
+      await listen<{
+        channel_id: string;
+        message_id: string;
+        user_id: string;
+        emoji: string;
+      }>("ws:reaction_remove", (event) => {
+        handleReactionRemove(
+          event.payload.channel_id,
+          event.payload.message_id,
+          event.payload.user_id,
+          event.payload.emoji,
+        );
+      }),
     );
 
     // Guild emoji events
@@ -385,27 +501,30 @@ export async function initWebSocket(): Promise<void> {
         "ws:guild_emoji_updated",
         (event) => {
           handleGuildEmojiUpdated(event.payload.guild_id, event.payload.emojis);
-        }
-      )
+        },
+      ),
     );
 
     // Read sync events (Tauri → frontend parity with browser mode)
     unlisteners.push(
       await listen<{ channel_id: string }>("ws:channel_read", (event) => {
         handleChannelReadEvent(event.payload.channel_id);
-      })
+      }),
     );
 
     unlisteners.push(
       await listen<{ channel_id: string }>("ws:dm_read", (event) => {
         handleDMReadEvent(event.payload.channel_id);
-      })
+      }),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; name: string }>("ws:dm_name_updated", (event) => {
-        handleDMNameUpdated(event.payload.channel_id, event.payload.name);
-      })
+      await listen<{ channel_id: string; name: string }>(
+        "ws:dm_name_updated",
+        (event) => {
+          handleDMNameUpdated(event.payload.channel_id, event.payload.name);
+        },
+      ),
     );
 
     // Call events (Tauri → complete call support)
@@ -413,26 +532,37 @@ export async function initWebSocket(): Promise<void> {
     // This completes the full call event coverage
     unlisteners.push(
       await listen<{ channel_id: string }>("ws:call_started", (event) => {
-        console.log("[WebSocket] Call started in channel:", event.payload.channel_id);
+        console.log(
+          "[WebSocket] Call started in channel:",
+          event.payload.channel_id,
+        );
         // Call started means the initiator is now connected
-      })
+      }),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string }>("ws:call_declined", (event) => {
-        console.log("[WebSocket] Call declined by:", event.payload.user_id);
-        // The call store will handle this through the API response
-      })
+      await listen<{ channel_id: string; user_id: string }>(
+        "ws:call_declined",
+        (event) => {
+          console.log("[WebSocket] Call declined by:", event.payload.user_id);
+          // The call store will handle this through the API response
+        },
+      ),
     );
 
     // Screen share events (Tauri → frontend parity with browser mode)
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string; username: string; source_label: string; has_audio: boolean; quality: string; started_at?: string }>(
-        "ws:screen_share_started",
-        async (event) => {
-          await handleScreenShareStarted(event.payload);
-        }
-      )
+      await listen<{
+        channel_id: string;
+        user_id: string;
+        username: string;
+        source_label: string;
+        has_audio: boolean;
+        quality: string;
+        started_at?: string;
+      }>("ws:screen_share_started", async (event) => {
+        await handleScreenShareStarted(event.payload);
+      }),
     );
 
     unlisteners.push(
@@ -440,27 +570,31 @@ export async function initWebSocket(): Promise<void> {
         "ws:screen_share_stopped",
         async (event) => {
           await handleScreenShareStopped(event.payload);
-        }
-      )
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string; new_quality: string; reason: string }>(
-        "ws:screen_share_quality_changed",
-        async (event) => {
-          await handleScreenShareQualityChanged(event.payload);
-        }
-      )
+      await listen<{
+        channel_id: string;
+        user_id: string;
+        new_quality: string;
+        reason: string;
+      }>("ws:screen_share_quality_changed", async (event) => {
+        await handleScreenShareQualityChanged(event.payload);
+      }),
     );
 
     // Webcam events (Tauri → frontend parity with browser mode)
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string; username: string; quality: string }>(
-        "ws:webcam_started",
-        async (event) => {
-          await handleWebcamStarted(event.payload);
-        }
-      )
+      await listen<{
+        channel_id: string;
+        user_id: string;
+        username: string;
+        quality: string;
+      }>("ws:webcam_started", async (event) => {
+        await handleWebcamStarted(event.payload);
+      }),
     );
 
     unlisteners.push(
@@ -468,204 +602,279 @@ export async function initWebSocket(): Promise<void> {
         "ws:webcam_stopped",
         async (event) => {
           await handleWebcamStopped(event.payload);
-        }
-      )
+        },
+      ),
     );
 
     // Voice stats events
     unlisteners.push(
-      await listen<{ channel_id: string; user_id: string; latency: number; packet_loss: number; jitter: number; quality: number }>(
-        "ws:voice_user_stats",
-        async (event) => {
-          await handleVoiceUserStatsEvent(event.payload);
-        }
-      )
+      await listen<{
+        channel_id: string;
+        user_id: string;
+        latency: number;
+        packet_loss: number;
+        jitter: number;
+        quality: number;
+      }>("ws:voice_user_stats", async (event) => {
+        await handleVoiceUserStatsEvent(event.payload);
+      }),
     );
 
     // Admin events
     unlisteners.push(
-      await listen<{ user_id: string; username: string }>("ws:admin_user_banned", async (event) => {
-        await handleAdminUserBanned(event.payload.user_id, event.payload.username);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ user_id: string; username: string }>("ws:admin_user_unbanned", async (event) => {
-        await handleAdminUserUnbanned(event.payload.user_id, event.payload.username);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_suspended", async (event) => {
-        await handleAdminGuildSuspended(event.payload.guild_id, event.payload.guild_name);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_unsuspended", async (event) => {
-        await handleAdminGuildUnsuspended(event.payload.guild_id, event.payload.guild_name);
-      })
-    );
-
-    unlisteners.push(
-      await listen<{ report_id: string; category: string; target_type: string }>(
-        "ws:admin_report_created",
+      await listen<{ user_id: string; username: string }>(
+        "ws:admin_user_banned",
         async (event) => {
-          await handleAdminReportCreated(event.payload.report_id, event.payload.category, event.payload.target_type);
-        }
-      )
+          await handleAdminUserBanned(
+            event.payload.user_id,
+            event.payload.username,
+          );
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ report_id: string }>("ws:admin_report_resolved", async (event) => {
-        await handleAdminReportResolved(event.payload.report_id);
-      })
+      await listen<{ user_id: string; username: string }>(
+        "ws:admin_user_unbanned",
+        async (event) => {
+          await handleAdminUserUnbanned(
+            event.payload.user_id,
+            event.payload.username,
+          );
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ user_id: string; username: string }>("ws:admin_user_deleted", async (event) => {
-        await handleAdminUserDeleted(event.payload.user_id, event.payload.username);
-      })
+      await listen<{ guild_id: string; guild_name: string }>(
+        "ws:admin_guild_suspended",
+        async (event) => {
+          await handleAdminGuildSuspended(
+            event.payload.guild_id,
+            event.payload.guild_name,
+          );
+        },
+      ),
     );
 
     unlisteners.push(
-      await listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_deleted", async (event) => {
-        await handleAdminGuildDeleted(event.payload.guild_id, event.payload.guild_name);
-      })
+      await listen<{ guild_id: string; guild_name: string }>(
+        "ws:admin_guild_unsuspended",
+        async (event) => {
+          await handleAdminGuildUnsuspended(
+            event.payload.guild_id,
+            event.payload.guild_name,
+          );
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<{
+        report_id: string;
+        category: string;
+        target_type: string;
+      }>("ws:admin_report_created", async (event) => {
+        await handleAdminReportCreated(
+          event.payload.report_id,
+          event.payload.category,
+          event.payload.target_type,
+        );
+      }),
+    );
+
+    unlisteners.push(
+      await listen<{ report_id: string }>(
+        "ws:admin_report_resolved",
+        async (event) => {
+          await handleAdminReportResolved(event.payload.report_id);
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<{ user_id: string; username: string }>(
+        "ws:admin_user_deleted",
+        async (event) => {
+          await handleAdminUserDeleted(
+            event.payload.user_id,
+            event.payload.username,
+          );
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<{ guild_id: string; guild_name: string }>(
+        "ws:admin_guild_deleted",
+        async (event) => {
+          await handleAdminGuildDeleted(
+            event.payload.guild_id,
+            event.payload.guild_name,
+          );
+        },
+      ),
     );
 
     // Friend events
     unlisteners.push(
       await listen("ws:friend_request_received", () => {
         loadPendingRequests();
-      })
+      }),
     );
 
     unlisteners.push(
       await listen("ws:friend_request_accepted", () => {
         Promise.all([loadFriends(), loadPendingRequests()]);
-      })
+      }),
     );
 
     // Block events
     unlisteners.push(
       await listen<{ user_id: string }>("ws:user_blocked", (event) => {
         handleUserBlocked(event.payload.user_id);
-      })
+      }),
     );
 
     unlisteners.push(
       await listen<{ user_id: string }>("ws:user_unblocked", (event) => {
         handleUserUnblocked(event.payload.user_id);
-      })
+      }),
     );
 
     // Thread events
     unlisteners.push(
-      await listen<{ channel_id: string; parent_id: string; message: Message; thread_info: ThreadInfo }>(
-        "ws:thread_reply_new",
-        (event) => {
-          handleThreadReplyNew(
-            event.payload.channel_id,
-            event.payload.parent_id,
-            event.payload.message,
-            event.payload.thread_info,
-          );
-        }
-      )
+      await listen<{
+        channel_id: string;
+        parent_id: string;
+        message: Message;
+        thread_info: ThreadInfo;
+      }>("ws:thread_reply_new", (event) => {
+        handleThreadReplyNew(
+          event.payload.channel_id,
+          event.payload.parent_id,
+          event.payload.message,
+          event.payload.thread_info,
+        );
+      }),
     );
 
     unlisteners.push(
-      await listen<{ channel_id: string; parent_id: string; message_id: string; thread_info: ThreadInfo }>(
-        "ws:thread_reply_delete",
-        (event) => {
-          handleThreadReplyDelete(
-            event.payload.channel_id,
-            event.payload.parent_id,
-            event.payload.message_id,
-            event.payload.thread_info,
-          );
-        }
-      )
+      await listen<{
+        channel_id: string;
+        parent_id: string;
+        message_id: string;
+        thread_info: ThreadInfo;
+      }>("ws:thread_reply_delete", (event) => {
+        handleThreadReplyDelete(
+          event.payload.channel_id,
+          event.payload.parent_id,
+          event.payload.message_id,
+          event.payload.thread_info,
+        );
+      }),
     );
 
     unlisteners.push(
-      await listen<{ thread_parent_id: string; last_read_message_id: string | null }>(
-        "ws:thread_read",
-        (event) => {
-          handleThreadRead(event.payload.thread_parent_id, event.payload.last_read_message_id);
-        }
-      )
+      await listen<{
+        thread_parent_id: string;
+        last_read_message_id: string | null;
+      }>("ws:thread_read", (event) => {
+        handleThreadRead(
+          event.payload.thread_parent_id,
+          event.payload.last_read_message_id,
+        );
+      }),
     );
 
     // Preferences sync
     unlisteners.push(
       await listen<any>("ws:preferences_updated", (event) => {
         handlePreferencesUpdated(event.payload);
-      })
+      }),
     );
 
     // State sync (patch)
     unlisteners.push(
-      await listen<{ entity_type: string; entity_id: string; diff: Record<string, unknown> }>(
-        "ws:patch",
-        async (event) => {
-          await handlePatchEvent(event.payload.entity_type, event.payload.entity_id, event.payload.diff);
-        }
-      )
+      await listen<{
+        entity_type: string;
+        entity_id: string;
+        diff: Record<string, unknown>;
+      }>("ws:patch", async (event) => {
+        await handlePatchEvent(
+          event.payload.entity_type,
+          event.payload.entity_id,
+          event.payload.diff,
+        );
+      }),
     );
 
     // Bot command response events
     unlisteners.push(
-      await listen<{ interaction_id: string; content: string; command_name: string; bot_name: string; channel_id: string; ephemeral: boolean }>(
-        "ws:command_response",
-        async (event) => {
-          if (event.payload.ephemeral) {
-            console.log("[WebSocket] Ephemeral command response:", event.payload.command_name, event.payload.content);
-            const syntheticMessage: Message = {
-              id: crypto.randomUUID(),
-              channel_id: event.payload.channel_id,
-              author: {
-                id: "system",
-                username: event.payload.bot_name,
-                display_name: event.payload.bot_name,
-                avatar_url: null,
-                status: "online",
-              },
-              content: event.payload.content,
-              encrypted: false,
-              attachments: [],
-              reply_to: null,
-              parent_id: null,
-              thread_reply_count: 0,
-              thread_last_reply_at: null,
-              edited_at: null,
-              created_at: new Date().toISOString(),
-              mention_type: null,
-            };
-            await addMessage(syntheticMessage);
-          } else {
-            console.log("[WebSocket] Non-ephemeral command response (handled via message_new):", event.payload.command_name);
-          }
+      await listen<{
+        interaction_id: string;
+        content: string;
+        command_name: string;
+        bot_name: string;
+        channel_id: string;
+        ephemeral: boolean;
+      }>("ws:command_response", async (event) => {
+        if (event.payload.ephemeral) {
+          console.log(
+            "[WebSocket] Ephemeral command response:",
+            event.payload.command_name,
+            event.payload.content,
+          );
+          const syntheticMessage: Message = {
+            id: crypto.randomUUID(),
+            channel_id: event.payload.channel_id,
+            author: {
+              id: "system",
+              username: event.payload.bot_name,
+              display_name: event.payload.bot_name,
+              avatar_url: null,
+              status: "online",
+            },
+            content: event.payload.content,
+            encrypted: false,
+            attachments: [],
+            reply_to: null,
+            parent_id: null,
+            thread_reply_count: 0,
+            thread_last_reply_at: null,
+            edited_at: null,
+            created_at: new Date().toISOString(),
+            mention_type: null,
+          };
+          await addMessage(syntheticMessage);
+        } else {
+          console.log(
+            "[WebSocket] Non-ephemeral command response (handled via message_new):",
+            event.payload.command_name,
+          );
         }
-      )
+      }),
     );
 
     unlisteners.push(
-      await listen<{ interaction_id: string; command_name: string; channel_id: string }>(
-        "ws:command_response_timeout",
-        async (event) => {
-          console.warn("[WebSocket] Command response timeout:", event.payload.command_name);
-          const { showToast } = await import("@/components/ui/Toast");
-          showToast({
-            type: "warning",
-            title: "Command Timeout",
-            message: `Command /${event.payload.command_name} did not respond within 30 seconds.`,
-            duration: 5000,
-            id: `cmd-timeout-${event.payload.command_name}`,
-          });
-        }
-      )
+      await listen<{
+        interaction_id: string;
+        command_name: string;
+        channel_id: string;
+      }>("ws:command_response_timeout", async (event) => {
+        console.warn(
+          "[WebSocket] Command response timeout:",
+          event.payload.command_name,
+        );
+        const { showToast } = await import("@/components/ui/Toast");
+        showToast({
+          type: "warning",
+          title: "Command Timeout",
+          message: `Command /${event.payload.command_name} did not respond within 30 seconds.`,
+          duration: 5000,
+          id: `cmd-timeout-${event.payload.command_name}`,
+        });
+      }),
     );
   } else {
     // Browser mode - use browser WebSocket events
@@ -682,7 +891,9 @@ export async function initWebSocket(): Promise<void> {
           }
         };
         ws.addEventListener("message", messageHandler);
-        unlisteners.push(() => ws.removeEventListener("message", messageHandler));
+        unlisteners.push(() =>
+          ws.removeEventListener("message", messageHandler),
+        );
       } else {
         console.warn("[WebSocket] No WebSocket instance found");
       }
@@ -693,14 +904,18 @@ export async function initWebSocket(): Promise<void> {
 
     // Re-attach on reconnection
     const reconnectHandler = () => {
-      console.log("[WebSocket] Received ws-reconnected event, re-attaching message handler");
+      console.log(
+        "[WebSocket] Received ws-reconnected event, re-attaching message handler",
+      );
       // Use setTimeout to ensure WebSocket is fully ready
       setTimeout(() => {
         attachMessageHandler();
       }, 100);
     };
     window.addEventListener("ws-reconnected", reconnectHandler);
-    unlisteners.push(() => window.removeEventListener("ws-reconnected", reconnectHandler));
+    unlisteners.push(() =>
+      window.removeEventListener("ws-reconnected", reconnectHandler),
+    );
   }
 }
 
@@ -734,10 +949,24 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "message_edit": {
       const editMessages = messagesState.byChannel[event.channel_id];
       if (editMessages) {
-        const editIndex = editMessages.findIndex((m) => m.id === event.message_id);
+        const editIndex = editMessages.findIndex(
+          (m) => m.id === event.message_id,
+        );
         if (editIndex !== -1) {
-          setMessagesState("byChannel", event.channel_id, editIndex, "content", event.content);
-          setMessagesState("byChannel", event.channel_id, editIndex, "edited_at", event.edited_at);
+          setMessagesState(
+            "byChannel",
+            event.channel_id,
+            editIndex,
+            "content",
+            event.content,
+          );
+          setMessagesState(
+            "byChannel",
+            event.channel_id,
+            editIndex,
+            "edited_at",
+            event.edited_at,
+          );
         }
       }
       break;
@@ -765,7 +994,10 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "voice_offer":
-      console.log("[WebSocket] Handling voice_offer for channel:", event.channel_id);
+      console.log(
+        "[WebSocket] Handling voice_offer for channel:",
+        event.channel_id,
+      );
       await handleVoiceOffer(event.channel_id, event.sdp);
       break;
 
@@ -775,7 +1007,12 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "voice_user_joined":
-      await handleVoiceUserJoined(event.channel_id, event.user_id, event.username, event.display_name);
+      await handleVoiceUserJoined(
+        event.channel_id,
+        event.user_id,
+        event.username,
+        event.display_name,
+      );
       break;
 
     case "voice_user_left":
@@ -791,7 +1028,12 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "voice_room_state":
-      await handleVoiceRoomState(event.channel_id, event.participants, event.screen_shares, event.webcams);
+      await handleVoiceRoomState(
+        event.channel_id,
+        event.participants,
+        event.screen_shares,
+        event.webcams,
+      );
       break;
 
     case "screen_share_started":
@@ -823,7 +1065,10 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
         const channelId = voiceState.channelId;
 
         if (channelId) {
-          console.log("[WebSocket] Auto-retry: leaving and rejoining channel", channelId);
+          console.log(
+            "[WebSocket] Auto-retry: leaving and rejoining channel",
+            channelId,
+          );
 
           // Send leave message
           await tauri.wsSend({
@@ -832,7 +1077,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
           });
 
           // Wait a bit for server to process leave
-          await new Promise(resolve => setTimeout(resolve, 150));
+          await new Promise((resolve) => setTimeout(resolve, 150));
 
           // Retry join
           await tauri.wsSend({
@@ -846,7 +1091,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     // Call events
     case "incoming_call":
       console.log("[WebSocket] Incoming call from:", event.initiator_name);
-      receiveIncomingCall(event.channel_id, event.initiator, event.initiator_name);
+      receiveIncomingCall(
+        event.channel_id,
+        event.initiator,
+        event.initiator_name,
+      );
       break;
 
     case "call_started":
@@ -860,7 +1109,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       callEndedExternally(
         event.channel_id,
         event.reason as EndReason,
-        event.duration_secs ?? undefined
+        event.duration_secs ?? undefined,
       );
       break;
 
@@ -933,11 +1182,21 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     // Reaction events
     case "reaction_add":
-      handleReactionAdd(event.channel_id, event.message_id, event.user_id, event.emoji);
+      handleReactionAdd(
+        event.channel_id,
+        event.message_id,
+        event.user_id,
+        event.emoji,
+      );
       break;
 
     case "reaction_remove":
-      handleReactionRemove(event.channel_id, event.message_id, event.user_id, event.emoji);
+      handleReactionRemove(
+        event.channel_id,
+        event.message_id,
+        event.user_id,
+        event.emoji,
+      );
       break;
 
     // Guild emoji events
@@ -967,7 +1226,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     // Admin report events
     case "admin_report_created":
-      await handleAdminReportCreated(event.report_id, event.category, event.target_type);
+      await handleAdminReportCreated(
+        event.report_id,
+        event.category,
+        event.target_type,
+      );
       break;
 
     case "admin_report_resolved":
@@ -976,11 +1239,21 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     // Thread events
     case "thread_reply_new":
-      handleThreadReplyNew(event.channel_id, event.parent_id, event.message, event.thread_info);
+      handleThreadReplyNew(
+        event.channel_id,
+        event.parent_id,
+        event.message,
+        event.thread_info,
+      );
       break;
 
     case "thread_reply_delete":
-      handleThreadReplyDelete(event.channel_id, event.parent_id, event.message_id, event.thread_info);
+      handleThreadReplyDelete(
+        event.channel_id,
+        event.parent_id,
+        event.message_id,
+        event.thread_info,
+      );
       break;
 
     case "thread_read":
@@ -996,7 +1269,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "command_response":
       if (event.ephemeral) {
         // For ephemeral responses, create a local system message
-        console.log("[WebSocket] Ephemeral command response:", event.command_name, event.content);
+        console.log(
+          "[WebSocket] Ephemeral command response:",
+          event.command_name,
+          event.content,
+        );
         const syntheticMessage: Message = {
           id: crypto.randomUUID(),
           channel_id: event.channel_id,
@@ -1021,7 +1298,10 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
         await addMessage(syntheticMessage);
       } else {
         // Non-ephemeral responses arrive as regular message_new events
-        console.log("[WebSocket] Non-ephemeral command response (handled via message_new):", event.command_name);
+        console.log(
+          "[WebSocket] Non-ephemeral command response (handled via message_new):",
+          event.command_name,
+        );
       }
       break;
 
@@ -1067,13 +1347,17 @@ export async function reinitWebSocketListeners(): Promise<void> {
 
   const ws = tauri.getBrowserWebSocket();
   if (!ws) {
-    console.warn("[WebSocket] No WebSocket instance available for reinitialization");
+    console.warn(
+      "[WebSocket] No WebSocket instance available for reinitialization",
+    );
     return;
   }
 
   // Remove old listener if it exists (prevent duplicates)
-  const oldListeners = unlisteners.filter(ul => ul.toString().includes("message"));
-  oldListeners.forEach(ul => ul());
+  const oldListeners = unlisteners.filter((ul) =>
+    ul.toString().includes("message"),
+  );
+  oldListeners.forEach((ul) => ul());
 
   // Attach new message handler
   const messageHandler = (event: MessageEvent) => {
@@ -1266,7 +1550,10 @@ async function handleVoiceOffer(channelId: string, sdp: string): Promise<void> {
   }
 }
 
-async function handleVoiceIceCandidate(channelId: string, candidate: string): Promise<void> {
+async function handleVoiceIceCandidate(
+  channelId: string,
+  candidate: string,
+): Promise<void> {
   const startTime = performance.now();
 
   try {
@@ -1282,7 +1569,9 @@ async function handleVoiceIceCandidate(channelId: string, candidate: string): Pr
     const result = await adapter.handleIceCandidate(channelId, candidate);
 
     const elapsed = performance.now() - startTime;
-    console.log(`[WebSocket] ICE candidate processed in ${elapsed.toFixed(2)}ms`);
+    console.log(
+      `[WebSocket] ICE candidate processed in ${elapsed.toFixed(2)}ms`,
+    );
 
     if (!result.ok) {
       console.error("Failed to handle ICE candidate:", result.error);
@@ -1292,7 +1581,12 @@ async function handleVoiceIceCandidate(channelId: string, candidate: string): Pr
   }
 }
 
-async function handleVoiceUserJoined(channelId: string, userId: string, username: string, displayName: string): Promise<void> {
+async function handleVoiceUserJoined(
+  channelId: string,
+  userId: string,
+  username: string,
+  displayName: string,
+): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1307,12 +1601,15 @@ async function handleVoiceUserJoined(channelId: string, userId: string, username
           speaking: false,
           screen_sharing: false,
         };
-      })
+      }),
     );
   }
 }
 
-async function handleVoiceUserLeft(channelId: string, userId: string): Promise<void> {
+async function handleVoiceUserLeft(
+  channelId: string,
+  userId: string,
+): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1320,12 +1617,15 @@ async function handleVoiceUserLeft(channelId: string, userId: string): Promise<v
     setVoiceState(
       produce((state) => {
         delete state.participants[userId];
-      })
+      }),
     );
   }
 }
 
-async function handleVoiceUserMuted(channelId: string, userId: string): Promise<void> {
+async function handleVoiceUserMuted(
+  channelId: string,
+  userId: string,
+): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1335,12 +1635,15 @@ async function handleVoiceUserMuted(channelId: string, userId: string): Promise<
         if (state.participants[userId]) {
           state.participants[userId].muted = true;
         }
-      })
+      }),
     );
   }
 }
 
-async function handleVoiceUserUnmuted(channelId: string, userId: string): Promise<void> {
+async function handleVoiceUserUnmuted(
+  channelId: string,
+  userId: string,
+): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1350,12 +1653,17 @@ async function handleVoiceUserUnmuted(channelId: string, userId: string): Promis
         if (state.participants[userId]) {
           state.participants[userId].muted = false;
         }
-      })
+      }),
     );
   }
 }
 
-async function handleVoiceRoomState(channelId: string, participants: any[], screenShares?: any[], webcams?: any[]): Promise<void> {
+async function handleVoiceRoomState(
+  channelId: string,
+  participants: any[],
+  screenShares?: any[],
+  webcams?: any[],
+): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1368,7 +1676,7 @@ async function handleVoiceRoomState(channelId: string, participants: any[], scre
         }
         state.screenShares = screenShares ?? [];
         state.webcams = webcams ?? [];
-      })
+      }),
     );
   }
 }
@@ -1398,7 +1706,7 @@ export async function handleScreenShareStarted(event: any): Promise<void> {
         if (state.participants[event.user_id]) {
           state.participants[event.user_id].screen_sharing = true;
         }
-      })
+      }),
     );
   }
 }
@@ -1413,7 +1721,9 @@ export async function handleScreenShareStopped(event: any): Promise<void> {
     setVoiceState(
       produce((state) => {
         // Remove from screen shares list
-        state.screenShares = state.screenShares.filter(s => s.user_id !== event.user_id);
+        state.screenShares = state.screenShares.filter(
+          (s) => s.user_id !== event.user_id,
+        );
 
         // Update participant's screen_sharing flag
         if (state.participants[event.user_id]) {
@@ -1425,25 +1735,33 @@ export async function handleScreenShareStopped(event: any): Promise<void> {
           state.screenSharing = false;
           state.screenShareInfo = null;
         }
-      })
+      }),
     );
   }
 }
 
-export async function handleScreenShareQualityChanged(event: any): Promise<void> {
+export async function handleScreenShareQualityChanged(
+  event: any,
+): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
-  console.log("[WebSocket] Screen share quality changed:", event.user_id, event.new_quality);
+  console.log(
+    "[WebSocket] Screen share quality changed:",
+    event.user_id,
+    event.new_quality,
+  );
 
   if (voiceState.channelId === event.channel_id) {
     setVoiceState(
       produce((state) => {
-        const share = state.screenShares.find(s => s.user_id === event.user_id);
+        const share = state.screenShares.find(
+          (s) => s.user_id === event.user_id,
+        );
         if (share) {
           share.quality = event.new_quality;
         }
-      })
+      }),
     );
   }
 }
@@ -1470,7 +1788,7 @@ export async function handleWebcamStarted(event: any): Promise<void> {
         if (state.participants[event.user_id]) {
           state.participants[event.user_id].webcam_active = true;
         }
-      })
+      }),
     );
   }
 }
@@ -1485,7 +1803,9 @@ export async function handleWebcamStopped(event: any): Promise<void> {
     setVoiceState(
       produce((state) => {
         // Remove from webcams list
-        state.webcams = state.webcams.filter(w => w.user_id !== event.user_id);
+        state.webcams = state.webcams.filter(
+          (w) => w.user_id !== event.user_id,
+        );
 
         // Update participant's webcam_active flag
         if (state.participants[event.user_id]) {
@@ -1494,7 +1814,7 @@ export async function handleWebcamStopped(event: any): Promise<void> {
 
         // If it was us, clear local state
         // (authState comparison not available here, so the voice store handles it via WS event)
-      })
+      }),
     );
   }
 }
@@ -1513,39 +1833,60 @@ async function handleVoiceUserStatsEvent(event: {
 
 // Admin event handlers
 
-async function handleAdminUserBanned(userId: string, username: string): Promise<void> {
+async function handleAdminUserBanned(
+  userId: string,
+  username: string,
+): Promise<void> {
   const { handleUserBannedEvent } = await import("@/stores/admin");
   handleUserBannedEvent(userId, username);
 }
 
-async function handleAdminUserUnbanned(userId: string, username: string): Promise<void> {
+async function handleAdminUserUnbanned(
+  userId: string,
+  username: string,
+): Promise<void> {
   const { handleUserUnbannedEvent } = await import("@/stores/admin");
   handleUserUnbannedEvent(userId, username);
 }
 
-async function handleAdminGuildSuspended(guildId: string, guildName: string): Promise<void> {
+async function handleAdminGuildSuspended(
+  guildId: string,
+  guildName: string,
+): Promise<void> {
   const { handleGuildSuspendedEvent } = await import("@/stores/admin");
   handleGuildSuspendedEvent(guildId, guildName);
 }
 
-async function handleAdminGuildUnsuspended(guildId: string, guildName: string): Promise<void> {
+async function handleAdminGuildUnsuspended(
+  guildId: string,
+  guildName: string,
+): Promise<void> {
   const { handleGuildUnsuspendedEvent } = await import("@/stores/admin");
   handleGuildUnsuspendedEvent(guildId, guildName);
 }
 
-async function handleAdminUserDeleted(userId: string, username: string): Promise<void> {
+async function handleAdminUserDeleted(
+  userId: string,
+  username: string,
+): Promise<void> {
   const { handleUserDeletedEvent } = await import("@/stores/admin");
   handleUserDeletedEvent(userId, username);
 }
 
-async function handleAdminGuildDeleted(guildId: string, guildName: string): Promise<void> {
+async function handleAdminGuildDeleted(
+  guildId: string,
+  guildName: string,
+): Promise<void> {
   const { handleGuildDeletedEvent } = await import("@/stores/admin");
   handleGuildDeletedEvent(guildId, guildName);
 }
 
 // Guild emoji event handler
 
-async function handleGuildEmojiUpdated(guildId: string, emojis: any[]): Promise<void> {
+async function handleGuildEmojiUpdated(
+  guildId: string,
+  emojis: any[],
+): Promise<void> {
   const { setGuildEmojis } = await import("@/stores/emoji");
   setGuildEmojis(guildId, emojis);
 }
@@ -1566,7 +1907,10 @@ function handleThreadReplyNew(
 
   // Mark thread as unread if not currently open and reply is from another user
   const user = currentUser();
-  if (threadsState.activeThreadId !== parentId && (!user || message.author.id !== user.id)) {
+  if (
+    threadsState.activeThreadId !== parentId &&
+    (!user || message.author.id !== user.id)
+  ) {
     markThreadUnread(parentId);
   }
 
@@ -1597,7 +1941,10 @@ function handleThreadReplyDelete(
   // by updateThreadInfo's has_unread preservation logic.
 }
 
-function handleThreadRead(parentId: string, lastReadMessageId: string | null): void {
+function handleThreadRead(
+  parentId: string,
+  lastReadMessageId: string | null,
+): void {
   setThreadReadState(parentId, lastReadMessageId);
   clearThreadUnread(parentId);
 }
@@ -1621,7 +1968,12 @@ function handleThreadNotification(message: Message): void {
 
 // Reaction event handlers
 
-function handleReactionAdd(channelId: string, messageId: string, userId: string, emoji: string): void {
+function handleReactionAdd(
+  channelId: string,
+  messageId: string,
+  userId: string,
+  emoji: string,
+): void {
   const messages = messagesState.byChannel[channelId];
   if (!messages) return;
 
@@ -1660,10 +2012,21 @@ function handleReactionAdd(channelId: string, messageId: string, userId: string,
   }
 
   // Update the message in the store
-  setMessagesState("byChannel", channelId, messageIndex, "reactions", reactions);
+  setMessagesState(
+    "byChannel",
+    channelId,
+    messageIndex,
+    "reactions",
+    reactions,
+  );
 }
 
-function handleReactionRemove(channelId: string, messageId: string, userId: string, emoji: string): void {
+function handleReactionRemove(
+  channelId: string,
+  messageId: string,
+  userId: string,
+  emoji: string,
+): void {
   const messages = messagesState.byChannel[channelId];
   if (!messages) return;
 
@@ -1700,13 +2063,23 @@ function handleReactionRemove(channelId: string, messageId: string, userId: stri
     }
 
     // Update the message in the store
-    setMessagesState("byChannel", channelId, messageIndex, "reactions", reactions.length > 0 ? reactions : undefined);
+    setMessagesState(
+      "byChannel",
+      channelId,
+      messageIndex,
+      "reactions",
+      reactions.length > 0 ? reactions : undefined,
+    );
   }
 }
 
 // State sync event handler
 
-async function handlePatchEvent(entityType: string, entityId: string, diff: Record<string, unknown>): Promise<void> {
+async function handlePatchEvent(
+  entityType: string,
+  entityId: string,
+  diff: Record<string, unknown>,
+): Promise<void> {
   console.log(`[WebSocket] Patch event: ${entityType}/${entityId}`, diff);
 
   switch (entityType) {
@@ -1738,7 +2111,11 @@ async function handlePatchEvent(entityType: string, entityId: string, diff: Reco
 
 // Admin report event handlers
 
-async function handleAdminReportCreated(reportId: string, category: string, targetType: string): Promise<void> {
+async function handleAdminReportCreated(
+  reportId: string,
+  category: string,
+  targetType: string,
+): Promise<void> {
   const { handleReportCreatedEvent } = await import("@/stores/admin");
   handleReportCreatedEvent(reportId, category, targetType);
 }

@@ -27,7 +27,12 @@ interface AutocompletePopupProps {
   /** Guild members (for @user autocomplete in guilds) */
   guildMembers?: GuildMember[];
   /** DM participants (for @user autocomplete in DMs) */
-  dmParticipants?: Array<{ user_id: string; username: string; display_name: string; avatar_url: string | null }>;
+  dmParticipants?: Array<{
+    user_id: string;
+    username: string;
+    display_name: string;
+    avatar_url: string | null;
+  }>;
   /** Optional guild ID for custom emojis */
   guildId?: string;
   /** Channels for #channel autocomplete */
@@ -48,11 +53,16 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     if (props.type !== "user") return [];
 
     const query = props.query.toLowerCase();
-    let users: Array<{ user_id: string; username: string; display_name: string; avatar_url: string | null }> = [];
+    let users: Array<{
+      user_id: string;
+      username: string;
+      display_name: string;
+      avatar_url: string | null;
+    }> = [];
 
     // Get users from guild members or DM participants
     if (props.guildMembers) {
-      users = props.guildMembers.map(m => ({
+      users = props.guildMembers.map((m) => ({
         user_id: m.user_id,
         username: m.username,
         display_name: m.display_name,
@@ -63,9 +73,10 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     }
 
     // Filter by query (match username or display name)
-    const filtered = users.filter(u =>
-      u.username.toLowerCase().includes(query) ||
-      u.display_name.toLowerCase().includes(query)
+    const filtered = users.filter(
+      (u) =>
+        u.username.toLowerCase().includes(query) ||
+        u.display_name.toLowerCase().includes(query),
     );
 
     // Sort to prioritize prefix matches
@@ -90,17 +101,11 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     // Limit to 8 results
     const limited = filtered.slice(0, 8);
 
-    return limited.map(u => ({
+    return limited.map((u) => ({
       id: u.user_id,
       label: u.display_name,
       description: `@${u.username}`,
-      icon: (
-        <Avatar
-          src={u.avatar_url}
-          alt={u.display_name}
-          size="sm"
-        />
-      ),
+      icon: <Avatar src={u.avatar_url} alt={u.display_name} size="sm" />,
     }));
   });
 
@@ -113,26 +118,30 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
 
     // Search standard emojis
     const standardEmojis = searchEmojis(query);
-    results.push(...standardEmojis.slice(0, 8).map(emoji => ({
-      id: emoji,
-      label: emoji,
-      description: undefined,
-      icon: undefined,
-    })));
+    results.push(
+      ...standardEmojis.slice(0, 8).map((emoji) => ({
+        id: emoji,
+        label: emoji,
+        description: undefined,
+        icon: undefined,
+      })),
+    );
 
     // Search custom guild emojis
     if (props.guildId) {
       const guildEmojis = emojiState.guildEmojis[props.guildId] ?? [];
       const customMatches = guildEmojis
-        .filter(e => e.name.toLowerCase().includes(query.toLowerCase()))
+        .filter((e) => e.name.toLowerCase().includes(query.toLowerCase()))
         .slice(0, 8 - results.length);
 
-      results.push(...customMatches.map(e => ({
-        id: `:${e.name}:`,
-        label: e.name,
-        description: "Custom emoji",
-        icon: <img src={e.image_url} alt={e.name} class="w-5 h-5" />,
-      })));
+      results.push(
+        ...customMatches.map((e) => ({
+          id: `:${e.name}:`,
+          label: e.name,
+          description: "Custom emoji",
+          icon: <img src={e.image_url} alt={e.name} class="w-5 h-5" />,
+        })),
+      );
     }
 
     return results.slice(0, 8);
@@ -146,8 +155,9 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     const channels = props.channels ?? [];
 
     // Filter to text channels and match name against query
-    const filtered = channels
-      .filter(c => c.channel_type === "text" && c.name.toLowerCase().includes(query));
+    const filtered = channels.filter(
+      (c) => c.channel_type === "text" && c.name.toLowerCase().includes(query),
+    );
 
     // Sort: prefix matches first, then by position
     filtered.sort((a, b) => {
@@ -158,7 +168,7 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
       return a.position - b.position;
     });
 
-    return filtered.slice(0, 8).map(c => ({
+    return filtered.slice(0, 8).map((c) => ({
       id: c.id,
       label: c.name,
       description: c.topic || undefined,
@@ -174,7 +184,9 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     const commands = props.commands ?? [];
 
     // Filter by name matching query
-    const filtered = commands.filter(c => c.name.toLowerCase().includes(query));
+    const filtered = commands.filter((c) =>
+      c.name.toLowerCase().includes(query),
+    );
 
     // Sort: prefix matches first
     filtered.sort((a, b) => {
@@ -185,7 +197,7 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
       return 0;
     });
 
-    return filtered.slice(0, 8).map(c => ({
+    return filtered.slice(0, 8).map((c) => ({
       id: c.is_ambiguous ? `${c.name}:${c.application_id}` : c.name,
       label: `/${c.name}`,
       description: c.is_ambiguous
@@ -197,10 +209,14 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
 
   const items = () => {
     switch (props.type) {
-      case "user": return userItems();
-      case "emoji": return emojiItems();
-      case "channel": return channelItems();
-      case "command": return commandItems();
+      case "user":
+        return userItems();
+      case "emoji":
+        return emojiItems();
+      case "channel":
+        return channelItems();
+      case "command":
+        return commandItems();
     }
   };
 

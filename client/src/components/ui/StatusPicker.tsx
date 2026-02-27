@@ -3,7 +3,11 @@ import { Crosshair } from "lucide-solid";
 import { UserStatus } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { markManualStatusChange } from "@/stores/presence";
-import { focusState, getActiveFocusMode, deactivateFocusMode } from "@/stores/focus";
+import {
+  focusState,
+  getActiveFocusMode,
+  deactivateFocusMode,
+} from "@/stores/focus";
 import StatusIndicator from "./StatusIndicator";
 
 interface StatusPickerProps {
@@ -33,7 +37,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
   };
 
   return (
-    <div 
+    <div
       class="absolute bottom-full left-0 mb-2 w-48 bg-surface-layer2 border border-white/10 rounded-xl shadow-xl overflow-hidden animate-slide-up z-50"
       onClick={(e) => e.stopPropagation()}
     >

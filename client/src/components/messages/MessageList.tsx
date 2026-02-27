@@ -1,6 +1,21 @@
-import { Component, For, Show, createEffect, on, createMemo, createSignal, onCleanup } from "solid-js";
+import {
+  Component,
+  For,
+  Show,
+  createEffect,
+  on,
+  createMemo,
+  createSignal,
+  onCleanup,
+} from "solid-js";
 import { createVirtualizer } from "@/lib/virtualizer";
-import { Loader2, ChevronDown, AlertCircle, MessageSquare, RefreshCw } from "lucide-solid";
+import {
+  Loader2,
+  ChevronDown,
+  AlertCircle,
+  MessageSquare,
+  RefreshCw,
+} from "lucide-solid";
 import MessageItem from "./MessageItem";
 import {
   messagesState,
@@ -33,7 +48,9 @@ const MessageList: Component<MessageListProps> = (props) => {
   const [isAtBottom, setIsAtBottom] = createSignal(true);
   const [hasNewMessages, setHasNewMessages] = createSignal(false);
   const [newMessageCount, setNewMessageCount] = createSignal(0);
-  const [paginationError, setPaginationError] = createSignal<string | null>(null);
+  const [paginationError, setPaginationError] = createSignal<string | null>(
+    null,
+  );
 
   // Use createMemo for proper reactive tracking of store values
   const messages = createMemo(() => {
@@ -50,18 +67,22 @@ const MessageList: Component<MessageListProps> = (props) => {
             message.created_at,
             prev.created_at,
             message.author.id,
-            prev.author.id
+            prev.author.id,
           )
         : false;
       return { message, isCompact };
     });
   });
 
-  const loading = createMemo(() => !!messagesState.loadingChannels[props.channelId]);
+  const loading = createMemo(
+    () => !!messagesState.loadingChannels[props.channelId],
+  );
 
   // --- Virtualizer ---
   const virtualizer = createVirtualizer({
-    get count() { return messagesWithCompact().length; },
+    get count() {
+      return messagesWithCompact().length;
+    },
     getScrollElement: () => containerRef ?? null,
     estimateSize: (index: number) => {
       const item = messagesWithCompact()[index];
@@ -72,7 +93,7 @@ const MessageList: Component<MessageListProps> = (props) => {
 
       // Images are tall (~320px from max-h-80)
       const hasImage = msg.attachments?.some((a) =>
-        a.mime_type?.startsWith("image/")
+        a.mime_type?.startsWith("image/"),
       );
       if (hasImage) estimate = 400;
 
@@ -176,7 +197,9 @@ const MessageList: Component<MessageListProps> = (props) => {
 
     // Guard against evicting everything
     if (kept.length === 0) {
-      console.warn("[MessageList] Eviction would remove all messages, skipping");
+      console.warn(
+        "[MessageList] Eviction would remove all messages, skipping",
+      );
       return;
     }
 
@@ -188,46 +211,50 @@ const MessageList: Component<MessageListProps> = (props) => {
   }
 
   // --- IntersectionObserver for upward pagination ---
-  createEffect(on(
-    () => props.channelId,
-    () => {
-      if (!sentinelRef || !containerRef) return;
+  createEffect(
+    on(
+      () => props.channelId,
+      () => {
+        if (!sentinelRef || !containerRef) return;
 
-      const observer = new IntersectionObserver(
-        ([entry]) => {
-          if (
-            entry.isIntersecting &&
-            hasMoreMessages(props.channelId) &&
-            !loading() &&
-            !isLoadingMore
-          ) {
-            triggerLoadMore().catch((err) =>
-              console.error("[MessageList] Unhandled pagination error:", err)
-            );
-          }
-        },
-        { root: containerRef, rootMargin: "200px 0px 0px 0px" }
-      );
-      observer.observe(sentinelRef);
-      onCleanup(() => observer.disconnect());
-    }
-  ));
+        const observer = new IntersectionObserver(
+          ([entry]) => {
+            if (
+              entry.isIntersecting &&
+              hasMoreMessages(props.channelId) &&
+              !loading() &&
+              !isLoadingMore
+            ) {
+              triggerLoadMore().catch((err) =>
+                console.error("[MessageList] Unhandled pagination error:", err),
+              );
+            }
+          },
+          { root: containerRef, rootMargin: "200px 0px 0px 0px" },
+        );
+        observer.observe(sentinelRef);
+        onCleanup(() => observer.disconnect());
+      },
+    ),
+  );
 
   // --- Load messages when channelId changes ---
-  createEffect(on(
-    () => props.channelId,
-    (channelId, prevChannelId) => {
-      if (channelId && channelId !== prevChannelId) {
-        setIsAtBottom(true);
-        setHasNewMessages(false);
-        setNewMessageCount(0);
-        setPaginationError(null);
-        prevMessageCount = 0;
-        loadInitialMessages(channelId);
-      }
-    },
-    { defer: false }
-  ));
+  createEffect(
+    on(
+      () => props.channelId,
+      (channelId, prevChannelId) => {
+        if (channelId && channelId !== prevChannelId) {
+          setIsAtBottom(true);
+          setHasNewMessages(false);
+          setNewMessageCount(0);
+          setPaginationError(null);
+          prevMessageCount = 0;
+          loadInitialMessages(channelId);
+        }
+      },
+      { defer: false },
+    ),
+  );
 
   // --- Track new messages for auto-scroll / indicator ---
   let prevMessageCount = 0;
@@ -239,7 +266,9 @@ const MessageList: Component<MessageListProps> = (props) => {
         setTimeout(() => scrollToBottom(true), 50);
       } else {
         setHasNewMessages(true);
-        setNewMessageCount(count => count + (currentCount - prevMessageCount));
+        setNewMessageCount(
+          (count) => count + (currentCount - prevMessageCount),
+        );
       }
     } else if (currentCount > 0 && prevMessageCount === 0) {
       // Initial load — scroll to bottom instantly
@@ -312,9 +341,7 @@ const MessageList: Component<MessageListProps> = (props) => {
           <h3 class="text-lg font-semibold text-text-primary mb-2">
             Failed to load messages
           </h3>
-          <p class="text-text-secondary max-w-sm mb-4">
-            {messagesState.error}
-          </p>
+          <p class="text-text-secondary max-w-sm mb-4">{messagesState.error}</p>
           <button
             onClick={() => loadInitialMessages(props.channelId)}
             class="px-4 py-2 bg-accent-primary text-white rounded-lg font-medium hover:opacity-90 transition-opacity"
@@ -325,7 +352,9 @@ const MessageList: Component<MessageListProps> = (props) => {
       </Show>
 
       {/* Empty state */}
-      <Show when={!loading() && messages().length === 0 && !messagesState.error}>
+      <Show
+        when={!loading() && messages().length === 0 && !messagesState.error}
+      >
         <div class="flex flex-col items-center justify-center h-full text-center px-4">
           <div class="w-20 h-20 bg-surface-layer2 rounded-full flex items-center justify-center mb-4">
             <span class="text-4xl">👋</span>
@@ -342,7 +371,10 @@ const MessageList: Component<MessageListProps> = (props) => {
       {/* Virtualized messages */}
       <Show when={messagesWithCompact().length > 0}>
         <div
-          style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            position: "relative",
+          }}
         >
           <For each={virtualizer.getVirtualItems()}>
             {(virtualItem) => {

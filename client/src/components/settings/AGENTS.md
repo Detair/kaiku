@@ -9,37 +9,44 @@ User preferences and application settings. Tabbed interface for appearance, audi
 ## Key Files
 
 ### SettingsModal.tsx
+
 Main settings dialog with sidebar navigation.
 
 **Tab Structure:**
+
 - **Appearance** - Theme, font size, compact mode
 - **Audio** - Output device, volume (not yet implemented)
 - **Voice** - Input device, noise suppression (not yet implemented)
 
 **Modal Behavior:**
+
 - ESC key closes
 - Backdrop click closes
 - Portal rendering for proper z-index
 - Smooth fade-in animation (0.15s)
 
 **Layout:**
+
 - 700px width, max 600px height
 - Left sidebar (192px) with tab buttons
 - Right content area (flex-1, scrollable)
 
 **Usage:**
+
 ```tsx
 import SettingsModal from "@/components/settings/SettingsModal";
 
 <Show when={showSettings()}>
   <SettingsModal onClose={() => setShowSettings(false)} />
-</Show>
+</Show>;
 ```
 
 ### AppearanceSettings.tsx
+
 Theme and visual customization.
 
 **Expected Settings:**
+
 - Theme selector (Auto, Light, Dark)
 - Accent color picker
 - Font size (12px - 18px)
@@ -48,22 +55,27 @@ Theme and visual customization.
 - Accessibility options
 
 **State:**
+
 - Persisted to localStorage
 - Applied via CSS custom properties
 - Reactive updates (no page reload needed)
 
 ### index.ts
+
 Re-exports SettingsModal for cleaner imports.
 
 ## Settings Categories
 
 ### Appearance
+
 **Implemented:**
+
 - Theme selection (auto/light/dark)
 - Accent color customization
 - Font size adjustment
 
 **Future:**
+
 - Custom themes
 - Background image
 - Saturation control
@@ -71,7 +83,9 @@ Re-exports SettingsModal for cleaner imports.
 - Reduce motion
 
 ### Audio
+
 **Planned:**
+
 - Output device selection
 - Output volume slider
 - Sound effects toggle
@@ -79,7 +93,9 @@ Re-exports SettingsModal for cleaner imports.
 - PTT (Push-to-Talk) keybind
 
 ### Voice
+
 **Planned:**
+
 - Input device selection
 - Input sensitivity slider
 - Noise suppression toggle
@@ -88,6 +104,7 @@ Re-exports SettingsModal for cleaner imports.
 - Automatic gain control
 
 ### Account (Future)
+
 - Change password
 - Enable/disable MFA
 - Email address
@@ -97,6 +114,7 @@ Re-exports SettingsModal for cleaner imports.
 - Privacy settings
 
 ### Notifications (Future)
+
 - Desktop notifications
 - Sound settings
 - Per-channel overrides
@@ -104,6 +122,7 @@ Re-exports SettingsModal for cleaner imports.
 - Keyword alerts
 
 ### Keybinds (Future)
+
 - Mute/unmute
 - Deafen
 - Push-to-talk
@@ -113,6 +132,7 @@ Re-exports SettingsModal for cleaner imports.
 ## State Management
 
 ### Persistence
+
 ```ts
 // localStorage keys
 "theme": "auto" | "light" | "dark"
@@ -124,13 +144,17 @@ Re-exports SettingsModal for cleaner imports.
 ```
 
 ### Reactive Application
+
 Settings changes immediately update:
+
 - CSS custom properties (`--color-accent-primary`)
 - Body class (`theme-dark`, `compact-mode`)
 - Audio/voice device selection (Tauri backend)
 
 ### Store Integration
+
 Expected settings store structure:
+
 ```ts
 interface SettingsState {
   theme: Theme;
@@ -147,15 +171,18 @@ interface SettingsState {
 ## Integration Points
 
 ### Components
+
 - Theme selector component
 - Color picker component
 - Slider components
 - Device selector dropdowns
 
 ### Stores
+
 - `@/stores/settings` - Settings state and persistence
 
 ### Tauri Backend
+
 - `setAudioDevice(deviceId)` - Change output
 - `setVoiceDevice(deviceId)` - Change input
 - `getAudioDevices()` - List available devices
@@ -163,6 +190,7 @@ interface SettingsState {
 ## Styling
 
 ### Modal Layout
+
 ```tsx
 <div class="flex">
   {/* Sidebar (192px) */}
@@ -178,10 +206,12 @@ interface SettingsState {
 ```
 
 ### Tab Button States
+
 - **Active:** `bg-accent-primary/20 text-accent-primary`
 - **Inactive:** `text-text-secondary hover:text-text-primary hover:bg-white/5`
 
 ### Tab Icons
+
 - Palette (Appearance)
 - Volume2 (Audio)
 - Mic (Voice)
@@ -189,39 +219,47 @@ interface SettingsState {
 ## UX Patterns
 
 ### Live Preview
+
 Settings changes apply immediately:
+
 - Theme switches without reload
 - Font size updates in real-time
 - Accent color propagates instantly
 
 ### Default Values
+
 - Theme: "auto" (respects OS preference)
 - Accent color: `#5865F2` (default blue)
 - Font size: 16px
 - Compact mode: false
 
 ### Reset Options
+
 Each tab should have "Reset to defaults" button.
 
 ## Future Enhancements
 
 ### Import/Export Settings
+
 - Export settings as JSON
 - Import settings from file
 - Share theme presets
 
 ### Cloud Sync (Future)
+
 - Sync settings across devices
 - Requires backend settings storage
 - Privacy-respecting (encrypted)
 
 ### Advanced Settings
+
 - Developer mode toggle
 - Debug logging
 - Hardware acceleration
 - Memory limits
 
 ### Accessibility
+
 - Screen reader mode
 - Keyboard navigation focus indicators
 - High contrast themes

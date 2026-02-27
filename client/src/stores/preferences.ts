@@ -115,7 +115,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
 const [preferences, setPreferences] =
   createSignal<UserPreferences>(DEFAULT_PREFERENCES);
 const [lastUpdated, setLastUpdated] = createSignal<string>(
-  new Date().toISOString()
+  new Date().toISOString(),
 );
 const [isSyncing, setIsSyncing] = createSignal(false);
 
@@ -205,8 +205,11 @@ function migrateOldPreferences(): Partial<UserPreferences> | null {
     try {
       const parsed = JSON.parse(oldConnection);
       migrated.connection = {
-        displayMode: parsed.displayMode ?? DEFAULT_PREFERENCES.connection.displayMode,
-        showNotifications: parsed.showNotifications ?? DEFAULT_PREFERENCES.connection.showNotifications,
+        displayMode:
+          parsed.displayMode ?? DEFAULT_PREFERENCES.connection.displayMode,
+        showNotifications:
+          parsed.showNotifications ??
+          DEFAULT_PREFERENCES.connection.showNotifications,
       };
       hasMigration = true;
       console.log("[Preferences] Migrated old connection settings key");
@@ -278,7 +281,7 @@ async function fetchPreferences(): Promise<PreferencesResponse> {
  * Uses Tauri invoke when available, falls back to HTTP API.
  */
 async function pushPreferences(
-  prefs: UserPreferences
+  prefs: UserPreferences,
 ): Promise<PreferencesResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -319,10 +322,7 @@ export async function initPreferences(): Promise<void> {
     const local = loadFromLocalStorage();
     const server = await fetchPreferences();
 
-    if (
-      !server.preferences ||
-      Object.keys(server.preferences).length === 0
-    ) {
+    if (!server.preferences || Object.keys(server.preferences).length === 0) {
       // No server prefs, push local (or defaults)
       const toSync = local?.data ?? DEFAULT_PREFERENCES;
       const result = await pushPreferences(toSync);
@@ -370,7 +370,7 @@ export async function initPreferences(): Promise<void> {
  */
 export function updatePreference<K extends keyof UserPreferences>(
   key: K,
-  value: UserPreferences[K]
+  value: UserPreferences[K],
 ): void {
   const updated = { ...preferences(), [key]: value };
   const now = new Date().toISOString();
@@ -397,7 +397,7 @@ export function updatePreference<K extends keyof UserPreferences>(
  */
 export function updateNestedPreference<
   K extends keyof UserPreferences,
-  NK extends keyof UserPreferences[K]
+  NK extends keyof UserPreferences[K],
 >(key: K, nestedKey: NK, value: UserPreferences[K][NK]): void {
   const current = preferences();
   const currentNested = current[key];
@@ -434,7 +434,7 @@ export function handlePreferencesUpdated(event: {
  * Get a specific channel's notification level.
  */
 export function getChannelNotificationLevel(
-  channelId: string
+  channelId: string,
 ): "all" | "mentions" | "muted" {
   return preferences().channelNotifications[channelId] ?? "mentions";
 }
@@ -444,7 +444,7 @@ export function getChannelNotificationLevel(
  */
 export function setChannelNotificationLevel(
   channelId: string,
-  level: "all" | "mentions" | "muted"
+  level: "all" | "mentions" | "muted",
 ): void {
   const current = preferences();
   const updatedNotifications = {

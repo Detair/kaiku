@@ -2,10 +2,21 @@
  * MembersTab - Member list with search, role badges, and role management
  */
 
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
+import {
+  Component,
+  createSignal,
+  createMemo,
+  For,
+  Show,
+  onMount,
+} from "solid-js";
 import { createVirtualizer } from "@/lib/virtualizer";
 import { Search, Crown } from "lucide-solid";
-import { guildsState, loadGuildMembers, getGuildMembers } from "@/stores/guilds";
+import {
+  guildsState,
+  loadGuildMembers,
+  getGuildMembers,
+} from "@/stores/guilds";
 import {
   loadGuildRoles,
   loadMemberRoles,
@@ -42,7 +53,7 @@ const MembersTab: Component<MembersTabProps> = (props) => {
       props.guildId,
       authState.user?.id || "",
       props.isOwner,
-      PermissionBits.MANAGE_ROLES
+      PermissionBits.MANAGE_ROLES,
     );
 
   const canModerate = (memberUserId: string): boolean => {
@@ -54,7 +65,7 @@ const MembersTab: Component<MembersTabProps> = (props) => {
       currentUserId,
       memberUserId,
       props.isOwner,
-      PermissionBits.KICK_MEMBERS
+      PermissionBits.KICK_MEMBERS,
     );
   };
 
@@ -67,14 +78,16 @@ const MembersTab: Component<MembersTabProps> = (props) => {
     return members().filter(
       (m) =>
         m.display_name.toLowerCase().includes(query) ||
-        m.username.toLowerCase().includes(query)
+        m.username.toLowerCase().includes(query),
     );
   });
 
   let membersContainerRef: HTMLDivElement | undefined;
 
   const virtualizer = createVirtualizer({
-    get count() { return filteredMembers().length; },
+    get count() {
+      return filteredMembers().length;
+    },
     getScrollElement: () => membersContainerRef ?? null,
     estimateSize: () => 80,
     overscan: 5,
@@ -101,9 +114,12 @@ const MembersTab: Component<MembersTabProps> = (props) => {
 
   const getStatusColor = (status: string): string => {
     switch (status) {
-      case "online": return "#22c55e"; // green
-      case "idle": return "#eab308"; // yellow
-      default: return "#6b7280"; // gray
+      case "online":
+        return "#22c55e"; // green
+      case "idle":
+        return "#eab308"; // yellow
+      default:
+        return "#6b7280"; // gray
     }
   };
 
@@ -132,24 +148,29 @@ const MembersTab: Component<MembersTabProps> = (props) => {
 
       {/* Member Count */}
       <div class="text-sm text-text-secondary mb-3">
-        {filteredMembers().length} member{filteredMembers().length !== 1 ? "s" : ""}
+        {filteredMembers().length} member
+        {filteredMembers().length !== 1 ? "s" : ""}
         {search() && ` matching "${search()}"`}
       </div>
 
       {/* Members List */}
-      <div
-        ref={membersContainerRef}
-        class="flex-1 overflow-y-auto min-h-0"
-      >
+      <div ref={membersContainerRef} class="flex-1 overflow-y-auto min-h-0">
         <Show
           when={filteredMembers().length > 0}
           fallback={
             <div class="text-center py-8 text-text-secondary">
-              {search() ? "No members match your search" : "You're the only one here. Invite some friends!"}
+              {search()
+                ? "No members match your search"
+                : "You're the only one here. Invite some friends!"}
             </div>
           }
         >
-          <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
+          <div
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+              position: "relative",
+            }}
+          >
             <For each={virtualizer.getVirtualItems()}>
               {(virtualItem) => {
                 const member = () => filteredMembers()[virtualItem.index];
@@ -165,13 +186,21 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                   >
                     <Show when={member()}>
                       {(m) => {
-                        const isMemberOwner = () => m().user_id === guild()?.owner_id;
-                        const memberRoles = () => getMemberRoles(props.guildId, m().user_id);
+                        const isMemberOwner = () =>
+                          m().user_id === guild()?.owner_id;
+                        const memberRoles = () =>
+                          getMemberRoles(props.guildId, m().user_id);
 
                         return (
                           <div
                             class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors group"
-                            onContextMenu={(e) => showUserContextMenu(e, { id: m().user_id, username: m().username, display_name: m().display_name })}
+                            onContextMenu={(e) =>
+                              showUserContextMenu(e, {
+                                id: m().user_id,
+                                username: m().username,
+                                display_name: m().display_name,
+                              })
+                            }
                           >
                             {/* Avatar with status indicator */}
                             <div class="relative flex-shrink-0">
@@ -195,7 +224,9 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                               <div
                                 class="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2"
                                 style={{
-                                  "background-color": getStatusColor(m().status),
+                                  "background-color": getStatusColor(
+                                    m().status,
+                                  ),
                                   "border-color": "var(--color-surface-base)",
                                 }}
                               />
@@ -217,7 +248,8 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                                 @{m().username}
                               </div>
                               <div class="text-xs text-text-secondary mt-0.5">
-                                Joined {formatJoinDate(m().joined_at)} &bull; {formatLastSeen(m())}
+                                Joined {formatJoinDate(m().joined_at)} &bull;{" "}
+                                {formatLastSeen(m())}
                               </div>
                               {/* Activity indicator */}
                               <Show when={getUserActivity(m().user_id)}>
@@ -235,8 +267,12 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                                   <span
                                     class="px-1.5 py-0.5 text-xs rounded-full"
                                     style={{
-                                      "background-color": role.color ? `${role.color}20` : "var(--color-surface-layer1)",
-                                      color: role.color || "var(--color-text-secondary)",
+                                      "background-color": role.color
+                                        ? `${role.color}20`
+                                        : "var(--color-surface-layer1)",
+                                      color:
+                                        role.color ||
+                                        "var(--color-text-secondary)",
                                       border: `1px solid ${role.color || "var(--color-white-10)"}`,
                                     }}
                                   >
@@ -245,12 +281,19 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                                 )}
                               </For>
                               <Show when={memberRoles().length === 0}>
-                                <span class="text-xs text-text-secondary">(no roles)</span>
+                                <span class="text-xs text-text-secondary">
+                                  (no roles)
+                                </span>
                               </Show>
                             </div>
 
                             {/* Manage dropdown - replaces kick button */}
-                            <Show when={!isMemberOwner() && (canManageRoles() || canModerate(m().user_id))}>
+                            <Show
+                              when={
+                                !isMemberOwner() &&
+                                (canManageRoles() || canModerate(m().user_id))
+                              }
+                            >
                               <MemberRoleDropdown
                                 guildId={props.guildId}
                                 userId={m().user_id}
@@ -270,7 +313,9 @@ const MembersTab: Component<MembersTabProps> = (props) => {
 
       {/* Loading state */}
       <Show when={guildsState.isMembersLoading}>
-        <div class="text-center py-4 text-text-secondary">Loading members...</div>
+        <div class="text-center py-4 text-text-secondary">
+          Loading members...
+        </div>
       </Show>
     </div>
   );

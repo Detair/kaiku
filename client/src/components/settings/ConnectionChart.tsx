@@ -5,7 +5,7 @@
  * Bar height represents session count, color represents quality.
  */
 
-import { Component, For } from 'solid-js';
+import { Component, For } from "solid-js";
 
 interface DailyStat {
   date: string;
@@ -22,7 +22,10 @@ interface ConnectionChartProps {
  * Calculate quality level (0-4) from latency and loss metrics.
  * 0 = no data (gray), 1 = poor (red), 2 = fair (orange), 3 = good (yellow), 4 = excellent (green)
  */
-function getQualityFromStats(latency: number | null, loss: number | null): number {
+function getQualityFromStats(
+  latency: number | null,
+  loss: number | null,
+): number {
   if (latency === null || loss === null) return 0;
   if (latency > 350 || loss > 5) return 1;
   if (latency > 200 || loss > 3) return 2;
@@ -31,15 +34,16 @@ function getQualityFromStats(latency: number | null, loss: number | null): numbe
 }
 
 const qualityColors = [
-  'bg-gray-600',   // 0: no data
-  'bg-red-500',    // 1: poor
-  'bg-orange-500', // 2: fair
-  'bg-yellow-500', // 3: good
-  'bg-green-500',  // 4: excellent
+  "bg-gray-600", // 0: no data
+  "bg-red-500", // 1: poor
+  "bg-orange-500", // 2: fair
+  "bg-yellow-500", // 3: good
+  "bg-green-500", // 4: excellent
 ];
 
 export const ConnectionChart: Component<ConnectionChartProps> = (props) => {
-  const maxSessions = () => Math.max(...props.data.map(d => d.session_count), 1);
+  const maxSessions = () =>
+    Math.max(...props.data.map((d) => d.session_count), 1);
 
   return (
     <div class="h-32 flex items-end gap-1">
@@ -53,7 +57,7 @@ export const ConnectionChart: Component<ConnectionChartProps> = (props) => {
               <div
                 class={`w-full rounded-t ${qualityColors[quality]}`}
                 style={{ height: `${Math.max(height, 4)}%` }}
-                title={`${day.date}: ${day.session_count} sessions, ${day.avg_latency ?? '-'}ms latency`}
+                title={`${day.date}: ${day.session_count} sessions, ${day.avg_latency ?? "-"}ms latency`}
               />
               <span class="text-[10px] text-text-secondary">
                 {new Date(day.date).getDate()}

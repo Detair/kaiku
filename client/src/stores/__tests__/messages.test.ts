@@ -45,7 +45,13 @@ function createMessage(id: string, channelId = "ch-1"): Message {
   return {
     id,
     channel_id: channelId,
-    author: { id: "user-1", username: "alice", display_name: "Alice", avatar_url: null, status: "online" },
+    author: {
+      id: "user-1",
+      username: "alice",
+      display_name: "Alice",
+      avatar_url: null,
+      status: "online",
+    },
     content: `content-${id}`,
     encrypted: false,
     attachments: [],
@@ -115,13 +121,19 @@ describe("messages store", () => {
 
     it("prevents concurrent loads for the same channel", async () => {
       let resolveFirst: (v: PaginatedMessages) => void;
-      const firstCall = new Promise<PaginatedMessages>((resolve) => { resolveFirst = resolve; });
+      const firstCall = new Promise<PaginatedMessages>((resolve) => {
+        resolveFirst = resolve;
+      });
       vi.mocked(tauri.getMessages).mockReturnValueOnce(firstCall);
 
       const p1 = loadMessages("ch-1");
       const p2 = loadMessages("ch-1"); // Should be no-op
 
-      resolveFirst!({ items: [createMessage("m1")], has_more: false, next_cursor: null });
+      resolveFirst!({
+        items: [createMessage("m1")],
+        has_more: false,
+        next_cursor: null,
+      });
       await p1;
       await p2;
 
@@ -129,7 +141,9 @@ describe("messages store", () => {
     });
 
     it("sets error on failure", async () => {
-      vi.mocked(tauri.getMessages).mockRejectedValue(new Error("Network error"));
+      vi.mocked(tauri.getMessages).mockRejectedValue(
+        new Error("Network error"),
+      );
 
       await loadMessages("ch-1");
 
@@ -157,7 +171,10 @@ describe("messages store", () => {
   describe("sendMessage", () => {
     it("sends message and adds to store", async () => {
       const sent = createMessage("sent-1");
-      vi.mocked(tauri.sendMessageWithStatus).mockResolvedValue({ message: sent, status: 201 });
+      vi.mocked(tauri.sendMessageWithStatus).mockResolvedValue({
+        message: sent,
+        status: 201,
+      });
 
       const result = await sendMessage("ch-1", "hello");
 
@@ -174,7 +191,10 @@ describe("messages store", () => {
 
     it("suppresses local echo for 202 status (slash commands)", async () => {
       const sent = createMessage("cmd-1");
-      vi.mocked(tauri.sendMessageWithStatus).mockResolvedValue({ message: sent, status: 202 });
+      vi.mocked(tauri.sendMessageWithStatus).mockResolvedValue({
+        message: sent,
+        status: 202,
+      });
 
       await sendMessage("ch-1", "/roll");
 
@@ -184,7 +204,10 @@ describe("messages store", () => {
     it("deduplicates by message ID", async () => {
       const sent = createMessage("dup-1");
       setMessagesState("byChannel", "ch-1", [sent]);
-      vi.mocked(tauri.sendMessageWithStatus).mockResolvedValue({ message: sent, status: 201 });
+      vi.mocked(tauri.sendMessageWithStatus).mockResolvedValue({
+        message: sent,
+        status: 201,
+      });
 
       await sendMessage("ch-1", "hello");
 
@@ -192,7 +215,9 @@ describe("messages store", () => {
     });
 
     it("shows toast on error", async () => {
-      vi.mocked(tauri.sendMessageWithStatus).mockRejectedValue(new Error("fail"));
+      vi.mocked(tauri.sendMessageWithStatus).mockRejectedValue(
+        new Error("fail"),
+      );
 
       const result = await sendMessage("ch-1", "hello");
 
@@ -229,7 +254,11 @@ describe("messages store", () => {
       const original = createMessage("m1");
       setMessagesState("byChannel", "ch-1", [original]);
 
-      const updated = { ...original, content: "edited content", edited_at: "2025-01-01T12:00:00Z" };
+      const updated = {
+        ...original,
+        content: "edited content",
+        edited_at: "2025-01-01T12:00:00Z",
+      };
       updateMessage(updated);
 
       expect(messagesState.byChannel["ch-1"][0].content).toBe("edited content");
@@ -246,7 +275,10 @@ describe("messages store", () => {
 
   describe("removeMessage", () => {
     it("removes message from channel", () => {
-      setMessagesState("byChannel", "ch-1", [createMessage("m1"), createMessage("m2")]);
+      setMessagesState("byChannel", "ch-1", [
+        createMessage("m1"),
+        createMessage("m2"),
+      ]);
 
       removeMessage("ch-1", "m1");
 

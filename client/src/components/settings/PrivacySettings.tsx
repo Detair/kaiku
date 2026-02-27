@@ -8,7 +8,8 @@ import { Component, createSignal, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 
 const PrivacySettings: Component = () => {
-  const [activitySharingEnabled, setActivitySharingEnabled] = createSignal(true);
+  const [activitySharingEnabled, setActivitySharingEnabled] =
+    createSignal(true);
   const [isLoading, setIsLoading] = createSignal(true);
 
   onMount(async () => {
@@ -43,7 +44,9 @@ const PrivacySettings: Component = () => {
 
         <div class="flex items-center justify-between py-2">
           <div class="flex-1 mr-4">
-            <div class="font-medium text-text-primary">Display current activity</div>
+            <div class="font-medium text-text-primary">
+              Display current activity
+            </div>
             <div class="text-sm text-text-secondary mt-1">
               Show what you're playing or doing to friends
             </div>
@@ -53,18 +56,18 @@ const PrivacySettings: Component = () => {
               type="checkbox"
               checked={activitySharingEnabled()}
               disabled={isLoading()}
-              onChange={(e) => handleActivitySharingChange(e.currentTarget.checked)}
+              onChange={(e) =>
+                handleActivitySharingChange(e.currentTarget.checked)
+              }
               class="sr-only peer"
             />
-            <div
-              class="w-11 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent-primary peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"
-            />
+            <div class="w-11 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent-primary peer-disabled:opacity-50 peer-disabled:cursor-not-allowed" />
           </label>
         </div>
 
         <p class="text-xs text-text-secondary mt-4 pt-4 border-t border-white/10">
-          When disabled, your activity status will not be visible to others.
-          You can still see the activity status of your friends.
+          When disabled, your activity status will not be visible to others. You
+          can still see the activity status of your friends.
         </p>
       </div>
     </div>

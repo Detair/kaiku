@@ -24,18 +24,26 @@ export default function PlatformPagesCard(props: PlatformPagesCardProps) {
     await Promise.all([loadPlatformPages(), loadPendingAcceptance()]);
   });
 
-  const pendingIds = () => new Set(pagesState.pendingAcceptance.map((p) => p.id));
+  const pendingIds = () =>
+    new Set(pagesState.pendingAcceptance.map((p) => p.id));
 
   const hasPendingPages = () => {
     return pagesState.platformPages.some((p) => pendingIds().has(p.id));
   };
 
   const pendingCount = () => {
-    return pagesState.platformPages.filter((p) => pendingIds().has(p.id)).length;
+    return pagesState.platformPages.filter((p) => pendingIds().has(p.id))
+      .length;
   };
 
   return (
-    <Show when={pagesState.platformPages.length > 0 || pagesState.isPlatformLoading || pagesState.error}>
+    <Show
+      when={
+        pagesState.platformPages.length > 0 ||
+        pagesState.isPlatformLoading ||
+        pagesState.error
+      }
+    >
       <div class="mx-2 mb-2">
         <div class="bg-zinc-800/50 rounded-lg overflow-hidden">
           {/* Header */}
@@ -53,7 +61,13 @@ export default function PlatformPagesCard(props: PlatformPagesCardProps) {
           </div>
 
           {/* Error state */}
-          <Show when={pagesState.error && !pagesState.isPlatformLoading && pagesState.platformPages.length === 0}>
+          <Show
+            when={
+              pagesState.error &&
+              !pagesState.isPlatformLoading &&
+              pagesState.platformPages.length === 0
+            }
+          >
             <div class="px-3 py-4 text-center">
               <span class="text-red-400 text-sm">Failed to load pages</span>
             </div>

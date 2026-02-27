@@ -2,7 +2,17 @@
  * DiscoveryView - Browse and search for public guilds.
  */
 
-import { Component, createSignal, createEffect, createMemo, For, Show, on, onCleanup, onMount } from "solid-js";
+import {
+  Component,
+  createSignal,
+  createEffect,
+  createMemo,
+  For,
+  Show,
+  on,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import { Search, ChevronLeft, ChevronRight } from "lucide-solid";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds } from "@/lib/tauri";
@@ -24,7 +34,9 @@ const DiscoveryView: Component = () => {
   let debounceTimer: ReturnType<typeof setTimeout>;
   let requestId = 0;
 
-  const memberGuildIds = createMemo(() => new Set(guildsState.guilds.map((g) => g.id)));
+  const memberGuildIds = createMemo(
+    () => new Set(guildsState.guilds.map((g) => g.id)),
+  );
 
   const fetchGuilds = async () => {
     const thisRequest = ++requestId;
@@ -45,11 +57,14 @@ const DiscoveryView: Component = () => {
       if (thisRequest !== requestId) return;
       console.error("Failed to discover guilds:", err);
       // Distinguish discovery-disabled from transient failures
-      const isDisabled = err instanceof Error && err.message.includes("DISCOVERY_DISABLED");
+      const isDisabled =
+        err instanceof Error && err.message.includes("DISCOVERY_DISABLED");
       setIsPermanentError(isDisabled);
-      setError(isDisabled
-        ? "Guild discovery is not enabled on this server."
-        : "Could not load guilds. Please try again.");
+      setError(
+        isDisabled
+          ? "Guild discovery is not enabled on this server."
+          : "Could not load guilds. Please try again.",
+      );
     } finally {
       if (thisRequest === requestId) setLoading(false);
     }
@@ -63,16 +78,20 @@ const DiscoveryView: Component = () => {
 
   // Debounce search query (defer to skip initial run)
   createEffect(
-    on(query, () => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        if (offset() !== 0) {
-          setOffset(0); // triggers the [sort, offset] effect which calls fetchGuilds
-        } else {
-          fetchGuilds(); // offset already 0, effect won't fire, so fetch directly
-        }
-      }, 300);
-    }, { defer: true }),
+    on(
+      query,
+      () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (offset() !== 0) {
+            setOffset(0); // triggers the [sort, offset] effect which calls fetchGuilds
+          } else {
+            fetchGuilds(); // offset already 0, effect won't fire, so fetch directly
+          }
+        }, 300);
+      },
+      { defer: true },
+    ),
   );
 
   // Clean up debounce timer on unmount
@@ -103,25 +122,37 @@ const DiscoveryView: Component = () => {
             />
           </div>
 
-          <div class="flex rounded-lg border border-white/5 overflow-hidden text-xs" role="group" aria-label="Sort order">
+          <div
+            class="flex rounded-lg border border-white/5 overflow-hidden text-xs"
+            role="group"
+            aria-label="Sort order"
+          >
             <button
-              onClick={() => { setSort("members"); setOffset(0); }}
+              onClick={() => {
+                setSort("members");
+                setOffset(0);
+              }}
               class="px-3 py-2 transition-colors"
               aria-pressed={sort() === "members"}
               classList={{
                 "bg-accent-primary text-white": sort() === "members",
-                "bg-surface-layer2 text-text-secondary hover:text-text-primary": sort() !== "members",
+                "bg-surface-layer2 text-text-secondary hover:text-text-primary":
+                  sort() !== "members",
               }}
             >
               Popular
             </button>
             <button
-              onClick={() => { setSort("newest"); setOffset(0); }}
+              onClick={() => {
+                setSort("newest");
+                setOffset(0);
+              }}
               class="px-3 py-2 transition-colors"
               aria-pressed={sort() === "newest"}
               classList={{
                 "bg-accent-primary text-white": sort() === "newest",
-                "bg-surface-layer2 text-text-secondary hover:text-text-primary": sort() !== "newest",
+                "bg-surface-layer2 text-text-secondary hover:text-text-primary":
+                  sort() !== "newest",
               }}
             >
               Newest
@@ -160,7 +191,9 @@ const DiscoveryView: Component = () => {
           <div class="flex flex-col items-center justify-center py-16 text-center">
             <Search class="w-10 h-10 text-text-secondary opacity-30 mb-3" />
             <p class="text-text-secondary text-sm">
-              {query() ? "No servers found matching your search." : "No discoverable servers yet."}
+              {query()
+                ? "No servers found matching your search."
+                : "No discoverable servers yet."}
             </p>
           </div>
         </Show>
@@ -170,7 +203,10 @@ const DiscoveryView: Component = () => {
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <For each={guilds()}>
               {(guild) => (
-                <GuildCard guild={guild} isMember={memberGuildIds().has(guild.id)} />
+                <GuildCard
+                  guild={guild}
+                  isMember={memberGuildIds().has(guild.id)}
+                />
               )}
             </For>
           </div>
@@ -179,7 +215,9 @@ const DiscoveryView: Component = () => {
           <Show when={totalPages() > 1}>
             <div class="flex items-center justify-center gap-3 mt-6">
               <button
-                onClick={() => setOffset((prev) => Math.max(0, prev - PAGE_SIZE))}
+                onClick={() =>
+                  setOffset((prev) => Math.max(0, prev - PAGE_SIZE))
+                }
                 disabled={offset() === 0}
                 aria-label="Previous page"
                 class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-30 disabled:cursor-default transition-colors"

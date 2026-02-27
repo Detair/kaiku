@@ -78,11 +78,12 @@ const BlockConfirmModal: Component<BlockConfirmModalProps> = (props) => {
           {/* Content */}
           <div class="p-5 space-y-4">
             <p class="text-text-secondary text-sm">
-              Are you sure you want to block <span class="text-text-primary font-medium">{name()}</span>?
+              Are you sure you want to block{" "}
+              <span class="text-text-primary font-medium">{name()}</span>?
             </p>
             <p class="text-text-secondary text-xs">
-              They won't be able to send you messages, friend requests, or call you.
-              You won't see their messages in shared channels.
+              They won't be able to send you messages, friend requests, or call
+              you. You won't see their messages in shared channels.
             </p>
 
             {error() && (

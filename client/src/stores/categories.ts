@@ -60,7 +60,12 @@ export async function loadGuildCategories(guildId: string): Promise<void> {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load guild categories:", error);
-    showToast({ type: "error", title: "Categories Failed", message: "Could not load channel categories.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Categories Failed",
+      message: "Could not load channel categories.",
+      duration: 8000,
+    });
     setCategoriesState({ isLoading: false, error });
   }
 }
@@ -110,9 +115,16 @@ export function toggleCategoryCollapse(categoryId: string): void {
   const currentState = categoriesState.collapseState[categoryId] ?? false;
   setCategoriesState("collapseState", categoryId, !currentState);
 
-  tauri.updateCategoryCollapse(categoryId, !currentState).catch(() =>
-    showToast({ type: "error", title: "Save Failed", message: "Could not save collapse preference.", duration: 8000 }),
-  );
+  tauri
+    .updateCategoryCollapse(categoryId, !currentState)
+    .catch(() =>
+      showToast({
+        type: "error",
+        title: "Save Failed",
+        message: "Could not save collapse preference.",
+        duration: 8000,
+      }),
+    );
 }
 
 /**
@@ -125,9 +137,16 @@ export function setCategoryCollapse(
 ): void {
   setCategoriesState("collapseState", categoryId, collapsed);
 
-  tauri.updateCategoryCollapse(categoryId, collapsed).catch(() =>
-    showToast({ type: "error", title: "Save Failed", message: "Could not save collapse preference.", duration: 8000 }),
-  );
+  tauri
+    .updateCategoryCollapse(categoryId, collapsed)
+    .catch(() =>
+      showToast({
+        type: "error",
+        title: "Save Failed",
+        message: "Could not save collapse preference.",
+        duration: 8000,
+      }),
+    );
 }
 
 /**
@@ -159,7 +178,7 @@ export function getTopLevelCategories(guildId: string): ChannelCategory[] {
  */
 export function getSubcategories(
   guildId: string,
-  parentId: string
+  parentId: string,
 ): ChannelCategory[] {
   const categories = categoriesState.categories[guildId] ?? [];
   return categories
@@ -207,7 +226,7 @@ export async function reorderCategories(
   guildId: string,
   categoryId: string,
   targetCategoryId: string,
-  position: "before" | "after" | "inside"
+  position: "before" | "after" | "inside",
 ): Promise<void> {
   const categories = categoriesState.categories[guildId] ?? [];
   const category = categories.find((c) => c.id === categoryId);
@@ -231,7 +250,9 @@ export async function reorderCategories(
   if (position === "inside") {
     // Moving into a category as a subcategory
     newParentId = targetCategoryId;
-    const subcategories = categories.filter((c) => c.parent_id === targetCategoryId);
+    const subcategories = categories.filter(
+      (c) => c.parent_id === targetCategoryId,
+    );
     insertPosition = subcategories.length;
   } else {
     // Moving before/after - same parent as target
@@ -248,7 +269,11 @@ export async function reorderCategories(
 
   // Build the reorder request
   // We need to recalculate positions for all affected categories
-  const categoriesToUpdate: Array<{ id: string; position: number; parentId: string | null }> = [];
+  const categoriesToUpdate: Array<{
+    id: string;
+    position: number;
+    parentId: string | null;
+  }> = [];
 
   // Get all categories at the same level as the target
   const affectedCategories = categories
@@ -256,7 +281,10 @@ export async function reorderCategories(
     .sort((a, b) => a.position - b.position);
 
   // Insert the moved category at the new position
-  affectedCategories.splice(insertPosition, 0, { ...category, parent_id: newParentId });
+  affectedCategories.splice(insertPosition, 0, {
+    ...category,
+    parent_id: newParentId,
+  });
 
   // Assign new positions
   affectedCategories.forEach((cat, index) => {

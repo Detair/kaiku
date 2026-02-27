@@ -141,8 +141,19 @@ pub async fn create_guild(
     body.validate()
         .map_err(|e| GuildError::Validation(e.to_string()))?;
 
+    let mut tx = state.db.begin().await?;
+
+    // Serialize guild creation per owner to enforce strict user guild limits.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 51))")
+        .bind(auth.id)
+        .execute(&mut *tx)
+        .await?;
+
     // Check guild creation limit
-    let owned_count = super::limits::count_user_owned_guilds(&state.db, auth.id).await?;
+    let owned_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds WHERE owner_id = $1")
+        .bind(auth.id)
+        .fetch_one(&mut *tx)
+        .await?;
     if owned_count >= state.config.max_guilds_per_user {
         return Err(GuildError::LimitExceeded(format!(
             "Maximum number of guilds reached ({})",
@@ -161,14 +172,14 @@ pub async fn create_guild(
     .bind(&body.name)
     .bind(auth.id)
     .bind(&body.description)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
 
     // Add owner as member
     sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
         .bind(guild_id)
         .bind(auth.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
 
     // Create default @everyone role
@@ -177,8 +188,10 @@ pub async fn create_guild(
            VALUES ($1, 'everyone', 0, 0, true)",
     )
     .bind(guild_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(guild))
 }

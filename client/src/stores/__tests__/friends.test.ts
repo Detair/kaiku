@@ -77,7 +77,10 @@ describe("friends store", () => {
 
   describe("loadFriends", () => {
     it("loads friends on success", async () => {
-      const friends = [createFriend(), createFriend({ user_id: "user-2", friendship_id: "fs-2" })];
+      const friends = [
+        createFriend(),
+        createFriend({ user_id: "user-2", friendship_id: "fs-2" }),
+      ];
       vi.mocked(tauri.getFriends).mockResolvedValue(friends);
 
       await loadFriends();
@@ -150,11 +153,16 @@ describe("friends store", () => {
     });
 
     it("shows toast on error and re-throws", async () => {
-      vi.mocked(tauri.sendFriendRequest).mockRejectedValue(new Error("not found"));
+      vi.mocked(tauri.sendFriendRequest).mockRejectedValue(
+        new Error("not found"),
+      );
 
       await expect(sendFriendRequest("bob")).rejects.toThrow();
       expect(showToast).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "error", title: "Friend Request Failed" }),
+        expect.objectContaining({
+          type: "error",
+          title: "Friend Request Failed",
+        }),
       );
     });
   });
@@ -225,7 +233,10 @@ describe("friends store", () => {
 
   describe("unblockUser", () => {
     it("removes user from blocked list optimistically", async () => {
-      const blocked = createFriend({ user_id: "user-1", friendship_status: "blocked" });
+      const blocked = createFriend({
+        user_id: "user-1",
+        friendship_status: "blocked",
+      });
       setFriendsState({ blocked: [blocked] });
       vi.mocked(tauri.unblockUser).mockResolvedValue(undefined);
 
@@ -238,7 +249,10 @@ describe("friends store", () => {
   describe("handleUserBlocked (WS handler)", () => {
     it("removes user from friends and pending, reloads blocked", async () => {
       const friend = createFriend({ user_id: "user-1" });
-      const pending = createFriend({ user_id: "user-1", friendship_status: "pending" });
+      const pending = createFriend({
+        user_id: "user-1",
+        friendship_status: "pending",
+      });
       setFriendsState({ friends: [friend], pendingRequests: [pending] });
       vi.mocked(tauri.getBlockedFriends).mockResolvedValue([]);
 
@@ -251,7 +265,10 @@ describe("friends store", () => {
 
   describe("handleUserUnblocked (WS handler)", () => {
     it("removes user from blocked list", () => {
-      const blocked = createFriend({ user_id: "user-1", friendship_status: "blocked" });
+      const blocked = createFriend({
+        user_id: "user-1",
+        friendship_status: "blocked",
+      });
       setFriendsState({ blocked: [blocked] });
 
       handleUserUnblocked("user-1");

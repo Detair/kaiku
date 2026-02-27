@@ -120,7 +120,9 @@ describe("websocket store", () => {
     });
 
     it("sets error on failure", async () => {
-      vi.mocked(tauri.wsConnect).mockRejectedValue(new Error("Connection failed"));
+      vi.mocked(tauri.wsConnect).mockRejectedValue(
+        new Error("Connection failed"),
+      );
 
       await expect(connect()).rejects.toThrow("Connection failed");
       expect(wsState.status).toBe("disconnected");
@@ -130,7 +132,10 @@ describe("websocket store", () => {
 
   describe("disconnect", () => {
     it("disconnects and clears subscriptions", async () => {
-      setWsState({ status: "connected", subscribedChannels: new Set(["ch-1"]) });
+      setWsState({
+        status: "connected",
+        subscribedChannels: new Set(["ch-1"]),
+      });
       vi.mocked(tauri.wsDisconnect).mockResolvedValue(undefined);
 
       await disconnect();

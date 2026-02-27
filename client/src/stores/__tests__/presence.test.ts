@@ -15,7 +15,16 @@ vi.mock("@/stores/preferences", () => ({
 }));
 
 vi.mock("@/stores/auth", () => ({
-  currentUser: vi.fn(() => ({ id: "me", username: "me", display_name: "Me", avatar_url: null, status: "online", email: null, mfa_enabled: false, created_at: "2025-01-01T00:00:00Z" })),
+  currentUser: vi.fn(() => ({
+    id: "me",
+    username: "me",
+    display_name: "Me",
+    avatar_url: null,
+    status: "online",
+    email: null,
+    mfa_enabled: false,
+    created_at: "2025-01-01T00:00:00Z",
+  })),
   updateUser: vi.fn(),
 }));
 
@@ -60,7 +69,11 @@ describe("presence store", () => {
     it("preserves existing activity when not provided", () => {
       setPresenceState("users", "user-1", {
         status: "online",
-        activity: { type: "game", name: "Minecraft", started_at: "2025-01-01T00:00:00Z" },
+        activity: {
+          type: "game",
+          name: "Minecraft",
+          started_at: "2025-01-01T00:00:00Z",
+        },
       });
 
       updateUserPresence("user-1", "idle");
@@ -85,7 +98,11 @@ describe("presence store", () => {
   describe("updateUserActivity", () => {
     it("updates activity for existing user", () => {
       setPresenceState("users", "user-1", { status: "online" });
-      const activity = { type: "game" as const, name: "Chess", started_at: "2025-01-01T00:00:00Z" };
+      const activity = {
+        type: "game" as const,
+        name: "Chess",
+        started_at: "2025-01-01T00:00:00Z",
+      };
 
       updateUserActivity("user-1", activity);
 
@@ -94,7 +111,11 @@ describe("presence store", () => {
     });
 
     it("creates user with online status if not present", () => {
-      const activity = { type: "coding" as const, name: "VS Code", started_at: "2025-01-01T00:00:00Z" };
+      const activity = {
+        type: "coding" as const,
+        name: "VS Code",
+        started_at: "2025-01-01T00:00:00Z",
+      };
 
       updateUserActivity("new-user", activity);
 
@@ -105,7 +126,11 @@ describe("presence store", () => {
     it("clears activity with null", () => {
       setPresenceState("users", "user-1", {
         status: "online",
-        activity: { type: "game", name: "Chess", started_at: "2025-01-01T00:00:00Z" },
+        activity: {
+          type: "game",
+          name: "Chess",
+          started_at: "2025-01-01T00:00:00Z",
+        },
       });
 
       updateUserActivity("user-1", null);

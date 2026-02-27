@@ -39,7 +39,10 @@ const FavoritesSection: Component = () => {
           <Star class="w-3.5 h-3.5 text-yellow-400" />
           <span>Favorites</span>
           <span class="ml-auto">
-            <Show when={isExpanded()} fallback={<ChevronRight class="w-3.5 h-3.5" />}>
+            <Show
+              when={isExpanded()}
+              fallback={<ChevronRight class="w-3.5 h-3.5" />}
+            >
               <ChevronDown class="w-3.5 h-3.5" />
             </Show>
           </span>
@@ -82,13 +85,17 @@ const FavoritesSection: Component = () => {
                       <button
                         class="w-full flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors"
                         classList={{
-                          "bg-surface-highlight text-text-primary": isActiveChannel(
-                            channel.channel_id
-                          ),
+                          "bg-surface-highlight text-text-primary":
+                            isActiveChannel(channel.channel_id),
                           "text-text-secondary hover:text-text-primary hover:bg-white/5":
                             !isActiveChannel(channel.channel_id),
                         }}
-                        onClick={() => handleChannelClick(channel.guild_id, channel.channel_id)}
+                        onClick={() =>
+                          handleChannelClick(
+                            channel.guild_id,
+                            channel.channel_id,
+                          )
+                        }
                       >
                         <Show
                           when={channel.channel_type === "voice"}

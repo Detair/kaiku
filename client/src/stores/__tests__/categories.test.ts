@@ -37,7 +37,7 @@ function createCategory(
   name: string,
   position: number,
   parentId: string | null = null,
-  collapsed: boolean = false
+  collapsed: boolean = false,
 ): ChannelCategory {
   return {
     id,
@@ -118,9 +118,7 @@ describe("categories store", () => {
     });
 
     it("should filter persisted state to only current guild's category IDs", () => {
-      const categories = [
-        createCategory("guild1-cat1", "General", 0),
-      ];
+      const categories = [createCategory("guild1-cat1", "General", 0)];
 
       const persistedState = {
         "guild1-cat1": true,
@@ -176,11 +174,16 @@ describe("categories store", () => {
     it("should persist collapse state via updateCategoryCollapse", () => {
       toggleCategoryCollapse("persist-toggle-cat");
 
-      expect(tauri.updateCategoryCollapse).toHaveBeenCalledWith("persist-toggle-cat", true);
+      expect(tauri.updateCategoryCollapse).toHaveBeenCalledWith(
+        "persist-toggle-cat",
+        true,
+      );
     });
 
     it("should show toast on persistence failure", async () => {
-      vi.mocked(tauri.updateCategoryCollapse).mockRejectedValueOnce(new Error("disk full"));
+      vi.mocked(tauri.updateCategoryCollapse).mockRejectedValueOnce(
+        new Error("disk full"),
+      );
 
       toggleCategoryCollapse("fail-cat");
 
@@ -197,7 +200,10 @@ describe("categories store", () => {
     it("should persist collapse state via updateCategoryCollapse", () => {
       setCategoryCollapse("persist-set-cat", true);
 
-      expect(tauri.updateCategoryCollapse).toHaveBeenCalledWith("persist-set-cat", true);
+      expect(tauri.updateCategoryCollapse).toHaveBeenCalledWith(
+        "persist-set-cat",
+        true,
+      );
     });
   });
 
@@ -290,9 +296,7 @@ describe("categories store", () => {
     });
 
     it("should return empty array when no subcategories exist", () => {
-      const categories = [
-        createCategory("cat1", "Parent", 0, null),
-      ];
+      const categories = [createCategory("cat1", "Parent", 0, null)];
 
       setGuildCategories("guild1", categories);
 
@@ -301,9 +305,7 @@ describe("categories store", () => {
     });
 
     it("should return empty array for unknown parent", () => {
-      const categories = [
-        createCategory("cat1", "Parent", 0, null),
-      ];
+      const categories = [createCategory("cat1", "Parent", 0, null)];
 
       setGuildCategories("guild1", categories);
 
@@ -336,7 +338,10 @@ describe("categories store", () => {
 
     it("should search across multiple guilds", () => {
       const guild1Categories = [createCategory("cat1", "Guild 1 Cat", 0)];
-      const guild2Category = { ...createCategory("cat2", "Guild 2 Cat", 0), guild_id: "guild2" };
+      const guild2Category = {
+        ...createCategory("cat2", "Guild 2 Cat", 0),
+        guild_id: "guild2",
+      };
 
       setGuildCategories("guild1", guild1Categories);
       setGuildCategories("guild2", [guild2Category]);
@@ -362,9 +367,7 @@ describe("categories store", () => {
     });
 
     it("should return false for top-level category", () => {
-      const categories = [
-        createCategory("cat1", "Parent", 0, null),
-      ];
+      const categories = [createCategory("cat1", "Parent", 0, null)];
 
       setGuildCategories("guild1", categories);
 
@@ -396,7 +399,9 @@ describe("categories store", () => {
 
     it("should not affect other guilds", () => {
       setGuildCategories("guild1", [createCategory("cat1", "G1", 0)]);
-      setGuildCategories("guild2", [{ ...createCategory("cat2", "G2", 0), guild_id: "guild2" }]);
+      setGuildCategories("guild2", [
+        { ...createCategory("cat2", "G2", 0), guild_id: "guild2" },
+      ]);
 
       clearGuildCategories("guild1");
 
@@ -446,7 +451,9 @@ describe("categories store", () => {
     });
 
     it("should handle API error gracefully", async () => {
-      vi.mocked(tauri.getGuildCategories).mockRejectedValue(new Error("Network error"));
+      vi.mocked(tauri.getGuildCategories).mockRejectedValue(
+        new Error("Network error"),
+      );
 
       // Should not throw
       await loadGuildCategories("guild1");
@@ -501,7 +508,9 @@ describe("categories store", () => {
       ];
 
       vi.mocked(tauri.getGuildCategories).mockResolvedValue(mockCategories);
-      vi.mocked(tauri.getUiState).mockRejectedValue(new Error("UI state read error"));
+      vi.mocked(tauri.getUiState).mockRejectedValue(
+        new Error("UI state read error"),
+      );
 
       await loadGuildCategories("guild1");
 

@@ -164,7 +164,7 @@ export async function initTheme(): Promise<void> {
   // Theme is now initialized through initPreferences()
   // The createEffect above will apply the theme when preferences load
   console.log(
-    "[Theme] initTheme() called - theme is now managed by preferences store"
+    "[Theme] initTheme() called - theme is now managed by preferences store",
   );
 }
 

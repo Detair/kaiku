@@ -12,7 +12,15 @@
  * Accessed via VoiceIsland settings button when in voice.
  */
 
-import { Component, createSignal, onMount, onCleanup, Show, For, createEffect } from "solid-js";
+import {
+  Component,
+  createSignal,
+  onMount,
+  onCleanup,
+  Show,
+  For,
+  createEffect,
+} from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Mic, Headphones, Loader2 } from "lucide-solid";
 import { createVoiceAdapter } from "@/lib/webrtc";
@@ -45,7 +53,10 @@ function getDeviceErrorMessage(error: VoiceError): string {
 }
 
 const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
-  const [devices, setDevices] = createSignal<AudioDeviceList>({ inputs: [], outputs: [] });
+  const [devices, setDevices] = createSignal<AudioDeviceList>({
+    inputs: [],
+    outputs: [],
+  });
   const [selectedInput, setSelectedInput] = createSignal<string>("");
   const [selectedOutput, setSelectedOutput] = createSignal<string>("");
   const [isTesting, setIsTesting] = createSignal(false);
@@ -59,7 +70,10 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
   const [adapter, setAdapter] = createSignal<VoiceAdapter | null>(null);
 
   // Draggable modal state
-  const [modalPosition, setModalPosition] = createSignal<{ x: number; y: number } | null>(null);
+  const [modalPosition, setModalPosition] = createSignal<{
+    x: number;
+    y: number;
+  } | null>(null);
   const [isDragging, setIsDragging] = createSignal(false);
   const [dragOffset, setDragOffset] = createSignal({ x: 0, y: 0 });
   let modalRef: HTMLDivElement | undefined;
@@ -91,12 +105,16 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
 
       // Set default selections (first device or default device)
       if (result.value.inputs.length > 0) {
-        const defaultInput = result.value.inputs.find(d => d.isDefault) || result.value.inputs[0];
+        const defaultInput =
+          result.value.inputs.find((d) => d.isDefault) ||
+          result.value.inputs[0];
         setSelectedInput(defaultInput.deviceId);
       }
 
       if (result.value.outputs.length > 0) {
-        const defaultOutput = result.value.outputs.find(d => d.isDefault) || result.value.outputs[0];
+        const defaultOutput =
+          result.value.outputs.find((d) => d.isDefault) ||
+          result.value.outputs[0];
         setSelectedOutput(defaultOutput.deviceId);
       }
 
@@ -136,7 +154,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     const currentPos = modalPosition() || getInitialModalPosition();
     setDragOffset({
       x: e.clientX - currentPos.x,
-      y: e.clientY - currentPos.y
+      y: e.clientY - currentPos.y,
     });
     e.preventDefault();
   };
@@ -158,7 +176,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
 
       setModalPosition({
         x: Math.max(0, Math.min(newX, maxX)),
-        y: Math.max(0, Math.min(newY, maxY))
+        y: Math.max(0, Math.min(newY, maxY)),
       });
     });
   };
@@ -215,12 +233,20 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       const result = await voiceAdapter.setInputDevice(deviceId);
 
       if (!result.ok) {
-        showToast({ type: "error", title: getDeviceErrorMessage(result.error), duration: 8000 });
+        showToast({
+          type: "error",
+          title: getDeviceErrorMessage(result.error),
+          duration: 8000,
+        });
         console.error("Set input device failed:", result.error);
       }
     } catch (err) {
       console.error("Failed to set input device:", err);
-      showToast({ type: "error", title: "Unexpected error while changing input device", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Unexpected error while changing input device",
+        duration: 8000,
+      });
     }
   };
 
@@ -236,12 +262,20 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       const result = await voiceAdapter.setOutputDevice(deviceId);
 
       if (!result.ok) {
-        showToast({ type: "error", title: getDeviceErrorMessage(result.error), duration: 8000 });
+        showToast({
+          type: "error",
+          title: getDeviceErrorMessage(result.error),
+          duration: 8000,
+        });
         console.error("Set output device failed:", result.error);
       }
     } catch (err) {
       console.error("Failed to set output device:", err);
-      showToast({ type: "error", title: "Unexpected error while changing output device", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Unexpected error while changing output device",
+        duration: 8000,
+      });
     }
   };
 
@@ -255,7 +289,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       const result = await voiceAdapter.startMicTest(selectedInput());
 
       if (!result.ok) {
-        showToast({ type: "error", title: getDeviceErrorMessage(result.error), duration: 8000 });
+        showToast({
+          type: "error",
+          title: getDeviceErrorMessage(result.error),
+          duration: 8000,
+        });
         console.error("Mic test start failed:", result.error);
         return;
       }
@@ -272,7 +310,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }, 50);
     } catch (err) {
       console.error("Failed to start mic test:", err);
-      showToast({ type: "error", title: "Unexpected error while starting microphone test", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Unexpected error while starting microphone test",
+        duration: 8000,
+      });
     }
   };
 
@@ -319,8 +361,14 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
 
       // Fade in/out for smoother sound
       gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.1);
-      gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.9);
+      gainNode.gain.linearRampToValueAtTime(
+        0.3,
+        audioContext.currentTime + 0.1,
+      );
+      gainNode.gain.linearRampToValueAtTime(
+        0.3,
+        audioContext.currentTime + 0.9,
+      );
       gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 1);
 
       oscillator.start(audioContext.currentTime);
@@ -335,7 +383,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }, 1000);
     } catch (err) {
       console.error("Failed to test speaker:", err);
-      showToast({ type: "error", title: "Failed to play test sound. Check your browser permissions.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Failed to play test sound. Check your browser permissions.",
+        duration: 8000,
+      });
       setIsTestingSpeaker(false);
     }
   };
@@ -384,8 +436,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       16, // Min margin from left
       Math.min(
         modalLeft,
-        viewportWidth - modalWidth - 16 // Max margin from right
-      )
+        viewportWidth - modalWidth - 16, // Max margin from right
+      ),
     );
 
     // Vertical: Position below VoiceIsland
@@ -397,13 +449,13 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       16, // Min margin from top
       Math.min(
         topPosition,
-        viewportHeight - modalHeight - 16 // Max margin from bottom
-      )
+        viewportHeight - modalHeight - 16, // Max margin from bottom
+      ),
     );
 
     return {
       x: leftPosition,
-      y: finalTop
+      y: finalTop,
     };
   };
 
@@ -432,42 +484,51 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
           "z-index": "9999",
         }}
       >
-          {/* Header - Draggable */}
-          <div
-            class="modal-header flex items-center justify-between px-6 py-4 border-b border-white/10 cursor-move select-none"
-            onMouseDown={handleModalMouseDown}
+        {/* Header - Draggable */}
+        <div
+          class="modal-header flex items-center justify-between px-6 py-4 border-b border-white/10 cursor-move select-none"
+          onMouseDown={handleModalMouseDown}
+        >
+          <h2 class="text-lg font-semibold text-text-primary">
+            Audio Settings
+          </h2>
+          <button
+            onClick={props.onClose}
+            class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-all duration-200"
+            title="Close"
           >
-            <h2 class="text-lg font-semibold text-text-primary">Audio Settings</h2>
-            <button
-              onClick={props.onClose}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-all duration-200"
-              title="Close"
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Content - Scrollable */}
+        <div class="px-6 py-4 space-y-6 overflow-y-auto flex-1">
+          {/* Loading state */}
+          <Show when={isLoading()}>
+            <div class="flex flex-col items-center justify-center py-8">
+              <Loader2 class="w-8 h-8 text-accent-primary animate-spin mb-3" />
+              <p class="text-sm text-text-secondary">
+                Loading audio devices...
+              </p>
+            </div>
+          </Show>
+
+          {/* Error message */}
+          <Show when={error() && !isLoading()}>
+            <div
+              class="px-4 py-3 rounded-xl"
+              style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)"
             >
-              <X class="w-5 h-5" />
-            </button>
-          </div>
+              <p class="text-sm" style="color: var(--color-error-text)">
+                {error()}
+              </p>
+            </div>
+          </Show>
 
-          {/* Content - Scrollable */}
-          <div class="px-6 py-4 space-y-6 overflow-y-auto flex-1">
-            {/* Loading state */}
-            <Show when={isLoading()}>
-              <div class="flex flex-col items-center justify-center py-8">
-                <Loader2 class="w-8 h-8 text-accent-primary animate-spin mb-3" />
-                <p class="text-sm text-text-secondary">Loading audio devices...</p>
-              </div>
-            </Show>
-
-            {/* Error message */}
-            <Show when={error() && !isLoading()}>
-              <div class="px-4 py-3 rounded-xl" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)">
-                <p class="text-sm" style="color: var(--color-error-text)">{error()}</p>
-              </div>
-            </Show>
-
-            {/* Device selectors - only show when loaded */}
-            <Show when={!isLoading()}>
-              {/* Input Device */}
-              <div>
+          {/* Device selectors - only show when loaded */}
+          <Show when={!isLoading()}>
+            {/* Input Device */}
+            <div>
               <label class="flex items-center gap-2 text-sm font-medium text-text-primary mb-2">
                 <div class="w-5 h-5 text-text-secondary">
                   <Mic />
@@ -482,7 +543,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 <For each={devices().inputs}>
                   {(device) => (
                     <option value={device.deviceId}>
-                      {device.label || `Microphone ${device.deviceId.slice(0, 8)}`}
+                      {device.label ||
+                        `Microphone ${device.deviceId.slice(0, 8)}`}
                       {device.isDefault ? " (Default)" : ""}
                     </option>
                   )}
@@ -495,8 +557,10 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                   onClick={() => (isTesting() ? stopMicTest() : startMicTest())}
                   class="px-4 py-2 rounded-xl font-medium text-sm transition-all duration-200"
                   classList={{
-                    "bg-accent-primary text-white hover:bg-accent-primary/90": !isTesting(),
-                    "bg-accent-danger text-white hover:bg-accent-danger/90": isTesting(),
+                    "bg-accent-primary text-white hover:bg-accent-primary/90":
+                      !isTesting(),
+                    "bg-accent-danger text-white hover:bg-accent-danger/90":
+                      isTesting(),
                   }}
                 >
                   {isTesting() ? "Stop Test" : "Test Microphone"}
@@ -509,7 +573,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                       class="h-full transition-all duration-75"
                       classList={{
                         "bg-amber-500": testLevel() < 20,
-                        "bg-accent-primary": testLevel() >= 20 && testLevel() <= 70,
+                        "bg-accent-primary":
+                          testLevel() >= 20 && testLevel() <= 70,
                         "bg-accent-danger": testLevel() > 70,
                       }}
                       style={{ width: `${testLevel()}%` }}
@@ -519,7 +584,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                     class="text-xs mt-1.5"
                     classList={{
                       "text-amber-500": testLevel() < 20 && testLevel() > 0,
-                      "text-accent-primary": testLevel() >= 20 && testLevel() <= 70,
+                      "text-accent-primary":
+                        testLevel() >= 20 && testLevel() <= 70,
                       "text-accent-danger": testLevel() > 70,
                       "text-text-secondary": testLevel() === 0,
                     }}
@@ -527,10 +593,10 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                     {testLevel() === 0
                       ? "Speak into your microphone to test"
                       : testLevel() < 20
-                      ? "Too quiet - speak louder or move mic closer"
-                      : testLevel() > 70
-                      ? "Too loud - may distort, reduce volume or move mic away"
-                      : "Good level - keep speaking like this"}
+                        ? "Too quiet - speak louder or move mic closer"
+                        : testLevel() > 70
+                          ? "Too loud - may distort, reduce volume or move mic away"
+                          : "Good level - keep speaking like this"}
                   </p>
                 </Show>
               </div>
@@ -538,13 +604,19 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
               {/* Noise Suppression Toggle */}
               <div class="mt-4 flex items-center justify-between">
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Noise Suppression</div>
-                  <div class="text-xs text-text-secondary">Reduces background noise</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Noise Suppression
+                  </div>
+                  <div class="text-xs text-text-secondary">
+                    Reduces background noise
+                  </div>
                 </div>
                 <button
                   onClick={toggleNoiseSuppression}
                   class={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2 focus:ring-offset-surface-base ${
-                    noiseSuppression() ? "bg-accent-primary" : "bg-surface-highlight"
+                    noiseSuppression()
+                      ? "bg-accent-primary"
+                      : "bg-surface-highlight"
                   }`}
                 >
                   <span
@@ -586,8 +658,10 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                   disabled={isTestingSpeaker()}
                   class="px-4 py-2 rounded-xl font-medium text-sm transition-all duration-200"
                   classList={{
-                    "bg-accent-primary text-white hover:bg-accent-primary/90": !isTestingSpeaker(),
-                    "bg-accent-primary/50 text-white cursor-not-allowed": isTestingSpeaker(),
+                    "bg-accent-primary text-white hover:bg-accent-primary/90":
+                      !isTestingSpeaker(),
+                    "bg-accent-primary/50 text-white cursor-not-allowed":
+                      isTestingSpeaker(),
                   }}
                 >
                   {isTestingSpeaker() ? "Playing..." : "Test Speaker"}
@@ -597,19 +671,19 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 </p>
               </div>
             </div>
-            </Show>
-          </div>
-
-          {/* Footer */}
-          <div class="px-6 py-4 border-t border-white/10 flex justify-end">
-            <button
-              onClick={props.onClose}
-              class="px-5 py-2.5 bg-accent-primary hover:bg-accent-primary/90 text-white rounded-xl font-medium text-sm transition-all duration-200"
-            >
-              Done
-            </button>
-          </div>
+          </Show>
         </div>
+
+        {/* Footer */}
+        <div class="px-6 py-4 border-t border-white/10 flex justify-end">
+          <button
+            onClick={props.onClose}
+            class="px-5 py-2.5 bg-accent-primary hover:bg-accent-primary/90 text-white rounded-xl font-medium text-sm transition-all duration-200"
+          >
+            Done
+          </button>
+        </div>
+      </div>
     </Portal>
   );
 };

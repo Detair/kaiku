@@ -52,7 +52,9 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
       await props.onCreateCategory(trimmed);
       setNewCategoryName("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create category.");
+      setError(
+        err instanceof Error ? err.message : "Failed to create category.",
+      );
     } finally {
       setLoading(false);
     }
@@ -87,7 +89,9 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
       setEditingId(null);
       setEditingName("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update category.");
+      setError(
+        err instanceof Error ? err.message : "Failed to update category.",
+      );
     } finally {
       setLoading(false);
     }
@@ -104,7 +108,9 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
     try {
       await props.onDeleteCategory(categoryId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete category.");
+      setError(
+        err instanceof Error ? err.message : "Failed to delete category.",
+      );
     } finally {
       setLoading(false);
     }
@@ -169,7 +175,9 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                     fallback={
                       <>
                         {/* Display mode */}
-                        <span class="flex-1 text-white truncate">{category.name}</span>
+                        <span class="flex-1 text-white truncate">
+                          {category.name}
+                        </span>
                         <button
                           onClick={() => startEditing(category)}
                           class="text-zinc-400 hover:text-white p-1 rounded-md transition-colors flex-shrink-0"
@@ -179,7 +187,9 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                           <Pencil size={14} />
                         </button>
                         <button
-                          onClick={() => handleDelete(category.id, category.name)}
+                          onClick={() =>
+                            handleDelete(category.id, category.name)
+                          }
                           class="text-red-400 hover:text-red-300 hover:bg-red-900/30 p-1 rounded-md transition-colors flex-shrink-0"
                           disabled={loading()}
                           aria-label={`Delete ${category.name}`}

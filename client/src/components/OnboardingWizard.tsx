@@ -10,11 +10,33 @@
  * 5. Done
  */
 
-import { Component, createSignal, createEffect, on, onCleanup, Show, For, lazy, Suspense } from "solid-js";
-import { Check, ChevronRight, ChevronLeft, Mic, Compass, Users } from "lucide-solid";
+import {
+  Component,
+  createSignal,
+  createEffect,
+  on,
+  onCleanup,
+  Show,
+  For,
+  lazy,
+  Suspense,
+} from "solid-js";
+import {
+  Check,
+  ChevronRight,
+  ChevronLeft,
+  Mic,
+  Compass,
+  Users,
+} from "lucide-solid";
 import { preferences, updatePreference } from "@/stores/preferences";
 import { currentUser, updateUser } from "@/stores/auth";
-import { setTheme, availableThemes, theme, type ThemeDefinition } from "@/stores/theme";
+import {
+  setTheme,
+  availableThemes,
+  theme,
+  type ThemeDefinition,
+} from "@/stores/theme";
 import { authState } from "@/stores/auth";
 import { joinViaInviteCode } from "@/stores/guilds";
 import { showToast } from "@/components/ui/Toast";
@@ -28,14 +50,18 @@ const TOTAL_STEPS = 5;
 const OnboardingWizard: Component = () => {
   // Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
   const shouldShow = () =>
-    authState.isInitialized && !preferences().onboarding_completed && !authState.setupRequired;
+    authState.isInitialized &&
+    !preferences().onboarding_completed &&
+    !authState.setupRequired;
 
   const [step, setStep] = createSignal(0);
   const [displayName, setDisplayName] = createSignal("");
   const [inviteCode, setInviteCode] = createSignal("");
   const [joiningInvite, setJoiningInvite] = createSignal(false);
   const [savingName, setSavingName] = createSignal(false);
-  const [discoveryGuilds, setDiscoveryGuilds] = createSignal<DiscoverableGuild[]>([]);
+  const [discoveryGuilds, setDiscoveryGuilds] = createSignal<
+    DiscoverableGuild[]
+  >([]);
   const [discoveryLoading, setDiscoveryLoading] = createSignal(false);
   const [discoveryError, setDiscoveryError] = createSignal(false);
   const [discoveryPermanent, setDiscoveryPermanent] = createSignal(false);
@@ -55,22 +81,30 @@ const OnboardingWizard: Component = () => {
   });
 
   // Sync display name if user data loads asynchronously after wizard is already showing
-  createEffect(on(
-    () => currentUser()?.display_name,
-    (name) => {
-      if (name && step() === 0 && displayName() === "") {
-        setDisplayName(name);
-      }
-    },
-    { defer: true },
-  ));
+  createEffect(
+    on(
+      () => currentUser()?.display_name,
+      (name) => {
+        if (name && step() === 0 && displayName() === "") {
+          setDisplayName(name);
+        }
+      },
+      { defer: true },
+    ),
+  );
 
   // Auto-focus first interactive element on step transitions (defer: skip initial)
-  createEffect(on(step, (currentStep) => {
-    if (currentStep === 0) {
-      queueMicrotask(() => displayNameRef?.focus());
-    }
-  }, { defer: true }));
+  createEffect(
+    on(
+      step,
+      (currentStep) => {
+        if (currentStep === 0) {
+          queueMicrotask(() => displayNameRef?.focus());
+        }
+      },
+      { defer: true },
+    ),
+  );
 
   // Focus trap: constrain Tab cycling within the dialog (aria-modal="true" contract)
   const handleFocusTrap = (e: KeyboardEvent) => {
@@ -132,7 +166,8 @@ const OnboardingWizard: Component = () => {
         showToast({
           type: "warning",
           title: "Could Not Save Name",
-          message: "Your display name wasn't saved. You can update it later in settings.",
+          message:
+            "Your display name wasn't saved. You can update it later in settings.",
           duration: 8000,
         });
         setSavingName(false);
@@ -148,11 +183,16 @@ const OnboardingWizard: Component = () => {
     setDiscoveryError(false);
     setDiscoveryPermanent(false);
     try {
-      const result = await discoverGuilds({ sort: "members", limit: 6, offset: 0 });
+      const result = await discoverGuilds({
+        sort: "members",
+        limit: 6,
+        offset: 0,
+      });
       setDiscoveryGuilds(result.guilds);
     } catch (err: unknown) {
       console.error("Failed to load discovery guilds:", err);
-      const isDisabled = err instanceof Error && err.message.includes("DISCOVERY_DISABLED");
+      const isDisabled =
+        err instanceof Error && err.message.includes("DISCOVERY_DISABLED");
       setDiscoveryPermanent(isDisabled);
       setDiscoveryError(true);
     } finally {
@@ -164,22 +204,37 @@ const OnboardingWizard: Component = () => {
     try {
       const result = await joinDiscoverable(guildId);
       if (result.already_member) {
-        showToast({ type: "info", title: "Already a Member", message: `You're already in ${result.guild_name}.` });
+        showToast({
+          type: "info",
+          title: "Already a Member",
+          message: `You're already in ${result.guild_name}.`,
+        });
       } else {
-        showToast({ type: "success", title: "Joined!", message: `You've joined ${result.guild_name}.` });
+        showToast({
+          type: "success",
+          title: "Joined!",
+          message: `You've joined ${result.guild_name}.`,
+        });
         // Refresh guild list so sidebar shows the new guild after wizard closes
         try {
           const { loadGuilds } = await import("@/stores/guilds");
           await loadGuilds();
         } catch (refreshErr) {
-          console.error("Failed to refresh guild list after onboarding join:", refreshErr);
+          console.error(
+            "Failed to refresh guild list after onboarding join:",
+            refreshErr,
+          );
         }
       }
       setJoinedIds((prev) => new Set([...prev, guildId]));
       return true;
     } catch (err: unknown) {
       console.error("Failed to join discoverable guild:", err);
-      showToast({ type: "error", title: "Join Failed", message: "Could not join this server." });
+      showToast({
+        type: "error",
+        title: "Join Failed",
+        message: "Could not join this server.",
+      });
       return false;
     }
   };
@@ -193,7 +248,11 @@ const OnboardingWizard: Component = () => {
       setInviteCode("");
     } catch (err: unknown) {
       console.error("Failed to join via invite code:", err);
-      showToast({ type: "error", title: "Invalid Invite", message: "Could not join with this invite code." });
+      showToast({
+        type: "error",
+        title: "Invalid Invite",
+        message: "Could not join with this invite code.",
+      });
     } finally {
       setJoiningInvite(false);
     }
@@ -201,10 +260,26 @@ const OnboardingWizard: Component = () => {
 
   return (
     <Show when={shouldShow()}>
-      <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50" role="dialog" aria-modal="true" aria-label="Onboarding wizard">
-        <div ref={dialogRef} class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden" style="background-color: var(--color-surface-layer2)">
+      <div
+        class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Onboarding wizard"
+      >
+        <div
+          ref={dialogRef}
+          class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden"
+          style="background-color: var(--color-surface-layer2)"
+        >
           {/* Progress dots */}
-          <div class="flex justify-center gap-2 pt-5 pb-2" role="progressbar" aria-valuenow={step() + 1} aria-valuemin={1} aria-valuemax={TOTAL_STEPS} aria-label={`Step ${step() + 1} of ${TOTAL_STEPS}`}>
+          <div
+            class="flex justify-center gap-2 pt-5 pb-2"
+            role="progressbar"
+            aria-valuenow={step() + 1}
+            aria-valuemin={1}
+            aria-valuemax={TOTAL_STEPS}
+            aria-label={`Step ${step() + 1} of ${TOTAL_STEPS}`}
+          >
             <For each={Array.from({ length: TOTAL_STEPS })}>
               {(_, i) => (
                 <div
@@ -223,13 +298,18 @@ const OnboardingWizard: Component = () => {
             {/* Step 0: Welcome */}
             <Show when={step() === 0}>
               <div class="text-center mb-6">
-                <h2 class="text-2xl font-bold text-text-primary">Welcome to Canis</h2>
+                <h2 class="text-2xl font-bold text-text-primary">
+                  Welcome to Canis
+                </h2>
                 <p class="text-sm text-text-secondary mt-2">
                   Let's get you set up in just a few steps.
                 </p>
               </div>
               <div>
-                <label for="onboarding-display-name" class="block text-sm font-medium text-text-secondary mb-2">
+                <label
+                  for="onboarding-display-name"
+                  class="block text-sm font-medium text-text-secondary mb-2"
+                >
                   Display Name
                 </label>
                 <input
@@ -251,7 +331,9 @@ const OnboardingWizard: Component = () => {
             {/* Step 1: Theme */}
             <Show when={step() === 1}>
               <div class="text-center mb-6">
-                <h2 class="text-xl font-bold text-text-primary">Pick a Theme</h2>
+                <h2 class="text-xl font-bold text-text-primary">
+                  Pick a Theme
+                </h2>
                 <p class="text-sm text-text-secondary mt-1">
                   Choose how Canis looks. You can change this anytime.
                 </p>
@@ -263,22 +345,37 @@ const OnboardingWizard: Component = () => {
                       onClick={() => setTheme(t.id)}
                       class="text-left p-3 rounded-xl border-2 transition-all"
                       classList={{
-                        "border-accent-primary bg-accent-primary/10": theme() === t.id,
-                        "border-white/10 hover:border-accent-primary/50": theme() !== t.id,
+                        "border-accent-primary bg-accent-primary/10":
+                          theme() === t.id,
+                        "border-white/10 hover:border-accent-primary/50":
+                          theme() !== t.id,
                       }}
                     >
                       <div class="flex items-center gap-2 mb-1">
                         <div class="flex gap-1">
-                          <div class="w-3 h-3 rounded-full border border-white/20" style={{ "background-color": t.preview.surface }} />
-                          <div class="w-3 h-3 rounded-full border border-white/20" style={{ "background-color": t.preview.accent }} />
-                          <div class="w-3 h-3 rounded-full border border-white/20" style={{ "background-color": t.preview.text }} />
+                          <div
+                            class="w-3 h-3 rounded-full border border-white/20"
+                            style={{ "background-color": t.preview.surface }}
+                          />
+                          <div
+                            class="w-3 h-3 rounded-full border border-white/20"
+                            style={{ "background-color": t.preview.accent }}
+                          />
+                          <div
+                            class="w-3 h-3 rounded-full border border-white/20"
+                            style={{ "background-color": t.preview.text }}
+                          />
                         </div>
                         <Show when={theme() === t.id}>
                           <Check class="w-3.5 h-3.5 text-accent-primary ml-auto" />
                         </Show>
                       </div>
-                      <div class="text-sm font-semibold text-text-primary">{t.name}</div>
-                      <div class="text-xs text-text-secondary">{t.description}</div>
+                      <div class="text-sm font-semibold text-text-primary">
+                        {t.name}
+                      </div>
+                      <div class="text-xs text-text-secondary">
+                        {t.description}
+                      </div>
                     </button>
                   )}
                 </For>
@@ -294,7 +391,13 @@ const OnboardingWizard: Component = () => {
                   Test your microphone and speakers. You can skip this step.
                 </p>
               </div>
-              <Suspense fallback={<div class="h-40 flex items-center justify-center text-text-secondary text-sm">Loading...</div>}>
+              <Suspense
+                fallback={
+                  <div class="h-40 flex items-center justify-center text-text-secondary text-sm">
+                    Loading...
+                  </div>
+                }
+              >
                 <MicTestPanel compact />
               </Suspense>
             </Show>
@@ -303,14 +406,20 @@ const OnboardingWizard: Component = () => {
             <Show when={step() === 3}>
               <div class="text-center mb-4">
                 <Compass class="w-8 h-8 text-accent-primary mx-auto mb-2" />
-                <h2 class="text-xl font-bold text-text-primary">Join a Server</h2>
+                <h2 class="text-xl font-bold text-text-primary">
+                  Join a Server
+                </h2>
                 <p class="text-sm text-text-secondary mt-1">
                   Find a community or enter an invite code.
                 </p>
               </div>
 
               {/* Tab switcher */}
-              <div class="flex rounded-lg border border-white/10 overflow-hidden text-xs mb-4" role="tablist" aria-label="Join method">
+              <div
+                class="flex rounded-lg border border-white/10 overflow-hidden text-xs mb-4"
+                role="tablist"
+                aria-label="Join method"
+              >
                 <button
                   id="tab-discover"
                   role="tab"
@@ -320,7 +429,8 @@ const OnboardingWizard: Component = () => {
                   class="flex-1 px-3 py-2 transition-colors"
                   classList={{
                     "bg-accent-primary text-white": joinTab() === "discover",
-                    "bg-surface-layer1 text-text-secondary hover:text-text-primary": joinTab() !== "discover",
+                    "bg-surface-layer1 text-text-secondary hover:text-text-primary":
+                      joinTab() !== "discover",
                   }}
                 >
                   Discover
@@ -334,7 +444,8 @@ const OnboardingWizard: Component = () => {
                   class="flex-1 px-3 py-2 transition-colors"
                   classList={{
                     "bg-accent-primary text-white": joinTab() === "invite",
-                    "bg-surface-layer1 text-text-secondary hover:text-text-primary": joinTab() !== "invite",
+                    "bg-surface-layer1 text-text-secondary hover:text-text-primary":
+                      joinTab() !== "invite",
                   }}
                 >
                   Invite Code
@@ -343,86 +454,124 @@ const OnboardingWizard: Component = () => {
 
               {/* Discover tab */}
               <Show when={joinTab() === "discover"}>
-                <div id="tabpanel-discover" role="tabpanel" aria-labelledby="tab-discover">
-                <Show when={discoveryLoading()}>
-                  <div class="grid grid-cols-2 gap-2">
-                    <For each={Array.from({ length: 4 })}>
-                      {() => <div class="h-20 rounded-lg bg-surface-layer1 animate-pulse" />}
-                    </For>
-                  </div>
-                </Show>
-                <Show when={!discoveryLoading() && discoveryError()}>
-                  <div class="text-center py-8 text-text-secondary text-sm">
-                    <p>{discoveryPermanent()
-                      ? "Guild discovery is not enabled on this server."
-                      : "Could not load servers. Check your connection."}</p>
-                    <Show when={!discoveryPermanent()}>
-                      <button
-                        onClick={loadDiscoveryGuilds}
-                        class="mt-2 px-3 py-1 text-xs bg-accent-primary text-white rounded-lg hover:bg-accent-hover"
-                      >
-                        Retry
-                      </button>
-                    </Show>
-                  </div>
-                </Show>
-                <Show when={!discoveryLoading() && !discoveryError() && discoveryGuilds().length === 0}>
-                  <div class="text-center py-8 text-text-secondary text-sm">
-                    No discoverable servers yet. Try using an invite code instead.
-                  </div>
-                </Show>
-                <Show when={!discoveryLoading() && !discoveryError() && discoveryGuilds().length > 0}>
-                  <div class="grid grid-cols-2 gap-2">
-                    <For each={discoveryGuilds()}>
-                      {(guild) => {
-                        const initials = guild.name
-                          .split(" ")
-                          .map((w) => w[0])
-                          .join("")
-                          .toUpperCase()
-                          .slice(0, 2);
-                        const isJoined = () => joinedIds().has(guild.id);
+                <div
+                  id="tabpanel-discover"
+                  role="tabpanel"
+                  aria-labelledby="tab-discover"
+                >
+                  <Show when={discoveryLoading()}>
+                    <div class="grid grid-cols-2 gap-2">
+                      <For each={Array.from({ length: 4 })}>
+                        {() => (
+                          <div class="h-20 rounded-lg bg-surface-layer1 animate-pulse" />
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                  <Show when={!discoveryLoading() && discoveryError()}>
+                    <div class="text-center py-8 text-text-secondary text-sm">
+                      <p>
+                        {discoveryPermanent()
+                          ? "Guild discovery is not enabled on this server."
+                          : "Could not load servers. Check your connection."}
+                      </p>
+                      <Show when={!discoveryPermanent()}>
+                        <button
+                          onClick={loadDiscoveryGuilds}
+                          class="mt-2 px-3 py-1 text-xs bg-accent-primary text-white rounded-lg hover:bg-accent-hover"
+                        >
+                          Retry
+                        </button>
+                      </Show>
+                    </div>
+                  </Show>
+                  <Show
+                    when={
+                      !discoveryLoading() &&
+                      !discoveryError() &&
+                      discoveryGuilds().length === 0
+                    }
+                  >
+                    <div class="text-center py-8 text-text-secondary text-sm">
+                      No discoverable servers yet. Try using an invite code
+                      instead.
+                    </div>
+                  </Show>
+                  <Show
+                    when={
+                      !discoveryLoading() &&
+                      !discoveryError() &&
+                      discoveryGuilds().length > 0
+                    }
+                  >
+                    <div class="grid grid-cols-2 gap-2">
+                      <For each={discoveryGuilds()}>
+                        {(guild) => {
+                          const initials = guild.name
+                            .split(" ")
+                            .map((w) => w[0])
+                            .join("")
+                            .toUpperCase()
+                            .slice(0, 2);
+                          const isJoined = () => joinedIds().has(guild.id);
 
-                        return (
-                          <div class="flex items-center gap-2 p-2.5 rounded-lg bg-surface-layer1 border border-white/5">
-                            <div class="w-8 h-8 rounded-lg bg-surface-layer2 flex items-center justify-center overflow-hidden flex-shrink-0">
-                              <Show
-                                when={guild.icon_url}
-                                fallback={<span class="text-[10px] font-bold text-text-primary">{initials}</span>}
-                              >
-                                <img src={guild.icon_url!} alt="" class="w-full h-full object-cover" />
-                              </Show>
-                            </div>
-                            <div class="flex-1 min-w-0">
-                              <div class="text-xs font-semibold text-text-primary truncate">{guild.name}</div>
-                              <div class="flex items-center gap-1 text-[10px] text-text-secondary">
-                                <Users class="w-2.5 h-2.5" />
-                                {guild.member_count.toLocaleString()}
+                          return (
+                            <div class="flex items-center gap-2 p-2.5 rounded-lg bg-surface-layer1 border border-white/5">
+                              <div class="w-8 h-8 rounded-lg bg-surface-layer2 flex items-center justify-center overflow-hidden flex-shrink-0">
+                                <Show
+                                  when={guild.icon_url}
+                                  fallback={
+                                    <span class="text-[10px] font-bold text-text-primary">
+                                      {initials}
+                                    </span>
+                                  }
+                                >
+                                  <img
+                                    src={guild.icon_url!}
+                                    alt=""
+                                    class="w-full h-full object-cover"
+                                  />
+                                </Show>
                               </div>
+                              <div class="flex-1 min-w-0">
+                                <div class="text-xs font-semibold text-text-primary truncate">
+                                  {guild.name}
+                                </div>
+                                <div class="flex items-center gap-1 text-[10px] text-text-secondary">
+                                  <Users class="w-2.5 h-2.5" />
+                                  {guild.member_count.toLocaleString()}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleJoinDiscoverable(guild.id)}
+                                disabled={isJoined()}
+                                class="px-2 py-1 text-[10px] font-medium rounded transition-colors flex-shrink-0"
+                                classList={{
+                                  "bg-accent-primary text-white hover:bg-accent-hover":
+                                    !isJoined(),
+                                  "bg-white/10 text-text-secondary cursor-default":
+                                    isJoined(),
+                                }}
+                              >
+                                {isJoined() ? "Joined" : "Join"}
+                              </button>
                             </div>
-                            <button
-                              onClick={() => handleJoinDiscoverable(guild.id)}
-                              disabled={isJoined()}
-                              class="px-2 py-1 text-[10px] font-medium rounded transition-colors flex-shrink-0"
-                              classList={{
-                                "bg-accent-primary text-white hover:bg-accent-hover": !isJoined(),
-                                "bg-white/10 text-text-secondary cursor-default": isJoined(),
-                              }}
-                            >
-                              {isJoined() ? "Joined" : "Join"}
-                            </button>
-                          </div>
-                        );
-                      }}
-                    </For>
-                  </div>
-                </Show>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  </Show>
                 </div>
               </Show>
 
               {/* Invite code tab */}
               <Show when={joinTab() === "invite"}>
-                <div id="tabpanel-invite" role="tabpanel" aria-labelledby="tab-invite" class="space-y-3">
+                <div
+                  id="tabpanel-invite"
+                  role="tabpanel"
+                  aria-labelledby="tab-invite"
+                  class="space-y-3"
+                >
                   <input
                     type="text"
                     value={inviteCode()}
@@ -430,7 +579,9 @@ const OnboardingWizard: Component = () => {
                     placeholder="Enter invite code (e.g. AbCdEfGh)"
                     maxLength={8}
                     class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
-                    onKeyDown={(e) => { if (e.key === "Enter") handleJoinInvite(); }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleJoinInvite();
+                    }}
                   />
                   <button
                     onClick={handleJoinInvite}
@@ -449,9 +600,12 @@ const OnboardingWizard: Component = () => {
                 <div class="w-16 h-16 rounded-full bg-accent-primary/20 flex items-center justify-center mx-auto mb-4">
                   <Check class="w-8 h-8 text-accent-primary" />
                 </div>
-                <h2 class="text-2xl font-bold text-text-primary">You're All Set!</h2>
+                <h2 class="text-2xl font-bold text-text-primary">
+                  You're All Set!
+                </h2>
                 <p class="text-sm text-text-secondary mt-2 max-w-xs mx-auto">
-                  Welcome aboard, {currentUser()?.display_name ?? "friend"}. Explore servers, chat with friends, and join voice channels.
+                  Welcome aboard, {currentUser()?.display_name ?? "friend"}.
+                  Explore servers, chat with friends, and join voice channels.
                 </p>
               </div>
             </Show>
@@ -496,11 +650,17 @@ const OnboardingWizard: Component = () => {
                 }
               >
                 <button
-                  onClick={() => (step() === 0 ? handleSaveDisplayName() : next())}
+                  onClick={() =>
+                    step() === 0 ? handleSaveDisplayName() : next()
+                  }
                   disabled={savingName()}
                   class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
                 >
-                  {savingName() ? "Saving..." : step() === 0 ? "Continue" : "Next"}
+                  {savingName()
+                    ? "Saving..."
+                    : step() === 0
+                      ? "Continue"
+                      : "Next"}
                   <ChevronRight class="w-4 h-4" />
                 </button>
               </Show>

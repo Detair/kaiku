@@ -11,7 +11,7 @@ const createEmoji = (
   id: string,
   name: string,
   category: string = "smileys",
-  keywords: string[] = []
+  keywords: string[] = [],
 ): Emoji => ({
   id,
   name,
@@ -105,7 +105,11 @@ describe("emoji store", () => {
     const emojis: Emoji[] = [
       createEmoji("smile", "smile", "smileys", ["happy", "face"]),
       createEmoji("heart", "red heart", "symbols", ["love", "romance"]),
-      createEmoji("thumbsup", "thumbs up", "gestures", ["like", "approve", "ok"]),
+      createEmoji("thumbsup", "thumbs up", "gestures", [
+        "like",
+        "approve",
+        "ok",
+      ]),
       createEmoji("fire", "fire", "nature", ["hot", "lit", "flame"]),
       createEmoji("cry", "crying face", "smileys", ["sad", "tears"]),
     ];

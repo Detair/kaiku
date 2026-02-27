@@ -20,7 +20,10 @@ const [viewerState, setViewerState] = createStore<WebcamViewerState>({
  * Register an available webcam track.
  * Called when a remote user's webcam track is received.
  */
-export function addAvailableTrack(userId: string, track: MediaStreamTrack): void {
+export function addAvailableTrack(
+  userId: string,
+  track: MediaStreamTrack,
+): void {
   console.log("[WebcamViewer] Track available:", userId);
 
   // Note: track.onended is already set in browser.ts to call onWebcamTrackRemoved,

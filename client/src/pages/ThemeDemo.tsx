@@ -36,7 +36,9 @@ print(calculate_fibonacci(10))`,
       <div class="max-w-4xl mx-auto space-y-8">
         {/* Theme Selector */}
         <div class="bg-surface-layer1 rounded-2xl p-6 border border-white/10">
-          <h1 class="text-3xl font-bold text-text-primary mb-2">Theme System Demo</h1>
+          <h1 class="text-3xl font-bold text-text-primary mb-2">
+            Theme System Demo
+          </h1>
           <p class="text-text-secondary mb-6">
             Select a theme to see colors update instantly
           </p>
@@ -47,15 +49,18 @@ print(calculate_fibonacci(10))`,
                 onClick={() => setTheme(theme.id)}
                 class="w-full text-left p-4 rounded-xl border-2 transition-all"
                 classList={{
-                  "border-accent-primary bg-accent-primary/10": themeState.currentTheme === theme.id,
-                  "border-white/10 hover:border-accent-primary/50 bg-surface-layer2": themeState.currentTheme !== theme.id,
+                  "border-accent-primary bg-accent-primary/10":
+                    themeState.currentTheme === theme.id,
+                  "border-white/10 hover:border-accent-primary/50 bg-surface-layer2":
+                    themeState.currentTheme !== theme.id,
                 }}
               >
                 <div class="flex items-start gap-3">
                   <div
                     class="w-5 h-5 rounded-full border-2 flex-shrink-0 mt-0.5"
                     classList={{
-                      "border-accent-primary bg-accent-primary": themeState.currentTheme === theme.id,
+                      "border-accent-primary bg-accent-primary":
+                        themeState.currentTheme === theme.id,
                       "border-white/30": themeState.currentTheme !== theme.id,
                     }}
                   >
@@ -64,8 +69,12 @@ print(calculate_fibonacci(10))`,
                     )}
                   </div>
                   <div class="flex-1">
-                    <div class="font-semibold text-text-primary">{theme.name}</div>
-                    <div class="text-sm text-text-secondary">{theme.description}</div>
+                    <div class="font-semibold text-text-primary">
+                      {theme.name}
+                    </div>
+                    <div class="text-sm text-text-secondary">
+                      {theme.description}
+                    </div>
                     <div class="flex gap-2 mt-2">
                       <div class="w-6 h-6 rounded bg-surface-base border border-white/10" />
                       <div class="w-6 h-6 rounded bg-surface-layer1 border border-white/10" />
@@ -81,7 +90,9 @@ print(calculate_fibonacci(10))`,
 
         {/* Code Highlighting Demo */}
         <div class="bg-surface-layer1 rounded-2xl p-6 border border-white/10">
-          <h2 class="text-2xl font-bold text-text-primary mb-2">Code Syntax Highlighting</h2>
+          <h2 class="text-2xl font-bold text-text-primary mb-2">
+            Code Syntax Highlighting
+          </h2>
           <p class="text-text-secondary mb-6">
             Code blocks with theme-aware syntax colors
           </p>
@@ -93,12 +104,18 @@ print(calculate_fibonacci(10))`,
             </div>
 
             <div>
-              <h3 class="text-lg font-semibold text-text-primary mb-2">TypeScript</h3>
-              <CodeBlock language="typescript">{exampleCode.typescript}</CodeBlock>
+              <h3 class="text-lg font-semibold text-text-primary mb-2">
+                TypeScript
+              </h3>
+              <CodeBlock language="typescript">
+                {exampleCode.typescript}
+              </CodeBlock>
             </div>
 
             <div>
-              <h3 class="text-lg font-semibold text-text-primary mb-2">Python</h3>
+              <h3 class="text-lg font-semibold text-text-primary mb-2">
+                Python
+              </h3>
               <CodeBlock language="python">{exampleCode.python}</CodeBlock>
             </div>
           </div>
@@ -106,27 +123,35 @@ print(calculate_fibonacci(10))`,
 
         {/* Color Reference */}
         <div class="bg-surface-layer1 rounded-2xl p-6 border border-white/10">
-          <h2 class="text-2xl font-bold text-text-primary mb-4">Theme Colors</h2>
+          <h2 class="text-2xl font-bold text-text-primary mb-4">
+            Theme Colors
+          </h2>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
               <div class="flex items-center gap-3">
                 <div class="w-12 h-12 rounded-lg bg-surface-base border border-white/10" />
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Surface Base</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Surface Base
+                  </div>
                   <div class="text-xs text-text-secondary">Background</div>
                 </div>
               </div>
               <div class="flex items-center gap-3">
                 <div class="w-12 h-12 rounded-lg bg-surface-layer1 border border-white/10" />
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Surface Layer 1</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Surface Layer 1
+                  </div>
                   <div class="text-xs text-text-secondary">Panels</div>
                 </div>
               </div>
               <div class="flex items-center gap-3">
                 <div class="w-12 h-12 rounded-lg bg-surface-layer2 border border-white/10" />
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Surface Layer 2</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Surface Layer 2
+                  </div>
                   <div class="text-xs text-text-secondary">Code blocks</div>
                 </div>
               </div>
@@ -135,15 +160,23 @@ print(calculate_fibonacci(10))`,
               <div class="flex items-center gap-3">
                 <div class="w-12 h-12 rounded-lg bg-accent-primary border border-white/10" />
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Accent Primary</div>
-                  <div class="text-xs text-text-secondary">Interactive elements</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Accent Primary
+                  </div>
+                  <div class="text-xs text-text-secondary">
+                    Interactive elements
+                  </div>
                 </div>
               </div>
               <div class="flex items-center gap-3">
                 <div class="w-12 h-12 rounded-lg bg-accent-danger border border-white/10" />
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Accent Danger</div>
-                  <div class="text-xs text-text-secondary">Destructive actions</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Accent Danger
+                  </div>
+                  <div class="text-xs text-text-secondary">
+                    Destructive actions
+                  </div>
                 </div>
               </div>
               <div class="flex items-center gap-3">
@@ -151,7 +184,9 @@ print(calculate_fibonacci(10))`,
                   Aa
                 </div>
                 <div>
-                  <div class="text-sm font-medium text-text-primary">Text Primary</div>
+                  <div class="text-sm font-medium text-text-primary">
+                    Text Primary
+                  </div>
                   <div class="text-xs text-text-secondary">Main content</div>
                 </div>
               </div>

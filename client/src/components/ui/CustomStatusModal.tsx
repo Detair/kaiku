@@ -88,7 +88,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
             value={expiryMinutes() ?? ""}
             onChange={(e) =>
               setExpiryMinutes(
-                e.currentTarget.value ? Number(e.currentTarget.value) : null
+                e.currentTarget.value ? Number(e.currentTarget.value) : null,
               )
             }
             class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors"

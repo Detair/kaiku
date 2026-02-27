@@ -129,12 +129,18 @@ export function setQuietHoursEnabled(enabled: boolean): void {
   });
 }
 
-export function getQuietHoursSchedule(): { startTime: string; endTime: string } {
+export function getQuietHoursSchedule(): {
+  startTime: string;
+  endTime: string;
+} {
   const { startTime, endTime } = preferences().sound.quietHours;
   return { startTime, endTime };
 }
 
-export function setQuietHoursSchedule(startTime: string, endTime: string): void {
+export function setQuietHoursSchedule(
+  startTime: string,
+  endTime: string,
+): void {
   const currentQuietHours = preferences().sound.quietHours;
   updateNestedPreference("sound", "quietHours", {
     ...currentQuietHours,
@@ -175,7 +181,7 @@ export function isDndActive(): boolean {
  */
 export function getChannelNotificationLevel(
   channelId: string,
-  isDm: boolean = false
+  isDm: boolean = false,
 ): NotificationLevel {
   const level = getChannelNotifLevel(channelId);
   // Map "muted" to "none" for this store's interface
@@ -196,7 +202,7 @@ export function getChannelNotificationLevel(
  */
 export function setChannelNotificationLevel(
   channelId: string,
-  level: NotificationLevel
+  level: NotificationLevel,
 ): void {
   // Map "none" to "muted" for the preferences store
   const prefsLevel = level === "none" ? "muted" : level;

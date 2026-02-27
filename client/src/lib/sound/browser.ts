@@ -59,7 +59,13 @@ export async function resumeAudioContext(): Promise<void> {
 export async function preloadSounds(): Promise<void> {
   if (preloadPromise) return preloadPromise;
 
-  const soundIds: SoundOption[] = ["default", "subtle", "ping", "chime", "bell"];
+  const soundIds: SoundOption[] = [
+    "default",
+    "subtle",
+    "ping",
+    "chime",
+    "bell",
+  ];
 
   preloadPromise = (async () => {
     const ctx = getAudioContext();
@@ -79,7 +85,7 @@ export async function preloadSounds(): Promise<void> {
         } catch (error) {
           console.warn(`Failed to preload sound ${id}:`, error);
         }
-      })
+      }),
     );
   })();
 

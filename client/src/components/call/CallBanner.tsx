@@ -5,15 +5,28 @@
  * Displays different UI based on call status: incoming, outgoing, connecting, connected, ended.
  */
 
-import { Component, Show, createSignal, createEffect, onCleanup } from "solid-js";
-import { Phone, PhoneOff, PhoneIncoming, PhoneOutgoing, Users } from "lucide-solid";
 import {
-  callState,
-  joinCall,
-  declineCall,
-  endCall,
-} from "@/stores/call";
-import { joinDMCall, declineDMCall, leaveDMCall, joinVoice, leaveVoice } from "@/lib/tauri";
+  Component,
+  Show,
+  createSignal,
+  createEffect,
+  onCleanup,
+} from "solid-js";
+import {
+  Phone,
+  PhoneOff,
+  PhoneIncoming,
+  PhoneOutgoing,
+  Users,
+} from "lucide-solid";
+import { callState, joinCall, declineCall, endCall } from "@/stores/call";
+import {
+  joinDMCall,
+  declineDMCall,
+  leaveDMCall,
+  joinVoice,
+  leaveVoice,
+} from "@/lib/tauri";
 
 interface CallBannerProps {
   channelId: string;
@@ -26,7 +39,10 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   // Duration timer for connected calls
   createEffect(() => {
     const current = callState.currentCall;
-    if (current.status === "connected" && current.channelId === props.channelId) {
+    if (
+      current.status === "connected" &&
+      current.channelId === props.channelId
+    ) {
       const interval = setInterval(() => {
         const elapsed = Math.floor((Date.now() - current.startedAt) / 1000);
         setCallDuration(elapsed);
@@ -132,7 +148,11 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   return (
     <Show when={currentCall()}>
       {(call) => (
-        <div class="px-4 py-3 border-b border-white/5 bg-surface-layer2" role="status" aria-live="polite">
+        <div
+          class="px-4 py-3 border-b border-white/5 bg-surface-layer2"
+          role="status"
+          aria-live="polite"
+        >
           {/* Incoming Call */}
           <Show when={call().status === "incoming_ringing"}>
             <div class="flex items-center justify-between">
@@ -142,7 +162,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 </div>
                 <div>
                   <p class="text-text-primary font-medium">
-                    {(call() as { initiatorName: string }).initiatorName} is calling
+                    {(call() as { initiatorName: string }).initiatorName} is
+                    calling
                   </p>
                   <p class="text-sm text-text-secondary">Incoming voice call</p>
                 </div>
@@ -202,7 +223,9 @@ const CallBanner: Component<CallBannerProps> = (props) => {
               </div>
               <div>
                 <p class="text-text-primary font-medium">Connecting...</p>
-                <p class="text-sm text-text-secondary">Setting up voice connection</p>
+                <p class="text-sm text-text-secondary">
+                  Setting up voice connection
+                </p>
               </div>
             </div>
           </Show>
@@ -218,10 +241,18 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   <p class="text-text-primary font-medium">In call</p>
                   <div class="flex items-center gap-2 text-sm text-text-secondary">
                     <span>{formatDuration(callDuration())}</span>
-                    <Show when={(call() as { participants: string[] }).participants.length > 0}>
+                    <Show
+                      when={
+                        (call() as { participants: string[] }).participants
+                          .length > 0
+                      }
+                    >
                       <span class="flex items-center gap-1">
                         <Users class="w-3 h-3" />
-                        {(call() as { participants: string[] }).participants.length}
+                        {
+                          (call() as { participants: string[] }).participants
+                            .length
+                        }
                       </span>
                     </Show>
                   </div>
@@ -248,7 +279,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
               <div>
                 <p class="text-text-primary font-medium">Reconnecting...</p>
                 <p class="text-sm text-text-secondary">
-                  Connection lost, retrying ({(call() as { countdown: number }).countdown}s)
+                  Connection lost, retrying (
+                  {(call() as { countdown: number }).countdown}s)
                 </p>
               </div>
             </div>
@@ -266,7 +298,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 </p>
                 <Show when={(call() as { duration?: number }).duration}>
                   <p class="text-sm text-text-secondary">
-                    Duration: {formatDuration((call() as { duration: number }).duration)}
+                    Duration:{" "}
+                    {formatDuration((call() as { duration: number }).duration)}
                   </p>
                 </Show>
               </div>

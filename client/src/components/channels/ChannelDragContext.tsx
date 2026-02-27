@@ -70,7 +70,7 @@ export function startDrag(id: string, type: DraggableType): void {
 export function setDropTarget(
   id: string | null,
   type: DraggableType | null,
-  position: DropPosition | null
+  position: DropPosition | null,
 ): void {
   // Don't set drop target to the item being dragged
   if (id === dragState.draggingId) {
@@ -119,10 +119,7 @@ export function getDragResult(): DragResult {
 /**
  * Check if a specific item is the drop target with a specific position
  */
-export function isDropTarget(
-  id: string,
-  position?: DropPosition
-): boolean {
+export function isDropTarget(id: string, position?: DropPosition): boolean {
   if (dragState.dropTargetId !== id) return false;
   if (position && dragState.dropPosition !== position) return false;
   return true;
@@ -143,7 +140,7 @@ export function isDraggingItem(id: string): boolean {
 export function calculateDropPosition(
   e: DragEvent,
   element: HTMLElement,
-  targetType: DraggableType
+  targetType: DraggableType,
 ): DropPosition {
   const rect = element.getBoundingClientRect();
   const y = e.clientY - rect.top;
@@ -175,13 +172,17 @@ export function isValidDrop(
   targetId: string,
   targetType: DraggableType,
   position: DropPosition,
-  isSubcategory: boolean
+  isSubcategory: boolean,
 ): boolean {
   // Can't drop on self
   if (sourceId === targetId) return false;
 
   // Category nesting validation
-  if (sourceType === "category" && targetType === "category" && position === "inside") {
+  if (
+    sourceType === "category" &&
+    targetType === "category" &&
+    position === "inside"
+  ) {
     // Can't nest into a subcategory (2-level max)
     if (isSubcategory) return false;
   }

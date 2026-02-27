@@ -22,7 +22,9 @@ export async function createVoiceAdapter(): Promise<VoiceAdapter> {
 
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
-  console.log(`[VoiceAdapter] Creating ${isTauri ? "Tauri" : "Browser"} adapter`);
+  console.log(
+    `[VoiceAdapter] Creating ${isTauri ? "Tauri" : "Browser"} adapter`,
+  );
 
   if (isTauri) {
     adapterInstance = new TauriVoiceAdapter();

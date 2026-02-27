@@ -50,7 +50,10 @@ const [viewerState, setViewerState] = createStore<ScreenShareViewerState>({
  * Register an available screen share track.
  * Called when a remote user's screen share track is received.
  */
-export function addAvailableTrack(userId: string, track: MediaStreamTrack): void {
+export function addAvailableTrack(
+  userId: string,
+  track: MediaStreamTrack,
+): void {
   console.log("[ScreenShareViewer] Track available:", userId);
 
   // Auto-cleanup when track ends

@@ -20,6 +20,6 @@ if (root) {
         <AppRoutes />
       </Router>
     ),
-    root
+    root,
   );
 }

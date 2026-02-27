@@ -26,7 +26,7 @@ const PageViewRoute: Component = () => {
         return tauri.getGuildPage(guildId, slug);
       }
       return tauri.getPlatformPage(slug);
-    }
+    },
   );
 
   // Scroll to URL fragment after page loads and markdown renders
@@ -71,10 +71,7 @@ const PageViewRoute: Component = () => {
             </div>
           }
         >
-          <PageView
-            page={page()!}
-            onBack={handleBack}
-          />
+          <PageView page={page()!} onBack={handleBack} />
         </Show>
       </Show>
     </div>

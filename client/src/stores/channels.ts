@@ -53,7 +53,10 @@ export async function loadChannels(): Promise<void> {
   try {
     const rawChannels = await tauri.getChannels();
     // Map to ChannelWithUnread (legacy endpoint doesn't return unread counts)
-    const channels: ChannelWithUnread[] = rawChannels.map((c) => ({ ...c, unread_count: 0 }));
+    const channels: ChannelWithUnread[] = rawChannels.map((c) => ({
+      ...c,
+      unread_count: 0,
+    }));
     setChannelsState({
       channels,
       isLoading: false,
@@ -114,18 +117,20 @@ export async function loadChannelsForGuild(guildId: string): Promise<void> {
       if (status.type === "connected") {
         break;
       }
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       waited += pollIntervalMs;
     }
 
     const finalStatus = await tauri.wsStatus();
     if (finalStatus.type !== "connected") {
-      console.warn("[Channels] WebSocket not connected, skipping subscriptions");
+      console.warn(
+        "[Channels] WebSocket not connected, skipping subscriptions",
+      );
       return;
     }
 
     // Subscribe to text channels
-    for (const channel of channels.filter(c => c.channel_type === "text")) {
+    for (const channel of channels.filter((c) => c.channel_type === "text")) {
       try {
         await subscribeChannel(channel.id);
         console.log(`[Channels] Subscribed to channel ${channel.name}`);
@@ -224,7 +229,12 @@ export function getTotalUnreadCount(): number {
 export function incrementUnreadCount(channelId: string): void {
   const idx = channelsState.channels.findIndex((c) => c.id === channelId);
   if (idx !== -1) {
-    setChannelsState("channels", idx, "unread_count", (count) => (count ?? 0) + 1);
+    setChannelsState(
+      "channels",
+      idx,
+      "unread_count",
+      (count) => (count ?? 0) + 1,
+    );
   }
 }
 
@@ -255,11 +265,17 @@ export async function markChannelAsRead(channelId: string): Promise<void> {
 /**
  * Mark all guild channels as read (optimistic update + API call).
  */
-export async function markAllGuildChannelsAsRead(guildId: string): Promise<void> {
+export async function markAllGuildChannelsAsRead(
+  guildId: string,
+): Promise<void> {
   // Optimistic update: zero out all unread counts for this guild's text channels
   const indices: number[] = [];
   channelsState.channels.forEach((c, idx) => {
-    if (c.guild_id === guildId && c.channel_type === "text" && c.unread_count > 0) {
+    if (
+      c.guild_id === guildId &&
+      c.channel_type === "text" &&
+      c.unread_count > 0
+    ) {
       indices.push(idx);
     }
   });
@@ -298,9 +314,15 @@ export async function createChannel(
   channelType: "text" | "voice",
   guildId?: string,
   topic?: string,
-  categoryId?: string
+  categoryId?: string,
 ): Promise<ChannelWithUnread> {
-  const channel = await tauri.createChannel(name, channelType, guildId, topic, categoryId);
+  const channel = await tauri.createChannel(
+    name,
+    channelType,
+    guildId,
+    topic,
+    categoryId,
+  );
   const channelWithUnread: ChannelWithUnread = { ...channel, unread_count: 0 };
   setChannelsState("channels", (prev) => [...prev, channelWithUnread]);
   return channelWithUnread;
@@ -319,10 +341,12 @@ export async function moveChannel(
   channelId: string,
   targetChannelId: string,
   position: "before" | "after",
-  newCategoryId?: string | null
+  newCategoryId?: string | null,
 ): Promise<void> {
   const channel = channelsState.channels.find((c) => c.id === channelId);
-  const targetChannel = channelsState.channels.find((c) => c.id === targetChannelId);
+  const targetChannel = channelsState.channels.find(
+    (c) => c.id === targetChannelId,
+  );
 
   if (!channel || !targetChannel) {
     console.error("Channel not found for move");
@@ -336,7 +360,8 @@ export async function moveChannel(
   }
 
   // Determine the target category
-  const targetCategoryId = newCategoryId !== undefined ? newCategoryId : targetChannel.category_id;
+  const targetCategoryId =
+    newCategoryId !== undefined ? newCategoryId : targetChannel.category_id;
 
   // Get channels in the target category
   const categoryChannels = channelsState.channels
@@ -344,11 +369,16 @@ export async function moveChannel(
     .sort((a, b) => a.position - b.position);
 
   // Find where to insert
-  const targetIndex = categoryChannels.findIndex((c) => c.id === targetChannelId);
+  const targetIndex = categoryChannels.findIndex(
+    (c) => c.id === targetChannelId,
+  );
   const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
 
   // Insert the moved channel
-  categoryChannels.splice(insertIndex, 0, { ...channel, category_id: targetCategoryId });
+  categoryChannels.splice(insertIndex, 0, {
+    ...channel,
+    category_id: targetCategoryId,
+  });
 
   // Build updated channels with new positions
   const updatedChannels = channelsState.channels.map((c) => {
@@ -367,11 +397,13 @@ export async function moveChannel(
   setChannelsState("channels", updatedChannels);
 
   // Prepare channel positions for server - only channels in the affected category
-  const channelPositions: tauri.ChannelPosition[] = categoryChannels.map((c, idx) => ({
-    id: c.id,
-    position: idx,
-    category_id: c.id === channelId ? targetCategoryId : c.category_id,
-  }));
+  const channelPositions: tauri.ChannelPosition[] = categoryChannels.map(
+    (c, idx) => ({
+      id: c.id,
+      position: idx,
+      category_id: c.id === channelId ? targetCategoryId : c.category_id,
+    }),
+  );
 
   // Persist to server
   try {
@@ -395,7 +427,7 @@ export async function moveChannel(
  */
 export async function moveChannelToCategory(
   channelId: string,
-  newCategoryId: string | null
+  newCategoryId: string | null,
 ): Promise<void> {
   const channel = channelsState.channels.find((c) => c.id === channelId);
 
@@ -433,11 +465,13 @@ export async function moveChannelToCategory(
   setChannelsState("channels", updatedChannels);
 
   // Persist to server - just the moved channel
-  const channelPositions: tauri.ChannelPosition[] = [{
-    id: channelId,
-    position: newPosition,
-    category_id: newCategoryId,
-  }];
+  const channelPositions: tauri.ChannelPosition[] = [
+    {
+      id: channelId,
+      position: newPosition,
+      category_id: newCategoryId,
+    },
+  ];
 
   try {
     await tauri.reorderGuildChannels(guildId, channelPositions);

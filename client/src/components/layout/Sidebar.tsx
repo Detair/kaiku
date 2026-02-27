@@ -9,7 +9,15 @@
  * - User panel at bottom
  */
 
-import { Component, createSignal, createEffect, onMount, Show, lazy, Suspense } from "solid-js";
+import {
+  Component,
+  createSignal,
+  createEffect,
+  onMount,
+  Show,
+  lazy,
+  Suspense,
+} from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { ChevronDown, Settings, Search, BookOpen } from "lucide-solid";
 import { loadChannels } from "@/stores/channels";
@@ -29,7 +37,9 @@ import UserPanel from "./UserPanel";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { PageListItem } from "@/lib/types";
 
-const GuildSettingsModal = lazy(() => import("@/components/guilds/GuildSettingsModal"));
+const GuildSettingsModal = lazy(
+  () => import("@/components/guilds/GuildSettingsModal"),
+);
 
 const Sidebar: Component = () => {
   const navigate = useNavigate();
@@ -69,7 +79,8 @@ const Sidebar: Component = () => {
   };
 
   // Get pending page IDs as a Set
-  const pendingPageIds = () => new Set(pagesState.pendingAcceptance.map((p) => p.id));
+  const pendingPageIds = () =>
+    new Set(pagesState.pendingAcceptance.map((p) => p.id));
 
   // Handle page selection - navigate to page route
   const handleSelectPage = (page: PageListItem) => {

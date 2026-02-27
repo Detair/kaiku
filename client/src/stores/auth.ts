@@ -7,8 +7,18 @@
 import { createStore } from "solid-js/store";
 import type { User } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
-import { initWebSocket, connect as wsConnect, disconnect as wsDisconnect, cleanupWebSocket } from "./websocket";
-import { initPresence, cleanupPresence, initIdleDetection, stopIdleDetectionCleanup } from "./presence";
+import {
+  initWebSocket,
+  connect as wsConnect,
+  disconnect as wsDisconnect,
+  cleanupWebSocket,
+} from "./websocket";
+import {
+  initPresence,
+  cleanupPresence,
+  initIdleDetection,
+  stopIdleDetectionCleanup,
+} from "./presence";
 import { initPreferences } from "./preferences";
 import { clearAllDrafts, cleanupDrafts } from "./drafts";
 
@@ -52,7 +62,10 @@ function registerWebSocketReconnectListener() {
       wsReconnectListenerRegistered = true;
       console.log("[Auth] WebSocket reconnection listener registered");
     } catch (e) {
-      console.error("[Auth] Failed to register WebSocket reconnect listener:", e);
+      console.error(
+        "[Auth] Failed to register WebSocket reconnect listener:",
+        e,
+      );
       // Non-critical, continue
     }
   }
@@ -91,7 +104,10 @@ export async function initAuth(): Promise<void> {
         console.error("[Auth] WebSocket reconnection failed:", wsErr);
         // WebSocket failure is critical for real-time messaging
         // The WebSocket module will auto-retry, but user should know there's an issue
-        setAuthState("error", "Real-time messaging temporarily unavailable. Reconnecting...");
+        setAuthState(
+          "error",
+          "Real-time messaging temporarily unavailable. Reconnecting...",
+        );
       }
       // Initialize preferences sync after session restore
       try {
@@ -125,7 +141,7 @@ export async function login(
   serverUrl: string,
   username: string,
   password: string,
-  mfaCode?: string
+  mfaCode?: string,
 ): Promise<User> {
   setAuthState({ isLoading: true, error: null });
 
@@ -153,7 +169,9 @@ export async function login(
       console.error("WebSocket connection failed:", wsErr);
       // WebSocket failure is critical for real-time messaging
       // The WebSocket module will auto-retry, but user should know there's an issue
-      setAuthState({ error: "Real-time messaging temporarily unavailable. Reconnecting..." });
+      setAuthState({
+        error: "Real-time messaging temporarily unavailable. Reconnecting...",
+      });
       // Continue - user is still logged in and WebSocket will auto-retry
     }
 
@@ -175,7 +193,12 @@ export async function login(
 
     // Detect MFA_REQUIRED
     if (error === "MFA_REQUIRED") {
-      setAuthState({ isLoading: false, error: null, mfaRequired: true, serverUrl });
+      setAuthState({
+        isLoading: false,
+        error: null,
+        mfaRequired: true,
+        serverUrl,
+      });
       throw new Error("MFA_REQUIRED");
     }
 
@@ -192,7 +215,7 @@ export async function register(
   username: string,
   password: string,
   email?: string,
-  displayName?: string
+  displayName?: string,
 ): Promise<User> {
   setAuthState({ isLoading: true, error: null });
 
@@ -202,7 +225,7 @@ export async function register(
       username,
       password,
       email,
-      displayName
+      displayName,
     );
     setAuthState({
       user: result.user,
@@ -250,13 +273,18 @@ export async function loginWithOidc(
   accessToken: string,
   refreshToken: string,
   expiresIn: number,
-  setupRequired: boolean = false
+  setupRequired: boolean = false,
 ): Promise<void> {
   setAuthState({ isLoading: true, error: null });
 
   try {
     // Store tokens
-    await tauri.oidcCompleteLogin(serverUrl, accessToken, refreshToken, expiresIn);
+    await tauri.oidcCompleteLogin(
+      serverUrl,
+      accessToken,
+      refreshToken,
+      expiresIn,
+    );
 
     // Fetch the current user with the new token
     const user = await tauri.getCurrentUser();
@@ -281,7 +309,9 @@ export async function loginWithOidc(
       await wsConnect();
     } catch (wsErr) {
       console.error("WebSocket connection failed:", wsErr);
-      setAuthState({ error: "Real-time messaging temporarily unavailable. Reconnecting..." });
+      setAuthState({
+        error: "Real-time messaging temporarily unavailable. Reconnecting...",
+      });
     }
 
     try {

@@ -5,7 +5,14 @@
  * Displays admin actions with actor, target, and timestamp information.
  */
 
-import { Component, Show, For, onMount, createSignal, createMemo } from "solid-js";
+import {
+  Component,
+  Show,
+  For,
+  onMount,
+  createSignal,
+  createMemo,
+} from "solid-js";
 import {
   Filter,
   ChevronLeft,
@@ -17,7 +24,12 @@ import {
   Calendar,
   X,
 } from "lucide-solid";
-import { adminState, loadAuditLog, setAuditLogFilters, clearAuditLogFilters } from "@/stores/admin";
+import {
+  adminState,
+  loadAuditLog,
+  setAuditLogFilters,
+  clearAuditLogFilters,
+} from "@/stores/admin";
 import TableRowSkeleton from "./TableRowSkeleton";
 
 const PAGE_SIZE = 20;
@@ -47,13 +59,13 @@ const AuditLogPanel: Component = () => {
   });
 
   // Calculate total pages
-  const totalPages = createMemo(() =>
-    Math.ceil(adminState.auditLogPagination.total / PAGE_SIZE) || 1
+  const totalPages = createMemo(
+    () => Math.ceil(adminState.auditLogPagination.total / PAGE_SIZE) || 1,
   );
 
   // Check if any filter is active
-  const hasActiveFilters = createMemo(() =>
-    filterValue().trim() || actionType() || fromDate() || toDate()
+  const hasActiveFilters = createMemo(
+    () => filterValue().trim() || actionType() || fromDate() || toDate(),
   );
 
   // Apply all filters
@@ -62,7 +74,9 @@ const AuditLogPanel: Component = () => {
       action: filterValue().trim() || undefined,
       actionType: actionType() || undefined,
       fromDate: fromDate() ? new Date(fromDate()).toISOString() : undefined,
-      toDate: toDate() ? new Date(toDate() + "T23:59:59").toISOString() : undefined,
+      toDate: toDate()
+        ? new Date(toDate() + "T23:59:59").toISOString()
+        : undefined,
     });
   };
 
@@ -135,7 +149,8 @@ const AuditLogPanel: Component = () => {
     const targetPart = parts[parts.length - 2] || "";
 
     // Capitalize first letter and format
-    const formattedAction = lastPart.charAt(0).toUpperCase() + lastPart.slice(1);
+    const formattedAction =
+      lastPart.charAt(0).toUpperCase() + lastPart.slice(1);
 
     // Add target context if available
     if (targetPart === "users") {
@@ -187,7 +202,9 @@ const AuditLogPanel: Component = () => {
             <button
               onClick={() => setShowFilters(!showFilters())}
               class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
-              classList={{ "bg-accent-primary/20 text-accent-primary": showFilters() }}
+              classList={{
+                "bg-accent-primary/20 text-accent-primary": showFilters(),
+              }}
               title="Advanced filters"
             >
               <Calendar class="w-4 h-4" />
@@ -227,7 +244,10 @@ const AuditLogPanel: Component = () => {
                 >
                   <For each={ACTION_TYPES}>
                     {(type) => (
-                      <option value={type.value} class="bg-[#1a1a2e] text-text-primary">
+                      <option
+                        value={type.value}
+                        class="bg-[#1a1a2e] text-text-primary"
+                      >
                         {type.label}
                       </option>
                     )}
@@ -275,17 +295,26 @@ const AuditLogPanel: Component = () => {
               </Show>
               <Show when={adminState.auditLogFilters.actionType}>
                 <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
-                  type: {ACTION_TYPES.find(t => t.value === adminState.auditLogFilters.actionType)?.label || adminState.auditLogFilters.actionType}
+                  type:{" "}
+                  {ACTION_TYPES.find(
+                    (t) => t.value === adminState.auditLogFilters.actionType,
+                  )?.label || adminState.auditLogFilters.actionType}
                 </span>
               </Show>
               <Show when={adminState.auditLogFilters.fromDate}>
                 <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
-                  from: {new Date(adminState.auditLogFilters.fromDate!).toLocaleDateString()}
+                  from:{" "}
+                  {new Date(
+                    adminState.auditLogFilters.fromDate!,
+                  ).toLocaleDateString()}
                 </span>
               </Show>
               <Show when={adminState.auditLogFilters.toDate}>
                 <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
-                  to: {new Date(adminState.auditLogFilters.toDate!).toLocaleDateString()}
+                  to:{" "}
+                  {new Date(
+                    adminState.auditLogFilters.toDate!,
+                  ).toLocaleDateString()}
                 </span>
               </Show>
             </div>
@@ -314,7 +343,9 @@ const AuditLogPanel: Component = () => {
               each={adminState.auditLog}
               fallback={
                 <div class="flex items-center justify-center py-12">
-                  <div class="text-text-secondary">No audit log entries found</div>
+                  <div class="text-text-secondary">
+                    No audit log entries found
+                  </div>
                 </div>
               }
             >
@@ -326,8 +357,12 @@ const AuditLogPanel: Component = () => {
                   <div class="grid grid-cols-5 gap-4 px-4 py-3 border-b border-white/5 hover:bg-white/5 transition-colors">
                     {/* Action */}
                     <div class="flex items-center gap-2 min-w-0">
-                      <ActionIcon class={`w-4 h-4 flex-shrink-0 ${actionColor}`} />
-                      <span class={`text-sm font-medium truncate ${actionColor}`}>
+                      <ActionIcon
+                        class={`w-4 h-4 flex-shrink-0 ${actionColor}`}
+                      />
+                      <span
+                        class={`text-sm font-medium truncate ${actionColor}`}
+                      >
                         {formatAction(entry.action)}
                       </span>
                     </div>
@@ -345,7 +380,9 @@ const AuditLogPanel: Component = () => {
                       >
                         <span class="capitalize">{entry.target_type}</span>
                         <span class="mx-1 text-text-secondary/50">/</span>
-                        <span class="font-mono">{truncateId(entry.target_id!)}</span>
+                        <span class="font-mono">
+                          {truncateId(entry.target_id!)}
+                        </span>
                       </Show>
                     </div>
 

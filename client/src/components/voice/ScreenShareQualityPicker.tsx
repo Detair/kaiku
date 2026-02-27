@@ -9,18 +9,35 @@ interface ScreenShareQualityPickerProps {
   onClose: () => void;
 }
 
-const qualityOptions: { value: ScreenShareQuality; label: string; description: string; premium?: boolean }[] = [
-  { value: "low", label: "480p 15fps", description: "Best for slow connections" },
+const qualityOptions: {
+  value: ScreenShareQuality;
+  label: string;
+  description: string;
+  premium?: boolean;
+}[] = [
+  {
+    value: "low",
+    label: "480p 15fps",
+    description: "Best for slow connections",
+  },
   { value: "medium", label: "720p 30fps", description: "Recommended" },
   { value: "high", label: "1080p 30fps", description: "Good connections" },
-  { value: "premium", label: "1080p 60fps", description: "Premium only", premium: true },
+  {
+    value: "premium",
+    label: "1080p 60fps",
+    description: "Premium only",
+    premium: true,
+  },
 ];
 
 /**
  * Quality selection dialog shown before starting screen share.
  */
-const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (props) => {
-  const [selectedQuality, setSelectedQuality] = createSignal<ScreenShareQuality>("medium");
+const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (
+  props,
+) => {
+  const [selectedQuality, setSelectedQuality] =
+    createSignal<ScreenShareQuality>("medium");
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -58,7 +75,9 @@ const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (prop
         <div class="flex items-center justify-between p-4 border-b border-background-primary">
           <div class="flex items-center gap-2">
             <Monitor class="w-5 h-5 text-primary" />
-            <h2 class="text-lg font-semibold text-text-primary">Share Screen</h2>
+            <h2 class="text-lg font-semibold text-text-primary">
+              Share Screen
+            </h2>
           </div>
           <button
             onClick={props.onClose}
@@ -86,20 +105,26 @@ const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (prop
                   name="quality"
                   value={option.value}
                   checked={selectedQuality() === option.value}
-                  onChange={() => !option.premium && setSelectedQuality(option.value)}
+                  onChange={() =>
+                    !option.premium && setSelectedQuality(option.value)
+                  }
                   disabled={option.premium}
                   class="w-4 h-4 text-primary"
                 />
                 <div class="flex-1">
                   <div class="flex items-center gap-2">
-                    <span class="text-sm font-medium text-text-primary">{option.label}</span>
+                    <span class="text-sm font-medium text-text-primary">
+                      {option.label}
+                    </span>
                     {option.premium && (
                       <span class="text-xs px-1.5 py-0.5 bg-warning/20 text-warning rounded">
                         Premium
                       </span>
                     )}
                   </div>
-                  <span class="text-xs text-text-muted">{option.description}</span>
+                  <span class="text-xs text-text-muted">
+                    {option.description}
+                  </span>
                 </div>
               </label>
             )}

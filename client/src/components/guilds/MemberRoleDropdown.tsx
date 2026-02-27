@@ -35,7 +35,12 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
   const memberRoleIds = () => getMemberRoleIds(props.guildId, props.userId);
 
   const canManageThisRole = (rolePosition: number): boolean => {
-    return canManageRole(props.guildId, currentUserId(), isOwner(), rolePosition);
+    return canManageRole(
+      props.guildId,
+      currentUserId(),
+      isOwner(),
+      rolePosition,
+    );
   };
 
   const canManageRolesPermission = () => {
@@ -44,7 +49,7 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
       props.guildId,
       currentUserId(),
       isOwner(),
-      PermissionBits.MANAGE_ROLES
+      PermissionBits.MANAGE_ROLES,
     );
   };
 
@@ -87,7 +92,7 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
       currentUserId(),
       props.userId,
       isOwner(),
-      PermissionBits.KICK_MEMBERS
+      PermissionBits.KICK_MEMBERS,
     );
   };
 
@@ -115,7 +120,9 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
               <Show
                 when={roles().length > 0}
                 fallback={
-                  <div class="px-3 py-2 text-sm text-text-secondary">No roles available</div>
+                  <div class="px-3 py-2 text-sm text-text-secondary">
+                    No roles available
+                  </div>
                 }
               >
                 <For each={roles()}>
@@ -126,23 +133,31 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
                     return (
                       <label
                         class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-white/10 transition-colors"
-                        classList={{ "opacity-50 cursor-not-allowed": !canManage }}
+                        classList={{
+                          "opacity-50 cursor-not-allowed": !canManage,
+                        }}
                       >
                         <input
                           type="checkbox"
                           checked={hasRole}
                           disabled={!canManage}
-                          onChange={() => canManage && handleToggleRole(role.id, hasRole)}
+                          onChange={() =>
+                            canManage && handleToggleRole(role.id, hasRole)
+                          }
                           class="w-4 h-4 rounded border-white/20 text-accent-primary"
                         />
                         <div
                           class="w-2.5 h-2.5 rounded-full flex-shrink-0"
                           style={{
                             "background-color": role.color || "transparent",
-                            border: role.color ? "none" : "1px solid var(--color-text-secondary)",
+                            border: role.color
+                              ? "none"
+                              : "1px solid var(--color-text-secondary)",
                           }}
                         />
-                        <span class="text-sm text-text-primary">{role.name}</span>
+                        <span class="text-sm text-text-primary">
+                          {role.name}
+                        </span>
                       </label>
                     );
                   }}
@@ -155,7 +170,8 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
           <Show when={canKick()}>
             <div
               classList={{
-                "border-t border-white/10 mt-1 pt-1": canManageRolesPermission(),
+                "border-t border-white/10 mt-1 pt-1":
+                  canManageRolesPermission(),
               }}
             >
               <button
@@ -176,10 +192,7 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
 
       {/* Click outside to close */}
       <Show when={isOpen()}>
-        <div
-          class="fixed inset-0 z-10"
-          onClick={() => setIsOpen(false)}
-        />
+        <div class="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
       </Show>
     </div>
   );

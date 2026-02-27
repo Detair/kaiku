@@ -5,7 +5,13 @@
  * Click to clear immediately.
  */
 
-import { Component, Show, createSignal, createEffect, onCleanup } from "solid-js";
+import {
+  Component,
+  Show,
+  createSignal,
+  createEffect,
+  onCleanup,
+} from "solid-js";
 import { Shield } from "lucide-solid";
 import {
   clearClipboard,

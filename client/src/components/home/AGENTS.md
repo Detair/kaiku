@@ -9,9 +9,11 @@ Home view (DM-focused interface) when no guild is selected. Three-column layout 
 ## Key Files
 
 ### HomeView.tsx
+
 Main layout orchestrator for home view.
 
 **Layout Structure:**
+
 ```
 ┌────────────┬─────────────────┬──────────────┐
 │ DM Sidebar │ Content Area    │ Right Panel  │
@@ -20,46 +22,56 @@ Main layout orchestrator for home view.
 ```
 
 **Content Switching:**
+
 - `dmsState.isShowingFriends === true` → Show FriendsList
 - `dmsState.isShowingFriends === false` → Show DMConversation
 
 **Usage:**
+
 ```tsx
 import HomeView from "@/components/home/HomeView";
 
 // When guildsState.activeGuildId is null
-<HomeView />
+<HomeView />;
 ```
 
 ### DMSidebar.tsx
+
 Left sidebar with DM conversations and Friends button.
 
 **Expected Features:**
+
 - "Friends" button at top (shows friends list)
 - List of DM conversations
 - "New Message" button
 - User search/filter
 
 **State:**
+
 - Highlights active DM or Friends view
 - Shows unread message counts (badges)
 
 ### DMConversation.tsx
+
 Active DM conversation view (replaces channel view).
 
 **Expected Components:**
+
 - DM header (participant names, call button)
 - Message list
 - Message input
 - CallBanner integration
 
 **Usage:**
+
 - Shown when DM selected and `!isShowingFriends`
 
 ### DMItem.tsx
+
 Individual DM conversation row in sidebar.
 
 **Expected Display:**
+
 - Participant avatar(s)
 - Last message preview
 - Timestamp
@@ -67,18 +79,22 @@ Individual DM conversation row in sidebar.
 - Online status indicator
 
 ### HomeRightPanel.tsx
+
 Right context panel (responsive, hidden on small screens).
 
 **Expected Content:**
+
 - Active call participants (if in call)
 - Friend requests (pending)
 - Online friends quick list
 - Activity feed (future)
 
 ### NewMessageModal.tsx
+
 Modal for starting new DM conversation.
 
 **Features:**
+
 - User search (by username)
 - Friend quick-select
 - Multi-select for group DMs (future)
@@ -86,6 +102,7 @@ Modal for starting new DM conversation.
 ## State Management
 
 ### From Stores
+
 - `dmsState.conversations` - All DM conversations
 - `dmsState.activeConversationId` - Selected DM
 - `dmsState.isShowingFriends` - Friends view toggle
@@ -95,12 +112,14 @@ Modal for starting new DM conversation.
 ## Integration Points
 
 ### Components
+
 - `FriendsList` (from `@/components/social`) - Friends interface
 - `CallBanner` (from `@/components/call`) - Call status
 - `MessageList` (from `@/components/messages`) - Message display
 - `MessageInput` (from `@/components/messages`) - Send messages
 
 ### Stores
+
 - `@/stores/dms` - DM conversations and selection
 - `@/stores/friends` - Friends and requests
 - `@/stores/call` - Call state
@@ -124,30 +143,40 @@ Modal for starting new DM conversation.
 ## Responsive Behavior
 
 ### Three-Column Layout
+
 - **Desktop (>1200px):** All three columns visible
 - **Tablet (768px-1200px):** Hide right panel
 - **Mobile (<768px):** Hide sidebar when conversation open
 
 ### Expected Breakpoints
+
 ```css
 /* Full layout */
-@media (min-width: 1200px) { /* show all */ }
+@media (min-width: 1200px) {
+  /* show all */
+}
 
 /* Hide right panel */
-@media (max-width: 1199px) { /* hide HomeRightPanel */ }
+@media (max-width: 1199px) {
+  /* hide HomeRightPanel */
+}
 
 /* Stack layout */
-@media (max-width: 767px) { /* hide sidebar when DM active */ }
+@media (max-width: 767px) {
+  /* hide sidebar when DM active */
+}
 ```
 
 ## DM Types
 
 ### One-on-One DMs
+
 - Single participant
 - Standard message exchange
 - Voice/video calls
 
 ### Group DMs (Future)
+
 - Multiple participants
 - Group call support
 - Admin/creator permissions
@@ -155,11 +184,13 @@ Modal for starting new DM conversation.
 ## Empty States
 
 ### No DMs
+
 - Show welcome message
 - Prompt to add friends or start conversation
 - Quick actions (Add Friend, Join Guild)
 
 ### Friends View
+
 - Show "Add Friend" if no friends
 - Display online friends prominently
 

@@ -9,7 +9,14 @@
  */
 
 import { Component, createSignal, For, Show, onMount } from "solid-js";
-import { ShieldAlert, Plus, Trash2, FlaskConical, ToggleLeft, ToggleRight } from "lucide-solid";
+import {
+  ShieldAlert,
+  Plus,
+  Trash2,
+  FlaskConical,
+  ToggleLeft,
+  ToggleRight,
+} from "lucide-solid";
 import {
   listFilterConfigs,
   updateFilterConfigs,
@@ -33,13 +40,30 @@ interface SafetyTabProps {
 }
 
 const CATEGORY_INFO: Record<string, { label: string; description: string }> = {
-  slurs: { label: "Slurs", description: "Blocks known slurs and derogatory terms" },
-  hate_speech: { label: "Hate Speech", description: "Filters hate speech and discriminatory language" },
-  spam: { label: "Spam", description: "Detects spam patterns, phishing links, and scam messages" },
-  abusive_language: { label: "Abusive Language", description: "Filters abusive and threatening language" },
+  slurs: {
+    label: "Slurs",
+    description: "Blocks known slurs and derogatory terms",
+  },
+  hate_speech: {
+    label: "Hate Speech",
+    description: "Filters hate speech and discriminatory language",
+  },
+  spam: {
+    label: "Spam",
+    description: "Detects spam patterns, phishing links, and scam messages",
+  },
+  abusive_language: {
+    label: "Abusive Language",
+    description: "Filters abusive and threatening language",
+  },
 };
 
-const ALL_CATEGORIES: FilterCategory[] = ["slurs", "hate_speech", "spam", "abusive_language"];
+const ALL_CATEGORIES: FilterCategory[] = [
+  "slurs",
+  "hate_speech",
+  "spam",
+  "abusive_language",
+];
 
 const SafetyTab: Component<SafetyTabProps> = (props) => {
   // Category configs
@@ -64,7 +88,9 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
 
   // Test panel
   const [testInput, setTestInput] = createSignal("");
-  const [testResult, setTestResult] = createSignal<TestFilterResponse | null>(null);
+  const [testResult, setTestResult] = createSignal<TestFilterResponse | null>(
+    null,
+  );
   const [testing, setTesting] = createSignal(false);
 
   // Moderation log
@@ -74,7 +100,9 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
   const [logOffset, setLogOffset] = createSignal(0);
 
   // Active section
-  const [activeSection, setActiveSection] = createSignal<"categories" | "patterns" | "test" | "log">("categories");
+  const [activeSection, setActiveSection] = createSignal<
+    "categories" | "patterns" | "test" | "log"
+  >("categories");
 
   onMount(async () => {
     await Promise.all([loadConfigs(), loadPatterns()]);
@@ -87,7 +115,8 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       setConfigs(data);
 
       // Initialize local state from server data
-      const local: Record<string, { enabled: boolean; action: FilterAction }> = {};
+      const local: Record<string, { enabled: boolean; action: FilterAction }> =
+        {};
       for (const cat of ALL_CATEGORIES) {
         const existing = data.find((c) => c.category === cat);
         local[cat] = {
@@ -226,7 +255,11 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       const server = configs().find((c) => c.category === cat);
       if (!local) continue;
       if (!server && local.enabled) return true;
-      if (server && (server.enabled !== local.enabled || server.action !== local.action)) return true;
+      if (
+        server &&
+        (server.enabled !== local.enabled || server.action !== local.action)
+      )
+        return true;
     }
     return false;
   };
@@ -245,13 +278,18 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       </div>
 
       {/* Section Tabs */}
-      <div class="flex gap-1 p-1 rounded-lg" style="background-color: var(--color-surface-raised)">
+      <div
+        class="flex gap-1 p-1 rounded-lg"
+        style="background-color: var(--color-surface-raised)"
+      >
         <button
           onClick={() => setActiveSection("categories")}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-accent-primary font-medium": activeSection() === "categories",
-            "text-text-secondary hover:text-text-primary": activeSection() !== "categories",
+            "bg-accent-primary/20 text-accent-primary font-medium":
+              activeSection() === "categories",
+            "text-text-secondary hover:text-text-primary":
+              activeSection() !== "categories",
           }}
         >
           Categories
@@ -260,8 +298,10 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
           onClick={() => setActiveSection("patterns")}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-accent-primary font-medium": activeSection() === "patterns",
-            "text-text-secondary hover:text-text-primary": activeSection() !== "patterns",
+            "bg-accent-primary/20 text-accent-primary font-medium":
+              activeSection() === "patterns",
+            "text-text-secondary hover:text-text-primary":
+              activeSection() !== "patterns",
           }}
         >
           Custom Patterns
@@ -270,8 +310,10 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
           onClick={() => setActiveSection("test")}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-accent-primary font-medium": activeSection() === "test",
-            "text-text-secondary hover:text-text-primary": activeSection() !== "test",
+            "bg-accent-primary/20 text-accent-primary font-medium":
+              activeSection() === "test",
+            "text-text-secondary hover:text-text-primary":
+              activeSection() !== "test",
           }}
         >
           Test
@@ -283,8 +325,10 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
           }}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-accent-primary font-medium": activeSection() === "log",
-            "text-text-secondary hover:text-text-primary": activeSection() !== "log",
+            "bg-accent-primary/20 text-accent-primary font-medium":
+              activeSection() === "log",
+            "text-text-secondary hover:text-text-primary":
+              activeSection() !== "log",
           }}
         >
           Log
@@ -293,12 +337,19 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
 
       {/* Categories Section */}
       <Show when={activeSection() === "categories"}>
-        <Show when={!configLoading()} fallback={<p class="text-text-secondary text-sm">Loading...</p>}>
+        <Show
+          when={!configLoading()}
+          fallback={<p class="text-text-secondary text-sm">Loading...</p>}
+        >
           <div class="space-y-3">
             <For each={ALL_CATEGORIES}>
               {(cat) => {
                 const info = CATEGORY_INFO[cat];
-                const local = () => localConfigs()[cat] ?? { enabled: false, action: "block" as FilterAction };
+                const local = () =>
+                  localConfigs()[cat] ?? {
+                    enabled: false,
+                    action: "block" as FilterAction,
+                  };
                 return (
                   <div
                     class="flex items-center justify-between p-4 rounded-xl border border-white/10"
@@ -306,19 +357,28 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                   >
                     <div class="flex-1">
                       <div class="flex items-center gap-2">
-                        <span class="font-medium text-text-primary">{info?.label ?? cat}</span>
+                        <span class="font-medium text-text-primary">
+                          {info?.label ?? cat}
+                        </span>
                         <Show when={local().enabled}>
                           <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">
                             Active
                           </span>
                         </Show>
                       </div>
-                      <p class="text-sm text-text-secondary mt-0.5">{info?.description}</p>
+                      <p class="text-sm text-text-secondary mt-0.5">
+                        {info?.description}
+                      </p>
                     </div>
                     <div class="flex items-center gap-3">
                       <select
                         value={local().action}
-                        onChange={(e) => setCategoryAction(cat, e.currentTarget.value as FilterAction)}
+                        onChange={(e) =>
+                          setCategoryAction(
+                            cat,
+                            e.currentTarget.value as FilterAction,
+                          )
+                        }
                         class="text-sm px-2 py-1 rounded-lg border border-white/10 bg-transparent text-text-primary"
                       >
                         <option value="block">Block</option>
@@ -333,7 +393,10 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                           "text-text-secondary": !local().enabled,
                         }}
                       >
-                        <Show when={local().enabled} fallback={<ToggleLeft class="w-8 h-8" />}>
+                        <Show
+                          when={local().enabled}
+                          fallback={<ToggleLeft class="w-8 h-8" />}
+                        >
                           <ToggleRight class="w-8 h-8" />
                         </Show>
                       </button>
@@ -360,11 +423,15 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
 
       {/* Custom Patterns Section */}
       <Show when={activeSection() === "patterns"}>
-        <Show when={!patternsLoading()} fallback={<p class="text-text-secondary text-sm">Loading...</p>}>
+        <Show
+          when={!patternsLoading()}
+          fallback={<p class="text-text-secondary text-sm">Loading...</p>}
+        >
           <div class="space-y-3">
             <div class="flex items-center justify-between">
               <p class="text-sm text-text-secondary">
-                {patterns().length} custom pattern{patterns().length !== 1 ? "s" : ""}
+                {patterns().length} custom pattern
+                {patterns().length !== 1 ? "s" : ""}
               </p>
               <button
                 onClick={() => setShowAddPattern(true)}
@@ -382,12 +449,16 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                 style="background-color: var(--color-surface-raised)"
               >
                 <div>
-                  <label class="text-sm text-text-secondary block mb-1">Pattern</label>
+                  <label class="text-sm text-text-secondary block mb-1">
+                    Pattern
+                  </label>
                   <input
                     type="text"
                     value={newPattern()}
                     onInput={(e) => setNewPattern(e.currentTarget.value)}
-                    placeholder={newIsRegex() ? "(?i)regex\\s+pattern" : "keyword"}
+                    placeholder={
+                      newIsRegex() ? "(?i)regex\\s+pattern" : "keyword"
+                    }
                     class="w-full px-3 py-2 rounded-lg border border-white/10 bg-transparent text-text-primary text-sm placeholder-text-secondary/50"
                     maxLength={500}
                   />
@@ -429,11 +500,14 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
             </Show>
 
             {/* Pattern List */}
-            <For each={patterns()} fallback={
-              <p class="text-sm text-text-secondary/60 text-center py-8">
-                No custom patterns configured.
-              </p>
-            }>
+            <For
+              each={patterns()}
+              fallback={
+                <p class="text-sm text-text-secondary/60 text-center py-8">
+                  No custom patterns configured.
+                </p>
+              }
+            >
               {(pattern) => (
                 <div
                   class="flex items-center justify-between p-3 rounded-lg border border-white/5"
@@ -441,7 +515,9 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                 >
                   <div class="flex-1 min-w-0">
                     <div class="flex items-center gap-2">
-                      <code class="text-sm text-text-primary truncate">{pattern.pattern}</code>
+                      <code class="text-sm text-text-primary truncate">
+                        {pattern.pattern}
+                      </code>
                       <Show when={pattern.is_regex}>
                         <span class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
                           regex
@@ -454,17 +530,25 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                       </Show>
                     </div>
                     <Show when={pattern.description}>
-                      <p class="text-xs text-text-secondary mt-0.5 truncate">{pattern.description}</p>
+                      <p class="text-xs text-text-secondary mt-0.5 truncate">
+                        {pattern.description}
+                      </p>
                     </Show>
                   </div>
                   <button
                     onClick={() => handleDeletePattern(pattern.id)}
                     class="p-1.5 rounded-lg transition-colors"
                     classList={{
-                      "text-red-400 bg-red-500/20": deleteConfirm() === pattern.id,
-                      "text-text-secondary hover:text-red-400 hover:bg-red-500/10": deleteConfirm() !== pattern.id,
+                      "text-red-400 bg-red-500/20":
+                        deleteConfirm() === pattern.id,
+                      "text-text-secondary hover:text-red-400 hover:bg-red-500/10":
+                        deleteConfirm() !== pattern.id,
                     }}
-                    title={deleteConfirm() === pattern.id ? "Click again to confirm" : "Delete"}
+                    title={
+                      deleteConfirm() === pattern.id
+                        ? "Click again to confirm"
+                        : "Delete"
+                    }
                   >
                     <Trash2 class="w-4 h-4" />
                   </button>
@@ -510,19 +594,28 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                   "border-green-500/30 bg-green-500/5": !result().blocked,
                 }}
               >
-                <p class="font-medium text-sm" classList={{
-                  "text-red-400": result().blocked,
-                  "text-green-400": !result().blocked,
-                }}>
-                  {result().blocked ? "Blocked" : "Allowed"} — {result().matches.length} match{result().matches.length !== 1 ? "es" : ""}
+                <p
+                  class="font-medium text-sm"
+                  classList={{
+                    "text-red-400": result().blocked,
+                    "text-green-400": !result().blocked,
+                  }}
+                >
+                  {result().blocked ? "Blocked" : "Allowed"} —{" "}
+                  {result().matches.length} match
+                  {result().matches.length !== 1 ? "es" : ""}
                 </p>
                 <Show when={result().matches.length > 0}>
                   <div class="mt-2 space-y-1">
                     <For each={result().matches}>
                       {(match) => (
                         <div class="text-xs text-text-secondary flex gap-2">
-                          <span class="px-1.5 py-0.5 rounded bg-white/5">{match.category}</span>
-                          <span class="px-1.5 py-0.5 rounded bg-white/5">{match.action}</span>
+                          <span class="px-1.5 py-0.5 rounded bg-white/5">
+                            {match.category}
+                          </span>
+                          <span class="px-1.5 py-0.5 rounded bg-white/5">
+                            {match.action}
+                          </span>
                           <code class="truncate">{match.matched_pattern}</code>
                         </div>
                       )}
@@ -545,15 +638,20 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
           </div>
 
           <Show when={logLoading()}>
-            <p class="text-sm text-text-secondary text-center py-4">Loading...</p>
+            <p class="text-sm text-text-secondary text-center py-4">
+              Loading...
+            </p>
           </Show>
 
           <Show when={!logLoading()}>
-            <For each={logEntries()} fallback={
-              <p class="text-sm text-text-secondary/60 text-center py-8">
-                No moderation actions recorded.
-              </p>
-            }>
+            <For
+              each={logEntries()}
+              fallback={
+                <p class="text-sm text-text-secondary/60 text-center py-8">
+                  No moderation actions recorded.
+                </p>
+              }
+            >
               {(entry) => (
                 <div
                   class="p-3 rounded-lg border border-white/5 space-y-1"
@@ -561,11 +659,17 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                 >
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
-                      <span class="text-xs px-1.5 py-0.5 rounded" classList={{
-                        "bg-red-500/20 text-red-400": entry.action === "block",
-                        "bg-yellow-500/20 text-yellow-400": entry.action === "warn",
-                        "bg-blue-500/20 text-blue-400": entry.action === "log",
-                      }}>
+                      <span
+                        class="text-xs px-1.5 py-0.5 rounded"
+                        classList={{
+                          "bg-red-500/20 text-red-400":
+                            entry.action === "block",
+                          "bg-yellow-500/20 text-yellow-400":
+                            entry.action === "warn",
+                          "bg-blue-500/20 text-blue-400":
+                            entry.action === "log",
+                        }}
+                      >
                         {entry.action}
                       </span>
                       <Show when={entry.category}>
@@ -574,13 +678,21 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                         </span>
                       </Show>
                     </div>
-                    <span class="text-xs text-text-secondary">{formatDate(entry.created_at)}</span>
+                    <span class="text-xs text-text-secondary">
+                      {formatDate(entry.created_at)}
+                    </span>
                   </div>
                   <p class="text-xs text-text-secondary">
-                    Pattern: <code class="text-text-primary">{entry.matched_pattern}</code>
+                    Pattern:{" "}
+                    <code class="text-text-primary">
+                      {entry.matched_pattern}
+                    </code>
                   </p>
                   <p class="text-xs text-text-secondary truncate">
-                    Content: <span class="text-text-primary/60">{entry.original_content}</span>
+                    Content:{" "}
+                    <span class="text-text-primary/60">
+                      {entry.original_content}
+                    </span>
                   </p>
                 </div>
               )}
@@ -597,7 +709,8 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                   Previous
                 </button>
                 <span class="text-sm text-text-secondary py-1">
-                  {logOffset() + 1}-{Math.min(logOffset() + 20, logTotal())} of {logTotal()}
+                  {logOffset() + 1}-{Math.min(logOffset() + 20, logTotal())} of{" "}
+                  {logTotal()}
                 </span>
                 <button
                   onClick={() => loadLog(logOffset() + 20)}

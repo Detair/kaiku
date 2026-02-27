@@ -173,7 +173,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
     const members = getGuildMembers(props.guildId);
     const memberRoles = permissionsState.memberRoles[props.guildId] || {};
     return members.filter((m) =>
-      memberRoles[m.user_id]?.includes(props.role!.id)
+      memberRoles[m.user_id]?.includes(props.role!.id),
     );
   };
 
@@ -183,7 +183,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
     const members = getGuildMembers(props.guildId);
     const memberRoles = permissionsState.memberRoles[props.guildId] || {};
     return members.filter(
-      (m) => !memberRoles[m.user_id]?.includes(props.role!.id)
+      (m) => !memberRoles[m.user_id]?.includes(props.role!.id),
     );
   };
 
@@ -207,8 +207,14 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
   };
 
   const colorPresets = [
-    "#ef4444", "#f97316", "#eab308", "#22c55e",
-    "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899",
+    "#ef4444",
+    "#f97316",
+    "#eab308",
+    "#22c55e",
+    "#06b6d4",
+    "#3b82f6",
+    "#8b5cf6",
+    "#ec4899",
   ];
 
   return (
@@ -293,18 +299,25 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                       <For each={perms}>
                         {(perm) => {
                           const canEdit = canEditPermission(perm.bit);
-                          const isEnabled = hasPermission(permissions(), perm.bit);
+                          const isEnabled = hasPermission(
+                            permissions(),
+                            perm.bit,
+                          );
 
                           return (
                             <label
                               class="flex items-start gap-3 p-2 rounded-lg cursor-pointer hover:bg-white/5 transition-colors"
-                              classList={{ "opacity-50 cursor-not-allowed": !canEdit }}
+                              classList={{
+                                "opacity-50 cursor-not-allowed": !canEdit,
+                              }}
                             >
                               <input
                                 type="checkbox"
                                 checked={isEnabled}
                                 disabled={!canEdit}
-                                onChange={() => canEdit && handlePermissionToggle(perm.bit)}
+                                onChange={() =>
+                                  canEdit && handlePermissionToggle(perm.bit)
+                                }
                                 class="mt-1 w-4 h-4 rounded border-white/20 text-accent-primary focus:ring-accent-primary focus:ring-offset-0"
                                 style="background-color: var(--color-surface-layer1)"
                               />
@@ -387,8 +400,12 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                       {member.display_name.charAt(0).toUpperCase()}
                     </div>
                     <div class="flex-1">
-                      <div class="text-sm text-text-primary">{member.display_name}</div>
-                      <div class="text-xs text-text-secondary">@{member.username}</div>
+                      <div class="text-sm text-text-primary">
+                        {member.display_name}
+                      </div>
+                      <div class="text-xs text-text-secondary">
+                        @{member.username}
+                      </div>
                     </div>
                     <button
                       onClick={() => handleRemoveMember(member.user_id)}
@@ -422,7 +439,11 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
           disabled={isSaving() || !hasChanges() || !name().trim()}
           class="px-4 py-2 rounded-lg bg-accent-primary text-white font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isSaving() ? "Saving..." : isNewRole() ? "Create Role" : "Save Changes"}
+          {isSaving()
+            ? "Saving..."
+            : isNewRole()
+              ? "Create Role"
+              : "Save Changes"}
         </button>
       </div>
     </div>

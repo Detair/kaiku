@@ -2,9 +2,9 @@
  * Bot Applications API
  */
 
-import { getAccessToken } from '../tauri';
+import { getAccessToken } from "../tauri";
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 export interface BotApplication {
   id: string;
@@ -34,7 +34,7 @@ export interface SlashCommand {
 export interface CommandOption {
   name: string;
   description: string;
-  type: 'string' | 'integer' | 'boolean' | 'user' | 'channel' | 'role';
+  type: "string" | "integer" | "boolean" | "user" | "channel" | "role";
   required: boolean;
 }
 
@@ -72,13 +72,13 @@ export interface RegisterCommandsRequest {
  * Create a new bot application.
  */
 export async function createBotApplication(
-  data: CreateApplicationRequest
+  data: CreateApplicationRequest,
 ): Promise<BotApplication> {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE}/api/applications`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(data),
@@ -86,7 +86,7 @@ export async function createBotApplication(
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Failed to create application');
+    throw new Error(error || "Failed to create application");
   }
 
   return response.json();
@@ -98,14 +98,14 @@ export async function createBotApplication(
 export async function listBotApplications(): Promise<BotApplication[]> {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE}/api/applications`, {
-    method: 'GET',
+    method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to list applications');
+    throw new Error("Failed to list applications");
   }
 
   return response.json();
@@ -117,14 +117,14 @@ export async function listBotApplications(): Promise<BotApplication[]> {
 export async function getBotApplication(id: string): Promise<BotApplication> {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE}/api/applications/${id}`, {
-    method: 'GET',
+    method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to get application');
+    throw new Error("Failed to get application");
   }
 
   return response.json();
@@ -136,14 +136,14 @@ export async function getBotApplication(id: string): Promise<BotApplication> {
 export async function deleteBotApplication(id: string): Promise<void> {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE}/api/applications/${id}`, {
-    method: 'DELETE',
+    method: "DELETE",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to delete application');
+    throw new Error("Failed to delete application");
   }
 }
 
@@ -151,18 +151,23 @@ export async function deleteBotApplication(id: string): Promise<void> {
  * Create a bot user for an application and get the token.
  * **WARNING: The token is only shown once!**
  */
-export async function createBotUser(applicationId: string): Promise<BotTokenResponse> {
+export async function createBotUser(
+  applicationId: string,
+): Promise<BotTokenResponse> {
   const token = getAccessToken();
-  const response = await fetch(`${API_BASE}/api/applications/${applicationId}/bot`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
+  const response = await fetch(
+    `${API_BASE}/api/applications/${applicationId}/bot`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
     },
-  });
+  );
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Failed to create bot user');
+    throw new Error(error || "Failed to create bot user");
   }
 
   return response.json();
@@ -172,17 +177,22 @@ export async function createBotUser(applicationId: string): Promise<BotTokenResp
  * Reset the bot token for an application.
  * **WARNING: The new token is only shown once!**
  */
-export async function resetBotToken(applicationId: string): Promise<BotTokenResponse> {
+export async function resetBotToken(
+  applicationId: string,
+): Promise<BotTokenResponse> {
   const token = getAccessToken();
-  const response = await fetch(`${API_BASE}/api/applications/${applicationId}/reset-token`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
+  const response = await fetch(
+    `${API_BASE}/api/applications/${applicationId}/reset-token`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
     },
-  });
+  );
 
   if (!response.ok) {
-    throw new Error('Failed to reset token');
+    throw new Error("Failed to reset token");
   }
 
   return response.json();
@@ -194,18 +204,18 @@ export async function resetBotToken(applicationId: string): Promise<BotTokenResp
 export async function registerSlashCommands(
   applicationId: string,
   data: RegisterCommandsRequest,
-  guildId?: string
+  guildId?: string,
 ): Promise<SlashCommand[]> {
   const token = getAccessToken();
   const url = new URL(`${API_BASE}/api/applications/${applicationId}/commands`);
   if (guildId) {
-    url.searchParams.set('guild_id', guildId);
+    url.searchParams.set("guild_id", guildId);
   }
 
   const response = await fetch(url.toString(), {
-    method: 'PUT',
+    method: "PUT",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(data),
@@ -213,7 +223,7 @@ export async function registerSlashCommands(
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Failed to register commands');
+    throw new Error(error || "Failed to register commands");
   }
 
   return response.json();
@@ -224,23 +234,23 @@ export async function registerSlashCommands(
  */
 export async function listSlashCommands(
   applicationId: string,
-  guildId?: string
+  guildId?: string,
 ): Promise<SlashCommand[]> {
   const token = getAccessToken();
   const url = new URL(`${API_BASE}/api/applications/${applicationId}/commands`);
   if (guildId) {
-    url.searchParams.set('guild_id', guildId);
+    url.searchParams.set("guild_id", guildId);
   }
 
   const response = await fetch(url.toString(), {
-    method: 'GET',
+    method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to list commands');
+    throw new Error("Failed to list commands");
   }
 
   return response.json();
@@ -251,21 +261,21 @@ export async function listSlashCommands(
  */
 export async function deleteSlashCommand(
   applicationId: string,
-  commandId: string
+  commandId: string,
 ): Promise<void> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/commands/${commandId}`,
     {
-      method: 'DELETE',
+      method: "DELETE",
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
-    throw new Error('Failed to delete command');
+    throw new Error("Failed to delete command");
   }
 }
 
@@ -274,40 +284,42 @@ export async function deleteSlashCommand(
  */
 export async function deleteAllSlashCommands(
   applicationId: string,
-  guildId?: string
+  guildId?: string,
 ): Promise<void> {
   const token = getAccessToken();
   const url = new URL(`${API_BASE}/api/applications/${applicationId}/commands`);
   if (guildId) {
-    url.searchParams.set('guild_id', guildId);
+    url.searchParams.set("guild_id", guildId);
   }
 
   const response = await fetch(url.toString(), {
-    method: 'DELETE',
+    method: "DELETE",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to delete commands');
+    throw new Error("Failed to delete commands");
   }
 }
 
 /**
  * List bots installed in a guild.
  */
-export async function listInstalledBots(guildId: string): Promise<InstalledBot[]> {
+export async function listInstalledBots(
+  guildId: string,
+): Promise<InstalledBot[]> {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE}/api/guilds/${guildId}/bots`, {
-    method: 'GET',
+    method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to list installed bots');
+    throw new Error("Failed to list installed bots");
   }
 
   return response.json();
@@ -316,34 +328,42 @@ export async function listInstalledBots(guildId: string): Promise<InstalledBot[]
 /**
  * Remove a bot from a guild.
  */
-export async function removeInstalledBot(guildId: string, botId: string): Promise<void> {
+export async function removeInstalledBot(
+  guildId: string,
+  botId: string,
+): Promise<void> {
   const token = getAccessToken();
-  const response = await fetch(`${API_BASE}/api/guilds/${guildId}/bots/${botId}`, {
-    method: 'DELETE',
-    headers: {
-      Authorization: `Bearer ${token}`,
+  const response = await fetch(
+    `${API_BASE}/api/guilds/${guildId}/bots/${botId}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
     },
-  });
+  );
 
   if (!response.ok) {
-    throw new Error('Failed to remove bot');
+    throw new Error("Failed to remove bot");
   }
 }
 
 /**
  * List available slash commands in a guild (from installed bots).
  */
-export async function listGuildCommands(guildId: string): Promise<GuildCommand[]> {
+export async function listGuildCommands(
+  guildId: string,
+): Promise<GuildCommand[]> {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE}/api/guilds/${guildId}/commands`, {
-    method: 'GET',
+    method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to list guild commands');
+    throw new Error("Failed to list guild commands");
   }
 
   return response.json();
@@ -354,24 +374,24 @@ export async function listGuildCommands(guildId: string): Promise<GuildCommand[]
  */
 export async function updateGatewayIntents(
   applicationId: string,
-  intents: string[]
+  intents: string[],
 ): Promise<BotApplication> {
   const token = getAccessToken();
   const response = await fetch(
     `${API_BASE}/api/applications/${applicationId}/intents`,
     {
-      method: 'PUT',
+      method: "PUT",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ intents }),
-    }
+    },
   );
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Failed to update intents');
+    throw new Error(error || "Failed to update intents");
   }
 
   return response.json();

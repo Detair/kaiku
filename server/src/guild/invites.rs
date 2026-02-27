@@ -11,7 +11,6 @@ use super::handlers::GuildError;
 use super::types::{CreateInviteRequest, GuildInvite, InviteResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::db;
 
 /// Generate a cryptographically random 8-character invite code
 fn generate_invite_code() -> String {
@@ -226,9 +225,36 @@ pub async fn join_via_invite(
         "Invalid or expired invite code".to_string(),
     ))?;
 
+    let globally_banned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
+    )
+    .bind(auth.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if globally_banned {
+        return Err(GuildError::Forbidden);
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    // Serialize member joins per guild so limit checks are strict under concurrency.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 53))")
+        .bind(invite.guild_id)
+        .execute(&mut *tx)
+        .await?;
+
     // Check if already a member
-    let is_member = db::is_guild_member(&state.db, invite.guild_id, auth.id).await?;
+    let is_member: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2)",
+    )
+    .bind(invite.guild_id)
+    .bind(auth.id)
+    .fetch_one(&mut *tx)
+    .await?;
     if is_member {
+        tx.commit().await?;
+
         // Already a member, just return guild info
         let guild_name: (String,) = sqlx::query_as("SELECT name FROM guilds WHERE id = $1")
             .bind(invite.guild_id)
@@ -248,7 +274,10 @@ pub async fn join_via_invite(
 
     // Check member limit (best-effort; concurrent joins may overshoot by a small
     // bounded amount due to TOCTOU, but the denormalized member_count self-corrects).
-    let member_count = crate::guild::limits::get_member_count(&state.db, invite.guild_id).await?;
+    let member_count: i64 = sqlx::query_scalar("SELECT member_count FROM guilds WHERE id = $1")
+        .bind(invite.guild_id)
+        .fetch_one(&mut *tx)
+        .await?;
     if member_count >= state.config.max_members_per_guild {
         return Err(GuildError::LimitExceeded(format!(
             "Guild has reached the maximum number of members ({})",
@@ -262,11 +291,13 @@ pub async fn join_via_invite(
     )
     .bind(invite.guild_id)
     .bind(auth.id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
     // If no rows affected, user was already a member (race with the earlier check)
     if result.rows_affected() == 0 {
+        tx.commit().await?;
+
         let guild_name: (String,) = sqlx::query_as("SELECT name FROM guilds WHERE id = $1")
             .bind(invite.guild_id)
             .fetch_one(&state.db)
@@ -283,14 +314,26 @@ pub async fn join_via_invite(
         }));
     }
 
-    // Initialize read state for all text channels so pre-existing messages don't show as unread
-    super::handlers::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await?;
-
     // Increment use count
     sqlx::query("UPDATE guild_invites SET use_count = use_count + 1 WHERE id = $1")
         .bind(invite.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+
+    tx.commit().await?;
+
+    // Initialize read state for all text channels (best-effort, non-critical)
+    if let Err(err) =
+        super::handlers::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await
+    {
+        tracing::error!(
+            ?err,
+            guild_id = %invite.guild_id,
+            user_id = %auth.id,
+            "Failed to initialize channel read state after invite join"
+        );
+        // Non-fatal: member was already inserted, read state can be retried on channel access
+    }
 
     // Get guild name for response
     let guild_name: (String,) = sqlx::query_as("SELECT name FROM guilds WHERE id = $1")

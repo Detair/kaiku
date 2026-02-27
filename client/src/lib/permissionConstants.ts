@@ -49,7 +49,8 @@ export const PermissionBits = {
   VIEW_CHANNEL: 1 << 24,
 } as const;
 
-export type PermissionBit = (typeof PermissionBits)[keyof typeof PermissionBits];
+export type PermissionBit =
+  (typeof PermissionBits)[keyof typeof PermissionBits];
 
 // Permission categories for UI grouping
 export type PermissionCategory =
@@ -303,11 +304,11 @@ export const PERMISSIONS: PermissionDefinition[] = [
 ];
 
 const CHANNEL_OVERRIDE_PERMISSION_KEY_SET = new Set<string>(
-  CHANNEL_OVERRIDE_PERMISSION_KEYS
+  CHANNEL_OVERRIDE_PERMISSION_KEYS,
 );
 
 export const CHANNEL_OVERRIDE_PERMISSIONS = PERMISSIONS.filter((permission) =>
-  CHANNEL_OVERRIDE_PERMISSION_KEY_SET.has(permission.key)
+  CHANNEL_OVERRIDE_PERMISSION_KEY_SET.has(permission.key),
 );
 
 // Category display names
@@ -322,7 +323,7 @@ export const CATEGORY_NAMES: Record<PermissionCategory, string> = {
 
 // Get permissions by category
 export function getPermissionsByCategory(
-  category: PermissionCategory
+  category: PermissionCategory,
 ): PermissionDefinition[] {
   return PERMISSIONS.filter((p) => p.category === category);
 }
@@ -398,9 +399,9 @@ export function isValidForEveryone(permissions: number): boolean {
 
 // Get list of forbidden permissions for @everyone that are currently set
 export function getForbiddenForEveryone(
-  permissions: number
+  permissions: number,
 ): PermissionDefinition[] {
   return PERMISSIONS.filter(
-    (p) => p.forbiddenForEveryone && hasPermission(permissions, p.bit)
+    (p) => p.forbiddenForEveryone && hasPermission(permissions, p.bit),
   );
 }

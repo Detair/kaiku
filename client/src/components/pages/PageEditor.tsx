@@ -5,7 +5,20 @@
  */
 
 import { createSignal, createEffect, Show, For, onCleanup } from "solid-js";
-import { Bold, Italic, Strikethrough, Image, Code, List, ListOrdered, Link, Eye, EyeOff, Save, X } from "lucide-solid";
+import {
+  Bold,
+  Italic,
+  Strikethrough,
+  Image,
+  Code,
+  List,
+  ListOrdered,
+  Link,
+  Eye,
+  EyeOff,
+  Save,
+  X,
+} from "lucide-solid";
 import type { Page, PageCategory } from "@/lib/types";
 import { MAX_CONTENT_SIZE } from "@/lib/pageConstants";
 import MarkdownPreview from "./MarkdownPreview";
@@ -15,7 +28,13 @@ interface PageEditorProps {
   page?: Page | null;
   guildId?: string;
   categories?: PageCategory[];
-  onSave: (data: { title: string; slug: string; content: string; requiresAcceptance: boolean; categoryId?: string | null }) => Promise<void>;
+  onSave: (data: {
+    title: string;
+    slug: string;
+    content: string;
+    requiresAcceptance: boolean;
+    categoryId?: string | null;
+  }) => Promise<void>;
   onCancel: () => void;
   isPlatform?: boolean;
 }
@@ -35,13 +54,19 @@ export default function PageEditor(props: PageEditorProps) {
   const [title, setTitle] = createSignal(props.page?.title || "");
   const [slug, setSlug] = createSignal(props.page?.slug || "");
   const [content, setContent] = createSignal(props.page?.content || "");
-  const [categoryId, setCategoryId] = createSignal<string | null>(props.page?.category_id ?? null);
-  const [requiresAcceptance, setRequiresAcceptance] = createSignal(props.page?.requires_acceptance || false);
+  const [categoryId, setCategoryId] = createSignal<string | null>(
+    props.page?.category_id ?? null,
+  );
+  const [requiresAcceptance, setRequiresAcceptance] = createSignal(
+    props.page?.requires_acceptance || false,
+  );
   const [showPreview, setShowPreview] = createSignal(true);
   const [isSaving, setIsSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = createSignal(false);
-  const [slugManuallyEdited, setSlugManuallyEdited] = createSignal(!!props.page?.slug);
+  const [slugManuallyEdited, setSlugManuallyEdited] = createSignal(
+    !!props.page?.slug,
+  );
 
   let textareaRef: HTMLTextAreaElement | undefined;
 
@@ -87,7 +112,9 @@ export default function PageEditor(props: PageEditorProps) {
     };
 
     window.addEventListener("beforeunload", handleBeforeUnload);
-    onCleanup(() => window.removeEventListener("beforeunload", handleBeforeUnload));
+    onCleanup(() =>
+      window.removeEventListener("beforeunload", handleBeforeUnload),
+    );
   });
 
   const contentSize = () => new TextEncoder().encode(content()).length;
@@ -143,7 +170,9 @@ export default function PageEditor(props: PageEditorProps) {
 
     // Validate slug format
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug())) {
-      setError("Invalid slug format. Use lowercase letters, numbers, and single dashes (e.g., 'terms-of-service')");
+      setError(
+        "Invalid slug format. Use lowercase letters, numbers, and single dashes (e.g., 'terms-of-service')",
+      );
       return;
     }
 
@@ -168,7 +197,9 @@ export default function PageEditor(props: PageEditorProps) {
 
   const handleCancel = () => {
     if (hasUnsavedChanges()) {
-      if (!confirm("You have unsaved changes. Are you sure you want to leave?")) {
+      if (
+        !confirm("You have unsaved changes. Are you sure you want to leave?")
+      ) {
         return;
       }
     }
@@ -178,12 +209,20 @@ export default function PageEditor(props: PageEditorProps) {
   const toolbarButtons = [
     { icon: Bold, title: "Bold", action: () => insertText("**", "**") },
     { icon: Italic, title: "Italic", action: () => insertText("*", "*") },
-    { icon: Strikethrough, title: "Strikethrough", action: () => insertText("~~", "~~") },
+    {
+      icon: Strikethrough,
+      title: "Strikethrough",
+      action: () => insertText("~~", "~~"),
+    },
     { icon: Code, title: "Code", action: () => insertText("`", "`") },
     { icon: Link, title: "Link", action: () => insertText("[", "](url)") },
     { icon: Image, title: "Image", action: () => insertText("![alt](", ")") },
     { icon: List, title: "Bullet List", action: () => insertText("- ") },
-    { icon: ListOrdered, title: "Numbered List", action: () => insertText("1. ") },
+    {
+      icon: ListOrdered,
+      title: "Numbered List",
+      action: () => insertText("1. "),
+    },
   ];
 
   return (
@@ -227,7 +266,9 @@ export default function PageEditor(props: PageEditorProps) {
       {/* Title and slug inputs */}
       <div class="px-4 py-3 space-y-3 border-b border-zinc-700">
         <div>
-          <label class="block text-sm font-medium text-zinc-300 mb-1">Title</label>
+          <label class="block text-sm font-medium text-zinc-300 mb-1">
+            Title
+          </label>
           <input
             type="text"
             value={title()}
@@ -241,15 +282,18 @@ export default function PageEditor(props: PageEditorProps) {
           <label class="block text-sm font-medium text-zinc-300 mb-1">
             Slug
             <span class="text-zinc-500 font-normal ml-2">
-              (URL: /{props.isPlatform ? "pages" : `guild/${props.guildId}/pages`}/{slug() || "..."}
-              )
+              (URL: /
+              {props.isPlatform ? "pages" : `guild/${props.guildId}/pages`}/
+              {slug() || "..."})
             </span>
           </label>
           <input
             type="text"
             value={slug()}
             onInput={(e) => {
-              setSlug(e.currentTarget.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+              setSlug(
+                e.currentTarget.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+              );
               setSlugManuallyEdited(true);
             }}
             placeholder="page-slug"
@@ -259,7 +303,9 @@ export default function PageEditor(props: PageEditorProps) {
         </div>
         <Show when={props.categories && props.categories.length > 0}>
           <div>
-            <label class="block text-sm font-medium text-zinc-300 mb-1">Category</label>
+            <label class="block text-sm font-medium text-zinc-300 mb-1">
+              Category
+            </label>
             <select
               value={categoryId() ?? ""}
               onChange={(e) => setCategoryId(e.currentTarget.value || null)}
@@ -306,7 +352,8 @@ export default function PageEditor(props: PageEditorProps) {
         ))}
         <div class="flex-1" />
         <div class="text-xs text-zinc-500 mr-2">
-          {contentSize().toLocaleString()} / {MAX_CONTENT_SIZE.toLocaleString()} bytes
+          {contentSize().toLocaleString()} / {MAX_CONTENT_SIZE.toLocaleString()}{" "}
+          bytes
           <Show when={isContentTooLarge()}>
             <span class="text-red-400 ml-1">(too large)</span>
           </Show>
@@ -330,7 +377,9 @@ export default function PageEditor(props: PageEditorProps) {
       {/* Editor and Preview */}
       <div class="flex-1 flex overflow-hidden">
         {/* Editor */}
-        <div class={`flex flex-col ${showPreview() ? "w-1/2" : "w-full"} border-r border-zinc-700`}>
+        <div
+          class={`flex flex-col ${showPreview() ? "w-1/2" : "w-full"} border-r border-zinc-700`}
+        >
           <textarea
             ref={textareaRef}
             value={content()}
@@ -347,9 +396,12 @@ export default function PageEditor(props: PageEditorProps) {
         {/* Preview */}
         <Show when={showPreview()}>
           <div class="w-1/2 overflow-auto p-4 bg-zinc-800">
-            <Show when={content()} fallback={
-              <p class="text-zinc-500 italic">Preview will appear here...</p>
-            }>
+            <Show
+              when={content()}
+              fallback={
+                <p class="text-zinc-500 italic">Preview will appear here...</p>
+              }
+            >
               <MarkdownPreview content={content()} />
             </Show>
           </div>

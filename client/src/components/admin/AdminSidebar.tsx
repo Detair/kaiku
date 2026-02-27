@@ -10,9 +10,22 @@
  */
 
 import { Component, For } from "solid-js";
-import { LayoutDashboard, Users, Building2, ScrollText, Settings, Flag } from "lucide-solid";
+import {
+  LayoutDashboard,
+  Users,
+  Building2,
+  ScrollText,
+  Settings,
+  Flag,
+} from "lucide-solid";
 
-export type AdminPanel = "overview" | "users" | "guilds" | "reports" | "audit-log" | "settings";
+export type AdminPanel =
+  | "overview"
+  | "users"
+  | "guilds"
+  | "reports"
+  | "audit-log"
+  | "settings";
 
 interface AdminSidebarProps {
   activePanel: AdminPanel;
@@ -20,7 +33,11 @@ interface AdminSidebarProps {
 }
 
 const AdminSidebar: Component<AdminSidebarProps> = (props) => {
-  const items: { id: AdminPanel; label: string; icon: typeof LayoutDashboard }[] = [
+  const items: {
+    id: AdminPanel;
+    label: string;
+    icon: typeof LayoutDashboard;
+  }[] = [
     { id: "overview", label: "Overview", icon: LayoutDashboard },
     { id: "users", label: "Users", icon: Users },
     { id: "guilds", label: "Guilds", icon: Building2 },
@@ -37,13 +54,17 @@ const AdminSidebar: Component<AdminSidebarProps> = (props) => {
             onClick={() => props.onSelectPanel(item.id)}
             class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
             classList={{
-              "bg-accent-primary/20 text-text-primary": props.activePanel === item.id,
-              "text-text-secondary hover:text-text-primary hover:bg-white/5": props.activePanel !== item.id,
+              "bg-accent-primary/20 text-text-primary":
+                props.activePanel === item.id,
+              "text-text-secondary hover:text-text-primary hover:bg-white/5":
+                props.activePanel !== item.id,
             }}
           >
             <item.icon
               class="w-4 h-4"
-              style={{ color: props.activePanel === item.id ? "#FFFFFF" : undefined }}
+              style={{
+                color: props.activePanel === item.id ? "#FFFFFF" : undefined,
+              }}
             />
             {item.label}
           </button>

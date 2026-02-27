@@ -85,14 +85,23 @@ export async function loadThreadReplies(parentId: string): Promise<void> {
   setThreadsState("error", null);
 
   try {
-    const response = await tauri.getThreadReplies(parentId, undefined, THREAD_REPLY_LIMIT);
+    const response = await tauri.getThreadReplies(
+      parentId,
+      undefined,
+      THREAD_REPLY_LIMIT,
+    );
 
     setThreadsState("repliesByThread", parentId, response.items);
     setThreadsState("hasMore", parentId, response.has_more);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load thread replies:", error);
-    showToast({ type: "error", title: "Thread Load Failed", message: "Could not load thread replies.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Thread Load Failed",
+      message: "Could not load thread replies.",
+      duration: 8000,
+    });
     setThreadsState("error", error);
   } finally {
     setThreadsState("loadingThreads", parentId, false);
@@ -107,15 +116,23 @@ export async function loadMoreThreadReplies(parentId: string): Promise<void> {
   if (!threadsState.hasMore[parentId]) return;
 
   const existing = threadsState.repliesByThread[parentId] || [];
-  const after = existing.length > 0 ? existing[existing.length - 1].id : undefined;
+  const after =
+    existing.length > 0 ? existing[existing.length - 1].id : undefined;
 
   setThreadsState("loadingThreads", parentId, true);
 
   try {
-    const response = await tauri.getThreadReplies(parentId, after, THREAD_REPLY_LIMIT);
+    const response = await tauri.getThreadReplies(
+      parentId,
+      after,
+      THREAD_REPLY_LIMIT,
+    );
 
     const current = threadsState.repliesByThread[parentId] || [];
-    setThreadsState("repliesByThread", parentId, [...current, ...response.items]);
+    setThreadsState("repliesByThread", parentId, [
+      ...current,
+      ...response.items,
+    ]);
     setThreadsState("hasMore", parentId, response.has_more);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -139,7 +156,11 @@ export async function sendThreadReply(
   setThreadsState("error", null);
 
   try {
-    const message = await tauri.sendThreadReply(parentId, channelId, content.trim());
+    const message = await tauri.sendThreadReply(
+      parentId,
+      channelId,
+      content.trim(),
+    );
 
     // Add to local store (may already be added by WebSocket)
     const existing = threadsState.repliesByThread[parentId] || [];
@@ -151,7 +172,12 @@ export async function sendThreadReply(
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to send thread reply:", error);
-    showToast({ type: "error", title: "Reply Failed", message: "Could not send thread reply. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Reply Failed",
+      message: "Could not send thread reply. Please try again.",
+      duration: 8000,
+    });
     setThreadsState("error", error);
     return null;
   }
@@ -172,7 +198,11 @@ export function addThreadReply(parentId: string, message: Message): void {
 export function removeThreadReply(parentId: string, messageId: string): void {
   const existing = threadsState.repliesByThread[parentId];
   if (existing) {
-    setThreadsState("repliesByThread", parentId, existing.filter((m) => m.id !== messageId));
+    setThreadsState(
+      "repliesByThread",
+      parentId,
+      existing.filter((m) => m.id !== messageId),
+    );
   }
 }
 
@@ -181,10 +211,19 @@ export function removeThreadReply(parentId: string, messageId: string): void {
  * Preserves the existing `has_unread` flag if the incoming data does not provide one,
  * since unread state is managed separately by markThreadUnread/clearThreadUnread.
  */
-export function updateThreadInfo(parentId: string, threadInfo: ThreadInfo): void {
+export function updateThreadInfo(
+  parentId: string,
+  threadInfo: ThreadInfo,
+): void {
   const existing = threadsState.threadInfoCache[parentId];
-  if (existing?.has_unread !== undefined && threadInfo.has_unread === undefined) {
-    setThreadsState("threadInfoCache", parentId, { ...threadInfo, has_unread: existing.has_unread });
+  if (
+    existing?.has_unread !== undefined &&
+    threadInfo.has_unread === undefined
+  ) {
+    setThreadsState("threadInfoCache", parentId, {
+      ...threadInfo,
+      has_unread: existing.has_unread,
+    });
   } else {
     setThreadsState("threadInfoCache", parentId, threadInfo);
   }
@@ -198,7 +237,10 @@ export function updateThreadInfo(parentId: string, threadInfo: ThreadInfo): void
 export function markThreadUnread(parentId: string): void {
   const cached = threadsState.threadInfoCache[parentId];
   if (cached) {
-    setThreadsState("threadInfoCache", parentId, { ...cached, has_unread: true });
+    setThreadsState("threadInfoCache", parentId, {
+      ...cached,
+      has_unread: true,
+    });
   }
 }
 
@@ -208,7 +250,10 @@ export function markThreadUnread(parentId: string): void {
 export function clearThreadUnread(parentId: string): void {
   const cached = threadsState.threadInfoCache[parentId];
   if (cached && cached.has_unread) {
-    setThreadsState("threadInfoCache", parentId, { ...cached, has_unread: false });
+    setThreadsState("threadInfoCache", parentId, {
+      ...cached,
+      has_unread: false,
+    });
   }
 }
 
@@ -226,11 +271,26 @@ export function updateParentThreadIndicator(
   const index = messages.findIndex((m) => m.id === parentId);
   if (index === -1) return;
 
-  setMessagesState("byChannel", channelId, index, "thread_reply_count", threadInfo.reply_count);
-  setMessagesState("byChannel", channelId, index, "thread_last_reply_at", threadInfo.last_reply_at);
+  setMessagesState(
+    "byChannel",
+    channelId,
+    index,
+    "thread_reply_count",
+    threadInfo.reply_count,
+  );
+  setMessagesState(
+    "byChannel",
+    channelId,
+    index,
+    "thread_last_reply_at",
+    threadInfo.last_reply_at,
+  );
 
   // Also update the active thread parent if it matches
-  if (threadsState.activeThreadId === parentId && threadsState.activeThreadParent) {
+  if (
+    threadsState.activeThreadId === parentId &&
+    threadsState.activeThreadParent
+  ) {
     setThreadsState("activeThreadParent", {
       ...threadsState.activeThreadParent,
       thread_reply_count: threadInfo.reply_count,
@@ -247,7 +307,8 @@ export async function markThreadRead(parentId: string): Promise<void> {
     await tauri.markThreadRead(parentId);
 
     const replies = threadsState.repliesByThread[parentId] || [];
-    const lastReadMessageId = replies.length > 0 ? replies[replies.length - 1].id : null;
+    const lastReadMessageId =
+      replies.length > 0 ? replies[replies.length - 1].id : null;
     setThreadsState("lastReadMessageByThread", parentId, lastReadMessageId);
     clearThreadUnread(parentId);
   } catch (err) {
@@ -260,7 +321,10 @@ export async function markThreadRead(parentId: string): Promise<void> {
 /**
  * Sync thread read position from WebSocket events.
  */
-export function setThreadReadState(parentId: string, lastReadMessageId: string | null): void {
+export function setThreadReadState(
+  parentId: string,
+  lastReadMessageId: string | null,
+): void {
   setThreadsState("lastReadMessageByThread", parentId, lastReadMessageId);
 }
 

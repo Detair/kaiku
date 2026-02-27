@@ -9,9 +9,11 @@ Direct message call UI components. Displays call state banners with dynamic cont
 ## Key Files
 
 ### CallBanner.tsx
+
 Call status banner shown at top of DM conversations.
 
 **Call States:**
+
 - `incoming_ringing` - Show Accept/Decline buttons with caller name
 - `outgoing_ringing` - Show Cancel button with "Calling..." text
 - `connecting` - Show connecting spinner
@@ -20,34 +22,40 @@ Call status banner shown at top of DM conversations.
 - `ended` - Show end reason with duration
 
 **Features:**
+
 - Call duration timer (updates every second)
 - Loading states during transitions
 - End reason text mapping (cancelled, declined, no_answer, etc.)
 - Participant count badge (when >0)
 
 **Error Handling:**
+
 - Catches 404 (call not found) and 409 (conflict) gracefully
 - Resets local state on error
 - Logs errors to console for debugging
 
 **Usage:**
+
 ```tsx
 import CallBanner from "@/components/call/CallBanner";
 
 // Inside DM conversation view
-<CallBanner channelId={conversation.channelId} />
+<CallBanner channelId={conversation.channelId} />;
 ```
 
 **Tauri Commands:**
+
 - `joinDMCall(channelId)` - Accept/join call
 - `declineDMCall(channelId)` - Decline/reject call
 - `leaveDMCall(channelId)` - Leave active call
 
 **State Management:**
+
 - `callState.currentCall` - Current call status
 - `joinCall()`, `declineCall()`, `endCall()` - Store actions
 
 ### index.ts
+
 Re-exports CallBanner for cleaner imports.
 
 ## Call Flow
@@ -77,18 +85,22 @@ Re-exports CallBanner for cleaner imports.
 ## Integration Points
 
 ### Stores
+
 - `@/stores/call` - Call state, join/decline/end actions
 
 ### Tauri Backend
+
 - `@/lib/tauri` - Direct call commands (joinDMCall, declineDMCall, leaveDMCall)
 
 ### WebSocket Events
+
 - Server sends call state changes via WebSocket
 - Store updates trigger CallBanner re-renders
 
 ## Styling
 
 Uses design system:
+
 - `bg-surface-layer2` - Banner background
 - `bg-green-500/20` - Accept button (incoming calls)
 - `bg-red-500/20` - Decline/Leave buttons
@@ -104,6 +116,7 @@ Uses design system:
 ## Future Enhancements
 
 Expected call features:
+
 - Screen sharing controls
 - Camera toggle (video calls)
 - Call history display

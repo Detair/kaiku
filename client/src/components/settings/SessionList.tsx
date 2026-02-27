@@ -5,8 +5,8 @@
  * Shows channel name, guild, time info, and basic metrics for each session.
  */
 
-import { Component, createResource, createSignal, Show, For } from 'solid-js';
-import { fetchApi } from '../../lib/tauri';
+import { Component, createResource, createSignal, Show, For } from "solid-js";
+import { fetchApi } from "../../lib/tauri";
 
 interface SessionSummary {
   id: string;
@@ -27,11 +27,18 @@ interface SessionListResponse {
   offset: number;
 }
 
-const qualityColors = ['bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-green-500'];
-const qualityLabels = ['Poor', 'Fair', 'Good', 'Excellent'];
+const qualityColors = [
+  "bg-red-500",
+  "bg-orange-500",
+  "bg-yellow-500",
+  "bg-green-500",
+];
+const qualityLabels = ["Poor", "Fair", "Good", "Excellent"];
 
 async function fetchSessions(offset: number): Promise<SessionSummary[]> {
-  const response = await fetchApi<SessionListResponse>(`/api/me/connection/sessions?limit=10&offset=${offset}`);
+  const response = await fetchApi<SessionListResponse>(
+    `/api/me/connection/sessions?limit=10&offset=${offset}`,
+  );
   return response.sessions;
 }
 
@@ -41,7 +48,7 @@ export const SessionList: Component = () => {
 
   const formatTime = (iso: string) => {
     const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
   const formatDate = (iso: string) => {
@@ -50,9 +57,9 @@ export const SessionList: Component = () => {
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    if (d.toDateString() === today.toDateString()) return 'Today';
-    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    if (d.toDateString() === today.toDateString()) return "Today";
+    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
   };
 
   const formatDuration = (start: string, end: string) => {
@@ -78,7 +85,9 @@ export const SessionList: Component = () => {
               />
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                  <span class="font-medium truncate">{session.channel_name}</span>
+                  <span class="font-medium truncate">
+                    {session.channel_name}
+                  </span>
                   <Show when={session.guild_name}>
                     <span class="text-text-secondary text-xs">
                       in {session.guild_name}
@@ -86,12 +95,15 @@ export const SessionList: Component = () => {
                   </Show>
                 </div>
                 <div class="text-xs text-text-secondary">
-                  {formatDate(session.started_at)}, {formatTime(session.started_at)} - {formatTime(session.ended_at)} ({formatDuration(session.started_at, session.ended_at)})
+                  {formatDate(session.started_at)},{" "}
+                  {formatTime(session.started_at)} -{" "}
+                  {formatTime(session.ended_at)} (
+                  {formatDuration(session.started_at, session.ended_at)})
                 </div>
               </div>
               <div class="text-right text-xs text-text-secondary">
-                <div>{session.avg_latency ?? '-'}ms</div>
-                <div>{session.avg_loss?.toFixed(1) ?? '-'}% loss</div>
+                <div>{session.avg_latency ?? "-"}ms</div>
+                <div>{session.avg_loss?.toFixed(1) ?? "-"}% loss</div>
               </div>
             </div>
           )}
@@ -100,7 +112,7 @@ export const SessionList: Component = () => {
         <Show when={sessions()?.length === 10}>
           <button
             class="w-full py-2 text-sm text-text-secondary hover:text-text-primary"
-            onClick={() => setOffset(o => o + 10)}
+            onClick={() => setOffset((o) => o + 10)}
           >
             Load more...
           </button>

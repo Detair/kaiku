@@ -33,15 +33,19 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
 
   const parentMessage = () => threadsState.activeThreadParent;
   const threadId = () => threadsState.activeThreadId;
-  const replies = () => (threadId() ? threadsState.repliesByThread[threadId()!] || [] : []);
-  const isLoading = () => (threadId() ? threadsState.loadingThreads[threadId()!] : false);
-  const hasMore = () => (threadId() ? threadsState.hasMore[threadId()!] : false);
+  const replies = () =>
+    threadId() ? threadsState.repliesByThread[threadId()!] || [] : [];
+  const isLoading = () =>
+    threadId() ? threadsState.loadingThreads[threadId()!] : false;
+  const hasMore = () =>
+    threadId() ? threadsState.hasMore[threadId()!] : false;
 
   // Auto-scroll to bottom only when a new reply is appended (not on pagination)
   createEffect(() => {
     const currentReplies = replies();
     const currentCount = currentReplies.length;
-    const currentLastId = currentCount > 0 ? currentReplies[currentCount - 1].id : undefined;
+    const currentLastId =
+      currentCount > 0 ? currentReplies[currentCount - 1].id : undefined;
 
     // Scroll if: new reply appended at the end (last ID changed and count grew)
     // or initial load (prev was 0)
@@ -49,7 +53,10 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
       currentCount > prevReplyCount && currentLastId !== prevLastId;
 
     if (isNewReplyAppended && repliesEndRef) {
-      setTimeout(() => repliesEndRef?.scrollIntoView({ behavior: "smooth" }), 50);
+      setTimeout(
+        () => repliesEndRef?.scrollIntoView({ behavior: "smooth" }),
+        50,
+      );
     }
 
     prevReplyCount = currentCount;
@@ -94,7 +101,9 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
     if (!scrollContainerRef || !threadId()) return;
 
     const distanceFromBottom =
-      scrollContainerRef.scrollHeight - scrollContainerRef.scrollTop - scrollContainerRef.clientHeight;
+      scrollContainerRef.scrollHeight -
+      scrollContainerRef.scrollTop -
+      scrollContainerRef.clientHeight;
 
     if (distanceFromBottom <= 40 && hasMore() && !isLoading()) {
       loadMoreThreadReplies(threadId()!);
@@ -173,28 +182,28 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
 
       {/* Reply input (hidden when threads are disabled — existing threads are read-only) */}
       <Show when={areThreadsEnabled(props.guildId)}>
-      <div class="px-4 pb-4 pt-2 border-t border-white/5">
-        <div class="flex items-end gap-2 bg-surface-layer2 rounded-lg px-3 py-2 border border-white/5 focus-within:border-accent-primary/50 transition-colors">
-          <textarea
-            ref={textareaRef}
-            value={replyContent()}
-            onInput={handleInput}
-            onKeyDown={handleKeyDown}
-            placeholder="Reply in thread..."
-            rows={1}
-            class="flex-1 bg-transparent text-text-primary text-sm placeholder-text-secondary/50 resize-none outline-none max-h-[120px]"
-          />
-          <button
-            onClick={handleSend}
-            disabled={!replyContent().trim() || sending()}
-            class="w-8 h-8 flex items-center justify-center rounded-lg text-text-secondary hover:text-accent-primary hover:bg-white/5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-            title="Send reply"
-            aria-label="Send reply"
-          >
-            <Send class="w-4 h-4" />
-          </button>
+        <div class="px-4 pb-4 pt-2 border-t border-white/5">
+          <div class="flex items-end gap-2 bg-surface-layer2 rounded-lg px-3 py-2 border border-white/5 focus-within:border-accent-primary/50 transition-colors">
+            <textarea
+              ref={textareaRef}
+              value={replyContent()}
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+              placeholder="Reply in thread..."
+              rows={1}
+              class="flex-1 bg-transparent text-text-primary text-sm placeholder-text-secondary/50 resize-none outline-none max-h-[120px]"
+            />
+            <button
+              onClick={handleSend}
+              disabled={!replyContent().trim() || sending()}
+              class="w-8 h-8 flex items-center justify-center rounded-lg text-text-secondary hover:text-accent-primary hover:bg-white/5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+              title="Send reply"
+              aria-label="Send reply"
+            >
+              <Send class="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      </div>
       </Show>
     </div>
   );

@@ -1,6 +1,10 @@
 import { Component, For, Show, createSignal } from "solid-js";
 import { User, MicOff, Volume2, Monitor, Camera } from "lucide-solid";
-import { voiceState, getLocalMetrics, getParticipantMetrics } from "@/stores/voice";
+import {
+  voiceState,
+  getLocalMetrics,
+  getParticipantMetrics,
+} from "@/stores/voice";
 import { authState } from "@/stores/auth";
 import { QualityIndicator } from "./QualityIndicator";
 import { QualityTooltip } from "./QualityTooltip";
@@ -22,7 +26,8 @@ const VoiceParticipants: Component<Props> = (props) => {
   // Remote participants from server (exclude current user, they're shown separately)
   const remoteParticipants = () => {
     return Object.values(voiceState.participants).filter(
-      (p) => voiceState.channelId === props.channelId && !isCurrentUser(p.user_id)
+      (p) =>
+        voiceState.channelId === props.channelId && !isCurrentUser(p.user_id),
     );
   };
 
@@ -30,11 +35,19 @@ const VoiceParticipants: Component<Props> = (props) => {
     return authState.user?.id === userId;
   };
 
-  const getUserDisplay = (participant: { user_id: string; display_name?: string; username?: string }) => {
+  const getUserDisplay = (participant: {
+    user_id: string;
+    display_name?: string;
+    username?: string;
+  }) => {
     if (isCurrentUser(participant.user_id)) {
       return authState.user?.display_name || authState.user?.username || "You";
     }
-    return participant.display_name || participant.username || participant.user_id.slice(0, 8);
+    return (
+      participant.display_name ||
+      participant.username ||
+      participant.user_id.slice(0, 8)
+    );
   };
 
   // Tooltip state for local user
@@ -55,13 +68,14 @@ const VoiceParticipants: Component<Props> = (props) => {
             onMouseEnter={() => setShowLocalTooltip(true)}
             onMouseLeave={() => setShowLocalTooltip(false)}
           >
-            <QualityIndicator
-              metrics={getLocalMetrics()}
-              mode="circle"
-            />
-            <Show when={showLocalTooltip() && typeof getLocalMetrics() === 'object'}>
+            <QualityIndicator metrics={getLocalMetrics()} mode="circle" />
+            <Show
+              when={showLocalTooltip() && typeof getLocalMetrics() === "object"}
+            >
               <div class="absolute bottom-full right-0 mb-2 z-50">
-                <QualityTooltip metrics={getLocalMetrics() as ConnectionMetrics} />
+                <QualityTooltip
+                  metrics={getLocalMetrics() as ConnectionMetrics}
+                />
               </div>
             </Show>
           </div>

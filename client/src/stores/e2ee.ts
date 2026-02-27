@@ -78,7 +78,7 @@ async function initialize(encryptionKey: string): Promise<InitE2EEResponse> {
  */
 async function encrypt(
   plaintext: string,
-  recipients: ClaimedPrekeyInput[]
+  recipients: ClaimedPrekeyInput[],
 ): Promise<E2EEContent> {
   if (!status().initialized) {
     throw new Error("E2EE not initialized");
@@ -98,13 +98,18 @@ async function decrypt(
   senderUserId: string,
   senderKey: string,
   messageType: number,
-  ciphertext: string
+  ciphertext: string,
 ): Promise<string> {
   if (!status().initialized) {
     throw new Error("E2EE not initialized");
   }
   try {
-    return await decryptMessage(senderUserId, senderKey, messageType, ciphertext);
+    return await decryptMessage(
+      senderUserId,
+      senderKey,
+      messageType,
+      ciphertext,
+    );
   } catch (e) {
     setError(String(e));
     throw e;

@@ -65,7 +65,10 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
   return (
     <Portal>
       <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-        <div class="border border-white/10 rounded-2xl w-[480px] max-h-[600px] flex flex-col shadow-2xl" style="background-color: var(--color-surface-base)">
+        <div
+          class="border border-white/10 rounded-2xl w-[480px] max-h-[600px] flex flex-col shadow-2xl"
+          style="background-color: var(--color-surface-base)"
+        >
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
             <h2 class="text-xl font-bold text-text-primary">Join a Server</h2>
@@ -106,8 +109,13 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
 
               {/* Error Message */}
               <Show when={error()}>
-                <div class="p-3 rounded-lg" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)">
-                  <p class="text-sm" style="color: var(--color-error-text)">{error()}</p>
+                <div
+                  class="p-3 rounded-lg"
+                  style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)"
+                >
+                  <p class="text-sm" style="color: var(--color-error-text)">
+                    {error()}
+                  </p>
                 </div>
               </Show>
             </div>

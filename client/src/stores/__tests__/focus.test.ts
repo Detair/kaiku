@@ -65,7 +65,9 @@ vi.mock("@/stores/preferences", () => {
     preferences: vi.fn(() => _prefs),
     updatePreference: vi.fn(),
     // Helper for tests to override preferences
-    __setPrefs: (p: typeof _prefs) => { _prefs = p; },
+    __setPrefs: (p: typeof _prefs) => {
+      _prefs = p;
+    },
   };
 });
 
@@ -140,7 +142,9 @@ describe("focus store", () => {
     it("allows VIP channel messages through suppression", () => {
       activateFocusMode("gaming");
 
-      const result = evaluateFocusPolicy(makeEvent({ channelId: "vip-channel-1" }));
+      const result = evaluateFocusPolicy(
+        makeEvent({ channelId: "vip-channel-1" }),
+      );
       expect(result).toBe("allow");
     });
 
@@ -148,7 +152,7 @@ describe("focus store", () => {
       activateFocusMode("gaming");
 
       const result = evaluateFocusPolicy(
-        makeEvent({ content: "This is URGENT please respond" })
+        makeEvent({ content: "This is URGENT please respond" }),
       );
       expect(result).toBe("allow");
     });
@@ -157,7 +161,7 @@ describe("focus store", () => {
       activateFocusMode("gaming");
 
       const result = evaluateFocusPolicy(
-        makeEvent({ content: "EMERGENCY situation" })
+        makeEvent({ content: "EMERGENCY situation" }),
       );
       expect(result).toBe("allow");
     });
@@ -166,7 +170,7 @@ describe("focus store", () => {
       activateFocusMode("gaming");
 
       const result = evaluateFocusPolicy(
-        makeEvent({ authorId: "random-user", content: "hey what's up" })
+        makeEvent({ authorId: "random-user", content: "hey what's up" }),
       );
       expect(result).toBe("suppress");
     });
@@ -174,9 +178,7 @@ describe("focus store", () => {
     it("allows mentions through in 'except_mentions' mode", () => {
       activateFocusMode("deep-work");
 
-      const result = evaluateFocusPolicy(
-        makeEvent({ mentionType: "direct" })
-      );
+      const result = evaluateFocusPolicy(makeEvent({ mentionType: "direct" }));
       expect(result).toBe("allow");
     });
 

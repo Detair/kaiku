@@ -2,7 +2,14 @@
  * ChannelPermissions - Channel permission override editor
  */
 
-import { Component, createSignal, For, Show, onMount, createEffect } from "solid-js";
+import {
+  Component,
+  createSignal,
+  For,
+  Show,
+  onMount,
+  createEffect,
+} from "solid-js";
 import { Plus, Settings, Trash2 } from "lucide-solid";
 import {
   loadChannelOverrides,
@@ -31,7 +38,9 @@ type OverrideState = "inherit" | "allow" | "deny";
 const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
   const [editingRoleId, setEditingRoleId] = createSignal<string | null>(null);
   const [showRolePicker, setShowRolePicker] = createSignal(false);
-  const [localOverrides, setLocalOverrides] = createSignal<Record<number, OverrideState>>({});
+  const [localOverrides, setLocalOverrides] = createSignal<
+    Record<number, OverrideState>
+  >({});
   const [isSaving, setIsSaving] = createSignal(false);
 
   onMount(() => {
@@ -56,14 +65,19 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
     return overrides().find((o) => o.role_id === roleId);
   };
 
-  const getOverrideState = (override: ChannelOverride | undefined, bit: number): OverrideState => {
+  const getOverrideState = (
+    override: ChannelOverride | undefined,
+    bit: number,
+  ): OverrideState => {
     if (!override) return "inherit";
     if (hasPermission(override.allow_permissions, bit)) return "allow";
     if (hasPermission(override.deny_permissions, bit)) return "deny";
     return "inherit";
   };
 
-  const countOverrides = (override: ChannelOverride): { allowed: number; denied: number } => {
+  const countOverrides = (
+    override: ChannelOverride,
+  ): { allowed: number; denied: number } => {
     let allowed = 0;
     let denied = 0;
     for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
@@ -137,7 +151,10 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
 
   // Group permissions by category
   const permissionsByCategory = () => {
-    const categories: Record<PermissionCategory, typeof CHANNEL_OVERRIDE_PERMISSIONS> = {
+    const categories: Record<
+      PermissionCategory,
+      typeof CHANNEL_OVERRIDE_PERMISSIONS
+    > = {
       content: [],
       voice: [],
       moderation: [],
@@ -159,7 +176,9 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
           <>
             {/* Header */}
             <div class="flex items-center justify-between mb-4">
-              <h3 class="text-sm font-semibold text-text-secondary uppercase">Role Overrides</h3>
+              <h3 class="text-sm font-semibold text-text-secondary uppercase">
+                Role Overrides
+              </h3>
               <div class="relative">
                 <button
                   onClick={() => setShowRolePicker(!showRolePicker())}
@@ -191,7 +210,9 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                               class="w-2.5 h-2.5 rounded-full"
                               style={{
                                 "background-color": role.color || "transparent",
-                                border: role.color ? "none" : "1px solid var(--color-text-secondary)",
+                                border: role.color
+                                  ? "none"
+                                  : "1px solid var(--color-text-secondary)",
                               }}
                             />
                             {role.is_default ? "@everyone" : role.name}
@@ -213,7 +234,9 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                 <For each={rolesWithOverrides()}>
                   {(role) => {
                     const override = getOverride(role.id);
-                    const counts = override ? countOverrides(override) : { allowed: 0, denied: 0 };
+                    const counts = override
+                      ? countOverrides(override)
+                      : { allowed: 0, denied: 0 };
 
                     return (
                       <div
@@ -224,7 +247,9 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                           class="w-3 h-3 rounded-full flex-shrink-0"
                           style={{
                             "background-color": role.color || "transparent",
-                            border: role.color ? "none" : "2px solid var(--color-text-secondary)",
+                            border: role.color
+                              ? "none"
+                              : "2px solid var(--color-text-secondary)",
                           }}
                         />
                         <div class="flex-1 min-w-0">
@@ -233,13 +258,24 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                           </div>
                           <div class="text-xs text-text-secondary">
                             <Show when={counts.allowed > 0}>
-                              <span class="text-green-400">+{counts.allowed} allowed</span>
+                              <span class="text-green-400">
+                                +{counts.allowed} allowed
+                              </span>
                             </Show>
-                            <Show when={counts.allowed > 0 && counts.denied > 0}> • </Show>
+                            <Show
+                              when={counts.allowed > 0 && counts.denied > 0}
+                            >
+                              {" "}
+                              •{" "}
+                            </Show>
                             <Show when={counts.denied > 0}>
-                              <span class="text-red-400">-{counts.denied} denied</span>
+                              <span class="text-red-400">
+                                -{counts.denied} denied
+                              </span>
                             </Show>
-                            <Show when={counts.allowed === 0 && counts.denied === 0}>
+                            <Show
+                              when={counts.allowed === 0 && counts.denied === 0}
+                            >
                               No overrides set
                             </Show>
                           </div>
@@ -264,7 +300,8 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                 </For>
                 <Show when={rolesWithOverrides().length === 0}>
                   <div class="text-center py-8 text-text-secondary">
-                    No permission overrides. All roles use their base permissions.
+                    No permission overrides. All roles use their base
+                    permissions.
                   </div>
                 </Show>
               </div>
@@ -303,12 +340,15 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                         <div class="space-y-1">
                           <For each={perms}>
                             {(perm) => {
-                              const state = () => localOverrides()[perm.bit] || "inherit";
+                              const state = () =>
+                                localOverrides()[perm.bit] || "inherit";
 
                               return (
                                 <div class="flex items-center gap-4 p-2 rounded-lg hover:bg-white/5">
                                   <div class="flex-1">
-                                    <div class="text-sm text-text-primary">{perm.name}</div>
+                                    <div class="text-sm text-text-primary">
+                                      {perm.name}
+                                    </div>
                                   </div>
                                   <div class="flex items-center gap-2">
                                     <label class="flex items-center gap-1 cursor-pointer">
@@ -316,30 +356,42 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                                         type="radio"
                                         name={`perm-${perm.bit}`}
                                         checked={state() === "inherit"}
-                                        onChange={() => handleStateChange(perm.bit, "inherit")}
+                                        onChange={() =>
+                                          handleStateChange(perm.bit, "inherit")
+                                        }
                                         class="w-4 h-4"
                                       />
-                                      <span class="text-xs text-text-secondary">Inherit</span>
+                                      <span class="text-xs text-text-secondary">
+                                        Inherit
+                                      </span>
                                     </label>
                                     <label class="flex items-center gap-1 cursor-pointer">
                                       <input
                                         type="radio"
                                         name={`perm-${perm.bit}`}
                                         checked={state() === "allow"}
-                                        onChange={() => handleStateChange(perm.bit, "allow")}
+                                        onChange={() =>
+                                          handleStateChange(perm.bit, "allow")
+                                        }
                                         class="w-4 h-4 accent-green-500"
                                       />
-                                      <span class="text-xs text-green-400">Allow</span>
+                                      <span class="text-xs text-green-400">
+                                        Allow
+                                      </span>
                                     </label>
                                     <label class="flex items-center gap-1 cursor-pointer">
                                       <input
                                         type="radio"
                                         name={`perm-${perm.bit}`}
                                         checked={state() === "deny"}
-                                        onChange={() => handleStateChange(perm.bit, "deny")}
+                                        onChange={() =>
+                                          handleStateChange(perm.bit, "deny")
+                                        }
                                         class="w-4 h-4 accent-red-500"
                                       />
-                                      <span class="text-xs text-red-400">Deny</span>
+                                      <span class="text-xs text-red-400">
+                                        Deny
+                                      </span>
                                     </label>
                                   </div>
                                 </div>

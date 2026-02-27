@@ -34,7 +34,10 @@ const LibraryViewRoute: Component = () => {
     const guildId = params.guildId;
     if (!userId || !guildId) return false;
     const isOwner = isGuildOwner(guildId, userId);
-    return isOwner || memberHasPermission(guildId, userId, isOwner, PermissionBits.MANAGE_PAGES);
+    return (
+      isOwner ||
+      memberHasPermission(guildId, userId, isOwner, PermissionBits.MANAGE_PAGES)
+    );
   };
 
   onMount(() => {

@@ -75,7 +75,10 @@ const TamperWarningModal: Component<TamperWarningModalProps> = (props) => {
               your system attempting to hijack your clipboard.
             </p>
 
-            <div class="flex gap-3 p-3 rounded-lg" style="background-color: var(--color-surface-base)">
+            <div
+              class="flex gap-3 p-3 rounded-lg"
+              style="background-color: var(--color-surface-base)"
+            >
               <div class="text-sm">
                 <p class="text-text-secondary">What you copied:</p>
                 <p class="text-text-primary font-medium">

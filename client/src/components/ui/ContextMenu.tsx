@@ -6,7 +6,14 @@
  * Follows the same global signal + Portal pattern as Toast.tsx.
  */
 
-import { Component, For, Show, createSignal, onMount, onCleanup } from "solid-js";
+import {
+  Component,
+  For,
+  Show,
+  createSignal,
+  onMount,
+  onCleanup,
+} from "solid-js";
 import { Dynamic, Portal } from "solid-js/web";
 
 // --- Types ---
@@ -34,7 +41,9 @@ interface ContextMenuState {
 
 // --- Type Guard ---
 
-export function isSeparator(entry: ContextMenuEntry): entry is ContextMenuSeparator {
+export function isSeparator(
+  entry: ContextMenuEntry,
+): entry is ContextMenuSeparator {
   return "separator" in entry && entry.separator === true;
 }
 
@@ -53,7 +62,10 @@ const [menuState, setMenuState] = createSignal<ContextMenuState>({
  * Show a context menu at the mouse position.
  * Automatically flips position if near the viewport edge.
  */
-export function showContextMenu(event: MouseEvent, items: ContextMenuEntry[]): void {
+export function showContextMenu(
+  event: MouseEvent,
+  items: ContextMenuEntry[],
+): void {
   event.preventDefault();
   event.stopPropagation();
 
@@ -120,13 +132,18 @@ const [focusedIndex, setFocusedIndex] = createSignal(-1);
 function getActionableIndices(items: ContextMenuEntry[]): number[] {
   return items
     .map((item, i) => ({ item, i }))
-    .filter(({ item }) => !isSeparator(item) && !(item as ContextMenuItem).disabled)
+    .filter(
+      ({ item }) => !isSeparator(item) && !(item as ContextMenuItem).disabled,
+    )
     .map(({ i }) => i);
 }
 
 // --- Components ---
 
-const ContextMenuItemButton: Component<{ item: ContextMenuItem; focused: boolean }> = (props) => {
+const ContextMenuItemButton: Component<{
+  item: ContextMenuItem;
+  focused: boolean;
+}> = (props) => {
   const handleClick = () => {
     if (props.item.disabled) return;
     hideContextMenu();
@@ -139,11 +156,12 @@ const ContextMenuItemButton: Component<{ item: ContextMenuItem; focused: boolean
       class={`
         w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-left rounded
         transition-colors cursor-default
-        ${props.item.disabled
-          ? "opacity-40 cursor-not-allowed"
-          : props.item.danger
-            ? "text-accent-error hover:bg-accent-error/10"
-            : "text-text-primary hover:bg-white/5"
+        ${
+          props.item.disabled
+            ? "opacity-40 cursor-not-allowed"
+            : props.item.danger
+              ? "text-accent-error hover:bg-accent-error/10"
+              : "text-text-primary hover:bg-white/5"
         }
         ${props.focused && !props.item.disabled ? "bg-white/10" : ""}
       `}
@@ -210,7 +228,8 @@ export const ContextMenuContainer: Component = () => {
       if (actionable.length > 0) setFocusedIndex(actionable[0]);
     } else if (e.key === "End") {
       e.preventDefault();
-      if (actionable.length > 0) setFocusedIndex(actionable[actionable.length - 1]);
+      if (actionable.length > 0)
+        setFocusedIndex(actionable[actionable.length - 1]);
     }
   };
 
@@ -252,7 +271,10 @@ export const ContextMenuContainer: Component = () => {
                   <div class="my-1 border-t border-white/10" role="separator" />
                 }
               >
-                <ContextMenuItemButton item={entry as ContextMenuItem} focused={focusedIndex() === index()} />
+                <ContextMenuItemButton
+                  item={entry as ContextMenuItem}
+                  focused={focusedIndex() === index()}
+                />
               </Show>
             )}
           </For>

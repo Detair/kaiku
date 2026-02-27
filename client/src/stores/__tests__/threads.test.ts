@@ -74,7 +74,11 @@ describe("threads store", () => {
     await loadMoreThreadReplies(parentId);
 
     expect(tauri.getThreadReplies).toHaveBeenCalledWith(parentId, "m2", 50);
-    expect(threadsState.repliesByThread[parentId].map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
+    expect(threadsState.repliesByThread[parentId].map((m) => m.id)).toEqual([
+      "m1",
+      "m2",
+      "m3",
+    ]);
     expect(threadsState.hasMore[parentId]).toBe(false);
   });
 
@@ -88,7 +92,10 @@ describe("threads store", () => {
 
   it("updates local read cursor to latest loaded reply when marking read", async () => {
     const parentId = "parent-1";
-    setThreadsState("repliesByThread", parentId, [createMessage("m1"), createMessage("m2")]);
+    setThreadsState("repliesByThread", parentId, [
+      createMessage("m1"),
+      createMessage("m2"),
+    ]);
     vi.mocked(tauri.markThreadRead).mockResolvedValueOnce(undefined);
 
     await markThreadRead(parentId);

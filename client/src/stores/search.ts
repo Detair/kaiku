@@ -7,8 +7,16 @@
 
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { SearchResult, SearchFilters, GlobalSearchResult } from "@/lib/types";
-import { searchGuildMessages, searchDMMessages, searchGlobalMessages } from "@/lib/tauri";
+import type {
+  SearchResult,
+  SearchFilters,
+  GlobalSearchResult,
+} from "@/lib/types";
+import {
+  searchGuildMessages,
+  searchDMMessages,
+  searchGlobalMessages,
+} from "@/lib/tauri";
 
 // ============================================================================
 // Types
@@ -67,7 +75,7 @@ const [showGlobalSearch, setShowGlobalSearch] = createSignal(false);
 export async function search(
   guildId: string,
   query: string,
-  filters: SearchFilters = {}
+  filters: SearchFilters = {},
 ): Promise<void> {
   // Skip if query is too short
   if (query.trim().length < 2) {
@@ -101,7 +109,7 @@ export async function search(
       query.trim(),
       searchState.limit,
       0,
-      filters
+      filters,
     );
 
     setSearchState({
@@ -126,7 +134,7 @@ export async function search(
  */
 export async function searchDMs(
   query: string,
-  filters: SearchFilters = {}
+  filters: SearchFilters = {},
 ): Promise<void> {
   // Skip if query is too short
   if (query.trim().length < 2) {
@@ -159,7 +167,7 @@ export async function searchDMs(
       query.trim(),
       searchState.limit,
       0,
-      filters
+      filters,
     );
 
     setSearchState({
@@ -184,7 +192,7 @@ export async function searchDMs(
  */
 export async function searchGlobal(
   query: string,
-  filters: SearchFilters = {}
+  filters: SearchFilters = {},
 ): Promise<void> {
   // Skip if query is too short
   if (query.trim().length < 2) {
@@ -217,7 +225,7 @@ export async function searchGlobal(
       query.trim(),
       searchState.limit,
       0,
-      filters
+      filters,
     );
 
     setSearchState({
@@ -262,21 +270,21 @@ export async function loadMore(): Promise<void> {
         searchState.query,
         searchState.limit,
         newOffset,
-        searchState.filters
+        searchState.filters,
       );
     } else if (searchState.context === "global") {
       response = await searchGlobalMessages(
         searchState.query,
         searchState.limit,
         newOffset,
-        searchState.filters
+        searchState.filters,
       );
     } else {
       response = await searchDMMessages(
         searchState.query,
         searchState.limit,
         newOffset,
-        searchState.filters
+        searchState.filters,
       );
     }
 

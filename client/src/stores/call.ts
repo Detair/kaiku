@@ -14,16 +14,35 @@ const CALL_ENDED_DISPLAY_MS = 3000;
 let callEndedTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
 // Call state types matching backend
-export type EndReason = "cancelled" | "all_declined" | "no_answer" | "last_left";
+export type EndReason =
+  | "cancelled"
+  | "all_declined"
+  | "no_answer"
+  | "last_left";
 
 export type CallState =
   | { status: "idle" }
   | { status: "outgoing_ringing"; channelId: string; startedAt: number }
-  | { status: "incoming_ringing"; channelId: string; initiator: string; initiatorName: string }
+  | {
+      status: "incoming_ringing";
+      channelId: string;
+      initiator: string;
+      initiatorName: string;
+    }
   | { status: "connecting"; channelId: string }
-  | { status: "connected"; channelId: string; participants: string[]; startedAt: number }
+  | {
+      status: "connected";
+      channelId: string;
+      participants: string[];
+      startedAt: number;
+    }
   | { status: "reconnecting"; channelId: string; countdown: number }
-  | { status: "ended"; channelId: string; reason: EndReason; duration?: number };
+  | {
+      status: "ended";
+      channelId: string;
+      reason: EndReason;
+      duration?: number;
+    };
 
 // Store state
 interface CallStoreState {
@@ -58,7 +77,7 @@ export function startCall(channelId: string): void {
 export function receiveIncomingCall(
   channelId: string,
   initiator: string,
-  initiatorName: string
+  initiatorName: string,
 ): void {
   // Only update if we're idle (don't interrupt an existing call)
   if (callState.currentCall.status === "idle") {
@@ -114,10 +133,13 @@ export function participantJoined(channelId: string, userId: string): void {
         if (state.currentCall.status === "connected") {
           // Prevent duplicate participants
           if (!state.currentCall.participants.includes(userId)) {
-            state.currentCall.participants = [...state.currentCall.participants, userId];
+            state.currentCall.participants = [
+              ...state.currentCall.participants,
+              userId,
+            ];
           }
         }
-      })
+      }),
     );
   }
   // Update active calls
@@ -125,11 +147,13 @@ export function participantJoined(channelId: string, userId: string): void {
     produce((state) => {
       if (state.activeCallsByChannel[channelId]) {
         // Prevent duplicate participants
-        if (!state.activeCallsByChannel[channelId].participants.includes(userId)) {
+        if (
+          !state.activeCallsByChannel[channelId].participants.includes(userId)
+        ) {
           state.activeCallsByChannel[channelId].participants.push(userId);
         }
       }
-    })
+    }),
   );
 }
 
@@ -142,22 +166,22 @@ export function participantLeft(channelId: string, userId: string): void {
     setCallState(
       produce((state) => {
         if (state.currentCall.status === "connected") {
-          state.currentCall.participants = state.currentCall.participants.filter(
-            (id) => id !== userId
-          );
+          state.currentCall.participants =
+            state.currentCall.participants.filter((id) => id !== userId);
         }
-      })
+      }),
     );
   }
   // Update active calls
   setCallState(
     produce((state) => {
       if (state.activeCallsByChannel[channelId]) {
-        state.activeCallsByChannel[channelId].participants = state.activeCallsByChannel[
-          channelId
-        ].participants.filter((id) => id !== userId);
+        state.activeCallsByChannel[channelId].participants =
+          state.activeCallsByChannel[channelId].participants.filter(
+            (id) => id !== userId,
+          );
       }
-    })
+    }),
   );
 }
 
@@ -166,7 +190,10 @@ export function participantLeft(channelId: string, userId: string): void {
  */
 export function declineCall(channelId: string): void {
   const current = callState.currentCall;
-  if (current.status === "incoming_ringing" && current.channelId === channelId) {
+  if (
+    current.status === "incoming_ringing" &&
+    current.channelId === channelId
+  ) {
     // Stop ringing when declining the call
     stopRinging();
     setCallState("currentCall", { status: "idle" });
@@ -176,7 +203,11 @@ export function declineCall(channelId: string): void {
 /**
  * End the current call (local action).
  */
-export function endCall(channelId: string, reason: EndReason, duration?: number): void {
+export function endCall(
+  channelId: string,
+  reason: EndReason,
+  duration?: number,
+): void {
   // Clear any existing timeout to prevent race conditions
   if (callEndedTimeoutId) {
     clearTimeout(callEndedTimeoutId);
@@ -193,7 +224,7 @@ export function endCall(channelId: string, reason: EndReason, duration?: number)
   setCallState(
     produce((state) => {
       delete state.activeCallsByChannel[channelId];
-    })
+    }),
   );
 
   // Reset to idle after showing ended state briefly
@@ -211,18 +242,22 @@ export function endCall(channelId: string, reason: EndReason, duration?: number)
 export function callEndedExternally(
   channelId: string,
   reason: EndReason,
-  duration?: number
+  duration?: number,
 ): void {
   // Remove from active calls
   setCallState(
     produce((state) => {
       delete state.activeCallsByChannel[channelId];
-    })
+    }),
   );
 
   // Update current call if it's the one that ended
   const current = callState.currentCall;
-  if (current.status !== "idle" && "channelId" in current && current.channelId === channelId) {
+  if (
+    current.status !== "idle" &&
+    "channelId" in current &&
+    current.channelId === channelId
+  ) {
     // Stop ringing if we were being called
     if (current.status === "incoming_ringing") {
       stopRinging();
@@ -253,8 +288,10 @@ export function getCurrentCall(): CallState {
  * for reactivity to work. Store reads are automatically tracked by Solid.js.
  */
 export function getActiveCallForChannel(
-  channelId: string
-): { initiator: string; initiatorName: string; participants: string[] } | undefined {
+  channelId: string,
+):
+  | { initiator: string; initiatorName: string; participants: string[] }
+  | undefined {
   return callState.activeCallsByChannel[channelId];
 }
 

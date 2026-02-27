@@ -7,7 +7,15 @@
 
 import { Component, createSignal, Show, For } from "solid-js";
 import { Portal } from "solid-js/web";
-import { Copy, Download, X, Shield, Check, Loader2, AlertTriangle } from "lucide-solid";
+import {
+  Copy,
+  Download,
+  X,
+  Shield,
+  Check,
+  Loader2,
+  AlertTriangle,
+} from "lucide-solid";
 import { secureCopy } from "@/lib/clipboard";
 
 interface RecoveryKeyModalProps {
@@ -87,9 +95,7 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
             <div class="bg-surface-base rounded-xl p-4 font-mono text-lg text-center">
               <div class="grid grid-cols-4 gap-2">
                 <For each={props.keyChunks}>
-                  {(chunk) => (
-                    <span class="text-text-primary">{chunk}</span>
-                  )}
+                  {(chunk) => <span class="text-text-primary">{chunk}</span>}
                 </For>
               </div>
             </div>

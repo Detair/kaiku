@@ -3,9 +3,10 @@ import { A } from "@solidjs/router";
 
 const ForgotPassword: Component = () => {
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
-  const storedUrl = typeof localStorage !== "undefined"
-    ? localStorage.getItem("serverUrl") || ""
-    : "";
+  const storedUrl =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("serverUrl") || ""
+      : "";
   const [serverUrl, setServerUrl] = createSignal(storedUrl || defaultServerUrl);
   const [email, setEmail] = createSignal("");
   const [error, setError] = createSignal("");
@@ -28,11 +29,14 @@ const ForgotPassword: Component = () => {
 
     setIsLoading(true);
     try {
-      const res = await fetch(`${serverUrl().replace(/\/+$/, "")}/auth/forgot-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email() }),
-      });
+      const res = await fetch(
+        `${serverUrl().replace(/\/+$/, "")}/auth/forgot-password`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email() }),
+        },
+      );
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
@@ -61,7 +65,10 @@ const ForgotPassword: Component = () => {
         <Show when={!success()}>
           <form onSubmit={handleSubmit} class="space-y-4">
             <div>
-              <label for="fp-server-url" class="block text-sm font-medium text-text-secondary mb-1">
+              <label
+                for="fp-server-url"
+                class="block text-sm font-medium text-text-secondary mb-1"
+              >
                 Server URL
               </label>
               <input
@@ -77,7 +84,10 @@ const ForgotPassword: Component = () => {
             </div>
 
             <div>
-              <label for="fp-email" class="block text-sm font-medium text-text-secondary mb-1">
+              <label
+                for="fp-email"
+                class="block text-sm font-medium text-text-secondary mb-1"
+              >
                 Email
               </label>
               <input
@@ -93,7 +103,11 @@ const ForgotPassword: Component = () => {
             </div>
 
             <Show when={error()}>
-              <div role="alert" class="p-3 rounded-md text-sm" style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)">
+              <div
+                role="alert"
+                class="p-3 rounded-md text-sm"
+                style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+              >
                 {error()}
               </div>
             </Show>
@@ -125,8 +139,12 @@ const ForgotPassword: Component = () => {
         </Show>
 
         <Show when={success()}>
-          <div class="p-4 rounded-md text-sm mb-4" style="background-color: var(--color-success-bg, rgba(34,197,94,0.1)); border: 1px solid var(--color-success-border, rgba(34,197,94,0.3)); color: var(--color-success-text, #22c55e)">
-            If an account with that email exists, a reset code has been sent. Check your inbox.
+          <div
+            class="p-4 rounded-md text-sm mb-4"
+            style="background-color: var(--color-success-bg, rgba(34,197,94,0.1)); border: 1px solid var(--color-success-border, rgba(34,197,94,0.3)); color: var(--color-success-text, #22c55e)"
+          >
+            If an account with that email exists, a reset code has been sent.
+            Check your inbox.
           </div>
           <div class="space-y-3">
             <A

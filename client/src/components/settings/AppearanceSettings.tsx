@@ -55,7 +55,8 @@ const AppearanceSettings: Component = () => {
                     <span
                       class="text-xs px-1.5 py-0.5 rounded"
                       classList={{
-                        "bg-surface-highlight text-text-secondary": theme.isDark,
+                        "bg-surface-highlight text-text-secondary":
+                          theme.isDark,
                         "bg-amber-100 text-amber-800": !theme.isDark,
                       }}
                     >
@@ -88,7 +89,11 @@ const AppearanceSettings: Component = () => {
         <button
           onClick={() => {
             updatePreference("onboarding_completed", false);
-            showToast({ type: "info", title: "Onboarding Reset", message: "Close settings to start the onboarding wizard." });
+            showToast({
+              type: "info",
+              title: "Onboarding Reset",
+              message: "Close settings to start the onboarding wizard.",
+            });
           }}
           class="flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-surface-layer2 border border-white/10 text-text-secondary hover:text-text-primary hover:border-white/20 transition-colors"
         >

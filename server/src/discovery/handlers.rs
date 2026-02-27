@@ -24,6 +24,8 @@ pub enum DiscoveryError {
     Disabled,
     #[error("Guild not found or not discoverable")]
     NotFound,
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
     #[error("Validation error: {0}")]
     Validation(String),
     #[error("Limit exceeded: {0}")]
@@ -45,6 +47,7 @@ impl IntoResponse for DiscoveryError {
                 "GUILD_NOT_FOUND",
                 "Guild not found or not discoverable".to_string(),
             ),
+            Self::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),
             Self::Database(err) => {
@@ -273,11 +276,32 @@ pub async fn join_discoverable(
 
     let guild_name = guild.ok_or(DiscoveryError::NotFound)?.0;
 
-    // TODO: Check guild_bans table here when the ban system is implemented.
-    // Discovery join is frictionless (no invite code), so banned users must be blocked.
+    let globally_banned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
+    )
+    .bind(auth.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if globally_banned {
+        return Err(DiscoveryError::Forbidden(
+            "You are banned and cannot join guilds via discovery".to_string(),
+        ));
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    // Serialize member joins per guild so limit checks are strict under concurrency.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 53))")
+        .bind(guild_id)
+        .execute(&mut *tx)
+        .await?;
 
     // Check member limit before attempting insert
-    let member_count = crate::guild::limits::get_member_count(&state.db, guild_id).await?;
+    let member_count: i64 = sqlx::query_scalar("SELECT member_count FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .fetch_one(&mut *tx)
+        .await?;
     if member_count >= state.config.max_members_per_guild {
         return Err(DiscoveryError::LimitExceeded(format!(
             "Guild has reached the maximum number of members ({})",
@@ -291,8 +315,10 @@ pub async fn join_discoverable(
     )
     .bind(guild_id)
     .bind(auth.id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     // If no rows affected, user was already a member
     if result.rows_affected() == 0 {

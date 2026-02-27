@@ -27,7 +27,10 @@ const [isLoading, setIsLoading] = createSignal(false);
 export const favoritesByGuild = createMemo(() => {
   const grouped = new Map<
     string,
-    { guild: { id: string; name: string; icon: string | null }; channels: FavoriteChannel[] }
+    {
+      guild: { id: string; name: string; icon: string | null };
+      channels: FavoriteChannel[];
+    }
   >();
 
   for (const fav of favorites()) {
@@ -83,7 +86,9 @@ async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
       }
       case "PUT":
         if (endpoint.includes("reorder-guilds")) {
-          return invoke("reorder_favorite_guilds", { guildIds: body.guild_ids }) as Promise<T>;
+          return invoke("reorder_favorite_guilds", {
+            guildIds: body.guild_ids,
+          }) as Promise<T>;
         }
         return invoke("reorder_favorite_channels", {
           guildId: body.guild_id,
@@ -126,7 +131,9 @@ async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
 export async function loadFavorites(): Promise<void> {
   setIsLoading(true);
   try {
-    const response = await apiCall<FavoriteChannel[] | { favorites: FavoriteChannel[] }>("/api/me/favorites");
+    const response = await apiCall<
+      FavoriteChannel[] | { favorites: FavoriteChannel[] }
+    >("/api/me/favorites");
     // Handle both shapes: Tauri returns array directly, browser returns { favorites: [...] }
     const data = Array.isArray(response) ? response : response.favorites;
     setFavorites(data);
@@ -143,7 +150,7 @@ export async function addFavorite(
   guildName: string,
   guildIcon: string | null,
   channelName: string,
-  channelType: "text" | "voice"
+  channelType: "text" | "voice",
 ): Promise<boolean> {
   try {
     const result = await apiCall<Favorite>(`/api/me/favorites/${channelId}`, {
@@ -166,9 +173,15 @@ export async function addFavorite(
     ]);
     return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to add favorite";
+    const message =
+      error instanceof Error ? error.message : "Failed to add favorite";
     console.error("Failed to add favorite:", message);
-    showToast({ type: "error", title: "Favorite Failed", message: "Could not add favorite. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Favorite Failed",
+      message: "Could not add favorite. Please try again.",
+      duration: 8000,
+    });
     throw new Error(message);
   }
 }
@@ -179,9 +192,15 @@ export async function removeFavorite(channelId: string): Promise<boolean> {
     setFavorites((prev) => prev.filter((f) => f.channel_id !== channelId));
     return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to remove favorite";
+    const message =
+      error instanceof Error ? error.message : "Failed to remove favorite";
     console.error("Failed to remove favorite:", message);
-    showToast({ type: "error", title: "Unfavorite Failed", message: "Could not remove favorite. Please try again.", duration: 8000 });
+    showToast({
+      type: "error",
+      title: "Unfavorite Failed",
+      message: "Could not remove favorite. Please try again.",
+      duration: 8000,
+    });
     throw new Error(message);
   }
 }
@@ -192,13 +211,20 @@ export async function toggleFavorite(
   guildName: string,
   guildIcon: string | null,
   channelName: string,
-  channelType: "text" | "voice"
+  channelType: "text" | "voice",
 ): Promise<boolean> {
   try {
     if (isFavorited(channelId)) {
       await removeFavorite(channelId);
     } else {
-      await addFavorite(channelId, guildId, guildName, guildIcon, channelName, channelType);
+      await addFavorite(
+        channelId,
+        guildId,
+        guildName,
+        guildIcon,
+        channelName,
+        channelType,
+      );
     }
     return true;
   } catch {
@@ -207,7 +233,10 @@ export async function toggleFavorite(
   }
 }
 
-export async function reorderChannels(guildId: string, channelIds: string[]): Promise<boolean> {
+export async function reorderChannels(
+  guildId: string,
+  channelIds: string[],
+): Promise<boolean> {
   try {
     await apiCall("/api/me/favorites/reorder", {
       method: "PUT",

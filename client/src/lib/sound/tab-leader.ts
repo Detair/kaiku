@@ -54,7 +54,10 @@ export function initTabLeader(): void {
   attemptBecomeLeader();
 
   // Start checking for dead leaders
-  checkLeaderInterval = window.setInterval(checkLeaderAlive, HEARTBEAT_INTERVAL);
+  checkLeaderInterval = window.setInterval(
+    checkLeaderAlive,
+    HEARTBEAT_INTERVAL,
+  );
 
   // Clean up on unload
   window.addEventListener("beforeunload", cleanup);
@@ -126,7 +129,7 @@ function broadcastMessage(message: LeaderMessage): void {
     if (message.type === "heartbeat" && isLeader) {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ tabId, timestamp: Date.now() })
+        JSON.stringify({ tabId, timestamp: Date.now() }),
       );
     }
   } catch {

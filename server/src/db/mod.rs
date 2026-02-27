@@ -12,6 +12,15 @@
 //! Database Layer
 //!
 //! `PostgreSQL` and Redis connections.
+//!
+//! Advisory Lock Seed Registry
+//! - 41 = `workspace_create`
+//! - 43 = `workspace_entry`
+//! - 51 = `guild_create`
+//! - 53 = `guild_member_join` (used by both invite joins and discovery joins)
+//!   - Called from: server/src/guild/invites.rs (invite join path)
+//!   - Called from: server/src/discovery/handlers.rs (discovery join path)
+//!
 
 mod models;
 mod queries;

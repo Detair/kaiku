@@ -5,10 +5,25 @@
  * and initializes encryption after user confirms they've saved it.
  */
 
-import { Component, createSignal, createEffect, Show, For, onCleanup } from "solid-js";
+import {
+  Component,
+  createSignal,
+  createEffect,
+  Show,
+  For,
+  onCleanup,
+} from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
-import { Shield, Copy, Download, Check, Loader2, AlertTriangle, X } from "lucide-solid";
+import {
+  Shield,
+  Copy,
+  Download,
+  Check,
+  Loader2,
+  AlertTriangle,
+  X,
+} from "lucide-solid";
 import { secureCopy } from "@/lib/clipboard";
 import { e2eeStore } from "@/stores/e2ee";
 import { uploadKeys, markPrekeysPublished } from "@/lib/tauri";
@@ -38,7 +53,7 @@ async function generateRecoveryKey(): Promise<RecoveryKey> {
     throw new Error("E2EE requires the native Tauri app");
   }
   const result = await invoke<{ full_key: string; chunks: string[] }>(
-    "generate_recovery_key"
+    "generate_recovery_key",
   );
   return {
     fullKey: result.full_key,
@@ -65,7 +80,10 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
           setRecoveryKey(key);
         })
         .catch((err) => {
-          console.error("[E2EESetupModal] Failed to generate recovery key:", err);
+          console.error(
+            "[E2EESetupModal] Failed to generate recovery key:",
+            err,
+          );
           setError("Failed to generate recovery key. Please try again.");
         })
         .finally(() => {
@@ -132,7 +150,7 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
         null, // device_name (optional)
         initResponse.identity_key_ed25519,
         initResponse.identity_key_curve25519,
-        initResponse.prekeys
+        initResponse.prekeys,
       );
 
       // 3. Mark prekeys as published
@@ -149,7 +167,7 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
       setError(
         err instanceof Error
           ? err.message
-          : "Failed to set up encryption. Please try again."
+          : "Failed to set up encryption. Please try again.",
       );
     } finally {
       setIsLoading(false);

@@ -11,7 +11,9 @@ import {
 } from "../screenShareViewer";
 
 // Mock MediaStreamTrack
-function createMockTrack(readyState: "live" | "ended" = "live"): MediaStreamTrack {
+function createMockTrack(
+  readyState: "live" | "ended" = "live",
+): MediaStreamTrack {
   const track = {
     readyState,
     onended: null as (() => void) | null,

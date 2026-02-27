@@ -11,9 +11,23 @@
  * Session elevation status is displayed with countdown timer.
  */
 
-import { Component, Show, createSignal, onMount, createEffect, onCleanup } from "solid-js";
+import {
+  Component,
+  Show,
+  createSignal,
+  onMount,
+  createEffect,
+  onCleanup,
+} from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { ArrowLeft, Shield, ShieldAlert, Users, Building2, Ban } from "lucide-solid";
+import {
+  ArrowLeft,
+  Shield,
+  ShieldAlert,
+  Users,
+  Building2,
+  Ban,
+} from "lucide-solid";
 import {
   adminState,
   checkAdminStatus,
@@ -154,7 +168,9 @@ const AdminDashboard: Component = () => {
                 <div class="max-w-4xl mx-auto space-y-6">
                   {/* Quick Stats */}
                   <section>
-                    <h2 class="text-lg font-bold text-text-primary mb-4">Quick Stats</h2>
+                    <h2 class="text-lg font-bold text-text-primary mb-4">
+                      Quick Stats
+                    </h2>
                     <div class="grid grid-cols-3 gap-4">
                       {/* Users Card */}
                       <div class="p-4 rounded-xl bg-white/5 border border-white/10">
@@ -166,7 +182,9 @@ const AdminDashboard: Component = () => {
                         </div>
                         <div class="text-2xl font-bold text-text-primary">
                           <Show
-                            when={!adminState.isStatsLoading && adminState.stats}
+                            when={
+                              !adminState.isStatsLoading && adminState.stats
+                            }
                             fallback="..."
                           >
                             {adminState.stats?.user_count ?? 0}
@@ -184,7 +202,9 @@ const AdminDashboard: Component = () => {
                         </div>
                         <div class="text-2xl font-bold text-text-primary">
                           <Show
-                            when={!adminState.isStatsLoading && adminState.stats}
+                            when={
+                              !adminState.isStatsLoading && adminState.stats
+                            }
                             fallback="..."
                           >
                             {adminState.stats?.guild_count ?? 0}
@@ -202,7 +222,9 @@ const AdminDashboard: Component = () => {
                         </div>
                         <div class="text-2xl font-bold text-text-primary">
                           <Show
-                            when={!adminState.isStatsLoading && adminState.stats}
+                            when={
+                              !adminState.isStatsLoading && adminState.stats
+                            }
                             fallback="..."
                           >
                             {adminState.stats?.banned_count ?? 0}
@@ -214,7 +236,9 @@ const AdminDashboard: Component = () => {
 
                   {/* Quick Actions */}
                   <section>
-                    <h2 class="text-lg font-bold text-text-primary mb-4">Quick Actions</h2>
+                    <h2 class="text-lg font-bold text-text-primary mb-4">
+                      Quick Actions
+                    </h2>
                     <div class="flex gap-3">
                       <button
                         onClick={() => setActivePanel("users")}
@@ -251,8 +275,9 @@ const AdminDashboard: Component = () => {
                               Session Not Elevated
                             </h3>
                             <p class="text-sm text-text-secondary mt-1">
-                              Some admin actions require session elevation. Use the quick access
-                              modal (Ctrl+Shift+A) to elevate your session with MFA verification.
+                              Some admin actions require session elevation. Use
+                              the quick access modal (Ctrl+Shift+A) to elevate
+                              your session with MFA verification.
                             </p>
                           </div>
                         </div>

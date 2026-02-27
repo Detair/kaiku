@@ -10,7 +10,12 @@ import { dmsState, getSelectedDM } from "@/stores/dms";
 import { getUserActivity } from "@/stores/presence";
 import { currentUser } from "@/stores/auth";
 import { ActivityIndicator } from "@/components/ui";
-import { ActiveNowModule, PendingModule, PinsModule, UnreadModule } from "./modules";
+import {
+  ActiveNowModule,
+  PendingModule,
+  PinsModule,
+  UnreadModule,
+} from "./modules";
 
 const HomeRightPanel: Component = () => {
   const dm = () => getSelectedDM();
@@ -18,7 +23,7 @@ const HomeRightPanel: Component = () => {
     const currentDM = dm();
     if (!currentDM) return [];
     const me = currentUser();
-    return currentDM.participants.filter(p => p.user_id !== me?.id);
+    return currentDM.participants.filter((p) => p.user_id !== me?.id);
   };
   const isGroupDM = () => otherParticipants().length > 1;
 
@@ -44,7 +49,9 @@ const HomeRightPanel: Component = () => {
               <div class="flex flex-col items-center">
                 <div class="w-20 h-20 rounded-full bg-accent-primary flex items-center justify-center mb-3">
                   <span class="text-2xl font-bold text-white">
-                    {otherParticipants()[0]?.display_name?.charAt(0).toUpperCase()}
+                    {otherParticipants()[0]
+                      ?.display_name?.charAt(0)
+                      .toUpperCase()}
                   </span>
                 </div>
                 <h3 class="text-lg font-semibold text-text-primary">
@@ -54,9 +61,18 @@ const HomeRightPanel: Component = () => {
                   @{otherParticipants()[0]?.username}
                 </p>
                 {/* Activity */}
-                <Show when={otherParticipants()[0]?.user_id && getUserActivity(otherParticipants()[0].user_id)}>
+                <Show
+                  when={
+                    otherParticipants()[0]?.user_id &&
+                    getUserActivity(otherParticipants()[0].user_id)
+                  }
+                >
                   <div class="mt-3 w-full px-3 py-2 rounded-lg bg-white/5">
-                    <ActivityIndicator activity={getUserActivity(otherParticipants()[0].user_id)!} />
+                    <ActivityIndicator
+                      activity={
+                        getUserActivity(otherParticipants()[0].user_id)!
+                      }
+                    />
                   </div>
                 </Show>
               </div>
@@ -78,9 +94,14 @@ const HomeRightPanel: Component = () => {
                       </span>
                     </div>
                     <div class="min-w-0 flex-1">
-                      <span class="text-sm text-text-primary">{p.display_name}</span>
+                      <span class="text-sm text-text-primary">
+                        {p.display_name}
+                      </span>
                       <Show when={p.user_id && getUserActivity(p.user_id)}>
-                        <ActivityIndicator activity={getUserActivity(p.user_id)!} compact />
+                        <ActivityIndicator
+                          activity={getUserActivity(p.user_id)!}
+                          compact
+                        />
                       </Show>
                     </div>
                   </div>

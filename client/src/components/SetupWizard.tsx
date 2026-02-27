@@ -67,7 +67,9 @@ async function fetchSetupConfig(): Promise<SetupConfig> {
     } else {
       // Unexpected error (OOM, extension interference, etc.)
       console.error("[SetupWizard] Unexpected error parsing JSON:", parseError);
-      throw new Error(`Failed to parse server response: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to parse server response: ${parseError instanceof Error ? parseError.message : "Unknown error"}`,
+      );
     }
   }
 }
@@ -90,7 +92,7 @@ async function completeSetup(config: SetupConfig): Promise<void> {
   }
 
   // Basic JWT validation: should have 3 parts (header.payload.signature)
-  const parts = accessToken.split('.');
+  const parts = accessToken.split(".");
   if (parts.length !== 3) {
     throw new Error("Access token is malformed. Please log in again.");
   }
@@ -124,11 +126,14 @@ async function completeSetup(config: SetupConfig): Promise<void> {
     let errorMessage = `Setup failed (HTTP ${response.status})`;
 
     // Read body as text first to avoid double consumption
-    let bodyText = '';
+    let bodyText = "";
     try {
       bodyText = await response.text();
     } catch (textError) {
-      console.error("[SetupWizard] Failed to read error response body:", textError);
+      console.error(
+        "[SetupWizard] Failed to read error response body:",
+        textError,
+      );
     }
 
     // Try to parse as JSON
@@ -138,9 +143,14 @@ async function completeSetup(config: SetupConfig): Promise<void> {
         errorMessage = errorBody.message || errorBody.error || errorMessage;
 
         // Handle specific error codes
-        if (response.status === 403 && errorBody.error === "SETUP_ALREADY_COMPLETE") {
+        if (
+          response.status === 403 &&
+          errorBody.error === "SETUP_ALREADY_COMPLETE"
+        ) {
           // Setup was completed by another admin - close the wizard
-          console.warn("[SetupWizard] Setup already completed by another admin");
+          console.warn(
+            "[SetupWizard] Setup already completed by another admin",
+          );
           clearSetupRequired();
           return;
         }
@@ -151,7 +161,10 @@ async function completeSetup(config: SetupConfig): Promise<void> {
       }
     } catch (parseError) {
       // If JSON parse fails but we have specific errors from above, re-throw them
-      if (parseError instanceof Error && parseError.message.includes("session has expired")) {
+      if (
+        parseError instanceof Error &&
+        parseError.message.includes("session has expired")
+      ) {
         throw parseError;
       }
       // Otherwise, use the raw text as error message
@@ -167,7 +180,9 @@ async function completeSetup(config: SetupConfig): Promise<void> {
 const SetupWizard: Component = () => {
   // Form state
   const [serverName, setServerName] = createSignal("");
-  const [registrationPolicy, setRegistrationPolicy] = createSignal<"open" | "invite_only" | "closed">("open");
+  const [registrationPolicy, setRegistrationPolicy] = createSignal<
+    "open" | "invite_only" | "closed"
+  >("open");
   const [termsUrl, setTermsUrl] = createSignal("");
   const [privacyUrl, setPrivacyUrl] = createSignal("");
 
@@ -192,14 +207,14 @@ const SetupWizard: Component = () => {
       setPrivacyUrl(config.privacy_url || "");
       setIsConfigLoaded(true);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
       console.error("[SetupWizard] Failed to load config:", {
         error: errorMessage,
         setupRequired: authState.setupRequired,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
       setError(
-        `Failed to load setup configuration. Please check your connection and refresh the page. Error: ${errorMessage}`
+        `Failed to load setup configuration. Please check your connection and refresh the page. Error: ${errorMessage}`,
       );
     } finally {
       setIsLoadingConfig(false);
@@ -267,8 +282,9 @@ const SetupWizard: Component = () => {
           {/* Info banner */}
           <div class="mb-6 px-4 py-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
             <p class="text-sm text-blue-200">
-              As the first user, you've been granted <strong>system admin</strong> permissions.
-              These settings can be changed later in the admin panel.
+              As the first user, you've been granted{" "}
+              <strong>system admin</strong> permissions. These settings can be
+              changed later in the admin panel.
             </p>
           </div>
 
@@ -316,12 +332,18 @@ const SetupWizard: Component = () => {
               </label>
               <select
                 value={registrationPolicy()}
-                onChange={(e) => setRegistrationPolicy(e.currentTarget.value as "open" | "invite_only" | "closed")}
+                onChange={(e) =>
+                  setRegistrationPolicy(
+                    e.currentTarget.value as "open" | "invite_only" | "closed",
+                  )
+                }
                 disabled={isLoading()}
                 class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="open">Open - Anyone can register</option>
-                <option value="invite_only">Invite Only - Requires invite code</option>
+                <option value="invite_only">
+                  Invite Only - Requires invite code
+                </option>
                 <option value="closed">Closed - Registration disabled</option>
               </select>
               <p class="mt-1 text-xs text-text-muted">
@@ -387,7 +409,8 @@ const SetupWizard: Component = () => {
           {/* Footer note */}
           <div class="mt-4 pt-4 border-t border-white/10">
             <p class="text-xs text-text-muted text-center">
-              <strong>Note:</strong> Setup can only be completed once and cannot be undone.
+              <strong>Note:</strong> Setup can only be completed once and cannot
+              be undone.
             </p>
           </div>
         </div>

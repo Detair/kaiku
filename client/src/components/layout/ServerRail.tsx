@@ -16,15 +16,26 @@
 
 import { Component, createSignal, For, Show, lazy, Suspense } from "solid-js";
 import { Home, Plus, UserPlus, Compass } from "lucide-solid";
-import { guildsState, selectHome, selectGuild, getGuildUnreadCount, selectDiscovery, isDiscoveryActive } from "@/stores/guilds";
+import {
+  guildsState,
+  selectHome,
+  selectGuild,
+  getGuildUnreadCount,
+  selectDiscovery,
+  isDiscoveryActive,
+} from "@/stores/guilds";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 
-const CreateGuildModal = lazy(() => import("@/components/guilds/CreateGuildModal"));
+const CreateGuildModal = lazy(
+  () => import("@/components/guilds/CreateGuildModal"),
+);
 const JoinGuildModal = lazy(() => import("@/components/guilds/JoinGuildModal"));
 
 const ServerRail: Component = () => {
   // Hover state (still local to component)
-  const [hoveredServerId, setHoveredServerId] = createSignal<string | null>(null);
+  const [hoveredServerId, setHoveredServerId] = createSignal<string | null>(
+    null,
+  );
   const [showCreateModal, setShowCreateModal] = createSignal(false);
   const [showJoinModal, setShowJoinModal] = createSignal(false);
 
@@ -104,7 +115,8 @@ const ServerRail: Component = () => {
                   class="w-12 h-12 flex items-center justify-center bg-surface-layer2 transition-all duration-200 cursor-pointer overflow-hidden"
                   style={{
                     "border-radius": getBorderRadius(guild.id),
-                    opacity: isActive(guild.id) || isHovered(guild.id) ? 1 : 0.8,
+                    opacity:
+                      isActive(guild.id) || isHovered(guild.id) ? 1 : 0.8,
                   }}
                   onMouseEnter={() => setHoveredServerId(guild.id)}
                   onMouseLeave={() => setHoveredServerId(null)}
@@ -127,7 +139,9 @@ const ServerRail: Component = () => {
                 {/* Unread badge */}
                 <Show when={getGuildUnreadCount(guild.id) > 0}>
                   <div class="absolute -bottom-0.5 -right-0.5 min-w-4 h-4 px-1 bg-accent-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center pointer-events-none">
-                    {getGuildUnreadCount(guild.id) > 99 ? "99+" : getGuildUnreadCount(guild.id)}
+                    {getGuildUnreadCount(guild.id) > 99
+                      ? "99+"
+                      : getGuildUnreadCount(guild.id)}
                   </div>
                 </Show>
               </div>
@@ -151,7 +165,8 @@ const ServerRail: Component = () => {
         <button
           class="w-12 h-12 flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group"
           style={{
-            "border-radius": isDiscoveryActive() || isHovered("discover") ? "16px" : "50%",
+            "border-radius":
+              isDiscoveryActive() || isHovered("discover") ? "16px" : "50%",
             opacity: isDiscoveryActive() || isHovered("discover") ? 1 : 0.8,
           }}
           onMouseEnter={() => setHoveredServerId("discover")}

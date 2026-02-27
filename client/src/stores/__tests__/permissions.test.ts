@@ -23,10 +23,46 @@ import {
 } from "../permissions";
 
 const mockRoles = [
-  { id: "role1", guild_id: "guild1", name: "Admin", position: 0, permissions: 8, color: "#ff0000", is_default: false, created_at: "2024-01-01T00:00:00Z" },
-  { id: "role2", guild_id: "guild1", name: "Mod", position: 1, permissions: 4, color: "#00ff00", is_default: false, created_at: "2024-01-01T00:00:00Z" },
-  { id: "role3", guild_id: "guild1", name: "Member", position: 2, permissions: 1, color: "#0000ff", is_default: false, created_at: "2024-01-01T00:00:00Z" },
-  { id: "everyone", guild_id: "guild1", name: "@everyone", position: 3, permissions: 0, color: null, is_default: true, created_at: "2024-01-01T00:00:00Z" },
+  {
+    id: "role1",
+    guild_id: "guild1",
+    name: "Admin",
+    position: 0,
+    permissions: 8,
+    color: "#ff0000",
+    is_default: false,
+    created_at: "2024-01-01T00:00:00Z",
+  },
+  {
+    id: "role2",
+    guild_id: "guild1",
+    name: "Mod",
+    position: 1,
+    permissions: 4,
+    color: "#00ff00",
+    is_default: false,
+    created_at: "2024-01-01T00:00:00Z",
+  },
+  {
+    id: "role3",
+    guild_id: "guild1",
+    name: "Member",
+    position: 2,
+    permissions: 1,
+    color: "#0000ff",
+    is_default: false,
+    created_at: "2024-01-01T00:00:00Z",
+  },
+  {
+    id: "everyone",
+    guild_id: "guild1",
+    name: "@everyone",
+    position: 3,
+    permissions: 0,
+    color: null,
+    is_default: true,
+    created_at: "2024-01-01T00:00:00Z",
+  },
 ];
 
 describe("permissions store", () => {
@@ -36,7 +72,12 @@ describe("permissions store", () => {
 
   describe("loadGuildRoles", () => {
     it("should load and sort roles by position", async () => {
-      const unsortedRoles = [mockRoles[2], mockRoles[0], mockRoles[3], mockRoles[1]];
+      const unsortedRoles = [
+        mockRoles[2],
+        mockRoles[0],
+        mockRoles[3],
+        mockRoles[1],
+      ];
       vi.mocked(tauri.getGuildRoles).mockResolvedValue(unsortedRoles);
 
       await loadGuildRoles("guild1");
@@ -67,14 +108,20 @@ describe("permissions store", () => {
       await reorderRole("guild1", "role2", 0);
 
       // Verify optimistic update happened
-      expect(tauri.updateGuildRole).toHaveBeenCalledWith("guild1", "role2", { position: 0 });
+      expect(tauri.updateGuildRole).toHaveBeenCalledWith("guild1", "role2", {
+        position: 0,
+      });
     });
 
     it("should revert on API failure", async () => {
-      vi.mocked(tauri.updateGuildRole).mockRejectedValue(new Error("API Error"));
+      vi.mocked(tauri.updateGuildRole).mockRejectedValue(
+        new Error("API Error"),
+      );
       vi.mocked(tauri.getGuildRoles).mockResolvedValue([...mockRoles]);
 
-      await expect(reorderRole("guild1", "role2", 0)).rejects.toThrow("API Error");
+      await expect(reorderRole("guild1", "role2", 0)).rejects.toThrow(
+        "API Error",
+      );
 
       // Should have reloaded roles
       expect(tauri.getGuildRoles).toHaveBeenCalledTimes(2); // Initial load + reload after error

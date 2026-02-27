@@ -13,7 +13,9 @@ const InviteJoin: Component = () => {
   const params = useParams<{ code: string }>();
   const navigate = useNavigate();
 
-  const [status, setStatus] = createSignal<"loading" | "success" | "error">("loading");
+  const [status, setStatus] = createSignal<"loading" | "success" | "error">(
+    "loading",
+  );
   const [errorMessage, setErrorMessage] = createSignal("");
 
   onMount(async () => {
@@ -30,13 +32,21 @@ const InviteJoin: Component = () => {
       // The joinViaInviteCode function already navigates to the guild
     } catch (err) {
       setStatus("error");
-      setErrorMessage(err instanceof Error ? err.message : "Failed to join guild");
+      setErrorMessage(
+        err instanceof Error ? err.message : "Failed to join guild",
+      );
     }
   });
 
   return (
-    <div class="h-screen flex items-center justify-center" style="background-color: var(--color-surface-base)">
-      <div class="text-center p-8 rounded-2xl border border-white/10 max-w-md" style="background-color: var(--color-surface-layer1)">
+    <div
+      class="h-screen flex items-center justify-center"
+      style="background-color: var(--color-surface-base)"
+    >
+      <div
+        class="text-center p-8 rounded-2xl border border-white/10 max-w-md"
+        style="background-color: var(--color-surface-layer1)"
+      >
         <Show when={status() === "loading"}>
           <div class="text-text-primary text-lg mb-2">Joining guild...</div>
           <div class="text-text-secondary">Please wait</div>
@@ -44,7 +54,9 @@ const InviteJoin: Component = () => {
 
         <Show when={status() === "success"}>
           <div class="text-accent-primary text-lg mb-2">Success!</div>
-          <div class="text-text-secondary">You've joined the guild. Redirecting...</div>
+          <div class="text-text-secondary">
+            You've joined the guild. Redirecting...
+          </div>
         </Show>
 
         <Show when={status() === "error"}>

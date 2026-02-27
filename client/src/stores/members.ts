@@ -12,13 +12,19 @@ import type { GuildMember } from "@/lib/types";
  * Apply a partial patch to a member's data.
  * Server sends: entity_id = user_id (UUID), diff = { guild_id, updates }
  */
-export function patchMember(entityId: string, diff: Record<string, unknown>): void {
+export function patchMember(
+  entityId: string,
+  diff: Record<string, unknown>,
+): void {
   // Extract guild_id from diff (server wraps member patches with guild context)
   const guildId = diff.guild_id as string | undefined;
   const updates = diff.updates as Record<string, unknown> | undefined;
 
   if (!guildId || !updates) {
-    console.warn("[Members] Invalid member patch format, expected { guild_id, updates }:", diff);
+    console.warn(
+      "[Members] Invalid member patch format, expected { guild_id, updates }:",
+      diff,
+    );
     return;
   }
 
@@ -39,7 +45,12 @@ export function patchMember(entityId: string, diff: Record<string, unknown>): vo
 
   // Filter to only valid GuildMember fields
   const validFields: (keyof GuildMember)[] = [
-    "username", "display_name", "avatar_url", "nickname", "status", "last_seen_at"
+    "username",
+    "display_name",
+    "avatar_url",
+    "nickname",
+    "status",
+    "last_seen_at",
   ];
   const fieldUpdates: Partial<GuildMember> = {};
   for (const field of validFields) {
@@ -49,7 +60,10 @@ export function patchMember(entityId: string, diff: Record<string, unknown>): vo
   }
 
   if (Object.keys(fieldUpdates).length > 0) {
-    setGuildsState("members", guildId, memberIndex, (prev) => ({ ...prev, ...fieldUpdates }));
+    setGuildsState("members", guildId, memberIndex, (prev) => ({
+      ...prev,
+      ...fieldUpdates,
+    }));
   }
 }
 
@@ -63,7 +77,10 @@ export function getMembers(guildId: string): GuildMember[] {
 /**
  * Get a specific member.
  */
-export function getMember(guildId: string, userId: string): GuildMember | undefined {
+export function getMember(
+  guildId: string,
+  userId: string,
+): GuildMember | undefined {
   return guildsState.members[guildId]?.find((m) => m.user_id === userId);
 }
 

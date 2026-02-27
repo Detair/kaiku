@@ -17,7 +17,9 @@ const VoiceControls: Component = () => {
   const [showMicTest, setShowMicTest] = createSignal(false);
   const [showQualityPicker, setShowQualityPicker] = createSignal(false);
   const [showSourcePicker, setShowSourcePicker] = createSignal(false);
-  const [selectedSourceId, setSelectedSourceId] = createSignal<string | undefined>(undefined);
+  const [selectedSourceId, setSelectedSourceId] = createSignal<
+    string | undefined
+  >(undefined);
 
   const handleSourceSelected = (sourceId: string) => {
     setShowSourcePicker(false);
@@ -66,7 +68,9 @@ const VoiceControls: Component = () => {
 
         {/* Screen share button */}
         <ScreenShareButton
-          onShowSourcePicker={isTauri ? () => setShowSourcePicker(true) : undefined}
+          onShowSourcePicker={
+            isTauri ? () => setShowSourcePicker(true) : undefined
+          }
           onShowQualityPicker={() => setShowQualityPicker(true)}
         />
 

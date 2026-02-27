@@ -417,6 +417,52 @@ async fn test_member_limit_on_discovery_join() {
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
 }
 
+#[tokio::test]
+async fn test_globally_banned_user_cannot_join_via_discovery() {
+    let mut config = low_limit_config();
+    config.enable_guild_discovery = true;
+    let app = TestApp::with_config(config).await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let (banned_user_id, _) = create_test_user(&app.pool).await;
+    let banned_token = generate_access_token(&app.config, banned_user_id);
+    let guild_id = create_guild(&app.pool, owner_id).await;
+    let mut guard = app.cleanup_guard();
+    guard.add(move |pool| async move {
+        delete_guild(&pool, guild_id).await;
+        delete_user(&pool, owner_id).await;
+        delete_user(&pool, banned_user_id).await;
+    });
+
+    sqlx::query("UPDATE guilds SET discoverable = true WHERE id = $1")
+        .bind(guild_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO global_bans (user_id, banned_by, reason) VALUES ($1, $2, $3)")
+        .bind(banned_user_id)
+        .bind(owner_id)
+        .bind("test global ban")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let banned_resp = app
+        .oneshot(
+            TestApp::request(
+                Method::POST,
+                &format!("/api/discover/guilds/{guild_id}/join"),
+            )
+            .header("authorization", format!("Bearer {banned_token}"))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(banned_resp.status(), StatusCode::FORBIDDEN);
+    let body = body_to_json(banned_resp).await;
+    assert_eq!(body["error"], "FORBIDDEN");
+}
+
 // ============================================================================
 // Usage endpoint
 // ============================================================================

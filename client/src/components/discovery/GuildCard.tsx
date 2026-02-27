@@ -42,10 +42,18 @@ const GuildCard: Component<GuildCardProps> = (props) => {
       const result = await joinDiscoverable(props.guild.id);
       if (result.already_member) {
         setLocalJoined(true);
-        showToast({ type: "info", title: "Already a Member", message: `You're already in ${result.guild_name}.` });
+        showToast({
+          type: "info",
+          title: "Already a Member",
+          message: `You're already in ${result.guild_name}.`,
+        });
       } else {
         setLocalJoined(true);
-        showToast({ type: "success", title: "Joined!", message: `You've joined ${result.guild_name}.` });
+        showToast({
+          type: "success",
+          title: "Joined!",
+          message: `You've joined ${result.guild_name}.`,
+        });
         // Refresh guild list so sidebar shows the new guild (stay in discovery view)
         try {
           await loadGuilds();
@@ -55,7 +63,12 @@ const GuildCard: Component<GuildCardProps> = (props) => {
       }
     } catch (err) {
       console.error("Failed to join guild:", err);
-      showToast({ type: "error", title: "Join Failed", message: "Could not join this server.", duration: 8000 });
+      showToast({
+        type: "error",
+        title: "Join Failed",
+        message: "Could not join this server.",
+        duration: 8000,
+      });
     } finally {
       setJoining(false);
     }
@@ -89,10 +102,16 @@ const GuildCard: Component<GuildCardProps> = (props) => {
             <Show
               when={props.guild.icon_url}
               fallback={
-                <span class="text-xs font-bold text-text-primary">{initials()}</span>
+                <span class="text-xs font-bold text-text-primary">
+                  {initials()}
+                </span>
               }
             >
-              <img src={props.guild.icon_url!} alt="" class="w-full h-full object-cover" />
+              <img
+                src={props.guild.icon_url!}
+                alt=""
+                class="w-full h-full object-cover"
+              />
             </Show>
           </div>
         </div>
@@ -100,10 +119,14 @@ const GuildCard: Component<GuildCardProps> = (props) => {
 
       {/* Content */}
       <div class="pt-7 px-4 pb-4 flex flex-col flex-1">
-        <h3 class="text-sm font-semibold text-text-primary truncate">{props.guild.name}</h3>
+        <h3 class="text-sm font-semibold text-text-primary truncate">
+          {props.guild.name}
+        </h3>
 
         <Show when={truncatedDescription()}>
-          <p class="text-xs text-text-secondary mt-1 line-clamp-2">{truncatedDescription()}</p>
+          <p class="text-xs text-text-secondary mt-1 line-clamp-2">
+            {truncatedDescription()}
+          </p>
         </Show>
 
         {/* Tags (Issue #17: use <For> instead of .map) */}

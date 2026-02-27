@@ -75,7 +75,73 @@ import type {
 } from "./types";
 
 // Re-export types for convenience
-export type { User, Channel, ChannelCategory, ChannelWithUnread, Message, AppSettings, Guild, GuildMember, GuildInvite, InviteResponse, InviteExpiry, Friend, Friendship, DMChannel, DMListItem, Page, PageListItem, GuildRole, GuildEmoji, ChannelOverride, CreateRoleRequest, UpdateRoleRequest, SetChannelOverrideRequest, AssignRoleResponse, RemoveRoleResponse, DeleteRoleResponse, AdminStats, AdminStatus, UserSummary, GuildSummary, AuditLogEntry, PaginatedResponse, ElevateResponse, UserDetailsResponse, GuildDetailsResponse, BulkBanResponse, BulkSuspendResponse, CallEndReason, CallStateResponse, E2EEStatus, InitE2EEResponse, PrekeyData, E2EEContent, ClaimedPrekeyInput, UserKeysResponse, ClaimedPrekeyResponse, SearchResponse, SearchFilters, GlobalSearchResponse, Pin, CreatePinRequest, UpdatePinRequest, ServerSettings, OidcProvider, OidcLoginResult, AuthSettingsResponse, AuthMethodsConfig, AdminOidcProvider, GuildSettings, GuildUsageStats, DiscoverResponse, JoinDiscoverableResponse, PageRevision, RevisionListItem, PageCategory };
+export type {
+  User,
+  Channel,
+  ChannelCategory,
+  ChannelWithUnread,
+  Message,
+  AppSettings,
+  Guild,
+  GuildMember,
+  GuildInvite,
+  InviteResponse,
+  InviteExpiry,
+  Friend,
+  Friendship,
+  DMChannel,
+  DMListItem,
+  Page,
+  PageListItem,
+  GuildRole,
+  GuildEmoji,
+  ChannelOverride,
+  CreateRoleRequest,
+  UpdateRoleRequest,
+  SetChannelOverrideRequest,
+  AssignRoleResponse,
+  RemoveRoleResponse,
+  DeleteRoleResponse,
+  AdminStats,
+  AdminStatus,
+  UserSummary,
+  GuildSummary,
+  AuditLogEntry,
+  PaginatedResponse,
+  ElevateResponse,
+  UserDetailsResponse,
+  GuildDetailsResponse,
+  BulkBanResponse,
+  BulkSuspendResponse,
+  CallEndReason,
+  CallStateResponse,
+  E2EEStatus,
+  InitE2EEResponse,
+  PrekeyData,
+  E2EEContent,
+  ClaimedPrekeyInput,
+  UserKeysResponse,
+  ClaimedPrekeyResponse,
+  SearchResponse,
+  SearchFilters,
+  GlobalSearchResponse,
+  Pin,
+  CreatePinRequest,
+  UpdatePinRequest,
+  ServerSettings,
+  OidcProvider,
+  OidcLoginResult,
+  AuthSettingsResponse,
+  AuthMethodsConfig,
+  AdminOidcProvider,
+  GuildSettings,
+  GuildUsageStats,
+  DiscoverResponse,
+  JoinDiscoverableResponse,
+  PageRevision,
+  RevisionListItem,
+  PageCategory,
+};
 
 /**
  * Unread aggregation types
@@ -135,9 +201,9 @@ interface UploadLimitsResponse {
  * Falls back to defaults if fetch fails.
  */
 let uploadLimits: UploadLimitsResponse = {
-  max_avatar_size: 5 * 1024 * 1024,      // 5MB default
-  max_emoji_size: 256 * 1024,             // 256KB default
-  max_upload_size: 50 * 1024 * 1024,      // 50MB default
+  max_avatar_size: 5 * 1024 * 1024, // 5MB default
+  max_emoji_size: 256 * 1024, // 256KB default
+  max_upload_size: 50 * 1024 * 1024, // 50MB default
 };
 
 /**
@@ -150,7 +216,9 @@ export async function fetchUploadLimits(): Promise<void> {
     const response = await fetch(`${serverUrl}/api/config/upload-limits`);
 
     if (!response.ok) {
-      console.error(`[Upload Limits] Failed to fetch (HTTP ${response.status}), using defaults`);
+      console.error(
+        `[Upload Limits] Failed to fetch (HTTP ${response.status}), using defaults`,
+      );
       return;
     }
 
@@ -158,38 +226,58 @@ export async function fetchUploadLimits(): Promise<void> {
     try {
       data = await response.json();
     } catch (parseError) {
-      console.error('[Upload Limits] Failed to parse JSON response:', parseError);
-      console.error('[Upload Limits] Response was not valid JSON - using defaults');
+      console.error(
+        "[Upload Limits] Failed to parse JSON response:",
+        parseError,
+      );
+      console.error(
+        "[Upload Limits] Response was not valid JSON - using defaults",
+      );
       return;
     }
 
     // Validate response structure
     const obj = data as Record<string, unknown>;
-    if (!data || typeof data !== 'object' ||
-      typeof obj['max_avatar_size'] !== 'number' ||
-      typeof obj['max_emoji_size'] !== 'number' ||
-      typeof obj['max_upload_size'] !== 'number') {
-      console.error('[Upload Limits] Invalid response structure:', data);
-      console.error('[Upload Limits] Expected {max_avatar_size: number, max_emoji_size: number, max_upload_size: number}');
+    if (
+      !data ||
+      typeof data !== "object" ||
+      typeof obj["max_avatar_size"] !== "number" ||
+      typeof obj["max_emoji_size"] !== "number" ||
+      typeof obj["max_upload_size"] !== "number"
+    ) {
+      console.error("[Upload Limits] Invalid response structure:", data);
+      console.error(
+        "[Upload Limits] Expected {max_avatar_size: number, max_emoji_size: number, max_upload_size: number}",
+      );
       return;
     }
 
     // Validate limits are positive
     const limits = data as UploadLimitsResponse;
-    if (limits.max_avatar_size <= 0 || limits.max_emoji_size <= 0 || limits.max_upload_size <= 0) {
-      console.error('[Upload Limits] Invalid limit values (must be positive):', limits);
+    if (
+      limits.max_avatar_size <= 0 ||
+      limits.max_emoji_size <= 0 ||
+      limits.max_upload_size <= 0
+    ) {
+      console.error(
+        "[Upload Limits] Invalid limit values (must be positive):",
+        limits,
+      );
       return;
     }
 
     uploadLimits = limits;
-    console.log('[Upload Limits] Successfully fetched from server:', uploadLimits);
+    console.log(
+      "[Upload Limits] Successfully fetched from server:",
+      uploadLimits,
+    );
   } catch (error) {
-    console.error('[Upload Limits] Unexpected error fetching limits:', error);
-    console.error('[Upload Limits] Using defaults as fallback');
+    console.error("[Upload Limits] Unexpected error fetching limits:", error);
+    console.error("[Upload Limits] Using defaults as fallback");
   }
 }
 
-type UploadType = 'avatar' | 'emoji' | 'attachment';
+type UploadType = "avatar" | "emoji" | "attachment";
 
 /**
  * Format bytes to human-readable size
@@ -212,11 +300,12 @@ function formatFileSize(bytes: number): string {
  * @returns Human-readable size string (e.g., "5MB", "256KB")
  */
 export function getUploadLimitText(type: UploadType): string {
-  const maxSize = type === 'avatar'
-    ? uploadLimits.max_avatar_size
-    : type === 'emoji'
-      ? uploadLimits.max_emoji_size
-      : uploadLimits.max_upload_size;
+  const maxSize =
+    type === "avatar"
+      ? uploadLimits.max_avatar_size
+      : type === "emoji"
+        ? uploadLimits.max_emoji_size
+        : uploadLimits.max_upload_size;
 
   return formatFileSize(maxSize);
 }
@@ -230,11 +319,12 @@ export function getUploadLimitText(type: UploadType): string {
  * @returns Error message if file is too large, null if valid
  */
 export function validateFileSize(file: File, type: UploadType): string | null {
-  const maxSize = type === 'avatar'
-    ? uploadLimits.max_avatar_size
-    : type === 'emoji'
-      ? uploadLimits.max_emoji_size
-      : uploadLimits.max_upload_size;
+  const maxSize =
+    type === "avatar"
+      ? uploadLimits.max_avatar_size
+      : type === "emoji"
+        ? uploadLimits.max_emoji_size
+        : uploadLimits.max_upload_size;
 
   if (file.size > maxSize) {
     return `File too large (${formatFileSize(file.size)}). Maximum size is ${formatFileSize(maxSize)}.`;
@@ -253,7 +343,8 @@ const browserState = {
 
 // Initialize from localStorage if available
 if (typeof localStorage !== "undefined") {
-  browserState.serverUrl = localStorage.getItem("serverUrl") || browserState.serverUrl;
+  browserState.serverUrl =
+    localStorage.getItem("serverUrl") || browserState.serverUrl;
   browserState.accessToken = localStorage.getItem("accessToken");
   browserState.refreshToken = localStorage.getItem("refreshToken");
   const expiresAt = localStorage.getItem("tokenExpiresAt");
@@ -280,7 +371,9 @@ function scheduleTokenRefresh() {
   // Refresh 60 seconds before expiration, but at least 10 seconds from now
   const refreshIn = Math.max(expiresAt - now - 60000, 10000);
 
-  console.log(`[Auth] Scheduling token refresh in ${Math.round(refreshIn / 1000)}s`);
+  console.log(
+    `[Auth] Scheduling token refresh in ${Math.round(refreshIn / 1000)}s`,
+  );
 
   browserState.refreshTimer = setTimeout(async () => {
     try {
@@ -327,7 +420,10 @@ export async function refreshAccessToken(): Promise<boolean> {
     try {
       data = await response.json();
     } catch (parseError) {
-      console.error("[Auth] Failed to parse token refresh response as JSON:", parseError);
+      console.error(
+        "[Auth] Failed to parse token refresh response as JSON:",
+        parseError,
+      );
 
       // Clear tokens - refresh failed
       browserState.accessToken = null;
@@ -337,7 +433,9 @@ export async function refreshAccessToken(): Promise<boolean> {
       localStorage.removeItem("refreshToken");
       localStorage.removeItem("tokenExpiresAt");
 
-      throw new Error(`Token refresh returned invalid JSON: ${parseError instanceof Error ? parseError.message : 'Parse failed'}`);
+      throw new Error(
+        `Token refresh returned invalid JSON: ${parseError instanceof Error ? parseError.message : "Parse failed"}`,
+      );
     }
 
     // Validate tokens are not empty
@@ -362,7 +460,10 @@ export async function refreshAccessToken(): Promise<boolean> {
 
     localStorage.setItem("accessToken", data.access_token);
     localStorage.setItem("refreshToken", data.refresh_token);
-    localStorage.setItem("tokenExpiresAt", browserState.tokenExpiresAt.toString());
+    localStorage.setItem(
+      "tokenExpiresAt",
+      browserState.tokenExpiresAt.toString(),
+    );
 
     console.log("[Auth] Token refreshed successfully");
 
@@ -385,7 +486,7 @@ if (browserState.accessToken && browserState.refreshToken) {
 async function httpRequest<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
 ): Promise<T> {
   // Always read token fresh from localStorage to handle HMR reloads
   const token = browserState.accessToken || localStorage.getItem("accessToken");
@@ -426,11 +527,17 @@ async function httpRequest<T>(
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
       // Re-throw MFA_REQUIRED without wrapping
-      if (parseError instanceof Error && parseError.message === "MFA_REQUIRED") {
+      if (
+        parseError instanceof Error &&
+        parseError.message === "MFA_REQUIRED"
+      ) {
         throw parseError;
       }
       // Log parse failure but continue with text fallback
-      console.warn(`[httpRequest] Failed to parse error response as JSON for ${path}:`, parseError);
+      console.warn(
+        `[httpRequest] Failed to parse error response as JSON for ${path}:`,
+        parseError,
+      );
 
       try {
         const text = await response.text();
@@ -439,7 +546,10 @@ async function httpRequest<T>(
         }
       } catch (textError) {
         // Log double failure (both JSON and text parsing failed)
-        console.error(`[httpRequest] Failed to parse error response as both JSON and text for ${path}:`, textError);
+        console.error(
+          `[httpRequest] Failed to parse error response as both JSON and text for ${path}:`,
+          textError,
+        );
         // Use statusText as final fallback
       }
     }
@@ -459,12 +569,17 @@ export async function login(
   serverUrl: string,
   username: string,
   password: string,
-  mfaCode?: string
+  mfaCode?: string,
 ): Promise<AuthResult> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("login", {
-      request: { server_url: serverUrl, username, password, mfa_code: mfaCode ?? null },
+      request: {
+        server_url: serverUrl,
+        username,
+        password,
+        mfa_code: mfaCode ?? null,
+      },
     });
   }
 
@@ -477,11 +592,7 @@ export async function login(
     body.mfa_code = mfaCode;
   }
 
-  const response = await httpRequest<AuthResponse>(
-    "POST",
-    "/auth/login",
-    body
-  );
+  const response = await httpRequest<AuthResponse>("POST", "/auth/login", body);
 
   // Store all token data
   browserState.accessToken = response.access_token;
@@ -490,12 +601,17 @@ export async function login(
 
   localStorage.setItem("accessToken", response.access_token);
   localStorage.setItem("refreshToken", response.refresh_token);
-  localStorage.setItem("tokenExpiresAt", browserState.tokenExpiresAt.toString());
+  localStorage.setItem(
+    "tokenExpiresAt",
+    browserState.tokenExpiresAt.toString(),
+  );
 
   // Schedule automatic token refresh
   scheduleTokenRefresh();
 
-  console.log(`[Auth] Login successful, token expires in ${response.expires_in}s`);
+  console.log(
+    `[Auth] Login successful, token expires in ${response.expires_in}s`,
+  );
 
   // Fetch user profile after login
   const user = await httpRequest<User>("GET", "/auth/me");
@@ -509,7 +625,9 @@ export async function login(
 /**
  * Update the user's presence status (online, idle, dnd, invisible, offline).
  */
-export async function updateStatus(status: "online" | "idle" | "dnd" | "invisible" | "offline"): Promise<void> {
+export async function updateStatus(
+  status: "online" | "idle" | "dnd" | "invisible" | "offline",
+): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("update_status", { status });
@@ -523,7 +641,7 @@ export async function register(
   username: string,
   password: string,
   email?: string,
-  displayName?: string
+  displayName?: string,
 ): Promise<AuthResult> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -542,11 +660,12 @@ export async function register(
   browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
 
-  const response = await httpRequest<AuthResponse>(
-    "POST",
-    "/auth/register",
-    { username, password, email, display_name: displayName }
-  );
+  const response = await httpRequest<AuthResponse>("POST", "/auth/register", {
+    username,
+    password,
+    email,
+    display_name: displayName,
+  });
 
   // Store all token data
   browserState.accessToken = response.access_token;
@@ -555,12 +674,17 @@ export async function register(
 
   localStorage.setItem("accessToken", response.access_token);
   localStorage.setItem("refreshToken", response.refresh_token);
-  localStorage.setItem("tokenExpiresAt", browserState.tokenExpiresAt.toString());
+  localStorage.setItem(
+    "tokenExpiresAt",
+    browserState.tokenExpiresAt.toString(),
+  );
 
   // Schedule automatic token refresh
   scheduleTokenRefresh();
 
-  console.log(`[Auth] Registration successful, token expires in ${response.expires_in}s`);
+  console.log(
+    `[Auth] Registration successful, token expires in ${response.expires_in}s`,
+  );
 
   // Fetch user profile after registration
   const user = await httpRequest<User>("GET", "/auth/me");
@@ -620,18 +744,22 @@ export async function getCurrentUser(): Promise<User | null> {
     console.warn(`[Auth] Failed to fetch current user: ${errorMessage}`);
 
     // Determine if this is an auth failure or other error
-    const isAuthError = errorMessage.includes("401") ||
+    const isAuthError =
+      errorMessage.includes("401") ||
       errorMessage.includes("403") ||
       errorMessage.includes("Unauthorized") ||
       errorMessage.includes("Forbidden");
 
-    const isJsonParseError = errorMessage.includes("invalid JSON") ||
+    const isJsonParseError =
+      errorMessage.includes("invalid JSON") ||
       errorMessage.includes("Parse failed");
 
     // If JSON parse failed on what might be an auth response, assume auth failure
     // We cannot reliably determine auth state with malformed responses
     if (isJsonParseError && errorMessage.includes("HTTP")) {
-      console.error("[Auth] JSON parse error on HTTP response - cannot determine auth state, clearing tokens");
+      console.error(
+        "[Auth] JSON parse error on HTTP response - cannot determine auth state, clearing tokens",
+      );
       // Clear all token state - safest approach when we can't parse server response
       if (browserState.refreshTimer) {
         clearTimeout(browserState.refreshTimer);
@@ -747,7 +875,10 @@ export async function mfaBackupCodeCount(): Promise<MfaBackupCodeCountResponse> 
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("mfa_backup_code_count");
   }
-  return httpRequest<MfaBackupCodeCountResponse>("GET", "/auth/mfa/backup-codes/count");
+  return httpRequest<MfaBackupCodeCountResponse>(
+    "GET",
+    "/auth/mfa/backup-codes/count",
+  );
 }
 
 /**
@@ -755,7 +886,10 @@ export async function mfaBackupCodeCount(): Promise<MfaBackupCodeCountResponse> 
  * In Tauri mode, retrieves from Rust backend state.
  * In browser mode, reads from browserState/localStorage.
  */
-async function getUploadAuth(): Promise<{ token: string | null; baseUrl: string }> {
+async function getUploadAuth(): Promise<{
+  token: string | null;
+  baseUrl: string;
+}> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     const authInfo = await invoke<[string, string] | null>("get_auth_info");
@@ -769,15 +903,18 @@ async function getUploadAuth(): Promise<{ token: string | null; baseUrl: string 
   }
   return {
     token: browserState.accessToken || localStorage.getItem("accessToken"),
-    baseUrl: (browserState.serverUrl || "http://localhost:8080").replace(/\/+$/, ""),
+    baseUrl: (browserState.serverUrl || "http://localhost:8080").replace(
+      /\/+$/,
+      "",
+    ),
   };
 }
 
 export async function uploadAvatar(file: File): Promise<User> {
   // Frontend validation
-  const error = validateFileSize(file, 'avatar');
+  const error = validateFileSize(file, "avatar");
   if (error) {
-    console.warn('[uploadAvatar] Frontend validation failed:', error);
+    console.warn("[uploadAvatar] Frontend validation failed:", error);
     throw new Error(error);
   }
 
@@ -804,11 +941,14 @@ export async function uploadAvatar(file: File): Promise<User> {
       const errorBody = await response.json();
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
-      console.warn('[uploadAvatar] Failed to parse error response:', parseError);
+      console.warn(
+        "[uploadAvatar] Failed to parse error response:",
+        parseError,
+      );
       errorMessage = response.statusText || errorMessage;
     }
 
-    console.error('[uploadAvatar] Upload failed:', {
+    console.error("[uploadAvatar] Upload failed:", {
       status: response.status,
       error: errorMessage,
       fileSize: file.size,
@@ -821,8 +961,11 @@ export async function uploadAvatar(file: File): Promise<User> {
   try {
     return await response.json();
   } catch (parseError) {
-    console.error('[uploadAvatar] Failed to parse success response:', parseError);
-    throw new Error('Server returned invalid response');
+    console.error(
+      "[uploadAvatar] Failed to parse success response:",
+      parseError,
+    );
+    throw new Error("Server returned invalid response");
   }
 }
 
@@ -842,11 +985,17 @@ export async function createChannel(
   channelType: "text" | "voice",
   guildId?: string,
   topic?: string,
-  categoryId?: string
+  categoryId?: string,
 ): Promise<Channel> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_channel", { name, channelType, guildId, topic, categoryId });
+    return invoke("create_channel", {
+      name,
+      channelType,
+      guildId,
+      topic,
+      categoryId,
+    });
   }
 
   return httpRequest<Channel>("POST", "/api/channels", {
@@ -861,7 +1010,7 @@ export async function createChannel(
 export async function getMessages(
   channelId: string,
   before?: string,
-  limit?: number
+  limit?: number,
 ): Promise<PaginatedMessages> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -875,14 +1024,14 @@ export async function getMessages(
 
   return httpRequest<PaginatedMessages>(
     "GET",
-    `/api/messages/channel/${channelId}${query ? `?${query}` : ""}`
+    `/api/messages/channel/${channelId}${query ? `?${query}` : ""}`,
   );
 }
 
 export async function sendMessage(
   channelId: string,
   content: string,
-  options?: { encrypted?: boolean; nonce?: string }
+  options?: { encrypted?: boolean; nonce?: string },
 ): Promise<Message> {
   const result = await sendMessageWithStatus(channelId, content, options);
   return result.message;
@@ -896,7 +1045,7 @@ export interface SendMessageResult {
 export async function sendMessageWithStatus(
   channelId: string,
   content: string,
-  options?: { encrypted?: boolean; nonce?: string }
+  options?: { encrypted?: boolean; nonce?: string },
 ): Promise<SendMessageResult> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1010,14 +1159,11 @@ export async function markThreadRead(parentId: string): Promise<void> {
   return httpRequest<void>("POST", `/api/messages/${parentId}/thread/read`);
 }
 
-export async function uploadFile(
-  messageId: string,
-  file: File
-): Promise<any> {
+export async function uploadFile(messageId: string, file: File): Promise<any> {
   // Frontend validation
-  const error = validateFileSize(file, 'attachment');
+  const error = validateFileSize(file, "attachment");
   if (error) {
-    console.warn('[uploadFile] Frontend validation failed:', error);
+    console.warn("[uploadFile] Frontend validation failed:", error);
     throw new Error(error);
   }
 
@@ -1045,11 +1191,11 @@ export async function uploadFile(
       const errorBody = await response.json();
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
-      console.warn('[uploadFile] Failed to parse error response:', parseError);
+      console.warn("[uploadFile] Failed to parse error response:", parseError);
       errorMessage = response.statusText || errorMessage;
     }
 
-    console.error('[uploadFile] Upload failed:', {
+    console.error("[uploadFile] Upload failed:", {
       status: response.status,
       error: errorMessage,
       messageId,
@@ -1063,8 +1209,8 @@ export async function uploadFile(
   try {
     return await response.json();
   } catch (parseError) {
-    console.error('[uploadFile] Failed to parse success response:', parseError);
-    throw new Error('Server returned invalid response');
+    console.error("[uploadFile] Failed to parse success response:", parseError);
+    throw new Error("Server returned invalid response");
   }
 }
 
@@ -1075,12 +1221,12 @@ export async function uploadFile(
 export async function uploadMessageWithFile(
   channelId: string,
   file: File,
-  content?: string
+  content?: string,
 ): Promise<Message> {
   // Frontend validation
-  const error = validateFileSize(file, 'attachment');
+  const error = validateFileSize(file, "attachment");
   if (error) {
-    console.warn('[uploadMessageWithFile] Frontend validation failed:', error);
+    console.warn("[uploadMessageWithFile] Frontend validation failed:", error);
     throw new Error(error);
   }
 
@@ -1097,11 +1243,14 @@ export async function uploadMessageWithFile(
     formData.append("content", content);
   }
 
-  const response = await fetch(`${baseUrl}/api/messages/channel/${channelId}/upload`, {
-    method: "POST",
-    headers,
-    body: formData,
-  });
+  const response = await fetch(
+    `${baseUrl}/api/messages/channel/${channelId}/upload`,
+    {
+      method: "POST",
+      headers,
+      body: formData,
+    },
+  );
 
   if (!response.ok) {
     let errorMessage = `Upload failed (HTTP ${response.status})`;
@@ -1110,11 +1259,14 @@ export async function uploadMessageWithFile(
       const errorBody = await response.json();
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
-      console.warn('[uploadMessageWithFile] Failed to parse error response:', parseError);
+      console.warn(
+        "[uploadMessageWithFile] Failed to parse error response:",
+        parseError,
+      );
       errorMessage = response.statusText || errorMessage;
     }
 
-    console.error('[uploadMessageWithFile] Upload failed:', {
+    console.error("[uploadMessageWithFile] Upload failed:", {
       status: response.status,
       error: errorMessage,
       channelId,
@@ -1128,8 +1280,11 @@ export async function uploadMessageWithFile(
   try {
     return await response.json();
   } catch (parseError) {
-    console.error('[uploadMessageWithFile] Failed to parse success response:', parseError);
-    throw new Error('Server returned invalid response');
+    console.error(
+      "[uploadMessageWithFile] Failed to parse success response:",
+      parseError,
+    );
+    throw new Error("Server returned invalid response");
   }
 }
 
@@ -1155,7 +1310,7 @@ export async function getGuild(guildId: string): Promise<Guild> {
 
 export async function createGuild(
   name: string,
-  description?: string
+  description?: string,
 ): Promise<Guild> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1169,11 +1324,16 @@ export async function updateGuild(
   guildId: string,
   name?: string,
   description?: string,
-  icon_url?: string
+  icon_url?: string,
 ): Promise<Guild> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_guild", { guildId, name, description, iconUrl: icon_url });
+    return invoke("update_guild", {
+      guildId,
+      name,
+      description,
+      iconUrl: icon_url,
+    });
   }
 
   return httpRequest<Guild>("PATCH", `/api/guilds/${guildId}`, {
@@ -1192,7 +1352,10 @@ export async function deleteGuild(guildId: string): Promise<void> {
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}`);
 }
 
-export async function joinGuild(_guildId: string, inviteCode: string): Promise<void> {
+export async function joinGuild(
+  _guildId: string,
+  inviteCode: string,
+): Promise<void> {
   // Guild join always requires a valid invite code — route through the invite endpoint
   await joinViaInvite(inviteCode);
 }
@@ -1215,19 +1378,26 @@ export async function getGuildMembers(guildId: string): Promise<GuildMember[]> {
   return httpRequest<GuildMember[]>("GET", `/api/guilds/${guildId}/members`);
 }
 
-export async function getGuildChannels(guildId: string): Promise<ChannelWithUnread[]> {
+export async function getGuildChannels(
+  guildId: string,
+): Promise<ChannelWithUnread[]> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("get_guild_channels", { guildId });
   }
 
-  return httpRequest<ChannelWithUnread[]>("GET", `/api/guilds/${guildId}/channels`);
+  return httpRequest<ChannelWithUnread[]>(
+    "GET",
+    `/api/guilds/${guildId}/channels`,
+  );
 }
 
 /**
  * Get guild settings.
  */
-export async function getGuildSettings(guildId: string): Promise<GuildSettings> {
+export async function getGuildSettings(
+  guildId: string,
+): Promise<GuildSettings> {
   return fetchApi<GuildSettings>(`/api/guilds/${guildId}/settings`);
 }
 
@@ -1273,16 +1443,23 @@ export async function discoverGuilds(params?: {
   if (params?.limit != null) searchParams.set("limit", String(params.limit));
   if (params?.offset != null) searchParams.set("offset", String(params.offset));
   const qs = searchParams.toString();
-  return fetchApi<DiscoverResponse>(`/api/discover/guilds${qs ? `?${qs}` : ""}`);
+  return fetchApi<DiscoverResponse>(
+    `/api/discover/guilds${qs ? `?${qs}` : ""}`,
+  );
 }
 
 /**
  * Join a discoverable guild (requires auth).
  */
-export async function joinDiscoverable(guildId: string): Promise<JoinDiscoverableResponse> {
-  return fetchApi<JoinDiscoverableResponse>(`/api/discover/guilds/${guildId}/join`, {
-    method: "POST",
-  });
+export async function joinDiscoverable(
+  guildId: string,
+): Promise<JoinDiscoverableResponse> {
+  return fetchApi<JoinDiscoverableResponse>(
+    `/api/discover/guilds/${guildId}/join`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 /**
@@ -1292,7 +1469,7 @@ export async function joinDiscoverable(guildId: string): Promise<JoinDiscoverabl
  */
 export async function markChannelAsRead(
   channelId: string,
-  lastReadMessageId?: string
+  lastReadMessageId?: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1312,7 +1489,7 @@ export async function searchGuildMessages(
   query: string,
   limit: number = 25,
   offset: number = 0,
-  filters?: SearchFilters
+  filters?: SearchFilters,
 ): Promise<SearchResponse> {
   // Always use HTTP for search - no Tauri command needed since search is server-side
   const params = new URLSearchParams({
@@ -1326,7 +1503,10 @@ export async function searchGuildMessages(
   if (filters?.author_id) params.set("author_id", filters.author_id);
   if (filters?.has) params.set("has", filters.has);
   if (filters?.sort) params.set("sort", filters.sort);
-  return httpRequest<SearchResponse>("GET", `/api/guilds/${guildId}/search?${params}`);
+  return httpRequest<SearchResponse>(
+    "GET",
+    `/api/guilds/${guildId}/search?${params}`,
+  );
 }
 
 /**
@@ -1336,7 +1516,7 @@ export async function searchDMMessages(
   query: string,
   limit: number = 25,
   offset: number = 0,
-  filters?: SearchFilters
+  filters?: SearchFilters,
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({
     q: query,
@@ -1359,7 +1539,7 @@ export async function searchGlobalMessages(
   query: string,
   limit: number = 25,
   offset: number = 0,
-  filters?: SearchFilters
+  filters?: SearchFilters,
 ): Promise<GlobalSearchResponse> {
   const params = new URLSearchParams({
     q: query,
@@ -1393,7 +1573,7 @@ export async function getGuildInvites(guildId: string): Promise<GuildInvite[]> {
  */
 export async function createGuildInvite(
   guildId: string,
-  expiresIn: InviteExpiry = "7d"
+  expiresIn: InviteExpiry = "7d",
 ): Promise<GuildInvite> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1408,7 +1588,10 @@ export async function createGuildInvite(
 /**
  * Delete/revoke an invite (owner only)
  */
-export async function deleteGuildInvite(guildId: string, code: string): Promise<void> {
+export async function deleteGuildInvite(
+  guildId: string,
+  code: string,
+): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("delete_guild_invite", { guildId, code });
@@ -1432,7 +1615,10 @@ export async function joinViaInvite(code: string): Promise<InviteResponse> {
 /**
  * Kick a member from a guild (owner only)
  */
-export async function kickGuildMember(guildId: string, userId: string): Promise<void> {
+export async function kickGuildMember(
+  guildId: string,
+  userId: string,
+): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("kick_guild_member", { guildId, userId });
@@ -1446,13 +1632,18 @@ export async function kickGuildMember(guildId: string, userId: string): Promise<
 /**
  * Get all categories for a guild.
  */
-export async function getGuildCategories(guildId: string): Promise<ChannelCategory[]> {
+export async function getGuildCategories(
+  guildId: string,
+): Promise<ChannelCategory[]> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("get_guild_categories", { guildId });
   }
 
-  return httpRequest<ChannelCategory[]>("GET", `/api/guilds/${guildId}/categories`);
+  return httpRequest<ChannelCategory[]>(
+    "GET",
+    `/api/guilds/${guildId}/categories`,
+  );
 }
 
 /**
@@ -1461,17 +1652,21 @@ export async function getGuildCategories(guildId: string): Promise<ChannelCatego
 export async function createGuildCategory(
   guildId: string,
   name: string,
-  parentId?: string
+  parentId?: string,
 ): Promise<ChannelCategory> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("create_guild_category", { guildId, name, parentId });
   }
 
-  return httpRequest<ChannelCategory>("POST", `/api/guilds/${guildId}/categories`, {
-    name,
-    parent_id: parentId,
-  });
+  return httpRequest<ChannelCategory>(
+    "POST",
+    `/api/guilds/${guildId}/categories`,
+    {
+      name,
+      parent_id: parentId,
+    },
+  );
 }
 
 /**
@@ -1484,7 +1679,7 @@ export async function updateGuildCategory(
     name?: string;
     position?: number;
     parentId?: string | null;
-  }
+  },
 ): Promise<ChannelCategory> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1498,7 +1693,7 @@ export async function updateGuildCategory(
       name: updates.name,
       position: updates.position,
       parent_id: updates.parentId,
-    }
+    },
   );
 }
 
@@ -1516,12 +1711,15 @@ export async function getGuildEmojis(guildId: string): Promise<GuildEmoji[]> {
 export async function uploadGuildEmoji(
   guildId: string,
   name: string,
-  file: File
+  file: File,
 ): Promise<GuildEmoji> {
   // Frontend validation
-  const validationError = validateFileSize(file, 'emoji');
+  const validationError = validateFileSize(file, "emoji");
   if (validationError) {
-    console.warn('[uploadGuildEmoji] Frontend validation failed:', validationError);
+    console.warn(
+      "[uploadGuildEmoji] Frontend validation failed:",
+      validationError,
+    );
     throw new Error(validationError);
   }
 
@@ -1549,11 +1747,14 @@ export async function uploadGuildEmoji(
       const errorBody = await response.json();
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
-      console.warn('[uploadGuildEmoji] Failed to parse error response:', parseError);
+      console.warn(
+        "[uploadGuildEmoji] Failed to parse error response:",
+        parseError,
+      );
       errorMessage = response.statusText || errorMessage;
     }
 
-    console.error('[uploadGuildEmoji] Upload failed:', {
+    console.error("[uploadGuildEmoji] Upload failed:", {
       status: response.status,
       error: errorMessage,
       guildId,
@@ -1568,29 +1769,36 @@ export async function uploadGuildEmoji(
   try {
     return await response.json();
   } catch (parseError) {
-    console.error('[uploadGuildEmoji] Failed to parse success response:', parseError);
-    throw new Error('Server returned invalid response');
+    console.error(
+      "[uploadGuildEmoji] Failed to parse success response:",
+      parseError,
+    );
+    throw new Error("Server returned invalid response");
   }
 }
 
 export async function updateGuildEmoji(
   guildId: string,
   emojiId: string,
-  name: string
+  name: string,
 ): Promise<GuildEmoji> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("update_guild_emoji", { guildId, emojiId, name });
   }
 
-  return httpRequest<GuildEmoji>("PATCH", `/api/guilds/${guildId}/emojis/${emojiId}`, {
-    name,
-  });
+  return httpRequest<GuildEmoji>(
+    "PATCH",
+    `/api/guilds/${guildId}/emojis/${emojiId}`,
+    {
+      name,
+    },
+  );
 }
 
 export async function deleteGuildEmoji(
   guildId: string,
-  emojiId: string
+  emojiId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1605,14 +1813,17 @@ export async function deleteGuildEmoji(
  */
 export async function deleteGuildCategory(
   guildId: string,
-  categoryId: string
+  categoryId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("delete_guild_category", { guildId, categoryId });
   }
 
-  await httpRequest<void>("DELETE", `/api/guilds/${guildId}/categories/${categoryId}`);
+  await httpRequest<void>(
+    "DELETE",
+    `/api/guilds/${guildId}/categories/${categoryId}`,
+  );
 }
 
 /**
@@ -1620,7 +1831,7 @@ export async function deleteGuildCategory(
  */
 export async function reorderGuildCategories(
   guildId: string,
-  categories: Array<{ id: string; position: number; parentId?: string | null }>
+  categories: Array<{ id: string; position: number; parentId?: string | null }>,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1651,7 +1862,7 @@ export interface ChannelPosition {
  */
 export async function reorderGuildChannels(
   guildId: string,
-  channels: ChannelPosition[]
+  channels: ChannelPosition[],
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1703,7 +1914,7 @@ export async function createPin(request: CreatePinRequest): Promise<Pin> {
 
 export async function updatePin(
   pinId: string,
-  request: UpdatePinRequest
+  request: UpdatePinRequest,
 ): Promise<Pin> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1731,7 +1942,9 @@ export async function reorderPins(pinIds: string[]): Promise<void> {
   await httpRequest<void>("PUT", "/api/me/pins/reorder", { pin_ids: pinIds });
 }
 
-export async function acceptFriendRequest(friendshipId: string): Promise<Friendship> {
+export async function acceptFriendRequest(
+  friendshipId: string,
+): Promise<Friendship> {
   return httpRequest<Friendship>("POST", `/api/friends/${friendshipId}/accept`);
 }
 
@@ -1757,7 +1970,12 @@ export interface CreateReportRequest {
   target_type: "user" | "message";
   target_user_id: string;
   target_message_id?: string;
-  category: "harassment" | "spam" | "inappropriate_content" | "impersonation" | "other";
+  category:
+    | "harassment"
+    | "spam"
+    | "inappropriate_content"
+    | "impersonation"
+    | "other";
   description?: string;
 }
 
@@ -1773,7 +1991,9 @@ export interface ReportResponse {
   created_at: string;
 }
 
-export async function createReport(request: CreateReportRequest): Promise<ReportResponse> {
+export async function createReport(
+  request: CreateReportRequest,
+): Promise<ReportResponse> {
   return httpRequest<ReportResponse>("POST", "/api/reports", request);
 }
 
@@ -1821,15 +2041,28 @@ export async function adminListReports(
   params.set("offset", String(offset));
   if (status) params.set("status", status);
   if (category) params.set("category", category);
-  return httpRequest<PaginatedReports>("GET", `/api/admin/reports?${params.toString()}`);
+  return httpRequest<PaginatedReports>(
+    "GET",
+    `/api/admin/reports?${params.toString()}`,
+  );
 }
 
-export async function adminGetReport(reportId: string): Promise<AdminReportResponse> {
-  return httpRequest<AdminReportResponse>("GET", `/api/admin/reports/${reportId}`);
+export async function adminGetReport(
+  reportId: string,
+): Promise<AdminReportResponse> {
+  return httpRequest<AdminReportResponse>(
+    "GET",
+    `/api/admin/reports/${reportId}`,
+  );
 }
 
-export async function adminClaimReport(reportId: string): Promise<AdminReportResponse> {
-  return httpRequest<AdminReportResponse>("POST", `/api/admin/reports/${reportId}/claim`);
+export async function adminClaimReport(
+  reportId: string,
+): Promise<AdminReportResponse> {
+  return httpRequest<AdminReportResponse>(
+    "POST",
+    `/api/admin/reports/${reportId}/claim`,
+  );
 }
 
 export async function adminResolveReport(
@@ -1837,10 +2070,14 @@ export async function adminResolveReport(
   resolution_action: string,
   resolution_note?: string,
 ): Promise<AdminReportResponse> {
-  return httpRequest<AdminReportResponse>("POST", `/api/admin/reports/${reportId}/resolve`, {
-    resolution_action,
-    resolution_note,
-  });
+  return httpRequest<AdminReportResponse>(
+    "POST",
+    `/api/admin/reports/${reportId}/resolve`,
+    {
+      resolution_action,
+      resolution_note,
+    },
+  );
 }
 
 export async function adminGetReportStats(): Promise<ReportStatsResponse> {
@@ -1853,11 +2090,17 @@ export interface DMIconResponse {
   icon_url: string;
 }
 
-export async function uploadDMAvatar(channelId: string, file: File): Promise<DMIconResponse> {
+export async function uploadDMAvatar(
+  channelId: string,
+  file: File,
+): Promise<DMIconResponse> {
   // Frontend validation
-  const validationError = validateFileSize(file, 'avatar');
+  const validationError = validateFileSize(file, "avatar");
   if (validationError) {
-    console.warn('[uploadDMAvatar] Frontend validation failed:', validationError);
+    console.warn(
+      "[uploadDMAvatar] Frontend validation failed:",
+      validationError,
+    );
     throw new Error(validationError);
   }
 
@@ -1883,11 +2126,14 @@ export async function uploadDMAvatar(channelId: string, file: File): Promise<DMI
       const errorBody = await response.json();
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
-      console.warn('[uploadDMAvatar] Failed to parse error response:', parseError);
+      console.warn(
+        "[uploadDMAvatar] Failed to parse error response:",
+        parseError,
+      );
       errorMessage = response.statusText || errorMessage;
     }
 
-    console.error('[uploadDMAvatar] Upload failed:', {
+    console.error("[uploadDMAvatar] Upload failed:", {
       status: response.status,
       error: errorMessage,
       channelId,
@@ -1901,8 +2147,11 @@ export async function uploadDMAvatar(channelId: string, file: File): Promise<DMI
   try {
     return await response.json();
   } catch (parseError) {
-    console.error('[uploadDMAvatar] Failed to parse success response:', parseError);
-    throw new Error('Server returned invalid response');
+    console.error(
+      "[uploadDMAvatar] Failed to parse success response:",
+      parseError,
+    );
+    throw new Error("Server returned invalid response");
   }
 }
 
@@ -1926,7 +2175,7 @@ export async function getDM(channelId: string): Promise<DMChannel> {
 
 export async function createDM(
   participantIds: string[],
-  name?: string
+  name?: string,
 ): Promise<DMChannel> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1959,7 +2208,7 @@ export async function getDMList(): Promise<DMListItem[]> {
 
 export async function markDMAsRead(
   channelId: string,
-  lastReadMessageId?: string
+  lastReadMessageId?: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1976,7 +2225,7 @@ export async function markDMAsRead(
  */
 export async function updateDMName(
   channelId: string,
-  name: string
+  name: string,
 ): Promise<void> {
   await httpRequest<void>("PATCH", `/api/dm/${channelId}/name`, { name });
 }
@@ -1986,61 +2235,86 @@ export async function updateDMName(
 /**
  * Get the current call state for a DM channel.
  */
-export async function getCallState(channelId: string): Promise<CallStateResponse | null> {
+export async function getCallState(
+  channelId: string,
+): Promise<CallStateResponse | null> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("get_call_state", { channelId });
   }
 
-  return httpRequest<CallStateResponse | null>("GET", `/api/dm/${channelId}/call`);
+  return httpRequest<CallStateResponse | null>(
+    "GET",
+    `/api/dm/${channelId}/call`,
+  );
 }
 
 /**
  * Start a new call in a DM channel.
  */
-export async function startDMCall(channelId: string): Promise<CallStateResponse> {
+export async function startDMCall(
+  channelId: string,
+): Promise<CallStateResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("start_dm_call", { channelId });
   }
 
-  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/start`);
+  return httpRequest<CallStateResponse>(
+    "POST",
+    `/api/dm/${channelId}/call/start`,
+  );
 }
 
 /**
  * Join an active call in a DM channel.
  */
-export async function joinDMCall(channelId: string): Promise<CallStateResponse> {
+export async function joinDMCall(
+  channelId: string,
+): Promise<CallStateResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("join_dm_call", { channelId });
   }
 
-  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/join`);
+  return httpRequest<CallStateResponse>(
+    "POST",
+    `/api/dm/${channelId}/call/join`,
+  );
 }
 
 /**
  * Decline an incoming call in a DM channel.
  */
-export async function declineDMCall(channelId: string): Promise<CallStateResponse> {
+export async function declineDMCall(
+  channelId: string,
+): Promise<CallStateResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("decline_dm_call", { channelId });
   }
 
-  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/decline`);
+  return httpRequest<CallStateResponse>(
+    "POST",
+    `/api/dm/${channelId}/call/decline`,
+  );
 }
 
 /**
  * Leave an active call in a DM channel.
  */
-export async function leaveDMCall(channelId: string): Promise<CallStateResponse> {
+export async function leaveDMCall(
+  channelId: string,
+): Promise<CallStateResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("leave_dm_call", { channelId });
   }
 
-  return httpRequest<CallStateResponse>("POST", `/api/dm/${channelId}/call/leave`);
+  return httpRequest<CallStateResponse>(
+    "POST",
+    `/api/dm/${channelId}/call/leave`,
+  );
 }
 
 // Voice Commands (browser mode stubs - voice requires Tauri)
@@ -2228,7 +2502,9 @@ export async function wsUnsubscribe(channelId: string): Promise<void> {
     return invoke("ws_unsubscribe", { channelId });
   }
 
-  browserWs?.send(JSON.stringify({ type: "unsubscribe", channel_id: channelId }));
+  browserWs?.send(
+    JSON.stringify({ type: "unsubscribe", channel_id: channelId }),
+  );
 }
 
 export async function wsTyping(channelId: string): Promise<void> {
@@ -2246,7 +2522,9 @@ export async function wsStopTyping(channelId: string): Promise<void> {
     return invoke("ws_stop_typing", { channelId });
   }
 
-  browserWs?.send(JSON.stringify({ type: "stop_typing", channel_id: channelId }));
+  browserWs?.send(
+    JSON.stringify({ type: "stop_typing", channel_id: channelId }),
+  );
 }
 
 export async function wsPing(): Promise<void> {
@@ -2283,7 +2561,10 @@ export async function wsSend(message: any): Promise<void> {
     await invoke("ws_send", { message: JSON.stringify(message) });
   } else {
     if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
-      throw new Error("WebSocket not connected. Current state: " + (browserWs ? browserWs.readyState : "null"));
+      throw new Error(
+        "WebSocket not connected. Current state: " +
+          (browserWs ? browserWs.readyState : "null"),
+      );
     }
     browserWs.send(JSON.stringify(message));
   }
@@ -2310,7 +2591,7 @@ export async function wsScreenShareStart(
   channelId: string,
   quality: "low" | "medium" | "high" | "premium",
   hasAudio: boolean,
-  sourceLabel: string
+  sourceLabel: string,
 ): Promise<void> {
   await wsSend({
     type: "voice_screen_share_start",
@@ -2388,7 +2669,7 @@ export async function createPlatformPage(
   title: string,
   content: string,
   slug?: string,
-  requiresAcceptance?: boolean
+  requiresAcceptance?: boolean,
 ): Promise<Page> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2416,7 +2697,7 @@ export async function updatePlatformPage(
   title?: string,
   slug?: string,
   content?: string,
-  requiresAcceptance?: boolean
+  requiresAcceptance?: boolean,
 ): Promise<Page> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2476,13 +2757,19 @@ export async function listGuildPages(guildId: string): Promise<PageListItem[]> {
 /**
  * Get a guild page by slug.
  */
-export async function getGuildPage(guildId: string, slug: string): Promise<Page> {
+export async function getGuildPage(
+  guildId: string,
+  slug: string,
+): Promise<Page> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("get_guild_page", { guildId, slug });
   }
 
-  return httpRequest<Page>("GET", `/api/guilds/${guildId}/pages/by-slug/${slug}`);
+  return httpRequest<Page>(
+    "GET",
+    `/api/guilds/${guildId}/pages/by-slug/${slug}`,
+  );
 }
 
 /**
@@ -2494,7 +2781,7 @@ export async function createGuildPage(
   content: string,
   slug?: string,
   requiresAcceptance?: boolean,
-  categoryId?: string
+  categoryId?: string,
 ): Promise<Page> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2527,7 +2814,7 @@ export async function updateGuildPage(
   slug?: string,
   content?: string,
   requiresAcceptance?: boolean,
-  categoryId?: string | null
+  categoryId?: string | null,
 ): Promise<Page> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2553,13 +2840,20 @@ export async function updateGuildPage(
     body.category_id = categoryId;
   }
 
-  return httpRequest<Page>("PATCH", `/api/guilds/${guildId}/pages/${pageId}`, body);
+  return httpRequest<Page>(
+    "PATCH",
+    `/api/guilds/${guildId}/pages/${pageId}`,
+    body,
+  );
 }
 
 /**
  * Delete a guild page.
  */
-export async function deleteGuildPage(guildId: string, pageId: string): Promise<void> {
+export async function deleteGuildPage(
+  guildId: string,
+  pageId: string,
+): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("delete_guild_page", { guildId, pageId });
@@ -2571,7 +2865,10 @@ export async function deleteGuildPage(guildId: string, pageId: string): Promise<
 /**
  * Reorder guild pages.
  */
-export async function reorderGuildPages(guildId: string, pageIds: string[]): Promise<void> {
+export async function reorderGuildPages(
+  guildId: string,
+  pageIds: string[],
+): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("reorder_guild_pages", { guildId, pageIds });
@@ -2613,7 +2910,7 @@ export async function getPendingAcceptance(): Promise<PageListItem[]> {
  */
 export async function listPageRevisions(
   guildId: string,
-  pageId: string
+  pageId: string,
 ): Promise<RevisionListItem[]> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2622,7 +2919,7 @@ export async function listPageRevisions(
 
   return httpRequest<RevisionListItem[]>(
     "GET",
-    `/api/guilds/${guildId}/pages/${pageId}/revisions`
+    `/api/guilds/${guildId}/pages/${pageId}/revisions`,
   );
 }
 
@@ -2632,7 +2929,7 @@ export async function listPageRevisions(
 export async function getPageRevision(
   guildId: string,
   pageId: string,
-  revisionNumber: number
+  revisionNumber: number,
 ): Promise<PageRevision> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2641,7 +2938,7 @@ export async function getPageRevision(
 
   return httpRequest<PageRevision>(
     "GET",
-    `/api/guilds/${guildId}/pages/${pageId}/revisions/${revisionNumber}`
+    `/api/guilds/${guildId}/pages/${pageId}/revisions/${revisionNumber}`,
   );
 }
 
@@ -2651,7 +2948,7 @@ export async function getPageRevision(
 export async function restorePageRevision(
   guildId: string,
   pageId: string,
-  revisionNumber: number
+  revisionNumber: number,
 ): Promise<Page> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2660,7 +2957,7 @@ export async function restorePageRevision(
 
   return httpRequest<Page>(
     "POST",
-    `/api/guilds/${guildId}/pages/${pageId}/revisions/${revisionNumber}/restore`
+    `/api/guilds/${guildId}/pages/${pageId}/revisions/${revisionNumber}/restore`,
   );
 }
 
@@ -2669,13 +2966,18 @@ export async function restorePageRevision(
 /**
  * List all page categories for a guild.
  */
-export async function listPageCategories(guildId: string): Promise<PageCategory[]> {
+export async function listPageCategories(
+  guildId: string,
+): Promise<PageCategory[]> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("list_page_categories", { guildId });
   }
 
-  return httpRequest<PageCategory[]>("GET", `/api/guilds/${guildId}/page-categories`);
+  return httpRequest<PageCategory[]>(
+    "GET",
+    `/api/guilds/${guildId}/page-categories`,
+  );
 }
 
 /**
@@ -2683,16 +2985,20 @@ export async function listPageCategories(guildId: string): Promise<PageCategory[
  */
 export async function createPageCategory(
   guildId: string,
-  name: string
+  name: string,
 ): Promise<PageCategory> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("create_page_category", { guildId, name });
   }
 
-  return httpRequest<PageCategory>("POST", `/api/guilds/${guildId}/page-categories`, {
-    name,
-  });
+  return httpRequest<PageCategory>(
+    "POST",
+    `/api/guilds/${guildId}/page-categories`,
+    {
+      name,
+    },
+  );
 }
 
 /**
@@ -2701,7 +3007,7 @@ export async function createPageCategory(
 export async function updatePageCategory(
   guildId: string,
   categoryId: string,
-  name: string
+  name: string,
 ): Promise<PageCategory> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2711,7 +3017,7 @@ export async function updatePageCategory(
   return httpRequest<PageCategory>(
     "PATCH",
     `/api/guilds/${guildId}/page-categories/${categoryId}`,
-    { name }
+    { name },
   );
 }
 
@@ -2720,7 +3026,7 @@ export async function updatePageCategory(
  */
 export async function deletePageCategory(
   guildId: string,
-  categoryId: string
+  categoryId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2729,7 +3035,7 @@ export async function deletePageCategory(
 
   await httpRequest<void>(
     "DELETE",
-    `/api/guilds/${guildId}/page-categories/${categoryId}`
+    `/api/guilds/${guildId}/page-categories/${categoryId}`,
   );
 }
 
@@ -2738,16 +3044,20 @@ export async function deletePageCategory(
  */
 export async function reorderPageCategories(
   guildId: string,
-  categoryIds: string[]
+  categoryIds: string[],
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("reorder_page_categories", { guildId, categoryIds });
   }
 
-  await httpRequest<void>("POST", `/api/guilds/${guildId}/page-categories/reorder`, {
-    category_ids: categoryIds,
-  });
+  await httpRequest<void>(
+    "POST",
+    `/api/guilds/${guildId}/page-categories/reorder`,
+    {
+      category_ids: categoryIds,
+    },
+  );
 }
 
 // ============================================================================
@@ -2771,14 +3081,18 @@ export async function getGuildRoles(guildId: string): Promise<GuildRole[]> {
  */
 export async function createGuildRole(
   guildId: string,
-  request: CreateRoleRequest
+  request: CreateRoleRequest,
 ): Promise<GuildRole> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("create_guild_role", { guildId, request });
   }
 
-  return httpRequest<GuildRole>("POST", `/api/guilds/${guildId}/roles`, request);
+  return httpRequest<GuildRole>(
+    "POST",
+    `/api/guilds/${guildId}/roles`,
+    request,
+  );
 }
 
 /**
@@ -2787,7 +3101,7 @@ export async function createGuildRole(
 export async function updateGuildRole(
   guildId: string,
   roleId: string,
-  request: UpdateRoleRequest
+  request: UpdateRoleRequest,
 ): Promise<GuildRole> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2797,7 +3111,7 @@ export async function updateGuildRole(
   return httpRequest<GuildRole>(
     "PATCH",
     `/api/guilds/${guildId}/roles/${roleId}`,
-    request
+    request,
   );
 }
 
@@ -2806,7 +3120,7 @@ export async function updateGuildRole(
  */
 export async function deleteGuildRole(
   guildId: string,
-  roleId: string
+  roleId: string,
 ): Promise<DeleteRoleResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2815,7 +3129,7 @@ export async function deleteGuildRole(
 
   return httpRequest<DeleteRoleResponse>(
     "DELETE",
-    `/api/guilds/${guildId}/roles/${roleId}`
+    `/api/guilds/${guildId}/roles/${roleId}`,
   );
 }
 
@@ -2824,7 +3138,7 @@ export async function deleteGuildRole(
  * Returns a map of user_id -> list of role_ids.
  */
 export async function getGuildMemberRoles(
-  guildId: string
+  guildId: string,
 ): Promise<Record<string, string[]>> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2833,7 +3147,7 @@ export async function getGuildMemberRoles(
 
   return httpRequest<Record<string, string[]>>(
     "GET",
-    `/api/guilds/${guildId}/member-roles`
+    `/api/guilds/${guildId}/member-roles`,
   );
 }
 
@@ -2843,7 +3157,7 @@ export async function getGuildMemberRoles(
 export async function assignMemberRole(
   guildId: string,
   userId: string,
-  roleId: string
+  roleId: string,
 ): Promise<AssignRoleResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2852,7 +3166,7 @@ export async function assignMemberRole(
 
   return httpRequest<AssignRoleResponse>(
     "POST",
-    `/api/guilds/${guildId}/members/${userId}/roles/${roleId}`
+    `/api/guilds/${guildId}/members/${userId}/roles/${roleId}`,
   );
 }
 
@@ -2862,7 +3176,7 @@ export async function assignMemberRole(
 export async function removeMemberRole(
   guildId: string,
   userId: string,
-  roleId: string
+  roleId: string,
 ): Promise<RemoveRoleResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2871,7 +3185,7 @@ export async function removeMemberRole(
 
   return httpRequest<RemoveRoleResponse>(
     "DELETE",
-    `/api/guilds/${guildId}/members/${userId}/roles/${roleId}`
+    `/api/guilds/${guildId}/members/${userId}/roles/${roleId}`,
   );
 }
 
@@ -2883,7 +3197,7 @@ export async function removeMemberRole(
  * Get permission overrides for a channel.
  */
 export async function getChannelOverrides(
-  channelId: string
+  channelId: string,
 ): Promise<ChannelOverride[]> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2892,7 +3206,7 @@ export async function getChannelOverrides(
 
   return httpRequest<ChannelOverride[]>(
     "GET",
-    `/api/channels/${channelId}/overrides`
+    `/api/channels/${channelId}/overrides`,
   );
 }
 
@@ -2902,7 +3216,7 @@ export async function getChannelOverrides(
 export async function setChannelOverride(
   channelId: string,
   roleId: string,
-  request: SetChannelOverrideRequest
+  request: SetChannelOverrideRequest,
 ): Promise<ChannelOverride> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2912,7 +3226,7 @@ export async function setChannelOverride(
   return httpRequest<ChannelOverride>(
     "PUT",
     `/api/channels/${channelId}/overrides/${roleId}`,
-    request
+    request,
   );
 }
 
@@ -2921,7 +3235,7 @@ export async function setChannelOverride(
  */
 export async function deleteChannelOverride(
   channelId: string,
-  roleId: string
+  roleId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2930,7 +3244,7 @@ export async function deleteChannelOverride(
 
   await httpRequest<void>(
     "DELETE",
-    `/api/channels/${channelId}/overrides/${roleId}`
+    `/api/channels/${channelId}/overrides/${roleId}`,
   );
 }
 
@@ -2968,7 +3282,7 @@ export async function getAdminStats(): Promise<AdminStats> {
 export async function adminListUsers(
   limit?: number,
   offset?: number,
-  search?: string
+  search?: string,
 ): Promise<PaginatedResponse<UserSummary>> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2987,7 +3301,7 @@ export async function adminListUsers(
 
   return httpRequest<PaginatedResponse<UserSummary>>(
     "GET",
-    `/api/admin/users${query ? `?${query}` : ""}`
+    `/api/admin/users${query ? `?${query}` : ""}`,
   );
 }
 
@@ -2997,7 +3311,7 @@ export async function adminListUsers(
 export async function adminListGuilds(
   limit?: number,
   offset?: number,
-  search?: string
+  search?: string,
 ): Promise<PaginatedResponse<GuildSummary>> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3016,7 +3330,7 @@ export async function adminListGuilds(
 
   return httpRequest<PaginatedResponse<GuildSummary>>(
     "GET",
-    `/api/admin/guilds${query ? `?${query}` : ""}`
+    `/api/admin/guilds${query ? `?${query}` : ""}`,
   );
 }
 
@@ -3024,7 +3338,7 @@ export async function adminListGuilds(
  * Get detailed user information (admin only).
  */
 export async function adminGetUserDetails(
-  userId: string
+  userId: string,
 ): Promise<UserDetailsResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3035,7 +3349,7 @@ export async function adminGetUserDetails(
 
   return httpRequest<UserDetailsResponse>(
     "GET",
-    `/api/admin/users/${userId}/details`
+    `/api/admin/users/${userId}/details`,
   );
 }
 
@@ -3043,7 +3357,7 @@ export async function adminGetUserDetails(
  * Get detailed guild information (admin only).
  */
 export async function adminGetGuildDetails(
-  guildId: string
+  guildId: string,
 ): Promise<GuildDetailsResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3054,7 +3368,7 @@ export async function adminGetGuildDetails(
 
   return httpRequest<GuildDetailsResponse>(
     "GET",
-    `/api/admin/guilds/${guildId}/details`
+    `/api/admin/guilds/${guildId}/details`,
   );
 }
 
@@ -3078,10 +3392,11 @@ export interface AuditLogFilters {
 export async function adminGetAuditLog(
   limit?: number,
   offset?: number,
-  filters?: AuditLogFilters | string
+  filters?: AuditLogFilters | string,
 ): Promise<PaginatedResponse<AuditLogEntry>> {
   // Support legacy string parameter (action filter prefix)
-  const filterObj: AuditLogFilters = typeof filters === "string" ? { action: filters } : filters || {};
+  const filterObj: AuditLogFilters =
+    typeof filters === "string" ? { action: filters } : filters || {};
 
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3106,7 +3421,7 @@ export async function adminGetAuditLog(
 
   return httpRequest<PaginatedResponse<AuditLogEntry>>(
     "GET",
-    `/api/admin/audit-log${query ? `?${query}` : ""}`
+    `/api/admin/audit-log${query ? `?${query}` : ""}`,
   );
 }
 
@@ -3115,7 +3430,7 @@ export async function adminGetAuditLog(
  */
 export async function adminElevate(
   mfaCode: string,
-  reason?: string
+  reason?: string,
 ): Promise<ElevateResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3149,7 +3464,7 @@ export async function adminDeElevate(): Promise<void> {
 export async function adminBanUser(
   userId: string,
   reason: string,
-  expiresAt?: string
+  expiresAt?: string,
 ): Promise<{ banned: boolean; user_id: string }> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3163,7 +3478,7 @@ export async function adminBanUser(
   return httpRequest<{ banned: boolean; user_id: string }>(
     "POST",
     `/api/admin/users/${userId}/ban`,
-    { reason, expires_at: expiresAt }
+    { reason, expires_at: expiresAt },
   );
 }
 
@@ -3171,7 +3486,7 @@ export async function adminBanUser(
  * Unban a user (requires elevation).
  */
 export async function adminUnbanUser(
-  userId: string
+  userId: string,
 ): Promise<{ banned: boolean; user_id: string }> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3180,7 +3495,7 @@ export async function adminUnbanUser(
 
   return httpRequest<{ banned: boolean; user_id: string }>(
     "POST",
-    `/api/admin/users/${userId}/unban`
+    `/api/admin/users/${userId}/unban`,
   );
 }
 
@@ -3189,7 +3504,7 @@ export async function adminUnbanUser(
  */
 export async function adminSuspendGuild(
   guildId: string,
-  reason: string
+  reason: string,
 ): Promise<{ suspended: boolean; guild_id: string }> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3199,7 +3514,7 @@ export async function adminSuspendGuild(
   return httpRequest<{ suspended: boolean; guild_id: string }>(
     "POST",
     `/api/admin/guilds/${guildId}/suspend`,
-    { reason }
+    { reason },
   );
 }
 
@@ -3207,7 +3522,7 @@ export async function adminSuspendGuild(
  * Unsuspend a guild (requires elevation).
  */
 export async function adminUnsuspendGuild(
-  guildId: string
+  guildId: string,
 ): Promise<{ suspended: boolean; guild_id: string }> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3216,7 +3531,7 @@ export async function adminUnsuspendGuild(
 
   return httpRequest<{ suspended: boolean; guild_id: string }>(
     "POST",
-    `/api/admin/guilds/${guildId}/unsuspend`
+    `/api/admin/guilds/${guildId}/unsuspend`,
   );
 }
 
@@ -3224,7 +3539,7 @@ export async function adminUnsuspendGuild(
  * Permanently delete a user (requires elevation).
  */
 export async function adminDeleteUser(
-  userId: string
+  userId: string,
 ): Promise<{ deleted: boolean; id: string }> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3233,7 +3548,7 @@ export async function adminDeleteUser(
 
   return httpRequest<{ deleted: boolean; id: string }>(
     "DELETE",
-    `/api/admin/users/${userId}`
+    `/api/admin/users/${userId}`,
   );
 }
 
@@ -3241,7 +3556,7 @@ export async function adminDeleteUser(
  * Permanently delete a guild (requires elevation).
  */
 export async function adminDeleteGuild(
-  guildId: string
+  guildId: string,
 ): Promise<{ deleted: boolean; id: string }> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3250,7 +3565,7 @@ export async function adminDeleteGuild(
 
   return httpRequest<{ deleted: boolean; id: string }>(
     "DELETE",
-    `/api/admin/guilds/${guildId}`
+    `/api/admin/guilds/${guildId}`,
   );
 }
 
@@ -3273,7 +3588,7 @@ export async function adminExportUsersCsv(search?: string): Promise<Blob> {
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
@@ -3302,7 +3617,7 @@ export async function adminExportGuildsCsv(search?: string): Promise<Blob> {
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
 
   if (!response.ok) {
@@ -3318,7 +3633,7 @@ export async function adminExportGuildsCsv(search?: string): Promise<Blob> {
 export async function adminBulkBanUsers(
   userIds: string[],
   reason: string,
-  expiresAt?: string
+  expiresAt?: string,
 ): Promise<BulkBanResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3341,7 +3656,7 @@ export async function adminBulkBanUsers(
  */
 export async function adminBulkSuspendGuilds(
   guildIds: string[],
-  reason: string
+  reason: string,
 ): Promise<BulkSuspendResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3357,7 +3672,7 @@ export async function adminBulkSuspendGuilds(
     {
       guild_ids: guildIds,
       reason,
-    }
+    },
   );
 }
 
@@ -3369,15 +3684,14 @@ export async function adminBulkSuspendGuilds(
  * Generic fetch helper for API calls.
  * Handles authentication and error handling.
  */
-export async function fetchApi<T>(path: string, options?: {
-  method?: string;
-  body?: unknown;
-}): Promise<T> {
-  return httpRequest<T>(
-    options?.method ?? "GET",
-    path,
-    options?.body
-  );
+export async function fetchApi<T>(
+  path: string,
+  options?: {
+    method?: string;
+    body?: unknown;
+  },
+): Promise<T> {
+  return httpRequest<T>(options?.method ?? "GET", path, options?.body);
 }
 
 // ============================================================================
@@ -3407,7 +3721,9 @@ export async function getE2EEStatus(): Promise<E2EEStatus> {
  * This generates identity keys and prekeys for the device.
  * Note: E2EE commands require Tauri - they are not available in browser mode.
  */
-export async function initE2EE(encryptionKey: string): Promise<InitE2EEResponse> {
+export async function initE2EE(
+  encryptionKey: string,
+): Promise<InitE2EEResponse> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<InitE2EEResponse>("init_e2ee", { encryptionKey });
@@ -3423,7 +3739,7 @@ export async function initE2EE(encryptionKey: string): Promise<InitE2EEResponse>
  */
 export async function encryptMessage(
   plaintext: string,
-  recipients: ClaimedPrekeyInput[]
+  recipients: ClaimedPrekeyInput[],
 ): Promise<E2EEContent> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3441,7 +3757,7 @@ export async function decryptMessage(
   senderUserId: string,
   senderKey: string,
   messageType: number,
-  ciphertext: string
+  ciphertext: string,
 ): Promise<string> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3590,12 +3906,12 @@ export async function getUserKeys(userId: string): Promise<UserKeysResponse> {
  */
 export async function claimPrekey(
   userId: string,
-  deviceId: string
+  deviceId: string,
 ): Promise<ClaimedPrekeyResponse> {
   return httpRequest<ClaimedPrekeyResponse>(
     "POST",
     `/api/users/${userId}/keys/claim`,
-    { device_id: deviceId }
+    { device_id: deviceId },
   );
 }
 
@@ -3607,21 +3923,25 @@ export async function uploadKeys(
   deviceName: string | null,
   identityKeyEd25519: string,
   identityKeyCurve25519: string,
-  oneTimePrekeys: PrekeyData[]
-): Promise<{ device_id: string; prekeys_uploaded: number; prekeys_skipped: number }> {
-  return httpRequest<{ device_id: string; prekeys_uploaded: number; prekeys_skipped: number }>(
-    "POST",
-    "/api/keys/upload",
-    {
-      device_name: deviceName,
-      identity_key_ed25519: identityKeyEd25519,
-      identity_key_curve25519: identityKeyCurve25519,
-      one_time_prekeys: oneTimePrekeys.map((pk) => ({
-        key_id: pk.key_id,
-        public_key: pk.public_key,
-      })),
-    }
-  );
+  oneTimePrekeys: PrekeyData[],
+): Promise<{
+  device_id: string;
+  prekeys_uploaded: number;
+  prekeys_skipped: number;
+}> {
+  return httpRequest<{
+    device_id: string;
+    prekeys_uploaded: number;
+    prekeys_skipped: number;
+  }>("POST", "/api/keys/upload", {
+    device_name: deviceName,
+    identity_key_ed25519: identityKeyEd25519,
+    identity_key_curve25519: identityKeyCurve25519,
+    one_time_prekeys: oneTimePrekeys.map((pk) => ({
+      key_id: pk.key_id,
+      public_key: pk.public_key,
+    })),
+  });
 }
 
 // ============================================================================
@@ -3634,7 +3954,7 @@ export async function uploadKeys(
 export async function addReaction(
   channelId: string,
   messageId: string,
-  emoji: string
+  emoji: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3644,7 +3964,7 @@ export async function addReaction(
   await httpRequest<void>(
     "PUT",
     `/api/channels/${channelId}/messages/${messageId}/reactions`,
-    { emoji }
+    { emoji },
   );
 }
 
@@ -3654,7 +3974,7 @@ export async function addReaction(
 export async function removeReaction(
   channelId: string,
   messageId: string,
-  emoji: string
+  emoji: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -3663,16 +3983,14 @@ export async function removeReaction(
 
   await httpRequest<void>(
     "DELETE",
-    `/api/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`
+    `/api/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
   );
 }
 
 /**
  * Delete a message (soft delete, own messages only).
  */
-export async function deleteMessage(
-  messageId: string
-): Promise<void> {
+export async function deleteMessage(messageId: string): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("delete_message", { messageId });
@@ -3718,7 +4036,9 @@ export async function markAllRead(): Promise<void> {
  * Fetch server settings (public, no auth required).
  * Used pre-login to determine available auth methods and OIDC providers.
  */
-export async function fetchServerSettings(serverUrl: string): Promise<ServerSettings> {
+export async function fetchServerSettings(
+  serverUrl: string,
+): Promise<ServerSettings> {
   const baseUrl = serverUrl.replace(/\/+$/, "");
   const resp = await fetch(`${baseUrl}/api/settings`);
   if (!resp.ok) {
@@ -3738,7 +4058,7 @@ export async function fetchServerSettings(serverUrl: string): Promise<ServerSett
  */
 export async function oidcAuthorize(
   serverUrl: string,
-  providerSlug: string
+  providerSlug: string,
 ): Promise<
   | { mode: "tauri"; tokens: OidcLoginResult }
   | { mode: "browser"; authUrl: string }
@@ -3767,7 +4087,7 @@ export async function oidcCompleteLogin(
   serverUrl: string,
   accessToken: string,
   refreshToken: string,
-  expiresIn: number
+  expiresIn: number,
 ): Promise<void> {
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
@@ -3780,10 +4100,7 @@ export async function oidcCompleteLogin(
   localStorage.setItem("serverUrl", baseUrl);
   localStorage.setItem("accessToken", accessToken);
   localStorage.setItem("refreshToken", refreshToken);
-  localStorage.setItem(
-    "tokenExpiresAt",
-    String(browserState.tokenExpiresAt)
-  );
+  localStorage.setItem("tokenExpiresAt", String(browserState.tokenExpiresAt));
 
   scheduleTokenRefresh();
 }
@@ -3814,7 +4131,11 @@ export async function adminUpdateAuthSettings(body: {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<AuthSettingsResponse>("admin_update_auth_settings", { body });
   }
-  return httpRequest<AuthSettingsResponse>("PUT", "/api/admin/auth-settings", body);
+  return httpRequest<AuthSettingsResponse>(
+    "PUT",
+    "/api/admin/auth-settings",
+    body,
+  );
 }
 
 /**
@@ -3848,7 +4169,11 @@ export async function adminCreateOidcProvider(body: {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<AdminOidcProvider>("admin_create_oidc_provider", { body });
   }
-  return httpRequest<AdminOidcProvider>("POST", "/api/admin/oidc-providers", body);
+  return httpRequest<AdminOidcProvider>(
+    "POST",
+    "/api/admin/oidc-providers",
+    body,
+  );
 }
 
 /**
@@ -3867,13 +4192,20 @@ export async function adminUpdateOidcProvider(
     client_secret?: string;
     scopes: string;
     enabled: boolean;
-  }
+  },
 ): Promise<AdminOidcProvider> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AdminOidcProvider>("admin_update_oidc_provider", { id, body });
+    return invoke<AdminOidcProvider>("admin_update_oidc_provider", {
+      id,
+      body,
+    });
   }
-  return httpRequest<AdminOidcProvider>("PUT", `/api/admin/oidc-providers/${id}`, body);
+  return httpRequest<AdminOidcProvider>(
+    "PUT",
+    `/api/admin/oidc-providers/${id}`,
+    body,
+  );
 }
 
 /**
@@ -3884,5 +4216,8 @@ export async function adminDeleteOidcProvider(id: string): Promise<void> {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<void>("admin_delete_oidc_provider", { id });
   }
-  await httpRequest<{ success: boolean }>("DELETE", `/api/admin/oidc-providers/${id}`);
+  await httpRequest<{ success: boolean }>(
+    "DELETE",
+    `/api/admin/oidc-providers/${id}`,
+  );
 }

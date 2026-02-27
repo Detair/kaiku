@@ -6,12 +6,41 @@
  * Uses server-side ts_headline for highlighting and ts_rank for relevance sorting.
  */
 
-import { Component, Show, For, createSignal, onCleanup, createMemo } from "solid-js";
+import {
+  Component,
+  Show,
+  For,
+  createSignal,
+  onCleanup,
+  createMemo,
+} from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { Search, X, Loader2, Hash, Filter, Link, Paperclip, Globe, MessageSquare } from "lucide-solid";
-import { searchState, search, searchDMs, searchGlobal, loadMore, clearSearch, hasMore } from "@/stores/search";
+import {
+  Search,
+  X,
+  Loader2,
+  Hash,
+  Filter,
+  Link,
+  Paperclip,
+  Globe,
+  MessageSquare,
+} from "lucide-solid";
+import {
+  searchState,
+  search,
+  searchDMs,
+  searchGlobal,
+  loadMore,
+  clearSearch,
+  hasMore,
+} from "@/stores/search";
 import { getActiveGuild } from "@/stores/guilds";
-import type { SearchFilters, SearchResult, GlobalSearchResult } from "@/lib/types";
+import type {
+  SearchFilters,
+  SearchResult,
+  GlobalSearchResult,
+} from "@/lib/types";
 import Avatar from "@/components/ui/Avatar";
 import { formatTimestamp } from "@/lib/utils";
 import DOMPurify from "dompurify";
@@ -31,14 +60,18 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
   const [dateTo, setDateTo] = createSignal("");
   const [authorFilter, setAuthorFilter] = createSignal("");
   const [hasFilter, setHasFilter] = createSignal<"link" | "file" | "">("");
-  const [sortOrder, setSortOrder] = createSignal<"relevance" | "date">("relevance");
+  const [sortOrder, setSortOrder] = createSignal<"relevance" | "date">(
+    "relevance",
+  );
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
   let resultsContainerRef: HTMLDivElement | undefined;
 
   const resultCount = createMemo(() => searchState.results.length);
 
   const virtualizer = createVirtualizer({
-    get count() { return resultCount(); },
+    get count() {
+      return resultCount();
+    },
     getScrollElement: () => resultsContainerRef ?? null,
     estimateSize: () => 100,
     overscan: 5,
@@ -96,8 +129,13 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
   const handleResultClick = (result: SearchResult | GlobalSearchResult) => {
     if (mode() === "global" && "source" in result) {
       const globalResult = result as GlobalSearchResult;
-      if (globalResult.source.type === "guild" && globalResult.source.guild_id) {
-        navigate(`/guilds/${globalResult.source.guild_id}/channels/${result.channel_id}?highlight=${result.id}`);
+      if (
+        globalResult.source.type === "guild" &&
+        globalResult.source.guild_id
+      ) {
+        navigate(
+          `/guilds/${globalResult.source.guild_id}/channels/${result.channel_id}?highlight=${result.id}`,
+        );
       } else {
         navigate(`/home/dm/${result.channel_id}?highlight=${result.id}`);
       }
@@ -106,7 +144,9 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
     } else {
       const guild = getActiveGuild();
       if (guild) {
-        navigate(`/guilds/${guild.id}/channels/${result.channel_id}?highlight=${result.id}`);
+        navigate(
+          `/guilds/${guild.id}/channels/${result.channel_id}?highlight=${result.id}`,
+        );
       }
     }
     props.onClose();
@@ -130,9 +170,12 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
 
   const placeholderText = () => {
     switch (mode()) {
-      case "global": return "Search everywhere...";
-      case "dm": return "Search DMs...";
-      default: return "Search messages...";
+      case "global":
+        return "Search everywhere...";
+      case "dm":
+        return "Search DMs...";
+      default:
+        return "Search messages...";
     }
   };
 
@@ -177,21 +220,31 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           {/* Sort Toggle */}
           <div class="flex gap-1">
             <button
-              onClick={() => { setSortOrder("relevance"); triggerSearch(); }}
+              onClick={() => {
+                setSortOrder("relevance");
+                triggerSearch();
+              }}
               class="px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary": sortOrder() === "relevance",
-                "bg-surface-layer1 text-text-secondary hover:text-text-primary": sortOrder() !== "relevance",
+                "bg-accent-primary/20 text-accent-primary":
+                  sortOrder() === "relevance",
+                "bg-surface-layer1 text-text-secondary hover:text-text-primary":
+                  sortOrder() !== "relevance",
               }}
             >
               Relevance
             </button>
             <button
-              onClick={() => { setSortOrder("date"); triggerSearch(); }}
+              onClick={() => {
+                setSortOrder("date");
+                triggerSearch();
+              }}
               class="px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary": sortOrder() === "date",
-                "bg-surface-layer1 text-text-secondary hover:text-text-primary": sortOrder() !== "date",
+                "bg-accent-primary/20 text-accent-primary":
+                  sortOrder() === "date",
+                "bg-surface-layer1 text-text-secondary hover:text-text-primary":
+                  sortOrder() !== "date",
               }}
             >
               Date
@@ -199,52 +252,77 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           </div>
           <div class="flex gap-2">
             <div class="flex-1">
-              <label class="text-xs text-text-secondary block mb-1">From date</label>
+              <label class="text-xs text-text-secondary block mb-1">
+                From date
+              </label>
               <input
                 type="date"
                 value={dateFrom()}
-                onInput={(e) => { setDateFrom(e.currentTarget.value); triggerSearch(); }}
+                onInput={(e) => {
+                  setDateFrom(e.currentTarget.value);
+                  triggerSearch();
+                }}
                 class="w-full px-2 py-1 rounded text-xs text-text-primary bg-surface-layer1 border border-white/10 outline-none"
               />
             </div>
             <div class="flex-1">
-              <label class="text-xs text-text-secondary block mb-1">To date</label>
+              <label class="text-xs text-text-secondary block mb-1">
+                To date
+              </label>
               <input
                 type="date"
                 value={dateTo()}
-                onInput={(e) => { setDateTo(e.currentTarget.value); triggerSearch(); }}
+                onInput={(e) => {
+                  setDateTo(e.currentTarget.value);
+                  triggerSearch();
+                }}
                 class="w-full px-2 py-1 rounded text-xs text-text-primary bg-surface-layer1 border border-white/10 outline-none"
               />
             </div>
           </div>
           <div>
-            <label class="text-xs text-text-secondary block mb-1">Author ID</label>
+            <label class="text-xs text-text-secondary block mb-1">
+              Author ID
+            </label>
             <input
               type="text"
               placeholder="User ID"
               value={authorFilter()}
-              onInput={(e) => { setAuthorFilter(e.currentTarget.value); triggerSearch(); }}
+              onInput={(e) => {
+                setAuthorFilter(e.currentTarget.value);
+                triggerSearch();
+              }}
               class="w-full px-2 py-1 rounded text-xs text-text-primary placeholder:text-text-secondary/50 bg-surface-layer1 border border-white/10 outline-none"
             />
           </div>
           <div class="flex gap-2">
             <button
-              onClick={() => { setHasFilter(hasFilter() === "link" ? "" : "link"); triggerSearch(); }}
+              onClick={() => {
+                setHasFilter(hasFilter() === "link" ? "" : "link");
+                triggerSearch();
+              }}
               class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary": hasFilter() === "link",
-                "bg-surface-layer1 text-text-secondary hover:text-text-primary": hasFilter() !== "link",
+                "bg-accent-primary/20 text-accent-primary":
+                  hasFilter() === "link",
+                "bg-surface-layer1 text-text-secondary hover:text-text-primary":
+                  hasFilter() !== "link",
               }}
             >
               <Link class="w-3 h-3" />
               Has link
             </button>
             <button
-              onClick={() => { setHasFilter(hasFilter() === "file" ? "" : "file"); triggerSearch(); }}
+              onClick={() => {
+                setHasFilter(hasFilter() === "file" ? "" : "file");
+                triggerSearch();
+              }}
               class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary": hasFilter() === "file",
-                "bg-surface-layer1 text-text-secondary hover:text-text-primary": hasFilter() !== "file",
+                "bg-accent-primary/20 text-accent-primary":
+                  hasFilter() === "file",
+                "bg-surface-layer1 text-text-secondary hover:text-text-primary":
+                  hasFilter() !== "file",
               }}
             >
               <Paperclip class="w-3 h-3" />
@@ -263,14 +341,22 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
       {/* Results */}
       <div ref={resultsContainerRef} class="flex-1 overflow-y-auto">
         {/* Loading State */}
-        <Show when={searchState.isSearching && searchState.results.length === 0}>
+        <Show
+          when={searchState.isSearching && searchState.results.length === 0}
+        >
           <div class="flex items-center justify-center py-8">
             <Loader2 class="w-6 h-6 text-text-secondary animate-spin" />
           </div>
         </Show>
 
         {/* Empty State */}
-        <Show when={!searchState.isSearching && searchState.query.length >= 2 && searchState.results.length === 0}>
+        <Show
+          when={
+            !searchState.isSearching &&
+            searchState.query.length >= 2 &&
+            searchState.results.length === 0
+          }
+        >
           <div class="flex flex-col items-center justify-center py-8 text-text-secondary">
             <Search class="w-12 h-12 mb-3 opacity-50" />
             <p class="text-sm">No results found</p>
@@ -295,7 +381,12 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
 
         {/* Results List */}
         <Show when={searchState.results.length > 0}>
-          <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
+          <div
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+              position: "relative",
+            }}
+          >
             <For each={virtualizer.getVirtualItems()}>
               {(virtualItem) => {
                 const result = () => searchState.results[virtualItem.index];
@@ -321,11 +412,19 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                               const globalResult = r() as GlobalSearchResult;
                               return (
                                 <div class="flex items-center gap-1 text-xs text-text-secondary mb-1">
-                                  <Show when={globalResult.source.type === "guild"} fallback={
-                                    <><MessageSquare class="w-3 h-3" /><span>Direct Messages</span></>
-                                  }>
+                                  <Show
+                                    when={globalResult.source.type === "guild"}
+                                    fallback={
+                                      <>
+                                        <MessageSquare class="w-3 h-3" />
+                                        <span>Direct Messages</span>
+                                      </>
+                                    }
+                                  >
                                     <Globe class="w-3 h-3" />
-                                    <span>{globalResult.source.guild_name}</span>
+                                    <span>
+                                      {globalResult.source.guild_name}
+                                    </span>
                                   </Show>
                                   <span class="mx-0.5">&gt;</span>
                                   <Hash class="w-3 h-3" />

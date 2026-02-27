@@ -23,7 +23,11 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
         await stopScreenShare();
       } catch (err) {
         console.error("Failed to stop screen share:", err);
-        showToast({ type: "error", title: "Could not stop screen share.", duration: 8000 });
+        showToast({
+          type: "error",
+          title: "Could not stop screen share.",
+          duration: 8000,
+        });
       } finally {
         setLoading(false);
       }
