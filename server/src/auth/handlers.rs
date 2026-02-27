@@ -1098,7 +1098,10 @@ pub async fn update_password(
         .map_err(AuthError::Database)?
         .ok_or(AuthError::UserNotFound)?;
 
-    let current_hash = user.password_hash.as_ref().ok_or(AuthError::InvalidCredentials)?;
+    let current_hash = user
+        .password_hash
+        .as_ref()
+        .ok_or(AuthError::InvalidCredentials)?;
 
     let valid = verify_password(&body.current_password, current_hash)
         .map_err(|_| AuthError::PasswordHash)?;
@@ -1107,12 +1110,20 @@ pub async fn update_password(
         return Err(AuthError::InvalidCredentials);
     }
 
-    let new_hash = hash_password(&body.new_password)
-        .map_err(|_| AuthError::PasswordHash)?;
+    let new_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
 
     crate::db::update_user_password(&state.db, auth_user.id, &new_hash)
         .await
         .map_err(AuthError::Database)?;
+
+    // Invalidate all sessions — force re-login after password change
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(auth_user.id)
+        .execute(&state.db)
+        .await
+        .map_err(AuthError::Database)?;
+
+    tracing::info!(user_id = %auth_user.id, "Password updated and all sessions invalidated");
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -1591,10 +1602,11 @@ pub async fn oidc_authorize(
         }
     } else {
         // Browser flow: use the server's own callback endpoint
-        format!(
-            "{}/auth/oidc/callback",
-            std::env::var("PUBLIC_URL").unwrap_or_else(|_| String::new())
-        )
+        let public_url = std::env::var("PUBLIC_URL").map_err(|_| {
+            tracing::error!("PUBLIC_URL env var is not set; required for OIDC browser flow");
+            AuthError::Internal("Server misconfiguration: PUBLIC_URL is not set".to_string())
+        })?;
+        format!("{public_url}/auth/oidc/callback")
     };
 
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager

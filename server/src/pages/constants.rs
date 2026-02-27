@@ -33,6 +33,19 @@ pub const DELETED_SLUG_COOLDOWN_DAYS: i64 = 7;
 /// These are system-reserved paths that could conflict with API routes
 /// or cause confusion in navigation.
 pub const RESERVED_SLUGS: &[&str] = &[
-    "admin", "api", "new", "edit", "delete", "settings", "create", "update", "list", "all", "me",
-    "system", "library", "revisions", "categories",
+    "admin",
+    "api",
+    "new",
+    "edit",
+    "delete",
+    "settings",
+    "create",
+    "update",
+    "list",
+    "all",
+    "me",
+    "system",
+    "library",
+    "revisions",
+    "categories",
 ];

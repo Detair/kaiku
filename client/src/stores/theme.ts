@@ -156,33 +156,3 @@ export function isDarkTheme(): boolean {
   return getCurrentTheme()?.isDark ?? true;
 }
 
-/**
- * @deprecated Use initPreferences() from preferences store instead.
- * This is kept for backwards compatibility during migration.
- */
-export async function initTheme(): Promise<void> {
-  // Theme is now initialized through initPreferences()
-  // The createEffect above will apply the theme when preferences load
-  console.log(
-    "[Theme] initTheme() called - theme is now managed by preferences store",
-  );
-}
-
-// ============================================================================
-// Legacy Compatibility
-// ============================================================================
-
-/**
- * @deprecated Access theme() directly or use preferences().theme
- * This object is kept for backwards compatibility.
- */
-export const themeState = {
-  get currentTheme() {
-    return theme();
-  },
-  availableThemes,
-  get isInitialized() {
-    // Always true since preferences handle initialization
-    return true;
-  },
-};

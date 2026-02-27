@@ -378,15 +378,19 @@ pub async fn test_webhook(
         })
     };
 
-    // SSRF check at delivery time (DNS rebinding protection)
-    if let Err(e) = super::ssrf::verify_resolved_ip(&webhook.url).await {
-        return Ok(Json(TestDeliveryResult {
-            success: false,
-            response_status: None,
-            latency_ms: 0,
-            error_message: Some(format!("SSRF blocked: {e}")),
-        }));
-    }
+    // SSRF check at delivery time (DNS rebinding protection).
+    // Returns the pinned address to prevent DNS rebinding between check and delivery.
+    let verified = match super::ssrf::verify_resolved_ip(&webhook.url).await {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(Json(TestDeliveryResult {
+                success: false,
+                response_status: None,
+                latency_ms: 0,
+                error_message: Some(format!("SSRF blocked: {e}")),
+            }));
+        }
+    };
 
     // Build test payload
     let event_id = Uuid::new_v4();
@@ -408,7 +412,10 @@ pub async fn test_webhook(
     let signature = signing::sign_payload(&signing_secret, &payload_bytes);
     let timestamp = chrono::Utc::now().timestamp().to_string();
 
+    // Build a per-request client that pins the resolved IP to prevent DNS rebinding.
+    // This ensures the HTTP request goes to the same IP that passed SSRF validation.
     let client = reqwest::Client::builder()
+        .resolve(&verified.host, verified.addr)
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| {

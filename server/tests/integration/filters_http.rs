@@ -5,9 +5,9 @@
 //!
 //! Run with: `cargo test --test integration filters_http -- --nocapture`
 
+use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
-use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
@@ -400,7 +400,8 @@ async fn test_dm_message_not_filtered() {
     let dm_channel = super::helpers::create_dm_channel(&app.pool, user_a, user_b).await;
 
     let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_channel).await });
+    guard
+        .add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_channel).await });
     guard.delete_user(user_a);
     guard.delete_user(user_b);
 

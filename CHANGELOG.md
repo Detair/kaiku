@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Added 13 new observability metrics: HTTP errors, WebSocket connections/messages, voice sessions/duration/RTP, DB pool stats, auth token refresh, process memory, OTel export failures (#285)
 - Added admin RLS bypass for `connection_metrics` and `connection_sessions` tables for Command Center aggregate queries (#285)
+- Added MFA secret database constraint to prevent empty-string corruption
 - Focus modes for intelligent notification routing — suppress notifications during gaming, coding, or streaming sessions with VIP contact overrides and emergency keyword bypass (#253)
 - Auto-activation of focus modes when matching apps are detected (games, IDEs) with support for custom triggers (#253)
 - Focus settings UI with per-mode configuration: suppression level, VIP users/channels, emergency keywords, and trigger categories (#253)
@@ -25,12 +26,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)
 - Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
+- Updated `.env.example` with non-empty Valkey password example
+
+### Removed
+- Removed dead code: `test-utils` feature flag, deprecated theme functions (`initTheme`, `themeState`), unused Tauri commands (`get_refresh_token`, `stop_presence_service`, `CallCapabilities`)
+- Cleaned up stale comments across client and shared crates
 
 ### Fixed
 - Webhook delivery worker no longer logs ERROR-level timeout messages every 2 seconds on idle — fred 10.x BRPOP nil responses are now correctly handled as normal idle behavior (#287)
 - Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
 
 ### Security
+- Enabled Content Security Policy (CSP) in Tauri webview to prevent script injection
+- Disabled `withGlobalTauri` to restrict IPC bridge access to explicit imports only
+- OIDC provider error details are no longer leaked to clients — errors are logged server-side
+- Sessions are now invalidated when a user changes their password
+- Added WebSocket message size limits (256 KiB max) to prevent memory exhaustion
+- Fixed SSRF bypass in test webhook delivery — now uses DNS-pinned HTTP client
+- OIDC flow now requires `PUBLIC_URL` to be set, preventing silently broken callback URLs
+- Added security response headers: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`
+- Added CORS wildcard origin warning log for production deployments
+- Fixed X-Forwarded-For IP extraction to use rightmost (proxy-appended) IP, preventing client spoofing
+- Rate-limited OIDC callback endpoint to prevent abuse
+- Redacted password and MFA code from `LoginRequest` debug output
 - Channel creation, member operations, and file uploads now enforce guild membership and permission checks — previously these endpoints could be accessed without proper authorization (#217, #218)
 - Guild join endpoint now requires a valid invite — previously any authenticated user could join any guild directly (#219)
 - E2EE device registration is now limited to 10 devices per user to prevent ghost device attacks (#221)

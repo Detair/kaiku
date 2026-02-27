@@ -47,8 +47,6 @@ import type { ReportTarget } from "./components/modals/ReportModal";
 // Context menu callbacks
 import { onShowBlockConfirm, onShowReport } from "./lib/contextMenuBuilders";
 
-// Theme
-import { initTheme } from "./stores/theme";
 import { fetchUploadLimits } from "./lib/tauri";
 import { initDrafts } from "./stores/drafts";
 
@@ -78,8 +76,7 @@ onShowReport((target) =>
 
 // Layout wrapper
 const Layout: Component<ParentProps> = (props) => {
-  onMount(async () => {
-    await initTheme();
+  onMount(() => {
     initDrafts();
     // Fetch upload size limits from server (non-blocking)
     fetchUploadLimits().catch((err) =>

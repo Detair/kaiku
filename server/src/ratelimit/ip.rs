@@ -19,8 +19,8 @@ pub fn extract_client_ip(
     if trust_proxy {
         if let Some(forwarded) = headers.get("X-Forwarded-For") {
             if let Ok(s) = forwarded.to_str() {
-                if let Some(first_ip) = s.split(',').next() {
-                    if let Ok(ip) = first_ip.trim().parse() {
+                if let Some(last_ip) = s.rsplit(',').next() {
+                    if let Ok(ip) = last_ip.trim().parse() {
                         return ip;
                     }
                 }
@@ -95,9 +95,9 @@ mod tests {
         let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 12345);
         let connect_info = ConnectInfo(socket);
 
-        // With trust_proxy = true, should use X-Forwarded-For
+        // With trust_proxy = true, should use X-Forwarded-For (rightmost/last IP)
         let ip = extract_client_ip(&headers, Some(&connect_info), true);
-        assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50)));
+        assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(70, 41, 3, 18)));
 
         // With trust_proxy = false, should use connect_info
         let ip = extract_client_ip(&headers, Some(&connect_info), false);

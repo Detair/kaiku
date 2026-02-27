@@ -9,12 +9,23 @@ use tracing::{debug, error, info};
 use crate::{AppState, User, UserStatus};
 
 /// Login request from frontend.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct LoginRequest {
     pub server_url: String,
     pub username: String,
     pub password: String,
     pub mfa_code: Option<String>,
+}
+
+impl std::fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("server_url", &self.server_url)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// Register request from frontend.
@@ -568,12 +579,6 @@ fn keyring_user(server_url: &str) -> String {
 fn store_refresh_token(server_url: &str, token: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
     entry.set_password(token)
-}
-
-#[allow(dead_code)]
-fn get_refresh_token(server_url: &str) -> Result<String, keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
-    entry.get_password()
 }
 
 fn clear_refresh_token(server_url: &str) -> Result<(), keyring::Error> {

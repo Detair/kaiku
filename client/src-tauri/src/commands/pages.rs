@@ -802,7 +802,10 @@ pub async fn list_page_revisions(
     let server_url = server_url.ok_or("Not authenticated")?;
     let token = token.ok_or("Not authenticated")?;
 
-    debug!("Fetching revisions for page: {} in guild: {}", page_id, guild_id);
+    debug!(
+        "Fetching revisions for page: {} in guild: {}",
+        page_id, guild_id
+    );
 
     let response = state
         .http
@@ -828,7 +831,11 @@ pub async fn list_page_revisions(
         .await
         .map_err(|e| format!("Invalid response: {e}"))?;
 
-    debug!("Fetched {} revisions for page: {}", revisions.len(), page_id);
+    debug!(
+        "Fetched {} revisions for page: {}",
+        revisions.len(),
+        page_id
+    );
     Ok(revisions)
 }
 
@@ -993,7 +1000,11 @@ pub async fn list_page_categories(
         .await
         .map_err(|e| format!("Invalid response: {e}"))?;
 
-    debug!("Fetched {} page categories for guild: {}", categories.len(), guild_id);
+    debug!(
+        "Fetched {} page categories for guild: {}",
+        categories.len(),
+        guild_id
+    );
     Ok(categories)
 }
 
@@ -1067,7 +1078,10 @@ pub async fn update_page_category(
     let server_url = server_url.ok_or("Not authenticated")?;
     let token = token.ok_or("Not authenticated")?;
 
-    debug!("Updating page category: {} in guild: {}", category_id, guild_id);
+    debug!(
+        "Updating page category: {} in guild: {}",
+        category_id, guild_id
+    );
 
     let response = state
         .http
@@ -1119,7 +1133,10 @@ pub async fn delete_page_category(
     let server_url = server_url.ok_or("Not authenticated")?;
     let token = token.ok_or("Not authenticated")?;
 
-    debug!("Deleting page category: {} in guild: {}", category_id, guild_id);
+    debug!(
+        "Deleting page category: {} in guild: {}",
+        category_id, guild_id
+    );
 
     let response = state
         .http

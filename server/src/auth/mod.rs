@@ -103,12 +103,24 @@ pub fn router(state: AppState) -> Router<AppState> {
             RateLimitCategory::AuthOther,
         )));
 
-    // OIDC routes without rate limiting (providers list + callback from IdP)
-    let oidc_other_routes = Router::new()
-        .route("/oidc/providers", get(handlers::oidc_providers))
-        .route("/oidc/callback", get(handlers::oidc_callback));
+    // OIDC callback with rate limiting (same as authorize)
+    let oidc_callback_route = Router::new()
+        .route("/oidc/callback", get(handlers::oidc_callback))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_by_ip,
+        ))
+        .layer(axum_middleware::from_fn(with_category(
+            RateLimitCategory::AuthOther,
+        )));
 
-    let oidc_routes = oidc_authorize_route.merge(oidc_other_routes);
+    // OIDC providers list (no rate limiting needed)
+    let oidc_providers_route =
+        Router::new().route("/oidc/providers", get(handlers::oidc_providers));
+
+    let oidc_routes = oidc_authorize_route
+        .merge(oidc_callback_route)
+        .merge(oidc_providers_route);
 
     // Password reset routes with rate limiting
     let forgot_password_route = Router::new()

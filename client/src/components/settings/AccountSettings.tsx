@@ -145,7 +145,6 @@ const AccountSettings: Component = () => {
         </div>
       </Show>
 
-      {/* Placeholder for other account settings */}
       <div class="pt-4 border-t border-white/5">
         <h4 class="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-4">
           Password & Authentication

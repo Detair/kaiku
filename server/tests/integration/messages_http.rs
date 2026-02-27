@@ -5,9 +5,9 @@
 //!
 //! Run with: `cargo test --test integration messages_http -- --nocapture`
 
+use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
-use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
@@ -93,7 +93,8 @@ async fn test_create_message_validation_errors() {
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
-    let channel_id = super::helpers::create_channel(&app.pool, guild_id, "msg-validation-test").await;
+    let channel_id =
+        super::helpers::create_channel(&app.pool, guild_id, "msg-validation-test").await;
 
     let mut guard = app.cleanup_guard();
     guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
@@ -142,7 +143,8 @@ async fn test_list_messages_pagination() {
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
-    let channel_id = super::helpers::create_channel(&app.pool, guild_id, "msg-pagination-test").await;
+    let channel_id =
+        super::helpers::create_channel(&app.pool, guild_id, "msg-pagination-test").await;
 
     let mut guard = app.cleanup_guard();
     guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });

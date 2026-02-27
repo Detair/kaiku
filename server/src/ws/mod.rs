@@ -1064,6 +1064,8 @@ pub async fn handler(
 
     // Respond with the protocol to confirm (required for WebSocket handshake)
     ws.protocols(["access_token"])
+        .max_message_size(256 * 1024)
+        .max_frame_size(64 * 1024)
         .on_upgrade(move |socket| handle_socket(socket, state, user_id))
 }
 

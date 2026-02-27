@@ -610,9 +610,7 @@ pub async fn create_revision(
         {
             Ok(revision) => return Ok(revision),
             Err(sqlx::Error::Database(db_err))
-                if db_err.is_unique_violation() && attempt + 1 < MAX_RETRIES =>
-            {
-            }
+                if db_err.is_unique_violation() && attempt + 1 < MAX_RETRIES => {}
             Err(err) => return Err(err),
         }
     }

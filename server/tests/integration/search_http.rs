@@ -5,14 +5,14 @@
 //!
 //! Run with: `cargo test --test integration search_http`
 
-use axum::body::Body;
-use axum::http::Method;
 use super::helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
     create_guild_with_default_role, create_test_user, delete_dm_channel, delete_guild, delete_user,
     generate_access_token, insert_attachment, insert_encrypted_message, insert_message,
     insert_message_at, TestApp,
 };
+use axum::body::Body;
+use axum::http::Method;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 

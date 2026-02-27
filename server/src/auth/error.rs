@@ -86,7 +86,7 @@ pub enum AuthError {
     OidcStateMismatch,
 
     /// OIDC code exchange failed.
-    #[error("OIDC code exchange failed: {0}")]
+    #[error("OIDC authentication failed")]
     OidcCodeExchangeFailed(String),
 
     /// Registration is disabled by server policy.
