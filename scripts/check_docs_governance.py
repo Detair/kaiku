@@ -222,6 +222,39 @@ def validate_release_template(errors: list[str]) -> None:
             )
 
 
+def check_observability_plan_linkage(errors: list[str]) -> None:
+    """Verify observability plan linkage: plan file, ops docs, and roadmap reference."""
+    plan_path = ROOT / "docs/plans/2026-02-27-phase-7-observability-telemetry-task-plan.md"
+    contract_path = ROOT / "docs/ops/observability-contract.md"
+    runbook_path = ROOT / "docs/ops/observability-runbook.md"
+
+    if not plan_path.exists():
+        errors.append(
+            "Missing observability implementation plan: "
+            "docs/plans/2026-02-27-phase-7-observability-telemetry-task-plan.md"
+        )
+    else:
+        plan_text = plan_path.read_text(encoding="utf-8")
+        if "**Status:**" not in plan_text:
+            errors.append(
+                "Observability plan missing lifecycle metadata '**Status:**': "
+                "docs/plans/2026-02-27-phase-7-observability-telemetry-task-plan.md"
+            )
+
+    if not contract_path.exists():
+        errors.append("Missing observability contract: docs/ops/observability-contract.md")
+
+    if not runbook_path.exists():
+        errors.append("Missing observability runbook: docs/ops/observability-runbook.md")
+
+    roadmap_text = ROADMAP_PATH.read_text(encoding="utf-8") if ROADMAP_PATH.exists() else ""
+    if "[Infra] SaaS Observability & Telemetry" not in roadmap_text:
+        errors.append(
+            "Roadmap does not reference '[Infra] SaaS Observability & Telemetry'"
+        )
+
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -243,6 +276,7 @@ def main() -> int:
 
     validate_plan_lifecycle(errors)
     validate_release_template(errors)
+    check_observability_plan_linkage(errors)
 
     if errors:
         print("Docs governance checks failed:")
