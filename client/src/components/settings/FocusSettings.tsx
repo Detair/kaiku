@@ -182,7 +182,7 @@ const FocusSettings: Component = () => {
   };
 
   const handleAddVipUser = (modeId: string) => {
-    const userId = vipUserInput().trim();
+    const userId = vipUserInput().trim().toLowerCase();
     if (!userId || !UUID_RE.test(userId)) return;
 
     const mode = modes().find((m) => m.id === modeId);
@@ -202,7 +202,7 @@ const FocusSettings: Component = () => {
   };
 
   const handleAddVipChannel = (modeId: string) => {
-    const channelId = vipChannelInput().trim();
+    const channelId = vipChannelInput().trim().toLowerCase();
     if (!channelId || !UUID_RE.test(channelId)) return;
 
     const mode = modes().find((m) => m.id === modeId);

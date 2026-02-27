@@ -17,9 +17,10 @@
 //! - 41 = `workspace_create`
 //! - 43 = `workspace_entry`
 //! - 51 = `guild_create`
-//! - 53 = `invite_join`
+//! - 53 = `guild_member_join` (used by both invite joins and discovery joins)
+//!   - Called from: server/src/guild/invites.rs (invite join path)
+//!   - Called from: server/src/discovery/handlers.rs (discovery join path)
 //!
-//! New advisory lock sites must use a unique seed not listed above.
 
 mod models;
 mod queries;

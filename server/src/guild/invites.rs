@@ -303,9 +303,6 @@ pub async fn join_via_invite(
         }));
     }
 
-    // Initialize read state for all text channels so pre-existing messages don't show as unread
-    super::handlers::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await?;
-
     // Increment use count
     sqlx::query("UPDATE guild_invites SET use_count = use_count + 1 WHERE id = $1")
         .bind(invite.id)
@@ -313,6 +310,19 @@ pub async fn join_via_invite(
         .await?;
 
     tx.commit().await?;
+
+    // Initialize read state for all text channels (best-effort, non-critical)
+    if let Err(err) =
+        super::handlers::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await
+    {
+        tracing::error!(
+            ?err,
+            guild_id = %invite.guild_id,
+            user_id = %auth.id,
+            "Failed to initialize channel read state after invite join"
+        );
+        // Non-fatal: member was already inserted, read state can be retried on channel access
+    }
 
     // Get guild name for response
     let guild_name: (String,) = sqlx::query_as("SELECT name FROM guilds WHERE id = $1")
