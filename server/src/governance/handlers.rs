@@ -16,6 +16,13 @@ use crate::auth::{verify_password, AuthUser};
 use crate::db;
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/// Threshold for considering an export job as stale (abandoned by crash/restart).
+const STALE_EXPORT_JOB_THRESHOLD: Duration = Duration::hours(1);
+
+// ============================================================================
 // Data Export Handlers
 // ============================================================================
 
@@ -45,9 +52,10 @@ pub async fn request_export(
              completed_at = NOW()
          WHERE user_id = $1
            AND status IN ('pending', 'processing')
-           AND created_at < NOW() - INTERVAL '1 hour'",
+           AND created_at < NOW() - CAST($2 AS INTERVAL)",
     )
     .bind(auth.id)
+    .bind(format!("{}h", STALE_EXPORT_JOB_THRESHOLD.num_hours()))
     .execute(&state.db)
     .await?;
 
