@@ -609,6 +609,9 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - [ ] **[Infra] SaaS Observability & Telemetry** ([Design](../plans/2026-02-15-phase-7-a11y-observability-design.md), [Implementation](../plans/2026-02-15-phase-7-a11y-observability-implementation.md))
   - **Context:** Maintain uptime and catch bugs at scale.
   - **Strategy:** Integrate **Sentry** (error tracking) and **OpenTelemetry** for performance monitoring across the Rust backend and Tauri clients.
+- [ ] **[Ops] Admin Command Center (Native Observability Lite)** ([Design](../plans/2026-02-27-phase-7-admin-command-center-design.md), [Implementation](../plans/2026-02-27-phase-7-admin-command-center-implementation.md), [Task Plan](../plans/2026-02-27-phase-7-admin-command-center-task-plan.md))
+  - **Context:** Provide built-in operational visibility for self-hosted admins without requiring a full Grafana stack.
+  - **Strategy:** Ship a cluster-wide admin panel with 30-day native retention for curated metrics, trace indexes, and logs; keep deep forensics (full traces/log search, advanced alerting) in external Tempo/Loki/Prometheus/Grafana.
 
 ---
 
