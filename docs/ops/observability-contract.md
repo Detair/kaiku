@@ -430,7 +430,9 @@ These do not block release but must be filed as issues and resolved before the f
 
 ---
 
-## 11. Enforcement
+## Enforcement
+
+Canonical implementation for server-side telemetry redaction and instrumentation enforcement lives in `server/src/observability/tracing.rs`. Any update to forbidden-attribute rules must update that file first and keep this contract aligned.
 
 ### 11.1 CI gates
 

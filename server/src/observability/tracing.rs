@@ -3,6 +3,8 @@
 //! Sets up a layered `tracing_subscriber` registry that bridges spans and logs
 //! to an OTLP collector, with a JSON stdout fallback layer for all log levels.
 
+use std::collections::HashSet;
+
 use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig as _;
@@ -11,6 +13,7 @@ use opentelemetry_sdk::{
     trace::{BatchSpanProcessor, Sampler, SdkTracerProvider},
     Resource,
 };
+use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 use tracing_subscriber::{
     layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter, Registry,
 };
@@ -24,6 +27,78 @@ use crate::config::ObservabilityConfig;
 /// before the HTTP server finishes serving requests.
 pub struct OtelGuard {
     inner: Option<OtelGuardInner>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RedactionLayer;
+
+#[derive(Default)]
+struct ForbiddenFieldVisitor {
+    forbidden_keys: HashSet<String>,
+}
+
+impl tracing::field::Visit for ForbiddenFieldVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {
+        if is_forbidden_attribute_key(field.name()) {
+            self.forbidden_keys.insert(field.name().to_owned());
+        }
+    }
+}
+
+impl<S> Layer<S> for RedactionLayer
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: Context<'_, S>,
+    ) {
+        let mut visitor = ForbiddenFieldVisitor::default();
+        attrs.record(&mut visitor);
+        if let Some(span) = ctx.span(id) {
+            span.extensions_mut().insert(visitor.forbidden_keys);
+        }
+    }
+
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        ctx: Context<'_, S>,
+    ) {
+        let mut visitor = ForbiddenFieldVisitor::default();
+        values.record(&mut visitor);
+        if let Some(span) = ctx.span(id) {
+            let mut extensions = span.extensions_mut();
+            if let Some(existing) = extensions.get_mut::<HashSet<String>>() {
+                existing.extend(visitor.forbidden_keys);
+            } else {
+                extensions.insert(visitor.forbidden_keys);
+            }
+        }
+    }
+}
+
+fn is_forbidden_attribute_key(key: &str) -> bool {
+    const FORBIDDEN_PATTERNS: [&str; 10] = [
+        "password",
+        "token",
+        "key",
+        "secret",
+        "credential",
+        "authorization",
+        "content",
+        "body",
+        "email",
+        "ip",
+    ];
+
+    let lowered = key.to_ascii_lowercase();
+    FORBIDDEN_PATTERNS
+        .iter()
+        .any(|pattern| lowered.contains(pattern))
 }
 
 struct OtelGuardInner {
@@ -130,6 +205,7 @@ pub fn init(config: &ObservabilityConfig) -> OtelGuard {
 
     Registry::default()
         .with(filter)
+        .with(RedactionLayer)
         .with(otel_trace_layer)
         .with(otel_log_layer)
         .with(tracing_subscriber::fmt::layer().json())
@@ -140,5 +216,44 @@ pub fn init(config: &ObservabilityConfig) -> OtelGuard {
             tracer_provider,
             logger_provider,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn assert_contains(haystack: &str, needle: &str) {
+        assert!(
+            haystack.contains(needle),
+            "missing expected instrumentation contract fragment: {needle}"
+        );
+    }
+
+    #[test]
+    fn redaction_key_match_works() {
+        assert!(super::is_forbidden_attribute_key("http.request.body"));
+        assert!(super::is_forbidden_attribute_key("user_email"));
+        assert!(super::is_forbidden_attribute_key("authorization"));
+        assert!(!super::is_forbidden_attribute_key("channel_id"));
+    }
+
+    #[test]
+    fn instrument_skip_list_contract_is_present() {
+        let auth = include_str!("../auth/handlers.rs");
+        assert_contains(auth, "#[tracing::instrument(skip(state, body)");
+
+        let chat = include_str!("../chat/messages.rs");
+        assert_contains(chat, "#[tracing::instrument(skip(state, body)");
+
+        let ws = include_str!("../ws/mod.rs");
+        assert_contains(
+            ws,
+            "#[tracing::instrument(skip(state, tx, subscribed_channels, admin_subscribed, activity_state, text),",
+        );
+
+        let voice = include_str!("../voice/call_handlers.rs");
+        assert_contains(
+            voice,
+            "#[tracing::instrument(skip(state), fields(user_id = %auth.id",
+        );
     }
 }
