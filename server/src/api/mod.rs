@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, FromRef, State};
 use axum::http::Request;
-use axum::middleware::{from_fn, from_fn_with_state};
+use axum::middleware::{from_fn, from_fn_with_state, Next};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -115,51 +115,53 @@ impl AppState {
 pub fn create_router(state: AppState) -> Router {
     // Configure CORS based on allowed origins
     // In production, set CORS_ALLOWED_ORIGINS to specific origins
-    let cors =
-        if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
-            // Development mode: allow any origin
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any)
-        } else {
-            // Production mode: restrict to configured origins
-            use axum::http::{header, HeaderName, Method};
-            let origins: Vec<_> = state
+    let cors = if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
+        tracing::warn!("CORS configured with wildcard origin — restrict via CORS_ALLOWED_ORIGINS in production");
+        // Development mode: allow any origin
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        // Production mode: restrict to configured origins
+        use axum::http::{header, HeaderName, Method};
+        let origins: Vec<_> = state
             .config
             .cors_allowed_origins
             .iter()
             .filter_map(|o| {
-                if let Ok(origin) = o.parse() { Some(origin) } else {
+                if let Ok(origin) = o.parse() {
+                    Some(origin)
+                } else {
                     tracing::warn!(origin = %o, "Invalid CORS origin in configuration, skipping");
                     None
                 }
             })
             .collect();
 
-            if origins.is_empty() {
-                tracing::error!(
-                    "No valid CORS origins configured! All cross-origin requests will fail."
-                );
-            }
+        if origins.is_empty() {
+            tracing::error!(
+                "No valid CORS origins configured! All cross-origin requests will fail."
+            );
+        }
 
-            CorsLayer::new()
-                .allow_origin(origins)
-                .allow_methods([
-                    Method::GET,
-                    Method::POST,
-                    Method::PUT,
-                    Method::PATCH,
-                    Method::DELETE,
-                    Method::OPTIONS,
-                ])
-                .allow_headers([
-                    header::CONTENT_TYPE,
-                    header::AUTHORIZATION,
-                    HeaderName::from_static("x-request-id"),
-                ])
-                .allow_credentials(true)
-        };
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                header::AUTHORIZATION,
+                HeaderName::from_static("x-request-id"),
+            ])
+            .allow_credentials(true)
+    };
 
     // Get max upload size from config (default 50MB)
     let max_upload_size = state.config.max_upload_size;
@@ -373,6 +375,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         .merge(app_routes)
         // Middleware
+        .layer(from_fn(security_headers))
         .layer(from_fn(http_error_counter))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
@@ -439,6 +442,25 @@ async fn http_error_counter(
     if status >= 400 {
         crate::observability::metrics::record_http_error(status);
     }
+    response
+}
+
+/// Middleware that adds security headers to all responses.
+async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("referrer-policy"),
+        axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
     response
 }
 

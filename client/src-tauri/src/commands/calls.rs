@@ -14,15 +14,6 @@ use crate::AppState;
 // Types
 // ============================================================================
 
-/// Call capabilities (for future video/screen share support).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct CallCapabilities {
-    pub audio: bool,
-    pub video: bool,
-    pub screenshare: bool,
-}
-
 /// Call state response from server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallStateResponse {

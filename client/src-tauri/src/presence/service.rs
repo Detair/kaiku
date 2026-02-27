@@ -42,9 +42,7 @@ pub fn start_presence_service(app: AppHandle) {
                 continue;
             }
 
-            let current = scanner
-                .scan()
-                .map(|g| (g.name.clone(), g.activity_type));
+            let current = scanner.scan().map(|g| (g.name.clone(), g.activity_type));
 
             // Only emit if activity changed
             if current != last_activity {
@@ -61,12 +59,6 @@ pub fn start_presence_service(app: AppHandle) {
             }
         }
     });
-}
-
-/// Stop background presence polling.
-#[allow(dead_code)]
-pub fn stop_presence_service() {
-    RUNNING.store(false, Ordering::SeqCst);
 }
 
 /// Enable or disable presence sharing.
@@ -129,16 +121,5 @@ mod tests {
         if was_running {
             RUNNING.store(true, Ordering::SeqCst);
         }
-    }
-
-    #[test]
-    fn test_stop_presence_service() {
-        // Set running to true
-        RUNNING.store(true, Ordering::SeqCst);
-        assert!(RUNNING.load(Ordering::SeqCst));
-
-        // Stop service
-        stop_presence_service();
-        assert!(!RUNNING.load(Ordering::SeqCst));
     }
 }

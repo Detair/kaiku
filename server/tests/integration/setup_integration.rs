@@ -325,9 +325,7 @@ async fn test_concurrent_registrations_only_one_gets_admin() {
         .expect("Failed to cleanup users");
 
     println!("✅ Concurrent registration test passed");
-    println!(
-        "    {num_concurrent} concurrent registrations, exactly 1 received admin"
-    );
+    println!("    {num_concurrent} concurrent registrations, exactly 1 received admin");
 }
 
 /// Test that concurrent setup completion attempts only succeed once.
@@ -450,7 +448,5 @@ async fn test_concurrent_setup_completion_only_one_succeeds() {
         .expect("Failed to reset server_name");
 
     println!("✅ Concurrent setup completion test passed");
-    println!(
-        "    {num_concurrent} concurrent attempts, exactly 1 succeeded"
-    );
+    println!("    {num_concurrent} concurrent attempts, exactly 1 succeeded");
 }

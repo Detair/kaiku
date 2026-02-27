@@ -35,14 +35,12 @@ impl ObservabilityConfig {
                 .unwrap_or(false),
             otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://localhost:4317".into()),
-            service_name: env::var("OTEL_SERVICE_NAME")
-                .unwrap_or_else(|_| "vc-server".into()),
+            service_name: env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "vc-server".into()),
             trace_sample_ratio: env::var("OTEL_TRACES_SAMPLER_ARG")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.1),
-            log_level: env::var("RUST_LOG")
-                .unwrap_or_else(|_| "vc_server=info".into()),
+            log_level: env::var("RUST_LOG").unwrap_or_else(|_| "vc_server=info".into()),
         }
     }
 }

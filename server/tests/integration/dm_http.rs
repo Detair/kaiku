@@ -5,9 +5,9 @@
 //!
 //! Run with: `cargo test --test integration dm_http -- --nocapture`
 
+use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
-use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 use uuid::Uuid;
 
 // ============================================================================
@@ -132,12 +132,14 @@ async fn test_list_dms() {
     // A creates DM with B
     let (_, dm_ab) = create_dm_via_api(&app, &token_a, &[user_b]).await;
     let dm_ab_uuid = Uuid::parse_str(dm_ab["id"].as_str().unwrap()).unwrap();
-    guard.add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_ab_uuid).await });
+    guard
+        .add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_ab_uuid).await });
 
     // A creates DM with C
     let (_, dm_ac) = create_dm_via_api(&app, &token_a, &[user_c]).await;
     let dm_ac_uuid = Uuid::parse_str(dm_ac["id"].as_str().unwrap()).unwrap();
-    guard.add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_ac_uuid).await });
+    guard
+        .add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_ac_uuid).await });
 
     // A lists → should have 2 DMs
     let dms_a = list_dms(&app, &token_a).await;

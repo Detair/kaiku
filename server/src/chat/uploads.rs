@@ -946,7 +946,10 @@ pub async fn download(
     };
 
     // Set headers
-    let disposition = if content_type.starts_with("image/") || content_type.starts_with("video/") || content_type.starts_with("audio/") {
+    let disposition = if content_type.starts_with("image/")
+        || content_type.starts_with("video/")
+        || content_type.starts_with("audio/")
+    {
         "inline"
     } else {
         "attachment"

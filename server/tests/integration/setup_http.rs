@@ -10,9 +10,9 @@
 //!
 //! Run with: `cargo test --test integration setup_http -- --nocapture`
 
+use super::helpers::{body_to_json, create_test_user, generate_access_token, make_admin, TestApp};
 use axum::body::Body;
 use axum::http::Method;
-use super::helpers::{body_to_json, create_test_user, generate_access_token, make_admin, TestApp};
 use serial_test::serial;
 use tokio::time::{timeout, Duration};
 
