@@ -4,7 +4,12 @@
 
 use std::path::Path;
 
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use hmac::{Hmac, Mac};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -138,11 +143,13 @@ impl LocalKeyStore {
     /// hashes in the database so the communication graph is not exposed
     /// in plaintext on disk.
     fn keyed_hash(&self, domain: &str, value: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.encryption_key.as_ref());
-        hasher.update(domain.as_bytes());
-        hasher.update(value.as_bytes());
-        STANDARD.encode(hasher.finalize())
+        let mut mac = match <Hmac<Sha256> as Mac>::new_from_slice(self.encryption_key.as_ref()) {
+            Ok(mac) => mac,
+            Err(_) => unreachable!("HMAC-SHA256 accepts keys of any length"),
+        };
+        mac.update(domain.as_bytes());
+        mac.update(value.as_bytes());
+        STANDARD.encode(mac.finalize().into_bytes())
     }
 
     /// Check if the store has an account.
@@ -245,9 +252,8 @@ impl LocalKeyStore {
         room_id: &str,
         session: &MegolmOutboundSession,
     ) -> Result<()> {
-        let serialized = serde_json::to_string(session)?;
-        // TODO: Replace metadata XOR obfuscation with AEAD (AES-256-GCM) for Megolm blobs.
-        let encrypted = self.encrypt_metadata_value(&serialized);
+        let serialized = session.serialize(&self.encryption_key)?;
+        let encrypted = self.encrypt_metadata_value(&serialized)?;
         let now = chrono::Utc::now().timestamp();
         let hashed_room_id = self.keyed_hash("megolm:room_outbound", room_id);
 
@@ -277,7 +283,8 @@ impl LocalKeyStore {
                 let json = self
                     .decrypt_metadata_value(&serialized)
                     .unwrap_or(serialized);
-                Ok(Some(serde_json::from_str(&json)?))
+                let session = MegolmOutboundSession::deserialize(&json, &self.encryption_key)?;
+                Ok(Some(session))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
@@ -291,9 +298,8 @@ impl LocalKeyStore {
         key: &MegolmInboundKey,
         session: &MegolmInboundSession,
     ) -> Result<()> {
-        let serialized = serde_json::to_string(session)?;
-        // TODO: Replace metadata XOR obfuscation with AEAD (AES-256-GCM) for Megolm blobs.
-        let encrypted = self.encrypt_metadata_value(&serialized);
+        let serialized = session.serialize(&self.encryption_key)?;
+        let encrypted = self.encrypt_metadata_value(&serialized)?;
         let now = chrono::Utc::now().timestamp();
         let hashed_room_id = self.keyed_hash("megolm:room_inbound", &key.room_id);
         let hashed_sender = self.keyed_hash("megolm:sender", &key.sender_key);
@@ -326,7 +332,8 @@ impl LocalKeyStore {
                 let json = self
                     .decrypt_metadata_value(&serialized)
                     .unwrap_or(serialized);
-                Ok(Some(serde_json::from_str(&json)?))
+                let session = MegolmInboundSession::deserialize(&json, &self.encryption_key)?;
+                Ok(Some(session))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
@@ -340,11 +347,7 @@ impl LocalKeyStore {
     /// Returns an error if serialization or database write fails.
     pub fn save_metadata(&self, metadata: &KeyStoreMetadata) -> Result<()> {
         let json = serde_json::to_string(metadata)?;
-
-        // Encrypt metadata (contains user_id and device_id) using a simple
-        // XOR-based obfuscation with the encryption key hash. This prevents
-        // trivial plaintext extraction from the SQLite file.
-        let encrypted = self.encrypt_metadata_value(&json);
+        let encrypted = self.encrypt_metadata_value(&json)?;
 
         self.conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('info', ?1)",
@@ -382,29 +385,59 @@ impl LocalKeyStore {
         }
     }
 
-    /// Encrypt a metadata value using AES-256-CTR-like construction with the encryption key.
-    /// Uses SHA-256 of (key || "metadata") as a stream cipher key applied via XOR.
-    fn encrypt_metadata_value(&self, plaintext: &str) -> String {
-        let mut stream_key = Sha256::new();
-        stream_key.update(self.encryption_key.as_ref());
-        stream_key.update(b"metadata_encryption");
-        let key_hash = stream_key.finalize();
+    fn encrypt_metadata_value(&self, plaintext: &str) -> Result<String> {
+        let mut key_derivation = Sha256::new();
+        key_derivation.update(self.encryption_key.as_ref());
+        key_derivation.update(b"metadata_encryption");
+        let key = key_derivation.finalize();
 
-        let encrypted: Vec<u8> = plaintext
-            .as_bytes()
-            .iter()
-            .enumerate()
-            .map(|(i, b)| b ^ key_hash[i % 32])
-            .collect();
+        let cipher = match Aes256Gcm::new_from_slice(&key) {
+            Ok(cipher) => cipher,
+            Err(_) => unreachable!("SHA-256 output size matches AES-256 key size"),
+        };
 
-        format!("enc:{}", STANDARD.encode(&encrypted))
+        let mut nonce_bytes = [0u8; 12];
+        getrandom::getrandom(&mut nonce_bytes).map_err(|e| {
+            vc_crypto::CryptoError::InvalidKey(format!("Nonce generation failed: {e}"))
+        })?;
+
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes()).map_err(|e| {
+            vc_crypto::CryptoError::DecryptionFailed(format!("Metadata encryption failed: {e}"))
+        })?;
+
+        let mut combined = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+        combined.extend_from_slice(&nonce_bytes);
+        combined.extend_from_slice(&ciphertext);
+
+        Ok(format!("enc:{}", STANDARD.encode(combined)))
     }
 
-    /// Decrypt a metadata value. Returns None if the value is not encrypted.
     fn decrypt_metadata_value(&self, stored: &str) -> Option<String> {
         let encoded = stored.strip_prefix("enc:")?;
         let encrypted = STANDARD.decode(encoded).ok()?;
 
+        let mut key_derivation = Sha256::new();
+        key_derivation.update(self.encryption_key.as_ref());
+        key_derivation.update(b"metadata_encryption");
+        let key = key_derivation.finalize();
+        let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+
+        if encrypted.len() > 12 {
+            let (nonce_bytes, ciphertext) = encrypted.split_at(12);
+            let nonce = Nonce::from_slice(nonce_bytes);
+
+            if let Ok(plaintext) = cipher.decrypt(nonce, ciphertext) {
+                if let Ok(decoded) = String::from_utf8(plaintext) {
+                    return Some(decoded);
+                }
+            }
+        }
+
+        self.decrypt_metadata_value_legacy_xor(&encrypted)
+    }
+
+    fn decrypt_metadata_value_legacy_xor(&self, encrypted: &[u8]) -> Option<String> {
         let mut stream_key = Sha256::new();
         stream_key.update(self.encryption_key.as_ref());
         stream_key.update(b"metadata_encryption");
@@ -426,6 +459,22 @@ mod tests {
     use vc_crypto::types::Curve25519PublicKey;
 
     use super::*;
+
+    fn legacy_encrypt_metadata_value(encryption_key: &[u8; 32], plaintext: &str) -> String {
+        let mut stream_key = Sha256::new();
+        stream_key.update(encryption_key);
+        stream_key.update(b"metadata_encryption");
+        let key_hash = stream_key.finalize();
+
+        let encrypted: Vec<u8> = plaintext
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ key_hash[i % 32])
+            .collect();
+
+        format!("enc:{}", STANDARD.encode(encrypted))
+    }
 
     #[test]
     fn test_store_account_roundtrip() {
@@ -513,6 +562,37 @@ mod tests {
         let loaded = store.load_metadata().unwrap().unwrap();
         assert_eq!(loaded.user_id, metadata.user_id);
         assert_eq!(loaded.device_id, metadata.device_id);
+    }
+
+    #[test]
+    fn test_store_metadata_legacy_xor_migration() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let key = [0u8; 32];
+
+        let store = LocalKeyStore::open(&path, key).unwrap();
+
+        let metadata = KeyStoreMetadata {
+            user_id: Uuid::new_v4(),
+            device_id: Uuid::new_v4(),
+            created_at: chrono::Utc::now().timestamp(),
+        };
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let legacy_encrypted = legacy_encrypt_metadata_value(&key, &json);
+
+        store
+            .conn
+            .execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES ('info', ?1)",
+                params![legacy_encrypted],
+            )
+            .unwrap();
+
+        let loaded = store.load_metadata().unwrap().unwrap();
+        assert_eq!(loaded.user_id, metadata.user_id);
+        assert_eq!(loaded.device_id, metadata.device_id);
+        assert_eq!(loaded.created_at, metadata.created_at);
     }
 
     #[test]

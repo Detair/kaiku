@@ -5,14 +5,13 @@
 //! This module is only compiled when the `megolm` feature is enabled.
 
 use crate::{CryptoError, Result};
-use serde::{Deserialize, Serialize};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 /// Outbound Megolm session for encrypting messages to a group.
 #[cfg(feature = "megolm")]
-#[derive(Serialize, Deserialize)]
 pub struct MegolmOutboundSession {
     /// The underlying vodozemac `GroupSession`.
-    #[serde(with = "vodozemac_group_session_serde")]
     session: vodozemac::megolm::GroupSession,
 }
 
@@ -54,6 +53,21 @@ impl MegolmOutboundSession {
         let ciphertext = self.session.encrypt(plaintext);
         ciphertext.to_base64()
     }
+
+    pub fn serialize(&self, encryption_key: &[u8; 32]) -> Result<String> {
+        let pickle_key = derive_pickle_key(encryption_key);
+        Ok(self.session.pickle().encrypt(&pickle_key))
+    }
+
+    pub fn deserialize(serialized: &str, encryption_key: &[u8; 32]) -> Result<Self> {
+        let pickle_key = derive_pickle_key(encryption_key);
+        let pickle = vodozemac::megolm::GroupSessionPickle::from_encrypted(serialized, &pickle_key)
+            .map_err(|e| CryptoError::Vodozemac(e.to_string()))?;
+
+        Ok(Self {
+            session: vodozemac::megolm::GroupSession::from(pickle),
+        })
+    }
 }
 
 #[cfg(feature = "megolm")]
@@ -65,10 +79,8 @@ impl Default for MegolmOutboundSession {
 
 /// Inbound Megolm session for decrypting messages from a group member.
 #[cfg(feature = "megolm")]
-#[derive(Serialize, Deserialize)]
 pub struct MegolmInboundSession {
     /// The underlying vodozemac `InboundGroupSession`.
-    #[serde(with = "vodozemac_inbound_group_session_serde")]
     session: vodozemac::megolm::InboundGroupSession,
 }
 
@@ -112,73 +124,36 @@ impl MegolmInboundSession {
             CryptoError::DecryptionFailed(format!("Decrypted payload is not valid UTF-8: {e}"))
         })
     }
-}
 
-// -----------------------------------------------------------------------------
-// Serde Modules for vodozemac structs
-//
-// Vodozemac's GroupSessions implement Pickle rather than direct Serde Serialize
-// to ensure internal invariants. We must serialize via base64 encoded pickles.
-// -----------------------------------------------------------------------------
-
-#[cfg(feature = "megolm")]
-mod vodozemac_group_session_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use vodozemac::megolm::GroupSession;
-
-    // We use an empty secret key for pickling because the local key store handles encryption
-    // at the storage layer. See `LocalKeyStore` in client/src-tauri/src/crypto/store.rs.
-    // TODO: Consider passing the encryption key through for defense-in-depth.
-    const PICKLE_KEY: [u8; 32] = [0u8; 32];
-
-    pub fn serialize<S>(session: &GroupSession, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let pickle = session.pickle().encrypt(&PICKLE_KEY);
-        serializer.serialize_str(&pickle)
+    pub fn serialize(&self, encryption_key: &[u8; 32]) -> Result<String> {
+        let pickle_key = derive_pickle_key(encryption_key);
+        Ok(self.session.pickle().encrypt(&pickle_key))
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<GroupSession, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let pickle_str = String::deserialize(deserializer)?;
+    pub fn deserialize(serialized: &str, encryption_key: &[u8; 32]) -> Result<Self> {
+        let pickle_key = derive_pickle_key(encryption_key);
         let pickle =
-            vodozemac::megolm::GroupSessionPickle::from_encrypted(&pickle_str, &PICKLE_KEY)
-                .map_err(serde::de::Error::custom)?;
-        Ok(GroupSession::from(pickle))
+            vodozemac::megolm::InboundGroupSessionPickle::from_encrypted(serialized, &pickle_key)
+                .map_err(|e| CryptoError::Vodozemac(e.to_string()))?;
+
+        Ok(Self {
+            session: vodozemac::megolm::InboundGroupSession::from(pickle),
+        })
     }
 }
 
-#[cfg(feature = "megolm")]
-mod vodozemac_inbound_group_session_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use vodozemac::megolm::InboundGroupSession;
+const PICKLE_KEY_DOMAIN: &[u8] = b"vodozemac-pickle-key";
 
-    // We use an empty secret key for pickling because the local key store handles encryption
-    // at the storage layer. See `LocalKeyStore` in client/src-tauri/src/crypto/store.rs.
-    // TODO: Consider passing the encryption key through for defense-in-depth.
-    const PICKLE_KEY: [u8; 32] = [0u8; 32];
+fn derive_pickle_key(encryption_key: &[u8; 32]) -> [u8; 32] {
+    let mut mac = match Hmac::<Sha256>::new_from_slice(encryption_key) {
+        Ok(mac) => mac,
+        Err(_) => unreachable!("HMAC-SHA256 accepts keys of any length"),
+    };
+    mac.update(PICKLE_KEY_DOMAIN);
 
-    pub fn serialize<S>(session: &InboundGroupSession, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let pickle = session.pickle().encrypt(&PICKLE_KEY);
-        serializer.serialize_str(&pickle)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<InboundGroupSession, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let pickle_str = String::deserialize(deserializer)?;
-        let pickle =
-            vodozemac::megolm::InboundGroupSessionPickle::from_encrypted(&pickle_str, &PICKLE_KEY)
-                .map_err(serde::de::Error::custom)?;
-        Ok(InboundGroupSession::from(pickle))
-    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&mac.finalize().into_bytes());
+    key
 }
 
 #[cfg(all(test, feature = "megolm"))]
@@ -215,23 +190,25 @@ mod tests {
 
     #[test]
     fn test_megolm_serialization() {
+        let encryption_key = [42u8; 32];
+
         // Create an outbound session
         let outbound = MegolmOutboundSession::new();
         let session_key = outbound.session_key();
 
         // Serialize and Deserialize Outbound
-        let serialized_outbound = serde_json::to_string(&outbound).unwrap();
-        let deserialized_outbound: MegolmOutboundSession =
-            serde_json::from_str(&serialized_outbound).unwrap();
+        let serialized_outbound = outbound.serialize(&encryption_key).unwrap();
+        let deserialized_outbound =
+            MegolmOutboundSession::deserialize(&serialized_outbound, &encryption_key).unwrap();
         assert_eq!(deserialized_outbound.session_id(), outbound.session_id());
 
         // Create an inbound session
         let inbound = MegolmInboundSession::new(&session_key).unwrap();
 
         // Serialize and Deserialize Inbound
-        let serialized_inbound = serde_json::to_string(&inbound).unwrap();
-        let deserialized_inbound: MegolmInboundSession =
-            serde_json::from_str(&serialized_inbound).unwrap();
+        let serialized_inbound = inbound.serialize(&encryption_key).unwrap();
+        let deserialized_inbound =
+            MegolmInboundSession::deserialize(&serialized_inbound, &encryption_key).unwrap();
         assert_eq!(deserialized_inbound.session_id(), inbound.session_id());
     }
 }

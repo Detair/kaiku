@@ -21,6 +21,8 @@ bs58 = "0.5"
 getrandom = "0.2"
 argon2 = "0.5"
 aes-gcm = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
 
 [features]
 # Megolm group-encryption sessions (not yet implemented — guarded behind a
