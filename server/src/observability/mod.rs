@@ -37,5 +37,8 @@ use crate::config::ObservabilityConfig;
 pub fn init(config: &ObservabilityConfig) -> (OtelGuard, Option<SdkMeterProvider>) {
     let guard = tracing::init(config);
     let meter_provider = metrics::init(config);
+    if meter_provider.is_some() {
+        metrics::register_metrics();
+    }
     (guard, meter_provider)
 }

@@ -4,11 +4,20 @@
 //! meter provider so that any crate can call `opentelemetry::global::meter()`
 //! to obtain an instrument without explicit provider wiring.
 
+use std::sync::OnceLock;
+
+use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig as _;
 use opentelemetry_sdk::{metrics::SdkMeterProvider, Resource};
 
 use crate::config::ObservabilityConfig;
+
+static HTTP_REQUESTS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static HTTP_REQUEST_DURATION_MS: OnceLock<Histogram<f64>> = OnceLock::new();
+static VOICE_JOINS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static WS_CONNECTIONS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static AUTH_ATTEMPTS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 
 /// Build a [`Resource`] describing this service instance for metrics.
 ///
@@ -72,4 +81,52 @@ pub fn init(config: &ObservabilityConfig) -> Option<SdkMeterProvider> {
 #[must_use]
 pub fn meter(name: &'static str) -> opentelemetry::metrics::Meter {
     global::meter(name)
+}
+
+/// Registers all application metrics. Call once at startup after `init()`.
+pub fn register_metrics() {
+    let meter = meter("vc-server");
+
+    HTTP_REQUESTS_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_http_requests_total")
+            .with_description("Total HTTP requests")
+            .build()
+    });
+
+    HTTP_REQUEST_DURATION_MS.get_or_init(|| {
+        meter
+            .f64_histogram("kaiku_http_request_duration_ms")
+            .with_description("HTTP request latency in milliseconds")
+            .with_unit("ms")
+            .build()
+    });
+
+    VOICE_JOINS_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_voice_joins_total")
+            .with_description("Total voice join attempts")
+            .build()
+    });
+
+    WS_CONNECTIONS_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ws_connections_total")
+            .with_description("Total WebSocket connection lifecycle events")
+            .build()
+    });
+
+    AUTH_ATTEMPTS_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_auth_attempts_total")
+            .with_description("Total authentication attempts")
+            .build()
+    });
+}
+
+pub fn record_voice_join(success: bool) {
+    let result = if success { "success" } else { "error" };
+    if let Some(counter) = VOICE_JOINS_TOTAL.get() {
+        counter.add(1, &[KeyValue::new("result", result)]);
+    }
 }
