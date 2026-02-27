@@ -584,6 +584,11 @@ pub async fn upload_message_with_file(
     // Validate actual file content matches claimed MIME type (magic byte check)
     let file_content_type = validate_file_content(&file_data, &file_content_type)?;
 
+    // Validate message content length if provided
+    if !content.is_empty() {
+        super::messages::validate_message_content(&content)
+            .map_err(|e| UploadError::Validation(e.to_string()))?;
+    }
     // Content filtering on message text (if non-empty, guild channels only)
     if !content.is_empty() {
         let channel = db::find_channel_by_id(&state.db, channel_id)

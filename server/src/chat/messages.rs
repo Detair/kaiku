@@ -338,7 +338,7 @@ pub fn validate_message_content(content: &str) -> Result<(), validator::Validati
     if regular_text_len > 4000 {
         return Err(validator::ValidationError::new("length").with_message(
             std::borrow::Cow::Borrowed(
-                "Regular text content (excluding code blocks) must be 1-4000 characters",
+                "Regular text content cannot exceed 4000 characters",
             ),
         ));
     }

@@ -1,4 +1,4 @@
-import { Component, createSignal, Show, For, onCleanup, createEffect } from "solid-js";
+import { Component, createSignal, Show, For, onCleanup, createEffect, createMemo } from "solid-js";
 import { PlusCircle, Send, UploadCloud, X, File as FileIcon } from "lucide-solid";
 import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
@@ -72,7 +72,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   };
 
   // Calculate character length properties separating code blocks and regular text
-  const lengthStats = () => {
+  const lengthStats = createMemo(() => {
     const text = content();
     // Use spreader to count unicode code points instead of UTF-16 code units (matching backend)
     const totalLength = [...text].length;
@@ -88,7 +88,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       totalLimit: 10000,
       regularLimit: 4000
     };
-  };
+  });
 
   const isNearLimit = () => {
     const stats = lengthStats();
