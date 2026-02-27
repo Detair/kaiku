@@ -612,7 +612,6 @@ pub async fn create_revision(
             Err(sqlx::Error::Database(db_err))
                 if db_err.is_unique_violation() && attempt + 1 < MAX_RETRIES =>
             {
-                continue;
             }
             Err(err) => return Err(err),
         }
