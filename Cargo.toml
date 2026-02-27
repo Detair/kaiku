@@ -79,6 +79,16 @@ regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
+# OpenTelemetry
+axum-tracing-opentelemetry = { version = "0.28" }
+init-tracing-opentelemetry = { version = "0.28" }
+opentelemetry = { version = "0.29", features = ["trace"] }
+opentelemetry-appender-tracing = { version = "0.29" }
+opentelemetry-otlp = { version = "0.29", features = ["tonic", "grpc-tonic", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.29", features = ["rt-tokio", "trace", "metrics", "logs"] }
+tracing-opentelemetry = { version = "0.30" }
+tracing-opentelemetry-instrumentation-sdk = { version = "0.28" }
+
 # S3
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }

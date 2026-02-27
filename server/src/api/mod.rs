@@ -19,6 +19,7 @@ use axum::extract::{DefaultBodyLimit, FromRef, State};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
 use fred::interfaces::ClientLike;
 use serde::Serialize;
 use sqlx::PgPool;
@@ -324,9 +325,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/admin", admin_routes)
         .layer(from_fn_with_state(state.clone(), auth::require_auth));
 
-    Router::new()
-        // Health check
-        .route("/health", get(health_check))
+    let app_routes = Router::new()
         // Public guild discovery (browsing, no auth required, IP rate limited)
         .nest(
             "/api/discover",
@@ -364,6 +363,13 @@ pub fn create_router(state: AppState) -> Router {
         )
         // API documentation
         .merge(api_docs(state.config.enable_api_docs))
+        .layer(OtelInResponseLayer)
+        .layer(OtelAxumLayer::default());
+
+    Router::new()
+        // Health check
+        .route("/health", get(health_check))
+        .merge(app_routes)
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())

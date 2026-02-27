@@ -780,6 +780,7 @@ pub async fn logout(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(fields(user_id = %auth_user.id))]
 pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
     Json(UserProfile {
         id: auth_user.id.to_string(),
@@ -806,6 +807,7 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state, multipart), fields(user_id = %auth_user.id))]
 pub async fn upload_avatar(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -967,6 +969,7 @@ pub async fn upload_avatar(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state, body), fields(user_id = %auth_user.id))]
 pub async fn update_profile(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1063,6 +1066,7 @@ pub async fn update_profile(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
 pub async fn mfa_setup(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1143,6 +1147,7 @@ pub async fn mfa_setup(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state, request), fields(user_id = %auth_user.id))]
 pub async fn mfa_verify(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1290,6 +1295,7 @@ pub async fn mfa_verify(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state, request), fields(user_id = %auth_user.id))]
 pub async fn mfa_disable(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1441,6 +1447,7 @@ pub struct OidcAuthorizeQuery {
     ),
     security(()),
 )]
+#[tracing::instrument(skip(state))]
 pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<serde_json::Value>> {
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
 
@@ -1475,6 +1482,7 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
     ),
     security(()),
 )]
+#[tracing::instrument(skip(state, query), fields(provider = %provider))]
 pub async fn oidc_authorize(
     State(state): State<AppState>,
     Path(provider): Path<String>,
@@ -1587,6 +1595,7 @@ pub async fn oidc_authorize(
         (status = 400, description = "Invalid callback parameters"),
     ),
 )]
+#[tracing::instrument(skip(state, query))]
 pub async fn oidc_callback(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<OidcCallbackQuery>,

@@ -1,0 +1,77 @@
+# OpenTelemetry Collector configuration for Kaiku observability stack
+# Receives traces/metrics/logs via OTLP, processes, and exports to Tempo/Prometheus/Loki.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  resourcedetection:
+    detectors: [env, system, docker]
+    timeout: 5s
+    override: false
+
+  # Strip PII fields from metric attributes before export
+  attributes/metrics_pii:
+    actions:
+      - key: user_id
+        action: delete
+      - key: session_id
+        action: delete
+      - key: http.url
+        action: delete
+
+connectors:
+  # Generates RED metrics (rate/error/duration) from trace spans.
+  # Canonical metric names produced:
+  #   traces_span_metrics_calls_total
+  #   traces_span_metrics_duration_milliseconds_bucket
+  spanmetrics:
+    dimensions:
+      - name: http.method
+      - name: http.status_code
+      - name: http.route
+      - name: service.name
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 200ms, 500ms, 1s, 2s, 5s]
+    metrics_flush_interval: 15s
+
+exporters:
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [otlp/tempo, spanmetrics]
+
+    metrics:
+      receivers: [otlp, spanmetrics]
+      processors: [attributes/metrics_pii, batch]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [loki]

@@ -87,6 +87,8 @@ anyhow.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+sentry = { version = "0.36", features = ["tracing", "backtrace", "contexts", "panic"] }
+sentry-tracing = "0.36"
 
 [dev-dependencies]
 tempfile = "3"

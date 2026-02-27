@@ -396,7 +396,11 @@ async fn handle_bot_event(
         } => {
             // Validate content length
             if let Err(e) = crate::chat::messages::validate_message_content(&content) {
-                return Err(e.message.as_ref().map(|m| m.to_string()).unwrap_or_else(|| "Invalid message content".to_string()));
+                return Err(e
+                    .message
+                    .as_ref()
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "Invalid message content".to_string()));
             }
 
             info!(
@@ -482,7 +486,11 @@ async fn handle_bot_event(
         } => {
             // Validate content length
             if let Err(e) = crate::chat::messages::validate_message_content(&content) {
-                return Err(e.message.as_ref().map(|m| m.to_string()).unwrap_or_else(|| "Invalid response content".to_string()));
+                return Err(e
+                    .message
+                    .as_ref()
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "Invalid response content".to_string()));
             }
 
             info!(

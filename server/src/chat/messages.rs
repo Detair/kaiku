@@ -341,9 +341,7 @@ pub fn validate_message_content(content: &str) -> Result<(), validator::Validati
 
     if regular_text_len > 4000 {
         return Err(validator::ValidationError::new("length").with_message(
-            std::borrow::Cow::Borrowed(
-                "Regular text content cannot exceed 4000 characters",
-            ),
+            std::borrow::Cow::Borrowed("Regular text content cannot exceed 4000 characters"),
         ));
     }
 
@@ -369,6 +367,7 @@ pub fn validate_message_content(content: &str) -> Result<(), validator::Validati
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id, channel_id = %channel_id))]
 pub async fn list(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -451,6 +450,7 @@ pub async fn list(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state, body), fields(user_id = %auth_user.id, channel_id = %channel_id))]
 pub async fn create(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1116,6 +1116,7 @@ pub async fn create(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state, body), fields(user_id = %auth_user.id, message_id = %id))]
 pub async fn update(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1270,6 +1271,7 @@ pub async fn update(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id, message_id = %id))]
 pub async fn delete(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1651,6 +1653,7 @@ async fn build_batch_thread_infos(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id, message_id = %parent_id))]
 pub async fn list_thread_replies(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1727,6 +1730,7 @@ pub async fn list_thread_replies(
     ),
     security(("bearer_auth" = [])),
 )]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id, message_id = %parent_id))]
 pub async fn mark_thread_read(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1788,7 +1792,13 @@ mod tests {
         let result = validate_message_content("");
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot be empty"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .as_ref()
+            .map(|m| m.to_string())
+            .unwrap_or_default()
+            .contains("cannot be empty"));
     }
 
     #[test]
@@ -1807,7 +1817,13 @@ mod tests {
         let result = validate_message_content(&content);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot exceed 4000"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .as_ref()
+            .map(|m| m.to_string())
+            .unwrap_or_default()
+            .contains("cannot exceed 4000"));
     }
 
     #[test]
@@ -1828,7 +1844,13 @@ mod tests {
         let result = validate_message_content(&content);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot exceed 10000"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .as_ref()
+            .map(|m| m.to_string())
+            .unwrap_or_default()
+            .contains("cannot exceed 10000"));
     }
 
     #[test]
@@ -1849,7 +1871,13 @@ mod tests {
         let result = validate_message_content(&content);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot exceed 4000"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .as_ref()
+            .map(|m| m.to_string())
+            .unwrap_or_default()
+            .contains("cannot exceed 4000"));
     }
 
     #[test]

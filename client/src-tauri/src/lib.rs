@@ -27,6 +27,29 @@ use webrtc::WebRtcClient;
 
 /// Run the Tauri application.
 pub fn run() {
+    // Initialize Sentry only when DSN is configured
+    let _sentry_guard = std::env::var("SENTRY_DSN_CLIENT")
+        .ok()
+        .filter(|dsn| !dsn.is_empty())
+        .map(|dsn| {
+            sentry::init((
+                dsn,
+                sentry::ClientOptions {
+                    release: sentry::release_name!(),
+                    environment: Some(
+                        std::env::var("APP_ENV")
+                            .unwrap_or_else(|_| "development".to_string())
+                            .into(),
+                    ),
+                    sample_rate: 1.0,
+                    traces_sample_rate: 0.05,
+                    send_default_pii: false,
+                    auto_session_tracking: true,
+                    ..Default::default()
+                },
+            ))
+        });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {

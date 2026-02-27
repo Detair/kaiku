@@ -2451,11 +2451,11 @@ pub async fn set_guild_page_limits(
     let max_revisions_value = body.max_revisions.flatten();
 
     let row: Option<(Option<i32>, Option<i32>)> = sqlx::query_as(
-        r#"UPDATE guilds
+        r"UPDATE guilds
            SET max_pages = CASE WHEN $2 THEN $3 ELSE max_pages END,
                max_revisions = CASE WHEN $4 THEN $5 ELSE max_revisions END
            WHERE id = $1
-           RETURNING max_pages, max_revisions"#,
+           RETURNING max_pages, max_revisions",
     )
     .bind(guild_id)
     .bind(max_pages_present)

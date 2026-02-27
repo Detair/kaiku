@@ -126,6 +126,24 @@ services:
     networks:
       - voicechat
 
+  # ==========================================================================
+  # OTel Collector (monitoring profile — opt-in)
+  # Start with: docker compose --profile monitoring up -d
+  # ==========================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.117.0
+    container_name: canis-otel-collector
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    volumes:
+      - ../monitoring/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics scrape endpoint
+    networks:
+      - voicechat
+
 networks:
   voicechat:
     driver: bridge

@@ -1,0 +1,113 @@
+# Prometheus alert rules — Phase 7 Observability SLOs
+#
+# Metric sources (from spanmetrics connector via OTel Collector):
+#   traces_span_metrics_calls_total
+#   traces_span_metrics_duration_milliseconds_bucket
+#
+# Severity levels:
+#   warning  — investigate within 30 minutes
+#   critical — page on-call immediately
+
+groups:
+  - name: kaiku.slo
+    rules:
+
+      # -------------------------------------------------------------------------
+      # API Error Rate SLO: < 0.1% errors (error budget: 99.9% success)
+      # -------------------------------------------------------------------------
+      - alert: APIHighErrorRate
+        expr: |
+          (
+            sum(rate(traces_span_metrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m]))
+            /
+            sum(rate(traces_span_metrics_calls_total[5m]))
+          ) > 0.001
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API error rate above 0.1%"
+          description: >
+            The ratio of errored spans to total spans has exceeded 0.1% for 5 minutes.
+            Current value: {{ $value | humanizePercentage }}.
+            Check Sentry for correlated error spikes and Tempo for representative traces.
+
+      # -------------------------------------------------------------------------
+      # API P99 Latency SLO: < 200ms
+      # -------------------------------------------------------------------------
+      - alert: APIP99LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (
+              rate(traces_span_metrics_duration_milliseconds_bucket[5m])
+            )
+          ) > 200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API P99 latency above 200ms"
+          description: >
+            The 99th-percentile request duration has exceeded 200ms for 5 minutes.
+            Current P99: {{ $value }}ms.
+            Inspect slow traces in Tempo; check database query latency and downstream calls.
+
+      # -------------------------------------------------------------------------
+      # Voice Join Latency SLO: P95 < 500ms
+      # (Conservative threshold; end-to-end target is <50ms steady state)
+      # -------------------------------------------------------------------------
+      - alert: VoiceJoinLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(traces_span_metrics_duration_milliseconds_bucket{http.route=~".*voice.*join.*"}[5m])
+            )
+          ) > 500
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Voice join P95 latency above 500ms"
+          description: >
+            The 95th-percentile voice join span duration has exceeded 500ms for 2 minutes.
+            Current P95: {{ $value }}ms.
+            Check WebRTC SFU health, STUN/TURN reachability, and server CPU under load.
+
+      # -------------------------------------------------------------------------
+      # Error Budget Fast Burn: 14.4× burn rate over 1h
+      # Consumes ~2% of 30-day budget in 1 hour — page immediately.
+      # -------------------------------------------------------------------------
+      - alert: APIErrorBudgetFastBurn
+        expr: |
+          (
+            sum(rate(traces_span_metrics_calls_total{status_code="STATUS_CODE_ERROR"}[1h]))
+            /
+            sum(rate(traces_span_metrics_calls_total[1h]))
+          ) > (0.001 * 14.4)
+        labels:
+          severity: critical
+        annotations:
+          summary: "API error budget burning at 14.4× normal rate"
+          description: >
+            Error rate over the last 1 hour is {{ $value | humanizePercentage }},
+            which is 14.4× the SLO budget (0.1%).
+            This will exhaust the monthly error budget in ~2 hours.
+            Escalate to engineering lead immediately.
+
+      # -------------------------------------------------------------------------
+      # Collector health: ensure OTel Collector scrape target is always up
+      # -------------------------------------------------------------------------
+      - alert: ObservabilityCollectorDown
+        expr: |
+          absent(up{job="otel-collector"} == 1)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OTel Collector is unreachable by Prometheus"
+          description: >
+            Prometheus cannot scrape the otel-collector job (target: otel-collector:8889).
+            All observability signals (traces, metrics from spanmetrics, logs) may be lost.
+            Check: docker compose ps otel-collector; inspect collector logs for pipeline errors.

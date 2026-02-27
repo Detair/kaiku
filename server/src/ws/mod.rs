@@ -823,6 +823,7 @@ pub mod channels {
 }
 
 /// Broadcast a server event to a channel via Redis.
+#[tracing::instrument(skip(redis, event), fields(channel_id = %channel_id))]
 pub async fn broadcast_to_channel(
     redis: &Client,
     channel_id: Uuid,
@@ -839,6 +840,7 @@ pub async fn broadcast_to_channel(
 }
 
 /// Broadcast an admin event to all admin subscribers via Redis.
+#[tracing::instrument(skip(redis, event))]
 pub async fn broadcast_admin_event(redis: &Client, event: &ServerEvent) -> Result<(), Error> {
     let payload = serde_json::to_string(event)
         .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
@@ -851,6 +853,7 @@ pub async fn broadcast_admin_event(redis: &Client, event: &ServerEvent) -> Resul
 }
 
 /// Broadcast an event to all of a user's connected sessions via Redis.
+#[tracing::instrument(skip(redis, event), fields(user_id = %user_id))]
 pub async fn broadcast_to_user(
     redis: &Client,
     user_id: Uuid,
@@ -888,6 +891,7 @@ async fn broadcast_presence_update(state: &AppState, user_id: Uuid, event: &Serv
 ///
 /// This sends only the changed fields instead of full objects,
 /// reducing bandwidth by up to 90% for partial updates.
+#[tracing::instrument(skip(redis, diff), fields(user_id = %user_id))]
 pub async fn broadcast_user_patch(
     redis: &Client,
     user_id: Uuid,
@@ -914,6 +918,7 @@ pub async fn broadcast_user_patch(
 }
 
 /// Broadcast a guild patch to all guild members via Redis.
+#[tracing::instrument(skip(redis, diff), fields(guild_id = %guild_id))]
 pub async fn broadcast_guild_patch(
     redis: &Client,
     guild_id: Uuid,
@@ -941,6 +946,7 @@ pub async fn broadcast_guild_patch(
 }
 
 /// Broadcast a member patch to all guild members via Redis.
+#[tracing::instrument(skip(redis, diff), fields(guild_id = %guild_id, user_id = %user_id))]
 pub async fn broadcast_member_patch(
     redis: &Client,
     guild_id: Uuid,
@@ -997,6 +1003,7 @@ fn error_response(status: u16, body: &'static str) -> Response {
 ///
 /// Client sends: `Sec-WebSocket-Protocol: access_token.<jwt_token>`
 /// Server responds: `Sec-WebSocket-Protocol: access_token`
+#[tracing::instrument(skip(ws, state, headers))]
 pub async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -1220,6 +1227,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 ///
 /// **Internal:** Exposed for integration tests only.
 #[allow(clippy::implicit_hasher)]
+#[tracing::instrument(
+    skip(state, tx, subscribed_channels, admin_subscribed, activity_state, text),
+    fields(user_id = %user_id)
+)]
 pub async fn handle_client_message(
     text: &str,
     user_id: Uuid,

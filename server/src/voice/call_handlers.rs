@@ -160,7 +160,7 @@ async fn verify_dm_participant(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, auth))]
+#[tracing::instrument(skip(state), fields(user_id = %auth.id, channel_id = %channel_id))]
 pub async fn get_call(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -202,7 +202,7 @@ async fn get_username(state: &AppState, user_id: Uuid) -> Result<String, CallHan
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, auth))]
+#[tracing::instrument(skip(state), fields(user_id = %auth.id, channel_id = %channel_id))]
 pub async fn start_call(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -287,7 +287,7 @@ pub async fn start_call(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, auth))]
+#[tracing::instrument(skip(state), fields(user_id = %auth.id, channel_id = %channel_id))]
 pub async fn join_call(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -360,7 +360,7 @@ pub async fn join_call(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, auth))]
+#[tracing::instrument(skip(state), fields(user_id = %auth.id, channel_id = %channel_id))]
 pub async fn decline_call(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -428,7 +428,7 @@ pub async fn decline_call(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, auth))]
+#[tracing::instrument(skip(state), fields(user_id = %auth.id, channel_id = %channel_id))]
 pub async fn leave_call(
     State(state): State<AppState>,
     auth: AuthUser,

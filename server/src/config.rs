@@ -6,6 +6,47 @@ use std::env;
 
 use anyhow::{Context, Result};
 
+/// Observability and telemetry configuration.
+#[derive(Debug, Clone)]
+pub struct ObservabilityConfig {
+    /// Whether observability/telemetry is enabled (env: `OBSERVABILITY_ENABLED`, default: false)
+    pub enabled: bool,
+
+    /// OpenTelemetry OTLP exporter endpoint (env: `OTEL_EXPORTER_OTLP_ENDPOINT`, default: `"http://localhost:4317"`)
+    pub otlp_endpoint: String,
+
+    /// Service name for telemetry (env: `OTEL_SERVICE_NAME`, default: `"vc-server"`)
+    pub service_name: String,
+
+    /// Trace sampling ratio (0.0-1.0) (env: `OTEL_TRACES_SAMPLER_ARG`, default: 0.1)
+    pub trace_sample_ratio: f64,
+
+    /// Log level filter (env: `RUST_LOG`, default: `"vc_server=info"`)
+    pub log_level: String,
+}
+
+impl ObservabilityConfig {
+    /// Load observability configuration from environment variables.
+    pub fn from_env() -> Self {
+        Self {
+            enabled: env::var("OBSERVABILITY_ENABLED")
+                .ok()
+                .map(|v| v.to_lowercase() == "true" || v == "1")
+                .unwrap_or(false),
+            otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:4317".into()),
+            service_name: env::var("OTEL_SERVICE_NAME")
+                .unwrap_or_else(|_| "vc-server".into()),
+            trace_sample_ratio: env::var("OTEL_TRACES_SAMPLER_ARG")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.1),
+            log_level: env::var("RUST_LOG")
+                .unwrap_or_else(|_| "vc_server=info".into()),
+        }
+    }
+}
+
 /// Server configuration loaded from environment variables.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -169,6 +210,9 @@ pub struct Config {
 
     /// Maximum number of revisions per page (default: 25)
     pub max_revisions_per_page: i64,
+
+    /// Observability and telemetry configuration
+    pub observability: ObservabilityConfig,
 }
 
 impl Config {
@@ -314,6 +358,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(25)
                 .max(1),
+            observability: ObservabilityConfig::from_env(),
         })
     }
 
@@ -400,6 +445,13 @@ impl Config {
             max_entries_per_workspace: 50,
             max_pages_per_guild: 10,
             max_revisions_per_page: 25,
+            observability: ObservabilityConfig {
+                enabled: false,
+                otlp_endpoint: "http://localhost:4317".into(),
+                service_name: "vc-server".into(),
+                trace_sample_ratio: 0.1,
+                log_level: "vc_server=info".into(),
+            },
         }
     }
 }

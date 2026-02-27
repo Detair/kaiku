@@ -18,6 +18,7 @@ import type {
   ConnectionMetrics,
   QualityLevel,
 } from "./types";
+import * as Sentry from "@sentry/browser";
 
 /** HTMLAudioElement extended with the non-standard setSinkId API (Chrome/Edge). */
 type AudioElementWithSinkId = HTMLAudioElement & {
@@ -69,6 +70,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     timestamp: number;
   } | null = null;
 
+  // Voice join start time for timing breadcrumb
+  private joinStartTime = 0;
+
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
   }
@@ -85,6 +89,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     try {
+    this.joinStartTime = Date.now();
       this.channelId = channelId;
       this.setState("requesting_media");
 
@@ -1019,6 +1024,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       switch (state) {
         case "connected":
           this.setState("connected");
+          const elapsed = Date.now() - this.joinStartTime;
+          Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
           this.startVAD(); // Start Voice Activity Detection
           break;
         case "disconnected":

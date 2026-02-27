@@ -61,6 +61,7 @@ import {
 import type { MentionType, SoundEventType } from "@/lib/sound/types";
 import { handleDMReadEvent, handleDMNameUpdated } from "./dms";
 
+import * as Sentry from "@sentry/browser";
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
@@ -105,6 +106,9 @@ let unlisteners: UnlistenFn[] = [];
 // Typing debounce timers
 const typingTimers: Record<string, NodeJS.Timeout> = {};
 const TYPING_TIMEOUT = 5000; // 5 seconds
+
+// Track connection start time for WS connect duration
+let connectStartTime = 0;
 
 /**
  * Handle notification sound for incoming message.
@@ -175,6 +179,8 @@ export async function initWebSocket(): Promise<void> {
 
     unlisteners.push(
       await listen("ws:connected", () => {
+        const connectDuration = Date.now() - connectStartTime;
+        Sentry.addBreadcrumb({ category: "ws", message: "connected", data: { duration_ms: connectDuration }, level: "info" });
         setWsState({ status: "connected", reconnectAttempt: 0, error: null });
       }),
     );
@@ -1381,6 +1387,7 @@ export async function reinitWebSocketListeners(): Promise<void> {
 export async function connect(): Promise<void> {
   try {
     setWsState({ status: "connecting", error: null });
+    connectStartTime = Date.now();
     await tauri.wsConnect();
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);

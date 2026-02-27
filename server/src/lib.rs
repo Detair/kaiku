@@ -16,6 +16,7 @@ pub mod email;
 pub mod governance;
 pub mod guild;
 pub mod moderation;
+pub mod observability;
 pub mod openapi;
 pub mod pages;
 pub mod permissions;

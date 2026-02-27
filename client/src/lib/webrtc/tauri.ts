@@ -18,6 +18,7 @@ import type {
   ConnectionMetrics,
   CaptureSource,
 } from "./types";
+import * as Sentry from "@sentry/browser";
 
 export class TauriVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
@@ -466,6 +467,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
           Failed: "disconnected",
         };
         const newState = stateMap[event.payload] || "disconnected";
+        if (event.payload === "Connected") {
+          Sentry.addBreadcrumb({ category: "voice", message: "voice_connected_native", data: { channel_id: this.channelId ?? "" }, level: "info" });
+        }
         this.setState(newState);
       }),
     );

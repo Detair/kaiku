@@ -62,6 +62,16 @@ regex.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# OpenTelemetry
+axum-tracing-opentelemetry.workspace = true
+init-tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry-appender-tracing.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-opentelemetry-instrumentation-sdk.workspace = true
+
 # S3
 aws-sdk-s3.workspace = true
 aws-config.workspace = true

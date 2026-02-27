@@ -1,0 +1,24 @@
+# Prometheus configuration for the Kaiku monitoring stack.
+# Scrapes metrics from the OTel Collector (spanmetrics + application metrics)
+# and the vc-server native Prometheus endpoint (future).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "/etc/prometheus/alerts/*.yaml"
+
+scrape_configs:
+  # OTel Collector Prometheus exporter — spanmetrics RED + resource metrics
+  - job_name: otel-collector
+    static_configs:
+      - targets:
+          - "otel-collector:8889"
+
+  # vc-server native Prometheus endpoint (instrumented in Phase 7)
+  # Kept here so the scrape config is ready when the endpoint is wired.
+  - job_name: vc-server
+    static_configs:
+      - targets:
+          - "vc-server:9090"

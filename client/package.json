@@ -29,6 +29,7 @@
     "solid-js": "^1.9.10"
   },
   "devDependencies": {
+    "@sentry/browser": "^8.0.0",
     "@playwright/test": "^1.57.0",
     "@rollup/plugin-commonjs": "^29.0.0",
     "@solidjs/testing-library": "^0.8.10",
