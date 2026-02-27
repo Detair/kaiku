@@ -451,7 +451,7 @@ mod tests {
         // We verify this by checking the branching logic in filter_accessible_channels
         // indirectly: an owner context should return all channels.
         let owner_id = Uuid::new_v4();
-        let channel_ids = vec![Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        let channel_ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
 
         let ctx = MemberPermissionContext {
             guild_owner_id: owner_id,

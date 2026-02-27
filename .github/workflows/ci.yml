@@ -123,7 +123,7 @@ jobs:
 
       - name: Run tests
         timeout-minutes: 20
-        run: cargo nextest run --all-features --workspace --exclude vc-client -j 1
+        run: cargo nextest run --all-features --workspace --exclude vc-client -j 4
 
       - name: Run @everyone security test
         timeout-minutes: 5
