@@ -136,9 +136,15 @@ pub async fn spawn_delivery_worker(
                 consecutive_errors = 0;
                 value
             }
+            // fred 10.x converts BRPOP nil (timeout, no items) into Err(ErrorKind::Timeout),
+            // so Ok(None) is unreachable — but kept for defensive completeness.
             Ok(None) => {
                 consecutive_errors = 0;
-                continue; // Timeout, no items
+                continue;
+            }
+            Err(ref e) if matches!(e.kind(), fred::error::ErrorKind::Timeout) => {
+                consecutive_errors = 0;
+                continue;
             }
             Err(e) => {
                 consecutive_errors += 1;

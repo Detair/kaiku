@@ -1141,6 +1141,7 @@ pub async fn update_password(
         .await
         .map_err(AuthError::Database)?;
 
+    // Invalidate all sessions — force re-login after password change
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(auth_user.id)
         .execute(&mut *tx)
@@ -1148,7 +1149,6 @@ pub async fn update_password(
         .map_err(AuthError::Database)?;
 
     tx.commit().await.map_err(AuthError::Database)?;
-
     tracing::info!(user_id = %auth_user.id, "Password updated and all sessions invalidated");
 
     Ok(Json(serde_json::json!({
