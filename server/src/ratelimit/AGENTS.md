@@ -197,7 +197,7 @@ pub async fn unblock_ip(&self, ip: &str) -> Result<(), RateLimitError> {
 **Challenge**: Clients behind proxies/load balancers have proxy IP, not real client IP.
 
 **Header Priority** (in `ip.rs`):
-1. `X-Forwarded-For` — Comma-separated list, take first (leftmost) IP
+1. `X-Forwarded-For` — Comma-separated list, take last (rightmost) IP (appended by trusted proxy)
 2. `X-Real-IP` — Single IP from proxy
 3. `Forwarded` — RFC 7239 standard header (parse `for=` parameter)
 4. Connection remote address (fallback, may be proxy)
@@ -205,11 +205,11 @@ pub async fn unblock_ip(&self, ip: &str) -> Result<(), RateLimitError> {
 **Extraction Logic**:
 ```rust
 pub fn extract_client_ip(headers: &HeaderMap) -> Option<String> {
-    // Try X-Forwarded-For (take first IP if comma-separated)
+    // Try X-Forwarded-For (take last/rightmost IP — appended by closest trusted proxy)
     if let Some(xff) = headers.get("x-forwarded-for") {
         if let Ok(value) = xff.to_str() {
-            if let Some(first_ip) = value.split(',').next() {
-                return Some(first_ip.trim().to_string());
+            if let Some(last_ip) = value.rsplit(',').next() {
+                return Some(last_ip.trim().to_string());
             }
         }
     }

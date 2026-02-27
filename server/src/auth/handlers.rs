@@ -58,7 +58,7 @@ pub struct RegisterRequest {
 }
 
 /// Login request.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     /// Username.
     pub username: String,
@@ -66,6 +66,16 @@ pub struct LoginRequest {
     pub password: String,
     /// MFA code (required if MFA is enabled).
     pub mfa_code: Option<String>,
+}
+
+impl std::fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// Token refresh request.
@@ -170,13 +180,22 @@ pub struct UpdateProfileResponse {
 }
 
 /// Update password request.
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
+#[derive(Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdatePasswordRequest {
     /// Current password.
     pub current_password: String,
     /// New password (8-128 characters).
     #[validate(length(min = 8, max = 128))]
     pub new_password: String,
+}
+
+impl std::fmt::Debug for UpdatePasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdatePasswordRequest")
+            .field("current_password", &"[REDACTED]")
+            .field("new_password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 // ============================================================================
@@ -1112,22 +1131,30 @@ pub async fn update_password(
 
     let new_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
 
-    crate::db::update_user_password(&state.db, auth_user.id, &new_hash)
+    // Transaction: update password + invalidate all sessions (matches reset_password pattern)
+    let mut tx = state.db.begin().await.map_err(AuthError::Database)?;
+
+    sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
+        .bind(&new_hash)
+        .bind(auth_user.id)
+        .execute(&mut *tx)
         .await
         .map_err(AuthError::Database)?;
 
-    // Invalidate all sessions — force re-login after password change
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(auth_user.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
         .map_err(AuthError::Database)?;
+
+    tx.commit().await.map_err(AuthError::Database)?;
 
     tracing::info!(user_id = %auth_user.id, "Password updated and all sessions invalidated");
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": "Password updated successfully"
+        "message": "Password updated successfully. All sessions have been invalidated — please log in again.",
+        "requires_reauth": true
     })))
 }
 

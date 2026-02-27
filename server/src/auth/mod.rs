@@ -49,6 +49,7 @@ pub fn hash_token(token: &str) -> String {
 /// - POST /logout - Invalidate session
 /// - GET /me - Get current user profile
 /// - POST /me - Update profile
+/// - POST /me/password - Change password (invalidates all sessions)
 /// - POST /me/avatar - Upload avatar
 /// - POST /mfa/setup - Setup MFA
 /// - POST /mfa/verify - Verify MFA (TOTP or backup code)
