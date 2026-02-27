@@ -1,3 +1,6 @@
+import { initSentry } from "@/lib/sentry";
+initSentry();
+
 /* @refresh reload */
 import { render } from "solid-js/web";
 import { Router } from "@solidjs/router";
