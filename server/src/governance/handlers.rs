@@ -1,7 +1,7 @@
 //! Data Governance HTTP Handlers
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderName, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{Duration, Utc};
@@ -44,6 +44,10 @@ pub async fn request_export(
     auth: AuthUser,
 ) -> Result<impl IntoResponse, GovError> {
     // Recover stale jobs that may have been left behind by crash/restart so
+    // users are not blocked forever by the active-job uniqueness constraint.
+    // NOTE: Uses `created_at` for stale detection because `data_export_jobs` has no `updated_at` field.
+    // The 1-hour threshold assumes exports complete well within this window.
+    // If exports grow to exceed 1 hour, add an `updated_at`/heartbeat column.
     // users are not blocked forever by the active-job uniqueness constraint.
     sqlx::query(
         "UPDATE data_export_jobs
@@ -189,14 +193,10 @@ pub async fn download_export(
     .await?
     .ok_or(GovError::ExportNotFound)?;
 
-    // Check expiry
+    // Check expiry — if expired, return 410 GONE without changing DB state.
+    // cleanup_expired_exports will handle S3 deletion and status update.
     if let Some(expires_at) = job.expires_at {
         if expires_at < Utc::now() {
-            // Mark as expired
-            sqlx::query("UPDATE data_export_jobs SET status = 'expired' WHERE id = $1")
-                .bind(job.id)
-                .execute(&state.db)
-                .await?;
             return Err(GovError::ExportExpired);
         }
     }
@@ -218,6 +218,10 @@ pub async fn download_export(
         (
             axum::http::header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"data-export-{}.zip\"", auth.id),
+        ),
+        (
+            HeaderName::from_static("x-content-type-options"),
+            "nosniff".to_string(),
         ),
     ];
 

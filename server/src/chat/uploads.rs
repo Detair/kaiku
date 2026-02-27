@@ -942,11 +942,16 @@ pub async fn download(
     };
 
     // Set headers
+    let disposition = if content_type.starts_with("image/") || content_type.starts_with("video/") || content_type.starts_with("audio/") {
+        "inline"
+    } else {
+        "attachment"
+    };
     let headers = [
         (axum::http::header::CONTENT_TYPE, content_type.clone()),
         (
             axum::http::header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{display_filename}\""),
+            format!("{disposition}; filename=\"{display_filename}\""),
         ),
         (
             axum::http::header::CACHE_CONTROL,

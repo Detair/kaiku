@@ -246,15 +246,11 @@ async fn build_export_archive(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Ve
 }
 
 /// Cleanup expired export jobs — delete S3 objects and mark as expired.
-///
-/// NOTE: Uses `created_at` for stale detection because `data_export_jobs` has no `updated_at` field.
-/// The 1-hour threshold assumes exports complete well within this window.
-/// If exports grow to exceed 1 hour, add an `updated_at`/heartbeat column.
 pub async fn cleanup_expired_exports(pool: &PgPool, s3: &Option<S3Client>) -> anyhow::Result<()> {
     // If S3 is unavailable, skip cleanup entirely to prevent orphaning objects.
     // Marking jobs as expired without deleting files would make them unrecoverable.
     if s3.is_none() {
-        tracing::warn!("S3 unavailable — skipping export cleanup to prevent orphaned objects");
+        tracing::debug!("S3 unavailable — skipping export cleanup to prevent orphaned objects");
         return Ok(());
     }
 
