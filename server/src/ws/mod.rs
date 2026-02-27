@@ -193,6 +193,11 @@ pub enum ClientEvent {
         activity: Option<crate::presence::Activity>,
     },
 
+    /// Set user status (online, away, busy, offline).
+    SetStatus {
+        status: crate::db::UserStatus,
+    },
+
     /// Subscribe to admin events (requires elevated admin).
     AdminSubscribe,
     /// Unsubscribe from admin events.
@@ -220,6 +225,7 @@ impl ClientEvent {
             Self::VoiceWebcamStart { .. } => "voice_webcam_start",
             Self::VoiceWebcamStop { .. } => "voice_webcam_stop",
             Self::SetActivity { .. } => "set_activity",
+            Self::SetStatus { .. } => "set_status",
             Self::AdminSubscribe => "admin_subscribe",
             Self::AdminUnsubscribe => "admin_unsubscribe",
         }
@@ -1439,6 +1445,23 @@ pub async fn handle_client_message(
             // Broadcast to user's presence subscribers
             let event = ServerEvent::RichPresenceUpdate { user_id, activity };
             broadcast_presence_update(state, user_id, &event).await;
+        }
+
+        ClientEvent::SetStatus { status } => {
+            let status_str = match status {
+                crate::db::UserStatus::Online => "online",
+                crate::db::UserStatus::Away => "away",
+                crate::db::UserStatus::Busy => "busy",
+                crate::db::UserStatus::Offline => "offline",
+            };
+            update_presence(state, user_id, status_str).await?;
+
+            let event = ServerEvent::PresenceUpdate {
+                user_id,
+                status: status_str.to_string(),
+            };
+            broadcast_presence_update(state, user_id, &event).await;
+            debug!("User {} set status to {}", user_id, status_str);
         }
 
         ClientEvent::AdminSubscribe => {

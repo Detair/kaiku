@@ -633,7 +633,17 @@ export async function updateStatus(
     return invoke("update_status", { status });
   }
 
-  await httpRequest<void>("POST", "/api/presence/status", { status });
+  // Map client status names to server enum values
+  const statusMap: Record<string, string> = {
+    online: "online",
+    idle: "away",
+    dnd: "busy",
+    invisible: "offline",
+    offline: "offline",
+  };
+  browserWs?.send(
+    JSON.stringify({ type: "set_status", status: statusMap[status] ?? "online" }),
+  );
 }
 
 export async function register(
