@@ -1457,7 +1457,7 @@ git commit -m "feat(call): Add WebSocket event handlers for calls"
 **Step 1: Manual testing checklist**
 
 1. Start the server: `cargo run -p vc-server`
-2. Start the client: `cd client && npm run dev`
+2. Start the client: `cd client && bun run dev`
 3. Open two browser windows logged in as different users
 4. Create a DM between the two users
 5. Test call flow:
@@ -1482,7 +1482,7 @@ git commit -m "feat(call): Add WebSocket event handlers for calls"
 
 ```bash
 cargo build -p vc-server --release
-cd client && npm run build
+cd client && bun run build
 ```
 
 **Step 4: Final commit**

@@ -605,7 +605,7 @@ After each task, verify:
 
 - [ ] `cargo build` succeeds
 - [ ] `cargo test` passes
-- [ ] `npm run build` succeeds (client)
+- [ ] `bun run build` succeeds (client)
 - [ ] Manual testing in browser
 
 Final verification:

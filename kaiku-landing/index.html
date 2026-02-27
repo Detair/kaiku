@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kaiku - The Echo of Victory</title>
+    <meta name="description" content="Kaiku: A modern, high-performance voice chat built for gamers.">
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700;800;900&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="noise-overlay"></div>
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+
+    <nav class="navbar">
+        <div class="container nav-content">
+            <div class="logo">
+                <span class="logo-text">KAIKU</span>
+            </div>
+            <ul class="nav-links">
+                <li><a href="#features">Features</a></li>
+                <li><a href="#how">How it Works</a></li>
+                <li><a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer"
+                        class="btn btn-primary btn-small">Visit GitHub</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <header class="hero" id="home">
+        <div class="container hero-content">
+            <div class="hero-text fade-in-up">
+                <div class="badge">Next Gen Voice Chat</div>
+                <h1 class="hero-title">The <span class="text-gradient">Echo</span> of Victory.</h1>
+                <p class="hero-subtitle">Experience crystal clear, zero-latency communication built exclusively for
+                    modern gamers and esports teams. Reclaim your data sovereignty and leave the corporate noise behind.
+                </p>
+                <div class="hero-actions">
+                    <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer"
+                        class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 8px;">
+                        <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2"
+                            fill="none" stroke-linecap="round" stroke-linejoin="round">
+                            <path
+                                d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22">
+                            </path>
+                        </svg>
+                        Visit GitHub
+                    </a>
+                    <a href="#features" class="btn btn-secondary">Explore Features</a>
+                </div>
+            </div>
+            <div class="hero-image fade-in-up delay-2">
+                <div class="mascot-container">
+                    <img src="assets/images/extracted/floki_logo_circle.png" alt="Kaiku Mascot Floki"
+                        class="mascot floating">
+                    <div class="mascot-glow"></div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <section class="features" id="features">
+        <div class="container">
+            <div class="section-header fade-in-up scroll-trigger">
+                <h2>Engineered for <span class="text-gradient">Performance</span></h2>
+                <p>Built from the ground up to be lightweight, secure, and incredibly fast.</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card glass scroll-trigger stagger-1">
+                    <img src="assets/images/extracted/feat_audio.png" alt="Low Latency Audio" class="feature-image">
+                    <h3>Low Latency Audio</h3>
+                    <p>Optimized WebRTC packet routing with automatic conflict recovery ensures your tactical callouts
+                        hit fast.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-2">
+                    <img src="assets/images/extracted/feat_workspace.png" alt="Personal Workspaces"
+                        class="feature-image">
+                    <h3>Personal Workspaces</h3>
+                    <p>Organize your favorite channels across multiple servers into dedicated tactical folders for
+                        immediate access.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-3">
+                    <img src="assets/images/extracted/feat_presence.png" alt="Rich Game Presence" class="feature-image">
+                    <h3>Rich Game Presence</h3>
+                    <p>Automatic process detection so you always know exactly what your pack is playing in real-time.
+                    </p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-1">
+                    <img src="assets/images/extracted/feat_stream.png" alt="Multi-Stream Tactics" class="feature-image">
+                    <h3>Multi-Stream Tactics</h3>
+                    <p>Share multiple video and game streams simultaneously for deep strategy breakdown and VOD reviews.
+                    </p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-2">
+                    <img src="assets/images/extracted/feat_freedom.png" alt="Absolute Data Freedom"
+                        class="feature-image">
+                    <h3>Absolute Data Freedom</h3>
+                    <p>Stop paying with your data. Self-hosted and End-to-End Encrypted so your team's strategy and
+                        conversations stay strictly yours.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-3">
+                    <img src="assets/images/extracted/feat_cpu.png" alt="Minimal Footprint" class="feature-image">
+                    <h3>Minimal Footprint</h3>
+                    <p>Native Rust/Tauri architecture utilizing minimal CPU usage. Play your games without stutter or
+                        frame pacing issues.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="how-it-works features" id="how">
+        <div class="container">
+            <div class="section-header fade-in-up scroll-trigger">
+                <h2>How It <span class="text-gradient">Works</span></h2>
+                <p>A super high-level look at Kaiku's modern architecture.</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card glass scroll-trigger stagger-1">
+                    <h3 style="color: var(--accent-primary); font-size: 1.5rem; margin-bottom: 0.5rem;">Frontend</h3>
+                    <h4 style="margin-bottom: 1rem; color: var(--text-light); font-size: 1.2rem;">Solid JS</h4>
+                    <p>Extreme reactivity and a premium glassmorphic UI without the virtual DOM overhead. Blazing fast
+                        and incredibly responsive.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-2">
+                    <h3 style="color: var(--accent-secondary); font-size: 1.5rem; margin-bottom: 0.5rem;">Backend &
+                        Desktop</h3>
+                    <h4 style="margin-bottom: 1rem; color: var(--text-light); font-size: 1.2rem;">Tauri (Rust)</h4>
+                    <p>Native OS-level performance, deep system integration for overlays, and a microscopic memory
+                        footprint perfect for gaming.</p>
+                </div>
+                <div class="feature-card glass scroll-trigger stagger-3">
+                    <h3 style="color: var(--accent-primary); font-size: 1.5rem; margin-bottom: 0.5rem;">Audio Engine
+                    </h3>
+                    <h4 style="margin-bottom: 1rem; color: var(--text-light); font-size: 1.2rem;">WebRTC & Olm</h4>
+                    <p>Fine-tuned STUN/TURN routing for flawless real-time voice communication tightly secured with true
+                        End-to-End Encryption.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="platform" id="github">
+        <div class="container">
+            <div class="platform-content glass scroll-trigger">
+                <div class="platform-text">
+                    <h2>Ready to join the <span class="text-gradient">Pack</span>?</h2>
+                    <p>Kaiku is open-source and in active development. Check out the repository to contribute or follow
+                        our progress.</p>
+                </div>
+                <div class="platform-downloads">
+                    <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer"
+                        class="btn btn-primary btn-large"
+                        style="display: inline-flex; align-items: center; justify-content: center; gap: 10px;">
+                        <svg viewBox="0 0 24 24" width="28" height="28" stroke="currentColor" stroke-width="2"
+                            fill="none" stroke-linecap="round" stroke-linejoin="round">
+                            <path
+                                d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22">
+                            </path>
+                        </svg>
+                        Visit GitHub
+                    </a>
+                    <p class="sys-req">Join the development on GitHub.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container footer-content">
+            <div class="footer-brand">
+                <span class="logo-text">KAIKU</span>
+                <p>The premium voice chat for the modern gamer.</p>
+            </div>
+            <div class="footer-links">
+                <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer">Github</a>
+                <a href="#">Documentation</a>
+                <a href="#">Privacy</a>
+            </div>
+        </div>
+    </footer>
+
+    <script src="main.js"></script>
+</body>
+
+</html>

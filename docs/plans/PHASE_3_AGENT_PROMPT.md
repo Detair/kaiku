@@ -25,7 +25,7 @@ Implement the Guild (Server) system following the plan at:
 
 1. **Read the plan first** - Understand all tasks before starting
 2. **One task at a time** - Complete each task fully before moving to the next
-3. **Build after each task** - Run `cargo build` and `npm run build` to verify
+3. **Build after each task** - Run `cargo build` and `bun run build` to verify
 4. **Follow existing patterns** - Match the code style in existing files:
    - `server/src/chat/` for backend patterns
    - `client/src/stores/` for frontend store patterns
@@ -81,7 +81,7 @@ Before implementing, read these files to understand patterns:
 
 After completing all tasks:
 1. Run `cargo build && cargo test`
-2. Run `cd client && npm run build`
+2. Run `cd client && bun run build`
 3. Test manually: create guild, switch guilds, send friend request, start DM
 
 ## Start
@@ -178,5 +178,5 @@ claude "Implement Task 2 (Guild Backend) from docs/plans/PHASE_3_IMPLEMENTATION.
 
 ### With Verification
 ```bash
-claude "Implement Task 7 (Server Rail UI). After implementation, run 'npm run build' to verify it compiles."
+claude "Implement Task 7 (Server Rail UI). After implementation, run 'bun run build' to verify it compiles."
 ```

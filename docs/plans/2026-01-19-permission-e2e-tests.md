@@ -7,7 +7,7 @@
 
 ## 1. Prerequisites & Environment
 
-The tests will run against the **browser version** of the client (`npm run dev`), communicating with a **local running backend** (`cargo run`).
+The tests will run against the **browser version** of the client (`bun run dev`), communicating with a **local running backend** (`cargo run`).
 
 *   **Test Directory:** `client/e2e/`
 *   **New File:** `client/e2e/permissions.spec.ts`

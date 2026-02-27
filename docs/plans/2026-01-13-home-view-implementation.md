@@ -509,7 +509,7 @@ export type { /* ... existing */ DMListItem };
 
 **Step 4: Build and verify**
 
-Run: `cd client && npm run build 2>&1 | tail -10`
+Run: `cd client && bun run build 2>&1 | tail -10`
 Expected: Build succeeds
 
 **Step 5: Commit**
@@ -660,7 +660,7 @@ export default DMItem;
 
 **Step 2: Build and verify**
 
-Run: `cd client && npm run build 2>&1 | tail -10`
+Run: `cd client && bun run build 2>&1 | tail -10`
 Expected: Build succeeds
 
 **Step 3: Commit**
@@ -777,7 +777,7 @@ export default DMSidebar;
 
 **Step 2: Build and verify**
 
-Run: `cd client && npm run build 2>&1 | tail -10`
+Run: `cd client && bun run build 2>&1 | tail -10`
 Expected: Build fails (NewMessageModal not yet created - expected)
 
 **Step 3: Commit partial progress**
@@ -1000,7 +1000,7 @@ export default NewMessageModal;
 
 **Step 2: Build and verify**
 
-Run: `cd client && npm run build 2>&1 | tail -10`
+Run: `cd client && bun run build 2>&1 | tail -10`
 Expected: Build succeeds
 
 **Step 3: Commit**
@@ -1254,7 +1254,7 @@ export { default as NewMessageModal } from "./NewMessageModal";
 
 **Step 5: Build and verify**
 
-Run: `cd client && npm run build 2>&1 | tail -10`
+Run: `cd client && bun run build 2>&1 | tail -10`
 Expected: Build succeeds
 
 **Step 6: Commit**
@@ -1349,7 +1349,7 @@ export default Main;
 
 **Step 2: Build and verify**
 
-Run: `cd client && npm run build 2>&1 | tail -10`
+Run: `cd client && bun run build 2>&1 | tail -10`
 Expected: Build succeeds
 
 **Step 3: Commit**
@@ -1369,7 +1369,7 @@ Run: `cd server && cargo run`
 
 **Step 2: Start the client dev server**
 
-Run: `cd client && npm run dev`
+Run: `cd client && bun run dev`
 
 **Step 3: Manual testing checklist**
 

@@ -1538,7 +1538,7 @@ export default Sidebar;
 
 **Step 2: Verify build**
 
-Run: `cd client && npm run build`
+Run: `cd client && bun run build`
 Expected: Build succeeds
 
 **Step 3: Commit**
@@ -1567,7 +1567,7 @@ cd server && cargo build --release
 **Step 3: Build client**
 
 ```bash
-cd client && npm run build
+cd client && bun run build
 ```
 
 **Step 4: Start server and test**
