@@ -144,6 +144,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/logout", post(handlers::logout))
         .route("/me", get(handlers::get_profile))
         .route("/me", post(handlers::update_profile))
+        .route("/me/password", post(handlers::update_password))
         .route(
             "/me/avatar",
             post(handlers::upload_avatar)

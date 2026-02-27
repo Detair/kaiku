@@ -809,6 +809,15 @@ export async function getCurrentUser(): Promise<User | null> {
   }
 }
 
+/** Update the current user's password. */
+export async function updatePassword(current_password: string, new_password: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("update_password", { currentPassword: current_password, newPassword: new_password });
+  }
+  return httpRequest("POST", "/auth/me/password", { current_password, new_password });
+}
+
 // ============================================================================
 // MFA Commands
 // ============================================================================
@@ -1971,11 +1980,11 @@ export interface CreateReportRequest {
   target_user_id: string;
   target_message_id?: string;
   category:
-    | "harassment"
-    | "spam"
-    | "inappropriate_content"
-    | "impersonation"
-    | "other";
+  | "harassment"
+  | "spam"
+  | "inappropriate_content"
+  | "impersonation"
+  | "other";
   description?: string;
 }
 
@@ -2563,7 +2572,7 @@ export async function wsSend(message: any): Promise<void> {
     if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
       throw new Error(
         "WebSocket not connected. Current state: " +
-          (browserWs ? browserWs.readyState : "null"),
+        (browserWs ? browserWs.readyState : "null"),
       );
     }
     browserWs.send(JSON.stringify(message));

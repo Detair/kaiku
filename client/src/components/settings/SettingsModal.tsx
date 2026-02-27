@@ -26,6 +26,8 @@ import SecuritySettings from "./SecuritySettings";
 import PrivacySettings from "./PrivacySettings";
 import FocusSettings from "./FocusSettings";
 import RecoveryKeyModal from "./RecoveryKeyModal";
+import AudioSettings from "./AudioSettings";
+import VoiceSettings from "./VoiceSettings";
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -203,21 +205,11 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
               </Show>
 
               <Show when={activeTab() === "audio"}>
-                <div class="text-text-secondary">
-                  <h3 class="text-lg font-semibold mb-4 text-text-primary">
-                    Audio Settings
-                  </h3>
-                  <p>Audio device settings coming soon...</p>
-                </div>
+                <AudioSettings />
               </Show>
 
               <Show when={activeTab() === "voice"}>
-                <div class="text-text-secondary">
-                  <h3 class="text-lg font-semibold mb-4 text-text-primary">
-                    Voice Settings
-                  </h3>
-                  <p>Voice processing settings coming soon...</p>
-                </div>
+                <VoiceSettings />
               </Show>
 
               <Show when={activeTab() === "privacy"}>

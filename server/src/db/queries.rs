@@ -169,6 +169,21 @@ pub async fn update_user_profile(
     builder.build_query_as::<User>().fetch_one(pool).await
 }
 
+/// Update user's password.
+pub async fn update_user_password(
+    pool: &PgPool,
+    user_id: Uuid,
+    password_hash: &str,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
+        .bind(password_hash)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map_err(db_error!("update_user_password", user_id = %user_id))?;
+    Ok(())
+}
+
 /// Get list of guild IDs the user is a member of.
 pub async fn get_user_guild_ids(pool: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
     let guild_ids =

@@ -5,11 +5,13 @@ import Avatar from "@/components/ui/Avatar";
 import * as tauri from "@/lib/tauri";
 import { validateFileSize, getUploadLimitText } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
+import ChangePasswordModal from "./ChangePasswordModal";
 
 const AccountSettings: Component = () => {
   const user = () => authState.user;
   const [isUploading, setIsUploading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = createSignal(false);
   let fileInput: HTMLInputElement | undefined;
 
   const handleFileChange = async (e: Event) => {
@@ -148,13 +150,20 @@ const AccountSettings: Component = () => {
         <h4 class="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-4">
           Password & Authentication
         </h4>
-        <button class="w-full text-left px-4 py-3 rounded-xl bg-surface-layer2 hover:bg-surface-highlight border border-white/5 transition-colors">
+        <button
+          class="w-full text-left px-4 py-3 rounded-xl bg-surface-layer2 hover:bg-surface-highlight border border-white/5 transition-colors"
+          onClick={() => setIsPasswordModalOpen(true)}
+        >
           <div class="font-medium text-text-primary">Change Password</div>
           <div class="text-xs text-text-secondary mt-0.5">
             Update your password to keep your account secure
           </div>
         </button>
       </div>
+
+      <Show when={isPasswordModalOpen()}>
+        <ChangePasswordModal onClose={() => setIsPasswordModalOpen(false)} />
+      </Show>
     </div>
   );
 };

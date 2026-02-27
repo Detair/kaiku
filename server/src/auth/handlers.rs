@@ -169,6 +169,16 @@ pub struct UpdateProfileResponse {
     pub updated: Vec<String>,
 }
 
+/// Update password request.
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
+pub struct UpdatePasswordRequest {
+    /// Current password.
+    pub current_password: String,
+    /// New password (8-128 characters).
+    #[validate(length(min = 8, max = 128))]
+    pub new_password: String,
+}
+
 // ============================================================================
 // Regex for validation
 // ============================================================================
@@ -1058,6 +1068,56 @@ pub async fn update_profile(
     Ok(Json(UpdateProfileResponse {
         updated: updated_fields,
     }))
+}
+
+/// Update current user password.
+///
+/// POST /auth/me/password
+#[utoipa::path(
+    post,
+    path = "/auth/me/password",
+    tag = "auth",
+    request_body = UpdatePasswordRequest,
+    responses(
+        (status = 200, description = "Password updated successfully"),
+        (status = 401, description = "Invalid current password"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip(state, body), fields(user_id = %auth_user.id))]
+pub async fn update_password(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(body): Json<UpdatePasswordRequest>,
+) -> AuthResult<Json<serde_json::Value>> {
+    body.validate()
+        .map_err(|e| AuthError::Validation(e.to_string()))?;
+
+    let user = find_user_by_id(&state.db, auth_user.id)
+        .await
+        .map_err(AuthError::Database)?
+        .ok_or(AuthError::UserNotFound)?;
+
+    let current_hash = user.password_hash.as_ref().ok_or(AuthError::InvalidCredentials)?;
+
+    let valid = verify_password(&body.current_password, current_hash)
+        .map_err(|_| AuthError::PasswordHash)?;
+
+    if !valid {
+        return Err(AuthError::InvalidCredentials);
+    }
+
+    let new_hash = hash_password(&body.new_password)
+        .map_err(|_| AuthError::PasswordHash)?;
+
+    crate::db::update_user_password(&state.db, auth_user.id, &new_hash)
+        .await
+        .map_err(AuthError::Database)?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Password updated successfully"
+    })))
 }
 
 /// Setup MFA (TOTP).
