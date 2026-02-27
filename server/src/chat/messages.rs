@@ -312,6 +312,10 @@ pub struct UpdateMessageRequest {
 static CODE_BLOCK_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(?s)```.*?```").unwrap());
 
+// NOTE: This regex handles standard triple-backtick fences (```...```).
+// Known limitations: fences with >3 backticks (e.g., ````) and triple backticks
+// inside fenced blocks may be miscounted. A full CommonMark parser would handle
+// these edge cases but is not warranted for validation purposes.
 /// Custom validation for message content length
 /// Standard messages: 1-4000 characters
 /// Messages with code blocks: 1-10000 characters
@@ -1784,6 +1788,7 @@ mod tests {
         let result = validate_message_content("");
 
         assert!(result.is_err());
+        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot be empty"));
     }
 
     #[test]
@@ -1802,6 +1807,7 @@ mod tests {
         let result = validate_message_content(&content);
 
         assert!(result.is_err());
+        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot exceed 4000"));
     }
 
     #[test]
@@ -1822,6 +1828,7 @@ mod tests {
         let result = validate_message_content(&content);
 
         assert!(result.is_err());
+        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot exceed 10000"));
     }
 
     #[test]
@@ -1842,6 +1849,7 @@ mod tests {
         let result = validate_message_content(&content);
 
         assert!(result.is_err());
+        assert!(result.unwrap_err().message.as_ref().map(|m| m.to_string()).unwrap_or_default().contains("cannot exceed 4000"));
     }
 
     #[test]
