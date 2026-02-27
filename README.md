@@ -50,8 +50,8 @@ We don't want your data. All direct messages and private group calls utilize **O
 ## <span style="color: #88C0D0;">🚀 Quick Start (Development)</span>
 
 1. Clone the repository: `git clone https://github.com/detair/canis.git`
-2. Install dependencies: `npm install`
-3. Run the development environment: `npm run tauri dev`
+2. Install dependencies: `bun install`
+3. Run the development environment: `bun run tauri dev`
 
 ## <span style="color: #88C0D0;">🤝 Contributing & License</span>
 
