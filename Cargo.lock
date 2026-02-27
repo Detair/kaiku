@@ -9517,7 +9517,6 @@ dependencies = [
  "image",
  "infer 0.16.0",
  "jsonwebtoken",
- "lazy_static",
  "lettre",
  "mime_guess",
  "openidconnect",

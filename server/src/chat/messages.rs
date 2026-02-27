@@ -1,6 +1,7 @@
 //! Message Handlers
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -308,9 +309,8 @@ pub struct UpdateMessageRequest {
     pub content: String,
 }
 
-lazy_static::lazy_static! {
-    static ref CODE_BLOCK_RE: regex::Regex = regex::Regex::new(r"(?s)```.*?```").unwrap();
-}
+static CODE_BLOCK_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?s)```.*?```").unwrap());
 
 /// Custom validation for message content length
 /// Standard messages: 1-4000 characters
@@ -322,23 +322,27 @@ pub fn validate_message_content(content: &str) -> Result<(), validator::Validati
     }
 
     let total_len = content.chars().count();
-    
+
     // Overall hard limit of 10,000 characters
     if total_len > 10000 {
-        return Err(validator::ValidationError::new("length")
-            .with_message(std::borrow::Cow::Borrowed("Content cannot exceed 10000 characters in total")));
+        return Err(validator::ValidationError::new("length").with_message(
+            std::borrow::Cow::Borrowed("Content cannot exceed 10000 characters in total"),
+        ));
     }
-    
+
     // Strip code blocks to check the regular text limit (4,000 chars)
     let text_without_blocks = CODE_BLOCK_RE.replace_all(content, "");
-    
+
     let regular_text_len = text_without_blocks.chars().count();
-    
+
     if regular_text_len > 4000 {
-        return Err(validator::ValidationError::new("length")
-            .with_message(std::borrow::Cow::Borrowed("Regular text content (excluding code blocks) must be 1-4000 characters")));
+        return Err(validator::ValidationError::new("length").with_message(
+            std::borrow::Cow::Borrowed(
+                "Regular text content (excluding code blocks) must be 1-4000 characters",
+            ),
+        ));
     }
-    
+
     Ok(())
 }
 
@@ -1775,6 +1779,94 @@ mod tests {
     use crate::auth::AuthUser;
     use crate::config::Config;
 
+    #[test]
+    fn test_validate_message_content_empty_rejected() {
+        let result = validate_message_content("");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_message_content_exact_normal_limit_passes() {
+        let content = "a".repeat(4000);
+
+        let result = validate_message_content(&content);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_message_content_normal_limit_plus_one_fails() {
+        let content = "a".repeat(4001);
+
+        let result = validate_message_content(&content);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_message_content_with_code_blocks_within_extended_limit_passes() {
+        let regular_text = "a".repeat(4000);
+        let code_block = format!("```{} ```", "b".repeat(2000));
+        let content = format!("{regular_text}{code_block}");
+
+        let result = validate_message_content(&content);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_message_content_with_code_blocks_exceeding_total_limit_fails() {
+        let content = format!("{}{}", "a".repeat(2000), "```b```".repeat(1200));
+
+        let result = validate_message_content(&content);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_message_content_nested_code_blocks_handled() {
+        let content = "before ```outer ```inner``` outer``` after";
+
+        let result = validate_message_content(content);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_message_content_unclosed_code_block_counts_as_regular_text() {
+        // With an odd number of triple backticks, the regex does not strip the open code block.
+        // This means the payload is validated against the 4,000 regular-text limit.
+        let content = format!("```{}", "a".repeat(4001));
+
+        let result = validate_message_content(&content);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_message_content_only_code_blocks_passes() {
+        let content = "```rust\nfn main() { println!(\"ok\"); }\n```";
+
+        let result = validate_message_content(content);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_message_content_mixed_text_and_code_blocks_passes() {
+        let content = format!(
+            "{} ```{} ``` {}",
+            "a".repeat(3990),
+            "b".repeat(1500),
+            "tail"
+        );
+
+        let result = validate_message_content(&content);
+
+        assert!(result.is_ok());
+    }
+
     fn test_auth_user(user: &db::User) -> AuthUser {
         AuthUser {
             id: user.id,
@@ -2393,4 +2485,3 @@ mod tests {
         );
     }
 }
-
