@@ -64,27 +64,38 @@ body {
     left: -50%;
     width: 200%;
     height: 200%;
-    background: repeating-linear-gradient(100deg,
-            transparent 0%,
-            var(--accent-primary) 15%,
-            var(--accent-tertiary) 30%,
-            var(--accent-secondary) 45%,
-            transparent 60%);
-    opacity: 0.08;
-    /* Very subtle to not distract from readability */
-    filter: blur(100px);
+    background:
+        radial-gradient(ellipse 80% 50% at 20% 40%,
+            rgba(136, 192, 208, 0.18) 0%,
+            transparent 60%),
+        radial-gradient(ellipse 60% 40% at 70% 60%,
+            rgba(180, 142, 173, 0.14) 0%,
+            transparent 55%),
+        radial-gradient(ellipse 70% 35% at 50% 30%,
+            rgba(163, 190, 140, 0.12) 0%,
+            transparent 50%);
+    filter: blur(60px);
     z-index: 0;
     pointer-events: none;
-    animation: auroraWave 25s linear infinite alternate;
+    animation: auroraShift 20s ease-in-out infinite alternate;
 }
 
-@keyframes auroraWave {
+@keyframes auroraShift {
     0% {
-        transform: translateX(0) translateY(0) rotate(0deg) scale(1);
+        transform: translateX(0%) translateY(0%) rotate(0deg) scale(1);
+        opacity: 0.7;
     }
-
+    33% {
+        transform: translateX(-3%) translateY(2%) rotate(1deg) scale(1.02);
+        opacity: 0.9;
+    }
+    66% {
+        transform: translateX(2%) translateY(-1%) rotate(-1deg) scale(0.98);
+        opacity: 0.8;
+    }
     100% {
-        transform: translateX(-5%) translateY(2%) rotate(3deg) scale(1.05);
+        transform: translateX(-4%) translateY(3%) rotate(2deg) scale(1.04);
+        opacity: 1;
     }
 }
 
