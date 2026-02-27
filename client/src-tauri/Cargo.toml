@@ -10,10 +10,14 @@ description = "VoiceChat Desktop Client"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = ["megolm"]
+megolm = []
+
 [dependencies]
 # Internal
 vc-common.workspace = true
-vc-crypto.workspace = true
+vc-crypto = { workspace = true, features = ["megolm"] }
 
 # Tauri
 tauri = { version = "2", features = [] }
@@ -66,6 +70,8 @@ sysinfo = "0.34"
 # Clipboard
 arboard = "3"
 sha2 = "0.10"
+hmac = "0.12"
+aes-gcm = "0.10"
 argon2.workspace = true
 getrandom = "0.2"
 

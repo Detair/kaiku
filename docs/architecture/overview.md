@@ -51,8 +51,8 @@
 │  │ • Local Auth    │  │ • Channels      │  │                 │             │
 │  │ • OIDC/SSO      │  │ • Messages      │  │ • webrtc-rs     │             │
 │  │ • MFA (TOTP)    │  │ • File Upload   │  │                 │             │
-│  │ • Sessions      │  │ • E2EE (Olm)    │  │ • Opus Codec    │             │
-│  │ • JWT Tokens    │  │ • WebSocket     │  │ • DTLS-SRTP     │             │
+│  │ • Sessions      │  │ • E2EE (Olm/  │  │ • Opus Codec    │             │
+│  │ • JWT Tokens    │  │    Megolm)    │  │ • DTLS-SRTP     │             │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘             │
 │           │                    │                    │                       │
 │           └─────────────────────┼─────────────────────┘                     │

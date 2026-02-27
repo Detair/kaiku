@@ -4,14 +4,18 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
+#[cfg(feature = "megolm")]
+use vc_crypto::megolm::{MegolmInboundSession, MegolmOutboundSession};
 use vc_crypto::olm::{EncryptedMessage, IdentityKeyPair, OlmAccount};
 use vc_crypto::types::{Curve25519PublicKey, KeyId};
 
+#[cfg(feature = "megolm")]
+use super::store::MegolmInboundKey;
 use super::store::{KeyStoreMetadata, LocalKeyStore, SessionKey};
 
 /// Crypto manager errors.
@@ -38,8 +42,13 @@ pub enum CryptoManagerError {
     NotInitialized,
 
     /// No one-time prekey available for recipient device.
-    #[error("No one-time prekey available for device {device_key} — recipient must replenish prekeys")]
+    #[error(
+        "No one-time prekey available for device {device_key} — recipient must replenish prekeys"
+    )]
     NoOneTimePrekey { device_key: String },
+
+    #[error("Key store lock poisoned: {0}")]
+    LockPoisoned(String),
 }
 
 /// Crypto manager result type.
@@ -111,6 +120,12 @@ pub struct CryptoManager {
 }
 
 impl CryptoManager {
+    fn lock_store(&self) -> Result<MutexGuard<'_, LocalKeyStore>> {
+        self.store
+            .lock()
+            .map_err(|e| CryptoManagerError::LockPoisoned(e.to_string()))
+    }
+
     /// Initialize the crypto manager.
     ///
     /// Creates a new Olm account if one doesn't exist, otherwise loads the existing one.
@@ -172,11 +187,9 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn needs_key_upload(&self) -> Result<bool> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
         let account = store.load_account()?;
         Ok(!account.one_time_keys().is_empty())
     }
@@ -187,11 +200,9 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn get_identity_keys(&self) -> Result<IdentityKeyPair> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
         let account = store.load_account()?;
         Ok(account.identity_keys())
     }
@@ -214,11 +225,9 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn our_curve25519_key(&self) -> Result<String> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
         let account = store.load_account()?;
         Ok(account.curve25519_key().to_base64())
     }
@@ -235,11 +244,9 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded or saved.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn generate_prekeys(&self, count: usize) -> Result<Vec<PrekeyForUpload>> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
         let mut account = store.load_account()?;
 
         // Generate new one-time keys
@@ -267,11 +274,9 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded or saved.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn mark_keys_published(&self) -> Result<()> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
         let mut account = store.load_account()?;
         account.mark_keys_as_published();
         store.save_account(&account)?;
@@ -284,11 +289,9 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn get_unpublished_keys(&self) -> Result<Vec<PrekeyForUpload>> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
         let account = store.load_account()?;
 
         let prekeys: Vec<PrekeyForUpload> = account
@@ -317,16 +320,14 @@ impl CryptoManager {
     ///
     /// Returns an error if the session cannot be created or encryption fails.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn encrypt_for_device(
         &self,
         recipient_user_id: Uuid,
         claimed: &ClaimedPrekey,
         plaintext: &str,
     ) -> Result<EncryptedMessage> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
 
         // Parse the recipient's identity key
         let recipient_identity_key =
@@ -387,16 +388,14 @@ impl CryptoManager {
     ///
     /// Returns an error if decryption fails or the session cannot be established.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn decrypt_message(
         &self,
         sender_user_id: Uuid,
         sender_key: &str,
         message: &EncryptedMessage,
     ) -> Result<String> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
 
         let sender_identity_key = Curve25519PublicKey::from_base64(sender_key)
             .map_err(|e| CryptoManagerError::InvalidKey(e.to_string()))?;
@@ -448,16 +447,104 @@ impl CryptoManager {
     ///
     /// Returns an error if the session lookup fails.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn has_session(&self, user_id: Uuid, device_curve25519: &str) -> Result<bool> {
-        let store = self.store.lock().expect("Mutex poisoned");
+        let store = self.lock_store()?;
         let session_key = SessionKey {
             user_id,
             device_curve25519: device_curve25519.to_string(),
         };
         Ok(store.load_session(&session_key)?.is_some())
+    }
+
+    // =========================================================================
+    // Megolm Group Encryption Methods
+    // =========================================================================
+
+    /// Create a new Megolm outbound session for a specific room/group.
+    /// Returns the exportable session key to be distributed via Olm.
+    #[cfg(feature = "megolm")]
+    pub fn create_outbound_group_session(&self, room_id: &str) -> Result<String> {
+        let store = self.lock_store()?;
+
+        // Always rotate and create a new outbound session for the room
+        let session = MegolmOutboundSession::new();
+        let session_key = session.session_key();
+
+        store.save_megolm_outbound_session(room_id, &session)?;
+        Ok(session_key)
+    }
+
+    /// Encrypt a message for a group channel using the current Megolm outbound session.
+    #[cfg(feature = "megolm")]
+    pub fn encrypt_group_message(&self, room_id: &str, plaintext: &str) -> Result<String> {
+        let store = self.lock_store()?;
+
+        let mut session = store
+            .load_megolm_outbound_session(room_id)?
+            .ok_or_else(|| {
+                CryptoManagerError::InvalidKey(
+                    "No outbound group session for this room".to_string(),
+                )
+            })?;
+
+        let ciphertext = session.encrypt(plaintext);
+
+        // Save the updated session (ratchet advanced)
+        store.save_megolm_outbound_session(room_id, &session)?;
+        Ok(ciphertext)
+    }
+
+    /// Store a Megolm session key received from another user (via an Olm 1:1 message).
+    #[cfg(feature = "megolm")]
+    pub fn add_inbound_group_session(
+        &self,
+        room_id: &str,
+        sender_key: &str,
+        session_key_b64: &str,
+    ) -> Result<()> {
+        let store = self.lock_store()?;
+
+        let session = MegolmInboundSession::new(session_key_b64).map_err(|_| {
+            CryptoManagerError::InvalidKey("Invalid megolm session key".to_string())
+        })?;
+
+        let key = MegolmInboundKey {
+            room_id: room_id.to_string(),
+            sender_key: sender_key.to_string(),
+        };
+
+        store.save_megolm_inbound_session(&key, &session)?;
+        Ok(())
+    }
+
+    /// Decrypt a Megolm group message using a stored inbound session.
+    #[cfg(feature = "megolm")]
+    pub fn decrypt_group_message(
+        &self,
+        room_id: &str,
+        sender_key: &str,
+        ciphertext: &str,
+    ) -> Result<String> {
+        let store = self.lock_store()?;
+
+        let key = MegolmInboundKey {
+            room_id: room_id.to_string(),
+            sender_key: sender_key.to_string(),
+        };
+
+        let mut session = store.load_megolm_inbound_session(&key)?.ok_or_else(|| {
+            CryptoManagerError::InvalidKey("No inbound group session found".to_string())
+        })?;
+
+        let plaintext = session.decrypt(ciphertext).map_err(|_| {
+            CryptoManagerError::InvalidKey("Group message decryption failed".to_string())
+        })?;
+
+        // Save the updated session (message index advanced for replay protection)
+        store.save_megolm_inbound_session(&key, &session)?;
+
+        Ok(plaintext)
     }
 }
 

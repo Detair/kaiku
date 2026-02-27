@@ -7,14 +7,15 @@ Solid.js signal-based state management. Each store manages a domain-specific sli
 ## Key Files
 - `auth.ts` - User authentication state and session management
 - `websocket.ts` - WebSocket connection and event routing
-- `messages.ts` - Message history per channel
+- `messages.ts` - Message history per channel, E2EE encrypt/decrypt routing (Olm 1:1 + Megolm group)
 - `channels.ts` - Channel list and selection
 - `guilds.ts` - Guild/server list and active selection
 - `voice.ts` - Voice connection state and participants
 - `call.ts` - DM call state (ringing, active, ended)
-- `presence.ts` - User online/offline status tracking
+- `presence.ts` - User online status tracking
 - `friends.ts` - Friend list and requests
 - `dms.ts` - Direct message channels
+- `e2ee.ts` - E2EE state management: Olm (1:1) and Megolm (group) encrypt/decrypt operations
 - `theme.ts` - Theme selection and color scheme
 
 ## For AI Agents
@@ -69,6 +70,16 @@ Maintains per-channel message history:
 - Infinite scroll with `loadMore()`
 - Optimistic updates (add message immediately, update on server response)
 - Attachment support
+- E2EE: automatic decryption of Olm (1:1) and Megolm (group) messages
+- Megolm session key auto-processing for inbound key distribution
+- Group DMs (3+ participants) route to Megolm, 1:1 DMs use Olm
+
+### E2EE Store
+Manages end-to-end encryption state:
+- Initialization status, device/identity keys
+- **Olm**: `encrypt()`, `decrypt()` for 1:1 DMs
+- **Megolm**: `createGroupSession()`, `encryptGroup()`, `decryptGroup()`, `addInboundSession()` for group DMs
+- Prekey management and backup operations
 
 ### Voice vs Call Stores
 - `voice.ts` - Voice channel connections (guild voice chat)

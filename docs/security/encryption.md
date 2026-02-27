@@ -26,7 +26,7 @@ Voice data is transmitted peer-to-peer (or via SFU) using standard WebRTC encryp
 
 Text messages use the **Olm** and **Megolm** cryptographic ratchets via the `vodozemac` library (Apache 2.0), ensuring that the server cannot read message content.
 
-> **Implementation Status:** ✅ DM messages (1:1 and Group DMs) are E2EE enabled. Guild channel encryption is planned.
+> **Implementation Status:** ✅ DM messages (1:1 Olm and Group Megolm) are fully E2EE enabled. Guild channel encryption is planned.
 
 ### 1:1 Direct Messages (Olm)
 - **Algorithm:** Double Ratchet Algorithm (Olm).
@@ -37,28 +37,33 @@ Text messages use the **Olm** and **Megolm** cryptographic ratchets via the `vod
     - **Forward Secrecy:** Compromising current keys does not compromise past messages.
     - **Post-Compromise Security:** New keys heal the session after a compromise.
 
-### Group DMs (Olm per-recipient)
-- **Current Implementation:** Each message is encrypted separately for each recipient using Olm sessions.
-- **Message Format:** `E2EEContent` JSON containing per-device ciphertexts with sender's Curve25519 key.
-- **Future:** Megolm group sessions for efficiency with larger groups.
-
-### Group Channels (Megolm) - Planned
-- **Algorithm:** Megolm (Outbound group sessions).
+### Group DMs (Megolm)
+- **Algorithm:** Megolm ratchet for efficient group encryption.
+- **Library:** `vodozemac` v0.9 (Rust implementation of Olm/Megolm)
 - **Mechanism:**
-    - Sender creates an outbound Megolm session.
-    - Session keys are distributed to group members via 1:1 Olm channels.
-    - Messages are encrypted with the Megolm ratchet.
-    - Receivers use their copy of the session key to decrypt.
-- **Efficiency:** Encrypt once, send to many.
+    - Sender creates an outbound Megolm session per channel.
+    - Session key distributed to all group members via 1:1 Olm-encrypted messages.
+    - Messages encrypted with the Megolm ratchet (one encrypt → all can decrypt).
+    - On receive: Olm decryption detects `__megolm_session_key__` marker, auto-stores inbound session.
+- **Message Format:** `MegolmE2EEContent` JSON containing `sender_key`, `room_id`, and `megolm_ciphertext`.
+- **Session Rotation:**
+    - Automatic rotation every 100 messages (matching Matrix protocol).
+    - Immediate rotation when participant list changes.
+    - Session state cached in-memory for performance.
+- **Efficiency:** Encrypt once, send to many. Key distribution cost amortized over 100 messages.
+
+### Guild Channels (Megolm) - Planned
+- Same Megolm mechanism as Group DMs, adapted for larger guild channels.
+- Additional considerations: member count scaling, lazy key distribution.
 
 ### Key Management
 - **Identity Keys:** Long-term Curve25519 keys identifying a user/device.
 - **One-Time Keys:** Uploaded to server for initial session establishment (X3DH).
 - **Storage:**
-    - **Tauri Client:** Encrypted SQLite database (`LocalKeyStore`) with AES-256-GCM encryption.
-    - **Key Derivation:** Recovery key → SHA-256 → encryption key for SQLite storage.
+    - **Tauri Client:** Encrypted SQLite database (`LocalKeyStore`) with AES-256-GCM encryption via SQLCipher.
+    - **Key Derivation:** Recovery key → Argon2id → encryption key for SQLite storage.
     - **Recovery Key:** 128-bit random value displayed as Base58-encoded chunks for user backup.
-- **Session Persistence:** Olm sessions serialized and stored encrypted, survive app restarts.
+- **Session Persistence:** Olm and Megolm sessions serialized (pickled) and stored encrypted, survive app restarts.
 
 ## Layer 4: Data at Rest
 

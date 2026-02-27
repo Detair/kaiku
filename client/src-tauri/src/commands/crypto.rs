@@ -769,6 +769,87 @@ pub async fn get_our_curve25519_key(state: State<'_, AppState>) -> Result<String
         .map_err(|e| format!("Failed to get Curve25519 key: {e}"))
 }
 
+// =============================================================================
+// Megolm Group E2EE Commands
+// =============================================================================
+
+/// Create a new Megolm outbound session for a group/channel.
+/// Returns the exportable session key (base64) that should be shared with other members
+/// via 1:1 Olm encrypted messages.
+#[command]
+pub async fn create_megolm_session(
+    state: State<'_, AppState>,
+    room_id: String,
+) -> Result<String, String> {
+    let crypto = state.crypto.lock().await;
+    let manager = crypto.as_ref().ok_or("E2EE not initialized")?;
+
+    manager
+        .create_outbound_group_session(&room_id)
+        .map_err(|e| format!("Failed to create Megolm session: {e}"))
+}
+
+/// Encrypt a message for a group using Megolm.
+#[command]
+pub async fn encrypt_group_message(
+    state: State<'_, AppState>,
+    room_id: String,
+    plaintext: String,
+) -> Result<String, String> {
+    if plaintext.len() > MAX_PLAINTEXT_LEN {
+        return Err(format!(
+            "Plaintext exceeds maximum size of {} KB",
+            MAX_PLAINTEXT_LEN / 1024
+        ));
+    }
+
+    let crypto = state.crypto.lock().await;
+    let manager = crypto.as_ref().ok_or("E2EE not initialized")?;
+
+    manager
+        .encrypt_group_message(&room_id, &plaintext)
+        .map_err(|e| format!("Failed to encrypt group message: {e}"))
+}
+
+/// Store an inbound Megolm session key received from another user.
+#[command]
+pub async fn add_inbound_group_session(
+    state: State<'_, AppState>,
+    room_id: String,
+    sender_key: String,
+    session_key: String,
+) -> Result<(), String> {
+    let crypto = state.crypto.lock().await;
+    let manager = crypto.as_ref().ok_or("E2EE not initialized")?;
+
+    manager
+        .add_inbound_group_session(&room_id, &sender_key, &session_key)
+        .map_err(|e| format!("Failed to add inbound group session: {e}"))
+}
+
+/// Decrypt a Megolm group message.
+#[command]
+pub async fn decrypt_group_message(
+    state: State<'_, AppState>,
+    room_id: String,
+    sender_key: String,
+    ciphertext: String,
+) -> Result<String, String> {
+    if ciphertext.len() > MAX_CIPHERTEXT_LEN {
+        return Err(format!(
+            "Ciphertext exceeds maximum size of {} KB",
+            MAX_CIPHERTEXT_LEN / 1024
+        ));
+    }
+
+    let crypto = state.crypto.lock().await;
+    let manager = crypto.as_ref().ok_or("E2EE not initialized")?;
+
+    manager
+        .decrypt_group_message(&room_id, &sender_key, &ciphertext)
+        .map_err(|e| format!("Failed to decrypt group message: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

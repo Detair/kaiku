@@ -2,47 +2,86 @@
 
 **Parent:** [Tauri Source](../AGENTS.md)
 
-**Purpose:** End-to-end encryption (E2EE) for text messages using vodozemac (Olm/Megolm protocol). **Currently a placeholder module** — E2EE implementation is future work.
+**Purpose:** End-to-end encryption (E2EE) for text messages using vodozemac (Olm/Megolm protocol). Provides encrypted local key storage, session management, and Tauri IPC commands for frontend integration.
 
-## Architecture (Planned)
+## Architecture
 
 ```
 Text Message (plaintext)
-    ↓ vodozemac::Account::encrypt()
-Encrypted Message (Olm/Megolm)
+    ↓ CryptoManager::encrypt() / encrypt_group_message()
+Encrypted Message (Olm 1:1 or Megolm Group)
     ↓ Server (stores encrypted, cannot read)
 Recipient Client
-    ↓ vodozemac::Account::decrypt()
+    ↓ CryptoManager::decrypt() / decrypt_group_message()
 Text Message (plaintext)
 ```
 
 ## Current State
 
-**File:** `mod.rs` — Empty placeholder (`//! Client-side Cryptography`)
+### Implemented
 
-**Status:** Not implemented. Voice uses DTLS-SRTP (server-trusted), not E2EE.
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Module root — exports `CryptoManager`, `ClaimedPrekey`, `PrekeyForUpload`, `PrekeyInfo` |
+| `manager.rs` | `CryptoManager` — session management, encrypt/decrypt for Olm and Megolm |
+| `store.rs` | `LocalKeyStore` — encrypted SQLite storage (SQLCipher) for accounts, sessions, and metadata |
 
-## Planned Implementation
+### Protocol Support
 
-### Phase 1: Key Management
-- **Identity Keys**: Ed25519 for signing, Curve25519 for encryption
-- **One-time Keys**: Pre-generated keys for initial Olm sessions
-- **Storage**: Encrypted local DB (sqlx + SQLCipher or sled)
+| Protocol | Use Case | Status |
+|----------|----------|--------|
+| **Olm** (Double Ratchet) | 1:1 DM encryption | ✅ Implemented |
+| **Megolm** (Ratchet) | Group DM encryption (3+ participants) | ✅ Implemented |
+| **MLS** (future) | Voice E2EE ("Paranoid Mode") | ❌ Planned |
 
-### Phase 2: Olm (1-to-1 E2EE)
-- **Session Establishment**: Double Ratchet between two users
-- **Message Encryption**: `vodozemac::Account::encrypt(message)`
-- **Message Decryption**: `vodozemac::Account::decrypt(ciphertext)`
+## CryptoManager API
 
-### Phase 3: Megolm (Group E2EE)
-- **Outbound Session**: One sender encrypts for many recipients
-- **Inbound Session**: Each recipient decrypts with shared group key
-- **Key Rotation**: Periodic ratchet to maintain forward secrecy
+### Olm (1:1 Messaging)
+- `init()` — Generate identity keys (Ed25519 + Curve25519), create Olm account
+- `encrypt()` — Encrypt plaintext for specific recipients via Olm sessions
+- `decrypt()` — Decrypt incoming Olm ciphertext
+- `generate_prekeys()` — Generate one-time prekeys for session establishment
+- `claim_prekey()` — Claim a one-time prekey from another user
 
-### Phase 4: Voice E2EE ("Paranoid Mode")
-- **MLS Protocol**: Multi-party E2EE for voice (replaces DTLS-SRTP)
-- **Server Role**: Blind relay (no decryption keys)
-- **Trade-off**: Higher latency (~10-20ms overhead), more complex
+### Megolm (Group Messaging)
+- `create_outbound_group_session(room_id)` — Create new outbound Megolm session, returns exportable session key
+- `encrypt_group_message(room_id, plaintext)` — Encrypt with current outbound session (ratchet advances)
+- `add_inbound_group_session(room_id, sender_key, session_key)` — Store received session key
+- `decrypt_group_message(room_id, sender_key, ciphertext)` — Decrypt with stored inbound session
+
+### Key Backup & Recovery
+- `create_backup()` / `restore_backup()` — AES-256-GCM encrypted key backup with Argon2id KDF
+- `generate_recovery_key()` — Base58-encoded recovery key for user backup
+
+## LocalKeyStore (store.rs)
+
+Encrypted SQLite database using SQLCipher with Argon2id key derivation.
+
+**Tables:**
+- `olm_account` — Serialized Olm account (one per device)
+- `olm_sessions` — Per-user Olm sessions (keyed by `user_id:device_id`)
+- `megolm_outbound_sessions` — Outbound Megolm sessions (keyed by `room_id`)
+- `megolm_inbound_sessions` — Inbound Megolm sessions (keyed by `room_id:sender_key`)
+- `metadata` — Encrypted key-value store for device IDs, prekey counters, etc.
+
+## Megolm Group Encryption Flow
+
+### Sending (Group DM)
+1. **Create session**: `create_outbound_group_session(channel_id)` → returns session key
+2. **Distribute key**: Session key encrypted via Olm for each group member's device, sent as a real message
+3. **Encrypt message**: `encrypt_group_message(channel_id, plaintext)` → Megolm ciphertext
+4. **Send**: Message sent with `encrypted: true` flag and `MegolmE2EEContent` JSON envelope
+
+### Receiving (Group DM)
+1. **Key receipt**: Olm-encrypted session key message arrives via WebSocket
+2. **Auto-process**: `processMegolmKeyIfPresent()` detects `__megolm_session_key__` marker
+3. **Store**: `add_inbound_group_session(room_id, sender_key, session_key)`
+4. **Decrypt**: `decrypt_group_message(room_id, sender_key, ciphertext)` → plaintext
+
+### Session Rotation
+- Sessions rotate every **100 messages** (matching Matrix protocol)
+- Sessions rotate when **participant list changes**
+- Session state cached in-memory (`megolmSessionCache` in `messages.ts`)
 
 ## Key Library: vodozemac
 
@@ -51,7 +90,7 @@ Text Message (plaintext)
 - **Alternative:** libsignal (AGPL-3.0) — incompatible with our license
 - **Protocol:** Implements Signal's Olm/Megolm, battle-tested crypto
 
-**Crate:** `vodozemac = "0.5"`
+**Crate:** `vodozemac = "0.9"`
 
 ## Security Considerations
 
@@ -64,87 +103,30 @@ Text Message (plaintext)
   - **Mitigation:** TLS + E2EE (defense in depth)
 
 ### Key Storage
-- **Identity Keys**: Long-lived, encrypted at rest with device key
+- **Identity Keys**: Long-lived, encrypted at rest with Argon2id-derived key
 - **Session Keys**: Ephemeral, rotated per session
 - **One-time Keys**: Pre-generated, deleted after use
-
-**Platform-specific:**
-- **macOS/iOS:** Keychain
-- **Windows:** DPAPI
-- **Linux:** Secret Service API (gnome-keyring, KWallet)
-- **Fallback:** Encrypted file with user password
+- **Local DB**: SQLCipher-encrypted SQLite
 
 ### Forward Secrecy
-- **Olm/Megolm:** Built-in via ratcheting
+- **Olm:** Built-in via Double Ratchet
+- **Megolm:** Forward secrecy via ratcheting (compromising a session key doesn't reveal past messages)
 - **Voice DTLS-SRTP (current):** No forward secrecy (server holds keys)
 - **Voice MLS (future):** Forward secrecy
 
-## Implementation Roadmap
+## Testing
 
-### Step 1: Device Identity (Week 1-2)
-- Generate Ed25519 + Curve25519 keypair on first run
-- Store in OS keyring
-- Upload public keys to server `/crypto/keys` endpoint
-
-### Step 2: Olm Sessions (Week 3-4)
-- Pre-generate one-time keys, upload to server
-- Implement Olm session establishment
-- Encrypt/decrypt 1-to-1 messages
-- Add `/crypto/sessions` endpoints to server
-
-### Step 3: Megolm Sessions (Week 5-6)
-- Create outbound Megolm session for group channels
-- Distribute session keys via Olm (encrypted)
-- Encrypt/decrypt group messages
-- Handle key rotation
-
-### Step 4: UI Integration (Week 7-8)
-- Display "Encrypted" badge on messages
-- Key verification UX (QR codes, emoji verification)
-- Key backup/restore flow
-- Device management UI
-
-### Step 5: Voice MLS (Future, 3-6 months)
-- Integrate MLS library (openmls crate)
-- SFU modifications for encrypted RTP
-- Performance testing (<50ms latency)
-
-## Testing Strategy
-
-### Unit Tests
-```rust
-#[cfg(test)]
-mod tests {
-    use vodozemac::{Account, Curve25519PublicKey, IdentityKeys};
-
-    #[test]
-    fn test_key_generation() {
-        let account = Account::new();
-        let identity_keys = account.identity_keys();
-        assert!(identity_keys.ed25519.verify_signature().is_ok());
-    }
-
-    #[test]
-    fn test_olm_session() {
-        let alice = Account::new();
-        let bob = Account::new();
-
-        // Establish session
-        let session = alice.create_outbound_session(&bob.identity_keys().curve25519);
-
-        // Encrypt/decrypt
-        let plaintext = "Hello, Bob!";
-        let ciphertext = session.encrypt(plaintext).unwrap();
-        let decrypted = bob.decrypt(&ciphertext).unwrap();
-        assert_eq!(decrypted, plaintext);
-    }
-}
+### Unit Tests (vc-crypto)
+```bash
+cargo test -p vc-crypto --features megolm
 ```
+Tests: `test_megolm_encrypt_decrypt`, `test_megolm_serialization`, `test_olm_session_encrypt_decrypt`, + 21 more
 
-### Integration Tests
-- **Two-client test**: Spin up two Tauri instances, send encrypted messages
-- **Server blind test**: Verify server cannot decrypt messages
-- **Key rotation test**: Ensure old keys cannot decrypt new messages
+### Integration Tests (store.rs)
+```bash
+cargo test -p client -- crypto::store
+```
+Tests: `test_store_account_roundtrip`, `test_store_session_roundtrip`, `test_store_persistence`, etc.
 
 ## Performance Targets
 
@@ -161,13 +143,8 @@ mod tests {
 
 ### Licenses
 - **vodozemac:** Apache-2.0 ✅
-- **ed25519-dalek:** BSD-3-Clause ✅
-- **x25519-dalek:** BSD-3-Clause ✅
-
-### Export Regulations
-- **U.S. Export Administration Regulations (EAR):** Cryptography is restricted
-- **Exemption:** Open-source + notification to BIS (Bureau of Industry and Security)
-- **Action Required:** File notification if distributing outside U.S. (not yet applicable)
+- **aes-gcm:** MIT/Apache-2.0 ✅
+- **argon2:** MIT/Apache-2.0 ✅
 
 ## Common Pitfalls
 
@@ -177,14 +154,15 @@ mod tests {
 
 ### Key Management is Hard
 - **Bad:** Storing keys in plaintext
-- **Good:** OS keyring with device-locked encryption
+- **Good:** SQLCipher-encrypted local storage with Argon2id KDF
 
 ### Fallback to Plaintext
 - **Bad:** Disabling E2EE if keys fail to load
-- **Good:** Block message send, require key recovery
+- **Good:** Block message send, require key recovery (current: graceful fallback with warning)
 
 ## Related Documentation
 
-- [ARCHITECTURE.md](../../../../ARCHITECTURE.md) — E2EE architecture overview
-- [STANDARDS.md](../../../../STANDARDS.md) — Olm/Megolm protocol specs
-- [Server Crypto](../../../../server/src/crypto/AGENTS.md) — Server-side key management
+- [vc-crypto AGENTS.md](../../../../shared/vc-crypto/AGENTS.md) — Core crypto library
+- [vc-crypto/src AGENTS.md](../../../../shared/vc-crypto/src/AGENTS.md) — Detailed source docs
+- [Commands AGENTS.md](../commands/AGENTS.md) — Tauri crypto commands
+- [Stores AGENTS.md](../../../src/stores/AGENTS.md) — Frontend e2ee.ts store

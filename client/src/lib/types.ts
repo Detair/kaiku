@@ -1181,6 +1181,16 @@ export interface EncryptedMessage {
   ciphertext: string;
 }
 
+/** Megolm group-encrypted message content (distinguished from Olm by `megolm_ciphertext` key). */
+export interface MegolmE2EEContent {
+  /** Sender's Curve25519 public key (base64) */
+  sender_key: string;
+  /** Room/channel this was encrypted for */
+  room_id: string;
+  /** Megolm ciphertext (base64) */
+  megolm_ciphertext: string;
+}
+
 export interface ClaimedPrekeyInput {
   user_id: string;
   device_id: string;

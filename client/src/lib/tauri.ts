@@ -3456,6 +3456,67 @@ export async function decryptMessage(
   throw new Error("E2EE requires the native Tauri app");
 }
 
+// =============================================================================
+// Megolm Group E2EE Commands
+// =============================================================================
+
+/**
+ * Create a new Megolm outbound session for a group/channel.
+ * Returns the exportable session key (base64) that should be shared with other members.
+ */
+export async function createMegolmSession(roomId: string): Promise<string> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<string>("create_megolm_session", { roomId });
+  }
+
+  throw new Error("E2EE requires the native Tauri app");
+}
+
+/**
+ * Encrypt a message for a group using Megolm.
+ */
+export async function encryptGroupMessage(roomId: string, plaintext: string): Promise<string> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<string>("encrypt_group_message", { roomId, plaintext });
+  }
+
+  throw new Error("E2EE requires the native Tauri app");
+}
+
+/**
+ * Store an inbound Megolm session key received from another user.
+ */
+export async function addInboundGroupSession(
+  roomId: string,
+  senderKey: string,
+  sessionKey: string
+): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<void>("add_inbound_group_session", { roomId, senderKey, sessionKey });
+  }
+
+  throw new Error("E2EE requires the native Tauri app");
+}
+
+/**
+ * Decrypt a Megolm group message.
+ */
+export async function decryptGroupMessage(
+  roomId: string,
+  senderKey: string,
+  ciphertext: string
+): Promise<string> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<string>("decrypt_group_message", { roomId, senderKey, ciphertext });
+  }
+
+  throw new Error("E2EE requires the native Tauri app");
+}
+
 /**
  * Mark prekeys as published after uploading them to the server.
  * Note: E2EE commands require Tauri - they are not available in browser mode.

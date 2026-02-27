@@ -425,7 +425,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Post-login E2EE setup prompt (skippable or mandatory via server config)
   - Backup reminder banner for users without backup
   - Server configuration option `REQUIRE_E2EE_SETUP` for mandatory setup
-- End-to-End Encrypted DM messaging
+- End-to-End Encrypted DM messaging (Olm 1:1)
   - LocalKeyStore with encrypted SQLite storage for Olm accounts and sessions
   - CryptoManager for session management and encrypt/decrypt operations
   - Tauri commands for E2EE initialization, encryption, and decryption
@@ -434,6 +434,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Encryption indicator (lock/unlock icon) in DM conversation headers
   - Graceful fallback to unencrypted messaging when E2EE not available
   - Automatic decryption of incoming encrypted messages
+- Megolm group E2EE for group DM channels (3+ participants)
+  - Megolm outbound/inbound sessions using vodozemac with pickle-based serialization
+  - Session key distribution via 1:1 Olm-encrypted messages (automatic key exchange)
+  - Session reuse with automatic rotation every 100 messages or on participant change
+  - Automatic inbound session key processing — receivers store keys on receipt
+  - `MegolmE2EEContent` message format distinguished from Olm via `megolm_ciphertext` field
+  - LocalKeyStore persistence for Megolm sessions (encrypted SQLite via SQLCipher)
+  - Tauri IPC commands: `create_megolm_session`, `encrypt_group_message`, `add_inbound_group_session`, `decrypt_group_message`
+  - Frontend E2EE store with `createGroupSession`, `encryptGroup`, `decryptGroup`, `addInboundSession`
+  - Transparent routing: group DMs automatically use Megolm, 1:1 DMs use Olm
 - Information Pages system for platform-wide and guild-specific content (ToS, Privacy Policy, FAQ, rules, guides)
 - Markdown editor with live preview, toolbar, and cheat sheet
 - Mermaid diagram support in markdown preview

@@ -173,6 +173,11 @@ pub fn run() {
             commands::crypto::generate_prekeys,
             commands::crypto::needs_prekey_upload,
             commands::crypto::get_our_curve25519_key,
+            // Megolm commands 
+            commands::crypto::create_megolm_session,
+            commands::crypto::encrypt_group_message,
+            commands::crypto::add_inbound_group_session,
+            commands::crypto::decrypt_group_message,
             // Presence commands
             commands::presence::scan_processes,
             commands::presence::scan_all_processes,

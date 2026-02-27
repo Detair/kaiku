@@ -14,6 +14,10 @@ import {
   markPrekeysPublished,
   generatePrekeys,
   needsPrekeyUpload,
+  createMegolmSession,
+  encryptGroupMessage,
+  addInboundGroupSession,
+  decryptGroupMessage,
 } from "@/lib/tauri";
 import type {
   E2EEStatus,
@@ -156,6 +160,81 @@ function clearError(): void {
   setError(null);
 }
 
+// ============================================================================
+// Megolm Group E2EE Functions
+// ============================================================================
+
+/**
+ * Create a new Megolm outbound session for a group/channel.
+ * Returns the exportable session key (base64) to distribute to group members.
+ */
+async function createGroupSession(roomId: string): Promise<string> {
+  if (!status().initialized) {
+    throw new Error("E2EE not initialized");
+  }
+  try {
+    return await createMegolmSession(roomId);
+  } catch (e) {
+    setError(String(e));
+    throw e;
+  }
+}
+
+/**
+ * Encrypt a message for a group using the current Megolm outbound session.
+ * The outbound session must have been created via `createGroupSession()` first.
+ */
+async function encryptGroup(roomId: string, plaintext: string): Promise<string> {
+  if (!status().initialized) {
+    throw new Error("E2EE not initialized");
+  }
+  try {
+    return await encryptGroupMessage(roomId, plaintext);
+  } catch (e) {
+    setError(String(e));
+    throw e;
+  }
+}
+
+/**
+ * Decrypt a Megolm group message using a stored inbound session.
+ */
+async function decryptGroup(
+  roomId: string,
+  senderKey: string,
+  ciphertext: string
+): Promise<string> {
+  if (!status().initialized) {
+    throw new Error("E2EE not initialized");
+  }
+  try {
+    return await decryptGroupMessage(roomId, senderKey, ciphertext);
+  } catch (e) {
+    setError(String(e));
+    throw e;
+  }
+}
+
+/**
+ * Store an inbound Megolm session key received from another user.
+ * Called when a group member sends us their outbound session key via Olm.
+ */
+async function addInboundSession(
+  roomId: string,
+  senderKey: string,
+  sessionKey: string
+): Promise<void> {
+  if (!status().initialized) {
+    throw new Error("E2EE not initialized");
+  }
+  try {
+    await addInboundGroupSession(roomId, senderKey, sessionKey);
+  } catch (e) {
+    setError(String(e));
+    throw e;
+  }
+}
+
 // Export the store
 export const e2eeStore = {
   // Reactive getters
@@ -163,7 +242,7 @@ export const e2eeStore = {
   isInitializing,
   error,
 
-  // Functions
+  // 1:1 Olm Functions
   checkStatus,
   initialize,
   encrypt,
@@ -172,6 +251,12 @@ export const e2eeStore = {
   checkNeedsPrekeyUpload,
   markAsPublished,
   clearError,
+
+  // Megolm Group Functions
+  createGroupSession,
+  encryptGroup,
+  decryptGroup,
+  addInboundSession,
 };
 
 // Also export individual signals and functions for direct access
@@ -187,4 +272,8 @@ export {
   checkNeedsPrekeyUpload,
   markAsPublished as markPrekeysAsPublished,
   clearError as clearE2EEError,
+  createGroupSession,
+  encryptGroup as encryptGroupE2EE,
+  decryptGroup as decryptGroupE2EE,
+  addInboundSession as addInboundGroupSessionE2EE,
 };

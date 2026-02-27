@@ -6,7 +6,7 @@
  */
 
 import { createStore } from "solid-js/store";
-import type { Message, ClaimedPrekeyInput, DMListItem, E2EEContent } from "@/lib/types";
+import type { Message, ClaimedPrekeyInput, DMListItem, E2EEContent, MegolmE2EEContent } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { e2eeStore } from "@/stores/e2ee";
 import { showToast } from "@/components/ui/Toast";
@@ -39,6 +39,8 @@ export function clearCurve25519KeyCache(): void {
 
 /**
  * Decrypt a message if it's encrypted and E2EE is available.
+ * Supports both 1:1 Olm messages and Megolm group messages.
+ * Also processes Megolm session key distribution messages automatically.
  * Returns the message with decrypted content, or a placeholder if decryption fails.
  */
 async function decryptMessageIfNeeded(message: Message): Promise<Message> {
@@ -55,8 +57,22 @@ async function decryptMessageIfNeeded(message: Message): Promise<Message> {
   }
 
   try {
-    // Parse the encrypted content
-    const e2ee: E2EEContent = JSON.parse(message.content);
+    // Parse the encrypted content to determine type
+    const parsed = JSON.parse(message.content);
+
+    // Megolm group message — identified by `megolm_ciphertext` key
+    if ("megolm_ciphertext" in parsed) {
+      const megolm = parsed as MegolmE2EEContent;
+      const plaintext = await e2eeStore.decryptGroup(
+        megolm.room_id,
+        megolm.sender_key,
+        megolm.megolm_ciphertext
+      );
+      return { ...message, content: plaintext };
+    }
+
+    // 1:1 Olm message — identified by `recipients` key
+    const e2ee = parsed as E2EEContent;
 
     // Get our identity info
     const ourKey = await getOurCurve25519Key();
@@ -90,10 +106,51 @@ async function decryptMessageIfNeeded(message: Message): Promise<Message> {
       ourCiphertext.ciphertext
     );
 
+    // Check if this is a Megolm session key distribution message
+    const processed = await processMegolmKeyIfPresent(plaintext, e2ee.sender_key);
+    if (processed) {
+      // Replace content with a non-visible indicator; this message is internal plumbing
+      return { ...message, content: "[Encryption key exchange]" };
+    }
+
     return { ...message, content: plaintext };
   } catch (err) {
     console.error("[E2EE] Decryption failed:", err);
     return { ...message, content: "[Unable to decrypt message]" };
+  }
+}
+
+/**
+ * Check if a decrypted Olm message contains a Megolm session key payload.
+ * If so, automatically store it as an inbound group session.
+ *
+ * @returns true if this was a session key message (and was processed), false otherwise
+ */
+async function processMegolmKeyIfPresent(
+  plaintext: string,
+  senderKey: string
+): Promise<boolean> {
+  try {
+    const payload = JSON.parse(plaintext);
+    if (payload?.type !== "__megolm_session_key__") {
+      return false;
+    }
+
+    const roomId = payload.room_id;
+    const sessionKey = payload.session_key;
+
+    if (!roomId || !sessionKey) {
+      console.warn("[E2EE/Megolm] Received malformed session key payload");
+      return false;
+    }
+
+    // Store the inbound session
+    await e2eeStore.addInboundSession(roomId, senderKey, sessionKey);
+    console.log(`[E2EE/Megolm] Stored inbound session key for room ${roomId} from ${senderKey.slice(0, 8)}...`);
+    return true;
+  } catch {
+    // Not JSON or not a key payload — that's fine, it's a regular message
+    return false;
   }
 }
 
@@ -427,6 +484,8 @@ export async function sendEncryptedDM(
 
 /**
  * Send a message to a DM channel, automatically using E2EE if available.
+ * For group DMs (3+ participants), uses Megolm group encryption.
+ * For 1:1 DMs (2 participants), uses Olm 1:1 encryption.
  *
  * @param channelId - The DM channel ID
  * @param content - The plaintext message content
@@ -455,6 +514,11 @@ export async function sendDMMessage(
 
     if (recipientUserIds.length > 0) {
       try {
+        // Group DMs (3+ participants including self) use Megolm
+        if (dm.participants.length > 2) {
+          return await sendEncryptedGroupDM(channelId, content, recipientUserIds);
+        }
+        // 1:1 DMs use Olm
         return await sendEncryptedDM(channelId, content, recipientUserIds);
       } catch (err) {
         // Log but fall back to unencrypted
@@ -465,6 +529,180 @@ export async function sendDMMessage(
 
   // Fall back to unencrypted message
   return sendMessage(channelId, content);
+}
+
+// ============================================================================
+// Megolm Group E2EE Functions
+// ============================================================================
+
+/**
+ * Tracks the outbound Megolm session state per room.
+ * Sessions are reused until the message count reaches the rotation limit
+ * or the participant list changes.
+ */
+interface MegolmSessionState {
+  /** Number of messages encrypted with this session. */
+  messageCount: number;
+  /** Sorted participant IDs at the time the session was created. */
+  participantHash: string;
+}
+
+/** Rotate the outbound session after this many messages (Matrix uses 100). */
+const MEGOLM_ROTATION_LIMIT = 100;
+
+/** In-memory cache of outbound Megolm session state. Keyed by channelId. */
+const megolmSessionCache: Map<string, MegolmSessionState> = new Map();
+
+/**
+ * Compute a simple hash of the sorted participant list.
+ * Used to detect when members change and a new session is needed.
+ */
+function participantHash(recipientUserIds: string[]): string {
+  return [...recipientUserIds].sort().join(",");
+}
+
+/**
+ * Send an encrypted group message using Megolm.
+ *
+ * Flow:
+ * 1. Create or reuse Megolm outbound session for this channel
+ * 2. If new session: distribute the session key to all members via 1:1 Olm messages
+ * 3. Encrypt the actual message with Megolm
+ * 4. Send the encrypted payload with the `encrypted` flag
+ *
+ * @param channelId - The channel/room ID
+ * @param content - The plaintext message content
+ * @param recipientUserIds - The user IDs of the members (excluding self)
+ * @returns The sent message or null on failure
+ */
+export async function sendEncryptedGroupDM(
+  channelId: string,
+  content: string,
+  recipientUserIds: string[]
+): Promise<Message | null> {
+  if (!content.trim()) {
+    return null;
+  }
+
+  const status = e2eeStore.status();
+  if (!status.initialized) {
+    throw new Error("E2EE not initialized - cannot send encrypted group message");
+  }
+
+  setMessagesState({ error: null });
+
+  try {
+    // Step 1: Determine if we need a new session or can reuse the existing one.
+    const currentHash = participantHash(recipientUserIds);
+    const cached = megolmSessionCache.get(channelId);
+    const needsNewSession =
+      !cached ||
+      cached.messageCount >= MEGOLM_ROTATION_LIMIT ||
+      cached.participantHash !== currentHash;
+
+    if (needsNewSession) {
+      // Create a new outbound Megolm session
+      const sessionKey = await e2eeStore.createGroupSession(channelId);
+
+      // Distribute the session key to all group members via 1:1 Olm messages
+      await distributeGroupSessionKey(channelId, sessionKey, recipientUserIds);
+
+      // Cache the new session state
+      megolmSessionCache.set(channelId, {
+        messageCount: 0,
+        participantHash: currentHash,
+      });
+
+      console.log(`[E2EE/Megolm] Created new outbound session for room ${channelId}`);
+    }
+
+    // Step 2: Encrypt the actual message with Megolm.
+    const megolmCiphertext = await e2eeStore.encryptGroup(channelId, content.trim());
+
+    // Increment message counter
+    const state = megolmSessionCache.get(channelId)!;
+    state.messageCount++;
+
+    // Step 3: Get our sender key for the content envelope.
+    const senderKey = await tauri.getOurCurve25519Key();
+    if (!senderKey) {
+      throw new Error("Cannot get our Curve25519 key");
+    }
+
+    // Build the Megolm E2EE content envelope.
+    const megolmContent: MegolmE2EEContent = {
+      sender_key: senderKey,
+      room_id: channelId,
+      megolm_ciphertext: megolmCiphertext,
+    };
+
+    // Step 4: Send the encrypted message.
+    const encryptedContent = JSON.stringify(megolmContent);
+    const message = await tauri.sendMessage(channelId, encryptedContent, {
+      encrypted: true,
+    });
+
+    // Add to local store
+    const prev = messagesState.byChannel[channelId] || [];
+    if (!prev.some((m) => m.id === message.id)) {
+      setMessagesState("byChannel", channelId, [...prev, message]);
+    }
+
+    return message;
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error("Failed to send encrypted group message:", error);
+    showToast({ type: "error", title: "Send Failed", message: "Could not send encrypted group message. Please try again.", duration: 8000 });
+    setMessagesState({ error });
+    return null;
+  }
+}
+
+/**
+ * Distribute a Megolm session key to all group members via 1:1 Olm.
+ *
+ * Sends the session key as an actual encrypted message to the channel
+ * so recipients receive it through the normal WebSocket `message_new` flow.
+ * The key payload uses a well-known `__megolm_session_key__` marker so
+ * receivers automatically detect and process it in `decryptMessageIfNeeded()`.
+ */
+async function distributeGroupSessionKey(
+  roomId: string,
+  sessionKey: string,
+  recipientUserIds: string[]
+): Promise<void> {
+  // Build the key-sharing payload
+  const keyPayload = JSON.stringify({
+    type: "__megolm_session_key__",
+    room_id: roomId,
+    session_key: sessionKey,
+  });
+
+  // Claim prekeys and encrypt for each recipient
+  const recipients = await claimPrekeysForRecipients(recipientUserIds);
+
+  if (recipients.length === 0) {
+    console.warn("[E2EE/Megolm] No recipients available for session key distribution");
+    return;
+  }
+
+  // Encrypt the session key payload via Olm for each recipient's devices
+  const encrypted = await e2eeStore.encrypt(keyPayload, recipients);
+
+  // Send the Olm-encrypted session key as a real message to the channel.
+  // This ensures recipients receive it via WebSocket `message_new` events
+  // and can automatically process it in `decryptMessageIfNeeded()`.
+  const encryptedContent = JSON.stringify(encrypted);
+  await tauri.sendMessage(roomId, encryptedContent, { encrypted: true });
+
+  // Also store the session key as an inbound session for ourselves
+  // so we can decrypt our own Megolm messages (e.g., on other devices)
+  const ourKey = await getOurCurve25519Key();
+  if (ourKey) {
+    await e2eeStore.addInboundSession(roomId, ourKey, sessionKey);
+  }
+
+  console.log(`[E2EE/Megolm] Distributed session key to ${recipients.length} device(s) for room ${roomId}`);
 }
 
 /**

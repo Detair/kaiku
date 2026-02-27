@@ -7,7 +7,7 @@ This document outlines critical security requirements and implementation guideli
 The VoiceChat platform implements multiple layers of security:
 - **Authentication**: JWT-based with refresh token rotation
 - **Password Storage**: Argon2id hashing
-- **Text E2EE**: Olm/Megolm (vodozemac)
+- **Text E2EE**: Olm (1:1 DMs) + Megolm (group DMs) via vodozemac
 - **Voice Security**: DTLS-SRTP (server-trusted), with future MLS support
 - **Session Management**: Token hashing, expiration, cleanup
 
@@ -37,7 +37,7 @@ openssl rand -hex 32
 
 **Risk**: All "encrypted" messages can be decrypted if database is breached.
 
-**Status**: 🔴 **NOT YET IMPLEMENTED** - Currently stored in plaintext!
+**Status**: 🟡 **CLIENT-SIDE** — Megolm sessions on the client are stored encrypted in SQLCipher. Server-side Megolm session data (if any) should also be encrypted at rest.
 
 **Implementation Required**:
 
@@ -385,17 +385,17 @@ NEW_KEY=$(openssl rand -hex 32)
 ## Security Roadmap
 
 ### Phase 1 (Critical - Next Sprint)
-- [ ] Implement MFA secret encryption
-- [ ] Implement Megolm session data encryption
-- [ ] Add rate limiting for auth endpoints
-- [ ] Clear message content on delete (GDPR)
-- [ ] Add failed login tracking
+- [x] Implement MFA secret encryption
+- [ ] Implement Megolm session data encryption (server-side, if applicable)
+- [x] Add rate limiting for auth endpoints
+- [x] Clear message content on delete (GDPR)
+- [x] Add failed login tracking
 
 ### Phase 2 (High Priority)
-- [ ] Implement audit logging
+- [x] Implement audit logging
 - [ ] Add rate limiting for messages and uploads
-- [ ] Implement MFA verification (TOTP)
-- [ ] Add password reset flow
+- [x] Implement MFA verification (TOTP)
+- [x] Add password reset flow
 - [ ] Implement account lockout after failed attempts
 
 ### Phase 3 (Future)

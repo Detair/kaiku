@@ -9425,6 +9425,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 name = "vc-client"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "arboard",
  "argon2",
@@ -9433,6 +9434,7 @@ dependencies = [
  "cpal 0.17.1",
  "futures",
  "getrandom 0.2.17",
+ "hmac",
  "image",
  "keyring",
  "nokhwa",
@@ -9482,9 +9484,11 @@ dependencies = [
  "argon2",
  "bs58",
  "getrandom 0.2.17",
+ "hmac",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "vodozemac",
  "zeroize",

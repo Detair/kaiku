@@ -24,6 +24,7 @@ Frontend receives Promise<T>
 |------|---------|--------------|
 | `auth.rs` | Authentication, registration, logout | `login`, `register`, `logout`, `get_current_user` |
 | `chat.rs` | Text channels and messages | `get_channels`, `get_messages`, `send_message` |
+| `crypto.rs` | E2EE encryption operations (Olm + Megolm) | `init_e2ee`, `encrypt_message`, `decrypt_message`, `create_megolm_session`, `encrypt_group_message`, `decrypt_group_message` |
 | `voice.rs` | Voice channel join/leave, mute/deafen | `join_voice`, `leave_voice`, `set_mute`, `handle_voice_offer` |
 | `settings.rs` | User preferences (audio, theme, etc.) | `get_settings`, `update_settings` |
 | `websocket.rs` | WebSocket lifecycle and subscriptions | `ws_connect`, `ws_disconnect`, `ws_subscribe` |
