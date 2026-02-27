@@ -1,5 +1,5 @@
 import { Component } from "solid-js";
-import { themeState, setTheme } from "@/stores/theme";
+import { availableThemes, theme as currentTheme, setTheme } from "@/stores/theme";
 import CodeBlock from "@/components/ui/CodeBlock";
 
 const ThemeDemo: Component = () => {
@@ -44,15 +44,15 @@ print(calculate_fibonacci(10))`,
           </p>
 
           <div class="space-y-3">
-            {themeState.availableThemes.map((theme) => (
+            {availableThemes.map((theme) => (
               <button
                 onClick={() => setTheme(theme.id)}
                 class="w-full text-left p-4 rounded-xl border-2 transition-all"
                 classList={{
                   "border-accent-primary bg-accent-primary/10":
-                    themeState.currentTheme === theme.id,
+                    currentTheme() === theme.id,
                   "border-white/10 hover:border-accent-primary/50 bg-surface-layer2":
-                    themeState.currentTheme !== theme.id,
+                    currentTheme() !== theme.id,
                 }}
               >
                 <div class="flex items-start gap-3">
@@ -60,11 +60,11 @@ print(calculate_fibonacci(10))`,
                     class="w-5 h-5 rounded-full border-2 flex-shrink-0 mt-0.5"
                     classList={{
                       "border-accent-primary bg-accent-primary":
-                        themeState.currentTheme === theme.id,
-                      "border-white/30": themeState.currentTheme !== theme.id,
+                        currentTheme() === theme.id,
+                      "border-white/30": currentTheme() !== theme.id,
                     }}
                   >
-                    {themeState.currentTheme === theme.id && (
+                    {currentTheme() === theme.id && (
                       <div class="w-2 h-2 bg-surface-base rounded-full m-0.5" />
                     )}
                   </div>

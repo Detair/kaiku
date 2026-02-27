@@ -6,7 +6,7 @@
 
 import { Component, For } from "solid-js";
 import { Check, RotateCcw } from "lucide-solid";
-import { themeState, setTheme, type ThemeDefinition } from "@/stores/theme";
+import { availableThemes, theme as currentTheme, setTheme, type ThemeDefinition } from "@/stores/theme";
 import { updatePreference } from "@/stores/preferences";
 import { showToast } from "@/components/ui/Toast";
 
@@ -19,16 +19,16 @@ const AppearanceSettings: Component = () => {
       </p>
 
       <div class="space-y-3">
-        <For each={themeState.availableThemes}>
+        <For each={availableThemes}>
           {(theme) => (
             <button
               onClick={() => setTheme(theme.id)}
               class="w-full text-left p-4 rounded-xl border-2 transition-all duration-200"
               classList={{
                 "border-accent-primary bg-accent-primary/10":
-                  themeState.currentTheme === theme.id,
+                  currentTheme() === theme.id,
                 "border-white/10 hover:border-accent-primary/50 hover:bg-white/5":
-                  themeState.currentTheme !== theme.id,
+                  currentTheme() !== theme.id,
               }}
             >
               <div class="flex items-start gap-3">
@@ -37,11 +37,11 @@ const AppearanceSettings: Component = () => {
                   class="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors"
                   classList={{
                     "border-accent-primary bg-accent-primary":
-                      themeState.currentTheme === theme.id,
-                    "border-white/30": themeState.currentTheme !== theme.id,
+                      currentTheme() === theme.id,
+                    "border-white/30": currentTheme() !== theme.id,
                   }}
                 >
-                  {themeState.currentTheme === theme.id && (
+                  {currentTheme() === theme.id && (
                     <Check class="w-3 h-3 text-white" />
                   )}
                 </div>
