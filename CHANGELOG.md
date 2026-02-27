@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
 
 ### Fixed
+- Webhook delivery worker no longer logs ERROR-level timeout messages every 2 seconds on idle — fred 10.x BRPOP nil responses are now correctly handled as normal idle behavior (#287)
 - Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
 
 ### Security
