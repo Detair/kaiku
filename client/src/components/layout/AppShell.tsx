@@ -24,10 +24,7 @@ const ScreenShareViewer = lazy(
 );
 
 interface AppShellProps extends ParentProps {
-  /**
-   * Whether to show the server rail (for guild/server switching).
-   * Controls visibility of the server rail for guild/server switching.
-   */
+  /** Whether to show the server rail (for guild/server switching). */
   showServerRail?: boolean;
   /**
    * Optional custom sidebar component to replace the default guild Sidebar.

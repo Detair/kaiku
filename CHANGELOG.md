@@ -26,11 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)
 - Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
-- Updated `.env.example` with non-empty Valkey password example
-
-### Removed
-- Removed dead code: `test-utils` feature flag, deprecated theme functions (`initTheme`, `themeState`), unused Tauri commands (`get_refresh_token`, `stop_presence_service`, `CallCapabilities`)
-- Cleaned up stale comments across client and shared crates
 ### Fixed
 - Webhook delivery worker no longer logs ERROR-level timeout messages every 2 seconds on idle — fred 10.x BRPOP nil responses are now correctly handled as normal idle behavior (#287)
 - Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
