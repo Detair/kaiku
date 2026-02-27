@@ -63,7 +63,8 @@ pub async fn create_workspace(
 
     let mut tx = state.db.begin().await?;
 
-    // Serialize workspace creation per user to enforce strict limits under concurrency.
+    // Advisory lock: serialize workspace creation per user to enforce strict limits under concurrency.
+    // Seed 41 prevents collision with other lock sites (see seed registry in server/src/advisory_locks.rs).
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 41))")
         .bind(auth_user.id)
         .execute(&mut *tx)
@@ -392,7 +393,8 @@ pub async fn add_entry(
 
     let mut tx = state.db.begin().await?;
 
-    // Serialize entry creation per workspace to enforce strict limits under concurrency.
+    // Advisory lock: serialize entry creation per workspace to enforce strict limits under concurrency.
+    // Seed 43 prevents collision with other lock sites (see seed registry in server/src/advisory_locks.rs).
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 43))")
         .bind(workspace_id)
         .execute(&mut *tx)
