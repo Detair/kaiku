@@ -79,6 +79,8 @@ pub struct LocalKeyStore {
 }
 
 impl LocalKeyStore {
+    const METADATA_ENCRYPTION_DOMAIN: &'static [u8] = b"vc-client:metadata_encryption:v1";
+
     /// Create or open a key store at the given path.
     ///
     /// The `encryption_key` is used to encrypt/decrypt Olm account and session state.
@@ -148,8 +150,17 @@ impl LocalKeyStore {
             Err(_) => unreachable!("HMAC-SHA256 accepts keys of any length"),
         };
         mac.update(domain.as_bytes());
+        mac.update(&[0u8]);
         mac.update(value.as_bytes());
         STANDARD.encode(mac.finalize().into_bytes())
+    }
+
+    fn keyed_hash_legacy(&self, domain: &str, value: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.encryption_key.as_ref());
+        hasher.update(domain.as_bytes());
+        hasher.update(value.as_bytes());
+        STANDARD.encode(hasher.finalize())
     }
 
     /// Check if the store has an account.
@@ -238,6 +249,40 @@ impl LocalKeyStore {
         match result {
             Ok(serialized) => {
                 let session = OlmSession::deserialize(&serialized, &self.encryption_key)?;
+                return Ok(Some(session));
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(e) => return Err(e.into()),
+        }
+
+        let legacy_hashed_user_id =
+            self.keyed_hash_legacy("session:user_id", &key.user_id.to_string());
+        let legacy_hashed_device_key =
+            self.keyed_hash_legacy("session:device_key", &key.device_curve25519);
+
+        let legacy_result: std::result::Result<String, _> = self.conn.query_row(
+            "SELECT serialized FROM sessions WHERE user_id = ?1 AND device_key = ?2",
+            params![legacy_hashed_user_id, legacy_hashed_device_key],
+            |row| row.get(0),
+        );
+
+        match legacy_result {
+            Ok(serialized) => {
+                let session = OlmSession::deserialize(&serialized, &self.encryption_key)?;
+                let now = chrono::Utc::now().timestamp();
+
+                let tx = self.conn.unchecked_transaction()?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO sessions (user_id, device_key, session_id, serialized, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![hashed_user_id, hashed_device_key, session.session_id(), serialized, now],
+                )?;
+                tx.execute(
+                    "DELETE FROM sessions WHERE user_id = ?1 AND device_key = ?2",
+                    params![legacy_hashed_user_id, legacy_hashed_device_key],
+                )?;
+                tx.commit()?;
+
                 Ok(Some(session))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -284,6 +329,39 @@ impl LocalKeyStore {
                     .decrypt_metadata_value(&serialized)
                     .unwrap_or(serialized);
                 let session = MegolmOutboundSession::deserialize(&json, &self.encryption_key)?;
+                return Ok(Some(session));
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(e) => return Err(e.into()),
+        }
+
+        let legacy_hashed_room_id = self.keyed_hash_legacy("megolm:room_outbound", room_id);
+        let legacy_result: std::result::Result<String, _> = self.conn.query_row(
+            "SELECT serialized FROM megolm_outbound_sessions WHERE room_id = ?1",
+            params![legacy_hashed_room_id],
+            |row| row.get(0),
+        );
+
+        match legacy_result {
+            Ok(serialized) => {
+                let json = self
+                    .decrypt_metadata_value(&serialized)
+                    .unwrap_or_else(|| serialized.clone());
+                let session = MegolmOutboundSession::deserialize(&json, &self.encryption_key)?;
+                let now = chrono::Utc::now().timestamp();
+
+                let tx = self.conn.unchecked_transaction()?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO megolm_outbound_sessions (room_id, session_id, serialized, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![hashed_room_id, session.session_id(), serialized, now],
+                )?;
+                tx.execute(
+                    "DELETE FROM megolm_outbound_sessions WHERE room_id = ?1",
+                    params![legacy_hashed_room_id],
+                )?;
+                tx.commit()?;
+
                 Ok(Some(session))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -333,6 +411,40 @@ impl LocalKeyStore {
                     .decrypt_metadata_value(&serialized)
                     .unwrap_or(serialized);
                 let session = MegolmInboundSession::deserialize(&json, &self.encryption_key)?;
+                return Ok(Some(session));
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(e) => return Err(e.into()),
+        }
+
+        let legacy_hashed_room_id = self.keyed_hash_legacy("megolm:room_inbound", &key.room_id);
+        let legacy_hashed_sender = self.keyed_hash_legacy("megolm:sender", &key.sender_key);
+        let legacy_result: std::result::Result<String, _> = self.conn.query_row(
+            "SELECT serialized FROM megolm_inbound_sessions WHERE room_id = ?1 AND sender_key = ?2",
+            params![legacy_hashed_room_id, legacy_hashed_sender],
+            |row| row.get(0),
+        );
+
+        match legacy_result {
+            Ok(serialized) => {
+                let json = self
+                    .decrypt_metadata_value(&serialized)
+                    .unwrap_or_else(|| serialized.clone());
+                let session = MegolmInboundSession::deserialize(&json, &self.encryption_key)?;
+                let now = chrono::Utc::now().timestamp();
+
+                let tx = self.conn.unchecked_transaction()?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO megolm_inbound_sessions (room_id, sender_key, session_id, serialized, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![hashed_room_id, hashed_sender, session.session_id(), serialized, now],
+                )?;
+                tx.execute(
+                    "DELETE FROM megolm_inbound_sessions WHERE room_id = ?1 AND sender_key = ?2",
+                    params![legacy_hashed_room_id, legacy_hashed_sender],
+                )?;
+                tx.commit()?;
+
                 Ok(Some(session))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -386,10 +498,7 @@ impl LocalKeyStore {
     }
 
     fn encrypt_metadata_value(&self, plaintext: &str) -> Result<String> {
-        let mut key_derivation = Sha256::new();
-        key_derivation.update(self.encryption_key.as_ref());
-        key_derivation.update(b"metadata_encryption");
-        let key = key_derivation.finalize();
+        let key = self.derive_metadata_encryption_key();
 
         let cipher = match Aes256Gcm::new_from_slice(&key) {
             Ok(cipher) => cipher,
@@ -403,24 +512,43 @@ impl LocalKeyStore {
 
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes()).map_err(|e| {
-            vc_crypto::CryptoError::DecryptionFailed(format!("Metadata encryption failed: {e}"))
+            vc_crypto::CryptoError::InvalidKey(format!("Metadata encryption failed: {e}"))
         })?;
 
         let mut combined = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
         combined.extend_from_slice(&nonce_bytes);
         combined.extend_from_slice(&ciphertext);
 
-        Ok(format!("enc:{}", STANDARD.encode(combined)))
+        Ok(format!("enc2:{}", STANDARD.encode(combined)))
     }
 
     fn decrypt_metadata_value(&self, stored: &str) -> Option<String> {
-        let encoded = stored.strip_prefix("enc:")?;
-        let encrypted = STANDARD.decode(encoded).ok()?;
+        if let Some(encoded) = stored.strip_prefix("enc2:") {
+            let encrypted = STANDARD.decode(encoded).ok()?;
+            return self.decrypt_metadata_value_aes(&encrypted);
+        }
 
-        let mut key_derivation = Sha256::new();
-        key_derivation.update(self.encryption_key.as_ref());
-        key_derivation.update(b"metadata_encryption");
-        let key = key_derivation.finalize();
+        if let Some(encoded) = stored.strip_prefix("enc:") {
+            let encrypted = STANDARD.decode(encoded).ok()?;
+            return self.decrypt_metadata_value_legacy_xor(&encrypted);
+        }
+
+        None
+    }
+
+    fn derive_metadata_encryption_key(&self) -> [u8; 32] {
+        let mut mac = match <Hmac<Sha256> as Mac>::new_from_slice(self.encryption_key.as_ref()) {
+            Ok(mac) => mac,
+            Err(_) => unreachable!("HMAC-SHA256 accepts keys of any length"),
+        };
+        mac.update(Self::METADATA_ENCRYPTION_DOMAIN);
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&mac.finalize().into_bytes());
+        key
+    }
+
+    fn decrypt_metadata_value_aes(&self, encrypted: &[u8]) -> Option<String> {
+        let key = self.derive_metadata_encryption_key();
         let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
 
         if encrypted.len() > 12 {
@@ -434,7 +562,7 @@ impl LocalKeyStore {
             }
         }
 
-        self.decrypt_metadata_value_legacy_xor(&encrypted)
+        None
     }
 
     fn decrypt_metadata_value_legacy_xor(&self, encrypted: &[u8]) -> Option<String> {
@@ -474,6 +602,14 @@ mod tests {
             .collect();
 
         format!("enc:{}", STANDARD.encode(encrypted))
+    }
+
+    fn legacy_keyed_hash(encryption_key: &[u8; 32], domain: &str, value: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(encryption_key);
+        hasher.update(domain.as_bytes());
+        hasher.update(value.as_bytes());
+        STANDARD.encode(hasher.finalize())
     }
 
     #[test]
@@ -542,6 +678,74 @@ mod tests {
     }
 
     #[test]
+    fn test_store_session_legacy_hash_migration() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let key = [0u8; 32];
+
+        let store = LocalKeyStore::open(&path, key).unwrap();
+
+        let mut alice = OlmAccount::new();
+        let mut bob = OlmAccount::new();
+        bob.generate_one_time_keys(1);
+        let bob_otk = bob.one_time_keys().pop().unwrap().1;
+        let bob_otk_key = Curve25519PublicKey::from_base64(&bob_otk).unwrap();
+        let session = alice.create_outbound_session(&bob.curve25519_key(), &bob_otk_key);
+        let session_id = session.session_id();
+        let serialized = session.serialize(&key).unwrap();
+
+        let session_key = SessionKey {
+            user_id: Uuid::new_v4(),
+            device_curve25519: bob_otk,
+        };
+
+        let legacy_hashed_uid =
+            legacy_keyed_hash(&key, "session:user_id", &session_key.user_id.to_string());
+        let legacy_hashed_dk =
+            legacy_keyed_hash(&key, "session:device_key", &session_key.device_curve25519);
+
+        store
+            .conn
+            .execute(
+                "INSERT INTO sessions (user_id, device_key, session_id, serialized, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    legacy_hashed_uid,
+                    legacy_hashed_dk,
+                    session_id,
+                    serialized,
+                    chrono::Utc::now().timestamp()
+                ],
+            )
+            .unwrap();
+
+        let loaded = store.load_session(&session_key).unwrap().unwrap();
+        assert_eq!(loaded.session_id(), session_id);
+
+        let new_hashed_uid = store.keyed_hash("session:user_id", &session_key.user_id.to_string());
+        let new_hashed_dk = store.keyed_hash("session:device_key", &session_key.device_curve25519);
+        let new_count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE user_id = ?1 AND device_key = ?2",
+                params![new_hashed_uid, new_hashed_dk],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_count, 1);
+
+        let legacy_count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE user_id = ?1 AND device_key = ?2",
+                params![legacy_hashed_uid, legacy_hashed_dk],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_count, 0);
+    }
+
+    #[test]
     fn test_store_metadata() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
@@ -558,6 +762,14 @@ mod tests {
         };
 
         store.save_metadata(&metadata).unwrap();
+
+        let stored: String = store
+            .conn
+            .query_row("SELECT value FROM metadata WHERE key = 'info'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(stored.starts_with("enc2:"));
 
         let loaded = store.load_metadata().unwrap().unwrap();
         assert_eq!(loaded.user_id, metadata.user_id);

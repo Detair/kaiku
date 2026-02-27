@@ -187,9 +187,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn needs_key_upload(&self) -> Result<bool> {
         let store = self.lock_store()?;
         let account = store.load_account()?;
@@ -202,9 +200,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn get_identity_keys(&self) -> Result<IdentityKeyPair> {
         let store = self.lock_store()?;
         let account = store.load_account()?;
@@ -229,9 +225,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn our_curve25519_key(&self) -> Result<String> {
         let store = self.lock_store()?;
         let account = store.load_account()?;
@@ -250,9 +244,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded or saved.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn generate_prekeys(&self, count: usize) -> Result<Vec<PrekeyForUpload>> {
         let store = self.lock_store()?;
         let mut account = store.load_account()?;
@@ -282,9 +274,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded or saved.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn mark_keys_published(&self) -> Result<()> {
         let store = self.lock_store()?;
         let mut account = store.load_account()?;
@@ -299,9 +289,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the account cannot be loaded.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn get_unpublished_keys(&self) -> Result<Vec<PrekeyForUpload>> {
         let store = self.lock_store()?;
         let account = store.load_account()?;
@@ -332,9 +320,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the session cannot be created or encryption fails.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn encrypt_for_device(
         &self,
         recipient_user_id: Uuid,
@@ -402,9 +388,7 @@ impl CryptoManager {
     ///
     /// Returns an error if decryption fails or the session cannot be established.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn decrypt_message(
         &self,
         sender_user_id: Uuid,
@@ -463,9 +447,7 @@ impl CryptoManager {
     ///
     /// Returns an error if the session lookup fails.
     ///
-    /// # Panics
-    ///
-    /// Panics if the Mutex is poisoned.
+    /// Returns `CryptoManagerError::LockPoisoned` if the internal lock is poisoned.
     pub fn has_session(&self, user_id: Uuid, device_curve25519: &str) -> Result<bool> {
         let store = self.lock_store()?;
         let session_key = SessionKey {
