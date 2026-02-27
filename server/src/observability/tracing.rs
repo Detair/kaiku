@@ -8,15 +8,16 @@ use std::collections::HashSet;
 use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig as _;
-use opentelemetry_sdk::{
-    logs::SdkLoggerProvider,
-    trace::{BatchSpanProcessor, Sampler, SdkTracerProvider},
-    Resource,
+use opentelemetry_sdk::error::OTelSdkResult;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
+use opentelemetry_sdk::trace::{
+    BatchSpanProcessor, Sampler, SdkTracerProvider, SpanData, SpanExporter,
 };
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
-use tracing_subscriber::{
-    layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter, Registry,
-};
+use opentelemetry_sdk::Resource;
+use tracing_subscriber::layer::{Context, SubscriberExt as _};
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::{EnvFilter, Layer, Registry};
 
 use crate::config::ObservabilityConfig;
 
@@ -78,6 +79,54 @@ where
                 extensions.insert(visitor.forbidden_keys);
             }
         }
+    }
+}
+
+#[derive(Debug)]
+struct RedactingSpanExporter<E> {
+    inner: E,
+}
+
+impl<E> RedactingSpanExporter<E> {
+    fn new(inner: E) -> Self {
+        Self { inner }
+    }
+}
+
+impl<E> SpanExporter for RedactingSpanExporter<E>
+where
+    E: SpanExporter,
+{
+    async fn export(&self, mut batch: Vec<SpanData>) -> OTelSdkResult {
+        for span in &mut batch {
+            span.attributes
+                .retain(|kv| !is_forbidden_attribute_key(kv.key.as_str()));
+
+            for event in &mut span.events.events {
+                event
+                    .attributes
+                    .retain(|kv| !is_forbidden_attribute_key(kv.key.as_str()));
+            }
+
+            for link in &mut span.links.links {
+                link.attributes
+                    .retain(|kv| !is_forbidden_attribute_key(kv.key.as_str()));
+            }
+        }
+
+        self.inner.export(batch).await
+    }
+
+    fn shutdown(&mut self) -> OTelSdkResult {
+        self.inner.shutdown()
+    }
+
+    fn force_flush(&mut self) -> OTelSdkResult {
+        self.inner.force_flush()
+    }
+
+    fn set_resource(&mut self, resource: &Resource) {
+        self.inner.set_resource(resource);
     }
 }
 
@@ -150,6 +199,7 @@ pub fn init(config: &ObservabilityConfig) -> OtelGuard {
 
         Registry::default()
             .with(filter)
+            .with(RedactionLayer)
             .with(tracing_subscriber::fmt::layer().json())
             .init();
 
@@ -169,6 +219,8 @@ pub fn init(config: &ObservabilityConfig) -> OtelGuard {
         .with_endpoint(&config.otlp_endpoint)
         .build()
         .expect("Failed to build OTLP span exporter");
+
+    let span_exporter = RedactingSpanExporter::new(span_exporter);
 
     let batch_processor = BatchSpanProcessor::builder(span_exporter).build();
 

@@ -131,7 +131,7 @@ services:
   # Start with: docker compose --profile monitoring up -d
   # ==========================================================================
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.117.0
     container_name: canis-otel-collector
     restart: unless-stopped
     profiles: ["monitoring"]

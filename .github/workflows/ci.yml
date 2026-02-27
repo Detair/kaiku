@@ -177,15 +177,29 @@ jobs:
 
       - name: Metric name convention (kaiku_* prefix)
         run: |
-          echo "Checking that all metric names in metrics.rs start with kaiku_..."
-          VIOLATIONS=$(grep -Eo '"[a-z][a-z0-9_]+"' server/src/observability/metrics.rs \
-            | grep -v '^"kaiku_' || true)
-          if [ -n "$VIOLATIONS" ]; then
-            echo "ERROR: Metric name convention check failed -- names not starting with 'kaiku_':"
-            echo "$VIOLATIONS"
-            exit 1
-          fi
-          echo "OK: All metric names use the kaiku_* prefix."
+          echo "Checking that declared metric instrument names start with kaiku_..."
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          content = pathlib.Path("server/src/observability/metrics.rs").read_text()
+          pattern = re.compile(r"\.(?:u64_counter|f64_histogram)\(\"([^\"]+)\"\)")
+          names = pattern.findall(content)
+
+          if not names:
+              print("ERROR: No metric instrument declarations found in metrics.rs")
+              sys.exit(1)
+
+          violations = [name for name in names if not name.startswith("kaiku_")]
+          if violations:
+              print("ERROR: Metric name convention check failed. Offending names:")
+              for name in violations:
+                  print(f" - {name}")
+              sys.exit(1)
+
+          print(f"OK: {len(names)} metric instrument names use the kaiku_* prefix.")
+          PY
 
       - name: No sensitive fields in tracing instrumentation
         run: |
