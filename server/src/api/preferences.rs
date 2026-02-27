@@ -298,14 +298,12 @@ fn validate_keyword_array(
             let keyword_len = unicode_len(s);
             if keyword_len < MIN_KEYWORD_LEN {
                 return Err(PreferencesError::Validation(format!(
-                    "{ctx} entry too short ({}, min {MIN_KEYWORD_LEN})",
-                    keyword_len
+                    "{ctx} entry too short ({keyword_len}, min {MIN_KEYWORD_LEN})"
                 )));
             }
             if keyword_len > MAX_KEYWORD_LEN {
                 return Err(PreferencesError::Validation(format!(
-                    "{ctx} entry too long ({}, max {MAX_KEYWORD_LEN})",
-                    keyword_len
+                    "{ctx} entry too long ({keyword_len}, max {MAX_KEYWORD_LEN})"
                 )));
             }
         }

@@ -12,6 +12,14 @@
 //! Database Layer
 //!
 //! `PostgreSQL` and Redis connections.
+//!
+//! Advisory Lock Seed Registry
+//! - 41 = `workspace_create`
+//! - 43 = `workspace_entry`
+//! - 51 = `guild_create`
+//! - 53 = `invite_join`
+//!
+//! New advisory lock sites must use a unique seed not listed above.
 
 mod models;
 mod queries;

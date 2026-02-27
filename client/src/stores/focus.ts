@@ -35,16 +35,16 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 
 type VipSetCache = {
   modeId: string | null;
-  userIdsRef: string[] | null;
-  channelIdsRef: string[] | null;
+  userIdsHash: string | null;
+  channelIdsHash: string | null;
   userSet: ReadonlySet<string>;
   channelSet: ReadonlySet<string>;
 };
 
 const vipSetCache: VipSetCache = {
   modeId: null,
-  userIdsRef: null,
-  channelIdsRef: null,
+  userIdsHash: null,
+  channelIdsHash: null,
   userSet: EMPTY_SET,
   channelSet: EMPTY_SET,
 };
@@ -58,25 +58,31 @@ function buildVipSet(ids: string[]): ReadonlySet<string> {
   return ids.length > 0 ? new Set(ids) : EMPTY_SET;
 }
 
+function hashVipIds(ids: string[]): string {
+  return JSON.stringify([...ids].sort());
+}
+
 function getCachedVipSets(mode: FocusMode): {
   userSet: ReadonlySet<string>;
   channelSet: ReadonlySet<string>;
 } {
   if (vipSetCache.modeId !== mode.id) {
     vipSetCache.modeId = mode.id;
-    vipSetCache.userIdsRef = null;
-    vipSetCache.channelIdsRef = null;
+    vipSetCache.userIdsHash = null;
+    vipSetCache.channelIdsHash = null;
     vipSetCache.userSet = EMPTY_SET;
     vipSetCache.channelSet = EMPTY_SET;
   }
 
-  if (vipSetCache.userIdsRef !== mode.vipUserIds) {
-    vipSetCache.userIdsRef = mode.vipUserIds;
+  const userIdsHash = hashVipIds(mode.vipUserIds);
+  if (vipSetCache.userIdsHash !== userIdsHash) {
+    vipSetCache.userIdsHash = userIdsHash;
     vipSetCache.userSet = buildVipSet(mode.vipUserIds);
   }
 
-  if (vipSetCache.channelIdsRef !== mode.vipChannelIds) {
-    vipSetCache.channelIdsRef = mode.vipChannelIds;
+  const channelIdsHash = hashVipIds(mode.vipChannelIds);
+  if (vipSetCache.channelIdsHash !== channelIdsHash) {
+    vipSetCache.channelIdsHash = channelIdsHash;
     vipSetCache.channelSet = buildVipSet(mode.vipChannelIds);
   }
 
