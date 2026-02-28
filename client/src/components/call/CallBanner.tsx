@@ -36,6 +36,11 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   const [isLoading, setIsLoading] = createSignal(false);
   const [callDuration, setCallDuration] = createSignal(0);
 
+  const isCallAlreadyGoneError = (err: unknown): boolean => {
+    if (!(err instanceof Error)) return false;
+    return /call not found|call_not_found/i.test(err.message);
+  };
+
   // Duration timer for connected calls
   createEffect(() => {
     const current = callState.currentCall;
@@ -98,8 +103,9 @@ const CallBanner: Component<CallBannerProps> = (props) => {
       await leaveDMCall(props.channelId);
       endCall(props.channelId, "last_left");
     } catch (err) {
-      console.error("Failed to leave call:", err);
-      // If call not found (404) or conflict (409), just clean up local state
+      if (!isCallAlreadyGoneError(err)) {
+        console.error("Failed to leave call:", err);
+      }
       await leaveVoice().catch(() => {}); // Best effort cleanup
       endCall(props.channelId, "last_left");
     } finally {
@@ -115,8 +121,9 @@ const CallBanner: Component<CallBannerProps> = (props) => {
       await leaveDMCall(props.channelId);
       endCall(props.channelId, "cancelled");
     } catch (err) {
-      console.error("Failed to cancel call:", err);
-      // If call not found (404) or already ended, just clean up local state
+      if (!isCallAlreadyGoneError(err)) {
+        console.error("Failed to cancel call:", err);
+      }
       await leaveVoice().catch(() => {}); // Best effort cleanup
       endCall(props.channelId, "cancelled");
     } finally {

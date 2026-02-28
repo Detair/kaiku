@@ -72,6 +72,8 @@ const DMConversation: Component = () => {
     return true;
   };
 
+  const selectedChannelId = () => dm()?.id;
+
   // Mark as read when viewing
   createEffect(() => {
     const currentDM = dm();
@@ -351,27 +353,28 @@ const DMConversation: Component = () => {
           </button>
         </header>
 
-        {/* Call Banner */}
-        <CallBanner channelId={dm()!.id} />
-
-        {/* Messages */}
-        <MessageList channelId={dm()!.id} />
-
-        {/* Typing Indicator */}
-        <TypingIndicator channelId={dm()!.id} />
-
-        {/* Message Input */}
-        <MessageInput
-          channelId={dm()!.id}
-          channelName={displayName()}
-          isE2EE={isEncrypted()}
-          dmParticipants={dm()!.participants.map((p) => ({
-            user_id: p.user_id,
-            username: p.username,
-            display_name: p.display_name,
-            avatar_url: p.avatar_url,
-          }))}
-        />
+        <Show when={selectedChannelId()}>
+          {(channelId) => (
+            <>
+              <CallBanner channelId={channelId()} />
+              <MessageList channelId={channelId()} />
+              <TypingIndicator channelId={channelId()} />
+              <MessageInput
+                channelId={channelId()}
+                channelName={displayName()}
+                isE2EE={isEncrypted()}
+                dmParticipants={
+                  dm()?.participants.map((p) => ({
+                    user_id: p.user_id,
+                    username: p.username,
+                    display_name: p.display_name,
+                    avatar_url: p.avatar_url,
+                  })) ?? []
+                }
+              />
+            </>
+          )}
+        </Show>
       </div>
     </Show>
   );
