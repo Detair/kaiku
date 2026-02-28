@@ -17,6 +17,7 @@ import {
   ScrollText,
   Settings,
   Flag,
+  Activity,
 } from "lucide-solid";
 
 export type AdminPanel =
@@ -25,6 +26,7 @@ export type AdminPanel =
   | "guilds"
   | "reports"
   | "audit-log"
+  | "command-center"
   | "settings";
 
 interface AdminSidebarProps {
@@ -43,6 +45,7 @@ const AdminSidebar: Component<AdminSidebarProps> = (props) => {
     { id: "guilds", label: "Guilds", icon: Building2 },
     { id: "reports", label: "Reports", icon: Flag },
     { id: "audit-log", label: "Audit Log", icon: ScrollText },
+    { id: "command-center", label: "Command Center", icon: Activity },
     { id: "settings", label: "Settings", icon: Settings },
   ];
 

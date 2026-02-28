@@ -760,6 +760,315 @@ pub async fn admin_elevate(
     Ok(result)
 }
 
+// ============================================================================
+// Observability Commands (Command Center)
+// ============================================================================
+
+/// Helper to read auth from state. Returns `(server_url, token)`.
+async fn read_auth(state: &AppState) -> Result<(String, String), String> {
+    let (server_url, token) = {
+        let auth = state.auth.read().await;
+        (auth.server_url.clone(), auth.access_token.clone())
+    };
+    let server_url = server_url.ok_or("Not authenticated")?;
+    let token = token.ok_or("Not authenticated")?;
+    Ok((server_url, token))
+}
+
+/// Build query params from optional key-value pairs.
+fn build_query(pairs: &[(&str, Option<String>)]) -> String {
+    let mut s = String::new();
+    for (key, value) in pairs {
+        if let Some(v) = value {
+            if !s.is_empty() {
+                s.push('&');
+            }
+            s.push_str(&form_urlencoded::Serializer::new(String::new())
+                .append_pair(key, v)
+                .finish());
+        }
+    }
+    s
+}
+
+/// Fetch observability summary (vital signs, server metadata, voice health).
+#[command]
+pub async fn admin_obs_summary(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = read_auth(&state).await?;
+    debug!("Fetching observability summary");
+
+    let response = state
+        .http
+        .get(format!("{server_url}/api/admin/observability/summary"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to fetch obs summary: {} - {}", status, body);
+        return Err(format!("Failed to fetch obs summary: {status}"));
+    }
+
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))
+}
+
+/// Fetch trend time-series for the given metrics over a time range.
+#[command]
+pub async fn admin_obs_trends(
+    state: State<'_, AppState>,
+    range: String,
+    metrics: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = read_auth(&state).await?;
+    debug!("Fetching observability trends (range={}, metrics={})", range, metrics.len());
+
+    let params = {
+        let mut p = build_query(&[("range", Some(range))]);
+        for m in &metrics {
+            if !p.is_empty() {
+                p.push('&');
+            }
+            p.push_str(&form_urlencoded::Serializer::new(String::new())
+                .append_pair("metric", m)
+                .finish());
+        }
+        p
+    };
+
+    let response = state
+        .http
+        .get(format!(
+            "{server_url}/api/admin/observability/trends?{params}"
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to fetch obs trends: {} - {}", status, body);
+        return Err(format!("Failed to fetch obs trends: {status}"));
+    }
+
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))
+}
+
+/// Fetch top routes ranked by latency or error count.
+#[command]
+pub async fn admin_obs_top_routes(
+    state: State<'_, AppState>,
+    range: String,
+    sort: Option<String>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = read_auth(&state).await?;
+    debug!("Fetching top routes (range={})", range);
+
+    let params = build_query(&[
+        ("range", Some(range)),
+        ("sort", sort),
+        ("limit", limit.map(|l| l.to_string())),
+    ]);
+
+    let response = state
+        .http
+        .get(format!(
+            "{server_url}/api/admin/observability/top-routes?{params}"
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to fetch top routes: {} - {}", status, body);
+        return Err(format!("Failed to fetch top routes: {status}"));
+    }
+
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))
+}
+
+/// Fetch top error categories.
+#[command]
+pub async fn admin_obs_top_errors(
+    state: State<'_, AppState>,
+    range: String,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = read_auth(&state).await?;
+    debug!("Fetching top errors (range={})", range);
+
+    let params = build_query(&[
+        ("range", Some(range)),
+        ("limit", limit.map(|l| l.to_string())),
+    ]);
+
+    let response = state
+        .http
+        .get(format!(
+            "{server_url}/api/admin/observability/top-errors?{params}"
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to fetch top errors: {} - {}", status, body);
+        return Err(format!("Failed to fetch top errors: {status}"));
+    }
+
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))
+}
+
+/// Fetch paginated log events with optional filters.
+#[command]
+pub async fn admin_obs_logs(
+    state: State<'_, AppState>,
+    level: Option<String>,
+    domain: Option<String>,
+    search: Option<String>,
+    cursor: Option<String>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = read_auth(&state).await?;
+    debug!("Fetching obs logs (level={:?}, domain={:?})", level, domain);
+
+    let params = build_query(&[
+        ("level", level),
+        ("domain", domain),
+        ("search", search),
+        ("cursor", cursor),
+        ("limit", limit.map(|l| l.to_string())),
+    ]);
+
+    let url = if params.is_empty() {
+        format!("{server_url}/api/admin/observability/logs")
+    } else {
+        format!("{server_url}/api/admin/observability/logs?{params}")
+    };
+
+    let response = state
+        .http
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to fetch obs logs: {} - {}", status, body);
+        return Err(format!("Failed to fetch obs logs: {status}"));
+    }
+
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))
+}
+
+/// Fetch paginated trace entries with optional filters.
+#[command]
+pub async fn admin_obs_traces(
+    state: State<'_, AppState>,
+    status: Option<String>,
+    domain: Option<String>,
+    cursor: Option<String>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = read_auth(&state).await?;
+    debug!("Fetching obs traces (status={:?}, domain={:?})", status, domain);
+
+    let params = build_query(&[
+        ("status", status),
+        ("domain", domain),
+        ("cursor", cursor),
+        ("limit", limit.map(|l| l.to_string())),
+    ]);
+
+    let url = if params.is_empty() {
+        format!("{server_url}/api/admin/observability/traces")
+    } else {
+        format!("{server_url}/api/admin/observability/traces?{params}")
+    };
+
+    let response = state
+        .http
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status_code = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to fetch obs traces: {} - {}", status_code, body);
+        return Err(format!(
+            "Failed to fetch obs traces: {status_code}"
+        ));
+    }
+
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))
+}
+
+/// Fetch external observability tool links.
+#[command]
+pub async fn admin_obs_links(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (server_url, token) = read_auth(&state).await?;
+    debug!("Fetching observability links");
+
+    let response = state
+        .http
+        .get(format!("{server_url}/api/admin/observability/links"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to fetch obs links: {} - {}", status, body);
+        return Err(format!("Failed to fetch obs links: {status}"));
+    }
+
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))
+}
+
 /// De-elevate admin session.
 #[command]
 pub async fn admin_de_elevate(state: State<'_, AppState>) -> Result<DeElevateResponse, String> {

@@ -41,6 +41,7 @@ import {
   AuditLogPanel,
   ReportsPanel,
   AdminSettings,
+  CommandCenterPanel,
   type AdminPanel,
 } from "@/components/admin";
 import AdminQuickModal from "@/components/admin/AdminQuickModal";
@@ -311,6 +312,11 @@ const AdminDashboard: Component = () => {
             {/* Audit Log Panel */}
             <Show when={activePanel() === "audit-log"}>
               <AuditLogPanel />
+            </Show>
+
+            {/* Command Center Panel */}
+            <Show when={activePanel() === "command-center"}>
+              <CommandCenterPanel />
             </Show>
 
             {/* Settings Panel */}

@@ -72,6 +72,14 @@ import type {
   PageRevision,
   RevisionListItem,
   PageCategory,
+  ObservabilitySummary,
+  TrendsResponse,
+  TopRoutesResponse,
+  TopErrorsResponse,
+  LogsResponse,
+  TracesResponse,
+  ObsLinksResponse,
+  ObsTimeRange,
 } from "./types";
 
 // Re-export types for convenience
@@ -4235,5 +4243,147 @@ export async function adminDeleteOidcProvider(id: string): Promise<void> {
   await httpRequest<{ success: boolean }>(
     "DELETE",
     `/api/admin/oidc-providers/${id}`,
+  );
+}
+
+// ============================================================================
+// Admin Observability Commands (Command Center)
+// ============================================================================
+
+export async function adminObsSummary(): Promise<ObservabilitySummary> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<ObservabilitySummary>("admin_obs_summary");
+  }
+  return httpRequest<ObservabilitySummary>(
+    "GET",
+    "/api/admin/observability/summary",
+  );
+}
+
+export async function adminObsTrends(
+  range: ObsTimeRange,
+  metrics: string[],
+): Promise<TrendsResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<TrendsResponse>("admin_obs_trends", { range, metrics });
+  }
+  const params = new URLSearchParams();
+  params.set("range", range);
+  for (const m of metrics) {
+    params.append("metric", m);
+  }
+  return httpRequest<TrendsResponse>(
+    "GET",
+    `/api/admin/observability/trends?${params.toString()}`,
+  );
+}
+
+export async function adminObsTopRoutes(
+  range: ObsTimeRange,
+  sort?: "latency" | "errors",
+  limit?: number,
+): Promise<TopRoutesResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<TopRoutesResponse>("admin_obs_top_routes", {
+      range,
+      sort,
+      limit,
+    });
+  }
+  const params = new URLSearchParams();
+  params.set("range", range);
+  if (sort) params.set("sort", sort);
+  if (limit) params.set("limit", String(limit));
+  return httpRequest<TopRoutesResponse>(
+    "GET",
+    `/api/admin/observability/top-routes?${params.toString()}`,
+  );
+}
+
+export async function adminObsTopErrors(
+  range: ObsTimeRange,
+  limit?: number,
+): Promise<TopErrorsResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<TopErrorsResponse>("admin_obs_top_errors", { range, limit });
+  }
+  const params = new URLSearchParams();
+  params.set("range", range);
+  if (limit) params.set("limit", String(limit));
+  return httpRequest<TopErrorsResponse>(
+    "GET",
+    `/api/admin/observability/top-errors?${params.toString()}`,
+  );
+}
+
+export async function adminObsLogs(
+  level?: string,
+  domain?: string,
+  search?: string,
+  cursor?: string,
+  limit?: number,
+): Promise<LogsResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<LogsResponse>("admin_obs_logs", {
+      level,
+      domain,
+      search,
+      cursor,
+      limit,
+    });
+  }
+  const params = new URLSearchParams();
+  if (level) params.set("level", level);
+  if (domain) params.set("domain", domain);
+  if (search) params.set("search", search);
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", String(limit));
+  const query = params.toString();
+  return httpRequest<LogsResponse>(
+    "GET",
+    `/api/admin/observability/logs${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function adminObsTraces(
+  status?: string,
+  domain?: string,
+  cursor?: string,
+  limit?: number,
+): Promise<TracesResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<TracesResponse>("admin_obs_traces", {
+      status,
+      domain,
+      cursor,
+      limit,
+    });
+  }
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (domain) params.set("domain", domain);
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", String(limit));
+  const query = params.toString();
+  return httpRequest<TracesResponse>(
+    "GET",
+    `/api/admin/observability/traces${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function adminObsLinks(): Promise<ObsLinksResponse> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<ObsLinksResponse>("admin_obs_links");
+  }
+  return httpRequest<ObsLinksResponse>(
+    "GET",
+    "/api/admin/observability/links",
   );
 }

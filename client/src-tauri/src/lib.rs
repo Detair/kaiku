@@ -181,6 +181,14 @@ pub fn run() {
             commands::admin::admin_suspend_guild,
             commands::admin::admin_unsuspend_guild,
             commands::admin::admin_delete_guild,
+            // Admin observability commands
+            commands::admin::admin_obs_summary,
+            commands::admin::admin_obs_trends,
+            commands::admin::admin_obs_top_routes,
+            commands::admin::admin_obs_top_errors,
+            commands::admin::admin_obs_logs,
+            commands::admin::admin_obs_traces,
+            commands::admin::admin_obs_links,
             // Crypto commands
             commands::crypto::get_server_settings,
             commands::crypto::get_backup_status,

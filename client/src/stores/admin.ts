@@ -16,6 +16,14 @@ import type {
   GuildDetailsResponse,
   BulkBanResponse,
   BulkSuspendResponse,
+  ObservabilitySummary,
+  TrendsResponse,
+  TopRoutesResponse,
+  TopErrorsResponse,
+  ObsLogEvent,
+  ObsTraceEntry,
+  ObsLinksResponse,
+  ObsTimeRange,
 } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import type { AuditLogFilters } from "@/lib/tauri";
@@ -77,6 +85,21 @@ interface AdminStoreState {
   auditLogFilter: string | null;
   auditLogFilters: AuditLogFilterState;
 
+  // Observability (Command Center)
+  obsSummary: ObservabilitySummary | null;
+  obsTrends: TrendsResponse | null;
+  obsTopRoutes: TopRoutesResponse | null;
+  obsTopErrors: TopErrorsResponse | null;
+  obsLogs: ObsLogEvent[];
+  obsLogsCursor: string | null;
+  obsLogsHasMore: boolean;
+  obsTraces: ObsTraceEntry[];
+  obsTracesCursor: string | null;
+  obsTracesHasMore: boolean;
+  obsLinks: ObsLinksResponse | null;
+  obsTimeRange: ObsTimeRange;
+  obsLastRefresh: number | null;
+
   // Loading states
   isStatusLoading: boolean;
   isStatsLoading: boolean;
@@ -88,6 +111,13 @@ interface AdminStoreState {
   isElevating: boolean;
   isBulkActionLoading: boolean;
   isExporting: boolean;
+  isObsSummaryLoading: boolean;
+  isObsTrendsLoading: boolean;
+  isObsTopRoutesLoading: boolean;
+  isObsTopErrorsLoading: boolean;
+  isObsLogsLoading: boolean;
+  isObsTracesLoading: boolean;
+  isObsLinksLoading: boolean;
 
   // Error state
   error: string | null;
@@ -133,6 +163,21 @@ const [adminState, setAdminState] = createStore<AdminStoreState>({
     toDate: null,
   },
 
+  // Observability (Command Center)
+  obsSummary: null,
+  obsTrends: null,
+  obsTopRoutes: null,
+  obsTopErrors: null,
+  obsLogs: [],
+  obsLogsCursor: null,
+  obsLogsHasMore: false,
+  obsTraces: [],
+  obsTracesCursor: null,
+  obsTracesHasMore: false,
+  obsLinks: null,
+  obsTimeRange: "1h",
+  obsLastRefresh: null,
+
   // Loading states
   isStatusLoading: false,
   isStatsLoading: false,
@@ -144,6 +189,13 @@ const [adminState, setAdminState] = createStore<AdminStoreState>({
   isElevating: false,
   isBulkActionLoading: false,
   isExporting: false,
+  isObsSummaryLoading: false,
+  isObsTrendsLoading: false,
+  isObsTopRoutesLoading: false,
+  isObsTopErrorsLoading: false,
+  isObsLogsLoading: false,
+  isObsTracesLoading: false,
+  isObsLinksLoading: false,
 
   // Error state
   error: null,
@@ -1061,6 +1113,19 @@ export function resetAdminState(): void {
       fromDate: null,
       toDate: null,
     },
+    obsSummary: null,
+    obsTrends: null,
+    obsTopRoutes: null,
+    obsTopErrors: null,
+    obsLogs: [],
+    obsLogsCursor: null,
+    obsLogsHasMore: false,
+    obsTraces: [],
+    obsTracesCursor: null,
+    obsTracesHasMore: false,
+    obsLinks: null,
+    obsTimeRange: "1h",
+    obsLastRefresh: null,
     isStatusLoading: false,
     isStatsLoading: false,
     isUsersLoading: false,
@@ -1071,6 +1136,13 @@ export function resetAdminState(): void {
     isElevating: false,
     isBulkActionLoading: false,
     isExporting: false,
+    isObsSummaryLoading: false,
+    isObsTrendsLoading: false,
+    isObsTopRoutesLoading: false,
+    isObsTopErrorsLoading: false,
+    isObsLogsLoading: false,
+    isObsTracesLoading: false,
+    isObsLinksLoading: false,
     error: null,
   });
 }
@@ -1382,6 +1454,159 @@ export function hasPendingAction(targetId: string): boolean {
     if (pending.targetId === targetId) return true;
   }
   return false;
+}
+
+// ============================================================================
+// Observability Functions (Command Center)
+// ============================================================================
+
+const DEFAULT_OBS_METRICS = [
+  "kaiku_http_request_duration_ms",
+  "kaiku_http_errors_total",
+  "kaiku_ws_connections_active",
+  "kaiku_voice_sessions_active",
+];
+
+export async function loadObsSummary(): Promise<void> {
+  setAdminState({ isObsSummaryLoading: true });
+  try {
+    const summary = await tauri.adminObsSummary();
+    setAdminState({
+      obsSummary: summary,
+      obsLastRefresh: Date.now(),
+      isObsSummaryLoading: false,
+    });
+  } catch (err) {
+    console.error("[Admin] Failed to load obs summary:", err);
+    setAdminState({ isObsSummaryLoading: false });
+  }
+}
+
+export async function loadObsTrends(
+  range?: ObsTimeRange,
+  metrics?: string[],
+): Promise<void> {
+  const r = range ?? adminState.obsTimeRange;
+  setAdminState({ isObsTrendsLoading: true });
+  try {
+    const trends = await tauri.adminObsTrends(
+      r,
+      metrics ?? DEFAULT_OBS_METRICS,
+    );
+    setAdminState({ obsTrends: trends, isObsTrendsLoading: false });
+  } catch (err) {
+    console.error("[Admin] Failed to load obs trends:", err);
+    setAdminState({ isObsTrendsLoading: false });
+  }
+}
+
+export async function loadObsTopRoutes(
+  range?: ObsTimeRange,
+  sort?: "latency" | "errors",
+): Promise<void> {
+  const r = range ?? adminState.obsTimeRange;
+  setAdminState({ isObsTopRoutesLoading: true });
+  try {
+    const routes = await tauri.adminObsTopRoutes(r, sort);
+    setAdminState({ obsTopRoutes: routes, isObsTopRoutesLoading: false });
+  } catch (err) {
+    console.error("[Admin] Failed to load obs top routes:", err);
+    setAdminState({ isObsTopRoutesLoading: false });
+  }
+}
+
+export async function loadObsTopErrors(range?: ObsTimeRange): Promise<void> {
+  const r = range ?? adminState.obsTimeRange;
+  setAdminState({ isObsTopErrorsLoading: true });
+  try {
+    const errors = await tauri.adminObsTopErrors(r);
+    setAdminState({ obsTopErrors: errors, isObsTopErrorsLoading: false });
+  } catch (err) {
+    console.error("[Admin] Failed to load obs top errors:", err);
+    setAdminState({ isObsTopErrorsLoading: false });
+  }
+}
+
+export async function loadObsLogs(
+  reset: boolean = false,
+  level?: string,
+  domain?: string,
+  search?: string,
+): Promise<void> {
+  setAdminState({ isObsLogsLoading: true });
+  const cursor = reset ? undefined : adminState.obsLogsCursor ?? undefined;
+  try {
+    const response = await tauri.adminObsLogs(
+      level,
+      domain,
+      search,
+      cursor,
+      50,
+    );
+    if (reset) {
+      setAdminState({
+        obsLogs: response.logs,
+        obsLogsCursor: response.next_cursor,
+        obsLogsHasMore: response.next_cursor !== null,
+        isObsLogsLoading: false,
+      });
+    } else {
+      setAdminState({
+        obsLogs: [...adminState.obsLogs, ...response.logs],
+        obsLogsCursor: response.next_cursor,
+        obsLogsHasMore: response.next_cursor !== null,
+        isObsLogsLoading: false,
+      });
+    }
+  } catch (err) {
+    console.error("[Admin] Failed to load obs logs:", err);
+    setAdminState({ isObsLogsLoading: false });
+  }
+}
+
+export async function loadObsTraces(
+  reset: boolean = false,
+  status?: string,
+  domain?: string,
+): Promise<void> {
+  setAdminState({ isObsTracesLoading: true });
+  const cursor = reset ? undefined : adminState.obsTracesCursor ?? undefined;
+  try {
+    const response = await tauri.adminObsTraces(status, domain, cursor, 50);
+    if (reset) {
+      setAdminState({
+        obsTraces: response.traces,
+        obsTracesCursor: response.next_cursor,
+        obsTracesHasMore: response.next_cursor !== null,
+        isObsTracesLoading: false,
+      });
+    } else {
+      setAdminState({
+        obsTraces: [...adminState.obsTraces, ...response.traces],
+        obsTracesCursor: response.next_cursor,
+        obsTracesHasMore: response.next_cursor !== null,
+        isObsTracesLoading: false,
+      });
+    }
+  } catch (err) {
+    console.error("[Admin] Failed to load obs traces:", err);
+    setAdminState({ isObsTracesLoading: false });
+  }
+}
+
+export async function loadObsLinks(): Promise<void> {
+  setAdminState({ isObsLinksLoading: true });
+  try {
+    const links = await tauri.adminObsLinks();
+    setAdminState({ obsLinks: links, isObsLinksLoading: false });
+  } catch (err) {
+    console.error("[Admin] Failed to load obs links:", err);
+    setAdminState({ isObsLinksLoading: false });
+  }
+}
+
+export function setObsTimeRange(range: ObsTimeRange): void {
+  setAdminState({ obsTimeRange: range });
 }
 
 // Export the store for reading

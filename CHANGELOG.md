@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Admin Command Center observability backend with 7 read-only endpoints: system summary, metric trends, top routes, top errors, log search, trace search, and external tool links
 - Native telemetry ingestion pipeline capturing WARN/ERROR logs and span metadata to PostgreSQL for self-hosted observability without external dependencies
+- Admin Command Center UI with real-time health monitoring, trend charts (uPlot), top routes/errors tables, paginated log/trace search, and external tool deep-links
 - Voice health scoring with composite metrics (jitter, packet loss, latency, session success rate)
 - Added 13 new observability metrics: HTTP errors, WebSocket connections/messages, voice sessions/duration/RTP, DB pool stats, auth token refresh, process memory, OTel export failures (#285)
 - Added admin RLS bypass for `connection_metrics` and `connection_sessions` tables for Command Center aggregate queries (#285)
