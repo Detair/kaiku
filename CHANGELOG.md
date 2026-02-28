@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Admin Command Center observability backend with 7 read-only endpoints: system summary, metric trends, top routes, top errors, log search, trace search, and external tool links
+- Native telemetry ingestion pipeline capturing WARN/ERROR logs and span metadata to PostgreSQL for self-hosted observability without external dependencies
+- Voice health scoring with composite metrics (jitter, packet loss, latency, session success rate)
 - Added 13 new observability metrics: HTTP errors, WebSocket connections/messages, voice sessions/duration/RTP, DB pool stats, auth token refresh, process memory, OTel export failures (#285)
 - Added admin RLS bypass for `connection_metrics` and `connection_sessions` tables for Command Center aggregate queries (#285)
 - Added MFA secret database constraint to prevent empty-string corruption (#295)
@@ -24,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Focus settings UI with per-mode configuration: suppression level, VIP users/channels, emergency keywords, and trigger categories (#253)
 
 ### Changed
+- Simplified admin session elevation to single-click confirmation (MFA verification deferred)
 - Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)
 - Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
 ### Fixed

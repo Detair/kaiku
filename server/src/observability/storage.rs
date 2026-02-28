@@ -315,18 +315,20 @@ pub async fn query_trends(
     }
 }
 
-/// Query paginated log events with filters. Cursor-based pagination using `id`.
+/// Query paginated log events with filters.
 ///
-/// Since `id` is a UUID v4 primary key, ordering by `(ts DESC, id DESC)` and
-/// filtering by `id < cursor` provides stable cursor pagination.
+/// Uses composite `(ts DESC, id DESC)` ordering with a subquery-based cursor
+/// for stable chronological pagination despite UUID v4 primary keys.
+///
+/// **Search performance note:** The `ILIKE '%term%'` search uses a leading
+/// wildcard which prevents B-tree index usage, causing a sequential scan
+/// within the time range. For large tables, consider adding a GIN trigram
+/// index (`gin_trgm_ops`) or full-text search index in a future iteration.
 #[tracing::instrument(skip(pool))]
 pub async fn query_logs(pool: &PgPool, filter: &LogFilter) -> Result<Vec<LogEvent>, sqlx::Error> {
     let limit = filter.limit.min(MAX_PAGE_SIZE);
     let from = clamp_from_time(filter.from, filter.to);
-    let search = filter
-        .search
-        .as_deref()
-        .map(escape_ilike_pattern);
+    let search = filter.search.as_deref().map(escape_ilike_pattern);
 
     sqlx::query_as::<_, LogEvent>(
         "SELECT id, ts, level, service, domain, event, message, trace_id, span_id, attrs \
@@ -337,8 +339,8 @@ pub async fn query_logs(pool: &PgPool, filter: &LogFilter) -> Result<Vec<LogEven
            AND ($4::text IS NULL OR domain = $4) \
            AND ($5::text IS NULL OR service = $5) \
            AND ($6::text IS NULL OR event ILIKE '%' || $6 || '%' OR message ILIKE '%' || $6 || '%') \
-           AND ($7::uuid IS NULL OR id < $7) \
-         ORDER BY id DESC \
+           AND ($7::uuid IS NULL OR (ts, id) < ((SELECT ts FROM telemetry_log_events WHERE id = $7), $7)) \
+         ORDER BY ts DESC, id DESC \
          LIMIT $8",
     )
     .bind(from)
@@ -353,8 +355,10 @@ pub async fn query_logs(pool: &PgPool, filter: &LogFilter) -> Result<Vec<LogEven
     .await
 }
 
-/// Query paginated trace index entries with filters. Cursor-based pagination
-/// using `id` (UUID v4 primary key).
+/// Query paginated trace index entries with filters.
+///
+/// Uses composite `(ts DESC, id DESC)` ordering with a subquery-based cursor
+/// for stable chronological pagination despite UUID v4 primary keys.
 #[tracing::instrument(skip(pool))]
 pub async fn query_traces(
     pool: &PgPool,
@@ -373,8 +377,8 @@ pub async fn query_traces(
            AND ($5::text IS NULL OR domain = $5) \
            AND ($6::text IS NULL OR route = $6) \
            AND ($7::int IS NULL OR duration_ms >= $7) \
-           AND ($8::uuid IS NULL OR id < $8) \
-         ORDER BY id DESC \
+           AND ($8::uuid IS NULL OR (ts, id) < ((SELECT ts FROM telemetry_trace_index WHERE id = $8), $8)) \
+         ORDER BY ts DESC, id DESC \
          LIMIT $9",
     )
     .bind(from)
@@ -486,7 +490,10 @@ fn clamp_from_time(from: DateTime<Utc>, to: DateTime<Utc>) -> DateTime<Utc> {
 
 /// Escape ILIKE pattern metacharacters (`%` and `_`) in user-supplied search text.
 fn escape_ilike_pattern(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(test)]

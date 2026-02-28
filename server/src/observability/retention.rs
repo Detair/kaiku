@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use sqlx::PgPool;
 
 const RETENTION_DAYS: i32 = 30;
+const DELETE_BATCH_SIZE: i64 = 10_000;
 
 /// Start the hourly retention and rollup refresh background task.
 ///
@@ -52,7 +53,7 @@ async fn run_retention_cycle(pool: &PgPool) {
 /// Delete metric samples older than 30 days.
 ///
 /// Attempts `TimescaleDB` `drop_chunks` first for efficient chunk-level deletion.
-/// Falls back to a plain `DELETE` if `TimescaleDB` is not available.
+/// Falls back to batched `DELETE` if `TimescaleDB` is not available.
 async fn purge_old_metric_samples(pool: &PgPool) -> i64 {
     // Try TimescaleDB drop_chunks first (much faster for hypertables)
     let ts_result = sqlx::query(
@@ -68,56 +69,74 @@ async fn purge_old_metric_samples(pool: &PgPool) -> i64 {
             0
         }
         Err(_) => {
-            // Fallback: plain DELETE
-            match sqlx::query(
-                "DELETE FROM telemetry_metric_samples WHERE ts < NOW() - make_interval(days => $1)",
+            // Fallback: batched DELETE to avoid long-held locks
+            purge_in_batches(
+                pool,
+                "DELETE FROM telemetry_metric_samples WHERE ctid IN (\
+                     SELECT ctid FROM telemetry_metric_samples \
+                     WHERE ts < NOW() - make_interval(days => $1) LIMIT $2\
+                 )",
+                "metric samples",
             )
+            .await
+        }
+    }
+}
+
+/// Delete log events older than 30 days in batches.
+async fn purge_old_log_events(pool: &PgPool) -> i64 {
+    purge_in_batches(
+        pool,
+        "DELETE FROM telemetry_log_events WHERE id IN (\
+             SELECT id FROM telemetry_log_events \
+             WHERE ts < NOW() - make_interval(days => $1) LIMIT $2\
+         )",
+        "log events",
+    )
+    .await
+}
+
+/// Delete trace index entries older than 30 days in batches.
+async fn purge_old_trace_index(pool: &PgPool) -> i64 {
+    purge_in_batches(
+        pool,
+        "DELETE FROM telemetry_trace_index WHERE id IN (\
+             SELECT id FROM telemetry_trace_index \
+             WHERE ts < NOW() - make_interval(days => $1) LIMIT $2\
+         )",
+        "trace index entries",
+    )
+    .await
+}
+
+/// Execute batched DELETEs to avoid holding table-level locks for too long.
+///
+/// Deletes up to [`DELETE_BATCH_SIZE`] rows per iteration until no more rows
+/// match the retention cutoff. The SQL must accept `$1` (retention days) and
+/// `$2` (batch size limit).
+async fn purge_in_batches(pool: &PgPool, sql: &str, table_label: &str) -> i64 {
+    let mut total_deleted: i64 = 0;
+    loop {
+        match sqlx::query(sql)
             .bind(RETENTION_DAYS)
+            .bind(DELETE_BATCH_SIZE)
             .execute(pool)
             .await
-            {
-                Ok(result) => result.rows_affected() as i64,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to purge old metric samples");
-                    0
+        {
+            Ok(result) => {
+                let deleted = result.rows_affected() as i64;
+                total_deleted += deleted;
+                if deleted < DELETE_BATCH_SIZE {
+                    break;
                 }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, table = table_label, "Failed to purge old {table_label}");
+                break;
             }
         }
     }
-}
-
-/// Delete log events older than 30 days.
-async fn purge_old_log_events(pool: &PgPool) -> i64 {
-    match sqlx::query(
-        "DELETE FROM telemetry_log_events WHERE ts < NOW() - make_interval(days => $1)",
-    )
-    .bind(RETENTION_DAYS)
-    .execute(pool)
-    .await
-    {
-        Ok(result) => result.rows_affected() as i64,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to purge old log events");
-            0
-        }
-    }
-}
-
-/// Delete trace index entries older than 30 days.
-async fn purge_old_trace_index(pool: &PgPool) -> i64 {
-    match sqlx::query(
-        "DELETE FROM telemetry_trace_index WHERE ts < NOW() - make_interval(days => $1)",
-    )
-    .bind(RETENTION_DAYS)
-    .execute(pool)
-    .await
-    {
-        Ok(result) => result.rows_affected() as i64,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to purge old trace index entries");
-            0
-        }
-    }
+    total_deleted
 }
 
 /// Refresh the trend rollups materialized view concurrently.

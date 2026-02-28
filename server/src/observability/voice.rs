@@ -103,10 +103,7 @@ async fn compute_health_score(pool: &PgPool) -> Result<f64, sqlx::Error> {
     // ── Assemble score ────────────────────────────────────────────────────
 
     // Default to healthy values if no data is available
-    let loss_p95: f64 = quality_row
-        .as_ref()
-        .and_then(|r| r.loss_p95)
-        .unwrap_or(0.0);
+    let loss_p95: f64 = quality_row.as_ref().and_then(|r| r.loss_p95).unwrap_or(0.0);
     let jitter_p95: f64 = quality_row
         .as_ref()
         .and_then(|r| r.jitter_p95)

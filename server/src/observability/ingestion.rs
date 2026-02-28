@@ -21,7 +21,6 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
-use super::storage::{InsertLogEvent, InsertMetricSample, InsertTraceEntry};
 use super::tracing::is_forbidden_attribute_key;
 
 // ============================================================================
@@ -73,7 +72,10 @@ pub struct CapturedSpan {
 // ============================================================================
 
 /// Create the log event ingestion channel (bounded, 4096 capacity).
-pub fn log_channel() -> (mpsc::Sender<CapturedLogEvent>, mpsc::Receiver<CapturedLogEvent>) {
+pub fn log_channel() -> (
+    mpsc::Sender<CapturedLogEvent>,
+    mpsc::Receiver<CapturedLogEvent>,
+) {
     mpsc::channel(4096)
 }
 
@@ -245,11 +247,7 @@ impl opentelemetry_sdk::trace::SpanProcessor for NativeSpanProcessor {
         let span_name = span.name.to_string();
 
         // Extract domain from span name (e.g., "auth.login" -> "auth")
-        let domain = span_name
-            .split('.')
-            .next()
-            .unwrap_or("unknown")
-            .to_owned();
+        let domain = span_name.split('.').next().unwrap_or("unknown").to_owned();
 
         // Extract route and status_code from span attributes
         let mut route = None;
@@ -391,9 +389,12 @@ impl NativeMetricExporter {
         if let Some(hist) = any.downcast_ref::<Histogram<f64>>() {
             for dp in &hist.data_points {
                 self.emit_sample(metric_name, &dp.attributes, cardinality, |labels| {
-                    let p50 = percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.50);
-                    let p95 = percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.95);
-                    let p99 = percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.99);
+                    let p50 =
+                        percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.50);
+                    let p95 =
+                        percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.95);
+                    let p99 =
+                        percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.99);
 
                     CapturedMetricSample {
                         ts: Utc::now(),
@@ -529,7 +530,12 @@ fn attributes_to_filtered_labels(attrs: &[KeyValue]) -> serde_json::Value {
 /// Uses linear interpolation within the bucket containing the target rank
 /// (`PERCENTILE_CONT` semantics). Empty buckets are skipped. Returns `None`
 /// if the histogram has zero observations.
-fn percentile_from_histogram(bounds: &[f64], bucket_counts: &[u64], count: u64, p: f64) -> Option<f64> {
+fn percentile_from_histogram(
+    bounds: &[f64],
+    bucket_counts: &[u64],
+    count: u64,
+    p: f64,
+) -> Option<f64> {
     if count == 0 {
         return None;
     }
@@ -563,25 +569,33 @@ fn percentile_from_histogram(bounds: &[f64], bucket_counts: &[u64], count: u64, 
 // Label allowlist for metric ingestion
 // ============================================================================
 
-/// Returns the set of allowed metric label keys per the observability contract §6.
-pub fn allowed_label_keys() -> HashSet<&'static str> {
-    [
-        "deployment.environment",
-        "service.name",
-        "http.request.method",
-        "http.route",
-        "http.response.status_code",
-        "outcome",
-        "error.type",
-        "voice.session_outcome",
-        "ws.event_type",
-        "db.operation",
-        "db.sql.table",
-        "tauri.command",
-        "os.type",
-    ]
-    .into_iter()
-    .collect()
+/// Allowed metric label keys per the observability contract §6.
+///
+/// Initialized once via `LazyLock` to avoid allocating a new `HashSet` on every call.
+static ALLOWED_LABEL_KEYS: std::sync::LazyLock<HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        [
+            "deployment.environment",
+            "service.name",
+            "http.request.method",
+            "http.route",
+            "http.response.status_code",
+            "outcome",
+            "error.type",
+            "voice.session_outcome",
+            "ws.event_type",
+            "db.operation",
+            "db.sql.table",
+            "tauri.command",
+            "os.type",
+        ]
+        .into_iter()
+        .collect()
+    });
+
+/// Returns a reference to the set of allowed metric label keys.
+pub fn allowed_label_keys() -> &'static HashSet<&'static str> {
+    &ALLOWED_LABEL_KEYS
 }
 
 /// Filter a JSONB labels object to only include allowlisted keys.
@@ -611,7 +625,14 @@ pub struct IngestionHandles {
     pub metric_handle: tokio::task::JoinHandle<()>,
 }
 
+/// Max items to accumulate before flushing a batch INSERT.
+const BATCH_CAPACITY: usize = 64;
+
 /// Spawn the background workers that drain ingestion channels and write to DB.
+///
+/// Each worker accumulates up to [`BATCH_CAPACITY`] items before flushing a
+/// single multi-row INSERT, reducing per-row overhead from network round-trips
+/// and transaction commits.
 ///
 /// Call this in `main()` after the database pool is created.
 pub fn spawn_ingestion_workers(
@@ -623,59 +644,109 @@ pub fn spawn_ingestion_workers(
     let log_pool = pool.clone();
     let log_handle = tokio::spawn(async move {
         let empty_attrs = serde_json::Value::Object(serde_json::Map::new());
-        while let Some(event) = log_rx.recv().await {
-            let params = InsertLogEvent {
-                ts: event.ts,
-                level: &event.level,
-                service: &event.service,
-                domain: &event.domain,
-                event: &event.event,
-                message: &event.message,
-                trace_id: event.trace_id.as_deref(),
-                span_id: event.span_id.as_deref(),
-                attrs: &empty_attrs,
+        let mut batch = Vec::with_capacity(BATCH_CAPACITY);
+        loop {
+            batch.clear();
+            // Wait for at least one message (blocks until available or closed)
+            let Some(first) = log_rx.recv().await else {
+                break;
             };
-            if let Err(e) = super::storage::insert_log_event(&log_pool, &params).await {
-                // Log to tracing, not to native storage (avoid circular ingestion)
-                tracing::debug!(error = %e, "Failed to persist native log event");
+            batch.push(first);
+            // Drain any immediately available messages up to batch capacity
+            while batch.len() < BATCH_CAPACITY {
+                match log_rx.try_recv() {
+                    Ok(msg) => batch.push(msg),
+                    Err(_) => break,
+                }
+            }
+            // Flush batch
+            let mut qb: sqlx::QueryBuilder<'_, sqlx::Postgres> = sqlx::QueryBuilder::new(
+                "INSERT INTO telemetry_log_events \
+                 (ts, level, service, domain, event, message, trace_id, span_id, attrs) ",
+            );
+            qb.push_values(&batch, |mut b, event| {
+                b.push_bind(event.ts)
+                    .push_bind(&event.level)
+                    .push_bind(&event.service)
+                    .push_bind(&event.domain)
+                    .push_bind(&event.event)
+                    .push_bind(&event.message)
+                    .push_bind(&event.trace_id)
+                    .push_bind(&event.span_id)
+                    .push_bind(&empty_attrs);
+            });
+            if let Err(e) = qb.build().execute(&log_pool).await {
+                tracing::debug!(error = %e, batch_size = batch.len(), "Failed to persist native log events");
             }
         }
     });
 
     let span_pool = pool.clone();
     let span_handle = tokio::spawn(async move {
-        while let Some(span) = span_rx.recv().await {
-            let params = InsertTraceEntry {
-                trace_id: &span.trace_id,
-                span_name: &span.span_name,
-                domain: &span.domain,
-                route: span.route.as_deref(),
-                status_code: span.status_code.as_deref(),
-                duration_ms: span.duration_ms,
-                ts: span.ts,
-                service: &span.service,
+        let mut batch = Vec::with_capacity(BATCH_CAPACITY);
+        loop {
+            batch.clear();
+            let Some(first) = span_rx.recv().await else {
+                break;
             };
-            if let Err(e) = super::storage::insert_trace_index_entry(&span_pool, &params).await {
-                tracing::debug!(error = %e, "Failed to persist native trace index entry");
+            batch.push(first);
+            while batch.len() < BATCH_CAPACITY {
+                match span_rx.try_recv() {
+                    Ok(msg) => batch.push(msg),
+                    Err(_) => break,
+                }
+            }
+            let mut qb: sqlx::QueryBuilder<'_, sqlx::Postgres> = sqlx::QueryBuilder::new(
+                "INSERT INTO telemetry_trace_index \
+                 (trace_id, span_name, domain, route, status_code, duration_ms, ts, service) ",
+            );
+            qb.push_values(&batch, |mut b, span| {
+                b.push_bind(&span.trace_id)
+                    .push_bind(&span.span_name)
+                    .push_bind(&span.domain)
+                    .push_bind(&span.route)
+                    .push_bind(&span.status_code)
+                    .push_bind(span.duration_ms)
+                    .push_bind(span.ts)
+                    .push_bind(&span.service);
+            });
+            if let Err(e) = qb.build().execute(&span_pool).await {
+                tracing::debug!(error = %e, batch_size = batch.len(), "Failed to persist native trace index entries");
             }
         }
     });
 
     let metric_handle = tokio::spawn(async move {
-        while let Some(sample) = metric_rx.recv().await {
-            let params = InsertMetricSample {
-                ts: sample.ts,
-                metric_name: &sample.metric_name,
-                scope: &sample.scope,
-                labels: &sample.labels,
-                value_count: sample.value_count,
-                value_sum: sample.value_sum,
-                value_p50: sample.value_p50,
-                value_p95: sample.value_p95,
-                value_p99: sample.value_p99,
+        let mut batch = Vec::with_capacity(BATCH_CAPACITY);
+        loop {
+            batch.clear();
+            let Some(first) = metric_rx.recv().await else {
+                break;
             };
-            if let Err(e) = super::storage::insert_metric_sample(&pool, &params).await {
-                tracing::debug!(error = %e, "Failed to persist native metric sample");
+            batch.push(first);
+            while batch.len() < BATCH_CAPACITY {
+                match metric_rx.try_recv() {
+                    Ok(msg) => batch.push(msg),
+                    Err(_) => break,
+                }
+            }
+            let mut qb: sqlx::QueryBuilder<'_, sqlx::Postgres> = sqlx::QueryBuilder::new(
+                "INSERT INTO telemetry_metric_samples \
+                 (ts, metric_name, scope, labels, value_count, value_sum, value_p50, value_p95, value_p99) ",
+            );
+            qb.push_values(&batch, |mut b, sample| {
+                b.push_bind(sample.ts)
+                    .push_bind(&sample.metric_name)
+                    .push_bind(&sample.scope)
+                    .push_bind(&sample.labels)
+                    .push_bind(sample.value_count)
+                    .push_bind(sample.value_sum)
+                    .push_bind(sample.value_p50)
+                    .push_bind(sample.value_p95)
+                    .push_bind(sample.value_p99);
+            });
+            if let Err(e) = qb.build().execute(&pool).await {
+                tracing::debug!(error = %e, batch_size = batch.len(), "Failed to persist native metric samples");
             }
         }
     });
@@ -759,7 +830,10 @@ mod tests {
         // p50 = 10th value. cumulative: [2, 5, 10, 18, 20].
         // 10th value falls in bucket 2 (bounds 25..50), at (10-5)/5 = 1.0 of the bucket
         let p50 = percentile_from_histogram(&bounds, &bucket_counts, count, 0.50).unwrap();
-        assert!((25.0..=50.0).contains(&p50), "p50={p50} should be in [25, 50]");
+        assert!(
+            (25.0..=50.0).contains(&p50),
+            "p50={p50} should be in [25, 50]"
+        );
 
         // p95 = 19th value. cumulative: [2, 5, 10, 18, 20].
         // 19th value falls in bucket 4 (bounds 100..+inf), return lower=100
