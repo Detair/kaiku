@@ -41,24 +41,31 @@ Maus-Navigation ist langsam.
 
 ## Layout-Struktur (Entwurf)
 
-```
-+---+---------------------+------------------------------------------------+
-| S |  Favorites / Quick  |                                                |
-| E |  [# Gen A]          |                                                |
-| R |  [# Raid B]         |                MAIN CHAT AREA                  |
-| V |                     |                                                |
-| E |  -----------------  |                                                |
-| R |  Server Context     |                                                |
-|   |  # announcements    |                                                |
-| R |  # general          |                                                |
-| A |  # off-topic        |                                                |
-| I |                     |                                                |
-| L |  Voice Channels     |                                                |
-|   |  > Lobby            |                                                |
-|   |                     |                                                |
-+---+---------------------+------------------------------------------------+
-| USR |   GLOBAL VOICE PANEL (Dynamic, Always Visible)                     |
-+---+---------------------+------------------------------------------------+
+```mermaid
+flowchart LR
+    subgraph Server_Strip ["Server Rail"]
+        direction TB
+        SV1((Server A))
+        SV2((Server B))
+    end
+    
+    subgraph Navigation ["Left Sidebar"]
+        direction TB
+        Fav["Favorites / Quick\n# Gen A\n# Raid B"]
+        Ctx["Server Context\n# announcements\n# general"]
+        VC["Voice Channels\n> Lobby"]
+    end
+    
+    subgraph MainArea ["Main Chat Area"]
+        direction TB
+        ChatText["Chat messages & input area..."]
+    end
+
+    Server_Strip --- Navigation --- MainArea
+
+    subgraph BottomPanel ["Global Bottom Bar (Always Visible)"]
+        Voice["USR | GLOBAL VOICE PANEL (Dynamic, Always Visible)"]
+    end
 ```
 
 ## Persona-Checks

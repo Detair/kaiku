@@ -248,28 +248,15 @@ Router::new()
 
 ## Architecture
 
-```
-Request
-    |
-    v
-+-------------------+
-| check_ip_blocked  | <-- Rejects if IP in block list
-+-------------------+
-    |
-    v
-+-------------------+
-| with_category     | <-- Sets RateLimitCategory in extensions
-+-------------------+
-    |
-    v
-+-------------------+
-| rate_limit_by_ip  | <-- Checks limit, increments counter
-| or rate_limit_by_ |
-| user              |
-+-------------------+
-    |
-    v
-+-------------------+
-| Handler           | <-- Actual route handler
-+-------------------+
+```mermaid
+flowchart TD
+    Req[Request] --> CheckIP[check_ip_blocked]
+    
+    CheckIP -- Rejects if IP in block list --> ErrorBlocked(Blocked)
+    CheckIP --> WithCat[with_category]
+    
+    WithCat -- Sets RateLimitCategory in extensions --> RateLimit[rate_limit_by_ip or rate_limit_by_user]
+    
+    RateLimit -- Checks limit, increments counter --> Handler[Handler]
+    RateLimit -- Rejects if over limit --> ErrorLimit(Rate Limited)
 ```

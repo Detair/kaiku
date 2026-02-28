@@ -7,15 +7,12 @@
 
 ## Triage Decision Tree
 
-```
-Alert fires
-     │
-     ▼
-Step 1: Check Sentry for error spike
-     │
-     ├─► New errors? ──Yes──► Note trace_id from Sentry event ──► Step 2
-     │
-     └─► No errors ─────────► Go to Step 3 (latency/SLO metric issue)
+```mermaid
+flowchart TD
+    Alert[Alert fires] --> Step1[Step 1: Check Sentry for error spike]
+    Step1 -- New errors? Yes --> Trace[Note trace_id from Sentry event]
+    Trace --> Step2[Step 2]
+    Step1 -- No errors --> Step3[Go to Step 3: latency/SLO metric issue]
 ```
 
 ---
@@ -156,27 +153,32 @@ Step 1: Check Sentry for error spike
 
 ### Escalation path
 
-```
-Warning
-  └─► On-call engineer self-resolves
-        └─► If unresolved in 30 min → escalate to Critical
+```mermaid
+flowchart LR
+    subgraph Warning
+        W[Warning] --> W_SelfRes[On-call engineer self-resolves]
+        W_SelfRes --> W_Esc[If unresolved in 30 min: escalate to Critical]
+    end
 
-Critical
-  └─► Page on-call engineer (PagerDuty / alertmanager webhook)
-        └─► Acknowledge within 10 min
-        └─► If unresolved in 30 min → page engineering lead
+    subgraph Critical
+        C[Critical] --> C_Page[Page on-call engineer via PagerDuty / alertmanager]
+        C_Page --> C_Ack[Acknowledge within 10 min]
+        C_Ack --> C_Esc[If unresolved in 30 min: page engineering lead]
+    end
 
-P1 / SLO Breach
-  └─► Page on-call + engineering lead simultaneously
-        └─► Open incident channel: #incident-YYYY-MM-DD
-        └─► Assign incident commander
-        └─► Status page update within 15 min
-        └─► Post-mortem within 48h
+    subgraph P1 / SLO Breach
+        P1[P1 / SLO Breach] --> P1_Page[Page on-call + engineering lead simultaneously]
+        P1_Page --> P1_Chan[Open incident channel: #incident-YYYY-MM-DD]
+        P1_Chan --> P1_Cmd[Assign incident commander]
+        P1_Cmd --> P1_Stat[Status page update within 15 min]
+        P1_Stat --> P1_Post[Post-mortem within 48h]
+    end
 
-ObservabilityCollectorDown (Critical)
-  └─► Restore collector FIRST (blind operation otherwise)
-        └─► Use Sentry as fallback error signal while collector is down
-        └─► Check application logs directly: docker compose logs server
+    subgraph ObservabilityCollectorDown
+        OCD[ObservabilityCollectorDown Critical] --> OCD_Rest[Restore collector FIRST]
+        OCD_Rest --> OCD_Sentry[Use Sentry as fallback error signal while collector is down]
+        OCD_Sentry --> OCD_Logs[Check application logs directly: docker compose logs server]
+    end
 ```
 
 ### Communication checklist (P1 incidents)
