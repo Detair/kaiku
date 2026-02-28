@@ -8,15 +8,36 @@ Self-hosted voice and text chat platform for gaming communities. Optimized for l
 
 ## Architecture Overview
 
-```
-Client (Tauri 2.0)          Server (Axum)
-├── WebView (Solid.js)      ├── Auth Service (JWT, OIDC, MFA)
-└── Rust Core               ├── Chat Service (WebSocket, E2EE)
-    ├── WebRTC (webrtc-rs)  ├── Voice Service (SFU, DTLS-SRTP)
-    └── Audio (cpal, opus)  └── Data Layer
-                                ├── PostgreSQL
-                                ├── Valkey
-                                └── S3 Storage
+```mermaid
+flowchart LR
+    subgraph Client ["Client (Tauri 2.0)"]
+        direction TB
+        WebView["WebView (Solid.js)"]
+        RustCore["Rust Core"]
+        WebRTC["WebRTC (webrtc-rs)"]
+        Audio["Audio (cpal, opus)"]
+        
+        RustCore --- WebRTC
+        RustCore --- Audio
+        WebView --- RustCore
+    end
+
+    subgraph Server ["Server (Axum)"]
+        direction TB
+        Auth["Auth Service (JWT, OIDC, MFA)"]
+        Chat["Chat Service (WebSocket, E2EE)"]
+        Voice["Voice Service (SFU, DTLS-SRTP)"]
+        Data["Data Layer"]
+        PG["PostgreSQL"]
+        Valkey["Valkey"]
+        S3["S3 Storage"]
+        
+        Data --- PG
+        Data --- Valkey
+        Data --- S3
+    end
+
+    Client <--> Server
 ```
 
 ## Key Files

@@ -189,31 +189,18 @@ docker compose exec postgres psql -U voicechat -c "SELECT pg_size_pretty(pg_data
 
 ## Architecture
 
-```
-                    ┌─────────────┐
-                    │   Clients   │
-                    └──────┬──────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-         TCP 80/443    TCP 443     UDP 10000-10100
-              │        (WSS)        (RTP)
-              │            │            │
-        ┌─────┴─────┐      │            │
-        │  Traefik  │      │            │
-        └─────┬─────┘      │            │
-              │            │            │
-              └────────────┼────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │   Server    │
-                    └──────┬──────┘
-                           │
-              ┌────────────┼────────────┐
-              │                         │
-        ┌─────┴─────┐            ┌──────┴──────┐
-        │ PostgreSQL│            │    Valkey   │
-        └───────────┘            └─────────────┘
+```mermaid
+flowchart TD
+    Clients[Clients]
+
+    Clients -- "TCP 80/443\n(HTTP/S)" --> Traefik
+    Clients -- "TCP 443\n(WSS)" --> Traefik
+    Clients -- "UDP 10000-10100\n(RTP)" ----> Server
+
+    Traefik[Traefik] --> Server[Server]
+
+    Server --> PostgreSQL[(PostgreSQL)]
+    Server --> Valkey[(Valkey)]
 ```
 
 ## Security Checklist
