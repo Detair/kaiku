@@ -203,6 +203,9 @@ const Login: Component = () => {
           <input
             type="url"
             class="input-field"
+            id="server-url"
+            name="server-url"
+            autocomplete="url"
             placeholder="https://chat.example.com"
             value={serverUrl()}
             onInput={(e) => handleServerUrlChange(e.currentTarget.value)}
@@ -231,6 +234,9 @@ const Login: Component = () => {
               <input
                 type="text"
                 class="input-field font-mono text-center text-lg tracking-widest"
+                id="mfa-code"
+                name="one-time-code"
+                autocomplete="one-time-code"
                 placeholder="000000"
                 value={mfaCode()}
                 onInput={(e) =>
@@ -337,6 +343,9 @@ const Login: Component = () => {
                 <input
                   type="text"
                   class="input-field"
+                  id="username"
+                  name="username"
+                  autocomplete="username"
                   placeholder="Enter your username"
                   value={username()}
                   onInput={(e) => setUsername(e.currentTarget.value)}
@@ -352,6 +361,9 @@ const Login: Component = () => {
                 <input
                   type="password"
                   class="input-field"
+                  id="password"
+                  name="password"
+                  autocomplete="current-password"
                   placeholder="Enter your password"
                   value={password()}
                   onInput={(e) => setPassword(e.currentTarget.value)}

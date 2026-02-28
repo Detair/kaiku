@@ -13,6 +13,7 @@
 
 import { Component, createSignal, createEffect, Show } from "solid-js";
 import { authState, clearSetupRequired } from "@/stores/auth";
+import { checkAdminStatus } from "@/lib/tauri";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
 
 // Setup config interface (matches server API)
@@ -21,6 +22,10 @@ interface SetupConfig {
   registration_policy: "open" | "invite_only" | "closed";
   terms_url?: string;
   privacy_url?: string;
+}
+
+interface SetupStatus {
+  setup_complete: boolean;
 }
 
 // Detect if running in Tauri
@@ -72,6 +77,20 @@ async function fetchSetupConfig(): Promise<SetupConfig> {
       );
     }
   }
+}
+
+async function fetchSetupStatus(): Promise<SetupStatus> {
+  const serverUrl = getServerUrl();
+  const response = await fetch(`${serverUrl}/api/setup/status`, {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch setup status (HTTP ${response.status})`);
+  }
+
+  return response.json();
 }
 
 // Complete server setup
@@ -191,10 +210,15 @@ const SetupWizard: Component = () => {
   const [isLoadingConfig, setIsLoadingConfig] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [isConfigLoaded, setIsConfigLoaded] = createSignal(false);
+  const [isSystemAdmin, setIsSystemAdmin] = createSignal(false);
+  const [setupIncomplete, setSetupIncomplete] = createSignal(authState.setupRequired);
+
+  const shouldShowWizard = () =>
+    !!authState.user && (authState.setupRequired || setupIncomplete());
 
   // Load config from server (async function called by effect)
   async function loadConfig() {
-    if (!authState.setupRequired || isConfigLoaded()) return;
+    if (!shouldShowWizard() || isConfigLoaded()) return;
 
     setIsLoadingConfig(true);
     setError(null);
@@ -223,13 +247,48 @@ const SetupWizard: Component = () => {
 
   // Load current config when wizard opens
   createEffect(() => {
-    if (!authState.setupRequired || isConfigLoaded()) return;
+    if (!shouldShowWizard() || isConfigLoaded()) return;
     loadConfig();
+  });
+
+  createEffect(() => {
+    if (!authState.user) return;
+
+    fetchSetupStatus()
+      .then((status) => {
+        const incomplete = !status.setup_complete;
+        setSetupIncomplete(incomplete);
+        if (!incomplete && authState.setupRequired) {
+          clearSetupRequired();
+        }
+      })
+      .catch((err) => {
+        console.warn("[SetupWizard] Failed to fetch setup status:", err);
+      });
+  });
+
+  createEffect(() => {
+    if (!shouldShowWizard()) return;
+
+    checkAdminStatus()
+      .then((status) => {
+        setIsSystemAdmin(status.is_admin);
+      })
+      .catch((err) => {
+        console.warn("[SetupWizard] Failed to check admin status:", err);
+        setIsSystemAdmin(false);
+      });
   });
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     setError(null);
+
+    if (!isSystemAdmin()) {
+      setError("Setup can only be completed by a system administrator.");
+      return;
+    }
+
     setIsLoading(true);
 
     try {
@@ -250,6 +309,7 @@ const SetupWizard: Component = () => {
 
       // Update auth state to hide the wizard
       clearSetupRequired();
+      setSetupIncomplete(false);
 
       console.log("[SetupWizard] Server setup completed successfully");
     } catch (err) {
@@ -261,7 +321,7 @@ const SetupWizard: Component = () => {
 
   // Only show wizard if setup is required
   return (
-    <Show when={authState.setupRequired}>
+    <Show when={shouldShowWizard()}>
       <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
         <div class="bg-surface-layer2 rounded-xl p-6 w-[32rem] shadow-2xl border border-white/10">
           {/* Header */}
@@ -281,11 +341,21 @@ const SetupWizard: Component = () => {
 
           {/* Info banner */}
           <div class="mb-6 px-4 py-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-            <p class="text-sm text-blue-200">
-              As the first user, you've been granted{" "}
-              <strong>system admin</strong> permissions. These settings can be
-              changed later in the admin panel.
-            </p>
+            <Show
+              when={isSystemAdmin()}
+              fallback={
+                <p class="text-sm text-blue-200">
+                  Server setup is still pending. Please ask a system administrator
+                  to complete setup.
+                </p>
+              }
+            >
+              <p class="text-sm text-blue-200">
+                As the first user, you've been granted{" "}
+                <strong>system admin</strong> permissions. These settings can be
+                changed later in the admin panel.
+              </p>
+            </Show>
           </div>
 
           {/* Loading state */}
@@ -387,7 +457,7 @@ const SetupWizard: Component = () => {
             <div class="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
               <button
                 type="submit"
-                disabled={isLoading() || !serverName().trim()}
+                disabled={isLoading() || !serverName().trim() || !isSystemAdmin()}
                 class="flex items-center gap-2 px-6 py-2.5 bg-accent-primary hover:bg-accent-hover text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-accent-primary"
               >
                 <Show

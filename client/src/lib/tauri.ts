@@ -495,13 +495,18 @@ async function httpRequest<T>(
     "Content-Type": "application/json",
   };
 
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
   // Remove trailing slash from serverUrl and ensure path starts with /
   const baseUrl = browserState.serverUrl.replace(/\/+$/, "");
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
+
+  const isAuthEndpoint =
+    cleanPath === "/auth/login" ||
+    cleanPath === "/auth/register" ||
+    cleanPath === "/auth/refresh";
+
+  if (token && !isAuthEndpoint) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
 
   console.log(`[httpRequest] ${method} ${path}`, {
     hasToken: !!token,
@@ -587,6 +592,18 @@ export async function login(
   browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
 
+  if (browserState.refreshTimer) {
+    clearTimeout(browserState.refreshTimer);
+    browserState.refreshTimer = null;
+  }
+
+  browserState.accessToken = null;
+  browserState.refreshToken = null;
+  browserState.tokenExpiresAt = null;
+  localStorage.removeItem("accessToken");
+  localStorage.removeItem("refreshToken");
+  localStorage.removeItem("tokenExpiresAt");
+
   const body: Record<string, unknown> = { username, password };
   if (mfaCode) {
     body.mfa_code = mfaCode;
@@ -635,14 +652,14 @@ export async function updateStatus(
 
   // Map client status names to server enum values
   const statusMap: Record<string, string> = {
-    online: "online",
-    idle: "away",
-    dnd: "busy",
-    invisible: "offline",
-    offline: "offline",
+    online: "Online",
+    idle: "Away",
+    dnd: "Busy",
+    invisible: "Offline",
+    offline: "Offline",
   };
   browserWs?.send(
-    JSON.stringify({ type: "set_status", status: statusMap[status] ?? "online" }),
+    JSON.stringify({ type: "set_status", status: statusMap[status] ?? "Online" }),
   );
 }
 
@@ -758,7 +775,12 @@ export async function getCurrentUser(): Promise<User | null> {
       errorMessage.includes("401") ||
       errorMessage.includes("403") ||
       errorMessage.includes("Unauthorized") ||
-      errorMessage.includes("Forbidden");
+      errorMessage.includes("Forbidden") ||
+      errorMessage.includes("Token expired") ||
+      errorMessage.includes("TOKEN_EXPIRED") ||
+      errorMessage.includes("Invalid token") ||
+      errorMessage.includes("INVALID_TOKEN") ||
+      errorMessage.includes("TOKEN_ERROR");
 
     const isJsonParseError =
       errorMessage.includes("invalid JSON") ||

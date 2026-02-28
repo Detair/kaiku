@@ -44,6 +44,7 @@ import {
   loadPendingRequests,
   handleUserBlocked,
   handleUserUnblocked,
+  setFriendOnlineStatus,
 } from "./friends";
 import { playNotification } from "@/lib/sound";
 import {
@@ -831,6 +832,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "presence_update":
       updateUserPresence(event.user_id, event.status);
+      setFriendOnlineStatus(event.user_id, event.status);
       break;
 
     case "rich_presence_update":
@@ -1160,6 +1162,10 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
         duration: 5000,
         id: `cmd-timeout-${event.command_name}`,
       });
+      break;
+
+    case "error":
+      console.warn("[WebSocket] Server error event:", event.code, event.message);
       break;
 
     default:

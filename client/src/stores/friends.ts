@@ -5,7 +5,7 @@
  */
 
 import { createStore } from "solid-js/store";
-import type { Friend } from "@/lib/types";
+import type { Friend, UserStatus } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
 
@@ -110,11 +110,44 @@ export async function sendFriendRequest(username: string): Promise<void> {
  * Accept a friend request
  */
 export async function acceptFriendRequest(friendshipId: string): Promise<void> {
+  const pendingFriend = friendsState.pendingRequests.find(
+    (f) => f.friendship_id === friendshipId,
+  );
+
+  if (pendingFriend) {
+    setFriendsState("pendingRequests", (prev) =>
+      prev.filter((f) => f.friendship_id !== friendshipId),
+    );
+
+    const alreadyFriend = friendsState.friends.some(
+      (f) => f.friendship_id === friendshipId || f.user_id === pendingFriend.user_id,
+    );
+
+    if (!alreadyFriend) {
+      setFriendsState("friends", (prev) => [
+        ...prev,
+        { ...pendingFriend, friendship_status: "accepted" },
+      ]);
+    }
+  }
+
   try {
     await tauri.acceptFriendRequest(friendshipId);
-    // Reload both friends and pending lists
-    await Promise.all([loadFriends(), loadPendingRequests()]);
+
+    void loadFriends();
+    void loadPendingRequests();
   } catch (err) {
+    if (pendingFriend) {
+      setFriendsState("pendingRequests", (prev) => {
+        const exists = prev.some((f) => f.friendship_id === friendshipId);
+        return exists ? prev : [...prev, pendingFriend];
+      });
+
+      setFriendsState("friends", (prev) =>
+        prev.filter((f) => f.friendship_id !== friendshipId),
+      );
+    }
+
     console.error("Failed to accept friend request:", err);
     showToast({
       type: "error",
@@ -242,6 +275,16 @@ export function handleUserUnblocked(userId: string): void {
  */
 export function getOnlineFriends(): Friend[] {
   return friendsState.friends.filter((f) => f.is_online);
+}
+
+export function setFriendOnlineStatus(userId: string, status: UserStatus): void {
+  const isOnline = status !== "offline";
+
+  setFriendsState("friends", (prev) =>
+    prev.map((friend) =>
+      friend.user_id === userId ? { ...friend, is_online: isOnline } : friend,
+    ),
+  );
 }
 
 // Export the store state

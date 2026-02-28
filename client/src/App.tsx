@@ -49,6 +49,7 @@ import { onShowBlockConfirm, onShowReport } from "./lib/contextMenuBuilders";
 
 import { fetchUploadLimits } from "./lib/tauri";
 import { initDrafts } from "./stores/drafts";
+import { initThemeEffect } from "./stores/theme";
 
 // Global modal state
 const [blockTarget, setBlockTarget] = createSignal<{
@@ -77,6 +78,7 @@ onShowReport((target) =>
 // Layout wrapper
 const Layout: Component<ParentProps> = (props) => {
   onMount(() => {
+    initThemeEffect();
     initDrafts();
     // Fetch upload size limits from server (non-blocking)
     fetchUploadLimits().catch((err) =>

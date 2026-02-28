@@ -118,6 +118,7 @@ const [lastUpdated, setLastUpdated] = createSignal<string>(
   new Date().toISOString(),
 );
 const [isSyncing, setIsSyncing] = createSignal(false);
+const [preferencesInitialized, setPreferencesInitialized] = createSignal(false);
 
 // ============================================================================
 // Debounce Timer
@@ -307,6 +308,7 @@ async function pushPreferences(
  * Fetches from server, compares timestamps with localStorage, and syncs.
  */
 export async function initPreferences(): Promise<void> {
+  setPreferencesInitialized(false);
   setIsSyncing(true);
 
   // Check for and apply migrations from old localStorage keys
@@ -361,6 +363,7 @@ export async function initPreferences(): Promise<void> {
     }
   } finally {
     setIsSyncing(false);
+    setPreferencesInitialized(true);
   }
 }
 
@@ -482,4 +485,4 @@ export function isInQuietHours(): boolean {
 // Exports
 // ============================================================================
 
-export { preferences, lastUpdated, isSyncing };
+export { preferences, lastUpdated, isSyncing, preferencesInitialized };

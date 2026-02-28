@@ -4,7 +4,7 @@
  * Manages user's cross-server channel favorites.
  */
 
-import { createSignal, createMemo } from "solid-js";
+import { createSignal } from "solid-js";
 import type { FavoriteChannel, Favorite } from "@/lib/types";
 import { showToast } from "@/components/ui/Toast";
 
@@ -24,7 +24,7 @@ const [isLoading, setIsLoading] = createSignal(false);
 /**
  * Favorites grouped by guild, sorted by guild_position then channel_position.
  */
-export const favoritesByGuild = createMemo(() => {
+export function favoritesByGuild() {
   const grouped = new Map<
     string,
     {
@@ -54,7 +54,7 @@ export const favoritesByGuild = createMemo(() => {
     const posB = b.channels[0]?.guild_position ?? 0;
     return posA - posB;
   });
-});
+}
 
 /**
  * Check if a channel is favorited.

@@ -5,7 +5,7 @@
  * Theme data is synced across devices through the preferences system.
  */
 
-import { createEffect } from "solid-js";
+import { createEffect, createRoot } from "solid-js";
 import { preferences, updatePreference } from "./preferences";
 import type { ThemeName } from "@/lib/types";
 
@@ -98,14 +98,21 @@ export const theme = () => preferences().theme;
 // Theme Application Effect
 // ============================================================================
 
-/**
- * Apply theme to document whenever it changes.
- * This effect runs automatically when preferences are initialized or updated.
- */
-createEffect(() => {
-  const currentTheme = theme();
-  document.documentElement.setAttribute("data-theme", currentTheme);
-});
+let themeEffectInitialized = false;
+
+export function initThemeEffect(): void {
+  if (themeEffectInitialized) {
+    return;
+  }
+
+  themeEffectInitialized = true;
+  createRoot(() => {
+    createEffect(() => {
+      const currentTheme = theme();
+      document.documentElement.setAttribute("data-theme", currentTheme);
+    });
+  });
+}
 
 // ============================================================================
 // Theme Functions
@@ -155,4 +162,3 @@ export function getThemeFamily(themeId: ThemeName): ThemeFamily {
 export function isDarkTheme(): boolean {
   return getCurrentTheme()?.isDark ?? true;
 }
-

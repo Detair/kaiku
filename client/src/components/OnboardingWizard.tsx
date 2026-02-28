@@ -29,7 +29,11 @@ import {
   Compass,
   Users,
 } from "lucide-solid";
-import { preferences, updatePreference } from "@/stores/preferences";
+import {
+  preferences,
+  preferencesInitialized,
+  updatePreference,
+} from "@/stores/preferences";
 import { currentUser, updateUser } from "@/stores/auth";
 import {
   setTheme,
@@ -51,6 +55,7 @@ const OnboardingWizard: Component = () => {
   // Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
   const shouldShow = () =>
     authState.isInitialized &&
+    preferencesInitialized() &&
     !preferences().onboarding_completed &&
     !authState.setupRequired;
 
