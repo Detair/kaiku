@@ -73,4 +73,43 @@ describe("updateCustomStatus", () => {
       }),
     );
   });
+
+  it("retries clear with empty string on legacy null handling", async () => {
+    const firstErrorText = JSON.stringify({
+      message: "Validation failed: No fields to update",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+        text: vi.fn().mockResolvedValue(firstErrorText),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: vi.fn().mockResolvedValue(""),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateCustomStatus(null);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(/\/auth\/me$/),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ status_message: null }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/\/auth\/me$/),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ status_message: "" }),
+      }),
+    );
+  });
 });

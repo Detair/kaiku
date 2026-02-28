@@ -575,10 +575,15 @@ async function httpRequest<T>(
     headers["Authorization"] = `Bearer ${token}`;
   }
 
+  const logHeaders = { ...headers };
+  if (logHeaders.Authorization) {
+    logHeaders.Authorization = "Bearer [REDACTED]";
+  }
+
   console.log(`[httpRequest] ${method} ${path}`, {
     hasToken: !!token,
     hasAuthHeader: !!headers["Authorization"],
-    headers: JSON.stringify(headers),
+    headers: JSON.stringify(logHeaders),
   });
 
   const response = await fetch(`${baseUrl}${cleanPath}`, {
@@ -752,7 +757,21 @@ export async function updateCustomStatus(
     });
   }
 
-  await httpRequest("POST", "/auth/me", { status_message: statusMessage });
+  try {
+    await httpRequest("POST", "/auth/me", { status_message: statusMessage });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+
+    if (
+      statusMessage === null &&
+      message.includes("No fields to update")
+    ) {
+      await httpRequest("POST", "/auth/me", { status_message: "" });
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export async function register(
