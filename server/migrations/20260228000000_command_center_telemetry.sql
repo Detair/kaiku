@@ -56,7 +56,7 @@ CREATE TABLE telemetry_log_events (
     attrs    JSONB       NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE INDEX idx_tle_ts        ON telemetry_log_events (ts DESC);
+CREATE INDEX idx_tle_ts        ON telemetry_log_events (ts DESC, id DESC);
 CREATE INDEX idx_tle_level_ts  ON telemetry_log_events (level, ts DESC);
 CREATE INDEX idx_tle_domain_ts ON telemetry_log_events (domain, ts DESC);
 CREATE INDEX idx_tle_trace_id  ON telemetry_log_events (trace_id) WHERE trace_id IS NOT NULL;
@@ -78,7 +78,7 @@ CREATE TABLE telemetry_trace_index (
     service     TEXT        NOT NULL
 );
 
-CREATE INDEX idx_tti_ts        ON telemetry_trace_index (ts DESC);
+CREATE INDEX idx_tti_ts        ON telemetry_trace_index (ts DESC, id DESC);
 CREATE INDEX idx_tti_status_ts ON telemetry_trace_index (status_code, ts DESC);
 CREATE INDEX idx_tti_domain_ts ON telemetry_trace_index (domain, ts DESC);
 CREATE INDEX idx_tti_duration  ON telemetry_trace_index (duration_ms DESC, ts DESC);

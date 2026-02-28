@@ -1,8 +1,8 @@
 //! Telemetry retention and rollup refresh jobs.
 //!
 //! Runs hourly to:
-//! 1. Hard-delete rows older than 30 days from all native telemetry tables.
-//! 2. Refresh the `telemetry_trend_rollups` materialized view concurrently.
+//! 1. Refresh the `telemetry_trend_rollups` materialized view concurrently.
+//! 2. Hard-delete rows older than 30 days from all native telemetry tables.
 //!
 //! Design reference: §11.5 (Retention Policies)
 
@@ -15,11 +15,16 @@ const DELETE_BATCH_SIZE: i64 = 10_000;
 
 /// Start the hourly retention and rollup refresh background task.
 ///
-/// This spawns a tokio task that runs every hour. The returned `JoinHandle`
-/// should be stored alongside other background task handles in `main`.
+/// This spawns a tokio task that runs every hour. The first tick is consumed
+/// immediately to avoid running a retention cycle during startup when the
+/// server is handling its initial request burst.
+///
+/// The returned `JoinHandle` should be stored alongside other background
+/// task handles in `main`.
 pub fn spawn_retention_task(pool: PgPool) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        interval.tick().await; // consume immediate first tick
         loop {
             interval.tick().await;
             run_retention_cycle(&pool).await;
@@ -29,16 +34,20 @@ pub fn spawn_retention_task(pool: PgPool) -> tokio::task::JoinHandle<()> {
 
 /// Execute one retention + rollup refresh cycle.
 ///
-/// Logs execution time and rows deleted via tracing (not to native telemetry
-/// tables, to avoid circular ingestion).
+/// Refreshes the materialized view *before* purging so that boundary-day data
+/// is captured in the rollup before deletion. Logs execution time and rows
+/// deleted via tracing (not to native telemetry tables, to avoid circular
+/// ingestion).
 #[tracing::instrument(skip(pool))]
 async fn run_retention_cycle(pool: &PgPool) {
     let start = Instant::now();
 
+    // Refresh rollups FIRST so boundary-day data is captured before deletion
+    refresh_trend_rollups(pool).await;
+
     let metrics_deleted = purge_old_metric_samples(pool).await;
     let logs_deleted = purge_old_log_events(pool).await;
     let traces_deleted = purge_old_trace_index(pool).await;
-    refresh_trend_rollups(pool).await;
 
     let elapsed = start.elapsed();
     tracing::info!(
