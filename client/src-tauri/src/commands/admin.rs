@@ -775,6 +775,20 @@ async fn read_auth(state: &AppState) -> Result<(String, String), String> {
     Ok((server_url, token))
 }
 
+const VALID_RANGES: &[&str] = &["1h", "6h", "24h", "7d", "30d"];
+const VALID_SORTS: &[&str] = &["latency", "errors"];
+const VALID_LEVELS: &[&str] = &["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+const VALID_TRACE_STATUSES: &[&str] = &["error", "slow"];
+
+fn validate_optional(value: Option<&str>, allowed: &[&str], name: &str) -> Result<(), String> {
+    if let Some(v) = value {
+        if !allowed.contains(&v) {
+            return Err(format!("Invalid {name}: {v}"));
+        }
+    }
+    Ok(())
+}
+
 /// Build query params from optional key-value pairs.
 fn build_query(pairs: &[(&str, Option<String>)]) -> String {
     let mut s = String::new();
@@ -827,6 +841,7 @@ pub async fn admin_obs_trends(
     range: String,
     metrics: Vec<String>,
 ) -> Result<serde_json::Value, String> {
+    validate_optional(Some(range.as_str()), VALID_RANGES, "range")?;
     let (server_url, token) = read_auth(&state).await?;
     debug!("Fetching observability trends (range={}, metrics={})", range, metrics.len());
 
@@ -874,6 +889,8 @@ pub async fn admin_obs_top_routes(
     sort: Option<String>,
     limit: Option<i64>,
 ) -> Result<serde_json::Value, String> {
+    validate_optional(Some(range.as_str()), VALID_RANGES, "range")?;
+    validate_optional(sort.as_deref(), VALID_SORTS, "sort")?;
     let (server_url, token) = read_auth(&state).await?;
     debug!("Fetching top routes (range={})", range);
 
@@ -913,6 +930,7 @@ pub async fn admin_obs_top_errors(
     range: String,
     limit: Option<i64>,
 ) -> Result<serde_json::Value, String> {
+    validate_optional(Some(range.as_str()), VALID_RANGES, "range")?;
     let (server_url, token) = read_auth(&state).await?;
     debug!("Fetching top errors (range={})", range);
 
@@ -954,6 +972,7 @@ pub async fn admin_obs_logs(
     cursor: Option<String>,
     limit: Option<i64>,
 ) -> Result<serde_json::Value, String> {
+    validate_optional(level.as_deref(), VALID_LEVELS, "level")?;
     let (server_url, token) = read_auth(&state).await?;
     debug!("Fetching obs logs (level={:?}, domain={:?})", level, domain);
 
@@ -1001,6 +1020,7 @@ pub async fn admin_obs_traces(
     cursor: Option<String>,
     limit: Option<i64>,
 ) -> Result<serde_json::Value, String> {
+    validate_optional(status.as_deref(), VALID_TRACE_STATUSES, "status")?;
     let (server_url, token) = read_auth(&state).await?;
     debug!("Fetching obs traces (status={:?}, domain={:?})", status, domain);
 

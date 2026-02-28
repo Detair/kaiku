@@ -44,6 +44,20 @@ import type { ObsTimeRange } from "@/lib/types";
 import TableRowSkeleton from "./TableRowSkeleton";
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+function isSafeUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
 // Time formatting utilities
 // ============================================================================
 
@@ -382,6 +396,8 @@ const CommandCenterPanel: Component = () => {
     loadObsTrends();
     loadObsTopRoutes(undefined, routeSort());
     loadObsTopErrors();
+    loadObsLogs(true, logsLevel() || undefined, logsDomain() || undefined, logsSearch() || undefined);
+    loadObsTraces(true, tracesStatus() || undefined, tracesDomain() || undefined);
   };
 
   // Route sort change
@@ -907,7 +923,7 @@ const CommandCenterPanel: Component = () => {
                         <DurationBadge ms={trace.duration_ms} />
                       </div>
                       <Show
-                        when={adminState.obsLinks?.tempo_url}
+                        when={isSafeUrl(adminState.obsLinks?.tempo_url)}
                         fallback={
                           <span class="text-text-secondary font-mono truncate">
                             {trace.trace_id}
@@ -915,7 +931,7 @@ const CommandCenterPanel: Component = () => {
                         }
                       >
                         <a
-                          href={`${adminState.obsLinks!.tempo_url}/trace/${trace.trace_id}`}
+                          href={`${adminState.obsLinks!.tempo_url}/trace/${encodeURIComponent(trace.trace_id)}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           class="text-accent-primary font-mono truncate hover:underline"
@@ -960,7 +976,7 @@ const CommandCenterPanel: Component = () => {
               External Tools
             </h3>
             <div class="flex flex-wrap gap-3">
-              <Show when={adminState.obsLinks!.grafana_url}>
+              <Show when={isSafeUrl(adminState.obsLinks!.grafana_url)}>
                 <a
                   href={adminState.obsLinks!.grafana_url!}
                   target="_blank"
@@ -971,7 +987,7 @@ const CommandCenterPanel: Component = () => {
                   Grafana
                 </a>
               </Show>
-              <Show when={adminState.obsLinks!.tempo_url}>
+              <Show when={isSafeUrl(adminState.obsLinks!.tempo_url)}>
                 <a
                   href={adminState.obsLinks!.tempo_url!}
                   target="_blank"
@@ -982,7 +998,7 @@ const CommandCenterPanel: Component = () => {
                   Tempo
                 </a>
               </Show>
-              <Show when={adminState.obsLinks!.loki_url}>
+              <Show when={isSafeUrl(adminState.obsLinks!.loki_url)}>
                 <a
                   href={adminState.obsLinks!.loki_url!}
                   target="_blank"
@@ -993,7 +1009,7 @@ const CommandCenterPanel: Component = () => {
                   Loki
                 </a>
               </Show>
-              <Show when={adminState.obsLinks!.prometheus_url}>
+              <Show when={isSafeUrl(adminState.obsLinks!.prometheus_url)}>
                 <a
                   href={adminState.obsLinks!.prometheus_url!}
                   target="_blank"
