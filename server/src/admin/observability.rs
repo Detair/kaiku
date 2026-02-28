@@ -5,15 +5,25 @@
 //!
 //! Design reference: command-center-design-v2 §3–§6, §12
 
+use std::time::Instant;
+
 use axum::extract::{Query, State};
 use axum::{Extension, Json};
 use chrono::{DateTime, Duration, Utc};
+use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::types::{AdminError, SystemAdminUser};
 use crate::api::AppState;
 use crate::observability::storage;
+
+/// Server start time (set on first access, approximates process start).
+static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn server_uptime_seconds() -> u64 {
+    START_TIME.get_or_init(Instant::now).elapsed().as_secs()
+}
 
 // ============================================================================
 // Time Range Parsing
@@ -66,19 +76,23 @@ pub struct TrendsParams {
     pub metric: Vec<String>,
 }
 
+/// Sort order for top routes queries.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TopRoutesSort {
+    #[default]
+    Latency,
+    Errors,
+}
+
 /// Top routes query parameters.
 #[derive(Debug, Deserialize)]
 pub struct TopRoutesParams {
     pub range: TimeRange,
-    /// Sort by `latency` or `errors`.
-    #[serde(default = "default_sort")]
-    pub sort: String,
+    #[serde(default)]
+    pub sort: TopRoutesSort,
     #[serde(default = "default_top_limit")]
     pub limit: i64,
-}
-
-fn default_sort() -> String {
-    "latency".to_string()
 }
 
 const fn default_top_limit() -> i64 {
@@ -149,6 +163,8 @@ pub struct VitalSigns {
 #[derive(Debug, Serialize)]
 pub struct ServerMetadata {
     pub version: &'static str,
+    pub uptime_seconds: u64,
+    pub environment: String,
     pub active_user_count: i64,
     pub guild_count: i64,
 }
@@ -223,6 +239,7 @@ pub struct LinksResponse {
 /// `GET /api/admin/observability/summary`
 ///
 /// Returns vital signs, server metadata, voice health, and recent error count.
+/// All telemetry queries run concurrently via `tokio::try_join!`.
 #[tracing::instrument(skip(state, _admin))]
 pub async fn summary(
     Extension(_admin): Extension<SystemAdminUser>,
@@ -230,79 +247,107 @@ pub async fn summary(
 ) -> Result<Json<SummaryResponse>, AdminError> {
     let now = Utc::now();
     let five_min_ago = now - Duration::minutes(5);
+    let db = &state.db;
 
-    // Fetch recent metrics for vital signs (last 5 minutes)
-    let latency_p95 = sqlx::query_scalar::<_, Option<f64>>(
-        "SELECT AVG(value_p95) FROM telemetry_metric_samples \
-         WHERE metric_name = 'kaiku_http_request_duration_ms' \
-         AND ts >= $1 AND ts <= $2",
-    )
-    .bind(five_min_ago)
-    .bind(now)
-    .fetch_optional(&state.db)
-    .await?
-    .flatten();
-
-    let error_metrics: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT \
-             SUM(CASE WHEN metric_name = 'kaiku_http_errors_total' THEN value_count ELSE 0 END), \
-             SUM(CASE WHEN metric_name = 'kaiku_http_requests_total' THEN value_count ELSE 0 END) \
-         FROM telemetry_metric_samples \
-         WHERE metric_name IN ('kaiku_http_errors_total', 'kaiku_http_requests_total') \
-         AND ts >= $1 AND ts <= $2",
-    )
-    .bind(five_min_ago)
-    .bind(now)
-    .fetch_optional(&state.db)
-    .await?;
+    // Run all queries concurrently
+    let (
+        latency_p95,
+        error_metrics,
+        ws_connections,
+        voice_sessions,
+        user_count,
+        guild_count,
+        active_alert_count,
+    ) = tokio::try_join!(
+        // Latency p95 (last 5 minutes)
+        async {
+            sqlx::query_scalar::<_, Option<f64>>(
+                "SELECT AVG(value_p95) FROM telemetry_metric_samples \
+                 WHERE metric_name = 'kaiku_http_request_duration_ms' \
+                 AND ts >= $1 AND ts <= $2",
+            )
+            .bind(five_min_ago)
+            .bind(now)
+            .fetch_optional(db)
+            .await
+            .map(|r| r.flatten())
+        },
+        // Error rate (last 5 minutes)
+        async {
+            sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+                "SELECT \
+                     SUM(CASE WHEN metric_name = 'kaiku_http_errors_total' THEN value_count ELSE 0 END), \
+                     SUM(CASE WHEN metric_name = 'kaiku_http_requests_total' THEN value_count ELSE 0 END) \
+                 FROM telemetry_metric_samples \
+                 WHERE metric_name IN ('kaiku_http_errors_total', 'kaiku_http_requests_total') \
+                 AND ts >= $1 AND ts <= $2",
+            )
+            .bind(five_min_ago)
+            .bind(now)
+            .fetch_optional(db)
+            .await
+        },
+        // Active WebSocket connections (most recent gauge)
+        async {
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT value_count FROM telemetry_metric_samples \
+                 WHERE metric_name = 'kaiku_ws_connections_active' \
+                 AND ts >= $1 \
+                 ORDER BY ts DESC LIMIT 1",
+            )
+            .bind(five_min_ago)
+            .fetch_optional(db)
+            .await
+            .map(|r| r.flatten())
+        },
+        // Active voice sessions (most recent gauge)
+        async {
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT value_count FROM telemetry_metric_samples \
+                 WHERE metric_name = 'kaiku_voice_sessions_active' \
+                 AND ts >= $1 \
+                 ORDER BY ts DESC LIMIT 1",
+            )
+            .bind(five_min_ago)
+            .fetch_optional(db)
+            .await
+            .map(|r| r.flatten())
+        },
+        // User count
+        async {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+                .fetch_one(db)
+                .await
+        },
+        // Guild count
+        async {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM guilds")
+                .fetch_one(db)
+                .await
+        },
+        // Recent error count (last 5 minutes)
+        async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM telemetry_log_events \
+                 WHERE level = 'ERROR' AND ts >= $1",
+            )
+            .bind(five_min_ago)
+            .fetch_one(db)
+            .await
+        },
+    )?;
 
     let error_rate_percent = error_metrics.and_then(|(errors, total)| {
         let e = errors.unwrap_or(0) as f64;
         let t = total.unwrap_or(0) as f64;
-        if t > 0.0 { Some(e / t * 100.0) } else { None }
+        if t > 0.0 {
+            Some(e / t * 100.0)
+        } else {
+            None
+        }
     });
 
-    // Active WebSocket connections and voice sessions from most recent gauge samples
-    let ws_connections = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT value_count FROM telemetry_metric_samples \
-         WHERE metric_name = 'kaiku_ws_connections_active' \
-         AND ts >= $1 \
-         ORDER BY ts DESC LIMIT 1",
-    )
-    .bind(five_min_ago)
-    .fetch_optional(&state.db)
-    .await?
-    .flatten();
-
-    let voice_sessions = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT value_count FROM telemetry_metric_samples \
-         WHERE metric_name = 'kaiku_voice_sessions_active' \
-         AND ts >= $1 \
-         ORDER BY ts DESC LIMIT 1",
-    )
-    .bind(five_min_ago)
-    .fetch_optional(&state.db)
-    .await?
-    .flatten();
-
-    // Server metadata from core tables
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.db)
-        .await?;
-    let guild_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds")
-        .fetch_one(&state.db)
-        .await?;
-
-    // Recent error count (last 5 minutes)
-    let active_alert_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM telemetry_log_events \
-         WHERE level = 'ERROR' AND ts >= $1",
-    )
-    .bind(five_min_ago)
-    .fetch_one(&state.db)
-    .await?;
-
-    // Voice health score (cached, refreshed every 10s)
+    // Voice health score (cached, refreshed every 10s — no DB query)
     let voice_health_score = crate::observability::voice::get_voice_health_score().await;
 
     Ok(Json(SummaryResponse {
@@ -314,6 +359,8 @@ pub async fn summary(
         },
         server_metadata: ServerMetadata {
             version: env!("CARGO_PKG_VERSION"),
+            uptime_seconds: server_uptime_seconds(),
+            environment: std::env::var("KAIKU_ENV").unwrap_or_else(|_| "production".into()),
             active_user_count: user_count,
             guild_count,
         },
@@ -345,14 +392,24 @@ pub async fn trends(
 
     let (from, to) = params.range.to_time_bounds();
 
-    let mut metrics = Vec::with_capacity(params.metric.len());
-    for metric_name in &params.metric {
-        let datapoints = storage::query_trends(&state.db, metric_name, from, to).await?;
-        metrics.push(MetricTrend {
-            metric_name: metric_name.clone(),
-            datapoints,
-        });
-    }
+    // Run all metric queries concurrently
+    let futures: Vec<_> = params
+        .metric
+        .iter()
+        .map(|name| {
+            let db = state.db.clone();
+            let name = name.clone();
+            async move {
+                let datapoints = storage::query_trends(&db, &name, from, to).await?;
+                Ok::<_, sqlx::Error>(MetricTrend {
+                    metric_name: name,
+                    datapoints,
+                })
+            }
+        })
+        .collect();
+
+    let metrics = try_join_all(futures).await?;
 
     Ok(Json(TrendsResponse { metrics }))
 }
@@ -367,7 +424,7 @@ pub async fn top_routes(
     Query(params): Query<TopRoutesParams>,
 ) -> Result<Json<TopRoutesResponse>, AdminError> {
     let (from, to) = params.range.to_time_bounds();
-    let sort_by_errors = params.sort == "errors";
+    let sort_by_errors = matches!(params.sort, TopRoutesSort::Errors);
     let limit = params.limit.clamp(1, 10);
 
     let raw = storage::query_top_routes(&state.db, from, to, sort_by_errors, limit).await?;
@@ -504,16 +561,17 @@ pub async fn traces(
 
 /// `GET /api/admin/observability/links`
 ///
-/// Returns configured external observability tool URLs from environment.
-#[tracing::instrument(skip(_admin))]
+/// Returns configured external observability tool URLs (loaded once at startup).
+#[tracing::instrument(skip(state, _admin))]
 pub async fn links(
     Extension(_admin): Extension<SystemAdminUser>,
+    State(state): State<AppState>,
 ) -> Json<LinksResponse> {
     Json(LinksResponse {
-        grafana_url: std::env::var("GRAFANA_URL").ok(),
-        tempo_url: std::env::var("TEMPO_URL").ok(),
-        loki_url: std::env::var("LOKI_URL").ok(),
-        prometheus_url: std::env::var("PROMETHEUS_URL").ok(),
+        grafana_url: state.config.grafana_url.clone(),
+        tempo_url: state.config.tempo_url.clone(),
+        loki_url: state.config.loki_url.clone(),
+        prometheus_url: state.config.prometheus_url.clone(),
     })
 }
 
@@ -546,7 +604,10 @@ mod tests {
     fn time_range_durations() {
         assert_eq!(TimeRange::OneHour.to_duration(), Duration::hours(1));
         assert_eq!(TimeRange::SixHours.to_duration(), Duration::hours(6));
-        assert_eq!(TimeRange::TwentyFourHours.to_duration(), Duration::hours(24));
+        assert_eq!(
+            TimeRange::TwentyFourHours.to_duration(),
+            Duration::hours(24)
+        );
         assert_eq!(TimeRange::SevenDays.to_duration(), Duration::days(7));
         assert_eq!(TimeRange::ThirtyDays.to_duration(), Duration::days(30));
     }
