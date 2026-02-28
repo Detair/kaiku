@@ -503,7 +503,11 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for NativeMetricEx
     }
 
     fn temporality(&self) -> opentelemetry_sdk::metrics::Temporality {
-        opentelemetry_sdk::metrics::Temporality::Cumulative
+        // Delta temporality: each export row contains only the per-interval
+        // increment, so SUM(value_count) across rows produces correct totals.
+        // The OTel SDK maintains separate aggregation state per reader, so
+        // the OTLP exporter continues receiving cumulative data independently.
+        opentelemetry_sdk::metrics::Temporality::Delta
     }
 }
 
