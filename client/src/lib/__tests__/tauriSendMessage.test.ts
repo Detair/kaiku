@@ -74,6 +74,27 @@ describe("updateCustomStatus", () => {
     );
   });
 
+  it("includes display_name when provided for compatibility", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: vi.fn().mockResolvedValue(""),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateCustomStatus({ text: "In queue", emoji: "X" }, "Me");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/auth\/me$/),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          status_message: "X In queue",
+          display_name: "Me",
+        }),
+      }),
+    );
+  });
+
   it("retries clear with empty string on legacy null handling", async () => {
     const firstErrorText = JSON.stringify({
       message: "Validation failed: No fields to update",

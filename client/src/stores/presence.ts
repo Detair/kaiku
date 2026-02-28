@@ -8,6 +8,7 @@
 import { createStore, produce } from "solid-js/store";
 import type {
   Activity,
+  CustomStatus,
   FocusTriggerCategory,
   UserPresence,
   UserStatus,
@@ -17,9 +18,10 @@ import {
   stopIdleDetection,
   setIdleTimeout,
 } from "@/lib/idleDetector";
-import { updateStatus } from "@/lib/tauri";
+import { updateCustomStatus, updateStatus } from "@/lib/tauri";
 import { preferences } from "./preferences";
-import { currentUser } from "./auth";
+import { currentUser, updateUser } from "./auth";
+import { setFriendsState } from "./friends";
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -304,7 +306,7 @@ export function markManualStatusChange(status: UserStatus): void {
  */
 export function patchUser(userId: string, diff: Record<string, unknown>): void {
   // Update presence state if there are presence-related fields
-  if ("status" in diff || "activity" in diff) {
+  if ("status" in diff || "activity" in diff || "status_message" in diff || "custom_status" in diff) {
     setPresenceState(
       produce((state) => {
         if (state.users[userId]) {
@@ -320,6 +322,50 @@ export function patchUser(userId: string, diff: Record<string, unknown>): void {
         }
       }),
     );
+
+    const nextFriendStatusMessage = (() => {
+      if ("custom_status" in diff) {
+        const raw = diff.custom_status;
+        if (raw && typeof raw === "object" && "text" in raw) {
+          const parsed = raw as {
+            text?: unknown;
+            emoji?: unknown;
+          };
+
+          if (typeof parsed.text === "string" && parsed.text.trim().length > 0) {
+            return `${typeof parsed.emoji === "string" ? `${parsed.emoji} ` : ""}${parsed.text}`.trim();
+          }
+        }
+
+        return null;
+      }
+
+      if ("status_message" in diff) {
+        const statusMessage = diff.status_message;
+        if (typeof statusMessage === "string" && statusMessage.trim().length > 0) {
+          return statusMessage.trim();
+        }
+
+        return null;
+      }
+
+      return undefined;
+    })();
+
+    if (nextFriendStatusMessage !== undefined) {
+      const patchStatusMessage = <T extends { user_id: string; status_message: string | null }>(
+        list: T[],
+      ): T[] =>
+        list.map((entry) =>
+          entry.user_id === userId
+            ? { ...entry, status_message: nextFriendStatusMessage }
+            : entry,
+        );
+
+      setFriendsState("friends", (prev) => patchStatusMessage(prev));
+      setFriendsState("pendingRequests", (prev) => patchStatusMessage(prev));
+      setFriendsState("blocked", (prev) => patchStatusMessage(prev));
+    }
   }
 
   // Update current user in auth store if this is the current user
@@ -345,6 +391,52 @@ export function patchUser(userId: string, diff: Record<string, unknown>): void {
         updateUser(updates);
       }
     });
+  }
+}
+
+let customStatusClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+export async function setMyCustomStatus(
+  status: CustomStatus | null,
+): Promise<void> {
+  const user = currentUser();
+  if (!user) return;
+
+  try {
+    await updateCustomStatus(status, user.display_name);
+
+    setPresenceState(
+      produce((state) => {
+        if (!state.users[user.id]) {
+          state.users[user.id] = { status: user.status };
+        }
+        state.users[user.id].customStatus = status;
+      }),
+    );
+
+    const statusMessage = status
+      ? `${status.emoji ? `${status.emoji} ` : ""}${status.text}`.trim()
+      : null;
+    updateUser({ status_message: statusMessage });
+
+    if (customStatusClearTimer) {
+      clearTimeout(customStatusClearTimer);
+      customStatusClearTimer = null;
+    }
+
+    if (status?.expiresAt) {
+      const expiresAtMs = Date.parse(status.expiresAt);
+      if (Number.isFinite(expiresAtMs)) {
+        const delayMs = expiresAtMs - Date.now();
+        if (delayMs > 0) {
+          customStatusClearTimer = setTimeout(() => {
+            void setMyCustomStatus(null);
+          }, delayMs);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[Presence] Failed to update custom status:", e);
   }
 }
 
