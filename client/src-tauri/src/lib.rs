@@ -329,7 +329,7 @@ pub struct AppState {
 impl AppState {
     fn new() -> Self {
         let http = HttpClient::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .expect("Failed to create HTTP client");
 

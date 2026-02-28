@@ -19,7 +19,13 @@ import {
   PhoneOutgoing,
   Users,
 } from "lucide-solid";
-import { callState, joinCall, declineCall, endCall } from "@/stores/call";
+import {
+  callState,
+  joinCall,
+  declineCall,
+  endCall,
+  callConnected,
+} from "@/stores/call";
 import {
   joinDMCall,
   declineDMCall,
@@ -27,6 +33,7 @@ import {
   joinVoice,
   leaveVoice,
 } from "@/lib/tauri";
+import { showToast } from "@/components/ui/Toast";
 
 interface CallBannerProps {
   channelId: string;
@@ -67,10 +74,21 @@ const CallBanner: Component<CallBannerProps> = (props) => {
     try {
       joinCall(props.channelId);
       await joinDMCall(props.channelId);
+      callConnected(props.channelId, []);
 
       const isNativeApp = typeof window !== "undefined" && "__TAURI__" in window;
       if (isNativeApp) {
-        await joinVoice(props.channelId);
+        void joinVoice(props.channelId).catch(async (voiceErr) => {
+          console.error("Failed to join voice media:", voiceErr);
+          await leaveDMCall(props.channelId).catch(() => {});
+          endCall(props.channelId, "cancelled");
+          showToast({
+            type: "error",
+            title: "Could not join voice media.",
+            message: "Please try the call again.",
+            duration: 8000,
+          });
+        });
       }
     } catch (err) {
       console.error("Failed to join call:", err);

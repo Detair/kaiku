@@ -8,7 +8,7 @@
 import { Component, Show, For } from "solid-js";
 import { dmsState, getSelectedDM } from "@/stores/dms";
 import { getUserActivity } from "@/stores/presence";
-import { currentUser } from "@/stores/auth";
+import { authState, currentUser } from "@/stores/auth";
 import { ActivityIndicator } from "@/components/ui";
 import {
   ActiveNowModule,
@@ -33,12 +33,14 @@ const HomeRightPanel: Component = () => {
         when={!dmsState.isShowingFriends && dm()}
         fallback={
           // Modular Sidebar (Friends View)
-          <div class="flex-1 flex flex-col overflow-y-auto">
-            <UnreadModule />
-            <ActiveNowModule />
-            <PendingModule />
-            <PinsModule />
-          </div>
+          <Show when={authState.isInitialized && !!authState.user}>
+            <div class="flex-1 flex flex-col overflow-y-auto">
+              <UnreadModule />
+              <ActiveNowModule />
+              <PendingModule />
+              <PinsModule />
+            </div>
+          </Show>
         }
       >
         <Show

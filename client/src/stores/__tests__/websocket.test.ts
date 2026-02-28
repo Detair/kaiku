@@ -128,6 +128,22 @@ describe("websocket store", () => {
       expect(wsState.status).toBe("disconnected");
       expect(wsState.error).toBe("Connection failed");
     });
+
+    it("re-subscribes existing channels after reconnect", async () => {
+      setWsState({
+        status: "reconnecting",
+        subscribedChannels: new Set(["ch-1", "ch-2"]),
+      });
+      vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
+      vi.mocked(tauri.wsSubscribe).mockResolvedValue(undefined);
+
+      await connect();
+
+      expect(tauri.wsConnect).toHaveBeenCalled();
+      expect(tauri.wsSubscribe).toHaveBeenCalledTimes(2);
+      expect(tauri.wsSubscribe).toHaveBeenCalledWith("ch-1");
+      expect(tauri.wsSubscribe).toHaveBeenCalledWith("ch-2");
+    });
   });
 
   describe("disconnect", () => {

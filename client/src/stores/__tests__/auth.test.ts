@@ -6,6 +6,7 @@ vi.mock("@/lib/tauri", () => ({
   register: vi.fn(),
   logout: vi.fn(),
   oidcCompleteLogin: vi.fn(),
+  getDMList: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/stores/websocket", () => ({

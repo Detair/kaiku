@@ -71,6 +71,16 @@ function registerWebSocketReconnectListener() {
   }
 }
 
+async function bootstrapDMSubscriptions(): Promise<void> {
+  try {
+    const { loadDMs } = await import("./dms");
+    await loadDMs();
+    console.log("[Auth] DM subscriptions initialized");
+  } catch (err) {
+    console.error("[Auth] Failed to initialize DM subscriptions:", err);
+  }
+}
+
 // Actions
 
 /**
@@ -117,6 +127,8 @@ export async function initAuth(): Promise<void> {
 
       // Initialize idle detection after preferences (uses idleTimeoutMinutes setting)
       initIdleDetection();
+
+      void bootstrapDMSubscriptions();
     }
   } catch (err) {
     console.error("Failed to restore session:", err);
@@ -184,6 +196,8 @@ export async function login(
 
     // Initialize idle detection after preferences (uses idleTimeoutMinutes setting)
     initIdleDetection();
+
+    void bootstrapDMSubscriptions();
 
     return result.user;
   } catch (err) {
@@ -255,6 +269,8 @@ export async function register(
     // Initialize idle detection after preferences (uses idleTimeoutMinutes setting)
     initIdleDetection();
 
+    void bootstrapDMSubscriptions();
+
     return result.user;
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -321,6 +337,8 @@ export async function loginWithOidc(
     }
 
     initIdleDetection();
+
+    void bootstrapDMSubscriptions();
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });

@@ -6,12 +6,18 @@
 
 import { createStore, produce } from "solid-js/store";
 import { startRinging, stopRinging } from "@/lib/sound/ring";
+import { dismissToast, showToast } from "@/components/ui/Toast";
 
 // Constants
 const CALL_ENDED_DISPLAY_MS = 3000;
+const INCOMING_CALL_TOAST_PREFIX = "incoming-call:";
 
 // Module-level timeout tracking for cleanup
 let callEndedTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+function incomingCallToastId(channelId: string): string {
+  return `${INCOMING_CALL_TOAST_PREFIX}${channelId}`;
+}
 
 // Call state types matching backend
 export type EndReason =
@@ -89,6 +95,33 @@ export function receiveIncomingCall(
     });
     // Start ringing for incoming call
     startRinging();
+
+    showToast({
+      id: incomingCallToastId(channelId),
+      type: "info",
+      title: `${initiatorName} is calling`,
+      message: "Incoming voice call",
+      duration: 0,
+      action: {
+        label: "Open",
+        onClick: () => {
+          void import("./dms").then(({ selectDM }) => {
+            selectDM(channelId);
+          });
+        },
+      },
+    });
+
+    if (
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      new Notification(`${initiatorName} is calling`, {
+        body: "Incoming voice call",
+        tag: incomingCallToastId(channelId),
+      });
+    }
   }
   // Always track in activeCallsByChannel for sidebar indicator
   setCallState("activeCallsByChannel", channelId, {
@@ -104,6 +137,7 @@ export function receiveIncomingCall(
 export function joinCall(channelId: string): void {
   // Stop ringing when answering the call
   stopRinging();
+  dismissToast(incomingCallToastId(channelId));
   setCallState("currentCall", {
     status: "connecting",
     channelId,
@@ -196,6 +230,7 @@ export function declineCall(channelId: string): void {
   ) {
     // Stop ringing when declining the call
     stopRinging();
+    dismissToast(incomingCallToastId(channelId));
     setCallState("currentCall", { status: "idle" });
   }
 }
@@ -221,6 +256,7 @@ export function endCall(
     duration,
   });
   // Remove from active calls
+  dismissToast(incomingCallToastId(channelId));
   setCallState(
     produce((state) => {
       delete state.activeCallsByChannel[channelId];
@@ -245,6 +281,7 @@ export function callEndedExternally(
   duration?: number,
 ): void {
   // Remove from active calls
+  dismissToast(incomingCallToastId(channelId));
   setCallState(
     produce((state) => {
       delete state.activeCallsByChannel[channelId];

@@ -37,6 +37,9 @@ const UnreadModule: Component = () => {
   let nextAllowedFetchAt = 0;
   let cooldownTimer: ReturnType<typeof setTimeout> | undefined;
   let lastRateLimitToastAt = 0;
+  let firstSuccessSeen = false;
+  let initialRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  const mountStartedAt = Date.now();
 
   const parseRetryAfterMs = (error: unknown): number | null => {
     const message = error instanceof Error ? error.message : String(error ?? "");
@@ -76,6 +79,7 @@ const UnreadModule: Component = () => {
       setUnreadData(data);
       nextAllowedFetchAt = 0;
       lastFetchTime = Date.now();
+      firstSuccessSeen = true;
     } catch (error) {
       const retryAfterMs = parseRetryAfterMs(error);
       if (retryAfterMs) {
@@ -93,6 +97,17 @@ const UnreadModule: Component = () => {
           });
         }
 
+        return;
+      }
+
+      const isEarlyStartup = Date.now() - mountStartedAt < 15_000;
+      if (!firstSuccessSeen && isEarlyStartup) {
+        if (initialRetryTimer) {
+          clearTimeout(initialRetryTimer);
+        }
+        initialRetryTimer = setTimeout(() => {
+          void fetchUnreads();
+        }, 2000);
         return;
       }
 
@@ -158,6 +173,7 @@ const UnreadModule: Component = () => {
   onCleanup(() => {
     if (wsDebounceTimer) clearTimeout(wsDebounceTimer);
     if (cooldownTimer) clearTimeout(cooldownTimer);
+    if (initialRetryTimer) clearTimeout(initialRetryTimer);
   });
 
   const totalUnread = () => unreadData()?.total ?? 0;

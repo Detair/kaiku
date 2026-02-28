@@ -1233,14 +1233,45 @@ export async function reinitWebSocketListeners(): Promise<void> {
   console.log("[WebSocket] Message handler attached to WebSocket instance");
 }
 
+async function resubscribeExistingChannels(): Promise<void> {
+  const channelIds = Array.from(wsState.subscribedChannels);
+  if (channelIds.length === 0) {
+    return;
+  }
+
+  await Promise.all(
+    channelIds.map(async (channelId) => {
+      try {
+        await tauri.wsSubscribe(channelId);
+      } catch (err) {
+        console.warn(
+          `[WebSocket] Failed to re-subscribe channel ${channelId} after reconnect:`,
+          err,
+        );
+      }
+    }),
+  );
+}
+
 /**
  * Connect to the WebSocket server.
  */
 export async function connect(): Promise<void> {
+  const previousStatus = wsState.status;
   try {
     setWsState({ status: "connecting", error: null });
     connectStartTime = Date.now();
     await tauri.wsConnect();
+
+    await resubscribeExistingChannels();
+
+    if (!isTauri) {
+      setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+      window.dispatchEvent(new CustomEvent("ws-connected"));
+      if (previousStatus === "reconnecting") {
+        window.dispatchEvent(new CustomEvent("ws-reconnected"));
+      }
+    }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setWsState({ status: "disconnected", error });

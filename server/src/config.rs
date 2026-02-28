@@ -64,7 +64,7 @@ pub struct Config {
     /// JWT public key (PEM format, base64 encoded) for verifying tokens
     pub jwt_public_key: String,
 
-    /// JWT access token expiry in seconds (default: 900 = 15 min)
+    /// JWT access token expiry in seconds (default: 3600 = 1 hour)
     pub jwt_access_expiry: i64,
 
     /// JWT refresh token expiry in seconds (default: 604800 = 7 days)
@@ -227,7 +227,7 @@ impl Config {
             jwt_access_expiry: env::var("JWT_ACCESS_EXPIRY")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(900),
+                .unwrap_or(3600),
             jwt_refresh_expiry: env::var("JWT_REFRESH_EXPIRY")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -402,7 +402,7 @@ impl Config {
             // Test RSA key pair (2048-bit, generated for testing only)
             jwt_private_key: TEST_JWT_PRIVATE_KEY.into(),
             jwt_public_key: TEST_JWT_PUBLIC_KEY.into(),
-            jwt_access_expiry: 900,
+            jwt_access_expiry: 3600,
             jwt_refresh_expiry: 604800,
             s3_endpoint: None,
             s3_bucket: "test-bucket".into(),
