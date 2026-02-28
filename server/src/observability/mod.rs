@@ -17,6 +17,8 @@
 //! ```
 
 pub mod metrics;
+pub mod retention;
+pub mod storage;
 pub mod tracing;
 
 use opentelemetry_sdk::metrics::SdkMeterProvider;

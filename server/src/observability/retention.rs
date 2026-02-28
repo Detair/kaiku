@@ -1,0 +1,152 @@
+//! Telemetry retention and rollup refresh jobs.
+//!
+//! Runs hourly to:
+//! 1. Hard-delete rows older than 30 days from all native telemetry tables.
+//! 2. Refresh the `telemetry_trend_rollups` materialized view concurrently.
+//!
+//! Design reference: §11.5 (Retention Policies)
+
+use std::time::{Duration, Instant};
+
+use sqlx::PgPool;
+
+const RETENTION_DAYS: i32 = 30;
+
+/// Start the hourly retention and rollup refresh background task.
+///
+/// This spawns a tokio task that runs every hour. The returned `JoinHandle`
+/// should be stored alongside other background task handles in `main`.
+pub fn spawn_retention_task(pool: PgPool) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            run_retention_cycle(&pool).await;
+        }
+    })
+}
+
+/// Execute one retention + rollup refresh cycle.
+///
+/// Logs execution time and rows deleted via tracing (not to native telemetry
+/// tables, to avoid circular ingestion).
+#[tracing::instrument(skip(pool))]
+async fn run_retention_cycle(pool: &PgPool) {
+    let start = Instant::now();
+
+    let metrics_deleted = purge_old_metric_samples(pool).await;
+    let logs_deleted = purge_old_log_events(pool).await;
+    let traces_deleted = purge_old_trace_index(pool).await;
+    refresh_trend_rollups(pool).await;
+
+    let elapsed = start.elapsed();
+    tracing::info!(
+        elapsed_ms = elapsed.as_millis() as u64,
+        metrics_deleted,
+        logs_deleted,
+        traces_deleted,
+        "Telemetry retention cycle completed"
+    );
+}
+
+/// Delete metric samples older than 30 days.
+///
+/// Attempts `TimescaleDB` `drop_chunks` first for efficient chunk-level deletion.
+/// Falls back to a plain `DELETE` if `TimescaleDB` is not available.
+async fn purge_old_metric_samples(pool: &PgPool) -> i64 {
+    // Try TimescaleDB drop_chunks first (much faster for hypertables)
+    let ts_result = sqlx::query(
+        "SELECT drop_chunks('telemetry_metric_samples', older_than => INTERVAL '30 days')",
+    )
+    .execute(pool)
+    .await;
+
+    match ts_result {
+        Ok(_) => {
+            tracing::debug!("Used TimescaleDB drop_chunks for metric samples");
+            // drop_chunks doesn't return affected row count easily, report 0
+            0
+        }
+        Err(_) => {
+            // Fallback: plain DELETE
+            match sqlx::query(
+                "DELETE FROM telemetry_metric_samples WHERE ts < NOW() - make_interval(days => $1)",
+            )
+            .bind(RETENTION_DAYS)
+            .execute(pool)
+            .await
+            {
+                Ok(result) => result.rows_affected() as i64,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to purge old metric samples");
+                    0
+                }
+            }
+        }
+    }
+}
+
+/// Delete log events older than 30 days.
+async fn purge_old_log_events(pool: &PgPool) -> i64 {
+    match sqlx::query(
+        "DELETE FROM telemetry_log_events WHERE ts < NOW() - make_interval(days => $1)",
+    )
+    .bind(RETENTION_DAYS)
+    .execute(pool)
+    .await
+    {
+        Ok(result) => result.rows_affected() as i64,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to purge old log events");
+            0
+        }
+    }
+}
+
+/// Delete trace index entries older than 30 days.
+async fn purge_old_trace_index(pool: &PgPool) -> i64 {
+    match sqlx::query(
+        "DELETE FROM telemetry_trace_index WHERE ts < NOW() - make_interval(days => $1)",
+    )
+    .bind(RETENTION_DAYS)
+    .execute(pool)
+    .await
+    {
+        Ok(result) => result.rows_affected() as i64,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to purge old trace index entries");
+            0
+        }
+    }
+}
+
+/// Refresh the trend rollups materialized view concurrently.
+///
+/// `CONCURRENTLY` allows reads during refresh (requires the unique index).
+async fn refresh_trend_rollups(pool: &PgPool) {
+    let start = Instant::now();
+    match sqlx::query("REFRESH MATERIALIZED VIEW CONCURRENTLY telemetry_trend_rollups")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => {
+            tracing::debug!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "Refreshed telemetry_trend_rollups"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to refresh telemetry_trend_rollups");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retention_days_is_30() {
+        assert_eq!(RETENTION_DAYS, 30);
+    }
+}
