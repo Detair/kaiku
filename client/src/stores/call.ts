@@ -64,6 +64,7 @@ const [callState, setCallState] = createStore<CallStoreState>({
  * Start an outgoing call.
  */
 export function startCall(channelId: string): void {
+  stopRinging();
   setCallState("currentCall", {
     status: "outgoing_ringing",
     channelId,
@@ -163,6 +164,11 @@ export function participantJoined(channelId: string, userId: string): void {
 export function participantLeft(channelId: string, userId: string): void {
   const current = callState.currentCall;
   if (current.status === "connected" && current.channelId === channelId) {
+    const remaining = current.participants.filter((id) => id !== userId);
+    if (remaining.length === 0) {
+      endCall(channelId, "last_left");
+      return;
+    }
     setCallState(
       produce((state) => {
         if (state.currentCall.status === "connected") {
@@ -171,6 +177,12 @@ export function participantLeft(channelId: string, userId: string): void {
         }
       }),
     );
+  } else if (
+    (current.status === "outgoing_ringing" || current.status === "connecting") &&
+    current.channelId === channelId
+  ) {
+    endCall(channelId, "last_left");
+    return;
   }
   // Update active calls
   setCallState(
@@ -180,6 +192,9 @@ export function participantLeft(channelId: string, userId: string): void {
           state.activeCallsByChannel[channelId].participants.filter(
             (id) => id !== userId,
           );
+        if (state.activeCallsByChannel[channelId].participants.length === 0) {
+          delete state.activeCallsByChannel[channelId];
+        }
       }
     }),
   );

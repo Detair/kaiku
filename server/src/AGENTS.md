@@ -2,7 +2,7 @@
 # Server Source Code
 
 ## Purpose
-Core implementation of the VoiceChat server. Contains all business logic, API handlers, service modules, and data layer integration. Entry point is `main.rs`, which orchestrates initialization of all services.
+Core implementation of the Kaiku server. Contains all business logic, API handlers, service modules, and data layer integration. Entry point is `main.rs`, which orchestrates initialization of all services.
 
 ## Key Files
 - `main.rs` - Server entry point, initializes all services and starts HTTP/WebSocket server

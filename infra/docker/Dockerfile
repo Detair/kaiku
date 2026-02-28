@@ -44,9 +44,9 @@ RUN cargo build --release --package vc-server
 # ============================================================================
 FROM bitnami/minideb:bookworm AS runtime
 
-LABEL org.opencontainers.image.title="VoiceChat Server"
+LABEL org.opencontainers.image.title="Kaiku Server"
 LABEL org.opencontainers.image.description="Self-hosted voice and text chat platform"
-LABEL org.opencontainers.image.vendor="Canis"
+LABEL org.opencontainers.image.vendor="Kaiku"
 LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 # Install minimal runtime dependencies

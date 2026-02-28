@@ -7,8 +7,9 @@
 import { createStore } from "solid-js/store";
 import type { DMListItem, Message } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
-import { subscribeChannel } from "@/stores/websocket";
+import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
+import { currentUser } from "@/stores/auth";
 
 interface DMsStoreState {
   dms: DMListItem[];
@@ -38,38 +39,25 @@ export async function loadDMs(): Promise<void> {
     const dms = await tauri.getDMList();
     setDmsState({ dms, isLoading: false });
 
-    // Wait for WebSocket to be fully connected before subscribing
-    // Poll for connection status with timeout
-    const maxWaitMs = 5000;
-    const pollIntervalMs = 100;
-    let waited = 0;
-
-    while (waited < maxWaitMs) {
-      const status = await tauri.wsStatus();
-      if (status.type === "connected") {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      waited += pollIntervalMs;
-    }
-
-    const finalStatus = await tauri.wsStatus();
-    if (finalStatus.type !== "connected") {
+    // Wait for WebSocket to be fully connected before subscribing (event-driven)
+    const connected = await waitForConnection();
+    if (!connected) {
       console.warn(
         "[DMs] WebSocket not connected after waiting, skipping subscriptions",
       );
       return;
     }
 
-    // Subscribe to all DM channels for real-time events (messages, calls, etc.)
-    for (const dm of dms) {
-      try {
-        await subscribeChannel(dm.id);
-        console.log(`[DMs] Subscribed to channel ${dm.id}`);
-      } catch (err) {
-        console.warn(`Failed to subscribe to DM channel ${dm.id}:`, err);
-      }
-    }
+    // Subscribe to all DM channels in parallel for real-time events
+    await Promise.all(
+      dms.map((dm) =>
+        subscribeChannel(dm.id)
+          .then(() => console.log(`[DMs] Subscribed to channel ${dm.id}`))
+          .catch((err) =>
+            console.warn(`Failed to subscribe to DM channel ${dm.id}:`, err),
+          ),
+      ),
+    );
   } catch (err) {
     console.error("Failed to load DMs:", err);
     setDmsState({
@@ -106,6 +94,10 @@ export function updateDMLastMessage(channelId: string, message: Message): void {
   const dmIndex = dmsState.dms.findIndex((d) => d.id === channelId);
   if (dmIndex === -1) return;
 
+  const isOwnMessage = message.author.id === currentUser()?.id;
+  const isSelectedDM = dmsState.selectedDMId === channelId && !dmsState.isShowingFriends;
+  const shouldIncrementUnread = !isOwnMessage && !isSelectedDM;
+
   setDmsState("dms", dmIndex, {
     last_message: {
       id: message.id,
@@ -114,7 +106,9 @@ export function updateDMLastMessage(channelId: string, message: Message): void {
       username: message.author.username,
       created_at: message.created_at,
     },
-    unread_count: dmsState.dms[dmIndex].unread_count + 1,
+    unread_count: shouldIncrementUnread
+      ? dmsState.dms[dmIndex].unread_count + 1
+      : dmsState.dms[dmIndex].unread_count,
   });
 
   // Re-sort DMs by last message time

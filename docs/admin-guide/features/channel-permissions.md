@@ -669,4 +669,4 @@ const VIEW_CHANNEL:         i64 = 1 << 24; // 16777216 ⭐ NEW
 
 **Document Version:** 1.0
 **Last Reviewed:** 2026-02-03
-**Authors:** VoiceChat Team
+**Authors:** Kaiku Team

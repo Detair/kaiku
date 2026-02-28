@@ -1,4 +1,4 @@
-# VoiceChat Platform - Technical Architecture
+# Kaiku Platform - Technical Architecture
 
 ## Architecture Overview
 

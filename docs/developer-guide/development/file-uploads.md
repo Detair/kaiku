@@ -2,7 +2,7 @@
 
 ## Overview
 
-File uploads in VoiceChat require S3-compatible storage. For local development, we use RustFS, an Apache-2.0 licensed, Rust-native, S3-compatible storage server.
+File uploads in Kaiku require S3-compatible storage. For local development, we use RustFS, an Apache-2.0 licensed, Rust-native, S3-compatible storage server.
 
 ## Setup
 

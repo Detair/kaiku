@@ -79,7 +79,7 @@ Icons are referenced in `tauri.conf.json`:
 
 ### Current Status
 
-Icons are placeholder files. Replace with actual VoiceChat branding before production release.
+Icons are placeholder files. Replace with actual Kaiku branding before production release.
 
 ## Dependencies
 

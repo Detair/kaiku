@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "VoiceChat",
+  "productName": "Kaiku",
   "identifier": "com.voicechat.app",
   "version": "0.1.0",
   "build": {
@@ -16,7 +16,7 @@
     },
     "windows": [
       {
-        "title": "VoiceChat",
+        "title": "Kaiku",
         "width": 1200,
         "height": 800,
         "minWidth": 800,

@@ -383,7 +383,10 @@ const MessageList: Component<MessageListProps> = (props) => {
                 <div
                   role="listitem"
                   data-index={virtualItem.index}
-                  ref={(el) => virtualizer.measureElement(el)}
+                  ref={(el) => {
+                    el.setAttribute("data-index", String(virtualItem.index));
+                    virtualizer.measureElement(el);
+                  }}
                   style={{
                     position: "absolute",
                     top: `${virtualItem.start}px`,

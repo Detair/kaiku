@@ -1,11 +1,11 @@
-# VoiceChat Project Audit
+# Kaiku Project Audit
 
 Date: 2026-02-14
 Scope reviewed: `docs/project/roadmap.md`, `CHANGELOG.md`, `docs/plans/*.md`
 
 ## What this project is about
 
-VoiceChat is a self-hosted voice/text collaboration platform for gaming communities, built to evolve from a prototype into a production-grade, multi-tenant SaaS-capable system.
+Kaiku is a self-hosted voice/text collaboration platform for gaming communities, built to evolve from a prototype into a production-grade, multi-tenant SaaS-capable system.
 
 From the roadmap, changelog, and plans, the core strategic direction is:
 - deliver Discord-like core collaboration (guilds, channels, DMs, voice/video),

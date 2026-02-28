@@ -1,4 +1,4 @@
-# VoiceChat Platform — Claude Code Projektkontext
+# Kaiku Platform — Claude Code Projektkontext
 
 Self-hosted Voice/Text-Chat für Gaming-Communities. Rust (Server + Tauri Client), Solid.js (Frontend), PostgreSQL, Valkey.
 **Lizenz:** MIT OR Apache-2.0 (Dual License)

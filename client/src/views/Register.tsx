@@ -189,7 +189,7 @@ const Register: Component = () => {
           Create an account
         </h1>
         <p class="text-text-secondary text-center mb-6">
-          Join VoiceChat to start chatting
+          Join Kaiku to start chatting
         </p>
 
         {/* Server URL (always shown) */}

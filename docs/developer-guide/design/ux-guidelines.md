@@ -1,6 +1,6 @@
 # UX Design Guidelines & Philosophie
 
-Dieses Dokument definiert die UX-Strategie für Canis. Ziel ist es, das etablierte "Gaming-Chat"-Modell (Discord/Teamspeak) durch moderne Effizienz-Patterns zu verbessern, ohne die Vertrautheit für Gamer zu opfern.
+Dieses Dokument definiert die UX-Strategie für Kaiku. Ziel ist es, das etablierte "Gaming-Chat"-Modell (Discord/Teamspeak) durch moderne Effizienz-Patterns zu verbessern, ohne die Vertrautheit für Gamer zu opfern.
 
 ---
 

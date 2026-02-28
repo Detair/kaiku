@@ -3,7 +3,7 @@
 
 ## Purpose
 
-Playwright end-to-end tests for the VoiceChat client. Tests user flows through the actual application UI.
+Playwright end-to-end tests for the Kaiku client. Tests user flows through the actual application UI.
 
 ## Key Files
 

@@ -3,7 +3,7 @@
 
 ## Purpose
 
-Integration tests for the VoiceChat server. Tests API endpoints, WebSocket connections, and cross-service interactions with real database and Redis instances.
+Integration tests for the Kaiku server. Tests API endpoints, WebSocket connections, and cross-service interactions with real database and Redis instances.
 
 ## Key Files
 

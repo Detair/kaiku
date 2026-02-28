@@ -1,4 +1,4 @@
-# VoiceChat Development Makefile
+# Kaiku Development Makefile
 #
 # Usage: make <target>
 # Run `make help` to see all available targets.
@@ -27,7 +27,7 @@ COMPOSE_CMD := $(shell if command -v docker >/dev/null 2>&1; then echo "docker c
 
 help: ## Show this help message
 	@echo ""
-	@echo "$(CYAN)VoiceChat Development Commands$(RESET)"
+	@echo "$(CYAN)Kaiku Development Commands$(RESET)"
 	@echo ""
 	@echo "$(GREEN)Setup:$(RESET)"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E "setup|install" | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-15s$(RESET) %s\n", $$1, $$2}'

@@ -9,7 +9,7 @@
  * - Active: rounded-[16px] + white "pill" indicator on left
  *
  * Structure:
- * - Top: "Canis Home" logo (Unified Home dashboard)
+ * - Top: "Kaiku Home" logo (Unified Home dashboard)
  * - Middle: Server/Guild icons (scrollable)
  * - Bottom: "Create Server" (+) button, "Join Server" button
  */
@@ -63,7 +63,7 @@ const ServerRail: Component = () => {
 
   return (
     <aside class="w-[72px] flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-white/10 z-20">
-      {/* Home Icon - Canis Logo */}
+      {/* Home Icon - Kaiku Logo */}
       <div class="relative">
         {/* Pill Indicator */}
         <div

@@ -1,4 +1,4 @@
-# VoiceChat Platform – Project Personas
+# Kaiku Platform – Project Personas
 
 This document defines the personas used as perspectives in design decisions, code reviews, and feature discussions. Each persona represents an important stakeholder view on the project.
 

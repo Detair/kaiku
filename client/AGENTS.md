@@ -2,7 +2,7 @@
 # Client
 
 ## Purpose
-Desktop client for the VoiceChat platform. Built with Tauri 2.0 (Rust backend) and Solid.js (frontend), providing a lightweight alternative to Electron-based clients.
+Desktop client for the Kaiku platform. Built with Tauri 2.0 (Rust backend) and Solid.js (frontend), providing a lightweight alternative to Electron-based clients.
 
 **Target:** <100MB RAM (vs Discord ~400MB)
 

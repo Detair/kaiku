@@ -1,6 +1,6 @@
 # Development Setup Guide
 
-This guide covers setting up the VoiceChat development environment.
+This guide covers setting up the Kaiku development environment.
 
 ## Standardized Multi-Project Setup
 

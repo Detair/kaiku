@@ -269,6 +269,31 @@ export async function sendMessage(
 
   setMessagesState({ error: null });
 
+  // Build an optimistic (pending) message so the UI updates instantly
+  const user = currentUser();
+  const pendingId = `pending:${crypto.randomUUID()}`;
+  const optimisticMessage: Message = {
+    id: pendingId,
+    channel_id: channelId,
+    author: user
+      ? { id: user.id, username: user.username, display_name: user.display_name, avatar_url: user.avatar_url, status: user.status }
+      : { id: "", username: "You", display_name: "You", avatar_url: null, status: "online" },
+    content: trimmedContent,
+    encrypted: false,
+    attachments: [],
+    reply_to: null,
+    parent_id: null,
+    thread_reply_count: 0,
+    thread_last_reply_at: null,
+    edited_at: null,
+    created_at: new Date().toISOString(),
+    mention_type: null,
+  };
+
+  // Show immediately
+  const prev = messagesState.byChannel[channelId] || [];
+  setMessagesState("byChannel", channelId, [...prev, optimisticMessage]);
+
   try {
     const { message, status } = await tauri.sendMessageWithStatus(
       channelId,
@@ -278,14 +303,28 @@ export async function sendMessage(
     // Slash command invocations return 202 Accepted and are not persisted as messages.
     const suppressLocalEcho = status === 202;
 
-    // Add the sent message to the store (check for duplicates since WebSocket may have already added it)
-    const prev = messagesState.byChannel[channelId] || [];
-    if (!suppressLocalEcho && !prev.some((m) => m.id === message.id)) {
-      setMessagesState("byChannel", channelId, [...prev, message]);
+    // Replace the optimistic message with the real one from the server
+    const current = messagesState.byChannel[channelId] || [];
+    if (suppressLocalEcho) {
+      // Remove optimistic message for slash commands
+      setMessagesState("byChannel", channelId, current.filter((m) => m.id !== pendingId));
+    } else {
+      // Swap pending for real — also deduplicate in case WebSocket echo arrived first
+      const withoutPending = current.filter((m) => m.id !== pendingId);
+      if (!withoutPending.some((m) => m.id === message.id)) {
+        setMessagesState("byChannel", channelId, [...withoutPending, message]);
+      } else {
+        // WebSocket echo already added the real message; just drop the pending one
+        setMessagesState("byChannel", channelId, withoutPending);
+      }
     }
 
     return message;
   } catch (err) {
+    // Remove the optimistic message on failure
+    const current = messagesState.byChannel[channelId] || [];
+    setMessagesState("byChannel", channelId, current.filter((m) => m.id !== pendingId));
+
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to send message:", error);
     showToast({ type: "error", title: "Send Failed", message: "Could not send message. Please try again.", duration: 8000 });
@@ -315,7 +354,11 @@ export async function addMessage(message: Message): Promise<void> {
   if (existing.some((m) => m.id === processedMessage.id)) {
     return;
   }
-  setMessagesState("byChannel", channelId, [...existing, processedMessage]);
+  // If this is a confirmed echo of our own message, replace the pending placeholder
+  const me = currentUser();
+  const hasPending = me && processedMessage.author.id === me.id && existing.some((m) => m.id.startsWith("pending:"));
+  const base = hasPending ? existing.filter((m) => !m.id.startsWith("pending:")) : existing;
+  setMessagesState("byChannel", channelId, [...base, processedMessage]);
 }
 
 /**

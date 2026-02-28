@@ -2,7 +2,7 @@
 
 ## Overview
 
-Native mobile app for the VoiceChat platform. **Android first** (Jetpack Compose + Kotlin), iOS later (SwiftUI + Swift). Shared Rust core library via **UniFFI** reusing existing `vc-crypto` crate. Includes 4 new MFA/auth mechanisms: QR Challenge-Response, QR Device Linking, FIDO2/Passkey, and Proximity-Based LAN Transfer.
+Native mobile app for the Kaiku platform. **Android first** (Jetpack Compose + Kotlin), iOS later (SwiftUI + Swift). Shared Rust core library via **UniFFI** reusing existing `vc-crypto` crate. Includes 4 new MFA/auth mechanisms: QR Challenge-Response, QR Device Linking, FIDO2/Passkey, and Proximity-Based LAN Transfer.
 
 ---
 
@@ -41,7 +41,7 @@ canis-mobile/
       app/
         build.gradle.kts
         src/main/java/io/wolftown/canis/
-          CanisApplication.kt
+          KaikuApplication.kt
           di/                          # Hilt DI modules
           data/repository/             # AuthRepository, ChatRepository, etc.
           data/local/                  # Room DB, EncryptedSharedPreferences

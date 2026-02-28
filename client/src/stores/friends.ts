@@ -110,11 +110,40 @@ export async function sendFriendRequest(username: string): Promise<void> {
  * Accept a friend request
  */
 export async function acceptFriendRequest(friendshipId: string): Promise<void> {
+  const pendingSnapshot = friendsState.pendingRequests;
+  const acceptedRequest = pendingSnapshot.find(
+    (request) => request.friendship_id === friendshipId,
+  );
+
+  if (acceptedRequest) {
+    setFriendsState({
+      pendingRequests: pendingSnapshot.filter(
+        (request) => request.friendship_id !== friendshipId,
+      ),
+    });
+  }
+
   try {
     await tauri.acceptFriendRequest(friendshipId);
-    // Reload both friends and pending lists
-    await Promise.all([loadFriends(), loadPendingRequests()]);
+
+    showToast({
+      type: "success",
+      title: "Friend Request Accepted",
+      message: `${acceptedRequest?.display_name ?? "Friend"} is now in your friends list.`,
+      duration: 3000,
+    });
+
+    const [friends, pendingRequests] = await Promise.all([
+      tauri.getFriends(),
+      tauri.getPendingFriends(),
+    ]);
+
+    setFriendsState({ friends, pendingRequests });
   } catch (err) {
+    if (acceptedRequest) {
+      setFriendsState({ pendingRequests: pendingSnapshot });
+    }
+
     console.error("Failed to accept friend request:", err);
     showToast({
       type: "error",

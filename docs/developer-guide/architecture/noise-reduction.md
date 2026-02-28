@@ -1,6 +1,6 @@
 # Noise Reduction Specification
 
-This document outlines the strategy for implementing background noise reduction in the VoiceChat platform (Canis), catering to both Desktop (Tauri) and Browser clients.
+This document outlines the strategy for implementing background noise reduction in the Kaiku platform (Kaiku), catering to both Desktop (Tauri) and Browser clients.
 
 ## Strategy: The Hybrid "Tiered" Approach
 

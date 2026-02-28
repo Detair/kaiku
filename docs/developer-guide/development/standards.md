@@ -1,4 +1,4 @@
-# VoiceChat Platform - Standards & Protocols
+# Kaiku Platform - Standards & Protocols
 
 This document lists all open standards, protocols, and libraries used. The goal is to minimize custom development and rely on proven, tested solutions.
 

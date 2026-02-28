@@ -2,7 +2,7 @@
 
 ## Overview
 
-A two-tier permission system for the VoiceChat platform, separating system-level administration from guild-level management. Designed with security-first principles including sudo-style elevation, privilege escalation prevention, and hardened emergency procedures.
+A two-tier permission system for the Kaiku platform, separating system-level administration from guild-level management. Designed with security-first principles including sudo-style elevation, privilege escalation prevention, and hardened emergency procedures.
 
 **Date:** 2026-01-13
 **Status:** Design Complete

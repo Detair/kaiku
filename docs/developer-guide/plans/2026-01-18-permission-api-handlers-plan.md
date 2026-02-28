@@ -596,7 +596,7 @@ pub fn router() -> Router<AppState> {
 Modify `server/src/lib.rs`:
 
 ```rust
-//! `VoiceChat` Server
+//! `Kaiku` Server
 //!
 //! Self-hosted voice and text chat platform for gaming communities.
 //! Optimized for low latency (<50ms), high quality, and maximum security.

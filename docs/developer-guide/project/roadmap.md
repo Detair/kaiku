@@ -1,4 +1,4 @@
-# VoiceChat (Canis) Roadmap
+# Kaiku Roadmap
 
 This roadmap outlines the development path from the current prototype to a production-ready, multi-tenant SaaS platform.
 
@@ -577,7 +577,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
   - Configurable limits (`MAX_WORKSPACES_PER_USER`, `MAX_ENTRIES_PER_WORKSPACE`), atomic CTE for concurrency safety, 17 integration tests.
 - [ ] **[Content] Sovereign Guild Model (BYO Infrastructure)** *(Optional — future consideration)* ([Design](../plans/2026-02-15-phase-6-sovereign-livekit-design.md), [Implementation](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md))
   - **Context:** Provide ultimate data ownership for privacy-conscious groups.
-  - **Strategy:** Allow Guild Admins in the SaaS version to provide their own **S3 API** keys and **SFU Relay** configurations, ensuring their media and voice traffic never touches Canis-owned storage.
+  - **Strategy:** Allow Guild Admins in the SaaS version to provide their own **S3 API** keys and **SFU Relay** configurations, ensuring their media and voice traffic never touches Kaiku-owned storage.
 - [ ] **[Voice] Live Session Toolkits** ([Design](../plans/2026-02-15-phase-6-sovereign-livekit-design.md), [Implementation](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md))
   - **Context:** Turn voice channels into productive spaces.
   - **Strategy:** 
