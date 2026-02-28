@@ -125,6 +125,8 @@ pub struct LogFilter {
 #[derive(Debug, Clone, Default)]
 pub struct TraceFilter {
     pub status_code: Option<String>,
+    /// When true, filter to any 5xx status code (overrides `status_code`).
+    pub is_error: bool,
     pub domain: Option<String>,
     pub route: Option<String>,
     pub duration_min: Option<i32>,
@@ -367,16 +369,18 @@ pub async fn query_traces(
          WHERE ts >= $1 \
            AND ts <= $2 \
            AND ($3::text IS NULL OR status_code = $3) \
-           AND ($4::text IS NULL OR domain = $4) \
-           AND ($5::text IS NULL OR route = $5) \
-           AND ($6::int IS NULL OR duration_ms >= $6) \
-           AND ($7::uuid IS NULL OR id < $7) \
+           AND ($4::bool IS NOT TRUE OR status_code LIKE '5%') \
+           AND ($5::text IS NULL OR domain = $5) \
+           AND ($6::text IS NULL OR route = $6) \
+           AND ($7::int IS NULL OR duration_ms >= $7) \
+           AND ($8::uuid IS NULL OR id < $8) \
          ORDER BY id DESC \
-         LIMIT $8",
+         LIMIT $9",
     )
     .bind(from)
     .bind(filter.to)
     .bind(filter.status_code.as_deref())
+    .bind(filter.is_error)
     .bind(filter.domain.as_deref())
     .bind(filter.route.as_deref())
     .bind(filter.duration_min)

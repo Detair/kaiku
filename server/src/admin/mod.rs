@@ -6,6 +6,7 @@
 
 pub mod handlers;
 pub mod middleware;
+pub mod observability;
 pub mod types;
 
 use axum::middleware::from_fn_with_state;
@@ -158,6 +159,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/elevate",
             post(handlers::elevate_session).delete(handlers::de_elevate_session),
         )
+        .nest("/observability", observability::router())
         .merge(elevated_routes)
         .layer(from_fn_with_state(state, require_system_admin));
 
