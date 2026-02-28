@@ -341,6 +341,72 @@ const browserState = {
   refreshTimer: null as ReturnType<typeof setTimeout> | null,
 };
 
+type BrowserPresenceStatus =
+  | "online"
+  | "idle"
+  | "dnd"
+  | "invisible"
+  | "offline";
+
+const PREFERRED_STATUS_KEY = "vc:preferred-status";
+const VALID_PREFERRED_STATUSES: ReadonlySet<string> = new Set([
+  "online",
+  "idle",
+  "dnd",
+  "invisible",
+  "offline",
+]);
+
+function readPreferredStatus(): BrowserPresenceStatus | null {
+  if (typeof localStorage === "undefined") {
+    return null;
+  }
+
+  const value = localStorage.getItem(PREFERRED_STATUS_KEY);
+  if (!value || !VALID_PREFERRED_STATUSES.has(value)) {
+    return null;
+  }
+
+  return value as BrowserPresenceStatus;
+}
+
+export function getPreferredStatus(): BrowserPresenceStatus | null {
+  return readPreferredStatus();
+}
+
+export function setPreferredStatus(status: BrowserPresenceStatus): void {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+
+  localStorage.setItem(PREFERRED_STATUS_KEY, status);
+}
+
+function normalizeUserStatus(status: string): BrowserPresenceStatus {
+  const normalized = status.toLowerCase();
+
+  if (normalized === "away") {
+    return "idle";
+  }
+
+  if (normalized === "busy") {
+    return "dnd";
+  }
+
+  if (VALID_PREFERRED_STATUSES.has(normalized)) {
+    return normalized as BrowserPresenceStatus;
+  }
+
+  return "offline";
+}
+
+function normalizeUserModel(user: User): User {
+  return {
+    ...user,
+    status: normalizeUserStatus(String(user.status)),
+  };
+}
+
 // Initialize from localStorage if available
 if (typeof localStorage !== "undefined") {
   browserState.serverUrl =
@@ -631,7 +697,7 @@ export async function login(
   );
 
   // Fetch user profile after login
-  const user = await httpRequest<User>("GET", "/auth/me");
+  const user = normalizeUserModel(await httpRequest<User>("GET", "/auth/me"));
 
   return {
     user,
@@ -714,7 +780,7 @@ export async function register(
   );
 
   // Fetch user profile after registration
-  const user = await httpRequest<User>("GET", "/auth/me");
+  const user = normalizeUserModel(await httpRequest<User>("GET", "/auth/me"));
 
   return {
     user,
@@ -765,7 +831,7 @@ export async function getCurrentUser(): Promise<User | null> {
   }
 
   try {
-    return await httpRequest<User>("GET", "/auth/me");
+    return normalizeUserModel(await httpRequest<User>("GET", "/auth/me"));
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.warn(`[Auth] Failed to fetch current user: ${errorMessage}`);
@@ -811,7 +877,7 @@ export async function getCurrentUser(): Promise<User | null> {
       const refreshed = await refreshAccessToken();
       if (refreshed) {
         try {
-          return await httpRequest<User>("GET", "/auth/me");
+          return normalizeUserModel(await httpRequest<User>("GET", "/auth/me"));
         } catch (retryError) {
           console.error("[Auth] Retry after refresh failed:", retryError);
           // Refresh didn't help, clear everything below
@@ -2490,6 +2556,18 @@ export async function wsConnect(): Promise<void> {
         console.log("[WebSocket] Event listeners reinitialized");
       } catch (err) {
         console.error("[WebSocket] Failed to reinitialize listeners:", err);
+      }
+
+      const preferredStatus = getPreferredStatus();
+      if (preferredStatus) {
+        try {
+          await updateStatus(preferredStatus);
+        } catch (statusErr) {
+          console.warn(
+            "[WebSocket] Failed to reapply preferred status:",
+            statusErr,
+          );
+        }
       }
 
       resolve();

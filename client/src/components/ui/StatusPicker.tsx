@@ -1,8 +1,8 @@
 import { Component, For, Show, createMemo } from "solid-js";
 import { Crosshair } from "lucide-solid";
 import { UserStatus } from "@/lib/types";
-import * as tauri from "@/lib/tauri";
-import { markManualStatusChange } from "@/stores/presence";
+import { setPreferredStatus } from "@/lib/tauri";
+import { markManualStatusChange, setMyStatus } from "@/stores/presence";
 import {
   focusState,
   getActiveFocusMode,
@@ -29,7 +29,8 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
   const handleSelect = async (status: UserStatus) => {
     try {
       markManualStatusChange(status);
-      await tauri.updateStatus(status);
+      setPreferredStatus(status);
+      await setMyStatus(status);
       props.onClose();
     } catch (err) {
       console.error("Failed to set status:", err);

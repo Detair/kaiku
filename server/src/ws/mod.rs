@@ -194,9 +194,7 @@ pub enum ClientEvent {
     },
 
     /// Set user status (online, away, busy, offline).
-    SetStatus {
-        status: crate::db::UserStatus,
-    },
+    SetStatus { status: crate::db::UserStatus },
 
     /// Subscribe to admin events (requires elevated admin).
     AdminSubscribe,
@@ -1097,6 +1095,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         warn!("Failed to update presence: {}", e);
     }
 
+    let online_event = ServerEvent::PresenceUpdate {
+        user_id,
+        status: "online".to_string(),
+    };
+    broadcast_presence_update(&state, user_id, &online_event).await;
+
     info!("WebSocket connected: user={}", user_id);
     crate::observability::metrics::record_ws_connect();
 
@@ -1255,6 +1259,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     if let Err(e) = update_presence(&state, user_id, "offline").await {
         warn!("Failed to update presence on disconnect: {}", e);
     }
+
+    let offline_event = ServerEvent::PresenceUpdate {
+        user_id,
+        status: "offline".to_string(),
+    };
+    broadcast_presence_update(&state, user_id, &offline_event).await;
 
     info!("WebSocket disconnected: user={}", user_id);
     crate::observability::metrics::record_ws_disconnect();

@@ -17,9 +17,10 @@ import {
   removeFriend,
   unblockUser,
 } from "@/stores/friends";
-import { getUserActivity } from "@/stores/presence";
+import { getUserActivity, getUserStatus } from "@/stores/presence";
 import type { Friend } from "@/lib/types";
 import { ActivityIndicator } from "@/components/ui";
+import StatusIndicator from "@/components/ui/StatusIndicator";
 import { showToast } from "@/components/ui/Toast";
 import AddFriend from "./AddFriend";
 
@@ -272,6 +273,15 @@ interface FriendItemProps {
 }
 
 const FriendItem: Component<FriendItemProps> = (props) => {
+  const status = () => {
+    const presenceStatus = getUserStatus(props.friend.user_id);
+    if (presenceStatus !== "offline") {
+      return presenceStatus;
+    }
+
+    return props.friend.is_online ? "online" : "offline";
+  };
+
   return (
     <div class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors">
       {/* Avatar */}
@@ -279,8 +289,8 @@ const FriendItem: Component<FriendItemProps> = (props) => {
         <div class="w-10 h-10 rounded-full bg-accent-primary flex items-center justify-center font-semibold text-white">
           {props.friend.display_name.charAt(0).toUpperCase()}
         </div>
-        <Show when={props.friend.is_online && props.tab !== "blocked"}>
-          <div class="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-surface-base rounded-full" />
+        <Show when={props.tab !== "blocked"}>
+          <StatusIndicator status={status()} size="sm" overlay />
         </Show>
       </div>
 

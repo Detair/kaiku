@@ -19,7 +19,7 @@ import {
 } from "@/lib/idleDetector";
 import { updateStatus } from "@/lib/tauri";
 import { preferences } from "./preferences";
-import { currentUser } from "./auth";
+import { currentUser, updateUser } from "./auth";
 
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
@@ -40,6 +40,30 @@ const [presenceState, setPresenceState] = createStore<PresenceState>({
 // Event listener cleanup
 let unlistener: UnlistenFn | null = null;
 let activityUnlistener: UnlistenFn | null = null;
+
+export function normalizePresenceStatus(status: string): UserStatus {
+  const normalized = status.toLowerCase();
+
+  if (normalized === "away") {
+    return "idle";
+  }
+
+  if (normalized === "busy") {
+    return "dnd";
+  }
+
+  if (
+    normalized === "online" ||
+    normalized === "idle" ||
+    normalized === "dnd" ||
+    normalized === "invisible" ||
+    normalized === "offline"
+  ) {
+    return normalized;
+  }
+
+  return "offline";
+}
 
 /**
  * Initialize presence event listeners.
@@ -125,16 +149,24 @@ export function updateUserPresence(
   status: UserStatus,
   activity?: Activity | null,
 ): void {
+  const normalizedStatus = normalizePresenceStatus(status);
+
   setPresenceState(
     produce((state) => {
       state.users[userId] = {
-        status,
+        status: normalizedStatus,
         activity:
           activity !== undefined ? activity : state.users[userId]?.activity,
-        lastSeen: status === "offline" ? new Date().toISOString() : undefined,
+        lastSeen:
+          normalizedStatus === "offline" ? new Date().toISOString() : undefined,
       };
     }),
   );
+
+  const user = currentUser();
+  if (user && user.id === userId && user.status !== normalizedStatus) {
+    updateUser({ status: normalizedStatus });
+  }
 }
 
 /**
@@ -167,7 +199,7 @@ export function setInitialPresence(
   setPresenceState(
     produce((state) => {
       for (const user of users) {
-        state.users[user.id] = { status: user.status };
+        state.users[user.id] = { status: normalizePresenceStatus(user.status) };
       }
     }),
   );
@@ -177,7 +209,8 @@ export function setInitialPresence(
  * Get a user's presence status.
  */
 export function getUserStatus(userId: string): UserStatus {
-  return presenceState.users[userId]?.status ?? "offline";
+  const status = presenceState.users[userId]?.status;
+  return status ? normalizePresenceStatus(status) : "offline";
 }
 
 /**
@@ -230,6 +263,7 @@ export async function setMyStatus(status: UserStatus): Promise<void> {
   try {
     await updateStatus(status);
     updateUserPresence(user.id, status);
+    updateUser({ status });
   } catch (e) {
     console.error("[Presence] Failed to update status:", e);
   }
@@ -308,7 +342,9 @@ export function patchUser(userId: string, diff: Record<string, unknown>): void {
       produce((state) => {
         if (state.users[userId]) {
           if ("status" in diff) {
-            state.users[userId].status = diff.status as UserStatus;
+            state.users[userId].status = normalizePresenceStatus(
+              String(diff.status),
+            );
           }
           if ("activity" in diff) {
             state.users[userId].activity = diff.activity as
@@ -331,6 +367,7 @@ export function patchUser(userId: string, diff: Record<string, unknown>): void {
         "username",
         "display_name",
         "avatar_url",
+        "status",
         "email",
         "mfa_enabled",
       ];

@@ -13,7 +13,11 @@ import type {
   ThreadInfo,
   UserStatus,
 } from "@/lib/types";
-import { updateUserActivity, updateUserPresence } from "./presence";
+import {
+  normalizePresenceStatus,
+  updateUserActivity,
+  updateUserPresence,
+} from "./presence";
 import {
   addMessage,
   removeMessage,
@@ -831,8 +835,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "presence_update":
-      updateUserPresence(event.user_id, event.status);
-      setFriendOnlineStatus(event.user_id, event.status);
+      {
+        const status = normalizePresenceStatus(String(event.status));
+        updateUserPresence(event.user_id, status);
+        setFriendOnlineStatus(event.user_id, status);
+      }
       break;
 
     case "rich_presence_update":
