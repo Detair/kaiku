@@ -20,11 +20,27 @@ vi.mock("@/components/ui/Toast", () => ({
   showToast: vi.fn(),
 }));
 
+vi.mock("@/stores/websocket", () => ({
+  waitForConnection: vi.fn(() => Promise.resolve(false)),
+  subscribeChannel: vi.fn(),
+}));
+
 // Dynamic imports used by selectGuild / selectHome — mock the modules
+vi.mock("../channels", () => ({
+  loadChannelsForGuild: vi.fn(),
+  loadDMChannels: vi.fn(),
+  channelsState: { channels: [] },
+}));
+
 vi.mock("./channels", () => ({
   loadChannelsForGuild: vi.fn(),
   loadDMChannels: vi.fn(),
   channelsState: { channels: [] },
+}));
+
+vi.mock("../voice", () => ({
+  voiceState: { channelId: null },
+  leaveVoice: vi.fn(),
 }));
 
 vi.mock("./voice", () => ({

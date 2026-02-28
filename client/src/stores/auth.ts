@@ -91,32 +91,29 @@ export async function initAuth(): Promise<void> {
 
     // If user is restored, also reconnect WebSocket and init preferences
     if (user) {
-      await initWebSocket();
-      await initPresence();
+      // Initialize WebSocket listeners and presence in parallel (both are independent)
+      await Promise.all([initWebSocket(), initPresence()]);
 
       // Register WebSocket reconnection listener (once globally)
       registerWebSocketReconnectListener();
 
-      try {
-        await wsConnect();
-        console.log("[Auth] WebSocket reconnected after session restore");
-      } catch (wsErr) {
-        console.error("[Auth] WebSocket reconnection failed:", wsErr);
-        // WebSocket failure is critical for real-time messaging
-        // The WebSocket module will auto-retry, but user should know there's an issue
-        setAuthState(
-          "error",
-          "Real-time messaging temporarily unavailable. Reconnecting...",
-        );
-      }
-      // Initialize preferences sync after session restore
-      try {
-        await initPreferences();
-        console.log("[Auth] Preferences initialized after session restore");
-      } catch (prefErr) {
-        console.error("[Auth] Preferences initialization failed:", prefErr);
-        // Continue even if preferences fail - non-critical
-      }
+      // Connect WebSocket and init preferences in parallel (both need listeners registered first)
+      await Promise.all([
+        wsConnect()
+          .then(() => console.log("[Auth] WebSocket reconnected after session restore"))
+          .catch((wsErr) => {
+            console.error("[Auth] WebSocket reconnection failed:", wsErr);
+            setAuthState(
+              "error",
+              "Real-time messaging temporarily unavailable. Reconnecting...",
+            );
+          }),
+        initPreferences()
+          .then(() => console.log("[Auth] Preferences initialized after session restore"))
+          .catch((prefErr) => {
+            console.error("[Auth] Preferences initialization failed:", prefErr);
+          }),
+      ]);
 
       // Initialize idle detection after preferences (uses idleTimeoutMinutes setting)
       initIdleDetection();

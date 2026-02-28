@@ -12,6 +12,7 @@ vi.mock("@/lib/tauri", () => ({
 
 vi.mock("@/stores/websocket", () => ({
   subscribeChannel: vi.fn(),
+  waitForConnection: vi.fn(() => Promise.resolve(true)),
 }));
 
 vi.mock("@/components/ui/Toast", () => ({
@@ -19,7 +20,7 @@ vi.mock("@/components/ui/Toast", () => ({
 }));
 
 import * as tauri from "@/lib/tauri";
-import { subscribeChannel } from "@/stores/websocket";
+import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
 import type { Channel, ChannelWithUnread } from "@/lib/types";
 import {
@@ -170,24 +171,14 @@ describe("channels store", () => {
     });
 
     it("skips WS subscribe when disconnected", async () => {
-      vi.useFakeTimers();
-      try {
-        vi.mocked(tauri.getGuildChannels).mockResolvedValue([
-          createChannelWithUnread(),
-        ]);
-        vi.mocked(tauri.wsStatus).mockResolvedValue({
-          type: "disconnected",
-        } as any);
+      vi.mocked(tauri.getGuildChannels).mockResolvedValue([
+        createChannelWithUnread(),
+      ]);
+      vi.mocked(waitForConnection).mockResolvedValue(false);
 
-        const promise = loadChannelsForGuild("guild-1");
-        // Advance past the 5s polling timeout
-        await vi.advanceTimersByTimeAsync(6000);
-        await promise;
+      await loadChannelsForGuild("guild-1");
 
-        expect(subscribeChannel).not.toHaveBeenCalled();
-      } finally {
-        vi.useRealTimers();
-      }
+      expect(subscribeChannel).not.toHaveBeenCalled();
     });
 
     it("sets error on failure", async () => {

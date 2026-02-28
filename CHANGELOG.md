@@ -26,9 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)
 - Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
+- Client auth initialization now runs independent startup work in parallel (`initWebSocket` + `initPresence`, then `wsConnect` + `initPreferences`) to reduce login/session-restore latency in Tauri mode
+- Presence store now registers Tauri listeners in parallel instead of sequentially
+- DM and guild channel subscription flows now use event-driven WebSocket readiness (`waitForConnection`) and parallel channel subscriptions instead of `wsStatus` polling loops
 ### Fixed
 - Webhook delivery worker no longer logs ERROR-level timeout messages every 2 seconds on idle — fred 10.x BRPOP nil responses are now correctly handled as normal idle behavior (#287)
 - Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
+- Tauri WebSocket listener initialization now batches listener registration with `Promise.all` and emits a `ws-connected` event so dependent stores can synchronize without fixed polling delays
 
 ### Security
 - Enabled Content Security Policy (CSP) in Tauri webview to prevent script injection (#295)

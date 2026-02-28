@@ -9,6 +9,7 @@ vi.mock("@/lib/tauri", () => ({
 
 vi.mock("@/stores/websocket", () => ({
   subscribeChannel: vi.fn(),
+  waitForConnection: vi.fn(() => Promise.resolve(true)),
 }));
 
 vi.mock("@/components/ui/Toast", () => ({
@@ -16,7 +17,7 @@ vi.mock("@/components/ui/Toast", () => ({
 }));
 
 import * as tauri from "@/lib/tauri";
-import { subscribeChannel } from "@/stores/websocket";
+import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
 import type { DMListItem, Message } from "@/lib/types";
 import {
@@ -114,7 +115,7 @@ describe("dms store", () => {
     it("loads DMs and subscribes to channels when WS connected", async () => {
       const dms = [createDM(), createDM({ id: "dm-2", name: "Bob" })];
       vi.mocked(tauri.getDMList).mockResolvedValue(dms);
-      vi.mocked(tauri.wsStatus).mockResolvedValue({ type: "connected" } as any);
+      vi.mocked(waitForConnection).mockResolvedValue(true);
       vi.mocked(subscribeChannel).mockResolvedValue(undefined);
 
       await loadDMs();
@@ -125,24 +126,14 @@ describe("dms store", () => {
     });
 
     it("skips subscriptions when WS not connected", async () => {
-      vi.useFakeTimers();
-      try {
-        const dms = [createDM()];
-        vi.mocked(tauri.getDMList).mockResolvedValue(dms);
-        vi.mocked(tauri.wsStatus).mockResolvedValue({
-          type: "disconnected",
-        } as any);
+      const dms = [createDM()];
+      vi.mocked(tauri.getDMList).mockResolvedValue(dms);
+      vi.mocked(waitForConnection).mockResolvedValue(false);
 
-        const promise = loadDMs();
-        // Advance past the 5s polling timeout
-        await vi.advanceTimersByTimeAsync(6000);
-        await promise;
+      await loadDMs();
 
-        expect(dmsState.dms).toEqual(dms);
-        expect(subscribeChannel).not.toHaveBeenCalled();
-      } finally {
-        vi.useRealTimers();
-      }
+      expect(dmsState.dms).toEqual(dms);
+      expect(subscribeChannel).not.toHaveBeenCalled();
     });
 
     it("sets error on failure", async () => {
