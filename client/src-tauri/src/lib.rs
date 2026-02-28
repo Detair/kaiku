@@ -1,4 +1,4 @@
-//! `VoiceChat` Desktop Client Library
+//! `Kaiku` Desktop Client Library
 //!
 //! Tauri backend for the desktop application.
 
@@ -61,7 +61,7 @@ pub fn run() {
                 )
                 .init();
 
-            tracing::info!("VoiceChat Client starting");
+            tracing::info!("Kaiku Client starting");
 
             // Store app state
             app.manage(AppState::new());

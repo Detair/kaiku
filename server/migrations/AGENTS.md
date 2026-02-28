@@ -3,7 +3,7 @@
 
 ## Purpose
 
-SQLx database migrations for the VoiceChat server. Defines the PostgreSQL schema evolution from initial setup through feature additions.
+SQLx database migrations for the Kaiku server. Defines the PostgreSQL schema evolution from initial setup through feature additions.
 
 ## Key Files
 

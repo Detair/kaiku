@@ -4,7 +4,7 @@
 **Superseded By:** `PHASE_5_SONNET_IMPLEMENTATION.md`
 
 ## Overview
-Phase 5 focuses on leveraging our specific technology stack (Rust, Tauri, Postgres) to deliver features that give Canis a competitive edge in performance and capability.
+Phase 5 focuses on leveraging our specific technology stack (Rust, Tauri, Postgres) to deliver features that give Kaiku a competitive edge in performance and capability.
 
 ## Master Checklist
 

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared types and protocols for VoiceChat"
+description = "Shared types and protocols for Kaiku"
 
 [dependencies]
 serde.workspace = true

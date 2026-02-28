@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for VoiceChat client","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:default","core:window:allow-start-dragging","core:webview:default","shell:allow-open"]}}
+{"default":{"identifier":"default","description":"Default capabilities for Kaiku client","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:default","core:window:allow-start-dragging","core:webview:default","shell:allow-open"]}}

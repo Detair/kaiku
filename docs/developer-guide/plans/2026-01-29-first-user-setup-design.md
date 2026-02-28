@@ -8,7 +8,7 @@
 
 ## Overview
 
-When a fresh Canis server starts with zero users, the first registered user automatically receives system admin permissions. After login, they must complete a mandatory setup wizard to configure the server before the platform is considered production-ready.
+When a fresh Kaiku server starts with zero users, the first registered user automatically receives system admin permissions. After login, they must complete a mandatory setup wizard to configure the server before the platform is considered production-ready.
 
 ## Goals
 
@@ -36,7 +36,7 @@ CREATE TABLE server_config (
 -- Initial values
 INSERT INTO server_config (key, value) VALUES
     ('setup_complete', 'false'::jsonb),
-    ('server_name', '"Canis Server"'::jsonb),
+    ('server_name', '"Kaiku Server"'::jsonb),
     ('registration_policy', '"open"'::jsonb),  -- 'open', 'invite_only', 'closed'
     ('terms_url', 'null'::jsonb),
     ('privacy_url', 'null'::jsonb);
@@ -105,7 +105,7 @@ If two users register simultaneously:
 **Response on Success (200):**
 ```json
 {
-  "current_server_name": "Canis Server",
+  "current_server_name": "Kaiku Server",
   "current_registration_policy": "open"
 }
 ```

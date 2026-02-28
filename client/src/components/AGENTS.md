@@ -4,7 +4,7 @@
 
 ## Purpose
 
-UI component library for the Canis voice/chat client. Built with Solid.js for reactive, performant rendering. Organized by feature domain with shared UI primitives.
+UI component library for the Kaiku voice/chat client. Built with Solid.js for reactive, performant rendering. Organized by feature domain with shared UI primitives.
 
 ## Component Domains
 

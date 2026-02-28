@@ -1,4 +1,4 @@
-# VoiceChat Platform (Canis)
+# Kaiku Platform (Kaiku)
 
 ## Purpose
 Self-hosted voice and text chat platform for gaming communities. Optimized for low latency (<50ms), high voice quality, and maximum security.

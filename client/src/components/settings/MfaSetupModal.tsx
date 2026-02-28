@@ -220,7 +220,7 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
                   <QrCode class="w-5 h-5 text-accent-primary flex-shrink-0" />
                   <p class="text-sm text-text-secondary">
                     Open your authenticator app (Google Authenticator, Authy,
-                    etc.) and enter the 6-digit code shown for VoiceChat.
+                    etc.) and enter the 6-digit code shown for Kaiku.
                   </p>
                 </div>
 

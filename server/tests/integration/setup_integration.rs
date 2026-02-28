@@ -444,7 +444,7 @@ async fn test_concurrent_setup_completion_only_one_succeeds() {
         .await
         .expect("Failed to reset setup_complete");
 
-    sqlx::query("UPDATE server_config SET value = '\"Canis Server\"' WHERE key = 'server_name'")
+    sqlx::query("UPDATE server_config SET value = '\"Kaiku Server\"' WHERE key = 'server_name'")
         .execute(pool.as_ref())
         .await
         .expect("Failed to reset server_name");

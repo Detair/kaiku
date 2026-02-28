@@ -352,7 +352,7 @@ Before implementation:
 | **Cross-client read sync** | Required | Clear notifications across devices when read on one |
 | **Server-synced settings** | Required | Preferences persist across devices |
 | **Do Not Disturb mode** | High | App-level + OS-level integration |
-| **Original branded sounds** | High | Replace placeholders with Canis identity |
+| **Original branded sounds** | High | Replace placeholders with Kaiku identity |
 | **Voice channel sounds** | Medium | Join/leave, mute/unmute, PTT beeps |
 | **Custom sound uploads** | Medium | Desktop-exclusive feature |
 | **UI feedback sounds** | Low | Button clicks, navigation |

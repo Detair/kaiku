@@ -1,5 +1,5 @@
 /**
- * Shared Types for VoiceChat Client
+ * Shared Types for Kaiku Client
  *
  * These types mirror the Rust types in shared/vc-common
  */

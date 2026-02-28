@@ -3,7 +3,7 @@
 Use these prompts to generate consistent assets for new themes.
 
 ## 1. Application Logo
-**Concept**: A stylized wolf or canine head, representing "Canis" / "VoiceChat".
+**Concept**: A stylized wolf or canine head, representing "Kaiku" / "Kaiku".
 **Base Prompt**: "Minimalist vector-style logo of a wolf head profile, looking right. Clean geometric lines, professional tech startup aesthetic, no text."
 
 ### Theme Variations

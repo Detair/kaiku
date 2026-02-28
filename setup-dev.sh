@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# VoiceChat (Canis) Development Environment Setup Script
+# Kaiku Development Environment Setup Script
 #
 # This script automates the installation of dependencies for a new development machine.
 # It covers System tools, Rust/Cargo, Bun, and Docker.
@@ -61,7 +61,7 @@ log_section() {
 }
 
 show_help() {
-    echo "VoiceChat (Canis) Development Environment Setup"
+    echo "Kaiku Development Environment Setup"
     echo ""
     echo "Usage: $0 [OPTIONS]"
     echo ""
@@ -456,7 +456,7 @@ if [ "$EUID" -eq 0 ]; then
     log_warn "Running as root is not recommended for some steps (like rustup)."
 fi
 
-log_section "VoiceChat Development Environment Setup"
+log_section "Kaiku Development Environment Setup"
 
 # Detect system type
 detect_system

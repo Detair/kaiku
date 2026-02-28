@@ -1,4 +1,4 @@
-# VoiceChat Platform - Project Specification
+# Kaiku Platform - Project Specification
 
 ## Project Overview
 

@@ -271,7 +271,7 @@ const SetupWizard: Component = () => {
             </div>
             <div>
               <h2 class="text-xl font-bold text-text-primary">
-                Welcome to Canis! 🎉
+                Welcome to Kaiku! 🎉
               </h2>
               <p class="text-sm text-text-muted">
                 You're the first user. Let's set up your server.

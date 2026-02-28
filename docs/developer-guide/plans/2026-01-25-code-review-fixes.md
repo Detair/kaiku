@@ -55,7 +55,7 @@ if let Some(ref encrypted_secret) = user.mfa_secret {
     let totp = TOTP::new(
         Algorithm::SHA1, 6, 1, 30,
         secret.to_bytes().map_err(|_| AuthError::Internal("Invalid secret".into()))?,
-        Some("VoiceChat".to_string()),
+        Some("Kaiku".to_string()),
         user.username.clone(),
     ).map_err(|e| AuthError::Internal(format!("TOTP creation failed: {e}")))?;
 

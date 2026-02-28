@@ -7,11 +7,11 @@ Use this prompt to instruct a Claude Sonnet agent to implement Phase 3 features.
 ## Agent Prompt
 
 ```
-You are implementing Phase 3 (Guild Architecture) for the Canis VoiceChat platform.
+You are implementing Phase 3 (Guild Architecture) for the Kaiku Kaiku platform.
 
 ## Project Context
 
-Canis is a self-hosted Discord-like voice and text chat platform built with:
+Kaiku is a self-hosted Discord-like voice and text chat platform built with:
 - **Server:** Rust (Axum, SQLx, PostgreSQL, Redis)
 - **Client:** Solid.js + TypeScript + UnoCSS (Tauri desktop app)
 - **Patterns:** JWT auth, WebSocket for real-time, REST API
@@ -100,7 +100,7 @@ For more granular control, use these task-specific prompts:
 
 ### Task 1: Database Migration
 ```
-Create the Phase 3 database migration for Canis at server/migrations/20240201000000_guilds.sql
+Create the Phase 3 database migration for Kaiku at server/migrations/20240201000000_guilds.sql
 
 Include tables for:
 - guilds (id, name, owner_id, icon_url, description, timestamps)
@@ -119,7 +119,7 @@ Reference: docs/plans/PHASE_3_IMPLEMENTATION.md Task 1
 
 ### Task 2: Guild Backend
 ```
-Implement the Guild API for Canis in Rust/Axum.
+Implement the Guild API for Kaiku in Rust/Axum.
 
 Create files:
 - server/src/guild/mod.rs (module + router)
@@ -143,7 +143,7 @@ Reference: docs/plans/PHASE_3_IMPLEMENTATION.md Task 2
 
 ### Task 7: Server Rail UI
 ```
-Create the Server Rail component for Canis (Solid.js).
+Create the Server Rail component for Kaiku (Solid.js).
 
 Create files:
 - client/src/components/layout/ServerRail.tsx

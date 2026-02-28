@@ -2,7 +2,7 @@
 # Server
 
 ## Purpose
-Backend server for the VoiceChat platform. Built with Rust and Axum, providing REST API, WebSocket connections, and voice service coordination.
+Backend server for the Kaiku platform. Built with Rust and Axum, providing REST API, WebSocket connections, and voice service coordination.
 
 ## Key Files
 - `Cargo.toml` - Server crate configuration

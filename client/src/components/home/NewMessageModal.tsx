@@ -53,8 +53,13 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
 
     try {
       const dm = await tauri.createDM(selectedIds());
+      const channelId = dm.channel?.id ?? (dm as { id?: string }).id;
+      if (!channelId) {
+        throw new Error("DM creation response missing channel id");
+      }
+
       await loadDMs();
-      selectDM(dm.channel.id);
+      selectDM(channelId);
       props.onClose();
     } catch (err) {
       setError(

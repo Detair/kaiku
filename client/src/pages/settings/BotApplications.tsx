@@ -180,7 +180,7 @@ const BotApplications: Component = () => {
       <div class="mb-6">
         <h1 class="text-2xl font-bold mb-2">Bot Applications</h1>
         <p class="text-surface-400">
-          Create and manage bot applications for the VoiceChat platform.
+          Create and manage bot applications for the Kaiku platform.
         </p>
       </div>
 

@@ -723,7 +723,7 @@ pub async fn elevate_session(
         totp_rs::Secret::Encoded(mfa_secret)
             .to_bytes()
             .map_err(|_| AdminError::InvalidMfaCode)?,
-        Some("VoiceChat".to_string()),
+        Some("Kaiku".to_string()),
         admin.username.clone(),
     )
     .map_err(|_| AdminError::InvalidMfaCode)?;

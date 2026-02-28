@@ -2,7 +2,7 @@
 
 ## Server URL Configuration
 
-The VoiceChat client can be configured with a default server URL to avoid manual entry on the login screen.
+The Kaiku client can be configured with a default server URL to avoid manual entry on the login screen.
 
 ### Development Setup
 

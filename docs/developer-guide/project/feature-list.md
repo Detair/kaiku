@@ -1,6 +1,6 @@
 # Kaiku Feature List (Phases 0-5)
 
-This document catalogs the major features implemented in the Kaiku (VoiceChat) project up through Phase 5 of the architectural roadmap.
+This document catalogs the major features implemented in the Kaiku project up through Phase 5 of the architectural roadmap.
 
 ## Core Collaboration Foundation
 - **Multi-Server "Guild" Architecture**: Discord-like server structure with distinct channels and role-based access.

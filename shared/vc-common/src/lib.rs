@@ -1,4 +1,4 @@
-//! `VoiceChat` Common Library
+//! `Kaiku` Common Library
 //!
 //! Shared types, protocols, and utilities used by both server and client.
 

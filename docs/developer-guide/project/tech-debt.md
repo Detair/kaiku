@@ -3,7 +3,7 @@
 **Last audited:** 2026-02-19
 **Branch:** `chore/tech-debt`
 
-This document catalogs all known tech debt across the Canis codebase, sourced from:
+This document catalogs all known tech debt across the Kaiku codebase, sourced from:
 - In-code markers (TODO, FIXME, HACK)
 - Roadmap unchecked items and documented known limitations
 - Code quality scan (unwrap/expect in production, lint suppressions, type safety gaps)

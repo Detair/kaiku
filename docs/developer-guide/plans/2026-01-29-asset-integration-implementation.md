@@ -44,7 +44,7 @@ Refer to the **Asset Integration Manual** at the same path (`asset_integration_m
 | `theme()` | `client/src/stores/theme.ts:95` | Returns current theme ID |
 | `getThemeFamily()` | `client/src/stores/theme.ts:148` | Returns `"standard"` or `"pixel"` for a theme ID |
 | Theme logos | `client/public/themes/{theme}/logo.png` | Per-theme logo already used somewhere (added Jan 28) |
-| Login view | `client/src/views/Login.tsx` | Text-only "Welcome back!" with VoiceChat branding |
+| Login view | `client/src/views/Login.tsx` | Text-only "Welcome back!" with Kaiku branding |
 | Register view | `client/src/views/Register.tsx` | Text-only "Create an account" |
 | MessageList empty state | `client/src/components/messages/MessageList.tsx:169-180` | Uses emoji placeholder `👋` |
 | Favicon | `client/index.html:5` | Uses Vite default `/vite.svg` |
@@ -58,7 +58,7 @@ Refer to the **Asset Integration Manual** at the same path (`asset_integration_m
 3. **Empty state uses emoji** — not the generated mascot illustration
 4. **Favicon is Vite default** — `vite.svg` placeholder
 5. **Tauri icons are placeholders** — empty/tiny files
-6. **App title is "VoiceChat"** — should be "Canis"
+6. **App title is "Kaiku"** — should be "Kaiku"
 7. **No theme-aware asset helper** — each component must manually check theme
 
 ---
@@ -87,8 +87,8 @@ Refer to the **Asset Integration Manual** at the same path (`asset_integration_m
 | `client/src/views/Login.tsx` | Add hero logo above heading |
 | `client/src/views/Register.tsx` | Add hero logo above heading |
 | `client/src/components/messages/MessageList.tsx` | Replace emoji with empty-channel illustration |
-| `client/index.html` | Update favicon and title to "Canis" |
-| `client/src-tauri/tauri.conf.json` | Update product name to "Canis" |
+| `client/index.html` | Update favicon and title to "Kaiku" |
+| `client/src-tauri/tauri.conf.json` | Update product name to "Kaiku" |
 
 ### Tauri Icons
 | File | Changes |
@@ -248,7 +248,7 @@ Insert before the `<h1>` tag (line 46):
 ```tsx
 <img
   src={heroLogo()}
-  alt="Canis"
+  alt="Kaiku"
   class="w-32 h-32 mx-auto mb-4 rounded-2xl object-cover"
 />
 ```
@@ -259,12 +259,12 @@ Change line 50:
 ```tsx
 // Before:
 <p class="text-text-secondary text-center mb-6">
-  Login to continue to VoiceChat
+  Login to continue to Kaiku
 </p>
 
 // After:
 <p class="text-text-secondary text-center mb-6">
-  Login to continue to Canis
+  Login to continue to Kaiku
 </p>
 ```
 
@@ -293,14 +293,14 @@ Insert before the heading text, same pattern as Login:
 ```tsx
 <img
   src={heroLogo()}
-  alt="Canis"
+  alt="Kaiku"
   class="w-32 h-32 mx-auto mb-4 rounded-2xl object-cover"
 />
 ```
 
 **Step 3: Update branding text**
 
-Replace any "VoiceChat" references with "Canis".
+Replace any "Kaiku" references with "Kaiku".
 
 **Verification:**
 ```bash
@@ -379,21 +379,21 @@ cp client/public/assets/branding/logo-icon.png client/public/favicon.png
 ```html
 <!-- Before: -->
 <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-<title>VoiceChat</title>
+<title>Kaiku</title>
 
 <!-- After: -->
 <link rel="icon" type="image/png" href="/favicon.png" />
-<title>Canis</title>
+<title>Kaiku</title>
 ```
 
 Also update the meta description:
 
 ```html
 <!-- Before: -->
-<meta name="description" content="VoiceChat - Self-hosted voice and text communication platform" />
+<meta name="description" content="Kaiku - Self-hosted voice and text communication platform" />
 
 <!-- After: -->
-<meta name="description" content="Canis - Self-hosted voice and text communication platform" />
+<meta name="description" content="Kaiku - Self-hosted voice and text communication platform" />
 ```
 
 **Step 3: Remove the old Vite SVG**
@@ -476,20 +476,20 @@ In `client/src-tauri/tauri.conf.json`, change:
 
 ```json
 // Before:
-"productName": "VoiceChat",
+"productName": "Kaiku",
 
 // After:
-"productName": "Canis",
+"productName": "Kaiku",
 ```
 
 And the window title:
 
 ```json
 // Before:
-"title": "VoiceChat",
+"title": "Kaiku",
 
 // After:
-"title": "Canis",
+"title": "Kaiku",
 ```
 
 **Verification:**
@@ -507,7 +507,7 @@ cd client && bun run check
 Add under `### Changed` in the `[Unreleased]` section:
 
 ```markdown
-- App branding updated from "VoiceChat" to "Canis" across all surfaces
+- App branding updated from "Kaiku" to "Kaiku" across all surfaces
   - Finnish Lapphund mascot hero logo on Login and Register screens
   - Theme-aware asset loading (standard and pixel variants)
   - Custom empty channel illustration replaces emoji placeholder
@@ -535,11 +535,11 @@ cd client && bun run check
 **Login screen:**
 1. Navigate to `/login` — verify mascot hero logo appears above "Welcome back!"
 2. Switch to Pixel Cozy theme (if accessible from login) — verify pixel variant loads
-3. Verify "Canis" branding text (not "VoiceChat")
+3. Verify "Kaiku" branding text (not "Kaiku")
 
 **Register screen:**
 1. Navigate to `/register` — verify same hero logo appears
-2. Verify "Canis" branding text
+2. Verify "Kaiku" branding text
 
 **Empty channel state:**
 1. Open a channel with no messages
@@ -547,11 +547,11 @@ cd client && bun run check
 3. Switch themes — verify standard vs pixel illustration swaps reactively
 
 **Favicon:**
-1. Check browser tab — verify Canis icon (not Vite logo)
-2. Check page title shows "Canis"
+1. Check browser tab — verify Kaiku icon (not Vite logo)
+2. Check page title shows "Kaiku"
 
 **Tauri app (if available):**
-1. Build Tauri app — verify window title is "Canis"
+1. Build Tauri app — verify window title is "Kaiku"
 2. Verify taskbar/dock icon uses mascot branding
 
 **Theme switching:**

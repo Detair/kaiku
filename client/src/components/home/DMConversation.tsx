@@ -45,10 +45,12 @@ const DMConversation: Component = () => {
     if (!currentDM) return;
 
     setIsStartingCall(true);
+    // Set outgoing state BEFORE the HTTP call so the WebSocket
+    // incoming_call echo (which arrives before the response) is
+    // correctly ignored by the call store.
+    startCall(currentDM.id);
     try {
       await startDMCall(currentDM.id);
-      startCall(currentDM.id);
-      // Start voice connection immediately as the initiator
       await joinVoice(currentDM.id);
     } catch (err) {
       console.error("Failed to start call:", err);

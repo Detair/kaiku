@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
+- Onboarding wizard no longer flashes on page reload before disappearing: visibility is now gated on preferences hydration (`initPreferences`) so users with `onboarding_completed=true` do not briefly see first-run modal content.
+- Accepting friend requests now updates the Pending tab immediately with optimistic UI feedback and a success toast, instead of waiting for slower list refreshes before users see the request disappear.
+- Fixed Direct Message creation bugs where new DMs appeared only after a page reload, sent messages didn't update the sidebar preview, and incoming messages failed to trigger notifications or unread badges.
+- Fixed 1:1 voice call bugs: initiator no longer hears their own ringtone due to a race condition between HTTP call start and WebSocket event handling, ringing now stops reliably when calls end or are declined, and the remote party's call state is properly cleaned up when one side hangs up instead of showing a stale active call.
+- Fixed TanStack Virtual `measureElement` warnings in message list and DM sidebar by ensuring `data-index` DOM attributes are set before virtualizer ref callbacks run.
 
 ### Security
 - Channel creation, member operations, and file uploads now enforce guild membership and permission checks — previously these endpoints could be accessed without proper authorization (#217, #218)

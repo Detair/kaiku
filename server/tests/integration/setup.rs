@@ -125,7 +125,7 @@ async fn test_server_config_operations() {
             .fetch_one(&mut *tx)
             .await
             .expect("Failed to get server_name");
-    assert_eq!(server_name.as_str(), Some("Canis Server"));
+    assert_eq!(server_name.as_str(), Some("Kaiku Server"));
 
     // Get default registration policy
     let reg_policy: serde_json::Value =

@@ -17,7 +17,7 @@ CREATE TABLE server_config (
 -- Initialize with default values
 INSERT INTO server_config (key, value) VALUES
     ('setup_complete', 'false'::jsonb),
-    ('server_name', '"Canis Server"'::jsonb),
+    ('server_name', '"Kaiku Server"'::jsonb),
     ('registration_policy', '"open"'::jsonb),  -- 'open', 'invite_only', 'closed'
     ('terms_url', 'null'::jsonb),
     ('privacy_url', 'null'::jsonb);

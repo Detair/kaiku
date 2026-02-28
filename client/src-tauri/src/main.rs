@@ -1,4 +1,4 @@
-//! `VoiceChat` Desktop Client - Entry Point
+//! `Kaiku` Desktop Client - Entry Point
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

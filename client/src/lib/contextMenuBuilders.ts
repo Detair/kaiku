@@ -96,9 +96,13 @@ export function showUserContextMenu(
             selectDM(existing.id);
           } else {
             const dm = await createDM([user.id]);
+            const channelId = dm.channel?.id ?? (dm as { id?: string }).id;
+            if (!channelId) {
+              throw new Error("DM creation response missing channel id");
+            }
             await loadDMs();
             selectHome();
-            selectDM(dm.channel.id);
+            selectDM(channelId);
           }
         } catch (e) {
           console.error("Failed to view profile:", e);
@@ -124,9 +128,13 @@ export function showUserContextMenu(
               selectDM(existing.id);
             } else {
               const dm = await createDM([user.id]);
+              const channelId = dm.channel?.id ?? (dm as { id?: string }).id;
+              if (!channelId) {
+                throw new Error("DM creation response missing channel id");
+              }
               await loadDMs();
               selectHome();
-              selectDM(dm.channel.id);
+              selectDM(channelId);
             }
           } catch (e) {
             console.error("Failed to open DM:", e);

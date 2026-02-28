@@ -1,6 +1,6 @@
 # Brainstorming: Phase 5 & Beyond
 
-This document captures potential features and improvements for the next stages of VoiceChat (Canis) development.
+This document captures potential features and improvements for the next stages of Kaiku development.
 
 ## 1. AI & Automation (Agents)
 *   **AI Channel Summarizer:** An agent that can provide summaries of missed conversations.
@@ -12,7 +12,7 @@ This document captures potential features and improvements for the next stages o
 *   **Slash Commands:** Standardized API for user interaction with bots.
 *   **Gateway API:** Robust WebSocket events for external applications.
 *   **Webhooks:** Outgoing and incoming webhooks for integrations (GitHub, GitLab, etc.).
-*   **Official SDKs:** Rust, TypeScript, and Python libraries to build Canis bots.
+*   **Official SDKs:** Rust, TypeScript, and Python libraries to build Kaiku bots.
 
 ## 3. Communication Enhancements
 *   **Threaded Conversations:** Discord/Slack style threads to keep side-discussions organized.
@@ -33,7 +33,7 @@ This document captures potential features and improvements for the next stages o
 *   **Custom Sound Packs:** Expanding the current sound pack system to allow user-uploaded notification sounds.
 
 ## 6. Infrastructure & SaaS Features
-*   **Federation (Matrix-like):** Allowing users from different Canis instances to communicate.
+*   **Federation (Matrix-like):** Allowing users from different Kaiku instances to communicate.
 *   **Multi-tenancy Improvements:** Better isolation and resource management for SaaS providers.
 *   **Mobile App (Tauri v2):** Bridging the gap to Android and iOS.
 *   **Analytics Dashboard:** Privacy-respecting stats for guild owners.

@@ -1,6 +1,6 @@
 # License Compliance
 
-This document tracks all direct third-party dependencies and their licenses for the VoiceChat project.
+This document tracks all direct third-party dependencies and their licenses for the Kaiku project.
 
 **Project License:** MIT OR Apache-2.0 (Dual License)
 

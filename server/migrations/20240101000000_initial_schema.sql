@@ -1,4 +1,4 @@
--- Initial Schema for VoiceChat
+-- Initial Schema for Kaiku
 -- Migration: 20240101000000_initial_schema
 
 -- ============================================================================

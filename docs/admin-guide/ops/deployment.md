@@ -1,6 +1,6 @@
-# VoiceChat Deployment Guide
+# Kaiku Deployment Guide
 
-This guide covers deploying VoiceChat on a self-hosted server.
+This guide covers deploying Kaiku on a self-hosted server.
 
 ## Prerequisites
 
@@ -108,7 +108,7 @@ OIDC_CLIENT_SECRET=your-client-secret
 | Service | Port | Description |
 |---------|------|-------------|
 | Traefik | 80, 443 | Reverse proxy with auto TLS |
-| Server | 8080 (internal) | VoiceChat API + WebSocket |
+| Server | 8080 (internal) | Kaiku API + WebSocket |
 | PostgreSQL | 5432 (internal) | Database |
 | Valkey | 6379 (internal) | Cache + pub/sub |
 

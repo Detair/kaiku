@@ -1,6 +1,6 @@
 # Encryption Architecture
 
-VoiceChat employs a multi-layered encryption strategy to ensure data privacy and security.
+Kaiku employs a multi-layered encryption strategy to ensure data privacy and security.
 
 ## Layer 1: Transport Security (TLS)
 

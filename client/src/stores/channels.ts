@@ -7,7 +7,7 @@
 import { createStore } from "solid-js/store";
 import type { ChannelWithUnread } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
-import { subscribeChannel } from "@/stores/websocket";
+import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
 
 // Channels state interface
@@ -107,37 +107,32 @@ export async function loadChannelsForGuild(guildId: string): Promise<void> {
     }
 
     // Subscribe to all text channels for real-time message updates
-    // Wait for WebSocket to be connected first
-    const maxWaitMs = 5000;
-    const pollIntervalMs = 100;
-    let waited = 0;
-
-    while (waited < maxWaitMs) {
-      const status = await tauri.wsStatus();
-      if (status.type === "connected") {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      waited += pollIntervalMs;
-    }
-
-    const finalStatus = await tauri.wsStatus();
-    if (finalStatus.type !== "connected") {
+    // Wait for WebSocket to be connected first (event-driven)
+    const connected = await waitForConnection();
+    if (!connected) {
       console.warn(
         "[Channels] WebSocket not connected, skipping subscriptions",
       );
       return;
     }
 
-    // Subscribe to text channels
-    for (const channel of channels.filter((c) => c.channel_type === "text")) {
-      try {
-        await subscribeChannel(channel.id);
-        console.log(`[Channels] Subscribed to channel ${channel.name}`);
-      } catch (err) {
-        console.warn(`Failed to subscribe to channel ${channel.id}:`, err);
-      }
-    }
+    // Subscribe to text channels in parallel
+    await Promise.all(
+      channels
+        .filter((c) => c.channel_type === "text")
+        .map((channel) =>
+          subscribeChannel(channel.id)
+            .then(() =>
+              console.log(`[Channels] Subscribed to channel ${channel.name}`),
+            )
+            .catch((err) =>
+              console.warn(
+                `Failed to subscribe to channel ${channel.id}:`,
+                err,
+              ),
+            ),
+        ),
+    );
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load guild channels:", error);

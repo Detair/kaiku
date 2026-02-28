@@ -66,11 +66,6 @@ const FriendsList: Component = () => {
       await acceptFriendRequest(friendshipId);
     } catch (err) {
       console.error("Failed to accept friend request:", err);
-      showToast({
-        type: "error",
-        title: "Could not accept friend request. Please try again.",
-        duration: 8000,
-      });
     }
   };
 

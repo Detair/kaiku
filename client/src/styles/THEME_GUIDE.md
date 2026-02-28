@@ -1,6 +1,6 @@
 # Theme Creation Guide
 
-This guide explains how to create custom themes for the VoiceChat client. Themes use CSS custom properties (variables) to define colors and structural tokens.
+This guide explains how to create custom themes for the Kaiku client. Themes use CSS custom properties (variables) to define colors and structural tokens.
 
 ---
 

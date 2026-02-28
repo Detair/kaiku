@@ -556,7 +556,7 @@ pub async fn login(
             secret
                 .to_bytes()
                 .map_err(|_| AuthError::Internal("Invalid TOTP secret encoding".into()))?,
-            Some("VoiceChat".to_string()),
+            Some("Kaiku".to_string()),
             user.username.clone(),
         )
         .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
@@ -1190,7 +1190,7 @@ pub async fn mfa_setup(
         secret
             .to_bytes()
             .map_err(|_| AuthError::Internal("Invalid TOTP secret encoding".into()))?,
-        Some("VoiceChat".to_string()),
+        Some("Kaiku".to_string()),
         auth_user.username.clone(),
     )
     .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
@@ -1279,7 +1279,7 @@ pub async fn mfa_verify(
         secret
             .to_bytes()
             .map_err(|_| AuthError::Internal("Invalid TOTP secret encoding".into()))?,
-        Some("VoiceChat".to_string()),
+        Some("Kaiku".to_string()),
         user.username,
     )
     .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;

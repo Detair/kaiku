@@ -35,7 +35,7 @@ const BackupCodesDisplay: Component<BackupCodesDisplayProps> = (props) => {
 
   const handleDownload = () => {
     const text = [
-      "VoiceChat MFA Backup Codes",
+      "Kaiku MFA Backup Codes",
       "==========================",
       `Generated: ${new Date().toISOString()}`,
       "",

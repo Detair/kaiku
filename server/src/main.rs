@@ -1,4 +1,4 @@
-//! `VoiceChat` Server - Main Entry Point
+//! `Kaiku` Server - Main Entry Point
 //!
 //! Self-hosted voice and text chat platform backend.
 
@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     let (_otel_guard, meter_provider) = vc_server::observability::init(&config.observability);
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        "Starting VoiceChat Server"
+        "Starting Kaiku Server"
     );
 
     // Initialize database

@@ -1,6 +1,6 @@
 # Rate Limiting
 
-This document describes the rate limiting system used by the Canis server to protect against abuse, brute-force attacks, and excessive API usage.
+This document describes the rate limiting system used by the Kaiku server to protect against abuse, brute-force attacks, and excessive API usage.
 
 ## Overview
 
