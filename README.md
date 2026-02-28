@@ -59,5 +59,6 @@ We welcome contributions! Please read our `CONTRIBUTING.md` (coming soon). Kaiku
 
 ---
 <div align="center">
-  <i style="color: #D8DEE9;">"Don't let your voice get lost in the noise. Join the Pack."</i>
+  <p><i style="color: #D8DEE9;">"Don't let your voice get lost in the noise. Join the Pack."</i></p>
+  <p><small><b>Disclaimer:</b> This project, including its code and documentation, was created with the assistance of Artificial Intelligence.</small></p>
 </div>
