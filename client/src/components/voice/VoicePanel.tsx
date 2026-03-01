@@ -1,8 +1,24 @@
-import { Component, Show, For } from "solid-js";
+import {
+  Component,
+  Show,
+  For,
+  createSignal,
+  onMount,
+  onCleanup,
+} from "solid-js";
 import { PhoneOff, Signal, MonitorUp } from "lucide-solid";
-import { voiceState, leaveVoice, getParticipants } from "@/stores/voice";
+import {
+  voiceState,
+  leaveVoice,
+  getParticipants,
+  getLocalMetrics,
+} from "@/stores/voice";
 import { getChannel } from "@/stores/channels";
 import { viewUserShare } from "@/stores/screenShareViewer";
+import { formatElapsedTime } from "@/lib/utils";
+import { QualityIndicator } from "./QualityIndicator";
+import { QualityTooltip } from "./QualityTooltip";
+import type { ConnectionMetrics } from "@/lib/webrtc/types";
 import VoiceControls from "./VoiceControls";
 
 /**
@@ -21,19 +37,62 @@ const VoicePanel: Component = () => {
     leaveVoice();
   };
 
+  // Elapsed timer — uses the store's authoritative connectedAt timestamp
+  const [elapsedTime, setElapsedTime] = createSignal("00:00");
+  const [showQualityTooltip, setShowQualityTooltip] = createSignal(false);
+
+  onMount(() => {
+    const interval = setInterval(() => {
+      const start = voiceState.connectedAt;
+      setElapsedTime(start ? formatElapsedTime(start) : "00:00");
+    }, 1000);
+    onCleanup(() => clearInterval(interval));
+  });
+
+  const metrics = (): ConnectionMetrics | "unknown" | null => getLocalMetrics();
+  const metricsObj = (): ConnectionMetrics | null => {
+    const m = metrics();
+    return typeof m === "object" && m !== null ? m : null;
+  };
+
   return (
     <Show when={voiceState.state === "connected" && channel()}>
-      <div class="bg-surface-base/50 border-t border-white/10 relative">
+      <div
+        class="bg-surface-base/50 border-t relative transition-all duration-200"
+        classList={{
+          "border-accent-success/50 shadow-[0_0_12px_rgba(163,190,140,0.3)]":
+            voiceState.speaking,
+          "border-white/10": !voiceState.speaking,
+        }}
+      >
         {/* Connection info */}
         <div class="px-3 py-2 flex items-center justify-between">
           <div class="flex items-center gap-2 min-w-0">
-            <Signal class="w-4 h-4 text-success flex-shrink-0" />
+            <Signal class="w-4 h-4 text-accent-success flex-shrink-0" />
             <div class="min-w-0">
               <div class="text-xs font-semibold text-accent-success">
                 Voice Connected
               </div>
-              <div class="text-xs text-text-secondary truncate">
-                {channel()?.name}
+              <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
+                <span>{channel()?.name}</span>
+                <span class="text-text-secondary/50">&middot;</span>
+                <span class="font-mono">{elapsedTime()}</span>
+                <div
+                  class="relative"
+                  onMouseEnter={() => setShowQualityTooltip(true)}
+                  onMouseLeave={() => setShowQualityTooltip(false)}
+                >
+                  <QualityIndicator
+                    metrics={metrics()}
+                    mode="circle"
+                    class="cursor-help"
+                  />
+                  <Show when={showQualityTooltip() && metricsObj()}>
+                    <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50">
+                      <QualityTooltip metrics={metricsObj()!} />
+                    </div>
+                  </Show>
+                </div>
               </div>
             </div>
           </div>
