@@ -59,6 +59,7 @@ yarn-error.log*
 coverage/
 *.lcov
 tarpaulin-report.html
+test-results/
 __pycache__/
 *.pyc
 

@@ -1,4 +1,4 @@
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { Mic, MicOff, Headphones, VolumeX, Settings } from "lucide-solid";
 import { voiceState, toggleMute, toggleDeafen } from "@/stores/voice";
 import MicrophoneTest from "./MicrophoneTest";
@@ -21,6 +21,23 @@ const VoiceControls: Component = () => {
     string | undefined
   >(undefined);
 
+  // Keyboard shortcuts
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (voiceState.state !== "connected") return;
+    if (e.ctrlKey && e.shiftKey && e.key === "M") {
+      e.preventDefault();
+      toggleMute();
+    } else if (e.ctrlKey && e.shiftKey && e.key === "D") {
+      e.preventDefault();
+      toggleDeafen();
+    }
+  };
+
+  onMount(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => window.removeEventListener("keydown", handleKeyDown));
+  });
+
   const handleSourceSelected = (sourceId: string) => {
     setShowSourcePicker(false);
     setSelectedSourceId(sourceId);
@@ -29,16 +46,16 @@ const VoiceControls: Component = () => {
 
   return (
     <>
-      <div class="px-3 py-2 flex items-center justify-center gap-2 border-t border-background-secondary">
+      <div class="px-3 py-2 flex items-center justify-center gap-2 border-t border-white/10">
         {/* Mute button */}
         <button
           onClick={() => toggleMute()}
           class={`p-2 rounded-full transition-colors ${
             voiceState.muted
-              ? "bg-danger/20 text-danger hover:bg-danger/30"
-              : "bg-background-secondary text-text-secondary hover:bg-background-primary hover:text-text-primary"
+              ? "bg-accent-danger/20 text-accent-danger hover:bg-accent-danger/30"
+              : "bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary"
           }`}
-          title={voiceState.muted ? "Unmute" : "Mute"}
+          title={voiceState.muted ? "Unmute (Ctrl+Shift+M)" : "Mute (Ctrl+Shift+M)"}
           disabled={voiceState.state !== "connected"}
         >
           {voiceState.muted ? (
@@ -53,10 +70,10 @@ const VoiceControls: Component = () => {
           onClick={() => toggleDeafen()}
           class={`p-2 rounded-full transition-colors ${
             voiceState.deafened
-              ? "bg-danger/20 text-danger hover:bg-danger/30"
-              : "bg-background-secondary text-text-secondary hover:bg-background-primary hover:text-text-primary"
+              ? "bg-accent-danger/20 text-accent-danger hover:bg-accent-danger/30"
+              : "bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary"
           }`}
-          title={voiceState.deafened ? "Undeafen" : "Deafen"}
+          title={voiceState.deafened ? "Undeafen (Ctrl+Shift+D)" : "Deafen (Ctrl+Shift+D)"}
           disabled={voiceState.state !== "connected"}
         >
           {voiceState.deafened ? (
@@ -80,7 +97,7 @@ const VoiceControls: Component = () => {
         {/* Settings button */}
         <button
           onClick={() => setShowMicTest(true)}
-          class="p-2 rounded-full bg-background-secondary text-text-secondary hover:bg-background-primary hover:text-text-primary transition-colors"
+          class="p-2 rounded-full bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary transition-colors"
           title="Voice Settings"
         >
           <Settings class="w-5 h-5" />

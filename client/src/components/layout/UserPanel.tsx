@@ -4,7 +4,7 @@
  * Shows current user's avatar, name, username, and settings button.
  * Fixed to the bottom of the sidebar with mt-auto.
  *
- * Voice controls are in VoiceIsland (appears when connected to voice).
+ * Voice controls are in VoicePanel (appears when connected to voice).
  */
 
 import {

@@ -9,13 +9,11 @@
  * 1. Server Rail (72px) - Leftmost vertical bar for server/guild navigation
  * 2. Context Sidebar (240px) - Channel list and user panel
  * 3. Main Stage (flex-1) - Chat messages and content
- * 4. Voice Island (overlay) - Floating voice controls
  */
 
 import { Component, JSX, ParentProps, Show, lazy, Suspense } from "solid-js";
 import ServerRail from "./ServerRail";
 import Sidebar from "./Sidebar";
-import VoiceIsland from "./VoiceIsland";
 import { voiceState } from "@/stores/voice";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 
@@ -52,11 +50,6 @@ const AppShell: Component<AppShellProps> = (props) => {
         {/* Main content passed as children */}
         {props.children}
       </main>
-
-      {/* 4. Dynamic Voice Island (Draggable Overlay) */}
-      <Show when={voiceState.channelId}>
-        <VoiceIsland />
-      </Show>
 
       {/* Screen Share Viewer (Portal overlay) */}
       <LazyErrorBoundary name="ScreenShareViewer">

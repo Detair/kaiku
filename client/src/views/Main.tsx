@@ -5,7 +5,6 @@
  * - ServerRail (for guild/server switching)
  * - Sidebar (channel list and user panel)
  * - Main stage (chat messages)
- * - VoiceIsland (floating voice controls)
  * - CommandPalette (Ctrl+K quick actions)
  */
 

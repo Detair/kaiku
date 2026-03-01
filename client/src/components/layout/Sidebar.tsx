@@ -34,6 +34,7 @@ import ChannelList from "@/components/channels/ChannelList";
 import PageSection from "@/components/pages/PageSection";
 import SearchPanel from "@/components/search/SearchPanel";
 import UserPanel from "./UserPanel";
+import VoicePanel from "@/components/voice/VoicePanel";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { PageListItem } from "@/lib/types";
 
@@ -169,6 +170,9 @@ const Sidebar: Component = () => {
 
       {/* Channel List */}
       <ChannelList />
+
+      {/* Voice Panel (Bottom, above User Panel) */}
+      <VoicePanel />
 
       {/* User Panel (Bottom) */}
       <UserPanel />
