@@ -19,9 +19,8 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer, Registry};
 
-use crate::config::ObservabilityConfig;
-
 use super::ingestion::{CapturedLogEvent, CapturedSpan, NativeLogLayer, NativeSpanProcessor};
+use crate::config::ObservabilityConfig;
 
 /// RAII guard that shuts down the `OTel` providers when dropped.
 ///

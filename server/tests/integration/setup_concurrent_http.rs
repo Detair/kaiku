@@ -10,12 +10,13 @@
 //!
 //! Run with: `cargo test --test integration setup_concurrent_http -- --nocapture`
 
-use super::helpers::{create_test_user, generate_access_token, make_admin, TestApp};
 use axum::body::Body;
 use axum::http::Method;
 use serial_test::serial;
 use tokio::time::{timeout, Duration};
 use tower::ServiceExt;
+
+use super::helpers::{create_test_user, generate_access_token, make_admin, TestApp};
 
 /// Set `setup_complete` to the given value and return the previous value.
 async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {

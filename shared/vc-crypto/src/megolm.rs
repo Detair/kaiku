@@ -4,9 +4,10 @@
 //!
 //! This module is only compiled when the `megolm` feature is enabled.
 
-use crate::{CryptoError, Result};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+
+use crate::{CryptoError, Result};
 
 /// Outbound Megolm session for encrypting messages to a group.
 #[cfg(feature = "megolm")]

@@ -194,9 +194,7 @@ pub enum ClientEvent {
     },
 
     /// Set user status (online, away, busy, offline).
-    SetStatus {
-        status: crate::db::UserStatus,
-    },
+    SetStatus { status: crate::db::UserStatus },
 
     /// Subscribe to admin events (requires elevated admin).
     AdminSubscribe,

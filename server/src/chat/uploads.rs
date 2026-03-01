@@ -3,8 +3,7 @@
 //! Handles file uploads to S3-compatible storage and metadata management.
 
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::HeaderName;
-use axum::http::StatusCode;
+use axum::http::{HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};

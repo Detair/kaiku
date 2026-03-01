@@ -20,9 +20,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::{PgPool, QueryBuilder};
 use tracing::warn;
-use uuid::Uuid;
-
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use super::types::{
     AdminError, AdminStatsResponse, AdminStatusResponse, BulkActionFailure, BulkBanRequest,

@@ -5,11 +5,12 @@
 //!
 //! Run with: `cargo test --test integration threads -- --nocapture`
 
-use super::helpers::{body_to_json, create_test_user, delete_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+use super::helpers::{body_to_json, create_test_user, delete_user, generate_access_token, TestApp};
 
 // ============================================================================
 // Test Helpers

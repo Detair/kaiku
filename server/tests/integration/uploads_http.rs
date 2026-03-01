@@ -5,11 +5,12 @@
 //!
 //! Run with: `cargo test --test integration uploads_http -- --nocapture`
 
-use super::helpers::{create_test_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
+
+use super::helpers::{create_test_user, generate_access_token, TestApp};
 
 // ============================================================================
 // Upload Error Paths

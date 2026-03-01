@@ -7,12 +7,13 @@
 //!
 //! Run with: `cargo test --test integration media_processing -- --nocapture`
 
-use super::helpers::{create_test_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
 use http_body_util::BodyExt;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
+
+use super::helpers::{create_test_user, generate_access_token, TestApp};
 
 /// Create a minimal PNG image in memory (10x10 solid color).
 fn create_test_png(width: u32, height: u32) -> Vec<u8> {

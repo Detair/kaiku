@@ -5,7 +5,7 @@ import type { AppSettings } from "@/lib/types";
 // Note: updateSettings only works in Tauri natively.
 // Fallback defaults are provided by getSettings().
 
-const [settingsTrigger, setSettingsTrigger] = createSignal(0);
+const [settingsTrigger, _setSettingsTrigger] = createSignal(0);
 
 const fetchSettings = async () => {
   return await getSettings();

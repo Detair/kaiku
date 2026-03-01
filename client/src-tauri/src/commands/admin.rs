@@ -797,9 +797,11 @@ fn build_query(pairs: &[(&str, Option<String>)]) -> String {
             if !s.is_empty() {
                 s.push('&');
             }
-            s.push_str(&form_urlencoded::Serializer::new(String::new())
-                .append_pair(key, v)
-                .finish());
+            s.push_str(
+                &form_urlencoded::Serializer::new(String::new())
+                    .append_pair(key, v)
+                    .finish(),
+            );
         }
     }
     s
@@ -807,9 +809,7 @@ fn build_query(pairs: &[(&str, Option<String>)]) -> String {
 
 /// Fetch observability summary (vital signs, server metadata, voice health).
 #[command]
-pub async fn admin_obs_summary(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+pub async fn admin_obs_summary(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let (server_url, token) = read_auth(&state).await?;
     debug!("Fetching observability summary");
 
@@ -843,7 +843,11 @@ pub async fn admin_obs_trends(
 ) -> Result<serde_json::Value, String> {
     validate_optional(Some(range.as_str()), VALID_RANGES, "range")?;
     let (server_url, token) = read_auth(&state).await?;
-    debug!("Fetching observability trends (range={}, metrics={})", range, metrics.len());
+    debug!(
+        "Fetching observability trends (range={}, metrics={})",
+        range,
+        metrics.len()
+    );
 
     let params = {
         let mut p = build_query(&[("range", Some(range))]);
@@ -851,9 +855,11 @@ pub async fn admin_obs_trends(
             if !p.is_empty() {
                 p.push('&');
             }
-            p.push_str(&form_urlencoded::Serializer::new(String::new())
-                .append_pair("metric", m)
-                .finish());
+            p.push_str(
+                &form_urlencoded::Serializer::new(String::new())
+                    .append_pair("metric", m)
+                    .finish(),
+            );
         }
         p
     };
@@ -1022,7 +1028,10 @@ pub async fn admin_obs_traces(
 ) -> Result<serde_json::Value, String> {
     validate_optional(status.as_deref(), VALID_TRACE_STATUSES, "status")?;
     let (server_url, token) = read_auth(&state).await?;
-    debug!("Fetching obs traces (status={:?}, domain={:?})", status, domain);
+    debug!(
+        "Fetching obs traces (status={:?}, domain={:?})",
+        status, domain
+    );
 
     let params = build_query(&[
         ("status", status),
@@ -1049,9 +1058,7 @@ pub async fn admin_obs_traces(
         let status_code = response.status();
         let body = response.text().await.unwrap_or_default();
         error!("Failed to fetch obs traces: {} - {}", status_code, body);
-        return Err(format!(
-            "Failed to fetch obs traces: {status_code}"
-        ));
+        return Err(format!("Failed to fetch obs traces: {status_code}"));
     }
 
     response
@@ -1062,9 +1069,7 @@ pub async fn admin_obs_traces(
 
 /// Fetch external observability tool links.
 #[command]
-pub async fn admin_obs_links(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+pub async fn admin_obs_links(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let (server_url, token) = read_auth(&state).await?;
     debug!("Fetching observability links");
 

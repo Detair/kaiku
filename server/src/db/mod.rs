@@ -1,26 +1,19 @@
-//! Advisory Lock Seed Registry
-//!
-//! `PostgreSQL` advisory locks use integer seeds to prevent collisions.
-//! Seeds are allocated per lock site:
-//! - 41 = `workspace_create` (per-user workspace creation limit)
-//! - 43 = `workspace_entry` (per-workspace entry creation limit)
-//! - 51 = `guild_create` (per-user guild creation limit) — see fix/review-focus-guild-discovery branch
-//! - 53 = `guild_join` (per-guild join serialization) — see fix/review-focus-guild-discovery branch
-//! - 61 = `page_create` (per-guild page creation limit)
-//!
-
 //! Database Layer
 //!
 //! `PostgreSQL` and Redis connections.
 //!
-//! Advisory Lock Seed Registry
-//! - 41 = `workspace_create`
-//! - 43 = `workspace_entry`
-//! - 51 = `guild_create`
-//! - 53 = `guild_member_join` (used by both invite joins and discovery joins)
-//!   - Called from: server/src/guild/invites.rs (invite join path)
-//!   - Called from: server/src/discovery/handlers.rs (discovery join path)
+//! ## Advisory Lock Seed Registry
 //!
+//! `PostgreSQL` advisory locks use integer seeds to prevent collisions.
+//! Seeds are allocated per lock site:
+//!
+//! - 41 = `workspace_create` (per-user workspace creation limit)
+//! - 43 = `workspace_entry` (per-workspace entry creation limit)
+//! - 51 = `guild_create` (per-user guild creation limit)
+//! - 53 = `guild_member_join` (per-guild join serialization)
+//!   - Called from: `server/src/guild/invites.rs` (invite join path)
+//!   - Called from: `server/src/discovery/handlers.rs` (discovery join path)
+//! - 61 = `page_create` (per-guild page creation limit)
 
 mod models;
 mod queries;

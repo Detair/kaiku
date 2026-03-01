@@ -45,8 +45,8 @@ pub async fn request_export(
 ) -> Result<impl IntoResponse, GovError> {
     // Recover stale jobs that may have been left behind by crash/restart so
     // users are not blocked forever by the active-job uniqueness constraint.
-    // NOTE: Uses `created_at` for stale detection because `data_export_jobs` has no `updated_at` field.
-    // The 1-hour threshold assumes exports complete well within this window.
+    // NOTE: Uses `created_at` for stale detection because `data_export_jobs` has no `updated_at`
+    // field. The 1-hour threshold assumes exports complete well within this window.
     // If exports grow to exceed 1 hour, add an `updated_at`/heartbeat column.
     // users are not blocked forever by the active-job uniqueness constraint.
     sqlx::query(

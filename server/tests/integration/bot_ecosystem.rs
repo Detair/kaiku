@@ -2,13 +2,14 @@
 
 use std::time::Duration;
 
-use super::helpers::{create_test_user, delete_user, generate_access_token, TestApp};
 use axum::body::Body;
 use axum::http::Method;
 use fred::interfaces::{ClientLike, EventInterface, KeysInterface, PubsubInterface};
 use http_body_util::BodyExt;
 use serde_json::json;
 use vc_server::db;
+
+use super::helpers::{create_test_user, delete_user, generate_access_token, TestApp};
 
 /// Test creating a bot application.
 #[tokio::test]

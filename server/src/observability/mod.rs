@@ -46,11 +46,11 @@ pub struct IngestionChannels {
 /// from metric initialisation is captured).
 ///
 /// # Returns
-/// * `OtelGuard` — drop-on-exit guard; keep it alive for the lifetime of
-///   `main` so providers flush and shut down gracefully.
+/// * `OtelGuard` — drop-on-exit guard; keep it alive for the lifetime of `main` so providers flush
+///   and shut down gracefully.
 /// * `Option<SdkMeterProvider>` — always `Some` (native exporter always active).
-/// * `IngestionChannels` — receivers for the native telemetry pipeline.
-///   Pass to [`ingestion::spawn_ingestion_workers`] after pool creation.
+/// * `IngestionChannels` — receivers for the native telemetry pipeline. Pass to
+///   [`ingestion::spawn_ingestion_workers`] after pool creation.
 pub fn init(
     config: &ObservabilityConfig,
 ) -> (OtelGuard, Option<SdkMeterProvider>, IngestionChannels) {

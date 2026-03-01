@@ -171,7 +171,8 @@ pub fn create_router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Social)));
 
-    // Discovery join route with Social rate limit (20 req/60s) — frictionless join needs tighter limit
+    // Discovery join route with Social rate limit (20 req/60s) — frictionless join needs tighter
+    // limit
     let discovery_join_routes = Router::new()
         .nest("/api/discover", discovery::protected_router())
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))

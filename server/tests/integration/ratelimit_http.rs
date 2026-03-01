@@ -13,11 +13,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::helpers::spawn_test_server;
 use vc_server::api::{create_router, AppState, AppStateConfig};
 use vc_server::config::Config;
 use vc_server::ratelimit::{LimitConfig, RateLimitConfig, RateLimiter, RateLimits};
 use vc_server::voice::sfu::SfuServer;
+
+use super::helpers::spawn_test_server;
 
 /// Create a test app with rate limiting enabled using a real server.
 async fn create_rate_limited_app(limits: RateLimits) -> (super::helpers::TestServer, Config) {

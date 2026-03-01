@@ -10,11 +10,12 @@
 //!
 //! Run with: `cargo test --test integration setup_http -- --nocapture`
 
-use super::helpers::{body_to_json, create_test_user, generate_access_token, make_admin, TestApp};
 use axum::body::Body;
 use axum::http::Method;
 use serial_test::serial;
 use tokio::time::{timeout, Duration};
+
+use super::helpers::{body_to_json, create_test_user, generate_access_token, make_admin, TestApp};
 
 // ============================================================================
 // Database state helpers

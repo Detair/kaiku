@@ -4,11 +4,10 @@
 
 use std::path::Path;
 
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
-};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};

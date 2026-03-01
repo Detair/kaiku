@@ -372,16 +372,15 @@ async fn main() -> Result<()> {
     let _ = voice_health_handle.await;
     info!("Background cleanup tasks stopped");
 
-    // 2. Flush and shut down OTel providers. Dropping these closes the
-    //    channel senders (NativeLogLayer, NativeSpanProcessor,
-    //    NativeMetricExporter), which lets the ingestion workers drain
-    //    remaining items and terminate naturally.
+    // 2. Flush and shut down OTel providers. Dropping these closes the channel senders
+    //    (NativeLogLayer, NativeSpanProcessor, NativeMetricExporter), which lets the ingestion
+    //    workers drain remaining items and terminate naturally.
     drop(otel_guard);
     drop(meter_provider);
     info!("OTel providers shut down, draining ingestion channels...");
 
-    // 3. Wait for ingestion workers to drain (no abort — they exit when
-    //    their channel senders are dropped above).
+    // 3. Wait for ingestion workers to drain (no abort — they exit when their channel senders are
+    //    dropped above).
     let _ = ingestion_handles.log_handle.await;
     let _ = ingestion_handles.span_handle.await;
     let _ = ingestion_handles.metric_handle.await;

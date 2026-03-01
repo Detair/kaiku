@@ -2,11 +2,12 @@
 //!
 //! Run with: `cargo test --test integration workspaces -- --nocapture`
 
+use axum::body::Body;
+use axum::http::Method;
+
 use super::helpers::{
     body_to_json, create_channel, create_guild, create_test_user, generate_access_token, TestApp,
 };
-use axum::body::Body;
-use axum::http::Method;
 
 // ============================================================================
 // Workspace CRUD Tests
