@@ -28,10 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Focus settings UI with per-mode configuration: suppression level, VIP users/channels, emergency keywords, and trigger categories (#253)
 
 ### Changed
+- Rebranded from VoiceChat/Canis to Kaiku across the entire application — window title, TOTP authenticator issuer, OpenAPI docs, Tauri identifier, and all user-facing strings (#302)
 - Simplified admin session elevation to single-click confirmation (MFA verification deferred)
 - Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)
 - Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
 ### Fixed
+- Browser-mode WebSocket connection now correctly signals readiness, fixing channel and DM subscriptions that previously timed out after 5 seconds (#302)
+- Sending multiple messages rapidly no longer causes earlier pending messages to disappear — only the specific confirmed message's placeholder is removed (#302)
+- Group voice calls no longer lose track of participants when additional users join — participant list and call duration are preserved correctly (#302)
+- Starting a voice call that fails to connect now properly resets call state instead of showing a stuck "calling" indicator (#302)
+- Idle detection (auto-away status) now works correctly after restoring a saved session (#302)
+- Restored missing success/error feedback for friend request acceptance, DM group rename failures, and invite code server joins (#302)
 - Webhook delivery worker no longer logs ERROR-level timeout messages every 2 seconds on idle — fred 10.x BRPOP nil responses are now correctly handled as normal idle behavior (#287)
 - Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
 - Onboarding wizard no longer flashes on page reload before disappearing: visibility is now gated on preferences hydration (`initPreferences`) so users with `onboarding_completed=true` do not briefly see first-run modal content.
