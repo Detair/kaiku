@@ -1,7 +1,7 @@
 /**
  * AppShell - Main Layout Grid
  *
- * The primary layout structure for Canis.
+ * The primary layout structure for Kaiku.
  * Implements "The Focused Hybrid" design philosophy:
  * Discord structure + Linear/Arc efficiency.
  *

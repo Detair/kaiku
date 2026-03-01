@@ -1,4 +1,4 @@
--- VoiceChat Development Seed Data
+-- Kaiku Development Seed Data
 -- Run with: make db-seed
 --
 -- This seeds channel structure only.
@@ -24,7 +24,7 @@ INSERT INTO channels (id, name, channel_type, category_id, topic, position)
 VALUES
     -- General category
     ('01903c8c-0001-7000-8000-000000000001', 'welcome', 'text',
-     '01903c8b-0001-7000-8000-000000000001', 'Welcome to VoiceChat!', 0),
+     '01903c8b-0001-7000-8000-000000000001', 'Welcome to Kaiku!', 0),
     ('01903c8c-0002-7000-8000-000000000002', 'general', 'text',
      '01903c8b-0001-7000-8000-000000000001', 'General discussion', 1),
     ('01903c8c-0003-7000-8000-000000000003', 'off-topic', 'text',

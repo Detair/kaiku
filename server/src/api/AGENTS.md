@@ -2,7 +2,7 @@
 
 # API Module
 
-Central routing configuration and shared application state for the VoiceChat platform.
+Central routing configuration and shared application state for the Kaiku platform.
 
 ## Purpose
 

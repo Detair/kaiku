@@ -1,4 +1,4 @@
-# VoiceChat Development Docker Compose
+# Kaiku Development Docker Compose
 #
 # Usage:
 #   docker compose -f docker-compose.dev.yml up -d              # Start all services

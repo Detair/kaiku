@@ -4,7 +4,7 @@
 
 ## Purpose
 
-This directory contains the Solid.js frontend application source code for the VoiceChat platform. It implements a reactive, type-safe UI with real-time WebSocket communication, Tauri-native commands, and a dual-mode architecture (native Tauri app + browser fallback).
+This directory contains the Solid.js frontend application source code for the Kaiku platform. It implements a reactive, type-safe UI with real-time WebSocket communication, Tauri-native commands, and a dual-mode architecture (native Tauri app + browser fallback).
 
 **Key Technologies:** Solid.js, TypeScript, UnoCSS, Solid Router, Tauri 2.0 API
 

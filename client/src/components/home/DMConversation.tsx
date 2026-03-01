@@ -18,8 +18,9 @@ import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
+import { showToast } from "@/components/ui/Toast";
 import { CallBanner } from "@/components/call";
-import { callState, startCall, isInCallForChannel } from "@/stores/call";
+import { callState, startCall, endCall, isInCallForChannel } from "@/stores/call";
 import {
   startDMCall,
   joinVoice,
@@ -45,13 +46,17 @@ const DMConversation: Component = () => {
     if (!currentDM) return;
 
     setIsStartingCall(true);
+    // Set outgoing state BEFORE the HTTP call so the WebSocket
+    // incoming_call echo (which arrives before the response) is
+    // correctly ignored by the call store.
+    startCall(currentDM.id);
     try {
       await startDMCall(currentDM.id);
-      startCall(currentDM.id);
-      // Start voice connection immediately as the initiator
       await joinVoice(currentDM.id);
     } catch (err) {
       console.error("Failed to start call:", err);
+      // Roll back optimistic call state on failure
+      endCall(currentDM.id, "cancelled");
     } finally {
       setIsStartingCall(false);
     }
@@ -120,6 +125,12 @@ const DMConversation: Component = () => {
       setIsEditingName(false);
     } catch (err) {
       console.error("Failed to update DM name:", err);
+      showToast({
+        type: "error",
+        title: "Could not rename conversation. Please try again.",
+        duration: 5000,
+      });
+      setIsEditingName(false);
     }
   };
 

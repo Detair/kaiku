@@ -10,7 +10,7 @@ Dockerfiles and related configurations for building production container images 
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Multi-stage build for VoiceChat server |
+| `Dockerfile` | Multi-stage build for Kaiku server |
 | `init-scripts/01-grant-test-permissions.sh` | PostgreSQL initialization script |
 
 ## Subdirectories
@@ -22,7 +22,7 @@ Database initialization scripts mounted into PostgreSQL container. Run automatic
 
 ### Dockerfile
 
-**Purpose:** Build production-ready VoiceChat server image
+**Purpose:** Build production-ready Kaiku server image
 
 **Build strategy:** Multi-stage build
 1. **builder** — Compile Rust binary with optimizations

@@ -29,7 +29,11 @@ import {
   Compass,
   Users,
 } from "lucide-solid";
-import { preferences, updatePreference } from "@/stores/preferences";
+import {
+  preferences,
+  updatePreference,
+  isInitialized as preferencesInitialized,
+} from "@/stores/preferences";
 import { currentUser, updateUser } from "@/stores/auth";
 import {
   setTheme,
@@ -51,6 +55,7 @@ const OnboardingWizard: Component = () => {
   // Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
   const shouldShow = () =>
     authState.isInitialized &&
+    preferencesInitialized() &&
     !preferences().onboarding_completed &&
     !authState.setupRequired;
 
@@ -246,6 +251,11 @@ const OnboardingWizard: Component = () => {
     try {
       await joinViaInviteCode(code);
       setInviteCode("");
+      showToast({
+        type: "success",
+        title: "Joined!",
+        message: "You've joined the server.",
+      });
     } catch (err: unknown) {
       console.error("Failed to join via invite code:", err);
       showToast({
@@ -299,7 +309,7 @@ const OnboardingWizard: Component = () => {
             <Show when={step() === 0}>
               <div class="text-center mb-6">
                 <h2 class="text-2xl font-bold text-text-primary">
-                  Welcome to Canis
+                  Welcome to Kaiku
                 </h2>
                 <p class="text-sm text-text-secondary mt-2">
                   Let's get you set up in just a few steps.
@@ -335,7 +345,7 @@ const OnboardingWizard: Component = () => {
                   Pick a Theme
                 </h2>
                 <p class="text-sm text-text-secondary mt-1">
-                  Choose how Canis looks. You can change this anytime.
+                  Choose how Kaiku looks. You can change this anytime.
                 </p>
               </div>
               <div class="grid grid-cols-2 gap-3">

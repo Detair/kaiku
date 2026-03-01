@@ -1,10 +1,10 @@
 # Security Implementation Guide
 
-This document outlines critical security requirements and implementation guidelines for the VoiceChat server.
+This document outlines critical security requirements and implementation guidelines for the Kaiku server.
 
 ## Overview
 
-The VoiceChat platform implements multiple layers of security:
+The Kaiku platform implements multiple layers of security:
 - **Authentication**: JWT-based with refresh token rotation
 - **Password Storage**: Argon2id hashing
 - **Text E2EE**: Olm (1:1 DMs) + Megolm (group DMs) via vodozemac

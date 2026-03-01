@@ -2478,6 +2478,9 @@ export async function wsConnect(): Promise<void> {
         console.error("[WebSocket] Failed to reinitialize listeners:", err);
       }
 
+      // Dispatch ws-connected event so waitForConnection() resolves in browser mode
+      window.dispatchEvent(new Event("ws-connected"));
+
       resolve();
     };
 

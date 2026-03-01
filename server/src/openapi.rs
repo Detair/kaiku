@@ -10,11 +10,11 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-/// `OpenAPI` documentation for the `VoiceChat` API.
+/// `OpenAPI` documentation for the `Kaiku` API.
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "VoiceChat API",
+        title = "Kaiku API",
         description = "Self-hosted voice and text chat platform API",
         version = "0.1.0",
         license(name = "MIT OR Apache-2.0"),

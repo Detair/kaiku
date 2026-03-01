@@ -1,9 +1,9 @@
 #!/bin/bash
-# Database Setup Script for VoiceChat Server
+# Database Setup Script for Kaiku Server
 
 set -e
 
-echo "Setting up VoiceChat database..."
+echo "Setting up Kaiku database..."
 
 # Create user and database
 sudo -u postgres psql <<EOF

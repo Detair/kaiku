@@ -238,6 +238,9 @@ const MessageList: Component<MessageListProps> = (props) => {
     ),
   );
 
+  // Track message count for auto-scroll / new-message indicator
+  let prevMessageCount = 0;
+
   // --- Load messages when channelId changes ---
   createEffect(
     on(
@@ -257,7 +260,6 @@ const MessageList: Component<MessageListProps> = (props) => {
   );
 
   // --- Track new messages for auto-scroll / indicator ---
-  let prevMessageCount = 0;
   createEffect(() => {
     const currentCount = messages().length;
 
@@ -383,7 +385,10 @@ const MessageList: Component<MessageListProps> = (props) => {
                 <div
                   role="listitem"
                   data-index={virtualItem.index}
-                  ref={(el) => virtualizer.measureElement(el)}
+                  ref={(el) => {
+                    el.setAttribute("data-index", String(virtualItem.index));
+                    virtualizer.measureElement(el);
+                  }}
                   style={{
                     position: "absolute",
                     top: `${virtualItem.start}px`,

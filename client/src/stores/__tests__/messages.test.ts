@@ -198,7 +198,7 @@ describe("messages store", () => {
 
       await sendMessage("ch-1", "/roll");
 
-      expect(messagesState.byChannel["ch-1"]).toBeUndefined();
+      expect(messagesState.byChannel["ch-1"]).toEqual([]);
     });
 
     it("deduplicates by message ID", async () => {

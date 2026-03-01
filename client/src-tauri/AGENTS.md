@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Tauri 2.0 Rust backend for the VoiceChat desktop client. Provides native functionality for audio I/O, WebRTC peer connections, cryptography, and IPC with the Solid.js frontend.
+Tauri 2.0 Rust backend for the Kaiku desktop client. Provides native functionality for audio I/O, WebRTC peer connections, cryptography, and IPC with the Solid.js frontend.
 
 **Performance targets:**
 - Idle RAM: <80MB

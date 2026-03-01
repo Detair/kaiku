@@ -53,7 +53,7 @@ Files in `public/` are available at root URL:
 
 ### Current Status
 
-Contains placeholder Vite logo. Replace with VoiceChat branding:
+Contains placeholder Vite logo. Replace with Kaiku branding:
 - Add `favicon.ico`
 - Add `apple-touch-icon.png`
 - Add PWA icons if implementing

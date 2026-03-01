@@ -3,7 +3,7 @@
 
 ## Purpose
 
-Development seed data for the VoiceChat server. Provides realistic test data for local development and integration testing.
+Development seed data for the Kaiku server. Provides realistic test data for local development and integration testing.
 
 ## Key Files
 

@@ -54,42 +54,44 @@ export async function initPresence(): Promise<void> {
   // In browser mode, presence updates are handled by the websocket store
   if (isTauri) {
     const { listen } = await import("@tauri-apps/api/event");
-    unlistener = await listen<{ user_id: string; status: UserStatus }>(
-      "ws:presence_update",
-      (event) => {
-        const { user_id, status } = event.payload;
-        updateUserPresence(user_id, status);
-      },
-    );
+    const [presenceListener, activityListener] = await Promise.all([
+      listen<{ user_id: string; status: UserStatus }>(
+        "ws:presence_update",
+        (event) => {
+          const { user_id, status } = event.payload;
+          updateUserPresence(user_id, status);
+        },
+      ),
+      listen<Activity | null>(
+        "presence:activity_changed",
+        async (event) => {
+          // Notify focus engine of activity category change for auto-activation
+          const VALID_TRIGGER_CATEGORIES: ReadonlySet<string> = new Set([
+            "game",
+            "coding",
+            "listening",
+            "watching",
+          ]);
+          const { handleActivityChange } = await import("./focus");
+          const rawType = event.payload?.type;
+          const category =
+            typeof rawType === "string" && VALID_TRIGGER_CATEGORIES.has(rawType)
+              ? (rawType as FocusTriggerCategory)
+              : null;
+          handleActivityChange(category);
 
-    // Listen for local activity changes from presence service
-    const VALID_TRIGGER_CATEGORIES: ReadonlySet<string> = new Set([
-      "game",
-      "coding",
-      "listening",
-      "watching",
+          // Send activity to server via WebSocket command
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("ws_send_activity", { activity: event.payload });
+          } catch (e) {
+            console.error("Failed to send activity to server:", e);
+          }
+        },
+      ),
     ]);
-    activityUnlistener = await listen<Activity | null>(
-      "presence:activity_changed",
-      async (event) => {
-        // Notify focus engine of activity category change for auto-activation
-        const { handleActivityChange } = await import("./focus");
-        const rawType = event.payload?.type;
-        const category =
-          typeof rawType === "string" && VALID_TRIGGER_CATEGORIES.has(rawType)
-            ? (rawType as FocusTriggerCategory)
-            : null;
-        handleActivityChange(category);
-
-        // Send activity to server via WebSocket command
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("ws_send_activity", { activity: event.payload });
-        } catch (e) {
-          console.error("Failed to send activity to server:", e);
-        }
-      },
-    );
+    unlistener = presenceListener;
+    activityUnlistener = activityListener;
   }
 }
 

@@ -168,16 +168,59 @@ describe("friends store", () => {
   });
 
   describe("acceptFriendRequest", () => {
-    it("accepts and reloads friends + pending", async () => {
-      vi.mocked(tauri.acceptFriendRequest).mockResolvedValue({} as any);
+    it("removes pending request immediately and reloads lists on success", async () => {
+      const pendingRequest = createFriend({
+        friendship_id: "fs-1",
+        friendship_status: "pending",
+      });
+
+      setFriendsState({ pendingRequests: [pendingRequest] });
+
+      let resolveAccept: ((value?: unknown) => void) | null = null;
+      vi.mocked(tauri.acceptFriendRequest).mockReturnValue(
+        new Promise((resolve) => {
+          resolveAccept = resolve;
+        }) as Promise<any>,
+      );
       vi.mocked(tauri.getFriends).mockResolvedValue([]);
       vi.mocked(tauri.getPendingFriends).mockResolvedValue([]);
 
-      await acceptFriendRequest("fs-1");
+      const action = acceptFriendRequest("fs-1");
+
+      expect(friendsState.pendingRequests).toEqual([]);
+
+      resolveAccept!();
+      await action;
 
       expect(tauri.acceptFriendRequest).toHaveBeenCalledWith("fs-1");
       expect(tauri.getFriends).toHaveBeenCalled();
       expect(tauri.getPendingFriends).toHaveBeenCalled();
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "success",
+          title: "Friend Request Accepted",
+        }),
+      );
+    });
+
+    it("restores pending request and shows error toast on failure", async () => {
+      const pendingRequest = createFriend({
+        friendship_id: "fs-1",
+        friendship_status: "pending",
+      });
+
+      setFriendsState({ pendingRequests: [pendingRequest] });
+      vi.mocked(tauri.acceptFriendRequest).mockRejectedValue(new Error("fail"));
+
+      await expect(acceptFriendRequest("fs-1")).rejects.toThrow();
+
+      expect(friendsState.pendingRequests).toEqual([pendingRequest]);
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Accept Failed",
+        }),
+      );
     });
   });
 

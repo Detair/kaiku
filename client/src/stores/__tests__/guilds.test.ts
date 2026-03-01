@@ -27,6 +27,11 @@ vi.mock("./channels", () => ({
   channelsState: { channels: [] },
 }));
 
+vi.mock("@/stores/websocket", () => ({
+  subscribeChannel: vi.fn(),
+  waitForConnection: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock("./voice", () => ({
   voiceState: { channelId: null },
   leaveVoice: vi.fn(),

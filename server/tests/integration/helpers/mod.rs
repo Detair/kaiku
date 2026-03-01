@@ -142,7 +142,7 @@ impl CleanupGuard {
     pub fn restore_config_defaults(&mut self) {
         self.add(|pool| async move {
             for (key, val) in [
-                ("server_name", serde_json::json!("Canis Server")),
+                ("server_name", serde_json::json!("Kaiku Server")),
                 ("registration_policy", serde_json::json!("open")),
                 ("terms_url", serde_json::Value::Null),
                 ("privacy_url", serde_json::Value::Null),

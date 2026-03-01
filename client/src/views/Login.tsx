@@ -192,7 +192,7 @@ const Login: Component = () => {
           Welcome back!
         </h1>
         <p class="text-text-secondary text-center mb-6">
-          Login to continue to VoiceChat
+          Login to continue to Kaiku
         </p>
 
         {/* Server URL (always shown) */}
