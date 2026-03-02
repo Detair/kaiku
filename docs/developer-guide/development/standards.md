@@ -48,7 +48,7 @@ This document lists all open standards, protocols, and libraries used. The goal 
 |----------|------|
 | **Standard** | W3C WebRTC + IETF RFC 8825-8835 |
 | **Purpose** | Real-Time Audio/Video Communication |
-| **Rust Library** | `webrtc-rs` (webrtc = "0.11") |
+| **Rust Library** | `webrtc` (webrtc = "0.11") |
 | **License** | MIT/Apache 2.0 |
 | **Documentation** | https://webrtc.rs |
 
@@ -104,16 +104,16 @@ This document lists all open standards, protocols, and libraries used. The goal 
 
 | Codec | Standard | Rust Library | License | Status |
 |-------|----------|--------------|--------|--------|
-| VP8 | WebM Project | `vpx-rs` | BSD-3 | Recommended for compatibility |
-| VP9 | WebM Project | `vpx-rs` | BSD-3 | Better quality |
+| VP8 | WebM Project | `vpx-encode` | BSD-3 | Recommended for compatibility |
+| VP9 | WebM Project | `vpx-encode` | BSD-3 | Better quality |
 | AV1 | AOMedia | `rav1e` | BSD-2 | Future, still CPU-intensive |
 
 ### Audio Processing
 
 | Feature | Standard/Library | License |
 |---------|------------------|--------|
-| Echo Cancellation | WebRTC AEC (in webrtc-rs) | MIT/Apache 2.0 |
-| Noise Suppression | WebRTC NS (in webrtc-rs) | MIT/Apache 2.0 |
+| Echo Cancellation | WebRTC AEC (in webrtc) | MIT/Apache 2.0 |
+| Noise Suppression | WebRTC NS (in webrtc) | MIT/Apache 2.0 |
 | Audio I/O | `cpal` (0.17) | Apache 2.0 |
 
 ---
@@ -140,7 +140,7 @@ This document lists all open standards, protocols, and libraries used. The goal 
 |----------|------|
 | **Standard** | DTLS-SRTP (IETF RFC 5764) |
 | **Purpose** | Voice Stream Encryption |
-| **Implementation** | Part of `webrtc-rs` |
+| **Implementation** | Part of `webrtc` |
 
 ### Voice Encryption (Paranoid Mode, later)
 
@@ -494,7 +494,7 @@ pulldown-cmark = "0.13"
 validator = { version = "0.20", features = ["derive"] }
 
 # HTTP Client - MIT/Apache 2.0
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.11", features = ["json"] }
 ```
 
 ### Client Backend (Cargo.toml)
@@ -571,12 +571,18 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",
     "ISC",
-    "Zlib",
-    "MPL-2.0",
-    "Unicode-DFS-2016",
     "CC0-1.0",
     "Unlicense",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "0BSD",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "IJG",
 ]
 
 deny = [

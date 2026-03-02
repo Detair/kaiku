@@ -639,23 +639,49 @@ cargo test test_channel_override_deny_wins_over_allow
 
 ```rust
 // Guild Permissions (from server/src/permissions/guild.rs)
-const CREATE_INVITE:        i64 = 1 << 0;  // 1
-const KICK_MEMBERS:         i64 = 1 << 1;  // 2
-const BAN_MEMBERS:          i64 = 1 << 2;  // 4
-const SEND_MESSAGES:        i64 = 1 << 3;  // 8
-const MANAGE_CHANNELS:      i64 = 1 << 4;  // 16
-const MANAGE_GUILD:         i64 = 1 << 5;  // 32
-const MANAGE_ROLES:         i64 = 1 << 6;  // 64
-const MANAGE_MESSAGES:      i64 = 1 << 7;  // 128
-const READ_MESSAGE_HISTORY: i64 = 1 << 8;  // 256
-const MENTION_EVERYONE:     i64 = 1 << 9;  // 512
-const VOICE_CONNECT:        i64 = 1 << 10; // 1024
-const VOICE_SPEAK:          i64 = 1 << 11; // 2048
-const VOICE_MUTE_MEMBERS:   i64 = 1 << 12; // 4096
-const VOICE_DEAFEN_MEMBERS: i64 = 1 << 13; // 8192
-const VOICE_MOVE_MEMBERS:   i64 = 1 << 14; // 16384
-const SCREEN_SHARE:         i64 = 1 << 15; // 32768
-const VIEW_CHANNEL:         i64 = 1 << 24; // 16777216 ⭐ NEW
+//
+// === Content (bits 0-4) ===
+const SEND_MESSAGES:        u64 = 1 << 0;   // 1
+const EMBED_LINKS:          u64 = 1 << 1;   // 2
+const ATTACH_FILES:         u64 = 1 << 2;   // 4
+const USE_EMOJI:            u64 = 1 << 3;   // 8
+const ADD_REACTIONS:        u64 = 1 << 4;   // 16
+//
+// === Voice (bits 5-9) ===
+const VOICE_CONNECT:        u64 = 1 << 5;   // 32
+const VOICE_SPEAK:          u64 = 1 << 6;   // 64
+const VOICE_MUTE_OTHERS:    u64 = 1 << 7;   // 128
+const VOICE_DEAFEN_OTHERS:  u64 = 1 << 8;   // 256
+const VOICE_MOVE_MEMBERS:   u64 = 1 << 9;   // 512
+//
+// === Moderation (bits 10-13) ===
+const MANAGE_MESSAGES:      u64 = 1 << 10;  // 1024
+const TIMEOUT_MEMBERS:      u64 = 1 << 11;  // 2048
+const KICK_MEMBERS:         u64 = 1 << 12;  // 4096
+const BAN_MEMBERS:          u64 = 1 << 13;  // 8192
+//
+// === Guild Management (bits 14-18) ===
+const MANAGE_CHANNELS:      u64 = 1 << 14;  // 16384
+const MANAGE_ROLES:         u64 = 1 << 15;  // 32768
+const VIEW_AUDIT_LOG:       u64 = 1 << 16;  // 65536
+const MANAGE_GUILD:         u64 = 1 << 17;  // 131072
+const TRANSFER_OWNERSHIP:   u64 = 1 << 18;  // 262144
+//
+// === Invites (bits 19-20) ===
+const CREATE_INVITE:        u64 = 1 << 19;  // 524288
+const MANAGE_INVITES:       u64 = 1 << 20;  // 1048576
+//
+// === Pages (bit 21) ===
+const MANAGE_PAGES:         u64 = 1 << 21;  // 2097152
+//
+// === Screen Sharing (bit 22) ===
+const SCREEN_SHARE:         u64 = 1 << 22;  // 4194304
+//
+// === Mentions (bit 23) ===
+const MENTION_EVERYONE:     u64 = 1 << 23;  // 8388608
+//
+// === Channel Visibility (bit 24) ===
+const VIEW_CHANNEL:         u64 = 1 << 24;  // 16777216
 ```
 
 ### Related Documentation

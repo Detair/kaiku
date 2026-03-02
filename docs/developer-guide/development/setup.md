@@ -9,7 +9,7 @@ see [CachyOS Multi-Project Development Environment Manual](cachyos-dev-environme
 
 ## Prerequisites
 
-- Docker and Docker Compose
+- Docker and Docker Compose (or Podman with `podman compose`)
 - Rust (latest stable)
 - Bun (install: `curl -fsSL https://bun.sh/install | bash`)
 - Node.js 18+ (required for Playwright tests)
@@ -26,7 +26,7 @@ docker compose -f docker-compose.dev.yml up -d
 ```
 
 This starts:
-- **PostgreSQL** on port 5433 (user: `voicechat`, password: `voicechat_dev_pass`)
+- **PostgreSQL** on port 5433 (user: `voicechat`, password: `voicechat_dev`)
 - **Valkey** on port 6379
 
 ### 2. Configure Environment
@@ -39,10 +39,10 @@ cp .env.example .env
 
 # Verify the database password matches docker-compose.dev.yml
 cat .env | grep DATABASE_URL
-# Should show: postgres://voicechat:voicechat_dev_pass@localhost:5433/voicechat
+# Should show: postgres://voicechat:voicechat_dev@localhost:5433/voicechat
 ```
 
-**Important**: The development database password is `voicechat_dev_pass` (as configured in `docker-compose.dev.yml`).
+**Important**: The development database password is `voicechat_dev` (as configured in `docker-compose.dev.yml`).
 
 ### 3. Run Database Migrations
 
@@ -97,16 +97,16 @@ If you see "password authentication failed for user 'voicechat'":
    ```bash
    # Check container environment
    docker exec voicechat-postgres-dev env | grep POSTGRES_PASSWORD
-   # Should show: POSTGRES_PASSWORD=voicechat_dev_pass
+   # Should show: POSTGRES_PASSWORD=voicechat_dev
 
    # Check .env file
    grep DATABASE_URL .env
-   # Should include: voicechat_dev_pass
+   # Should include: voicechat_dev
    ```
 
 3. If the password is wrong, update `.env`:
    ```
-   DATABASE_URL=postgres://voicechat:voicechat_dev_pass@localhost:5433/voicechat
+   DATABASE_URL=postgres://voicechat:voicechat_dev@localhost:5433/voicechat
    ```
 
 ### Port Already in Use
@@ -146,7 +146,7 @@ cargo run -p vc-server
 docker exec -it voicechat-postgres-dev psql -U voicechat -d voicechat
 
 # Or using psql from host
-PGPASSWORD=voicechat_dev_pass psql -h localhost -p 5433 -U voicechat -d voicechat
+PGPASSWORD=voicechat_dev psql -h localhost -p 5433 -U voicechat -d voicechat
 ```
 
 ## API Endpoints

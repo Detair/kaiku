@@ -4,7 +4,7 @@
 
 A self-hosted voice and text chat platform for gaming communities, optimized for low latency, high voice quality, and maximum security.
 
-**Project Status:** Phase 4 (Advanced Features)
+**Project Status:** Phase 6 (Competitive Differentiators & Mastery)
 **License:** MIT OR Apache-2.0 (Dual License)
 **Target Audience:** Gaming communities, self-hosters, organizations with privacy requirements
 
@@ -34,7 +34,7 @@ A self-hosted voice and text chat platform for gaming communities, optimized for
 | Real-time Voice | 🔴 High | ✅ | WebRTC-based, Opus codec |
 | Push-to-Talk | 🔴 High | ✅ | Configurable hotkeys |
 | Voice Activation | 🔴 High | ✅ | Adjustable thresholds |
-| Noise Cancellation | 🔴 High | ✅ | RNNoise-based |
+| Noise Cancellation | 🔴 High | ✅ | Browser/WebRTC native |
 | Echo Cancellation | 🔴 High | ✅ | WebRTC AEC |
 | Volume Control | 🟡 Medium | ✅ | Adjustable per user |
 | Spatial Audio | 🟢 Low | ❌ | Interesting for gaming, later |
@@ -49,13 +49,13 @@ A self-hosted voice and text chat platform for gaming communities, optimized for
 | Emojis | 🔴 High | ✅ | Unicode + Custom Emojis |
 | @Mentions | 🔴 High | ✅ | User and channel mentions |
 | Image Uploads | 🔴 High | ✅ | With preview |
-| Link Previews | 🟡 Medium | ✅ | Open Graph meta tags |
+| Link Previews | 🟡 Medium | ❌ | Open Graph meta tags |
 | File Uploads | 🟡 Medium | ✅ | Configurable limits |
 | Message History | 🔴 High | ✅ | Searchable |
 | Edit Message | 🟡 Medium | ✅ | With edit indicator |
 | Delete Message | 🟡 Medium | ✅ | Soft-delete |
 | Threads | 🟢 Low | ✅ | Slack-style side threads with participant avatars, unread indicators |
-| Reactions | 🟢 Low | ❌ | Later |
+| Reactions | 🟢 Low | ✅ | Emoji picker with Unicode reactions |
 
 ### User Management
 
@@ -68,7 +68,7 @@ A self-hosted voice and text chat platform for gaming communities, optimized for
 | Roles & Permissions | 🔴 High | ✅ | Fine-grained per channel |
 | User Profiles | 🔴 High | ✅ | Avatar, status, bio |
 | Online Status | 🔴 High | ✅ | Online, Away, Busy, Offline |
-| Friends List | 🟡 Medium | ❌ | Later |
+| Friends List | 🟡 Medium | ✅ | Send/accept/block with online status |
 | Blocking | 🟡 Medium | ✅ | Users can block others |
 
 ### Server Structure

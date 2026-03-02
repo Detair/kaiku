@@ -74,7 +74,7 @@ const channel = await invoke<Channel>('get_channel', { id });
 
 ## Git Workflow
 
-> Full specification: `docs/plans/2026-01-18-git-workflow-design.md`
+> Full specification: `docs/developer-guide/plans/2026-01-18-git-workflow-design.md`
 
 **NEVER commit directly to `main`.** Always create a feature branch or worktree for changes and merge via PR.
 **Branch naming:** `feature/<name>`, `fix/<name>`, `refactor/<area>`, `docs/<topic>`
@@ -96,7 +96,7 @@ Review src/api/channels.rs for security only      # Scoped review
 Ask [Faramir|Elrond|Gandalf|Éowyn|Pippin] about [topic]  # Character deep-dive
 ```
 
-See `docs/development/code-review.md` for full review format, concern areas, severity criteria, and character descriptions.
+See `docs/developer-guide/development/code-review.md` for full review format, concern areas, severity criteria, and character descriptions.
 
 ## Quick Reference
 
@@ -114,12 +114,12 @@ GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, SSPL, Proprietary
 ### Wichtige Crates
 - Web: axum, tower, tokio
 - OpenAPI: utoipa, utoipa-swagger-ui
-- WebRTC: webrtc-rs
+- WebRTC: webrtc
 - DB: sqlx (PostgreSQL)
 - Redis: fred
 - Auth: jsonwebtoken, argon2, openidconnect
 - E2EE Text: vodozemac
-- Crypto: rustls, x25519-dalek, ed25519-dalek
+- Crypto: rustls
 
 ### Package Manager
 - Bun (for package management and script running)
@@ -133,9 +133,9 @@ GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, SSPL, Proprietary
 
 ## Documentation Pointers
 
-- `PROJECT_SPEC.md` — Anforderungen und Entscheidungslog
-- `ARCHITECTURE.md` — Technische Architektur und Diagramme
-- `STANDARDS.md` — Verwendete Protokolle und Libraries
+- `docs/developer-guide/project/specification.md` — Anforderungen und Entscheidungslog
+- `docs/developer-guide/architecture/overview.md` — Technische Architektur und Diagramme
+- `docs/developer-guide/development/standards.md` — Verwendete Protokolle und Libraries
 - `LICENSE_COMPLIANCE.md` — Lizenzprüfung aller Dependencies
 - `CHANGELOG.md` — Änderungsprotokoll
-- `docs/development/code-review.md` — Review-System, Concern Areas, Characters, Workflows
+- `docs/developer-guide/development/code-review.md` — Review-System, Concern Areas, Characters, Workflows

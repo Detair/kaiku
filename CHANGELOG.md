@@ -26,71 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Focus modes for intelligent notification routing — suppress notifications during gaming, coding, or streaming sessions with VIP contact overrides and emergency keyword bypass (#253)
 - Auto-activation of focus modes when matching apps are detected (games, IDEs) with support for custom triggers (#253)
 - Focus settings UI with per-mode configuration: suppression level, VIP users/channels, emergency keywords, and trigger categories (#253)
-
-### Changed
-- Rebranded from VoiceChat/Canis to Kaiku across the entire application — window title, TOTP authenticator issuer, OpenAPI docs, Tauri identifier, and all user-facing strings (#302)
-- Simplified admin session elevation to single-click confirmation (MFA verification deferred)
-- Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)
-- Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
-### Fixed
-- Browser-mode WebSocket connection now correctly signals readiness, fixing channel and DM subscriptions that previously timed out after 5 seconds (#302)
-- Sending multiple messages rapidly no longer causes earlier pending messages to disappear — only the specific confirmed message's placeholder is removed (#302)
-- Group voice calls no longer lose track of participants when additional users join — participant list and call duration are preserved correctly (#302)
-- Starting a voice call that fails to connect now properly resets call state instead of showing a stuck "calling" indicator (#302)
-- Idle detection (auto-away status) now works correctly after restoring a saved session (#302)
-- Restored missing success/error feedback for friend request acceptance, DM group rename failures, and invite code server joins (#302)
-- Webhook delivery worker no longer logs ERROR-level timeout messages every 2 seconds on idle — fred 10.x BRPOP nil responses are now correctly handled as normal idle behavior (#287)
-- Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
-- Onboarding wizard no longer flashes on page reload before disappearing: visibility is now gated on preferences hydration (`initPreferences`) so users with `onboarding_completed=true` do not briefly see first-run modal content.
-- Accepting friend requests now updates the Pending tab immediately with optimistic UI feedback and a success toast, instead of waiting for slower list refreshes before users see the request disappear.
-- Fixed Direct Message creation bugs where new DMs appeared only after a page reload, sent messages didn't update the sidebar preview, and incoming messages failed to trigger notifications or unread badges.
-- Fixed 1:1 voice call bugs: initiator no longer hears their own ringtone due to a race condition between HTTP call start and WebSocket event handling, ringing now stops reliably when calls end or are declined, and the remote party's call state is properly cleaned up when one side hangs up instead of showing a stale active call.
-- Fixed TanStack Virtual `measureElement` warnings in message list and DM sidebar by ensuring `data-index` DOM attributes are set before virtualizer ref callbacks run.
-
-### Security
-- Enabled Content Security Policy (CSP) in Tauri webview to prevent script injection (#295)
-- Disabled `withGlobalTauri` to restrict IPC bridge access to explicit imports only (#295)
-- OIDC provider error details are no longer leaked to clients — errors are logged server-side (#295)
-- Sessions are now invalidated when a user changes their password (#295)
-- Added WebSocket message size limits (256 KiB max) to prevent memory exhaustion (#295)
-- Fixed SSRF bypass in test webhook delivery — now uses DNS-pinned HTTP client (#295)
-- OIDC flow now requires `PUBLIC_URL` to be set, preventing silently broken callback URLs (#295)
-- Added security response headers: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` (#295)
-- Added CORS wildcard origin warning log for production deployments (#295)
-- Fixed X-Forwarded-For IP extraction to use rightmost (proxy-appended) IP, preventing client spoofing (#295)
-- Rate-limited OIDC callback endpoint to prevent abuse (#295)
-- Redacted password and MFA code from `LoginRequest` debug output (#295)
-- Channel creation, member operations, and file uploads now enforce guild membership and permission checks — previously these endpoints could be accessed without proper authorization (#217, #218)
-- Guild join endpoint now requires a valid invite — previously any authenticated user could join any guild directly (#219)
-- E2EE device registration is now limited to 10 devices per user to prevent ghost device attacks (#221)
-- E2EE identity key fallback that produced permanently undecryptable messages has been replaced with a proper error — clients now surface a clear re-verification prompt instead of silently losing messages (#222)
-- Logout now verifies refresh token ownership — previously any valid token could revoke another user's session (#224)
-- MFA setup now requires TOTP verification before activation — previously MFA was activated immediately on secret generation without confirming the user had configured their authenticator (#225)
-- E2EE local key store is now encrypted with AES-256-GCM using SQLCipher — previously session data was stored in plaintext SQLite (#226)
-- Server now validates uploaded E2EE public keys are valid Curve25519 points — previously any byte string was accepted (#227)
-- E2EE key backup overwrites now require password re-authentication — previously backups could be silently replaced (#228)
-- Guild admins can now manage custom emoji regardless of uploader — previously only the original uploader could update or delete emoji (#229)
-- Webhook delivery now resolves DNS and validates the target IP at delivery time to prevent SSRF via DNS rebinding (#230)
-- Webhook signing secrets are now encrypted at rest using AES-256-GCM — previously stored as plaintext in the database (#231)
-- Refresh token rotation now uses atomic database operations to prevent race condition token reuse (#232)
-- E2EE local key store encryption now uses Argon2id key derivation instead of single-pass SHA-256 (#233)
-
-### Fixed
-- WebSocket pubsub handler no longer panics when filtering events from blocked users — `blocking_read()` was incorrectly used in an async context, crashing the server whenever a blocked user's event was processed (#212)
-- Redis failures in block checks and screen share limits are now logged with user context and failsafe policy — previously errors were silently swallowed, making Redis outages invisible in call, DM, message, and friend request flows (#213)
-- Tauri IPC crypto commands now validate string parameter lengths — previously unbounded inputs to `init_e2ee`, `encrypt_message`, `decrypt_message`, `create_backup`, `restore_backup`, and `generate_prekeys` could cause CPU stalls or excessive memory usage (#214)
-- Admin dashboard now correctly shows whether the current session is elevated — previously `is_elevated` was always reported as `false` regardless of actual elevation state (TD-17)
-- Revealed spoilers now stay revealed when scrolling away and back in the message list — previously clicking `||spoiler||` text to reveal it would reset when the message re-rendered (TD-22)
-- E2EE key backups now include the actual identity keys and prekeys — previously the encrypted backup contained only a timestamp placeholder, making it impossible to restore E2EE keys from a backup
-- WebSocket upgrade error paths no longer panic on unexpected conditions — replaced `.expect()` calls with a proper `error_response` helper that returns HTTP status codes (TD-05)
-
-### Changed
-- Message character limits are now evaluated dynamically: standard text is limited to 4,000 characters, while messages containing code blocks can have up to 10,000 total characters.
-- Upload size limits (avatar, emoji, attachment) are now fetched from `GET /api/config/upload-limits` at startup and applied client-side — previously the client used hardcoded defaults that could drift from server configuration (TD-13)
-- Notification sounds now play for the active channel when the application window is in the background
-- Production client builds now selectively strip `console.log` and `console.debug` while preserving `console.error` and `console.warn` for diagnostics (TD-09)
-
-### Added
 - Digital Library — guild pages now support revision history (automatic snapshots on content changes with configurable pruning), page categories (guild-scoped, ordered, with CRUD and reordering), deep-linkable heading anchors (GitHub-style slugs with click-to-copy URL), a library catalog view for browsing pages by category, and per-guild configurable page/revision limits with admin overrides; 13 new API endpoints for revisions, categories, and admin limit management
 - Personal workspaces — users can create named workspace folders and add channels from any guild they're a member of, enabling cross-guild "Mission Control" views; 9 REST API endpoints for workspace CRUD, entry management, and drag-and-drop reordering; real-time cross-device sync via 7 new WebSocket events; configurable max workspaces per user limit (default: 20); guild membership and VIEW_CHANNEL permission checks enforced on entry creation
 - Data export — users can request a full export of their data (profile, messages, guild memberships, friends, preferences) as a downloadable ZIP archive via `POST /api/me/data-export`; background worker gathers data into a versioned JSON archive, uploads to S3, and sends email notification when ready; downloads expire after 7 days
@@ -544,6 +479,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - User-friendly error messages showing both file size and limit in human-readable format (KB/MB)
 
 ### Changed
+- Rebranded from VoiceChat/Canis to Kaiku across the entire application — window title, TOTP authenticator issuer, OpenAPI docs, Tauri identifier, and all user-facing strings (#302)
+- Simplified admin session elevation to single-click confirmation (MFA verification deferred)
+- Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)
+- Fixed voice join metric to use `outcome` label (was `result`) with `failure` value (was `error`) (#285)
+- Message character limits are now evaluated dynamically: standard text is limited to 4,000 characters, while messages containing code blocks can have up to 10,000 total characters.
+- Upload size limits (avatar, emoji, attachment) are now fetched from `GET /api/config/upload-limits` at startup and applied client-side — previously the client used hardcoded defaults that could drift from server configuration (TD-13)
+- Notification sounds now play for the active channel when the application window is in the background
+- Production client builds now selectively strip `console.log` and `console.debug` while preserving `console.error` and `console.warn` for diagnostics (TD-09)
+- Restored dropped VoicePanel features: elapsed timer, connection quality indicator with tooltip, speaking glow animation, and keyboard shortcuts for mute/deafen (#307)
 - Upgraded message list virtualizer from custom implementation to `@tanstack/solid-virtual` for proper dynamic sizing via ResizeObserver
 - Replaced MinIO (AGPL-3.0) with RustFS (Apache-2.0) as the default S3-compatible object storage for development — no code changes needed, only Docker and documentation updates
 - Bot command responses now enforce single-response semantics — each `interaction_id` accepts exactly one `CommandResponse`, duplicate responses are rejected with a clear error (#176)
@@ -617,15 +561,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Identified critical updates (sqlx, axum) and blockers
   - Phased update strategy executed in subsequent releases
 
-### Deprecated
-
-### Removed
-- Deleted 12 stale documentation files (session artifacts, redundant license docs, completed update checklists, dependency snapshots)
-- Removed phantom dependencies from standards documentation (jsonrpsee, nnnoiseless, metrics, x25519-dalek, ed25519-dalek)
-- Removed stale scripts (resume-session.sh, update-deps.sh)
-- Legacy unscoped `GET /api/channels` endpoint that returned all channels across all guilds
-
 ### Fixed
+- Browser-mode WebSocket connection now correctly signals readiness, fixing channel and DM subscriptions that previously timed out after 5 seconds (#302)
+- Sending multiple messages rapidly no longer causes earlier pending messages to disappear — only the specific confirmed message's placeholder is removed (#302)
+- Group voice calls no longer lose track of participants when additional users join — participant list and call duration are preserved correctly (#302)
+- Starting a voice call that fails to connect now properly resets call state instead of showing a stuck "calling" indicator (#302)
+- Idle detection (auto-away status) now works correctly after restoring a saved session (#302)
+- Restored missing success/error feedback for friend request acceptance, DM group rename failures, and invite code server joins (#302)
+- Webhook delivery worker no longer logs ERROR-level timeout messages every 2 seconds on idle — fred 10.x BRPOP nil responses are now correctly handled as normal idle behavior (#287)
+- Process scanner now reports correct activity type (coding, listening, watching) instead of hardcoding all detected apps as "game" (#253)
+- Onboarding wizard no longer flashes on page reload before disappearing: visibility is now gated on preferences hydration (`initPreferences`) so users with `onboarding_completed=true` do not briefly see first-run modal content.
+- Accepting friend requests now updates the Pending tab immediately with optimistic UI feedback and a success toast, instead of waiting for slower list refreshes before users see the request disappear.
+- Fixed Direct Message creation bugs where new DMs appeared only after a page reload, sent messages didn't update the sidebar preview, and incoming messages failed to trigger notifications or unread badges.
+- Fixed 1:1 voice call bugs: initiator no longer hears their own ringtone due to a race condition between HTTP call start and WebSocket event handling, ringing now stops reliably when calls end or are declined, and the remote party's call state is properly cleaned up when one side hangs up instead of showing a stale active call.
+- Fixed TanStack Virtual `measureElement` warnings in message list and DM sidebar by ensuring `data-index` DOM attributes are set before virtualizer ref callbacks run.
+- WebSocket pubsub handler no longer panics when filtering events from blocked users — `blocking_read()` was incorrectly used in an async context, crashing the server whenever a blocked user's event was processed (#212)
+- Redis failures in block checks and screen share limits are now logged with user context and failsafe policy — previously errors were silently swallowed, making Redis outages invisible in call, DM, message, and friend request flows (#213)
+- Tauri IPC crypto commands now validate string parameter lengths — previously unbounded inputs to `init_e2ee`, `encrypt_message`, `decrypt_message`, `create_backup`, `restore_backup`, and `generate_prekeys` could cause CPU stalls or excessive memory usage (#214)
+- Admin dashboard now correctly shows whether the current session is elevated — previously `is_elevated` was always reported as `false` regardless of actual elevation state (TD-17)
+- Revealed spoilers now stay revealed when scrolling away and back in the message list — previously clicking `||spoiler||` text to reveal it would reset when the message re-rendered (TD-22)
+- E2EE key backups now include the actual identity keys and prekeys — previously the encrypted backup contained only a timestamp placeholder, making it impossible to restore E2EE keys from a backup
+- WebSocket upgrade error paths no longer panic on unexpected conditions — replaced `.expect()` calls with a proper `error_response` helper that returns HTTP status codes (TD-05)
 - Message list layout drift when images load or code blocks expand — now uses real element measurement instead of estimated sizes
 - Toast notifications now use consistent durations (error: 8s, success: 3s) and dedup IDs for repeatable events (command timeout, screen share)
 - Slash command autocomplete now allows hyphens in command names
@@ -747,6 +703,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed unused `update_user_password` database function (#131)
 
 ### Security
+- Enabled Content Security Policy (CSP) in Tauri webview to prevent script injection (#295)
+- Disabled `withGlobalTauri` to restrict IPC bridge access to explicit imports only (#295)
+- OIDC provider error details are no longer leaked to clients — errors are logged server-side (#295)
+- Sessions are now invalidated when a user changes their password (#295)
+- Added WebSocket message size limits (256 KiB max) to prevent memory exhaustion (#295)
+- Fixed SSRF bypass in test webhook delivery — now uses DNS-pinned HTTP client (#295)
+- OIDC flow now requires `PUBLIC_URL` to be set, preventing silently broken callback URLs (#295)
+- Added security response headers: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` (#295)
+- Added CORS wildcard origin warning log for production deployments (#295)
+- Fixed X-Forwarded-For IP extraction to use rightmost (proxy-appended) IP, preventing client spoofing (#295)
+- Rate-limited OIDC callback endpoint to prevent abuse (#295)
+- Redacted password and MFA code from `LoginRequest` debug output (#295)
+- Channel creation, member operations, and file uploads now enforce guild membership and permission checks — previously these endpoints could be accessed without proper authorization (#217, #218)
+- Guild join endpoint now requires a valid invite — previously any authenticated user could join any guild directly (#219)
+- E2EE device registration is now limited to 10 devices per user to prevent ghost device attacks (#221)
+- E2EE identity key fallback that produced permanently undecryptable messages has been replaced with a proper error — clients now surface a clear re-verification prompt instead of silently losing messages (#222)
+- Logout now verifies refresh token ownership — previously any valid token could revoke another user's session (#224)
+- MFA setup now requires TOTP verification before activation — previously MFA was activated immediately on secret generation without confirming the user had configured their authenticator (#225)
+- E2EE local key store is now encrypted with AES-256-GCM using SQLCipher — previously session data was stored in plaintext SQLite (#226)
+- Server now validates uploaded E2EE public keys are valid Curve25519 points — previously any byte string was accepted (#227)
+- E2EE key backup overwrites now require password re-authentication — previously backups could be silently replaced (#228)
+- Guild admins can now manage custom emoji regardless of uploader — previously only the original uploader could update or delete emoji (#229)
+- Webhook delivery now resolves DNS and validates the target IP at delivery time to prevent SSRF via DNS rebinding (#230)
+- Webhook signing secrets are now encrypted at rest using AES-256-GCM — previously stored as plaintext in the database (#231)
+- Refresh token rotation now uses atomic database operations to prevent race condition token reuse (#232)
+- E2EE local key store encryption now uses Argon2id key derivation instead of single-pass SHA-256 (#233)
 - Megolm group E2EE stubs gated behind compile-time `megolm` feature flag — previously contained `todo!()` macros that would panic at runtime if group encryption was invoked (TD-01)
 - Search query length capped at 1000 characters across guild, DM, and global search endpoints to prevent resource exhaustion (TD-08)
 - Eliminated all `.unwrap()` calls in production server code — TOTP secret decoding now returns proper errors instead of panicking, WebSocket auth responses use `.expect()` with justification, duration arithmetic uses `saturating_sub()`, and S3 endpoint formatting uses safe `if let` pattern (#163)
@@ -786,6 +768,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ownership verification in page reorder operations prevents cross-guild attacks
 - Fail-fast permission checks on database errors (no silent auth bypass)
 - Fixed missing size validation for user avatar uploads (previously relied only on DefaultBodyLimit middleware)
+
+### Deprecated
+
+### Removed
+- Deleted 12 stale documentation files (session artifacts, redundant license docs, completed update checklists, dependency snapshots)
+- Removed phantom dependencies from standards documentation (jsonrpsee, nnnoiseless, metrics, x25519-dalek, ed25519-dalek)
+- Removed stale scripts (resume-session.sh, update-deps.sh)
+- Legacy unscoped `GET /api/channels` endpoint that returned all channels across all guilds
 
 ## [0.1.0] - 2026-01-18
 

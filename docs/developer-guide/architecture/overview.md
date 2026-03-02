@@ -25,7 +25,7 @@ flowchart TD
             direction LR
             Auth["Auth Service\n• Local Auth\n• OIDC/SSO\n• MFA\n• Sessions"]
             Chat["Chat Service\n• Channels\n• Messages\n• File Upload\n• E2EE"]
-            Voice["Voice Service (SFU)\n• webrtc-rs\n• Opus Codec\n• DTLS-SRTP"]
+            Voice["Voice Service (SFU)\n• webrtc crate\n• Opus Codec\n• DTLS-SRTP"]
         end
         
         Gateway <--> Auth
@@ -61,7 +61,7 @@ flowchart TD
             direction LR
             Views["Views\n• Login\n• Channels\n• Settings\n• Voice"]
             Comps["Components\n• Channel\n• Message\n• UserList\n• VoiceBar"]
-            Stores["Stores\n• Auth\n• Channels\n• Messages\n• Voice"]
+            Stores["Stores (30+)\n• Auth, Guilds, Channels\n• Messages, DMs, Threads\n• Voice, Call, Presence\n• Friends, Permissions\n• Settings, Search, E2EE"]
             Views --- Comps --- Stores
         end
 
@@ -70,7 +70,7 @@ flowchart TD
         subgraph Backend ["BACKEND (Rust)"]
             direction LR
             Audio["Audio\n• cpal\n• opus"]
-            WebRTC["WebRTC\n• webrtc-rs\n• Signaling\n• DTLS-SRTP"]
+            WebRTC["WebRTC\n• webrtc\n• Signaling\n• DTLS-SRTP"]
             Crypto["Crypto\n• vodozemac\n• Key Store\n• Keyring"]
             Net["Network\n• HTTP/REST\n• WebSocket\n• rustls"]
             Audio --- WebRTC --- Crypto --- Net
@@ -98,35 +98,49 @@ flowchart TD
 #### Auth Service
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                       AUTH SERVICE                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Endpoints:                                                      │
-│  ──────────                                                      │
-│  POST   /auth/register          Local user registration          │
-│  POST   /auth/login             Login (local or SSO start)       │
-│  POST   /auth/logout            End session                      │
-│  POST   /auth/refresh           Renew access token               │
-│  GET    /auth/oidc/callback     SSO callback handler             │
-│  POST   /auth/mfa/setup         TOTP setup                       │
-│  POST   /auth/mfa/verify        TOTP verification                │
-│                                                                  │
-│  Internal Functions:                                             │
-│  ───────────────────                                             │
-│  • Password Hashing (Argon2id)                                   │
-│  • JWT Generation/Validation                                     │
-│  • Session Management (Valkey)                                   │
-│  • OIDC Provider Integration                                     │
-│  • JIT User Provisioning                                         │
-│                                                                  │
-│  Token Strategy:                                                 │
-│  ────────────────                                                │
-│  • Access Token:  JWT, 15 min validity                           │
-│  • Refresh Token: Opaque, 7 days, in Valkey                      │
-│  • Session:       Valkey with user metadata                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          AUTH SERVICE                                 │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  Public Endpoints:                                                    │
+│  ─────────────────                                                    │
+│  POST   /auth/register                Local user registration         │
+│  POST   /auth/login                   Login (local + MFA)             │
+│  POST   /auth/refresh                 Renew access token              │
+│  GET    /auth/oidc/providers          List configured SSO providers   │
+│  GET    /auth/oidc/authorize/{prov}   Start SSO flow                  │
+│  GET    /auth/oidc/callback           SSO callback handler            │
+│  POST   /auth/forgot-password         Request password reset          │
+│  POST   /auth/reset-password          Complete password reset         │
+│                                                                       │
+│  Protected Endpoints (require JWT):                                   │
+│  ──────────────────────────────────                                   │
+│  POST   /auth/logout                  End session                     │
+│  GET    /auth/me                      Get user profile                │
+│  POST   /auth/me                      Update profile                  │
+│  POST   /auth/me/password             Change password                 │
+│  POST   /auth/me/avatar               Upload avatar                   │
+│  POST   /auth/mfa/setup               TOTP setup                      │
+│  POST   /auth/mfa/verify              TOTP verification               │
+│  POST   /auth/mfa/disable             Disable MFA                     │
+│  POST   /auth/mfa/backup-codes        Generate recovery codes         │
+│  GET    /auth/mfa/backup-codes/count  Remaining code count            │
+│                                                                       │
+│  Internal Functions:                                                  │
+│  ───────────────────                                                  │
+│  • Password Hashing (Argon2id)                                        │
+│  • JWT Generation/Validation (EdDSA/RS256)                            │
+│  • Session Management (Valkey)                                        │
+│  • OIDC Provider Integration (JIT Provisioning)                       │
+│  • MFA: TOTP + Backup Codes (Argon2id hashed)                        │
+│                                                                       │
+│  Token Strategy:                                                      │
+│  ────────────────                                                     │
+│  • Access Token:  JWT, 15 min validity                                │
+│  • Refresh Token: Opaque, 7 days, in Valkey                           │
+│  • Session:       Valkey with user metadata                           │
+│                                                                       │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 #### Chat Service
@@ -135,10 +149,10 @@ flowchart TD
 flowchart TD
     subgraph Chat [CHAT SERVICE]
         direction TB
-        R1["REST:\nGET/POST/PATCH/DELETE /channels\nGET/POST/PATCH/DELETE /messages\nPOST /upload"]
-        W1["WS Events:\n→ message.new/edit/delete\n→ typing.start/stop\n→ presence.update\n→ channel.update"]
+        R1["REST:\nGET/POST/PATCH/DELETE /channels\nGET/POST/PATCH/DELETE /messages\nPOST /upload\nGET/POST /guilds, /dm, /search"]
+        W1["WS Events (50+ types):\n→ MessageNew/Edit/Delete\n→ ReactionAdd/Remove\n→ TypingStart/Stop\n→ PresenceUpdate\n→ VoiceUserJoined/Left\n→ CallStarted/Ended\n→ ScreenShareStarted/Stopped"]
         E1["E2EE:\n• Olm (1:1 DMs)\n• Megolm (Groups)"]
-        
+
         R1 ~~~ W1 ~~~ E1
     end
 ```
@@ -166,14 +180,37 @@ flowchart TD
 erDiagram
     users ||--o{ sessions : has
     users ||--o{ user_keys : owns
+    users ||--o{ friendships : has
+    users ||--o{ user_devices : registers
+
+    guilds ||--o{ guild_members : contains
+    guilds ||--o{ channels : has
+    guilds ||--o{ guild_roles : defines
+    guilds ||--o{ guild_invites : creates
+    guilds ||--o{ guild_emojis : owns
+    guilds ||--o{ pages : hosts
+
+    guild_roles ||--o{ guild_member_roles : "assigned via"
+    guild_members ||--o{ guild_member_roles : has
+    users ||--o{ guild_members : joins
+
     channels ||--o{ channel_members : contains
-    users ||--o{ channel_members : joins
-    roles ||--o{ channel_members : "assigned to"
+    channels ||--o{ channel_overrides : configured_by
     channels ||--o{ messages : contains
-    users ||--o{ messages : sends
     channels ||--o{ megolm_sessions : has
-    messages ||--o{ files : has
+
+    users ||--o{ messages : sends
+    messages ||--o{ message_reactions : has
+    messages ||--o{ file_attachments : has
+
+    users ||--o{ bot_applications : develops
+    bot_applications ||--o{ webhooks : configures
+    bot_applications ||--o{ slash_commands : registers
 ```
+
+> **Note:** This is a simplified overview. The full schema has 70+ tables including
+> telemetry, moderation, workspaces, DM state, admin/audit, and more.
+> See `server/migrations/` for the authoritative schema.
 
 ---
 
@@ -220,15 +257,15 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph Docker ["Docker Network (voicechat_net)"]
+    subgraph Docker ["Docker Network (voicechat)"]
         Traefik["Traefik (Proxy)\nPort 443 / 80"]
-        Traefik --> API["kaiku-api (Auth + Chat)"]
-        Traefik --> Voice["kaiku-voice (SFU, UDP 10000-10100)"]
-        Traefik --> Web["kaiku-web (Static)"]
-        
-        API --> Valkey["Valkey"]
-        API --> Postgres["Postgres"]
+        Traefik --> Server["kaiku-server\n(Auth + Chat + Voice SFU)\nPort 8080 + UDP 10000-10100"]
+
+        Server --> Valkey["Valkey\n(Sessions, Presence, Pub/Sub)"]
+        Server --> Postgres["PostgreSQL\n(Persistent Data)"]
     end
+
+    OTel["OTel Collector\n(opt-in monitoring profile)"] -.-> Server
 ```
 
 ---

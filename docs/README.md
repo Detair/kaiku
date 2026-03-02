@@ -8,15 +8,21 @@ Welcome to the official documentation for Kaiku. This directory is structured to
 docs/
 ├── admin-guide/        # Guides for self-hosting, configuration, and operations
 │   ├── configuration/  # Details on auth methods, feature flags, rate-limiting, and webhooks
+│   ├── features/       # Feature-specific admin documentation
+│   ├── getting-started/ # Quick-start guides for administrators
 │   ├── ops/            # Deployment guides, incident triage, security hardening, and updates
-│   ├── rules-and-limits/ # Default limits, message policies, and user conduct guidelines
 │   └── self-hosting.md # Overview of self-hosting Kaiku
 │
 └── developer-guide/    # Deep technical dives into Kaiku's architecture and codebase
     ├── agents/         # Architecture and implementation details of AI agents
     ├── architecture/   # Core architecture, data models, networking, and system diagrams
     ├── design/         # Brand, UI/UX guidelines, and image generation rules
-    └── security/       # Cryptographic protocols (Olm/Megolm) and security implementations
+    ├── development/    # Setup, standards, CI, code review, and development workflows
+    ├── examples/       # Code examples and reference implementations
+    ├── plans/          # Design documents and implementation plans
+    ├── project/        # Project specification and roadmap
+    ├── security/       # Cryptographic protocols (Olm/Megolm) and security implementations
+    └── testing/        # Test strategies and testing documentation
 ```
 
 ## Where to Start?

@@ -14,7 +14,7 @@ flowchart LR
         direction TB
         WebView["WebView (Solid.js)"]
         RustCore["Rust Core"]
-        WebRTC["WebRTC (webrtc-rs)"]
+        WebRTC["WebRTC (webrtc)"]
         Audio["Audio (cpal, opus)"]
         
         RustCore --- WebRTC

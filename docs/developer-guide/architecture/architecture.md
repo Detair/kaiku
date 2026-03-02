@@ -29,8 +29,8 @@ Instead of shipping an entire Chromium browser instance disguised as a chat app 
 ## <span style="color: #88C0D0;">3. The Audio Core: WebRTC</span>
 Kaiku utilizes deep, customized WebRTC implementations for all real-time media.
 
-- **Mesh vs. SFU**: For small private calls, Kaiku utilizes pure Peer-to-Peer (Mesh) routing. Audio travels directly from your PC to your friend's PC—literally zero intermediary servers (zero latency).
-- **Optimized Routing**: For larger server channels, Kaiku can intelligently switch to an SFU (Selective Forwarding Unit) model to save bandwidth, while maintaining our strict End-to-End Encryption protocols.
+- **SFU Architecture**: All voice calls — including 1:1 DM calls — are routed through a Selective Forwarding Unit (SFU). This simplifies the networking model, provides consistent latency behavior, and makes it straightforward to add participants or record diagnostics without renegotiating peer connections.
+- **End-to-End Encryption**: All voice streams are encrypted with DTLS-SRTP as the baseline, with a planned "Paranoid Mode" upgrade to MLS for true end-to-end encryption.
 
 ---
 *Detailed component diagrams and IPC (Inter-Process Communication) documentation will be added as the codebase matures.*
