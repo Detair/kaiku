@@ -42,6 +42,7 @@ import {
   ReportsPanel,
   AdminSettings,
   CommandCenterPanel,
+  PlatformPagesPanel,
   type AdminPanel,
 } from "@/components/admin";
 import AdminQuickModal from "@/components/admin/AdminQuickModal";
@@ -302,6 +303,10 @@ const AdminDashboard: Component = () => {
             {/* Guilds Panel */}
             <Show when={activePanel() === "guilds"}>
               <GuildsPanel />
+            </Show>
+
+            <Show when={activePanel() === "platform-pages"}>
+              <PlatformPagesPanel />
             </Show>
 
             {/* Reports Panel */}

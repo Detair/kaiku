@@ -18,12 +18,14 @@ import {
   Settings,
   Flag,
   Activity,
+  BookOpen,
 } from "lucide-solid";
 
 export type AdminPanel =
   | "overview"
   | "users"
   | "guilds"
+  | "platform-pages"
   | "reports"
   | "audit-log"
   | "command-center"
@@ -43,6 +45,7 @@ const AdminSidebar: Component<AdminSidebarProps> = (props) => {
     { id: "overview", label: "Overview", icon: LayoutDashboard },
     { id: "users", label: "Users", icon: Users },
     { id: "guilds", label: "Guilds", icon: Building2 },
+    { id: "platform-pages", label: "Platform Pages", icon: BookOpen },
     { id: "reports", label: "Reports", icon: Flag },
     { id: "audit-log", label: "Audit Log", icon: ScrollText },
     { id: "command-center", label: "Command Center", icon: Activity },
@@ -54,6 +57,7 @@ const AdminSidebar: Component<AdminSidebarProps> = (props) => {
       <For each={items}>
         {(item) => (
           <button
+            data-testid={`admin-tab-${item.id}`}
             onClick={() => props.onSelectPanel(item.id)}
             class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
             classList={{

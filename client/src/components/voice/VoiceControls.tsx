@@ -49,6 +49,7 @@ const VoiceControls: Component = () => {
       <div class="px-3 py-2 flex items-center justify-center gap-2 border-t border-white/10">
         {/* Mute button */}
         <button
+          data-testid="voice-mute"
           onClick={() => toggleMute()}
           class={`p-2 rounded-full transition-colors ${
             voiceState.muted
@@ -67,6 +68,7 @@ const VoiceControls: Component = () => {
 
         {/* Deafen button */}
         <button
+          data-testid="voice-deafen"
           onClick={() => toggleDeafen()}
           class={`p-2 rounded-full transition-colors ${
             voiceState.deafened
@@ -96,6 +98,7 @@ const VoiceControls: Component = () => {
 
         {/* Settings button */}
         <button
+          data-testid="voice-settings"
           onClick={() => setShowMicTest(true)}
           class="p-2 rounded-full bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary transition-colors"
           title="Voice Settings"

@@ -113,6 +113,7 @@ const DiscoveryView: Component = () => {
           <div class="flex-1 relative">
             <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
             <input
+              data-testid="discovery-search"
               type="text"
               placeholder="Search servers..."
               aria-label="Search servers"

@@ -127,6 +127,7 @@ const FriendsList: Component = () => {
         <div class="h-6 w-px bg-white/10 mx-2" />
 
         <button
+          data-testid="friends-tab-online"
           onClick={() => setTab("online")}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
@@ -138,6 +139,7 @@ const FriendsList: Component = () => {
           Online
         </button>
         <button
+          data-testid="friends-tab-all"
           onClick={() => setTab("all")}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
@@ -149,6 +151,7 @@ const FriendsList: Component = () => {
           All
         </button>
         <button
+          data-testid="friends-tab-pending"
           onClick={() => setTab("pending")}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
@@ -165,6 +168,7 @@ const FriendsList: Component = () => {
           </Show>
         </button>
         <button
+          data-testid="friends-tab-blocked"
           onClick={() => setTab("blocked")}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
@@ -192,6 +196,7 @@ const FriendsList: Component = () => {
         </Show>
 
         <button
+          data-testid="add-friend-button"
           onClick={() => setShowAddFriend(true)}
           class="btn-primary py-1 px-3 text-sm flex items-center gap-2"
         >

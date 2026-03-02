@@ -63,3 +63,41 @@ python3 scripts/generate_release_notes.py \
   --version v0.1.0 \
   --output /tmp/release-notes.md
 ```
+
+## Real Playwright Runner
+
+### `run-e2e-real.sh`
+
+Runs a real end-to-end Playwright flow from a clean state in one command:
+
+1. Reset containers and volumes
+2. Start PostgreSQL/Valkey/RustFS
+3. Run SQL migrations
+4. Initialize RustFS bucket
+5. Start backend server
+6. Run Playwright spec
+7. Cleanup stack (unless `--keep-stack`)
+
+**Usage**:
+
+```bash
+./scripts/run-e2e-real.sh
+./scripts/run-e2e-real.sh --spec e2e/onboarding.spec.ts
+./scripts/run-e2e-real.sh --spec e2e/gates.spec.ts --spec e2e/status-presence.spec.ts
+./scripts/run-e2e-real.sh --project firefox -- --headed
+```
+
+By default, the runner executes Playwright with `--workers=1` for deterministic real-stack behavior.
+Override with `PLAYWRIGHT_WORKERS=<n>` if needed.
+
+You can also run it via Make:
+
+```bash
+make e2e-real
+```
+
+For a full real smoke batch (gates + status-presence + chat-core):
+
+```bash
+make e2e-real-smoke
+```

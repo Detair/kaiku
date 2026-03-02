@@ -256,6 +256,7 @@ export const ContextMenuContainer: Component = () => {
       <Show when={menuState().visible}>
         <div
           ref={menuRef}
+          data-testid="context-menu"
           class="fixed z-[9999] min-w-48 bg-surface-base border border-white/10 rounded-lg shadow-xl py-1"
           style={{
             left: `${menuState().x}px`,

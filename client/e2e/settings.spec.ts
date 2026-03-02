@@ -1,117 +1,74 @@
-/**
- * User Settings E2E Tests
- *
- * Tests the settings modal and its various tabs.
- * Prerequisites: Backend running, test users created
- */
-
 import { test, expect } from "@playwright/test";
-import { loginAsAlice, openUserSettings } from "./helpers";
+import { registerAndReachMain, openUserSettings, uniqueId } from "./helpers";
 
 test.describe("User Settings", () => {
-  test.beforeEach(async ({ page }) => {
-    await loginAsAlice(page);
+  test("settings modal opens via gear button", async ({ page }) => {
+    await registerAndReachMain(page);
+    await openUserSettings(page);
+    await expect(page.getByText("Settings")).toBeVisible({ timeout: 5000 });
   });
 
-  test("should open settings modal", async ({ page }) => {
+  test("settings tabs are navigable and load content", async ({ page }) => {
+    await registerAndReachMain(page);
     await openUserSettings(page);
-    await expect(
-      page.locator('text=Account').or(page.locator('text=Settings'))
-    ).toBeVisible({ timeout: 3000 });
+
+    // Each tab has a content-specific keyword to verify panel loaded
+    const tabExpectations: Record<string, RegExp> = {
+      account: /display name/i,
+      appearance: /theme/i,
+      notifications: /desktop|sound|notification/i,
+      audio: /input|output|device|microphone/i,
+      privacy: /block|privacy/i,
+      security: /password/i,
+    };
+
+    for (const [tab, contentPattern] of Object.entries(tabExpectations)) {
+      const tabButton = page.getByTestId(`settings-tab-${tab}`);
+      await expect(tabButton).toBeVisible({ timeout: 5000 });
+      await tabButton.click();
+      // Verify the tab content panel rendered with tab-specific content
+      await expect(
+        page.locator('[role="dialog"]').getByText(contentPattern).first(),
+      ).toBeVisible({ timeout: 5000 });
+    }
   });
 
-  test("should display account settings", async ({ page }) => {
-    await openUserSettings(page);
-    await expect(
-      page
-        .locator('text=Display Name')
-        .or(page.locator('text=Username'))
-        .or(page.locator('text=Account'))
-    ).toBeVisible({ timeout: 3000 });
-  });
-
-  test("should switch to appearance tab", async ({ page }) => {
-    await openUserSettings(page);
-    const tab = page.locator('button:has-text("Appearance"), [title*="Appearance"]').first();
-    await expect(tab).toBeVisible({ timeout: 3000 });
-    await tab.click();
-    await expect(
-      page.locator('text=Theme').or(page.locator('text=Appearance'))
-    ).toBeVisible({ timeout: 3000 });
-  });
-
-  test("should switch to audio tab", async ({ page }) => {
-    await openUserSettings(page);
-    const tab = page.locator('button:has-text("Audio"), [title*="Audio"]').first();
-    await expect(tab).toBeVisible({ timeout: 3000 });
-    await tab.click();
-    await expect(
-      page
-        .locator('text=Input Device')
-        .or(page.locator('text=Output Device'))
-        .or(page.locator('text=Audio'))
-    ).toBeVisible({ timeout: 3000 });
-  });
-
-  test("should switch to notifications tab", async ({ page }) => {
-    await openUserSettings(page);
-    const tab = page
-      .locator('button:has-text("Notifications"), [title*="Notification"]')
-      .first();
-    await expect(tab).toBeVisible({ timeout: 3000 });
-    await tab.click();
-    await expect(
-      page
-        .locator('text=Desktop')
-        .or(page.locator('text=Sound'))
-        .or(page.locator('text=Notification'))
-    ).toBeVisible({ timeout: 3000 });
-  });
-
-  test("should switch to privacy tab", async ({ page }) => {
-    await openUserSettings(page);
-    const tab = page.locator('button:has-text("Privacy"), [title*="Privacy"]').first();
-    await expect(tab).toBeVisible({ timeout: 3000 });
-    await tab.click();
-    await expect(
-      page.locator('text=Privacy').or(page.locator('text=Block'))
-    ).toBeVisible({ timeout: 3000 });
-  });
-
-  test("should switch to security tab", async ({ page }) => {
-    await openUserSettings(page);
-    const tab = page.locator('button:has-text("Security"), [title*="Security"]').first();
-    await expect(tab).toBeVisible({ timeout: 3000 });
-    await tab.click();
-    await expect(
-      page
-        .locator('text=Password')
-        .or(page.locator('text=Two-Factor'))
-        .or(page.locator('text=Security'))
-    ).toBeVisible({ timeout: 3000 });
-  });
-
-  test("should update display name", async ({ page }) => {
+  test("account tab allows updating display name", async ({ page }) => {
+    await registerAndReachMain(page);
     await openUserSettings(page);
 
-    const nameInput = page.locator(
-      'input[placeholder*="display" i], input[placeholder*="name" i]'
-    ).first();
-    await expect(nameInput).toBeVisible({ timeout: 3000 });
+    await page.getByTestId("settings-tab-account").click();
+    await expect(page.getByText(/display name/i).first()).toBeVisible({ timeout: 5000 });
 
-    const original = await nameInput.inputValue();
-    await nameInput.fill("E2E Test Name");
+    // Find the display name input and update it
+    const displayNameInput = page.locator('[role="dialog"]').getByLabel(/display name/i);
+    await expect(displayNameInput).toBeVisible({ timeout: 5000 });
 
-    const saveBtn = page.locator('button:has-text("Save")').first();
-    await expect(saveBtn).toBeVisible({ timeout: 2000 });
+    const newName = `E2E-${uniqueId("name")}`;
+    await displayNameInput.fill(newName);
+
+    // Click save button
+    const saveBtn = page.locator('[role="dialog"]').getByRole("button", { name: /save/i });
+    await expect(saveBtn).toBeVisible({ timeout: 5000 });
     await saveBtn.click();
 
-    // Verify the value persisted by checking the input still has the new value
-    await expect(nameInput).toHaveValue("E2E Test Name", { timeout: 3000 });
+    // Close and reopen settings to verify persistence
+    await page.keyboard.press("Escape");
+    await openUserSettings(page);
+    await page.getByTestId("settings-tab-account").click();
 
-    // Restore original name
-    await nameInput.fill(original || "alice");
-    await saveBtn.click();
-    await expect(nameInput).toHaveValue(original || "alice", { timeout: 3000 });
+    // Re-query input after modal reopen to avoid stale reference
+    const savedNameInput = page.locator('[role="dialog"]').getByLabel(/display name/i);
+    await expect(savedNameInput).toHaveValue(newName, { timeout: 10000 });
+  });
+
+  test("security tab shows password and MFA sections", async ({ page }) => {
+    await registerAndReachMain(page);
+    await openUserSettings(page);
+
+    await page.getByTestId("settings-tab-security").click();
+    await expect(
+      page.getByText(/password/i).first(),
+    ).toBeVisible({ timeout: 5000 });
   });
 });

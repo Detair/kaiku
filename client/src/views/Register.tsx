@@ -200,6 +200,7 @@ const Register: Component = () => {
           <input
             type="url"
             class="input-field"
+            data-testid="register-server-url"
             placeholder="https://chat.example.com"
             value={serverUrl()}
             onInput={(e) => handleServerUrlChange(e.currentTarget.value)}
@@ -276,6 +277,7 @@ const Register: Component = () => {
               <input
                 type="text"
                 class="input-field"
+                data-testid="register-username"
                 placeholder="Choose a username"
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
@@ -323,6 +325,7 @@ const Register: Component = () => {
               <input
                 type="password"
                 class="input-field"
+                data-testid="register-password"
                 placeholder="Create a password"
                 value={password()}
                 onInput={(e) => setPassword(e.currentTarget.value)}
@@ -339,6 +342,7 @@ const Register: Component = () => {
               <input
                 type="password"
                 class="input-field"
+                data-testid="register-password-confirm"
                 placeholder="Confirm your password"
                 value={confirmPassword()}
                 onInput={(e) => setConfirmPassword(e.currentTarget.value)}
@@ -359,6 +363,7 @@ const Register: Component = () => {
             <button
               type="submit"
               class="btn-primary w-full flex items-center justify-center gap-2"
+              data-testid="register-submit"
               disabled={authState.isLoading}
             >
               <Show

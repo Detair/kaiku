@@ -62,7 +62,10 @@ const ServerRail: Component = () => {
   };
 
   return (
-    <aside class="w-[72px] flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-white/10 z-20">
+    <aside
+      class="w-[72px] flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-white/10 z-20"
+      data-testid="server-rail"
+    >
       {/* Home Icon - Kaiku Logo */}
       <div class="relative">
         {/* Pill Indicator */}
@@ -74,6 +77,7 @@ const ServerRail: Component = () => {
         {/* Icon Container */}
         <button
           class="w-12 h-12 flex items-center justify-center bg-surface-layer2 transition-all duration-200 cursor-pointer"
+          data-testid="home-button"
           style={{
             "border-radius": getBorderRadius("home"),
             opacity: isActive("home") || isHovered("home") ? 1 : 0.8,
@@ -113,6 +117,7 @@ const ServerRail: Component = () => {
                 {/* Server Icon */}
                 <button
                   class="w-12 h-12 flex items-center justify-center bg-surface-layer2 transition-all duration-200 cursor-pointer overflow-hidden"
+                  data-testid="guild-button"
                   style={{
                     "border-radius": getBorderRadius(guild.id),
                     opacity:
@@ -183,6 +188,7 @@ const ServerRail: Component = () => {
       <div class="relative">
         <button
           class="w-12 h-12 flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group"
+          data-testid="create-server-button"
           style={{
             "border-radius": isHovered("add") ? "16px" : "50%",
             opacity: isHovered("add") ? 1 : 0.8,

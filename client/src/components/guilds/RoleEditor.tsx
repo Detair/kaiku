@@ -240,6 +240,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
             Role Name
           </label>
           <input
+            data-testid="role-name-input"
             type="text"
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
@@ -435,6 +436,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
           Cancel
         </button>
         <button
+          data-testid="role-save"
           onClick={handleSave}
           disabled={isSaving() || !hasChanges() || !name().trim()}
           class="px-4 py-2 rounded-lg bg-accent-primary text-white font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"

@@ -97,6 +97,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
             <div class="relative">
               <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
               <input
+                data-testid="new-dm-input"
                 type="text"
                 value={search()}
                 onInput={(e) => setSearch(e.currentTarget.value)}
@@ -149,6 +150,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
           {/* Footer */}
           <div class="p-4 border-t border-white/10">
             <button
+              data-testid="new-dm-submit"
               onClick={handleCreate}
               disabled={selectedIds().length === 0 || isCreating()}
               class="w-full py-2 bg-accent-primary text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"

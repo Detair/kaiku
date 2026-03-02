@@ -82,6 +82,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
       class="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
+      data-testid="page-acceptance-modal"
     >
       {/* Backdrop */}
       <div
@@ -116,6 +117,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
         <div
           ref={contentRef}
           onScroll={checkScroll}
+          data-testid="page-acceptance-content"
           class="flex-1 overflow-auto px-6 py-4 min-h-0"
         >
           <MarkdownPreview content={props.page.content} />
@@ -142,6 +144,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
             <button
               type="button"
               onClick={handleDefer}
+              data-testid="page-acceptance-remind-later"
               class="px-4 py-2 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-700 rounded-md transition-colors"
             >
               Remind Me Later
@@ -150,6 +153,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
           <button
             type="button"
             onClick={handleAccept}
+            data-testid="page-acceptance-accept"
             disabled={!canAccept()}
             class={`px-6 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${
               canAccept()

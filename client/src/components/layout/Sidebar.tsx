@@ -106,6 +106,7 @@ const Sidebar: Component = () => {
         {/* Settings gear - only show when in a guild */}
         <Show when={activeGuild()}>
           <button
+            data-testid="guild-settings-button"
             onClick={() => setShowGuildSettings(true)}
             class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             title="Server Settings"

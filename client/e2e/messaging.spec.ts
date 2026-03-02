@@ -1,69 +1,137 @@
-/**
- * Messaging E2E Tests
- *
- * Tests message sending, display, and input behavior.
- * Prerequisites: Backend running, test users + seed data, at least one text channel
- */
-
 import { test, expect } from "@playwright/test";
-import { loginAsAdmin, selectFirstGuild, uniqueId } from "./helpers";
+import {
+  registerAndReachMain,
+  uniqueId,
+  createTextChannel,
+  selectChannel,
+  sendMessage,
+  ensureGuildSelected,
+} from "./helpers";
 
 test.describe("Messaging", () => {
-  test.beforeEach(async ({ page }) => {
-    await loginAsAdmin(page);
-    await selectFirstGuild(page);
-    // Click the first text channel
-    const channelItem = page.locator('aside [role="button"]').first();
-    await expect(channelItem).toBeVisible({ timeout: 5000 });
-    await channelItem.click();
+  test("send and display a message", async ({ page }) => {
+    await registerAndReachMain(page);
+    await ensureGuildSelected(page);
+    const channelName = await createTextChannel(page);
+    await selectChannel(page, channelName);
+
+    const msg = `hello-${uniqueId("msg")}`;
+    await sendMessage(page, msg);
+    await expect(page.getByText(msg)).toBeVisible();
+  });
+
+  test("empty message is not sent", async ({ page }) => {
+    await registerAndReachMain(page);
+    await ensureGuildSelected(page);
+    const channelName = await createTextChannel(page);
+    await selectChannel(page, channelName);
+
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    const beforeCount = await page.getByTestId("message-item").count();
+    await input.press("Enter");
+
+    // Verify message count stays stable (no new messages appear)
+    await expect
+      .poll(() => page.getByTestId("message-item").count(), { timeout: 3000 })
+      .toBe(beforeCount);
+  });
+
+  test("markdown bold renders correctly", async ({ page }) => {
+    await registerAndReachMain(page);
+    await ensureGuildSelected(page);
+    const channelName = await createTextChannel(page);
+    await selectChannel(page, channelName);
+
+    await sendMessage(page, "**bold text**");
     await expect(
-      page.locator('textarea[placeholder*="Message"]')
-    ).toBeVisible({ timeout: 10000 });
+      page.locator("strong").filter({ hasText: "bold text" })
+    ).toBeVisible({ timeout: 15000 });
   });
 
-  test("should display message input", async ({ page }) => {
-    const input = page.locator('textarea[placeholder*="Message"]');
-    await expect(input).toBeVisible();
-    await expect(input).toBeEditable();
-  });
+  test("code block renders correctly", async ({ page }) => {
+    await registerAndReachMain(page);
+    await ensureGuildSelected(page);
+    const channelName = await createTextChannel(page);
+    await selectChannel(page, channelName);
 
-  test("should send and display a message", async ({ page }) => {
-    const testMessage = `Hello from E2E ${uniqueId()}`;
-    const input = page.locator('textarea[placeholder*="Message"]');
-    await input.fill(testMessage);
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible({ timeout: 10000 });
+    await input.fill("```js\nconsole.log('hello')\n```");
     await input.press("Enter");
 
-    // Message should appear in the message list
-    await expect(page.locator(`text=${testMessage}`)).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(
+      page.locator("code, pre").filter({ hasText: "console.log" })
+    ).toBeVisible({ timeout: 15000 });
   });
 
-  test("should not send empty message", async ({ page }) => {
-    const input = page.locator('textarea[placeholder*="Message"]');
-    // Count messages before
-    const messagesBefore = await page
-      .locator('[role="listitem"]')
-      .count();
+  test("multi-line message with Shift+Enter", async ({ page }) => {
+    await registerAndReachMain(page);
+    await ensureGuildSelected(page);
+    const channelName = await createTextChannel(page);
+    await selectChannel(page, channelName);
 
-    // Try to send empty message
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    const line1 = `line1-${uniqueId("ml")}`;
+    const line2 = `line2-${uniqueId("ml")}`;
+    await input.fill(line1);
+    await input.press("Shift+Enter");
+    await input.pressSequentially(line2);
     await input.press("Enter");
 
-    // Message count should not increase
-    await expect(page.locator('[role="listitem"]')).toHaveCount(messagesBefore, {
-      timeout: 2000,
-    });
+    await expect(page.getByText(line1)).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText(line2)).toBeVisible({ timeout: 15000 });
   });
 
-  test("should render markdown in messages", async ({ page }) => {
-    const boldText = uniqueId("bold");
-    const input = page.locator('textarea[placeholder*="Message"]');
-    await input.fill(`**${boldText}**`);
-    await input.press("Enter");
+  test("edit a sent message", async ({ page }) => {
+    await registerAndReachMain(page);
+    await ensureGuildSelected(page);
+    const channelName = await createTextChannel(page);
+    await selectChannel(page, channelName);
 
-    // Should render as bold (strong element)
-    await expect(page.locator(`strong:has-text("${boldText}")`)).toBeVisible({
-      timeout: 10000,
-    });
+    const original = `edit-orig-${uniqueId("msg")}`;
+    await sendMessage(page, original);
+
+    // Hover message, click more actions, click edit
+    const messageItem = page.getByTestId("message-item").filter({ hasText: original });
+    await messageItem.hover();
+    await page.getByTestId("message-action-more").click();
+    await page.getByText(/edit/i).first().click();
+
+    // Update message content
+    const edited = `edit-updated-${uniqueId("msg")}`;
+    const editInput = messageItem.locator("textarea, input").first();
+    await expect(editInput).toBeVisible({ timeout: 5000 });
+    await editInput.fill(edited);
+    await editInput.press("Enter");
+
+    await expect(page.getByText(edited)).toBeVisible({ timeout: 15000 });
+  });
+
+  test("delete a sent message", async ({ page }) => {
+    await registerAndReachMain(page);
+    await ensureGuildSelected(page);
+    const channelName = await createTextChannel(page);
+    await selectChannel(page, channelName);
+
+    const msg = `delete-me-${uniqueId("msg")}`;
+    await sendMessage(page, msg);
+
+    // Hover message, click more actions, click delete
+    const messageItem = page.getByTestId("message-item").filter({ hasText: msg });
+    await messageItem.hover();
+    await page.getByTestId("message-action-more").click();
+    await page.getByText(/delete/i).first().click();
+
+    // Confirm deletion if a confirmation dialog appears
+    const confirmBtn = page.getByRole("button", { name: /confirm|delete/i });
+    if (await confirmBtn.isVisible()) {
+      await confirmBtn.click();
+    }
+
+    await expect(page.getByText(msg)).toBeHidden({ timeout: 15000 });
   });
 });

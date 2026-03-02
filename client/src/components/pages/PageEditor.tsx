@@ -246,6 +246,7 @@ export default function PageEditor(props: PageEditorProps) {
           <button
             type="button"
             onClick={handleSave}
+            data-testid="page-editor-save"
             disabled={isSaving() || isContentTooLarge()}
             class="px-4 py-1.5 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-md flex items-center gap-2 transition-colors"
           >
@@ -271,6 +272,7 @@ export default function PageEditor(props: PageEditorProps) {
           </label>
           <input
             type="text"
+            data-testid="page-editor-title"
             value={title()}
             onInput={(e) => setTitle(e.currentTarget.value)}
             placeholder="Page title"
@@ -289,6 +291,7 @@ export default function PageEditor(props: PageEditorProps) {
           </label>
           <input
             type="text"
+            data-testid="page-editor-slug"
             value={slug()}
             onInput={(e) => {
               setSlug(
@@ -322,6 +325,7 @@ export default function PageEditor(props: PageEditorProps) {
           <label class="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
+              data-testid="page-editor-requires-acceptance"
               checked={requiresAcceptance()}
               onChange={(e) => setRequiresAcceptance(e.currentTarget.checked)}
               class="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-zinc-900"
@@ -382,6 +386,7 @@ export default function PageEditor(props: PageEditorProps) {
         >
           <textarea
             ref={textareaRef}
+            data-testid="page-editor-content"
             value={content()}
             onInput={(e) => setContent(e.currentTarget.value)}
             placeholder="Write your content in Markdown..."

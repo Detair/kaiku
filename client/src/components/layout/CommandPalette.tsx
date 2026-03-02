@@ -191,6 +191,7 @@ const CommandPalette: Component = () => {
       >
         {/* Command Palette Dialog */}
         <div
+          data-testid="command-palette"
           class="w-[600px] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up"
           style="background-color: var(--color-surface-layer2)"
         >
@@ -198,6 +199,7 @@ const CommandPalette: Component = () => {
           <div class="border-b border-white/5">
             <input
               ref={inputRef}
+              data-testid="command-palette-input"
               type="text"
               placeholder="Search channels, users, or type > for commands..."
               class="w-full px-6 py-4 bg-transparent text-xl text-text-input outline-none placeholder:text-text-secondary/40"

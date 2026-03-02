@@ -41,7 +41,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
   };
 
   return (
-    <div class="absolute top-0 right-4 -translate-y-1/2 flex items-center gap-1 bg-surface-layer2 border border-white/10 rounded-lg shadow-xl px-1 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div data-testid="message-action-bar" class="absolute top-0 right-4 -translate-y-1/2 flex items-center gap-1 bg-surface-layer2 border border-white/10 rounded-lg shadow-xl px-1 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
       {/* Quick emoji reactions */}
       {QUICK_EMOJIS.map((emoji) => (
         <button
@@ -58,6 +58,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       <button
         ref={emojiButtonRef}
         class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+        data-testid="message-action-react"
         onClick={() => setShowEmojiPicker(!showEmojiPicker())}
         title="More reactions"
         aria-label="More reactions"
@@ -85,6 +86,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       >
         <button
           class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+          data-testid="message-action-thread"
           onClick={() => props.onReplyInThread?.()}
           title="Reply in Thread"
           aria-label="Reply in Thread"
@@ -99,6 +101,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       {/* Context menu button */}
       <button
         class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+        data-testid="message-action-more"
         onClick={props.onShowContextMenu}
         title="More actions"
         aria-label="More actions"

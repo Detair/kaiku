@@ -14,7 +14,6 @@
 import { Component, JSX, ParentProps, Show, lazy, Suspense } from "solid-js";
 import ServerRail from "./ServerRail";
 import Sidebar from "./Sidebar";
-import { voiceState } from "@/stores/voice";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 
 const ScreenShareViewer = lazy(

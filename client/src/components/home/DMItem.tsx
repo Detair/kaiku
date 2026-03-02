@@ -97,6 +97,7 @@ const DMItem: Component<DMItemProps> = (props) => {
         style={{ height: isSelected() ? "20px" : "0px" }}
       />
       <button
+        data-testid="dm-item"
         onClick={() => selectDM(props.dm.id)}
         class="w-full flex items-start gap-3 p-2 rounded-lg transition-colors text-left"
         classList={{

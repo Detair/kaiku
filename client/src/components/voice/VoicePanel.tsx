@@ -58,6 +58,7 @@ const VoicePanel: Component = () => {
   return (
     <Show when={voiceState.state === "connected" && channel()}>
       <div
+        data-testid="voice-panel"
         class="bg-surface-base/50 border-t relative transition-all duration-200"
         classList={{
           "border-accent-success/50 shadow-[0_0_12px_rgba(163,190,140,0.3)]":
@@ -97,6 +98,7 @@ const VoicePanel: Component = () => {
             </div>
           </div>
           <button
+            data-testid="voice-disconnect"
             onClick={handleDisconnect}
             class="p-1.5 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded transition-colors"
             title="Disconnect"

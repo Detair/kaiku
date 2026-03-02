@@ -7,7 +7,7 @@
         services-up services-down migrate \
         docker-up docker-down docker-logs docker-clean \
         db-migrate db-reset db-seed \
-        test-everyone-security \
+        test-everyone-security e2e-real e2e-real-smoke \
         build release
 
 # Default target
@@ -123,6 +123,14 @@ test-server: ## Run server tests only
 test-watch: ## Run tests in watch mode
 	cargo watch -x 'nextest run' 2>/dev/null || cargo watch -x test
 
+e2e-real: ## Run real Playwright gate flow with clean stack
+	@./scripts/run-e2e-real.sh
+
+e2e-real-smoke: ## Run real Playwright smoke suite (gates, status, chat)
+	@./scripts/run-e2e-real.sh --spec e2e/gates.spec.ts
+	@./scripts/run-e2e-real.sh --spec e2e/status-presence.spec.ts
+	@./scripts/run-e2e-real.sh --spec e2e/chat-core.spec.ts
+
 test-everyone-security: ## Run ignored @everyone security integration test in Docker
 	@./scripts/test-everyone-security.sh
 
@@ -198,12 +206,12 @@ db-status: ## Show migration status
 	sqlx migrate info --source server/migrations
 
 db-shell: ## Open psql shell
-	@docker exec -it voicechat-dev-postgres psql -U voicechat -d voicechat
+	@$(COMPOSE_CMD) -f docker-compose.dev.yml exec postgres psql -U voicechat -d voicechat
 
 db-seed: ## Seed database with test data
 	@echo "$(CYAN)Seeding database...$(RESET)"
 	@if [ -f server/seeds/dev.sql ]; then \
-		docker exec -i voicechat-dev-postgres psql -U voicechat -d voicechat < server/seeds/dev.sql; \
+		$(COMPOSE_CMD) -f docker-compose.dev.yml exec -T postgres psql -U voicechat -d voicechat < server/seeds/dev.sql; \
 	else \
 		echo "$(YELLOW)No seed file found at server/seeds/dev.sql$(RESET)"; \
 	fi

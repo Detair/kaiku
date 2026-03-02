@@ -458,6 +458,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
   return (
     <div
+      data-testid="message-item"
       onContextMenu={handleContextMenu}
       onMouseEnter={() => {
         reactionShortcutHandler = handleAddReaction;

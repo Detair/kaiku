@@ -113,6 +113,7 @@ const HomeSidebar: Component = () => {
         </button>
 
         <button
+          data-testid="new-dm-button"
           onClick={() => setShowNewMessage(true)}
           class="p-1 rounded hover:bg-white/10 transition-colors text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100"
           title="New Message"

@@ -98,6 +98,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
               </label>
               <input
                 id="username"
+                data-testid="add-friend-input"
                 type="text"
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
@@ -138,6 +139,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
               </button>
               <button
                 type="submit"
+                data-testid="add-friend-submit"
                 class="px-4 py-2 bg-accent-primary text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={isSubmitting()}
               >

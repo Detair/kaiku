@@ -75,7 +75,7 @@ const GuildCard: Component<GuildCardProps> = (props) => {
   };
 
   return (
-    <div class="flex flex-col rounded-xl border border-white/5 overflow-hidden bg-surface-layer2 hover:border-white/10 transition-colors">
+    <div data-testid="discovery-guild-card" class="flex flex-col rounded-xl border border-white/5 overflow-hidden bg-surface-layer2 hover:border-white/10 transition-colors">
       {/* Banner area */}
       <div class="h-24 relative">
         <Show

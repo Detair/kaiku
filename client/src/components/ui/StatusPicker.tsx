@@ -39,6 +39,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
   return (
     <div
       class="absolute bottom-full left-0 mb-2 w-48 bg-surface-layer2 border border-white/10 rounded-xl shadow-xl overflow-hidden animate-slide-up z-50"
+      data-testid="status-picker"
       onClick={(e) => e.stopPropagation()}
     >
       <div class="p-1">
@@ -46,6 +47,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
           {(option) => (
             <button
               onClick={() => handleSelect(option.value)}
+              data-testid={`status-option-${option.value}`}
               class="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-left group"
             >
               <div class="group-hover:scale-110 transition-transform">

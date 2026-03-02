@@ -27,7 +27,7 @@ const ReactionBar: Component<ReactionBarProps> = (props) => {
   };
 
   return (
-    <div class="flex flex-wrap items-center gap-1 mt-1">
+    <div data-testid="reaction-bar" class="flex flex-wrap items-center gap-1 mt-1">
       <For each={props.reactions}>
         {(reaction) => (
           <button

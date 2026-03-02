@@ -186,6 +186,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
         <div class="relative flex-1 max-w-md">
           <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" />
           <input
+            data-testid="search-input"
             type="text"
             placeholder={placeholderText()}
             value={inputValue()}
@@ -339,7 +340,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
       </Show>
 
       {/* Results */}
-      <div ref={resultsContainerRef} class="flex-1 overflow-y-auto">
+      <div ref={resultsContainerRef} data-testid="search-results" class="flex-1 overflow-y-auto">
         {/* Loading State */}
         <Show
           when={searchState.isSearching && searchState.results.length === 0}

@@ -33,6 +33,7 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
 
   return (
     <div
+      data-testid="emoji-picker"
       class="bg-surface-layer2 rounded-lg shadow-xl w-80 overflow-hidden flex flex-col border border-white/10"
       style={{
         ...(props.maxHeight
@@ -44,6 +45,7 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
       {/* Search */}
       <div class="p-2 border-b border-white/10">
         <input
+          data-testid="emoji-search"
           type="text"
           placeholder="Search emoji..."
           value={search()}

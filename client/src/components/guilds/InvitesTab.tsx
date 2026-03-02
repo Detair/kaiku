@@ -118,6 +118,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
             </select>
           </div>
           <button
+            data-testid="create-invite-button"
             onClick={handleCreate}
             disabled={isCreating()}
             class="flex items-center gap-2 px-4 py-2 bg-accent-primary text-white rounded-lg font-medium hover:opacity-90 disabled:opacity-50 mt-5"
@@ -150,7 +151,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                   style="background-color: var(--color-surface-layer1)"
                 >
                   <div class="flex-1 min-w-0">
-                    <code class="text-sm text-accent-primary font-mono truncate block">
+                    <code data-testid="invite-code" class="text-sm text-accent-primary font-mono truncate block">
                       {window.location.origin}/invite/{invite.code}
                     </code>
                     <div class="text-xs text-text-secondary mt-1">

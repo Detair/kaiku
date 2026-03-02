@@ -585,6 +585,7 @@ const ChannelList: Component = () => {
               </button>
               <button
                 class="p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
+                data-testid="create-channel-button"
                 title="Create Channel"
                 onClick={() => openCreateModal("text", null)}
               >
@@ -618,6 +619,7 @@ const ChannelList: Component = () => {
           <Show when={canManageChannels()}>
             <button
               class="p-2 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
+              data-testid="create-channel-button"
               title="Create Channel"
               onClick={() => openCreateModal("text", null)}
             >

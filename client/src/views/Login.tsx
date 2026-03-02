@@ -338,6 +338,7 @@ const Login: Component = () => {
                   type="text"
                   class="input-field"
                   placeholder="Enter your username"
+                  data-testid="login-username"
                   value={username()}
                   onInput={(e) => setUsername(e.currentTarget.value)}
                   disabled={authState.isLoading}
@@ -353,6 +354,7 @@ const Login: Component = () => {
                   type="password"
                   class="input-field"
                   placeholder="Enter your password"
+                  data-testid="login-password"
                   value={password()}
                   onInput={(e) => setPassword(e.currentTarget.value)}
                   disabled={authState.isLoading}
@@ -372,6 +374,7 @@ const Login: Component = () => {
               <Show when={error()}>
                 <div
                   class="p-3 rounded-md text-sm"
+                  data-testid="login-error"
                   style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
                 >
                   {error()}
@@ -381,6 +384,7 @@ const Login: Component = () => {
               <button
                 type="submit"
                 class="btn-primary w-full flex items-center justify-center gap-2"
+                data-testid="login-submit"
                 disabled={authState.isLoading}
               >
                 <Show

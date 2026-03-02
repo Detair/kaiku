@@ -13,3 +13,4 @@ export { default as AuditLogPanel } from "./AuditLogPanel";
 export { default as ReportsPanel } from "./ReportsPanel";
 export { default as AdminSettings } from "./AdminSettings";
 export { default as CommandCenterPanel } from "./CommandCenterPanel";
+export { default as PlatformPagesPanel } from "./PlatformPagesPanel";

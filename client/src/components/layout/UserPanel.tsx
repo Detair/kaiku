@@ -73,6 +73,8 @@ const UserPanel: Component = () => {
           <Show when={user()}>
             <button
               class="flex items-center gap-2.5 flex-1 min-w-0 text-left hover:bg-white/5 p-1 rounded-lg transition-colors -ml-1"
+              data-testid="change-status-button"
+              data-current-status={user()?.status || "online"}
               onClick={() => setShowStatusPicker(!showStatusPicker())}
               title="Change Status"
             >
@@ -113,12 +115,14 @@ const UserPanel: Component = () => {
           </Show>
           <button
             class="p-1.5 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-all duration-200"
+            data-testid="user-settings-button"
             title="User Settings"
             onClick={() => setShowSettings(true)}
           >
             <Settings class="w-4 h-4" />
           </button>
           <button
+            data-testid="logout-button"
             class="p-1.5 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded-lg transition-all duration-200"
             title="Logout"
             onClick={() => logout()}

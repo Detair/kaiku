@@ -498,6 +498,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         {/* Text input */}
         <textarea
           ref={textareaRef}
+          data-testid="message-input"
           value={content()}
           onInput={(e) => handleInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
@@ -531,6 +532,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           <Show when={content().trim() || pendingFiles().length > 0}>
             <button
               type="submit"
+              data-testid="message-send"
               class="p-2 text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
               disabled={isSending() || isOverLimit()}
               title={pendingFiles().length > 0 ? `Send ${pendingFiles().length} file(s)` : "Send message"}

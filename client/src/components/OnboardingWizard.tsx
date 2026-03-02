@@ -275,6 +275,7 @@ const OnboardingWizard: Component = () => {
         role="dialog"
         aria-modal="true"
         aria-label="Onboarding wizard"
+        data-testid="onboarding-wizard"
       >
         <div
           ref={dialogRef}
@@ -324,6 +325,7 @@ const OnboardingWizard: Component = () => {
                 </label>
                 <input
                   id="onboarding-display-name"
+                  data-testid="onboarding-display-name"
                   ref={displayNameRef}
                   type="text"
                   value={displayName()}
@@ -640,6 +642,7 @@ const OnboardingWizard: Component = () => {
               <Show when={step() > 0 && step() < TOTAL_STEPS - 1}>
                 <button
                   onClick={next}
+                  data-testid="onboarding-skip"
                   class="text-sm text-text-secondary hover:text-text-primary transition-colors"
                 >
                   Skip
@@ -652,6 +655,7 @@ const OnboardingWizard: Component = () => {
                 fallback={
                   <button
                     onClick={complete}
+                    data-testid="onboarding-get-started"
                     class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover transition-colors"
                   >
                     Get Started
@@ -663,6 +667,7 @@ const OnboardingWizard: Component = () => {
                   onClick={() =>
                     step() === 0 ? handleSaveDisplayName() : next()
                   }
+                  data-testid="onboarding-next"
                   disabled={savingName()}
                   class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
                 >

@@ -161,6 +161,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                   </div>
                   <input
                     type="text"
+                    data-testid="create-channel-name"
                     value={name()}
                     onInput={(e) =>
                       setName(
@@ -211,6 +212,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
             <button
               type="submit"
               onClick={handleSubmit}
+              data-testid="create-channel-submit"
               class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isCreating() || !name().trim()}
             >

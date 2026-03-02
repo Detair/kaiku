@@ -111,7 +111,7 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
   };
 
   return (
-    <div class="w-[400px] flex-shrink-0 flex flex-col border-l border-white/5 bg-surface-layer1">
+    <div data-testid="thread-sidebar" class="w-[400px] flex-shrink-0 flex flex-col border-l border-white/5 bg-surface-layer1">
       {/* Header */}
       <header class="h-12 px-4 flex items-center justify-between border-b border-white/5 shadow-sm">
         <span class="font-semibold text-text-primary">Thread</span>
@@ -186,6 +186,7 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
           <div class="flex items-end gap-2 bg-surface-layer2 rounded-lg px-3 py-2 border border-white/5 focus-within:border-accent-primary/50 transition-colors">
             <textarea
               ref={textareaRef}
+              data-testid="thread-reply-input"
               value={replyContent()}
               onInput={handleInput}
               onKeyDown={handleKeyDown}

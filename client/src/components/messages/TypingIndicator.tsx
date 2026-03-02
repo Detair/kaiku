@@ -23,7 +23,7 @@ const TypingIndicator: Component<TypingIndicatorProps> = (props) => {
 
   return (
     <Show when={typingUsers().length > 0}>
-      <div class="h-6 px-4 flex items-center text-sm text-text-muted">
+      <div data-testid="typing-indicator" class="h-6 px-4 flex items-center text-sm text-text-muted">
         <div class="flex items-center gap-2">
           {/* Animated typing dots */}
           <div class="flex gap-0.5">

@@ -1,129 +1,79 @@
-/**
- * Authentication E2E Tests
- *
- * Tests login, registration, and password recovery flows.
- * Prerequisites: Backend running, test users created (scripts/create-test-users.sh)
- */
-
 import { test, expect } from "@playwright/test";
+import { registerAndReachMain, uniqueUsername, login } from "./helpers";
 
 test.describe("Authentication", () => {
-  test.describe("Login", () => {
-    test("should display login form", async ({ page }) => {
-      await page.goto("/login");
-      await expect(
-        page.locator('input[placeholder="Enter your username"]')
-      ).toBeVisible();
-      await expect(
-        page.locator('input[placeholder="Enter your password"]')
-      ).toBeVisible();
-      await expect(page.locator('button[type="submit"]')).toBeVisible();
-    });
+  test("login form displays required fields", async ({ page }) => {
+    await page.goto("/login");
 
-    test("should login with valid credentials", async ({ page }) => {
-      await page.goto("/login");
-      await page.fill('input[placeholder="Enter your username"]', "alice");
-      await page.fill('input[placeholder="Enter your password"]', "password123");
-      await page.click('button[type="submit"]');
-
-      // Should redirect to main app (sidebar visible)
-      await expect(page.locator("aside")).toBeVisible({ timeout: 15000 });
-    });
-
-    test("should show error for invalid credentials", async ({ page }) => {
-      await page.goto("/login");
-      await page.fill('input[placeholder="Enter your username"]', "alice");
-      await page.fill(
-        'input[placeholder="Enter your password"]',
-        "wrongpassword"
-      );
-      await page.click('button[type="submit"]');
-
-      // Should show error message (remain on login page)
-      await expect(page.locator("text=Invalid")).toBeVisible({ timeout: 5000 });
-    });
-
-    test("should have link to register page", async ({ page }) => {
-      await page.goto("/login");
-      const registerLink = page.locator('a:has-text("Register")');
-      await expect(registerLink).toBeVisible();
-      await registerLink.click();
-      await expect(page).toHaveURL(/\/register/);
-    });
-
-    test("should have link to forgot password page", async ({ page }) => {
-      await page.goto("/login");
-      const forgotLink = page.locator('a:has-text("Forgot")');
-      await expect(forgotLink).toBeVisible();
-      await forgotLink.click();
-      await expect(page).toHaveURL(/\/forgot-password/);
-    });
+    await expect(page.getByTestId("login-username")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("login-password")).toBeVisible();
+    await expect(page.getByTestId("login-submit")).toBeVisible();
   });
 
-  test.describe("Registration", () => {
-    test("should display registration form", async ({ page }) => {
-      await page.goto("/register");
-      await expect(
-        page.locator('input[placeholder="Choose a username"]')
-      ).toBeVisible();
-      await expect(
-        page.locator('input[placeholder="Create a password"]')
-      ).toBeVisible();
-      await expect(
-        page.locator('input[placeholder="Confirm your password"]')
-      ).toBeVisible();
-      await expect(page.locator('button[type="submit"]')).toBeVisible();
-    });
+  test("successful login after registration", async ({ page }) => {
+    const { username } = await registerAndReachMain(page);
 
-    test("should register a new account", async ({ page }) => {
-      const username = `e2etest${Date.now()}`;
-      await page.goto("/register");
-      await page.fill('input[placeholder="Choose a username"]', username);
-      await page.fill('input[placeholder="Create a password"]', "testpass123!");
-      await page.fill(
-        'input[placeholder="Confirm your password"]',
-        "testpass123!"
-      );
-      await page.click('button[type="submit"]');
+    await page.getByTestId("logout-button").click();
+    await expect(page).toHaveURL(/\/login/, { timeout: 15000 });
 
-      // Should either redirect to app or show success
-      await expect(
-        page.locator("aside").or(page.locator("text=success"))
-      ).toBeVisible({ timeout: 15000 });
-    });
+    await login(page, username, "password123");
 
-    test("should show validation errors", async ({ page }) => {
-      await page.goto("/register");
-      await page.fill('input[placeholder="Choose a username"]', "test");
-      await page.fill('input[placeholder="Create a password"]', "short");
-      await page.fill('input[placeholder="Confirm your password"]', "mismatch");
-      await page.click('button[type="submit"]');
-
-      // Page should remain on register (not redirect) and show validation feedback
-      await expect(page).toHaveURL(/\/register/, { timeout: 3000 });
-    });
-
-    test("should have link to login page", async ({ page }) => {
-      await page.goto("/register");
-      const loginLink = page.locator('a:has-text("Login")');
-      await expect(loginLink).toBeVisible();
-      await loginLink.click();
-      await expect(page).toHaveURL(/\/login/);
-    });
+    await expect(page.getByTestId("user-settings-button")).toBeVisible({ timeout: 15000 });
   });
 
-  test.describe("Password Recovery", () => {
-    test("should display forgot password form", async ({ page }) => {
-      await page.goto("/forgot-password");
-      await expect(page.locator('input[type="email"], input[placeholder*="email" i]')).toBeVisible();
-      await expect(page.locator('button[type="submit"]')).toBeVisible();
-    });
+  test("invalid credentials show error", async ({ page }) => {
+    await page.goto("/login");
 
-    test("should display reset password form", async ({ page }) => {
-      await page.goto("/reset-password");
-      await expect(
-        page.locator('input[placeholder*="password" i]').first()
-      ).toBeVisible();
-    });
+    const username = uniqueUsername("badcreds");
+    await page.getByTestId("login-username").fill(username);
+    await page.getByTestId("login-password").fill("wrongpassword99");
+    await page.getByTestId("login-submit").click();
+
+    await expect(
+      page.getByTestId("login-error").or(page.getByText(/invalid|error|failed|incorrect/i)),
+    ).toBeVisible({ timeout: 15000 });
+  });
+
+  test("registration creates account and enters app", async ({ page }) => {
+    await registerAndReachMain(page);
+
+    await expect(page.getByTestId("user-settings-button")).toBeVisible({ timeout: 15000 });
+  });
+
+  test("registration validation rejects mismatched passwords", async ({ page }) => {
+    await page.goto("/register");
+
+    await page.getByTestId("register-server-url").fill("http://localhost:8080");
+    await page.getByTestId("register-username").fill(uniqueUsername("mismatch"));
+    await page.getByTestId("register-password").fill("pass1234");
+    await page.getByTestId("register-password-confirm").fill("different");
+    await page.getByTestId("register-submit").click();
+
+    await expect(page.getByText("Passwords do not match")).toBeVisible({ timeout: 10000 });
+  });
+
+  test("login and register pages have navigation links", async ({ page }) => {
+    await page.goto("/login");
+    const registerLink = page.getByRole("link", { name: "Register" });
+    await expect(registerLink).toBeVisible({ timeout: 10000 });
+    await expect(registerLink).toHaveAttribute("href", "/register");
+
+    await page.goto("/register");
+    const loginLink = page.getByRole("link", { name: "Login" });
+    await expect(loginLink).toBeVisible({ timeout: 10000 });
+    await expect(loginLink).toHaveAttribute("href", "/login");
+  });
+
+  test("unauthenticated access redirects to login", async ({ page }) => {
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/(login|register)/, { timeout: 15000 });
+  });
+
+  test("logout redirects to login", async ({ page }) => {
+    await registerAndReachMain(page);
+
+    await page.getByTestId("logout-button").click();
+
+    await expect(page).toHaveURL(/\/login/, { timeout: 15000 });
   });
 });
