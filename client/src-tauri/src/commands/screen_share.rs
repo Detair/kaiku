@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use crate::capture::capturer::FrameCapturer;
-use crate::capture::source::{enumerate_sources, find_target_by_id};
+use crate::capture::source::enumerate_sources;
 use crate::capture::{CaptureSource, CaptureSourceType};
 use crate::video::encoder::{VideoEncoder, Vp9Encoder};
 use crate::video::rtp::VideoRtpSender;
@@ -93,31 +93,13 @@ pub async fn start_screen_share(
     // Resolve quality params
     let params = QualityParams::from_tier(&quality)?;
 
-    // Verify source exists
-    let target =
-        find_target_by_id(&source_id).ok_or_else(|| format!("Source not found: {source_id}"))?;
-
-    let source_name = match &target {
-        scap::Target::Display(d) => {
-            if d.title.is_empty() {
-                format!("Display {}", d.id)
-            } else {
-                d.title.clone()
-            }
-        }
-        scap::Target::Window(w) => {
-            if w.title.is_empty() {
-                format!("Window {}", w.id)
-            } else {
-                w.title.clone()
-            }
-        }
-    };
-
-    let source_type = match &target {
-        scap::Target::Display(_) => CaptureSourceType::Monitor,
-        scap::Target::Window(_) => CaptureSourceType::Window,
-    };
+    let source = enumerate_sources()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|source| source.id == source_id)
+        .ok_or_else(|| format!("Source not found: {source_id}"))?;
+    let source_name = source.name;
+    let source_type = source.source_type;
 
     // Get video track from WebRTC
     let video_track = voice_state
@@ -134,13 +116,7 @@ pub async fn start_screen_share(
     let (frame_tx, mut frame_rx) = mpsc::channel(2);
 
     // Start capturer on blocking thread
-    let capturer = FrameCapturer::new(
-        target,
-        source_id.clone(),
-        params.fps,
-        params.width,
-        params.height,
-    );
+    let capturer = FrameCapturer::new(source_id.clone(), params.fps, params.width, params.height);
 
     let capturer_handle = capturer
         .start(frame_tx, shutdown_rx)

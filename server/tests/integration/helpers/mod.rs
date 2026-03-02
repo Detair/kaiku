@@ -167,19 +167,18 @@ impl Drop for CleanupGuard {
         }
 
         let pool = self.pool.clone();
-        let handle = tokio::runtime::Handle::current();
-
-        // Spawn a blocking thread to run async cleanup.
-        // This works regardless of tokio runtime flavor.
-        std::thread::spawn(move || {
-            handle.block_on(async move {
+        let _ = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create cleanup runtime");
+            runtime.block_on(async move {
                 for action in actions {
                     action(pool.clone()).await;
                 }
             });
         })
-        .join()
-        .expect("Cleanup thread panicked");
+        .join();
     }
 }
 
@@ -430,11 +429,13 @@ pub fn generate_access_token(config: &Config, user_id: Uuid) -> String {
 
 /// Delete a user by ID (cascades to friendships, reports, etc.).
 pub async fn delete_user(pool: &PgPool, user_id: Uuid) {
-    sqlx::query("DELETE FROM users WHERE id = $1")
+    if let Err(err) = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
         .execute(pool)
         .await
-        .expect("Failed to delete test user");
+    {
+        tracing::warn!(%user_id, %err, "Failed to delete test user");
+    }
 }
 
 /// Create an accepted friendship between two users.

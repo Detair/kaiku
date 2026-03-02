@@ -91,10 +91,13 @@ impl IntoResponse for RoleError {
                 StatusCode::FORBIDDEN,
                 serde_json::json!({"error": "LIMIT_EXCEEDED", "message": msg}),
             ),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
-            ),
+            Self::Database(err) => {
+                tracing::error!(%err, "Role endpoint database error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
+                )
+            }
         };
         (status, Json(body)).into_response()
     }
@@ -217,17 +220,18 @@ pub async fn create_role(
     let new_perms = GuildPermissions::from_bits_truncate(body.permissions.unwrap_or(0));
     can_manage_role(
         ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MAX),
+        ctx.highest_role_position.unwrap_or(i32::MIN),
         i32::MAX, // New role, no position yet
         Some(new_perms),
     )?;
 
     // Get next position (higher number = lower rank)
-    let max_position: (i64,) =
-        sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_one(&state.db)
-            .await?;
+    let max_position: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(MAX(position), 0)::bigint FROM guild_roles WHERE guild_id = $1",
+    )
+    .bind(guild_id)
+    .fetch_one(&state.db)
+    .await?;
 
     let role_id = Uuid::now_v7();
     let position = max_position.0 as i32 + 1;
@@ -336,7 +340,7 @@ pub async fn update_role(
 
     can_manage_role(
         ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MAX),
+        ctx.highest_role_position.unwrap_or(i32::MIN),
         current_role.0,
         new_perms,
     )?;
@@ -344,7 +348,7 @@ pub async fn update_role(
     // Security: Prevent moving a role to a position above the actor's highest role
     // (lower number = higher rank, so new_position must be > actor's position)
     if let Some(new_position) = body.position {
-        let actor_position = ctx.highest_role_position.unwrap_or(i32::MAX);
+        let actor_position = ctx.highest_role_position.unwrap_or(i32::MIN);
         if new_position <= actor_position {
             return Err(RoleError::Permission(PermissionError::RoleHierarchy {
                 actor_position,
@@ -445,7 +449,7 @@ pub async fn delete_role(
     // Check hierarchy
     can_manage_role(
         ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MAX),
+        ctx.highest_role_position.unwrap_or(i32::MIN),
         role.0,
         None,
     )?;
@@ -509,7 +513,7 @@ pub async fn assign_role(
     // Check hierarchy
     can_manage_role(
         ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MAX),
+        ctx.highest_role_position.unwrap_or(i32::MIN),
         role.0,
         None,
     )?;
@@ -590,7 +594,7 @@ pub async fn remove_role(
     // Check hierarchy
     can_manage_role(
         ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MAX),
+        ctx.highest_role_position.unwrap_or(i32::MIN),
         role.0,
         None,
     )?;

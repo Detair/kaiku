@@ -7,12 +7,11 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 use super::convert::BgraToI420Converter;
-use super::source::build_capture_options;
+use super::source::{build_capture_options, find_target_by_id};
 use super::{CaptureError, I420Frame};
 
 /// Frame capturer that produces I420 frames from a native capture source.
 pub struct FrameCapturer {
-    target: scap::Target,
     source_id: String,
     fps: u32,
     width: u32,
@@ -22,17 +21,8 @@ pub struct FrameCapturer {
 impl FrameCapturer {
     /// Create a new frame capturer for the given source.
     ///
-    /// `target` must be a previously resolved `scap::Target`.
-    /// `source_id` is used for logging only.
-    pub const fn new(
-        target: scap::Target,
-        source_id: String,
-        fps: u32,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub const fn new(source_id: String, fps: u32, width: u32, height: u32) -> Self {
         Self {
-            target,
             source_id,
             fps,
             width,
@@ -49,13 +39,16 @@ impl FrameCapturer {
         frame_tx: mpsc::Sender<I420Frame>,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Result<tokio::task::JoinHandle<()>, CaptureError> {
-        let target = self.target;
         let fps = self.fps;
         let width = self.width;
         let height = self.height;
         let source_id = self.source_id;
 
         let handle = tokio::task::spawn_blocking(move || {
+            let Some(target) = find_target_by_id(&source_id) else {
+                error!(source = %source_id, "Capture source is no longer available");
+                return;
+            };
             let options = build_capture_options(target, fps, width, height);
 
             let mut capturer = match scap::capturer::Capturer::build(options) {

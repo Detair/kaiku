@@ -204,13 +204,11 @@ async fn test_role_limit() {
         delete_user(&pool, owner_id).await;
     });
 
-    // Create @everyone role with MANAGE_ROLES (counts as 1 of limit 2)
     sqlx::query(
-        "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default) VALUES ($1, $2, 'everyone', $3, 0, true)",
+        "UPDATE guild_roles SET permissions = $1 WHERE guild_id = $2 AND is_default = true",
     )
-    .bind(uuid::Uuid::now_v7())
-    .bind(guild_id)
     .bind(vc_server::permissions::GuildPermissions::MANAGE_ROLES.to_db())
+    .bind(guild_id)
     .execute(&app.pool)
     .await
     .unwrap();
@@ -225,11 +223,24 @@ async fn test_role_limit() {
                 .unwrap(),
         )
         .await;
+    let first_role_status = resp.status();
+    let first_role_body = body_to_json(resp).await;
     assert_eq!(
-        resp.status(),
+        first_role_status,
         StatusCode::OK,
-        "First extra role should succeed"
+        "First extra role should succeed, body={first_role_body}"
     );
+
+    let resp = app
+        .oneshot(
+            TestApp::request(Method::POST, &format!("/api/guilds/{guild_id}/roles"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Admin"}"#))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "Second role should succeed");
 
     // Next role should fail (3/2)
     let resp = app
@@ -237,7 +248,7 @@ async fn test_role_limit() {
             TestApp::request(Method::POST, &format!("/api/guilds/{guild_id}/roles"))
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "Admin"}"#))
+                .body(Body::from(r#"{"name": "Overflow"}"#))
                 .unwrap(),
         )
         .await;
