@@ -36,7 +36,11 @@ RUN cargo build --release --package vc-server 2>/dev/null || true
 COPY shared/ shared/
 COPY server/ server/
 
+# Copy SQLx offline query cache (required for building without a database)
+COPY .sqlx/ .sqlx/
+
 # Build the actual binary
+ENV SQLX_OFFLINE=true
 RUN cargo build --release --package vc-server
 
 # ============================================================================
