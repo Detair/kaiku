@@ -337,20 +337,20 @@ jobs:
 
       - name: Install dependencies (Windows)
         if: matrix.platform == 'windows-latest'
-        uses: msys2/setup-msys2@v2
-        with:
-          update: true
-          install: >-
-            mingw-w64-x86_64-libvpx
-            mingw-w64-x86_64-pkgconf
+        run: |
+          vcpkg install libvpx:x64-windows-static-md
+          choco install -y pkgconfiglite
 
       - name: Configure pkg-config (Windows)
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
-          "PKG_CONFIG=C:/msys64/mingw64/bin/pkgconf.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "C:/msys64/mingw64/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "C:/msys64/usr/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          Copy-Item "$root\lib\vpx.lib" "$root\lib\libvpx.lib" -ErrorAction SilentlyContinue
+          "VPX_LIB_DIR=$root\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VPX_INCLUDE_DIR=$root\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VPX_VERSION=1.15.2" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VPX_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Set CMake policy floor (macOS)
         if: matrix.platform == 'macos-latest'
