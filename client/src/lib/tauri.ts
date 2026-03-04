@@ -608,9 +608,11 @@ export async function login(
 
   const response = await httpRequest<AuthResponse>("POST", "/auth/login", body);
 
-  // Store tokens in memory only (refresh token is in HttpOnly cookie)
+  // Store access token in memory; browser relies on HttpOnly cookie for refresh
   browserState.accessToken = response.access_token;
-  browserState.refreshToken = response.refresh_token;
+  if (isTauri) {
+    browserState.refreshToken = response.refresh_token;
+  }
   browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
 
   // Schedule automatic token refresh
@@ -726,9 +728,11 @@ export async function register(
     display_name: displayName,
   });
 
-  // Store tokens in memory only (refresh token is in HttpOnly cookie)
+  // Store access token in memory; browser relies on HttpOnly cookie for refresh
   browserState.accessToken = response.access_token;
-  browserState.refreshToken = response.refresh_token;
+  if (isTauri) {
+    browserState.refreshToken = response.refresh_token;
+  }
   browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
 
   // Schedule automatic token refresh
@@ -4138,10 +4142,12 @@ export async function oidcCompleteLogin(
 ): Promise<void> {
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
-  // Store tokens (browser mode)
+  // Store tokens; browser relies on HttpOnly cookie for refresh
   browserState.serverUrl = baseUrl;
   browserState.accessToken = accessToken;
-  browserState.refreshToken = refreshToken;
+  if (isTauri) {
+    browserState.refreshToken = refreshToken;
+  }
   browserState.tokenExpiresAt = Date.now() + expiresIn * 1000;
 
   localStorage.setItem("serverUrl", baseUrl);
