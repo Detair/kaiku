@@ -248,15 +248,6 @@ pub async fn create_emoji(
         return Err(EmojiError::GuildNotFound);
     }
 
-    // Check emoji limit before processing multipart upload
-    let emoji_count = super::limits::count_guild_emojis(&state.db, guild_id).await?;
-    if emoji_count >= state.config.max_emojis_per_guild {
-        return Err(EmojiError::LimitExceeded(format!(
-            "Maximum number of emojis per guild reached ({})",
-            state.config.max_emojis_per_guild
-        )));
-    }
-
     let s3 = state
         .s3
         .as_ref()
@@ -265,7 +256,7 @@ pub async fn create_emoji(
     let mut name: Option<String> = None;
     let mut file_data: Option<Vec<u8>> = None;
 
-    // Parse multipart
+    // Parse multipart (outside lock — no DB interaction needed)
     while let Ok(Some(field)) = multipart.next_field().await {
         let field_name = field.name().unwrap_or_default().to_string();
         match field_name.as_str() {
@@ -324,7 +315,29 @@ pub async fn create_emoji(
 
     let s3_key = format!("emojis/{guild_id}/{emoji_id}.{extension}");
 
-    // Upload to S3
+    // Advisory lock seed 59 = emoji_create (see db/mod.rs registry).
+    // Lock is held during S3 upload but emoji files are small (<256KB).
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 59))")
+        .bind(guild_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let emoji_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_emojis WHERE guild_id = $1")
+            .bind(guild_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+    if emoji_count >= state.config.max_emojis_per_guild {
+        return Err(EmojiError::LimitExceeded(format!(
+            "Maximum number of emojis per guild reached ({})",
+            state.config.max_emojis_per_guild
+        )));
+    }
+
+    // Upload to S3 (inside lock — acceptable for small emoji files)
     s3.upload(&s3_key, file_data, content_type)
         .await
         .map_err(|e| EmojiError::Storage(e.to_string()))?;
@@ -342,11 +355,13 @@ pub async fn create_emoji(
     .bind(emoji_id)
     .bind(guild_id)
     .bind(&req.name)
-    .bind(&image_url) // Store the proxy URL (placeholder)
+    .bind(&image_url)
     .bind(animated)
     .bind(auth_user.id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     // Broadcast update
     // Re-query full list for broadcast

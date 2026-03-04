@@ -285,10 +285,9 @@ pub async fn join_via_invite(
         }));
     }
 
-    // Check member limit (best-effort; concurrent joins may overshoot by a small
-    // bounded amount due to TOCTOU, but the denormalized member_count self-corrects).
+    // Live count inside advisory lock (seed 53) for strict limit enforcement.
     let member_count: i64 =
-        sqlx::query_scalar("SELECT member_count::bigint FROM guilds WHERE id = $1")
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_members WHERE guild_id = $1")
             .bind(invite.guild_id)
             .fetch_one(&mut *tx)
             .await?;

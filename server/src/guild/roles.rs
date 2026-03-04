@@ -207,15 +207,6 @@ pub async fn create_role(
                 other => RoleError::Permission(other),
             })?;
 
-    // Check role limit
-    let role_count = super::limits::count_guild_roles(&state.db, guild_id).await?;
-    if role_count >= state.config.max_roles_per_guild {
-        return Err(RoleError::LimitExceeded(format!(
-            "Maximum number of roles per guild reached ({})",
-            state.config.max_roles_per_guild
-        )));
-    }
-
     // Check if trying to grant permissions we don't have
     let new_perms = GuildPermissions::from_bits_truncate(body.permissions.unwrap_or(0));
     let actor_position = if ctx.is_owner {
@@ -230,15 +221,37 @@ pub async fn create_role(
         Some(new_perms),
     )?;
 
-    // Get next position (higher number = lower rank)
-    let max_position: (i32,) =
-        sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1")
+    let mut tx = state.db.begin().await?;
+
+    // Advisory lock seed 57 = role_create (see db/mod.rs registry)
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 57))")
+        .bind(guild_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // Atomic count check inside lock
+    let role_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_roles WHERE guild_id = $1")
             .bind(guild_id)
-            .fetch_one(&state.db)
+            .fetch_one(&mut *tx)
+            .await?;
+
+    if role_count >= state.config.max_roles_per_guild {
+        return Err(RoleError::LimitExceeded(format!(
+            "Maximum number of roles per guild reached ({})",
+            state.config.max_roles_per_guild
+        )));
+    }
+
+    // Get next position (higher number = lower rank)
+    let max_position: i32 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1")
+            .bind(guild_id)
+            .fetch_one(&mut *tx)
             .await?;
 
     let role_id = Uuid::now_v7();
-    let position = max_position.0 + 1;
+    let position = max_position + 1;
 
     let role = sqlx::query_as::<
         _,
@@ -265,8 +278,10 @@ pub async fn create_role(
     .bind(&body.color)
     .bind(new_perms.bits() as i64)
     .bind(position)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(RoleResponse {
         id: role.0,

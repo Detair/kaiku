@@ -789,15 +789,7 @@ pub async fn add_bot_to_guild(
                 other => GuildError::Permission(other),
             })?;
 
-    // Check bot installation limit
-    let bot_count = super::limits::count_guild_bots(&state.db, guild_id).await?;
-    if bot_count >= state.config.max_bots_per_guild {
-        return Err(GuildError::LimitExceeded(format!(
-            "Maximum number of bots per guild reached ({})",
-            state.config.max_bots_per_guild
-        )));
-    }
-
+    // Validate bot exists and is installable (outside lock)
     let bot_exists = sqlx::query!(
         "SELECT id FROM users WHERE id = $1 AND is_bot = true",
         bot_id
@@ -827,18 +819,37 @@ pub async fn add_bot_to_guild(
 
     let application_id = app.id;
 
-    sqlx::query!(
-        r#"
-        INSERT INTO guild_bot_installations (guild_id, application_id, installed_by)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (guild_id, application_id) DO NOTHING
-        "#,
-        guild_id,
-        application_id,
-        auth.id
+    // Advisory lock seed 63 = bot_install (see db/mod.rs registry)
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 63))")
+        .bind(guild_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let bot_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_bot_installations WHERE guild_id = $1")
+            .bind(guild_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+    if bot_count >= state.config.max_bots_per_guild {
+        return Err(GuildError::LimitExceeded(format!(
+            "Maximum number of bots per guild reached ({})",
+            state.config.max_bots_per_guild
+        )));
+    }
+
+    sqlx::query(
+        "INSERT INTO guild_bot_installations (guild_id, application_id, installed_by) VALUES ($1, $2, $3) ON CONFLICT (guild_id, application_id) DO NOTHING",
     )
-    .execute(&state.db)
+    .bind(guild_id)
+    .bind(application_id)
+    .bind(auth.id)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

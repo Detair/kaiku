@@ -13,7 +13,11 @@
 //! - 53 = `guild_member_join` (per-guild join serialization)
 //!   - Called from: `server/src/guild/invites.rs` (invite join path)
 //!   - Called from: `server/src/discovery/handlers.rs` (discovery join path)
+//! - 55 = `channel_create` (per-guild channel creation limit)
+//! - 57 = `role_create` (per-guild role creation limit)
+//! - 59 = `emoji_create` (per-guild emoji creation limit)
 //! - 61 = `page_create` (per-guild page creation limit)
+//! - 63 = `bot_install` (per-guild bot installation limit)
 
 mod models;
 mod queries;

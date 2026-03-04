@@ -170,27 +170,6 @@ pub async fn create(
         _ => return Err(ChannelError::Validation("Invalid channel type".to_string())),
     };
 
-    // For guild channels, verify membership and MANAGE_CHANNELS permission
-    if let Some(guild_id) = body.guild_id {
-        crate::permissions::require_guild_permission(
-            &state.db,
-            guild_id,
-            auth_user.id,
-            crate::permissions::GuildPermissions::MANAGE_CHANNELS,
-        )
-        .await
-        .map_err(|_| ChannelError::Forbidden)?;
-
-        // Check channel limit
-        let channel_count = crate::guild::limits::count_guild_channels(&state.db, guild_id).await?;
-        if channel_count >= state.config.max_channels_per_guild {
-            return Err(ChannelError::LimitExceeded(format!(
-                "Maximum number of channels per guild reached ({})",
-                state.config.max_channels_per_guild
-            )));
-        }
-    }
-
     // Validate voice channel user limit
     if channel_type == ChannelType::Voice {
         if let Some(limit) = body.user_limit {
@@ -202,19 +181,78 @@ pub async fn create(
         }
     }
 
-    let channel = db::create_channel(
-        &state.db,
-        db::CreateChannelParams {
-            name: &body.name,
-            channel_type: &channel_type,
-            category_id: body.category_id,
-            guild_id: body.guild_id,
-            topic: body.topic.as_deref(),
-            icon_url: None,
-            user_limit: body.user_limit,
-        },
-    )
-    .await?;
+    // For guild channels, use advisory lock to prevent TOCTOU race on channel limits.
+    let channel = if let Some(guild_id) = body.guild_id {
+        crate::permissions::require_guild_permission(
+            &state.db,
+            guild_id,
+            auth_user.id,
+            crate::permissions::GuildPermissions::MANAGE_CHANNELS,
+        )
+        .await
+        .map_err(|_| ChannelError::Forbidden)?;
+
+        let mut tx = state.db.begin().await?;
+
+        // Advisory lock seed 55 = channel_create (see db/mod.rs registry)
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 55))")
+            .bind(guild_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let channel_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM channels WHERE guild_id = $1")
+                .bind(guild_id)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        if channel_count >= state.config.max_channels_per_guild {
+            return Err(ChannelError::LimitExceeded(format!(
+                "Maximum number of channels per guild reached ({})",
+                state.config.max_channels_per_guild
+            )));
+        }
+
+        let position: i32 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM channels WHERE category_id IS NOT DISTINCT FROM $1",
+        )
+        .bind(body.category_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let channel = sqlx::query_as::<_, db::Channel>(
+            r"INSERT INTO channels (name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              RETURNING id, name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position, max_screen_shares, created_at, updated_at",
+        )
+        .bind(&body.name)
+        .bind(&channel_type)
+        .bind(body.category_id)
+        .bind(body.guild_id)
+        .bind(body.topic.as_deref())
+        .bind(None::<&str>) // icon_url
+        .bind(body.user_limit)
+        .bind(position)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        channel
+    } else {
+        db::create_channel(
+            &state.db,
+            db::CreateChannelParams {
+                name: &body.name,
+                channel_type: &channel_type,
+                category_id: body.category_id,
+                guild_id: body.guild_id,
+                topic: body.topic.as_deref(),
+                icon_url: None,
+                user_limit: body.user_limit,
+            },
+        )
+        .await?
+    };
 
     Ok((StatusCode::CREATED, Json(channel.into())))
 }

@@ -711,6 +711,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Orphaned password reset tokens cleaned up when email send fails (#130)
 - Removed unused `update_user_password` database function (#131)
 - Stale data export jobs stuck in `pending`/`processing` after server crash are now automatically recovered by the hourly cleanup loop, instead of only being recovered when the same user requests a new export (#265)
+- Guild resource limits (channels, roles, emojis, bots) now use PostgreSQL advisory locks to prevent TOCTOU races under concurrent creation; invite join member limit check uses live `COUNT(*)` instead of denormalized `member_count` (#270)
 
 ### Security
 - Enabled Content Security Policy (CSP) in Tauri webview to prevent script injection (#295)
