@@ -41,11 +41,14 @@ impl IntoResponse for ChannelError {
             ),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "Database error".to_string(),
-            ),
+            Self::Database(err) => {
+                tracing::error!(%err, "Channel endpoint database error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Database error".to_string(),
+                )
+            }
         };
         (
             status,

@@ -73,6 +73,7 @@ pub struct ReorderChannelsRequest {
 pub enum GuildError {
     NotFound,
     Forbidden,
+    ForbiddenMsg(String),
     Permission(PermissionError),
     Validation(String),
     LimitExceeded(String),
@@ -92,6 +93,7 @@ impl IntoResponse for GuildError {
                 "FORBIDDEN",
                 "Access denied".to_string(),
             ),
+            Self::ForbiddenMsg(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
             Self::Permission(e) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", e.to_string()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),

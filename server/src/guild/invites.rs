@@ -236,19 +236,6 @@ pub async fn join_via_invite(
         return Err(GuildError::Forbidden);
     }
 
-    // Check guild-specific ban
-    let guild_banned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM guild_bans WHERE guild_id = $1 AND user_id = $2 AND (expires_at IS NULL OR expires_at > NOW()))",
-    )
-    .bind(invite.guild_id)
-    .bind(auth.id)
-    .fetch_one(&state.db)
-    .await?;
-
-    if guild_banned {
-        return Err(GuildError::Forbidden);
-    }
-
     let mut tx = state.db.begin().await?;
 
     // Serialize member joins per guild so limit checks are strict under concurrency.
@@ -256,6 +243,21 @@ pub async fn join_via_invite(
         .bind(invite.guild_id)
         .execute(&mut *tx)
         .await?;
+
+    // Check guild-specific ban
+    let guild_banned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM guild_bans WHERE guild_id = $1 AND user_id = $2 AND (expires_at IS NULL OR expires_at > NOW()))",
+    )
+    .bind(invite.guild_id)
+    .bind(auth.id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if guild_banned {
+        return Err(GuildError::ForbiddenMsg(
+            "You are banned from this guild".to_string(),
+        ));
+    }
 
     // Check if already a member
     let is_member: bool = sqlx::query_scalar(

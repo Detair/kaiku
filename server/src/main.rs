@@ -231,7 +231,7 @@ async fn main() -> Result<()> {
                     tracing::info!(count, "Recovered stale export jobs");
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to recover stale export jobs");
+                    tracing::error!(error = %e, "Failed to recover stale export jobs");
                 }
                 _ => {}
             }

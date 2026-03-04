@@ -14,10 +14,15 @@
 //!   - Called from: `server/src/guild/invites.rs` (invite join path)
 //!   - Called from: `server/src/discovery/handlers.rs` (discovery join path)
 //! - 55 = `channel_create` (per-guild channel creation limit)
+//!   - Called from: `server/src/chat/channels.rs`
 //! - 57 = `role_create` (per-guild role creation limit)
+//!   - Called from: `server/src/guild/roles.rs`
 //! - 59 = `emoji_create` (per-guild emoji creation limit)
+//!   - Called from: `server/src/guild/emojis.rs`
 //! - 61 = `page_create` (per-guild page creation limit)
+//!   - Called from: `server/src/pages/handlers.rs`
 //! - 63 = `bot_install` (per-guild bot installation limit)
+//!   - Called from: `server/src/guild/handlers.rs`
 
 mod models;
 mod queries;
