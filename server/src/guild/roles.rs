@@ -244,11 +244,12 @@ pub async fn create_role(
     }
 
     // Get next position (higher number = lower rank)
-    let max_position: i32 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let max_position: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1",
+    )
+    .bind(guild_id)
+    .fetch_one(&mut *tx)
+    .await?;
 
     let role_id = Uuid::now_v7();
     let position = max_position + 1;

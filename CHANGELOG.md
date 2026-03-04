@@ -481,7 +481,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - User-friendly error messages showing both file size and limit in human-readable format (KB/MB)
 
 ### Changed
-- Data export now writes the ZIP archive to a temp file instead of building it entirely in memory, and caps high-cardinality sections (messages: 500K, reactions: 500K, attachments: 100K, audit log: 100K rows) to prevent OOM on large accounts (#266)
+- Data export now writes the ZIP archive to a temp file and streams it directly to S3 instead of loading the entire archive into memory, and caps high-cardinality sections (messages: 500K, reactions: 500K, attachments: 100K, audit log: 100K rows) to prevent OOM on large accounts (#266, #322)
 - Rebranded from VoiceChat/Canis to Kaiku across the entire application — window title, TOTP authenticator issuer, OpenAPI docs, Tauri identifier, and all user-facing strings (#302)
 - Simplified admin session elevation to single-click confirmation (MFA verification deferred)
 - Renamed `kaiku_auth_attempts_total` metric to `kaiku_auth_login_attempts_total` to match observability contract (#285)

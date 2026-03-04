@@ -159,12 +159,13 @@ pub async fn process_export_job(
         .await?;
 
     match build_export_archive(pool, user_id).await {
-        Ok(archive_data) => {
-            let file_size = archive_data.len() as i64;
+        Ok(tmp) => {
             let s3_key = format!("exports/{user_id}/{job_id}.zip");
 
-            // Upload to S3
-            s3.upload(&s3_key, archive_data, "application/zip").await?;
+            // Stream archive directly to S3 without loading into memory
+            let file_size = s3
+                .upload_from_path(&s3_key, tmp.path(), "application/zip")
+                .await? as i64;
 
             let expires_at = Utc::now() + Duration::days(7);
 
@@ -248,11 +249,14 @@ pub async fn process_export_job(
 /// memory during construction (each section is dropped after serialization).
 ///
 /// High-cardinality sections (messages, reactions, attachments, audit log) are
-/// capped with `LIMIT` to prevent OOM on large accounts. The finished archive
-/// is read back into memory for S3 upload.
-async fn build_export_archive(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<u8>> {
-    let tmp = tempfile::NamedTempFile::new()
-        .context("Failed to create temp file for export archive")?;
+/// capped with `LIMIT` to prevent OOM on large accounts. Returns the temp file
+/// for streaming upload to S3.
+async fn build_export_archive(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    let tmp =
+        tempfile::NamedTempFile::new().context("Failed to create temp file for export archive")?;
     let mut zip = ZipWriter::new(std::io::BufWriter::new(
         tmp.as_file()
             .try_clone()
@@ -291,7 +295,11 @@ async fn build_export_archive(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Ve
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(section = "messages", rows = messages.len(), "Export section collected");
+    tracing::info!(
+        section = "messages",
+        rows = messages.len(),
+        "Export section collected"
+    );
     zip.start_file("messages.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &messages)?;
     drop(messages);
@@ -394,7 +402,11 @@ async fn build_export_archive(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Ve
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(section = "reactions", rows = reactions.len(), "Export section collected");
+    tracing::info!(
+        section = "reactions",
+        rows = reactions.len(),
+        "Export section collected"
+    );
     zip.start_file("reactions.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &reactions)?;
     drop(reactions);
@@ -412,7 +424,11 @@ async fn build_export_archive(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Ve
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(section = "attachments", rows = attachments.len(), "Export section collected");
+    tracing::info!(
+        section = "attachments",
+        rows = attachments.len(),
+        "Export section collected"
+    );
     zip.start_file("attachments.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &attachments)?;
     drop(attachments);
@@ -472,7 +488,11 @@ async fn build_export_archive(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Ve
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(section = "audit_log", rows = audit_log.len(), "Export section collected");
+    tracing::info!(
+        section = "audit_log",
+        rows = audit_log.len(),
+        "Export section collected"
+    );
     zip.start_file("audit_log.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &audit_log)?;
     drop(audit_log);
@@ -502,13 +522,17 @@ async fn build_export_archive(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Ve
     zip.start_file("manifest.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &manifest)?;
 
-    zip.finish()
+    let buf_writer = zip
+        .finish()
         .map_err(|e| anyhow::anyhow!("Failed to finalize export ZIP archive: {e}"))?;
 
-    // Read finished archive from temp file for S3 upload
-    let archive_data = std::fs::read(tmp.path())
-        .context("Failed to read completed export archive from temp file")?;
-    Ok(archive_data)
+    // Flush BufWriter and sync to disk before handing path to ByteStream
+    drop(buf_writer);
+    tmp.as_file()
+        .sync_all()
+        .context("Failed to sync export archive to disk")?;
+
+    Ok(tmp)
 }
 
 /// Recover stale export jobs stuck in `pending`/`processing` after a server crash.

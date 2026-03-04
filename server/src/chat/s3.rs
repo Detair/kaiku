@@ -3,6 +3,7 @@
 //! Handles S3-compatible storage for file uploads.
 //! Supports any S3-compatible backend: AWS S3, `RustFS`, Backblaze B2, Cloudflare R2.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -143,6 +144,46 @@ impl S3Client {
             .map_err(|e| S3Error::Upload(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Upload a file to S3 by streaming directly from a file path.
+    ///
+    /// Unlike [`upload`], this never loads the entire file into memory.
+    /// Uses a 5-minute timeout since export archives can be large.
+    ///
+    /// Returns the file size in bytes.
+    pub async fn upload_from_path(
+        &self,
+        key: &str,
+        path: &Path,
+        content_type: &str,
+    ) -> Result<u64, S3Error> {
+        let file_size = std::fs::metadata(path)
+            .map_err(|e| S3Error::Upload(format!("Failed to read file metadata: {e}")))?
+            .len();
+
+        let body = ByteStream::from_path(path)
+            .await
+            .map_err(|e| S3Error::Upload(format!("Failed to open file for streaming: {e}")))?;
+
+        let upload_future = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(body)
+            .content_type(content_type)
+            .content_length(file_size as i64)
+            .send();
+
+        tokio::time::timeout(Duration::from_secs(300), upload_future)
+            .await
+            .map_err(|_| {
+                S3Error::Upload("S3 streaming upload timed out after 5 minutes".to_string())
+            })?
+            .map_err(|e| S3Error::Upload(e.to_string()))?;
+
+        Ok(file_size)
     }
 
     /// Generate a presigned URL for downloading a file.

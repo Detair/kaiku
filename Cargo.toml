@@ -93,6 +93,7 @@ tracing-opentelemetry-instrumentation-sdk = { version = "0.28" }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 aws-smithy-async = { version = "1", features = ["rt-tokio"] }
+aws-smithy-types = { version = "1", features = ["rt-tokio"] }
 
 # API Docs
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
