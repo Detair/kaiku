@@ -843,7 +843,7 @@ pub struct SignedUrlResponse {
 #[derive(Debug, Deserialize)]
 pub struct DownloadQuery {
     /// **Deprecated:** Use `GET /api/messages/attachments/<id>/url` with Authorization header instead.
-    /// Optional JWT token for authentication (alternative to Authorization header).
+    /// When present, authenticates via this JWT token instead of the Authorization header.
     pub token: Option<String>,
     /// Optional variant to download: "thumbnail" (256px) or "medium" (1024px).
     pub variant: Option<String>,

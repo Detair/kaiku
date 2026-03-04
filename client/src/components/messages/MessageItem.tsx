@@ -203,6 +203,15 @@ async function fetchSignedUrl(
     for (const [key, entry] of signedUrlCache) {
       if (entry.expiresAt <= now) signedUrlCache.delete(key);
     }
+    // Hard cap: if still over limit, evict entries closest to expiry
+    if (signedUrlCache.size > 500) {
+      const sorted = [...signedUrlCache.entries()].sort(
+        (a, b) => a[1].expiresAt - b[1].expiresAt,
+      );
+      for (let i = 0; i < sorted.length - 500; i++) {
+        signedUrlCache.delete(sorted[i][0]);
+      }
+    }
   }
 
   // Cache with safety margin (at most 300s, at most half the TTL) to avoid negative expiry
@@ -634,7 +643,14 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                       : undefined;
                     const [imgSrc] = createResource(
                       () => attachment.id,
-                      (id) => fetchSignedUrl(id, variant),
+                      async (id) => {
+                        try {
+                          return await fetchSignedUrl(id, variant);
+                        } catch (err) {
+                          console.error("Failed to load image attachment:", id, err);
+                          throw err;
+                        }
+                      },
                     );
 
                     return (
