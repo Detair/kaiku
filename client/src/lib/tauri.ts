@@ -3787,7 +3787,7 @@ export async function getSignedUrl(
   variant?: string,
 ): Promise<{ url: string; expires_in: number }> {
   const path = variant
-    ? `/api/messages/attachments/${attachmentId}/url?variant=${variant}`
+    ? `/api/messages/attachments/${attachmentId}/url?variant=${encodeURIComponent(variant)}`
     : `/api/messages/attachments/${attachmentId}/url`;
   return httpRequest<{ url: string; expires_in: number }>("GET", path);
 }

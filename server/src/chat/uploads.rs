@@ -835,15 +835,15 @@ pub struct SignedUrlQuery {
 pub struct SignedUrlResponse {
     /// Presigned S3 URL for direct download.
     pub url: String,
-    /// Seconds until the URL expires.
+    /// Duration in seconds from generation until the URL expires.
     pub expires_in: i64,
 }
 
 /// Query parameters for download endpoint.
 #[derive(Debug, Deserialize)]
 pub struct DownloadQuery {
+    /// **Deprecated:** Use `GET /api/messages/attachments/<id>/url` with Authorization header instead.
     /// Optional JWT token for authentication (alternative to Authorization header).
-    /// Used for browser requests like <img src="..."> that can't set headers.
     pub token: Option<String>,
     /// Optional variant to download: "thumbnail" (256px) or "medium" (1024px).
     pub variant: Option<String>,
@@ -855,7 +855,7 @@ pub struct DownloadQuery {
 ///
 /// Supports two authentication methods:
 /// 1. Authorization header (Bearer token) - standard API auth
-/// 2. `token` query parameter - for browser requests that can't set headers
+/// 2. `token` query parameter - **deprecated**, use presigned URLs via `/url` endpoint instead
 #[utoipa::path(
     get,
     path = "/api/messages/attachments/{id}/download",
@@ -1014,7 +1014,7 @@ pub async fn download(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, auth_user))]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
 pub async fn get_signed_url(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -1059,7 +1059,14 @@ pub async fn get_signed_url(
     let presigned_url = s3
         .presign_get(s3_key)
         .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?;
+        .map_err(|e| {
+            tracing::error!(
+                attachment_id = %id,
+                s3_key = %s3_key,
+                "Failed to generate presigned URL: {e}"
+            );
+            UploadError::Storage(e.to_string())
+        })?;
 
     Ok(Json(SignedUrlResponse {
         url: presigned_url,

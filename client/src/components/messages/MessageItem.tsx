@@ -196,10 +196,20 @@ async function fetchSignedUrl(
   }
 
   const result = await getSignedUrl(attachmentId, variant);
-  // Cache with 5-minute safety margin before expiry
+
+  // Evict expired entries when cache grows too large
+  if (signedUrlCache.size > 500) {
+    const now = Date.now();
+    for (const [key, entry] of signedUrlCache) {
+      if (entry.expiresAt <= now) signedUrlCache.delete(key);
+    }
+  }
+
+  // Cache with safety margin (at most 300s, at most half the TTL) to avoid negative expiry
+  const safetyMargin = Math.min(300, Math.floor(result.expires_in / 2));
   signedUrlCache.set(cacheKey, {
     url: result.url,
-    expiresAt: Date.now() + (result.expires_in - 300) * 1000,
+    expiresAt: Date.now() + (result.expires_in - safetyMargin) * 1000,
   });
   return result.url;
 }
@@ -589,8 +599,18 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                       type="button"
                       class="flex items-center gap-3 px-4 py-3 bg-surface-layer2 rounded-xl hover:bg-surface-highlight transition-all duration-200 border border-white/5 max-w-sm cursor-pointer text-left"
                       onClick={async () => {
-                        const url = await fetchSignedUrl(attachment.id);
-                        window.open(url, "_blank");
+                        try {
+                          const url = await fetchSignedUrl(attachment.id);
+                          window.open(url, "_blank");
+                        } catch (err) {
+                          console.error("Failed to get signed URL:", err);
+                          showToast({
+                            type: "error",
+                            title: "Download Failed",
+                            message: "Could not get download link.",
+                            duration: 8000,
+                          });
+                        }
                       }}
                     >
                       <div class="p-2 bg-surface-base rounded-lg text-accent-primary">
@@ -639,6 +659,13 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                           />
                         </Show>
 
+                        {/* Error fallback when signed URL fetch fails */}
+                        <Show when={imgSrc.error}>
+                          <div class="absolute inset-0 flex items-center justify-center text-text-secondary text-sm">
+                            Failed to load image
+                          </div>
+                        </Show>
+
                         {/* Actual image — loads signed URL, fades in over placeholder */}
                         <Show when={imgSrc()}>
                           <img
@@ -655,10 +682,20 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                               );
                             }}
                             onClick={async () => {
-                              const url = await fetchSignedUrl(
-                                attachment.id,
-                              );
-                              window.open(url, "_blank");
+                              try {
+                                const url = await fetchSignedUrl(
+                                  attachment.id,
+                                );
+                                window.open(url, "_blank");
+                              } catch (err) {
+                                console.error("Failed to get signed URL:", err);
+                                showToast({
+                                  type: "error",
+                                  title: "Download Failed",
+                                  message: "Could not get download link.",
+                                  duration: 8000,
+                                });
+                              }
                             }}
                             style={{ cursor: "pointer" }}
                           />
@@ -668,8 +705,18 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                           class="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded-lg text-white opacity-0 group-hover/attachment:opacity-100 transition-opacity backdrop-blur-sm cursor-pointer"
                           title="Download original"
                           onClick={async () => {
-                            const url = await fetchSignedUrl(attachment.id);
-                            window.open(url, "_blank");
+                            try {
+                              const url = await fetchSignedUrl(attachment.id);
+                              window.open(url, "_blank");
+                            } catch (err) {
+                              console.error("Failed to get signed URL:", err);
+                              showToast({
+                                type: "error",
+                                title: "Download Failed",
+                                message: "Could not get download link.",
+                                duration: 8000,
+                              });
+                            }
                           }}
                         >
                           <Download class="w-4 h-4" />
