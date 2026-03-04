@@ -163,10 +163,7 @@ pub async fn create_platform_page(
     })?;
 
     // Advisory lock: serialize platform page creation to enforce strict limits under concurrency.
-    // Advisory lock: serialize platform page creation to enforce strict limits under concurrency.
-    // Seed 61 prevents collision with other lock sites (see registry in server/src/db/mod.rs).
-    // Other seeds in this codebase: 41 (workspace_create), 43 (workspace_entry).
-    // Seeds 51/53 are on another branch (fix/review-focus-guild-discovery).
+    // Seed 61 (see registry in server/src/db/mod.rs).
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 61))")
         .bind("platform_pages")
         .execute(&mut *tx)
@@ -661,9 +658,7 @@ pub async fn create_guild_page(
     })?;
 
     // Advisory lock: serialize guild page creation to enforce strict limits under concurrency.
-    // Seed 61 prevents collision with other lock sites (see registry in server/src/db/mod.rs).
-    // Other seeds in this codebase: 41 (workspace_create), 43 (workspace_entry).
-    // Seeds 51/53 are on another branch (fix/review-focus-guild-discovery).
+    // Seed 61 (see registry in server/src/db/mod.rs).
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 61))")
         .bind(guild_id)
         .execute(&mut *tx)

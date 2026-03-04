@@ -16,8 +16,6 @@ use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::guild::types::{CreateEmojiRequest, GuildEmoji, UpdateEmojiRequest};
 use crate::ws::ServerEvent;
-// Use direct Redis publish for now as broadcast_guild_emoji_update isn't in mod.rs yet
-// but we added GuildEmojiUpdated to ServerEvent.
 
 // ============================================================================
 // Error Types
@@ -381,9 +379,6 @@ pub async fn create_emoji(
         return Err(EmojiError::Storage(upload_err.to_string()));
     }
 
-    // Broadcast update
-    // Re-query full list for broadcast
-
     // Re-query full list for broadcast
     let all_emojis = sqlx::query_as::<_, GuildEmoji>(
         "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC",
@@ -571,7 +566,15 @@ pub async fn delete_emoji(
         let extensions = ["png", "jpg", "gif", "webp"];
         for ext in extensions {
             let key = format!("emojis/{guild_id}/{emoji_id}.{ext}");
-            let _ = s3.delete(&key).await;
+            if let Err(e) = s3.delete(&key).await {
+                tracing::warn!(
+                    emoji_id = %emoji_id,
+                    guild_id = %guild_id,
+                    s3_key = %key,
+                    error = %e,
+                    "Failed to delete emoji file from S3"
+                );
+            }
         }
     }
 

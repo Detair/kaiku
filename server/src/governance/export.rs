@@ -2,6 +2,7 @@
 //!
 //! Gathers user data from all tables into a versioned JSON archive and uploads to S3.
 
+use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -15,6 +16,15 @@ use zip::ZipWriter;
 use crate::chat::S3Client;
 use crate::email::EmailService;
 
+/// Maximum number of messages included in a data export.
+const EXPORT_CAP_MESSAGES: i64 = 500_000;
+/// Maximum number of reactions included in a data export.
+const EXPORT_CAP_REACTIONS: i64 = 500_000;
+/// Maximum number of attachment metadata rows included in a data export.
+const EXPORT_CAP_ATTACHMENTS: i64 = 100_000;
+/// Maximum number of audit log entries included in a data export.
+const EXPORT_CAP_AUDIT_LOG: i64 = 100_000;
+
 /// Versioned export manifest.
 #[derive(Serialize)]
 struct ExportManifest {
@@ -22,6 +32,7 @@ struct ExportManifest {
     exported_at: String,
     user_id: String,
     sections: Vec<&'static str>,
+    truncated_sections: Vec<&'static str>,
 }
 
 /// User profile data for export.
@@ -163,9 +174,11 @@ pub async fn process_export_job(
             let s3_key = format!("exports/{user_id}/{job_id}.zip");
 
             // Stream archive directly to S3 without loading into memory
-            let file_size = s3
+            let file_size: i64 = s3
                 .upload_from_path(&s3_key, tmp.path(), "application/zip")
-                .await? as i64;
+                .await?
+                .try_into()
+                .context("Export archive too large")?;
 
             let expires_at = Utc::now() + Duration::days(7);
 
@@ -246,11 +259,12 @@ pub async fn process_export_job(
 }
 
 /// Build the export ZIP archive, writing sections to a temp file to reduce peak
-/// memory during construction (each section is dropped after serialization).
+/// memory during construction. High-cardinality sections (messages, reactions,
+/// attachments, audit log) are explicitly dropped after serialization to limit
+/// peak heap usage.
 ///
-/// High-cardinality sections (messages, reactions, attachments, audit log) are
-/// capped with `LIMIT` to prevent OOM on large accounts. Returns the temp file
-/// for streaming upload to S3.
+/// Those same sections are capped with `LIMIT` to prevent OOM on large accounts.
+/// Returns the temp file for streaming upload to S3.
 async fn build_export_archive(
     pool: &PgPool,
     user_id: Uuid,
@@ -283,23 +297,37 @@ async fn build_export_archive(
     zip.start_file("profile.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &profile)?;
 
-    // 2. Messages (non-deleted, includes encrypted) — capped at 500K rows
+    // 2. Messages (non-deleted, includes encrypted) — capped
+    let mut truncated_sections: Vec<&'static str> = Vec::new();
+
     let messages: Vec<ExportMessage> = sqlx::query_as(
         "SELECT id, channel_id, content, encrypted, created_at, edited_at
          FROM messages
          WHERE user_id = $1 AND deleted_at IS NULL
          ORDER BY created_at ASC
-         LIMIT 500000",
+         LIMIT $2",
     )
     .bind(user_id)
+    .bind(EXPORT_CAP_MESSAGES)
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(
-        section = "messages",
-        rows = messages.len(),
-        "Export section collected"
-    );
+    if messages.len() as i64 >= EXPORT_CAP_MESSAGES {
+        truncated_sections.push("messages");
+        tracing::warn!(
+            section = "messages",
+            rows = messages.len(),
+            user_id = %user_id,
+            "Export section truncated at cap"
+        );
+    } else {
+        tracing::info!(
+            section = "messages",
+            rows = messages.len(),
+            user_id = %user_id,
+            "Export section collected"
+        );
+    }
     zip.start_file("messages.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &messages)?;
     drop(messages);
@@ -390,45 +418,69 @@ async fn build_export_archive(
     zip.start_file("blocked_users.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &blocked_users)?;
 
-    // 8. Reactions — capped at 500K rows
+    // 8. Reactions — capped
     let reactions: Vec<ExportReaction> = sqlx::query_as(
         "SELECT id, message_id, emoji, created_at
          FROM message_reactions
          WHERE user_id = $1
          ORDER BY created_at ASC
-         LIMIT 500000",
+         LIMIT $2",
     )
     .bind(user_id)
+    .bind(EXPORT_CAP_REACTIONS)
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(
-        section = "reactions",
-        rows = reactions.len(),
-        "Export section collected"
-    );
+    if reactions.len() as i64 >= EXPORT_CAP_REACTIONS {
+        truncated_sections.push("reactions");
+        tracing::warn!(
+            section = "reactions",
+            rows = reactions.len(),
+            user_id = %user_id,
+            "Export section truncated at cap"
+        );
+    } else {
+        tracing::info!(
+            section = "reactions",
+            rows = reactions.len(),
+            user_id = %user_id,
+            "Export section collected"
+        );
+    }
     zip.start_file("reactions.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &reactions)?;
     drop(reactions);
 
-    // 9. Attachments (metadata only, no S3 keys) — capped at 100K rows
+    // 9. Attachments (metadata only, no S3 keys) — capped
     let attachments: Vec<ExportAttachment> = sqlx::query_as(
         "SELECT fa.id, fa.filename, fa.mime_type, fa.size_bytes, fa.created_at
          FROM file_attachments fa
          JOIN messages m ON m.id = fa.message_id
          WHERE m.user_id = $1
          ORDER BY fa.created_at ASC
-         LIMIT 100000",
+         LIMIT $2",
     )
     .bind(user_id)
+    .bind(EXPORT_CAP_ATTACHMENTS)
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(
-        section = "attachments",
-        rows = attachments.len(),
-        "Export section collected"
-    );
+    if attachments.len() as i64 >= EXPORT_CAP_ATTACHMENTS {
+        truncated_sections.push("attachments");
+        tracing::warn!(
+            section = "attachments",
+            rows = attachments.len(),
+            user_id = %user_id,
+            "Export section truncated at cap"
+        );
+    } else {
+        tracing::info!(
+            section = "attachments",
+            rows = attachments.len(),
+            user_id = %user_id,
+            "Export section collected"
+        );
+    }
     zip.start_file("attachments.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &attachments)?;
     drop(attachments);
@@ -475,24 +527,36 @@ async fn build_export_archive(
     zip.start_file("key_backups.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &key_backups)?;
 
-    // 13. Audit log — capped at 100K rows
+    // 13. Audit log — capped
     let audit_log: Vec<ExportAuditLogEntry> = sqlx::query_as(
         "SELECT action, target_type, target_id, details,
                 host(ip_address) as ip_address, created_at
          FROM system_audit_log
          WHERE actor_id = $1
          ORDER BY created_at ASC
-         LIMIT 100000",
+         LIMIT $2",
     )
     .bind(user_id)
+    .bind(EXPORT_CAP_AUDIT_LOG)
     .fetch_all(pool)
     .await?;
 
-    tracing::info!(
-        section = "audit_log",
-        rows = audit_log.len(),
-        "Export section collected"
-    );
+    if audit_log.len() as i64 >= EXPORT_CAP_AUDIT_LOG {
+        truncated_sections.push("audit_log");
+        tracing::warn!(
+            section = "audit_log",
+            rows = audit_log.len(),
+            user_id = %user_id,
+            "Export section truncated at cap"
+        );
+    } else {
+        tracing::info!(
+            section = "audit_log",
+            rows = audit_log.len(),
+            user_id = %user_id,
+            "Export section collected"
+        );
+    }
     zip.start_file("audit_log.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &audit_log)?;
     drop(audit_log);
@@ -517,19 +581,28 @@ async fn build_export_archive(
             "key_backups",
             "audit_log",
         ],
+        truncated_sections,
     };
 
     zip.start_file("manifest.json", options)?;
     serde_json::to_writer_pretty(&mut zip, &manifest)?;
 
-    let buf_writer = zip
+    let mut buf_writer = zip
         .finish()
         .map_err(|e| anyhow::anyhow!("Failed to finalize export ZIP archive: {e}"))?;
-
-    // Flush BufWriter and sync to disk before handing path to ByteStream
+    buf_writer
+        .flush()
+        .context("Failed to flush export archive BufWriter")?;
     drop(buf_writer);
-    tmp.as_file()
-        .sync_all()
+
+    // sync_all is a blocking syscall — run off the async executor
+    let file = tmp
+        .as_file()
+        .try_clone()
+        .context("Failed to clone file handle for sync")?;
+    tokio::task::spawn_blocking(move || file.sync_all())
+        .await
+        .context("sync_all task panicked")?
         .context("Failed to sync export archive to disk")?;
 
     Ok(tmp)

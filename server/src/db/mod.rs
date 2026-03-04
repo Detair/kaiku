@@ -8,8 +8,11 @@
 //! Seeds are allocated per lock site:
 //!
 //! - 41 = `workspace_create` (per-user workspace creation limit)
+//!   - Called from: `server/src/workspaces/handlers.rs`
 //! - 43 = `workspace_entry` (per-workspace entry creation limit)
+//!   - Called from: `server/src/workspaces/handlers.rs`
 //! - 51 = `guild_create` (per-user guild creation limit)
+//!   - Called from: `server/src/guild/handlers.rs`
 //! - 53 = `guild_member_join` (per-guild join serialization)
 //!   - Called from: `server/src/guild/invites.rs` (invite join path)
 //!   - Called from: `server/src/discovery/handlers.rs` (discovery join path)

@@ -158,13 +158,20 @@ impl S3Client {
         path: &Path,
         content_type: &str,
     ) -> Result<u64, S3Error> {
-        let file_size = std::fs::metadata(path)
+        let file_size = tokio::fs::metadata(path)
+            .await
             .map_err(|e| S3Error::Upload(format!("Failed to read file metadata: {e}")))?
             .len();
 
         let body = ByteStream::from_path(path)
             .await
             .map_err(|e| S3Error::Upload(format!("Failed to open file for streaming: {e}")))?;
+
+        let content_length: i64 = file_size.try_into().map_err(|_| {
+            S3Error::Upload(format!(
+                "File too large: {file_size} bytes exceeds i64 maximum"
+            ))
+        })?;
 
         let upload_future = self
             .client
@@ -173,7 +180,7 @@ impl S3Client {
             .key(key)
             .body(body)
             .content_type(content_type)
-            .content_length(file_size as i64)
+            .content_length(content_length)
             .send();
 
         tokio::time::timeout(Duration::from_secs(300), upload_future)
