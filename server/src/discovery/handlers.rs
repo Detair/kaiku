@@ -299,12 +299,11 @@ pub async fn join_discoverable(
 
     // Check member limit before attempting insert
     let member_count: i64 =
-        sqlx::query_scalar("SELECT member_count::bigint FROM guilds WHERE id = $1")
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_members WHERE guild_id = $1")
             .bind(guild_id)
             .fetch_one(&mut *tx)
             .await?;
     if member_count >= state.config.max_members_per_guild {
-        tx.rollback().await?;
         return Err(DiscoveryError::LimitExceeded(format!(
             "Guild has reached the maximum number of members ({})",
             state.config.max_members_per_guild

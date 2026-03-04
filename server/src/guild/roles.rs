@@ -42,6 +42,9 @@ pub enum RoleError {
 
 impl IntoResponse for RoleError {
     fn into_response(self) -> Response {
+        if let Self::Database(db_err) = &self {
+            tracing::error!(error = %db_err, "Guild role database operation failed");
+        }
         let (status, body) = match &self {
             Self::NotFound => (
                 StatusCode::NOT_FOUND,
@@ -91,13 +94,10 @@ impl IntoResponse for RoleError {
                 StatusCode::FORBIDDEN,
                 serde_json::json!({"error": "LIMIT_EXCEEDED", "message": msg}),
             ),
-            Self::Database(err) => {
-                tracing::error!(%err, "Role endpoint database error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
-                )
-            }
+            Self::Database(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
+            ),
         };
         (status, Json(body)).into_response()
     }
@@ -218,23 +218,27 @@ pub async fn create_role(
 
     // Check if trying to grant permissions we don't have
     let new_perms = GuildPermissions::from_bits_truncate(body.permissions.unwrap_or(0));
+    let actor_position = if ctx.is_owner {
+        -1
+    } else {
+        ctx.highest_role_position.unwrap_or(i32::MAX)
+    };
     can_manage_role(
         ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MIN),
+        actor_position,
         i32::MAX, // New role, no position yet
         Some(new_perms),
     )?;
 
     // Get next position (higher number = lower rank)
-    let max_position: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(MAX(position), 0)::bigint FROM guild_roles WHERE guild_id = $1",
-    )
-    .bind(guild_id)
-    .fetch_one(&state.db)
-    .await?;
+    let max_position: (i32,) =
+        sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1")
+            .bind(guild_id)
+            .fetch_one(&state.db)
+            .await?;
 
     let role_id = Uuid::now_v7();
-    let position = max_position.0 as i32 + 1;
+    let position = max_position.0 + 1;
 
     let role = sqlx::query_as::<
         _,
@@ -338,9 +342,14 @@ pub async fn update_role(
         }
     }
 
+    let actor_position = if ctx.is_owner {
+        -1
+    } else {
+        ctx.highest_role_position.unwrap_or(i32::MAX)
+    };
     can_manage_role(
         ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MIN),
+        actor_position,
         current_role.0,
         new_perms,
     )?;
@@ -348,7 +357,11 @@ pub async fn update_role(
     // Security: Prevent moving a role to a position above the actor's highest role
     // (lower number = higher rank, so new_position must be > actor's position)
     if let Some(new_position) = body.position {
-        let actor_position = ctx.highest_role_position.unwrap_or(i32::MIN);
+        let actor_position = if ctx.is_owner {
+            -1
+        } else {
+            ctx.highest_role_position.unwrap_or(i32::MAX)
+        };
         if new_position <= actor_position {
             return Err(RoleError::Permission(PermissionError::RoleHierarchy {
                 actor_position,
@@ -447,12 +460,12 @@ pub async fn delete_role(
     }
 
     // Check hierarchy
-    can_manage_role(
-        ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MIN),
-        role.0,
-        None,
-    )?;
+    let actor_position = if ctx.is_owner {
+        -1
+    } else {
+        ctx.highest_role_position.unwrap_or(i32::MAX)
+    };
+    can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
     sqlx::query("DELETE FROM guild_roles WHERE id = $1")
         .bind(role_id)
@@ -511,12 +524,12 @@ pub async fn assign_role(
     }
 
     // Check hierarchy
-    can_manage_role(
-        ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MIN),
-        role.0,
-        None,
-    )?;
+    let actor_position = if ctx.is_owner {
+        -1
+    } else {
+        ctx.highest_role_position.unwrap_or(i32::MAX)
+    };
+    can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
     // Check target is a member
     let is_member: Option<(i32,)> =
@@ -592,12 +605,12 @@ pub async fn remove_role(
     let role = role.ok_or(RoleError::NotFound)?;
 
     // Check hierarchy
-    can_manage_role(
-        ctx.computed_permissions,
-        ctx.highest_role_position.unwrap_or(i32::MIN),
-        role.0,
-        None,
-    )?;
+    let actor_position = if ctx.is_owner {
+        -1
+    } else {
+        ctx.highest_role_position.unwrap_or(i32::MAX)
+    };
+    can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
     let result = sqlx::query(
         "DELETE FROM guild_member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3",

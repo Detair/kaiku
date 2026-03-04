@@ -280,7 +280,6 @@ pub async fn join_via_invite(
             .fetch_one(&mut *tx)
             .await?;
     if member_count >= state.config.max_members_per_guild {
-        tx.rollback().await?;
         return Err(GuildError::LimitExceeded(format!(
             "Guild has reached the maximum number of members ({})",
             state.config.max_members_per_guild

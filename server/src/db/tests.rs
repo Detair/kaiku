@@ -1178,4 +1178,82 @@ mod postgres_tests {
         assert_eq!(result.dms[0].unread_count, 2);
         assert_eq!(result.total, 2);
     }
+
+    #[sqlx::test]
+    async fn test_guild_roles_max_position_decodes_as_i32(pool: PgPool) {
+        let owner = create_user(&pool, "rolesowner", "Roles Owner", None, "hash")
+            .await
+            .expect("create owner");
+
+        let guild_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+            .bind(guild_id)
+            .bind("Role Decode Guild")
+            .bind(owner.id)
+            .execute(&pool)
+            .await
+            .expect("create guild");
+
+        sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+            .bind(guild_id)
+            .bind(owner.id)
+            .execute(&pool)
+            .await
+            .expect("add owner member");
+
+        let default_role_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, '@everyone', $3, $4, true)",
+        )
+        .bind(default_role_id)
+        .bind(guild_id)
+        .bind(0_i64)
+        .bind(0_i32)
+        .execute(&pool)
+        .await
+        .expect("create default role");
+
+        let max_position: (i32,) = sqlx::query_as(
+            "SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1",
+        )
+        .bind(guild_id)
+        .fetch_one(&pool)
+        .await
+        .expect("query max position as i32");
+        assert_eq!(max_position.0, 0);
+
+        let custom_role_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, $3, $4, $5, false)",
+        )
+        .bind(custom_role_id)
+        .bind(guild_id)
+        .bind("Moderator")
+        .bind(0_i64)
+        .bind(max_position.0 + 1)
+        .execute(&pool)
+        .await
+        .expect("create custom role");
+
+        let max_position_after: (i32,) = sqlx::query_as(
+            "SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1",
+        )
+        .bind(guild_id)
+        .fetch_one(&pool)
+        .await
+        .expect("query max position after insert");
+        assert_eq!(max_position_after.0, 1);
+    }
+
+    #[test]
+    fn test_owner_sentinel_can_manage_role_hierarchy() {
+        use crate::permissions::{can_manage_role, GuildPermissions};
+
+        let perms = GuildPermissions::MANAGE_ROLES | GuildPermissions::MANAGE_GUILD;
+
+        assert!(can_manage_role(perms, -1, 0, None).is_ok());
+        assert!(can_manage_role(perms, -1, 10, Some(GuildPermissions::MANAGE_GUILD)).is_ok());
+    }
 }

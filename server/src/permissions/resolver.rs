@@ -297,6 +297,15 @@ mod tests {
     }
 
     #[test]
+    fn test_owner_position_can_manage_any_non_owner_role() {
+        let perms = GuildPermissions::MANAGE_ROLES | GuildPermissions::MANAGE_GUILD;
+
+        assert!(can_manage_role(perms, -1, 0, None).is_ok());
+        assert!(can_manage_role(perms, -1, 1, None).is_ok());
+        assert!(can_manage_role(perms, -1, 999, None).is_ok());
+    }
+
+    #[test]
     fn test_cannot_escalate_permissions() {
         let actor_perms = GuildPermissions::MANAGE_ROLES | GuildPermissions::KICK_MEMBERS;
         let new_perms = GuildPermissions::KICK_MEMBERS | GuildPermissions::BAN_MEMBERS;
