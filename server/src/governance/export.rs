@@ -189,13 +189,38 @@ pub async fn process_export_job(
                 "Export job completed"
             );
 
-            // Send email notification if configured
+            // Send email notification if configured (best-effort, non-fatal)
             if let Some(email) = email_service {
-                if let Ok(Some(user)) = crate::db::find_user_by_id(pool, user_id).await {
-                    if let Some(user_email) = &user.email {
-                        let _ = email
-                            .send_data_export_ready(user_email, &user.username)
-                            .await;
+                match crate::db::find_user_by_id(pool, user_id).await {
+                    Ok(Some(user)) => {
+                        if let Some(user_email) = &user.email {
+                            if let Err(e) = email
+                                .send_data_export_ready(user_email, &user.username)
+                                .await
+                            {
+                                tracing::warn!(
+                                    job_id = %job_id,
+                                    user_id = %user_id,
+                                    error = %e,
+                                    "Failed to send data export notification email"
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            job_id = %job_id,
+                            user_id = %user_id,
+                            "Cannot send export notification: user not found"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            job_id = %job_id,
+                            user_id = %user_id,
+                            error = %e,
+                            "Failed to look up user for export notification email"
+                        );
                     }
                 }
             }
