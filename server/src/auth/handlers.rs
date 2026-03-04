@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use chrono::{Duration, Utc};
 use fred::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
@@ -170,6 +170,21 @@ pub struct UpdateProfileRequest {
     /// New email address (optional, set to null to clear).
     #[validate(email)]
     pub email: Option<String>,
+    /// Custom status message (Some(Some("text")) = set, Some(None) = clear, None = no change).
+    /// Not yet wired to database — prepared for future custom status feature.
+    #[allow(dead_code)]
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[allow(clippy::option_option)]
+    pub status_message: Option<Option<String>>,
+}
+
+#[allow(clippy::option_option)]
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Update profile response.
@@ -228,6 +243,27 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
                 .take(512)
                 .collect()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UpdateProfileRequest;
+
+    #[test]
+    fn update_profile_request_distinguishes_missing_and_null_status_message() {
+        let missing: UpdateProfileRequest =
+            serde_json::from_str("{}").expect("missing status_message should deserialize");
+        assert_eq!(missing.status_message, None);
+
+        let explicit_null: UpdateProfileRequest =
+            serde_json::from_str(r#"{"status_message":null}"#)
+                .expect("null status_message should deserialize");
+        assert_eq!(explicit_null.status_message, Some(None));
+
+        let value: UpdateProfileRequest = serde_json::from_str(r#"{"status_message":"In queue"}"#)
+            .expect("string status_message should deserialize");
+        assert_eq!(value.status_message, Some(Some("In queue".to_string())));
+    }
 }
 
 // ============================================================================
@@ -1019,7 +1055,7 @@ pub async fn update_profile(
         .map_err(|e| AuthError::Validation(e.to_string()))?;
 
     // Check if there's anything to update
-    if body.display_name.is_none() && body.email.is_none() {
+    if body.display_name.is_none() && body.email.is_none() && body.status_message.is_none() {
         return Err(AuthError::Validation("No fields to update".to_string()));
     }
 

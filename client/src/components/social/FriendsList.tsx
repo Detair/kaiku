@@ -17,8 +17,9 @@ import {
   removeFriend,
   unblockUser,
 } from "@/stores/friends";
-import { getUserActivity } from "@/stores/presence";
+import { getUserActivity, getUserStatus, getUserPresence } from "@/stores/presence";
 import type { Friend } from "@/lib/types";
+import { formatRelativeTime, truncate } from "@/lib/utils";
 import { ActivityIndicator } from "@/components/ui";
 import { showToast } from "@/components/ui/Toast";
 import AddFriend from "./AddFriend";
@@ -277,6 +278,33 @@ interface FriendItemProps {
 }
 
 const FriendItem: Component<FriendItemProps> = (props) => {
+  const status = () => {
+    const presenceStatus = getUserStatus(props.friend.user_id);
+    if (presenceStatus !== "offline") {
+      return presenceStatus;
+    }
+
+    return props.friend.is_online ? "online" : "offline";
+  };
+
+  const customStatusDisplay = () => {
+    const customStatus = getUserPresence(props.friend.user_id)?.customStatus;
+    if (customStatus?.text?.trim()) {
+      return `${customStatus.emoji ? `${customStatus.emoji} ` : ""}${customStatus.text}`.trim();
+    }
+
+    return props.friend.status_message?.trim() || "";
+  };
+
+  const offlineLastSeenText = () => {
+    const lastSeen = getUserPresence(props.friend.user_id)?.lastSeen || props.friend.last_seen;
+    if (!lastSeen || status() !== "offline") {
+      return null;
+    }
+
+    return `Last seen ${formatRelativeTime(lastSeen)}`;
+  };
+
   return (
     <div class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors">
       {/* Avatar */}
@@ -294,13 +322,17 @@ const FriendItem: Component<FriendItemProps> = (props) => {
         <div class="font-semibold text-text-primary truncate">
           {props.friend.display_name}
         </div>
-        <div class="text-sm text-text-secondary truncate">
-          @{props.friend.username}
-          <Show when={props.friend.status_message}>
-            {" "}
-            - {props.friend.status_message}
+        <div class="flex items-center gap-2 min-w-0">
+          <div class="text-sm text-text-secondary truncate">@{props.friend.username}</div>
+          <Show when={customStatusDisplay().length > 0}>
+            <div class="text-xs text-text-secondary truncate max-w-48">
+              {truncate(customStatusDisplay(), 36)}
+            </div>
           </Show>
         </div>
+        <Show when={offlineLastSeenText()}>
+          <div class="text-xs text-text-secondary/80 truncate">{offlineLastSeenText()}</div>
+        </Show>
         {/* Activity indicator */}
         <Show when={getUserActivity(props.friend.user_id)}>
           <ActivityIndicator

@@ -1117,6 +1117,26 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         }
     };
 
+    match get_friends_presence(&state.db, user_id).await {
+        Ok(friend_presence) => {
+            for (friend_id, status) in friend_presence {
+                let event = ServerEvent::PresenceUpdate {
+                    user_id: friend_id,
+                    status,
+                };
+                if tx.send(event).await.is_err() {
+                    break;
+                }
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to fetch initial friend presence for {}: {}",
+                user_id, e
+            );
+        }
+    }
+
     // Fetch user's guild IDs for guild event subscriptions
     let guild_ids = match db::get_user_guild_ids(&state.db, user_id).await {
         Ok(guilds) => {
@@ -1718,4 +1738,32 @@ async fn get_user_friends(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Uuid>,
     .await?;
 
     Ok(friends.into_iter().map(|(id,)| id).collect())
+}
+
+async fn get_friends_presence(
+    db: &sqlx::PgPool,
+    user_id: Uuid,
+) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        r"
+        SELECT
+            CASE
+                WHEN f.requester_id = $1 THEN f.addressee_id
+                ELSE f.requester_id
+            END as friend_id,
+            u.status::text as status
+        FROM friendships f
+        JOIN users u ON u.id = CASE
+            WHEN f.requester_id = $1 THEN f.addressee_id
+            ELSE f.requester_id
+        END
+        WHERE (f.requester_id = $1 OR f.addressee_id = $1)
+          AND f.status = 'accepted'
+        ",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows)
 }

@@ -96,6 +96,7 @@ export interface User extends UserProfile {
   email: string | null;
   mfa_enabled: boolean;
   created_at: string;
+  status_message?: string | null;
 }
 
 // Guild Types
@@ -806,6 +807,7 @@ export interface Friend {
   friendship_id: string;
   friendship_status: FriendshipStatus;
   created_at: string;
+  last_seen?: string | null;
 }
 
 // DM Types

@@ -10,7 +10,6 @@ import {
   Show,
   For,
   createSignal,
-  createEffect,
   onMount,
   onCleanup,
 } from "solid-js";
@@ -34,13 +33,69 @@ const UnreadModule: Component = () => {
     null,
   );
   const [loading, setLoading] = createSignal(true);
+  let inFlightFetch: Promise<void> | null = null;
+  let nextAllowedFetchAt = 0;
+  let cooldownTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastRateLimitToastAt = 0;
+
+  const parseRetryAfterMs = (error: unknown): number | null => {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    const match = message.match(/wait\s+(\d+)\s+seconds?/i);
+    if (!match) return null;
+
+    const seconds = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    return seconds * 1000;
+  };
+
+  const scheduleCooldownRetry = (delayMs: number) => {
+    if (cooldownTimer) {
+      clearTimeout(cooldownTimer);
+    }
+
+    cooldownTimer = setTimeout(() => {
+      if (Date.now() >= nextAllowedFetchAt) {
+        void fetchUnreads();
+      }
+    }, delayMs + 150);
+  };
 
   // Fetch unread data
   const fetchUnreads = async () => {
+    if (Date.now() < nextAllowedFetchAt) {
+      return;
+    }
+
+    if (inFlightFetch) {
+      return inFlightFetch;
+    }
+
+    inFlightFetch = (async () => {
     try {
       const data = await getUnreadAggregate();
       setUnreadData(data);
+      nextAllowedFetchAt = 0;
+      lastFetchTime = Date.now();
     } catch (error) {
+      const retryAfterMs = parseRetryAfterMs(error);
+      if (retryAfterMs) {
+        nextAllowedFetchAt = Date.now() + retryAfterMs;
+        scheduleCooldownRetry(retryAfterMs);
+
+        const now = Date.now();
+        if (now - lastRateLimitToastAt > 15_000) {
+          lastRateLimitToastAt = now;
+          showToast({
+            type: "warning",
+            title: "Unread Refresh Rate-Limited",
+            message: `Retrying in ${Math.ceil(retryAfterMs / 1000)} seconds.`,
+            duration: 5000,
+          });
+        }
+
+        return;
+      }
+
       console.error("Failed to fetch unread aggregate:", error);
       showToast({
         type: "error",
@@ -51,7 +106,11 @@ const UnreadModule: Component = () => {
       });
     } finally {
       setLoading(false);
+      inFlightFetch = null;
     }
+    })();
+
+    return inFlightFetch;
   };
 
   // Refresh when window gains focus (throttled to once per 30s)
@@ -60,9 +119,11 @@ const UnreadModule: Component = () => {
 
   const throttledFetch = () => {
     const now = Date.now();
+    if (now < nextAllowedFetchAt) {
+      return;
+    }
     if (now - lastFetchTime >= FOCUS_REFRESH_INTERVAL_MS) {
-      lastFetchTime = now;
-      fetchUnreads();
+      void fetchUnreads();
     }
   };
 
@@ -73,29 +134,30 @@ const UnreadModule: Component = () => {
   const debouncedFetch = () => {
     if (wsDebounceTimer) clearTimeout(wsDebounceTimer);
     wsDebounceTimer = setTimeout(() => {
-      lastFetchTime = Date.now();
-      fetchUnreads();
+      if (Date.now() >= nextAllowedFetchAt) {
+        void fetchUnreads();
+      }
     }, WS_DEBOUNCE_MS);
   };
 
   onMount(() => {
     lastFetchTime = Date.now();
-    fetchUnreads();
-  });
-
-  createEffect(() => {
     const handleFocus = () => throttledFetch();
     const handleUnreadUpdate = () => debouncedFetch();
     window.addEventListener("focus", handleFocus);
     window.addEventListener("unread-update", handleUnreadUpdate);
-    return () => {
+
+    void fetchUnreads();
+
+    onCleanup(() => {
       window.removeEventListener("focus", handleFocus);
       window.removeEventListener("unread-update", handleUnreadUpdate);
-    };
+    });
   });
 
   onCleanup(() => {
     if (wsDebounceTimer) clearTimeout(wsDebounceTimer);
+    if (cooldownTimer) clearTimeout(cooldownTimer);
   });
 
   const totalUnread = () => unreadData()?.total ?? 0;

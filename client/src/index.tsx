@@ -13,6 +13,9 @@ import "./styles/themes-pixel.css";
 import "./styles/highlight-theme.css";
 import "./styles/themes-pixel-highlight.css";
 import AppRoutes from "./App";
+import { applyInitialTheme } from "./stores/theme";
+
+applyInitialTheme();
 
 const root = document.getElementById("root");
 

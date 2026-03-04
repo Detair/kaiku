@@ -112,11 +112,68 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
 // Signals
 // ============================================================================
 
+function getInitialPreferencesState(): {
+  preferences: UserPreferences;
+  updatedAt: string;
+} {
+  const fallbackUpdatedAt = new Date().toISOString();
+
+  if (typeof localStorage === "undefined") {
+    return {
+      preferences: DEFAULT_PREFERENCES,
+      updatedAt: fallbackUpdatedAt,
+    };
+  }
+
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored) as Partial<StoredPreferences>;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        parsed.data &&
+        typeof parsed.data === "object"
+      ) {
+        return {
+          preferences: {
+            ...DEFAULT_PREFERENCES,
+            ...(parsed.data as Partial<UserPreferences>),
+          },
+          updatedAt:
+            typeof parsed.updated_at === "string"
+              ? parsed.updated_at
+              : fallbackUpdatedAt,
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("[Preferences] Failed to parse stored preferences", error);
+  }
+
+  const legacyTheme = localStorage.getItem("theme");
+  if (legacyTheme && (THEME_NAMES as readonly string[]).includes(legacyTheme)) {
+    return {
+      preferences: {
+        ...DEFAULT_PREFERENCES,
+        theme: legacyTheme as UserPreferences["theme"],
+      },
+      updatedAt: fallbackUpdatedAt,
+    };
+  }
+
+  return {
+    preferences: DEFAULT_PREFERENCES,
+    updatedAt: fallbackUpdatedAt,
+  };
+}
+
+const initialPreferencesState = getInitialPreferencesState();
+
 const [preferences, setPreferences] =
-  createSignal<UserPreferences>(DEFAULT_PREFERENCES);
-const [lastUpdated, setLastUpdated] = createSignal<string>(
-  new Date().toISOString(),
-);
+  createSignal<UserPreferences>(initialPreferencesState.preferences);
+const [lastUpdated, setLastUpdated] =
+  createSignal<string>(initialPreferencesState.updatedAt);
 const [isSyncing, setIsSyncing] = createSignal(false);
 const [isInitialized, setIsInitialized] = createSignal(false);
 

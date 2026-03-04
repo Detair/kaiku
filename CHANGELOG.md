@@ -562,6 +562,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Phased update strategy executed in subsequent releases
 
 ### Fixed
+- Friend presence indicators now update immediately on WebSocket reconnect instead of showing stale online/offline status until next full refresh (#314)
+- Unread badge polling no longer hammers the server after receiving a 429 rate-limit response — backs off exponentially instead of retrying immediately (#314)
+- Theme selection now persists across page reloads instead of briefly flashing the default theme on startup (#314)
+- Cancelling a DM call no longer crashes or shows stale error dialogs when the call state has already been cleaned up (#314)
+- Custom status can now be cleared (set to null) on servers that reject null `status_message` values — falls back to empty string automatically (#314)
+- Custom status updates from other users now appear immediately in the friend list instead of requiring a page refresh (#314)
 - Browser-mode WebSocket connection now correctly signals readiness, fixing channel and DM subscriptions that previously timed out after 5 seconds (#302)
 - Sending multiple messages rapidly no longer causes earlier pending messages to disappear — only the specific confirmed message's placeholder is removed (#302)
 - Group voice calls no longer lose track of participants when additional users join — participant list and call duration are preserved correctly (#302)

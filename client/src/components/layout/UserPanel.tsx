@@ -24,6 +24,7 @@ import StatusPicker from "@/components/ui/StatusPicker";
 import CustomStatusModal from "@/components/ui/CustomStatusModal";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { CustomStatus } from "@/lib/types";
+import { truncate } from "@/lib/utils";
 
 const SettingsModal = lazy(() => import("@/components/settings/SettingsModal"));
 const AdminQuickModal = lazy(
@@ -41,7 +42,23 @@ const UserPanel: Component = () => {
   const currentCustomStatus = () => {
     const userId = user()?.id;
     if (!userId) return null;
-    return getUserPresence(userId)?.customStatus ?? null;
+
+    const presenceCustomStatus = getUserPresence(userId)?.customStatus;
+    if (presenceCustomStatus) {
+      return presenceCustomStatus;
+    }
+
+    const fallbackStatusMessage = user()?.status_message?.trim();
+    return fallbackStatusMessage ? { text: fallbackStatusMessage } : null;
+  };
+
+  const currentCustomStatusText = () => {
+    const customStatus = currentCustomStatus();
+    if (!customStatus?.text?.trim()) {
+      return null;
+    }
+
+    return `${customStatus.emoji ? `${customStatus.emoji} ` : ""}${customStatus.text}`.trim();
   };
 
   const handleCustomStatusSave = async (_status: CustomStatus | null) => {
@@ -92,6 +109,11 @@ const UserPanel: Component = () => {
                 <div class="text-xs text-text-secondary truncate">
                   @{user()!.username}
                 </div>
+                <Show when={currentCustomStatusText()}>
+                  <div class="text-[11px] text-text-secondary/90 truncate">
+                    {truncate(currentCustomStatusText()!, 40)}
+                  </div>
+                </Show>
               </div>
             </button>
           </Show>

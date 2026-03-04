@@ -94,6 +94,19 @@ export const THEME_IDS = availableThemes.map((t) => t.id);
  */
 export const theme = () => preferences().theme;
 
+export function applyInitialTheme(): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const currentTheme = theme();
+  if (!currentTheme) {
+    return;
+  }
+
+  document.documentElement.setAttribute("data-theme", currentTheme);
+}
+
 // ============================================================================
 // Theme Application Effect
 // ============================================================================

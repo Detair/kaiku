@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   updateStatus: vi.fn(),
+  updateCustomStatus: vi.fn(),
 }));
 
 vi.mock("@/lib/idleDetector", () => ({
@@ -28,9 +29,14 @@ vi.mock("@/stores/auth", () => ({
   updateUser: vi.fn(),
 }));
 
-import { updateStatus } from "@/lib/tauri";
+vi.mock("@/stores/friends", () => ({
+  setFriendsState: vi.fn(),
+}));
+
+import { updateCustomStatus, updateStatus } from "@/lib/tauri";
 import { startIdleDetection, stopIdleDetection } from "@/lib/idleDetector";
 import { currentUser } from "@/stores/auth";
+import { setFriendsState } from "@/stores/friends";
 import {
   presenceState,
   setPresenceState,
@@ -41,6 +47,7 @@ import {
   isUserOnline,
   clearPresence,
   setMyStatus,
+  setMyCustomStatus,
   patchUser,
   initIdleDetection,
   markManualStatusChange,
@@ -50,6 +57,16 @@ import {
 describe("presence store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(currentUser).mockReturnValue({
+      id: "me",
+      username: "me",
+      display_name: "Me",
+      avatar_url: null,
+      status: "online",
+      email: null,
+      mfa_enabled: false,
+      created_at: "2025-01-01T00:00:00Z",
+    });
     setPresenceState({ users: {} });
   });
 
@@ -231,6 +248,47 @@ describe("presence store", () => {
 
       // Should not create a new entry via the presence path
       expect(presenceState.users["unknown"]).toBeUndefined();
+    });
+
+    it("patches friend store status_message when user patch contains custom status", async () => {
+      patchUser("friend-1", { status_message: "On call" });
+
+      await Promise.resolve();
+
+      expect(setFriendsState).toHaveBeenCalledWith("friends", expect.any(Function));
+      expect(setFriendsState).toHaveBeenCalledWith(
+        "pendingRequests",
+        expect.any(Function),
+      );
+      expect(setFriendsState).toHaveBeenCalledWith("blocked", expect.any(Function));
+    });
+  });
+
+  describe("setMyCustomStatus", () => {
+    it("updates server and local custom status", async () => {
+      vi.mocked(updateCustomStatus).mockResolvedValue(undefined);
+
+      await setMyCustomStatus({ text: "In queue", emoji: "🎮" });
+
+      expect(updateCustomStatus).toHaveBeenCalledWith({
+        text: "In queue",
+        emoji: "🎮",
+      }, "Me");
+      expect(presenceState.users["me"].customStatus?.text).toBe("In queue");
+      expect(presenceState.users["me"].customStatus?.emoji).toBe("🎮");
+    });
+
+    it("clears custom status", async () => {
+      vi.mocked(updateCustomStatus).mockResolvedValue(undefined);
+      setPresenceState("users", "me", {
+        status: "online",
+        customStatus: { text: "Busy" },
+      });
+
+      await setMyCustomStatus(null);
+
+      expect(updateCustomStatus).toHaveBeenCalledWith(null, "Me");
+      expect(presenceState.users["me"].customStatus).toBeNull();
     });
   });
 
