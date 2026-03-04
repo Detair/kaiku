@@ -26,8 +26,13 @@ const BLURHASH_COMPONENTS_Y: u32 = 3;
 const BLURHASH_SAMPLE_SIZE: u32 = 32;
 
 /// Maximum image dimension (width or height) to prevent decompression bombs.
-/// An 8192x8192 RGBA image is ~256 MB in memory.
-const MAX_IMAGE_DIMENSION: u32 = 8192;
+const MAX_IMAGE_DIMENSION: u32 = 4096;
+
+/// Maximum decoded image memory budget (bytes).
+/// A 4096x4096 RGBA image = 64 MB. This limits the `image` crate's
+/// internal allocator to reject images that would exceed this budget,
+/// preventing memory pressure from concurrent large image uploads.
+const MAX_DECODE_ALLOC: u64 = 64 * 1024 * 1024;
 
 #[derive(Error, Debug)]
 pub enum ProcessingError {
@@ -87,6 +92,7 @@ pub fn process_image(
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
 
     let img = reader

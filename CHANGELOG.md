@@ -715,6 +715,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guild resource limits (channels, roles, emojis, bots) now use PostgreSQL advisory locks to prevent TOCTOU races under concurrent creation; invite join member limit check uses live `COUNT(*)` instead of denormalized `member_count` (#270)
 
 ### Security
+- Image upload processing now enforces a 64 MB decoded memory budget (`max_alloc`) and reduces the maximum image dimension from 8192px to 4096px to prevent memory pressure from concurrent large image uploads (#268)
 - Enabled Content Security Policy (CSP) in Tauri webview to prevent script injection (#295)
 - Disabled `withGlobalTauri` to restrict IPC bridge access to explicit imports only (#295)
 - OIDC provider error details are no longer leaked to clients — errors are logged server-side (#295)
