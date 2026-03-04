@@ -396,7 +396,8 @@ function scheduleTokenRefresh() {
       await refreshAccessToken();
     } catch (error) {
       console.error("[Auth] Auto-refresh failed:", error);
-      // Token refresh failed - user will need to log in again
+      clearBrowserTokens();
+      window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
     }
   }, refreshIn);
 }
@@ -751,14 +752,17 @@ export async function logout(): Promise<void> {
     return invoke("logout");
   }
 
-  // Browser mode - tell server to clear the HttpOnly cookie
+  // Browser mode — server clears the HttpOnly cookie via Set-Cookie header.
+  // If this fails the cookie persists (JS cannot clear HttpOnly cookies).
   try {
     await httpRequest("POST", "/auth/logout");
   } catch (e) {
-    console.warn("[Auth] Server logout failed (session may already be expired):", e);
+    console.warn(
+      "[Auth] Server logout failed — HttpOnly cookie may persist until it expires:",
+      e,
+    );
   }
   clearBrowserTokens();
-  console.log("[Auth] Logged out, tokens cleared");
 }
 
 export async function getCurrentUser(): Promise<User | null> {

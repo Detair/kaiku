@@ -106,6 +106,11 @@ pub struct LogoutRequest {
 }
 
 /// Authentication response with tokens.
+///
+/// The `refresh_token` is always included in the JSON body for Tauri client
+/// compatibility. In browser mode the refresh token is also delivered as an
+/// `HttpOnly` cookie (the secure channel); the JSON copy is transient and
+/// not persisted by the client.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AuthResponse {
     /// Access token (short-lived).
