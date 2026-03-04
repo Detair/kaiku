@@ -508,9 +508,8 @@ export async function refreshAccessToken(): Promise<boolean> {
 // The cookie is sent automatically; the server returns a fresh access token.
 if (!isTauri && !browserState.accessToken) {
   if (!isSessionRestoreBlocked()) {
-    refreshAccessToken().catch((error) => {
-      console.warn("[Auth] Session restore failed:", error);
-    });
+    // refreshAccessToken never throws (returns false on failure), so no .catch() needed.
+    void refreshAccessToken();
   }
 }
 
@@ -578,17 +577,14 @@ async function httpRequest<T>(
 
     try {
       const errorBody = await response.json();
-      // Detect MFA_REQUIRED from server
+      // Detect MFA_REQUIRED from server — throw before falling into catch
       if (response.status === 403 && errorBody.error === "MFA_REQUIRED") {
-        throw new Error("MFA_REQUIRED");
+        throw new HttpError(403, "MFA_REQUIRED");
       }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     } catch (parseError) {
-      // Re-throw MFA_REQUIRED without wrapping
-      if (
-        parseError instanceof Error &&
-        parseError.message === "MFA_REQUIRED"
-      ) {
+      // Re-throw HttpError (including MFA_REQUIRED) without wrapping
+      if (parseError instanceof HttpError) {
         throw parseError;
       }
       // Log parse failure but continue with text fallback
@@ -618,7 +614,19 @@ async function httpRequest<T>(
   // Handle empty responses
   const text = await response.text();
   if (!text) return null as T;
-  return JSON.parse(text);
+
+  try {
+    return JSON.parse(text);
+  } catch (parseError) {
+    console.error(
+      `[httpRequest] Failed to parse success response as JSON for ${cleanPath}:`,
+      text.slice(0, 200),
+    );
+    throw new HttpError(
+      response.status,
+      `Invalid JSON response from ${cleanPath}`,
+    );
+  }
 }
 
 // Auth Commands

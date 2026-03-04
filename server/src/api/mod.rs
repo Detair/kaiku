@@ -114,8 +114,9 @@ impl AppState {
 /// Create the main application router.
 pub fn create_router(state: AppState) -> Router {
     // Configure CORS based on allowed origins
-    // In production, set CORS_ALLOWED_ORIGINS to specific origins
     let cors = if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
+        // Wildcard `*` is incompatible with `allow_credentials(true)` per the
+        // CORS spec, so mirror the request Origin header instead.
         tracing::warn!(
             "CORS wildcard mirrors Origin header; set CORS_ALLOWED_ORIGINS explicitly in production"
         );

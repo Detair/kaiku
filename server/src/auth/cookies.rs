@@ -19,8 +19,13 @@ fn parse_same_site(config: &Config) -> SameSite {
     match config.cookie_same_site.as_str() {
         "strict" => SameSite::Strict,
         "none" => SameSite::None,
-        _ => {
-            debug_assert!(config.cookie_same_site == "lax", "Unexpected cookie_same_site value: {}", config.cookie_same_site);
+        other => {
+            if other != "lax" {
+                tracing::warn!(
+                    value = %other,
+                    "Unexpected cookie_same_site value, defaulting to Lax"
+                );
+            }
             SameSite::Lax
         }
     }
