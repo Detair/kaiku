@@ -112,6 +112,9 @@ let unlisteners: UnlistenFn[] = [];
 // Metrics collection interval
 let metricsInterval: number | null = null;
 
+// Guard against concurrent join calls from rapid clicks
+let isJoining = false;
+
 // Notification state for packet loss incidents
 let currentIncidentStart: number | null = null;
 let goodQualityStartTime: number | null = null;
@@ -392,82 +395,94 @@ export async function cleanupVoice(): Promise<void> {
  * Join a voice channel.
  */
 export async function joinVoice(channelId: string): Promise<void> {
-  // Leave current channel if connected
-  if (voiceState.state !== "disconnected") {
-    await leaveVoice();
+  if (isJoining) {
+    console.warn("[Voice] Join already in progress, ignoring duplicate call");
+    return;
   }
+  isJoining = true;
 
-  setVoiceState({ state: "connecting", channelId, error: null });
+  try {
+    // Leave current channel if connected
+    if (voiceState.state !== "disconnected") {
+      await leaveVoice();
+    }
 
-  const adapter = await createVoiceAdapter();
+    setVoiceState({ state: "connecting", channelId, error: null });
 
-  // Set up adapter event handlers
-  adapter.setEventHandlers({
-    onStateChange: (state) => {
-      const stateMap = {
-        disconnected: "disconnected" as const,
-        requesting_media: "connecting" as const,
-        connecting: "connecting" as const,
-        connected: "connected" as const,
-        reconnecting: "connecting" as const,
-      };
-      setVoiceState({ state: stateMap[state] });
-    },
-    onError: (error) => {
-      setVoiceState({ error });
-    },
-    onLocalMuteChange: (muted) => {
-      setVoiceState({ muted });
-    },
-    onSpeakingChange: (speaking) => {
-      setVoiceState({ speaking });
-    },
-    onScreenShareTrack: (userId, track) => {
-      console.log("[Voice] Screen share track received:", userId);
-      // Import and call viewer store
-      import("@/stores/screenShareViewer").then(({ startViewing }) => {
-        startViewing(userId, track);
-      });
-    },
-    onScreenShareTrackRemoved: (userId) => {
-      console.log("[Voice] Screen share track removed:", userId);
-      import("@/stores/screenShareViewer").then(({ removeAvailableTrack }) => {
-        removeAvailableTrack(userId);
-      });
-    },
-    onScreenShareStopped: (_userId, reason) => {
-      console.log("[Voice] Screen share stopped:", reason);
-      // Sync local state when screen share is stopped (e.g., via system UI)
-      setVoiceState({ screenSharing: false });
-    },
-    onWebcamTrack: (userId, track) => {
-      console.log("[Voice] Webcam track received:", userId);
-      import("@/stores/webcamViewer").then(({ addAvailableTrack }) => {
-        addAvailableTrack(userId, track);
-      });
-    },
-    onWebcamTrackRemoved: (userId) => {
-      console.log("[Voice] Webcam track removed:", userId);
-      import("@/stores/webcamViewer").then(({ removeAvailableTrack }) => {
-        removeAvailableTrack(userId);
-      });
-    },
-  });
+    const adapter = await createVoiceAdapter();
 
-  const result = await adapter.join(channelId);
-  if (!result.ok) {
-    setVoiceState({
-      state: "disconnected",
-      channelId: null,
-      error: result.error,
+    // Set up adapter event handlers
+    adapter.setEventHandlers({
+      onStateChange: (state) => {
+        const stateMap = {
+          disconnected: "disconnected" as const,
+          requesting_media: "connecting" as const,
+          connecting: "connecting" as const,
+          connected: "connected" as const,
+          reconnecting: "connecting" as const,
+        };
+        setVoiceState({ state: stateMap[state] });
+      },
+      onError: (error) => {
+        setVoiceState({ error });
+      },
+      onLocalMuteChange: (muted) => {
+        setVoiceState({ muted });
+      },
+      onSpeakingChange: (speaking) => {
+        setVoiceState({ speaking });
+      },
+      onScreenShareTrack: (userId, track) => {
+        console.log("[Voice] Screen share track received:", userId);
+        // Import and call viewer store
+        import("@/stores/screenShareViewer").then(({ startViewing }) => {
+          startViewing(userId, track);
+        });
+      },
+      onScreenShareTrackRemoved: (userId) => {
+        console.log("[Voice] Screen share track removed:", userId);
+        import("@/stores/screenShareViewer").then(
+          ({ removeAvailableTrack }) => {
+            removeAvailableTrack(userId);
+          },
+        );
+      },
+      onScreenShareStopped: (_userId, reason) => {
+        console.log("[Voice] Screen share stopped:", reason);
+        // Sync local state when screen share is stopped (e.g., via system UI)
+        setVoiceState({ screenSharing: false });
+      },
+      onWebcamTrack: (userId, track) => {
+        console.log("[Voice] Webcam track received:", userId);
+        import("@/stores/webcamViewer").then(({ addAvailableTrack }) => {
+          addAvailableTrack(userId, track);
+        });
+      },
+      onWebcamTrackRemoved: (userId) => {
+        console.log("[Voice] Webcam track removed:", userId);
+        import("@/stores/webcamViewer").then(({ removeAvailableTrack }) => {
+          removeAvailableTrack(userId);
+        });
+      },
     });
-    throw new Error(getErrorMessage(result.error));
-  }
 
-  // Start session tracking and metrics collection
-  setVoiceState("sessionId", crypto.randomUUID());
-  setVoiceState("connectedAt", Date.now());
-  startMetricsLoop();
+    const result = await adapter.join(channelId);
+    if (!result.ok) {
+      setVoiceState({
+        state: "disconnected",
+        channelId: null,
+        error: result.error,
+      });
+      throw new Error(getErrorMessage(result.error));
+    }
+
+    // Start session tracking and metrics collection
+    setVoiceState("sessionId", crypto.randomUUID());
+    setVoiceState("connectedAt", Date.now());
+    startMetricsLoop();
+  } finally {
+    isJoining = false;
+  }
 }
 
 /**
