@@ -20,7 +20,6 @@ import {
 } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { ChevronDown, Settings, Search, BookOpen } from "lucide-solid";
-import { loadChannels } from "@/stores/channels";
 import { getActiveGuild } from "@/stores/guilds";
 import { loadFavorites } from "@/stores/favorites";
 import { clearSearch } from "@/stores/search";
@@ -55,9 +54,8 @@ const Sidebar: Component = () => {
     clearSearch();
   };
 
-  // Load channels and favorites when sidebar mounts
+  // Load pending page acceptance and favorites when sidebar mounts
   onMount(() => {
-    loadChannels();
     loadPendingAcceptance();
     loadFavorites();
   });

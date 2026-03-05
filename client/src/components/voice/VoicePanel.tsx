@@ -22,7 +22,7 @@ import type { ConnectionMetrics } from "@/lib/webrtc/types";
 import VoiceControls from "./VoiceControls";
 
 /**
- * Voice panel shown when connected to a voice channel.
+ * Voice panel shown when connected or connecting to a voice channel.
  * Displays current channel, participants, and controls.
  */
 const VoicePanel: Component = () => {
@@ -36,6 +36,9 @@ const VoicePanel: Component = () => {
   const handleDisconnect = () => {
     leaveVoice();
   };
+
+  const isConnected = () => voiceState.state === "connected";
+  const isConnecting = () => voiceState.state === "connecting";
 
   // Elapsed timer — uses the store's authoritative connectedAt timestamp
   const [elapsedTime, setElapsedTime] = createSignal("00:00");
@@ -56,7 +59,7 @@ const VoicePanel: Component = () => {
   };
 
   return (
-    <Show when={voiceState.state === "connected" && channel()}>
+    <Show when={(isConnected() || isConnecting()) && voiceState.channelId}>
       <div
         data-testid="voice-panel"
         class="bg-surface-base/50 border-t relative transition-all duration-200"
@@ -69,31 +72,45 @@ const VoicePanel: Component = () => {
         {/* Connection info */}
         <div class="px-3 py-2 flex items-center justify-between">
           <div class="flex items-center gap-2 min-w-0">
-            <Signal class="w-4 h-4 text-accent-success flex-shrink-0" />
+            <Signal
+              class="w-4 h-4 flex-shrink-0"
+              classList={{
+                "text-accent-success": isConnected(),
+                "text-amber-400 animate-pulse": isConnecting(),
+              }}
+            />
             <div class="min-w-0">
-              <div class="text-xs font-semibold text-accent-success">
-                Voice Connected
+              <div
+                class="text-xs font-semibold"
+                classList={{
+                  "text-accent-success": isConnected(),
+                  "text-amber-400 animate-pulse": isConnecting(),
+                }}
+              >
+                {isConnected() ? "Voice Connected" : "Connecting..."}
               </div>
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
-                <span>{channel()?.name}</span>
-                <span class="text-text-secondary/50">&middot;</span>
-                <span class="font-mono">{elapsedTime()}</span>
-                <div
-                  class="relative"
-                  onMouseEnter={() => setShowQualityTooltip(true)}
-                  onMouseLeave={() => setShowQualityTooltip(false)}
-                >
-                  <QualityIndicator
-                    metrics={metrics()}
-                    mode="circle"
-                    class="cursor-help"
-                  />
-                  <Show when={showQualityTooltip() && metricsObj()}>
-                    <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50">
-                      <QualityTooltip metrics={metricsObj()!} />
-                    </div>
-                  </Show>
-                </div>
+                <span>{channel()?.name || "Voice Channel"}</span>
+                <Show when={isConnected()}>
+                  <span class="text-text-secondary/50">&middot;</span>
+                  <span class="font-mono">{elapsedTime()}</span>
+                  <div
+                    class="relative"
+                    onMouseEnter={() => setShowQualityTooltip(true)}
+                    onMouseLeave={() => setShowQualityTooltip(false)}
+                  >
+                    <QualityIndicator
+                      metrics={metrics()}
+                      mode="circle"
+                      class="cursor-help"
+                    />
+                    <Show when={showQualityTooltip() && metricsObj()}>
+                      <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50">
+                        <QualityTooltip metrics={metricsObj()!} />
+                      </div>
+                    </Show>
+                  </div>
+                </Show>
               </div>
             </div>
           </div>
@@ -172,8 +189,10 @@ const VoicePanel: Component = () => {
           </div>
         </Show>
 
-        {/* Voice controls */}
-        <VoiceControls />
+        {/* Voice controls - only when fully connected */}
+        <Show when={isConnected()}>
+          <VoiceControls />
+        </Show>
       </div>
     </Show>
   );
