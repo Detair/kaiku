@@ -365,8 +365,6 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       }
     }
 
-    trackCursor();
-
     // Send on Enter (without Shift), allow Shift+Enter for newlines
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -377,6 +375,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   // Handle textarea click - close autocomplete if cursor moved away from trigger
   const handleTextareaClick = () => {
     trackCursor();
+    // Re-detect autocomplete (closes popup if cursor moved away from trigger)
     detectAutocomplete(content());
   };
 
@@ -537,6 +536,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           onInput={(e) => handleInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
           onClick={handleTextareaClick}
+          onKeyUp={trackCursor}
           onCompositionStart={() => setIsComposing(true)}
           onCompositionEnd={() => setIsComposing(false)}
           class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none resize-none overflow-y-auto"
@@ -550,7 +550,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         <button
           ref={emojiButtonRef}
           type="button"
-          class="p-2 text-text-secondary hover:text-text-primary transition-colors"
+          class={`p-2 transition-colors ${showEmojiPicker() ? "text-accent-primary" : "text-text-secondary hover:text-text-primary"}`}
           title="Add emoji"
           onClick={() => setShowEmojiPicker((prev) => !prev)}
         >
