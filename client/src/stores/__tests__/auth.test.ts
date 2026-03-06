@@ -426,6 +426,23 @@ describe("auth store", () => {
 
       expect(authState.user).toBeNull();
       expect(wsDisconnect).toHaveBeenCalled();
+      expect(cleanupWebSocket).toHaveBeenCalled();
+      expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+      expect(cleanupPresence).toHaveBeenCalled();
+    });
+
+    it("sets sessionExpired even when cleanup throws", async () => {
+      setAuthState({ user: createUser(), isInitialized: true });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(false);
+      vi.mocked(wsDisconnect).mockRejectedValue(new Error("cleanup fail"));
+
+      window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+
+      await vi.waitFor(() => {
+        expect(authState.sessionExpired).toBe(true);
+      });
+
+      expect(authState.user).toBeNull();
     });
 
     it("ignores event when not authenticated", async () => {
