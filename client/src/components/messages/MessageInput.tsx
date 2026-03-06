@@ -1,5 +1,5 @@
 import { Component, createSignal, Show, For, onCleanup, createEffect, createMemo } from "solid-js";
-import { PlusCircle, Send, UploadCloud, X, File as FileIcon } from "lucide-solid";
+import { PlusCircle, Send, Smile, UploadCloud, X, File as FileIcon } from "lucide-solid";
 import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
 import { uploadMessageWithFile, validateFileSize, getUploadLimitText } from "@/lib/tauri";
@@ -9,6 +9,7 @@ import AutocompletePopup from "./AutocompletePopup";
 import { guildsState } from "@/stores/guilds";
 import { channelsState } from "@/stores/channels";
 import { listGuildCommands, type GuildCommand } from "@/lib/api/bots";
+import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 
 interface MessageInputProps {
   channelId: string;
@@ -40,8 +41,11 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const [autocompleteStart, setAutocompleteStart] = createSignal(0);
   const [guildCommands, setGuildCommands] = createSignal<GuildCommand[]>([]);
   const [commandsFetched, setCommandsFetched] = createSignal(false);
+  const [showEmojiPicker, setShowEmojiPicker] = createSignal(false);
+  const [lastCursorPos, setLastCursorPos] = createSignal<number | null>(null);
   let typingTimeout: NodeJS.Timeout | undefined;
   let textareaRef: HTMLTextAreaElement | undefined;
+  let emojiButtonRef: HTMLButtonElement | undefined;
   let resizeFrame: number | undefined;
 
   // Load draft when channel changes (handles both initial mount and channel switches)
@@ -49,6 +53,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     const channelId = props.channelId;
     const draft = getDraft(channelId);
     setContent(draft);
+    setShowEmojiPicker(false);
     // Resize after setting content
     setTimeout(() => resizeTextarea(), 0);
   });
@@ -148,9 +153,38 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     setPendingFiles([]);
   };
 
+  const trackCursor = () => {
+    if (textareaRef) setLastCursorPos(textareaRef.selectionStart);
+  };
+
+  const handleEmojiSelect = (emoji: string) => {
+    const currentContent = content();
+    const pos = lastCursorPos() ?? currentContent.length;
+    const before = currentContent.substring(0, pos);
+    const after = currentContent.substring(pos);
+    const newContent = before + emoji + after;
+    const newCursorPos = pos + emoji.length;
+
+    setContent(newContent);
+    setShowEmojiPicker(false);
+
+    // Save draft
+    const isE2EE = props.isE2EE ?? false;
+    saveDraft(props.channelId, newContent, isE2EE);
+
+    setTimeout(() => {
+      if (textareaRef) {
+        textareaRef.focus();
+        textareaRef.setSelectionRange(newCursorPos, newCursorPos);
+      }
+      resizeTextarea();
+    }, 0);
+  };
+
   const handleInput = (value: string) => {
     setContent(value);
     resizeTextarea();
+    trackCursor();
 
     // Detect autocomplete triggers
     detectAutocomplete(value);
@@ -341,8 +375,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
   // Handle textarea click - close autocomplete if cursor moved away from trigger
   const handleTextareaClick = () => {
-    // Re-detect autocomplete at current cursor position
-    // This will close autocomplete if user clicked away from trigger
+    trackCursor();
+    // Re-detect autocomplete (closes popup if cursor moved away from trigger)
     detectAutocomplete(content());
   };
 
@@ -503,6 +537,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           onInput={(e) => handleInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
           onClick={handleTextareaClick}
+          onKeyUp={trackCursor}
           onCompositionStart={() => setIsComposing(true)}
           onCompositionEnd={() => setIsComposing(false)}
           class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none resize-none overflow-y-auto"
@@ -511,6 +546,17 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           disabled={isSending()}
           rows={1}
         />
+
+        {/* Emoji picker button */}
+        <button
+          ref={emojiButtonRef}
+          type="button"
+          class={`p-2 transition-colors ${showEmojiPicker() ? "text-accent-primary" : "text-text-secondary hover:text-text-primary"}`}
+          title="Add emoji"
+          onClick={() => setShowEmojiPicker((prev) => !prev)}
+        >
+          <Smile class="w-5 h-5" />
+        </button>
 
         {/* Send button and character counter container */}
         <div class="flex items-center gap-1 pr-1">
@@ -548,6 +594,16 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         <div class="mt-2 text-sm" style="color: var(--color-error-text)">
           Failed to send: {messagesState.error}
         </div>
+      </Show>
+
+      {/* Emoji Picker */}
+      <Show when={showEmojiPicker() && emojiButtonRef}>
+        <PositionedEmojiPicker
+          anchorEl={emojiButtonRef!}
+          onSelect={handleEmojiSelect}
+          onClose={() => setShowEmojiPicker(false)}
+          guildId={props.guildId}
+        />
       </Show>
 
       {/* Autocomplete Popup */}
