@@ -39,6 +39,8 @@ import {
   hasMoreMessages,
   clearChannelMessages,
   clearCurve25519KeyCache,
+  editingMessageId,
+  setEditingMessageId,
 } from "../messages";
 
 function createMessage(id: string, channelId = "ch-1"): Message {
@@ -345,5 +347,25 @@ describe("messages store", () => {
     it("does not throw", () => {
       expect(() => clearCurve25519KeyCache()).not.toThrow();
     });
+  });
+});
+
+describe("editingMessageId", () => {
+  it("is null initially", () => {
+    expect(editingMessageId()).toBeNull();
+  });
+
+  it("can be set and cleared", () => {
+    setEditingMessageId("msg-1");
+    expect(editingMessageId()).toBe("msg-1");
+
+    setEditingMessageId(null);
+    expect(editingMessageId()).toBeNull();
+  });
+
+  it("setting a new ID replaces the previous one", () => {
+    setEditingMessageId("msg-1");
+    setEditingMessageId("msg-2");
+    expect(editingMessageId()).toBe("msg-2");
   });
 });
