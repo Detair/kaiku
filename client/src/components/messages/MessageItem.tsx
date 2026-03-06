@@ -19,6 +19,7 @@ import {
   Trash2,
   Flag,
   MessageSquareMore,
+  Pencil,
 } from "lucide-solid";
 import type { Message } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
@@ -33,6 +34,7 @@ import {
   addReaction,
   removeReaction,
   deleteMessage,
+  editMessage,
 } from "@/lib/tauri";
 import {
   showContextMenu,
@@ -42,7 +44,7 @@ import { currentUser } from "@/stores/auth";
 import { showUserContextMenu, triggerReport } from "@/lib/contextMenuBuilders";
 import { spoilerExtension } from "@/lib/markdown/spoilerExtension";
 import { openThread } from "@/stores/threads";
-import { removeMessage } from "@/stores/messages";
+import { removeMessage, editingMessageId, setEditingMessageId } from "@/stores/messages";
 import { showToast } from "@/components/ui/Toast";
 
 interface MessageItemProps {
@@ -275,6 +277,63 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
   const author = () => props.message.author;
   const isEdited = () => !!props.message.edited_at;
+  const isBeingEdited = () => editingMessageId() === props.message.id;
+  const [editContent, setEditContent] = createSignal("");
+  const [isSavingEdit, setIsSavingEdit] = createSignal(false);
+  let editTextareaRef: HTMLTextAreaElement | undefined;
+
+  const startEdit = () => {
+    setEditContent(props.message.content);
+    setEditingMessageId(props.message.id);
+  };
+
+  const cancelEdit = () => {
+    if (editingMessageId() === props.message.id) {
+      setEditingMessageId(null);
+    }
+  };
+
+  const saveEdit = async () => {
+    const newContent = editContent().trim();
+    if (!newContent || newContent === props.message.content) {
+      cancelEdit();
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      await editMessage(props.message.id, newContent);
+      setEditingMessageId(null);
+    } catch (err) {
+      console.error("Failed to edit message:", err);
+      showToast({
+        type: "error",
+        title: "Edit Failed",
+        message: err instanceof Error ? err.message : "Could not edit message.",
+        duration: 5000,
+      });
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleEditKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cancelEdit();
+    } else if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void saveEdit();
+    }
+  };
+
+  const resizeEditTextarea = () => {
+    if (!editTextareaRef) return;
+    editTextareaRef.style.height = "auto";
+    const newHeight = Math.min(Math.max(editTextareaRef.scrollHeight, 24), 192);
+    editTextareaRef.style.height = `${newHeight}px`;
+  };
+
   const hasReactions = () =>
     props.message.reactions && props.message.reactions.length > 0;
 
@@ -469,6 +528,11 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       items.push(
         { separator: true },
         {
+          label: "Edit Message",
+          icon: Pencil,
+          action: () => startEdit(),
+        },
+        {
           label: "Delete Message",
           icon: Trash2,
           danger: true,
@@ -501,7 +565,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       }}
       class={`group relative flex gap-4 px-4 py-0.5 hover:bg-white/3 transition-colors ${
         props.compact ? "mt-0" : "mt-4"
-      }`}
+      } ${isBeingEdited() ? "bg-accent-primary/5 ring-1 ring-accent-primary/20 rounded-lg" : ""}`}
     >
       {/* Avatar column */}
       <div class="w-10 flex-shrink-0">
@@ -545,6 +609,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           props.isInsideThread ? undefined : () => openThread(props.message)
         }
         threadsEnabled={props.threadsEnabled}
+        isOwn={currentUser()?.id === props.message.author.id}
+        onEdit={startEdit}
       />
 
       {/* Content column */}
@@ -570,31 +636,61 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           </div>
         </Show>
 
-        <div
-          ref={contentRef}
-          class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none"
+        <Show
+          when={!isBeingEdited()}
+          fallback={
+            <div class="mt-1">
+              <textarea
+                ref={(el) => {
+                  editTextareaRef = el;
+                  requestAnimationFrame(() => {
+                    el.focus();
+                    el.selectionStart = el.value.length;
+                    resizeEditTextarea();
+                  });
+                }}
+                class="w-full bg-surface-base border border-accent-primary/50 rounded-lg px-3 py-2 text-text-primary text-sm resize-none focus:outline-none focus:border-accent-primary transition-colors"
+                value={editContent()}
+                onInput={(e) => {
+                  setEditContent(e.currentTarget.value);
+                  resizeEditTextarea();
+                }}
+                onKeyDown={handleEditKeyDown}
+                disabled={isSavingEdit()}
+                rows={1}
+              />
+              <div class="text-xs text-text-secondary mt-1">
+                escape to cancel · enter to save
+              </div>
+            </div>
+          }
         >
-          <For each={contentBlocks()}>
-            {(block) => (
-              <Show
-                when={block.type === "code"}
-                fallback={<div innerHTML={(block as TextBlock).html} />}
+          <div
+            ref={contentRef}
+            class="text-text-primary break-words leading-relaxed prose prose-invert max-w-none"
+          >
+            <For each={contentBlocks()}>
+              {(block) => (
+                <Show
+                  when={block.type === "code"}
+                  fallback={<div innerHTML={(block as TextBlock).html} />}
+                >
+                  <CodeBlock language={(block as CodeBlockData).language}>
+                    {(block as CodeBlockData).code}
+                  </CodeBlock>
+                </Show>
+              )}
+            </For>
+            <Show when={isEdited()}>
+              <span
+                class="text-xs text-text-secondary/70 ml-1.5 align-super"
+                title={`Edited ${formatTimestamp(props.message.edited_at!)}`}
               >
-                <CodeBlock language={(block as CodeBlockData).language}>
-                  {(block as CodeBlockData).code}
-                </CodeBlock>
-              </Show>
-            )}
-          </For>
-          <Show when={isEdited()}>
-            <span
-              class="text-xs text-text-secondary/70 ml-1.5 align-super"
-              title={`Edited ${formatTimestamp(props.message.edited_at!)}`}
-            >
-              (edited)
-            </span>
-          </Show>
-        </div>
+                (edited)
+              </span>
+            </Show>
+          </div>
+        </Show>
 
         {/* Attachments */}
         <Show when={props.message.attachments?.length > 0}>
