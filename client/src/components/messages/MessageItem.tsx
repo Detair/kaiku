@@ -44,7 +44,7 @@ import { currentUser } from "@/stores/auth";
 import { showUserContextMenu, triggerReport } from "@/lib/contextMenuBuilders";
 import { spoilerExtension } from "@/lib/markdown/spoilerExtension";
 import { openThread } from "@/stores/threads";
-import { removeMessage, editingMessageId, setEditingMessageId } from "@/stores/messages";
+import { removeMessage, updateMessage, editingMessageId, setEditingMessageId } from "@/stores/messages";
 import { showToast } from "@/components/ui/Toast";
 
 interface MessageItemProps {
@@ -302,7 +302,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
     setIsSavingEdit(true);
     try {
-      await editMessage(props.message.id, newContent);
+      const updated = await editMessage(props.message.id, newContent);
+      updateMessage(updated);
       setEditingMessageId(null);
     } catch (err) {
       console.error("Failed to edit message:", err);
