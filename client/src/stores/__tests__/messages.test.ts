@@ -351,6 +351,10 @@ describe("messages store", () => {
 });
 
 describe("editingMessageId", () => {
+  beforeEach(() => {
+    setEditingMessageId(null);
+  });
+
   it("is null initially", () => {
     expect(editingMessageId()).toBeNull();
   });
