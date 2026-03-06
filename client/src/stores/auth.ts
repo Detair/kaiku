@@ -31,6 +31,7 @@ interface AuthState {
   error: string | null;
   setupRequired: boolean;
   mfaRequired: boolean;
+  sessionExpired: boolean;
 }
 
 // Create the store
@@ -42,6 +43,7 @@ const [authState, setAuthState] = createStore<AuthState>({
   error: null,
   setupRequired: false,
   mfaRequired: false,
+  sessionExpired: false,
 });
 
 // Derived state

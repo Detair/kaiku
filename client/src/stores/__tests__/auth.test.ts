@@ -86,6 +86,7 @@ describe("auth store", () => {
       isInitialized: false,
       error: null,
       setupRequired: false,
+      sessionExpired: false,
     });
   });
 
@@ -96,6 +97,10 @@ describe("auth store", () => {
       expect(authState.isInitialized).toBe(false);
       expect(authState.error).toBeNull();
       expect(authState.setupRequired).toBe(false);
+    });
+
+    it("has sessionExpired false initially", () => {
+      expect(authState.sessionExpired).toBe(false);
     });
   });
 
