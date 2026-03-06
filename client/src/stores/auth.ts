@@ -197,6 +197,7 @@ export async function login(
       error: null,
       setupRequired: result.setup_required,
       mfaRequired: false,
+      sessionExpired: false,
     });
 
     // Initialize WebSocket listeners and presence in parallel (independent)
@@ -270,6 +271,7 @@ export async function register(
       isInitialized: true,
       error: null,
       setupRequired: result.setup_required,
+      sessionExpired: false,
     });
 
     // Initialize WebSocket listeners and presence in parallel (independent)
@@ -333,6 +335,7 @@ export async function loginWithOidc(
       isInitialized: true,
       error: null,
       setupRequired,
+      sessionExpired: false,
     });
 
     // Initialize WebSocket listeners and presence in parallel (independent)
