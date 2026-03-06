@@ -6,7 +6,7 @@
  */
 
 import { Component, createSignal, Show } from "solid-js";
-import { SmilePlus, MoreHorizontal, MessageSquareMore } from "lucide-solid";
+import { SmilePlus, MoreHorizontal, MessageSquareMore, Pencil } from "lucide-solid";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 
 interface MessageActionsProps {
@@ -22,6 +22,10 @@ interface MessageActionsProps {
   onReplyInThread?: () => void;
   /** Whether threads are enabled for this guild (default true) */
   threadsEnabled?: boolean;
+  /** Whether the current user owns this message */
+  isOwn?: boolean;
+  /** Callback to enter edit mode */
+  onEdit?: () => void;
 }
 
 // Quick reaction emojis
@@ -92,6 +96,19 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
           aria-label="Reply in Thread"
         >
           <MessageSquareMore class="w-4 h-4" />
+        </button>
+      </Show>
+
+      {/* Edit button (own messages only) */}
+      <Show when={props.isOwn && props.onEdit}>
+        <button
+          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+          data-testid="message-action-edit"
+          onClick={() => props.onEdit?.()}
+          title="Edit Message"
+          aria-label="Edit Message"
+        >
+          <Pencil class="w-4 h-4" />
         </button>
       </Show>
 

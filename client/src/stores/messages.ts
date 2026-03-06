@@ -5,6 +5,7 @@
  * Supports E2EE for DM channels when encryption is initialized.
  */
 
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { Message, ClaimedPrekeyInput, DMListItem, E2EEContent, MegolmE2EEContent } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
@@ -36,6 +37,17 @@ async function getOurCurve25519Key(): Promise<string | null> {
 export function clearCurve25519KeyCache(): void {
   cachedOurCurve25519Key = null;
 }
+
+// ============================================================================
+// Edit State
+// ============================================================================
+
+/**
+ * Tracks which message is currently being edited (only one at a time).
+ * null means no message is being edited.
+ */
+const [editingMessageId, setEditingMessageId] = createSignal<string | null>(null);
+export { editingMessageId, setEditingMessageId };
 
 /**
  * Decrypt a message if it's encrypted and E2EE is available.

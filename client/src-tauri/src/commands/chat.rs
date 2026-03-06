@@ -211,6 +211,53 @@ pub async fn send_message(
     Ok(message)
 }
 
+/// Edit a message (own messages only).
+#[command]
+pub async fn edit_message(
+    state: State<'_, AppState>,
+    message_id: String,
+    content: String,
+) -> Result<Message, String> {
+    let (server_url, token) = {
+        let auth = state.auth.read().await;
+        (auth.server_url.clone(), auth.access_token.clone())
+    };
+
+    let server_url = server_url.ok_or("Not authenticated")?;
+    let token = token.ok_or("Not authenticated")?;
+
+    debug!("Editing message {}", message_id);
+
+    let response = state
+        .http
+        .patch(format!("{server_url}/api/messages/{message_id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "content": content
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to edit message: {}", e);
+            format!("Connection failed: {e}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        error!("Failed to edit message: {} - {}", status, body);
+        return Err(format!("Failed to edit message: {status}"));
+    }
+
+    let message: Message = response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {e}"))?;
+
+    debug!("Message edited: {}", message.id);
+    Ok(message)
+}
+
 /// Get thread replies for a parent message.
 #[command]
 pub async fn get_thread_replies(

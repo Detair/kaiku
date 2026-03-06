@@ -4135,6 +4135,23 @@ export async function deleteMessage(messageId: string): Promise<void> {
 }
 
 /**
+ * Edit a message (own messages only).
+ */
+export async function editMessage(
+  messageId: string,
+  content: string,
+): Promise<Message> {
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("edit_message", { messageId, content });
+  }
+
+  return httpRequest<Message>("PATCH", `/api/messages/${messageId}`, {
+    content,
+  });
+}
+
+/**
  * Get aggregate unread counts across all guilds and DMs.
  * Returns unread counts grouped by guild, plus DM unreads.
  */

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Inline message editing — edit own messages via context menu or hover pencil button with Enter to save, Escape to cancel
 - Guild bans — per-guild ban enforcement via `guild_bans` table; banned users are blocked from joining via discovery or invite codes, with support for temporary bans via `expires_at` (#272)
 - Admin Command Center observability backend with 7 read-only endpoints: system summary, metric trends, top routes, top errors, log search, trace search, and external tool links
 - Native telemetry ingestion pipeline capturing WARN/ERROR logs and span metadata to PostgreSQL for self-hosted observability without external dependencies
