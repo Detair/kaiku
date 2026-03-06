@@ -278,6 +278,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
   const author = () => props.message.author;
   const isEdited = () => !!props.message.edited_at;
+  const isOwn = () => currentUser()?.id === props.message.author.id;
   const isBeingEdited = () => editingMessageId() === props.message.id;
   const [editContent, setEditContent] = createSignal("");
   const [isSavingEdit, setIsSavingEdit] = createSignal(false);
@@ -473,8 +474,6 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
   const handleContextMenu = (e: MouseEvent) => {
     const msg = props.message;
-    const me = currentUser();
-    const isOwn = me?.id === msg.author.id;
 
     const items: ContextMenuEntry[] = [
       {
@@ -513,7 +512,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       );
     }
 
-    if (!isOwn) {
+    if (!isOwn()) {
       items.push(
         { separator: true },
         {
@@ -531,7 +530,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       );
     }
 
-    if (isOwn) {
+    if (isOwn()) {
       items.push(
         { separator: true },
         {
@@ -616,7 +615,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           props.isInsideThread ? undefined : () => openThread(props.message)
         }
         threadsEnabled={props.threadsEnabled}
-        isOwn={currentUser()?.id === props.message.author.id}
+        isOwn={isOwn()}
         onEdit={startEdit}
       />
 
