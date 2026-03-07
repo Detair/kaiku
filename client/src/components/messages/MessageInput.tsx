@@ -1,5 +1,5 @@
 import { Component, createSignal, Show, For, onCleanup, createEffect, createMemo } from "solid-js";
-import { PlusCircle, Send, Smile, UploadCloud, X, File as FileIcon } from "lucide-solid";
+import { PlusCircle, Send, Smile, UploadCloud, X, File as FileIcon, Bold, Italic, Code, EyeOff } from "lucide-solid";
 import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
 import { uploadMessageWithFile, validateFileSize, getUploadLimitText } from "@/lib/tauri";
@@ -47,6 +47,24 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   let textareaRef: HTMLTextAreaElement | undefined;
   let emojiButtonRef: HTMLButtonElement | undefined;
   let resizeFrame: number | undefined;
+
+  const insertFormatting = (before: string, after: string = "") => {
+    if (!textareaRef) return;
+    const start = textareaRef.selectionStart;
+    const end = textareaRef.selectionEnd;
+    const selected = content().slice(start, end);
+    const newContent = content().slice(0, start) + before + selected + after + content().slice(end);
+    setContent(newContent);
+    requestAnimationFrame(() => {
+      if (textareaRef) {
+        const cursorPos = selected.length > 0
+          ? start + before.length + selected.length + after.length
+          : start + before.length;
+        textareaRef.focus();
+        textareaRef.setSelectionRange(cursorPos, cursorPos);
+      }
+    });
+  };
 
   // Load draft when channel changes (handles both initial mount and channel switches)
   createEffect(() => {
@@ -376,6 +394,13 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       }
     }
 
+    // Formatting shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === "b") { e.preventDefault(); insertFormatting("**", "**"); return; }
+      if (e.key === "i") { e.preventDefault(); insertFormatting("*", "*"); return; }
+      if (e.key === "e") { e.preventDefault(); insertFormatting("`", "`"); return; }
+    }
+
     // Send on Enter (without Shift), allow Shift+Enter for newlines
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -528,74 +553,92 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         </div>
       </Show>
 
-      <div class="relative flex items-center rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors" style="background-color: var(--color-surface-layer2)">
-        {/* Attachment button */}
-        <button
-          type="button"
-          class="p-3 text-text-secondary hover:text-text-primary transition-colors"
-          title="Add files"
-          onClick={handleFileSelect}
-        >
-          <PlusCircle class="w-5 h-5" />
-        </button>
+      <div class="relative flex flex-col rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors" style="background-color: var(--color-surface-layer2)">
+        {/* Formatting toolbar */}
+        <div class="flex items-center gap-1 px-2 py-1 border-b border-white/5">
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors" title="Bold (Ctrl+B)" onClick={() => insertFormatting("**", "**")}>
+            <Bold class="w-4 h-4" />
+          </button>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors" title="Italic (Ctrl+I)" onClick={() => insertFormatting("*", "*")}>
+            <Italic class="w-4 h-4" />
+          </button>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors" title="Code (Ctrl+E)" onClick={() => insertFormatting("`", "`")}>
+            <Code class="w-4 h-4" />
+          </button>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors" title="Spoiler" onClick={() => insertFormatting("||", "||")}>
+            <EyeOff class="w-4 h-4" />
+          </button>
+        </div>
 
-        {/* Text input */}
-        <textarea
-          ref={textareaRef}
-          data-testid="message-input"
-          value={content()}
-          onInput={(e) => handleInput(e.currentTarget.value)}
-          onKeyDown={handleKeyDown}
-          onClick={handleTextareaClick}
-          onKeyUp={trackCursor}
-          onCompositionStart={() => setIsComposing(true)}
-          onCompositionEnd={() => setIsComposing(false)}
-          class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none resize-none overflow-y-auto"
-          style={{ "min-height": "24px", "max-height": "192px" }}
-          placeholder={`Message #${props.channelName}`}
-          disabled={isSending()}
-          rows={1}
-        />
+        <div class="flex items-center">
+          {/* Attachment button */}
+          <button
+            type="button"
+            class="p-3 text-text-secondary hover:text-text-primary transition-colors"
+            title="Add files"
+            onClick={handleFileSelect}
+          >
+            <PlusCircle class="w-5 h-5" />
+          </button>
 
-        {/* Emoji picker button */}
-        <button
-          ref={emojiButtonRef}
-          type="button"
-          class={`p-2 transition-colors ${showEmojiPicker() ? "text-accent-primary" : "text-text-secondary hover:text-text-primary"}`}
-          title="Add emoji"
-          onClick={() => setShowEmojiPicker((prev) => !prev)}
-        >
-          <Smile class="w-5 h-5" />
-        </button>
+          {/* Text input */}
+          <textarea
+            ref={textareaRef}
+            data-testid="message-input"
+            value={content()}
+            onInput={(e) => handleInput(e.currentTarget.value)}
+            onKeyDown={handleKeyDown}
+            onClick={handleTextareaClick}
+            onKeyUp={trackCursor}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={() => setIsComposing(false)}
+            class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none resize-none overflow-y-auto"
+            style={{ "min-height": "24px", "max-height": "192px" }}
+            placeholder={`Message #${props.channelName}`}
+            disabled={isSending()}
+            rows={1}
+          />
 
-        {/* Send button and character counter container */}
-        <div class="flex items-center gap-1 pr-1">
-          {/* Character counter - show when nearing limit */}
-          <Show when={isNearLimit()}>
-            <div class="flex flex-col items-end pr-2 gap-0.5 pointer-events-none">
-              <Show when={lengthStats().totalLength > lengthStats().regularLength}>
-                <span class={`text-[9px] ${lengthStats().totalLength > lengthStats().totalLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
-                  Total: {lengthStats().totalLength}/{lengthStats().totalLimit}
+          {/* Emoji picker button */}
+          <button
+            ref={emojiButtonRef}
+            type="button"
+            class={`p-2 transition-colors ${showEmojiPicker() ? "text-accent-primary" : "text-text-secondary hover:text-text-primary"}`}
+            title="Add emoji"
+            onClick={() => setShowEmojiPicker((prev) => !prev)}
+          >
+            <Smile class="w-5 h-5" />
+          </button>
+
+          {/* Send button and character counter container */}
+          <div class="flex items-center gap-1 pr-1">
+            {/* Character counter - show when nearing limit */}
+            <Show when={isNearLimit()}>
+              <div class="flex flex-col items-end pr-2 gap-0.5 pointer-events-none">
+                <Show when={lengthStats().totalLength > lengthStats().regularLength}>
+                  <span class={`text-[9px] ${lengthStats().totalLength > lengthStats().totalLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
+                    Total: {lengthStats().totalLength}/{lengthStats().totalLimit}
+                  </span>
+                </Show>
+                <span class={`text-[10px] leading-tight ${lengthStats().regularLength > lengthStats().regularLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
+                  Text: {lengthStats().regularLength}/{lengthStats().regularLimit}
                 </span>
-              </Show>
-              <span class={`text-[10px] leading-tight ${lengthStats().regularLength > lengthStats().regularLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
-                Text: {lengthStats().regularLength}/{lengthStats().regularLimit}
-              </span>
-            </div>
-          </Show>
+              </div>
+            </Show>
 
-          {/* Send button - show when there's content OR pending files */}
-          <Show when={content().trim() || pendingFiles().length > 0}>
-            <button
-              type="submit"
-              data-testid="message-send"
-              class="p-2 text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
-              disabled={isSending() || isOverLimit()}
-              title={pendingFiles().length > 0 ? `Send ${pendingFiles().length} file(s)` : "Send message"}
-            >
-              <Send class="w-5 h-5" />
-            </button>
-          </Show>
+            {/* Send button - show when there's content OR pending files */}
+            <Show when={content().trim() || pendingFiles().length > 0}>
+              <button
+                type="submit"
+                data-testid="message-send"
+                class="p-2 text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
+                disabled={isSending() || isOverLimit()}
+                title={pendingFiles().length > 0 ? `Send ${pendingFiles().length} file(s)` : "Send message"}
+              >
+                <Send class="w-5 h-5" />
+              </button>
+            </Show>
+          </div>
         </div>
       </div>
 

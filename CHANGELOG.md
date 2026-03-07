@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Layout areas (ServerRail, Sidebar, Main Stage) now separated by solid border lines for clearer visual structure
 
 ### Added
+- Message formatting toolbar — Bold, Italic, Code, and Spoiler buttons above the message input with keyboard shortcuts (Ctrl+B, Ctrl+I, Ctrl+E) and selection wrapping support
 - Floki mascot branding throughout the client — illustrations on login, register, and password reset screens (side-by-side layout), per-step illustrations in onboarding wizard, idle dashboard image on home view, and Floki emotes replacing generic icons in empty states
 - Session expiry notification — automatic token refresh when returning to background tabs, silent retry on session loss, and non-dismissable modal prompting re-login when session is truly expired (#341)
 - Inline message editing — edit own messages via context menu or hover pencil button with Enter to save, Escape to cancel
