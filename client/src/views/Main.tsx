@@ -15,6 +15,7 @@ import {
   Suspense,
   onMount,
   createEffect,
+  createSignal,
   onCleanup,
 } from "solid-js";
 import { Hash, Volume2 } from "lucide-solid";
@@ -27,6 +28,7 @@ import ThreadSidebar from "@/components/messages/ThreadSidebar";
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";
+import KeyboardShortcutsDialog from "@/components/ui/KeyboardShortcutsDialog";
 import { selectedChannel } from "@/stores/channels";
 import { loadGuilds, guildsState, isDiscoveryActive } from "@/stores/guilds";
 import { threadsState } from "@/stores/threads";
@@ -42,31 +44,65 @@ const DiscoveryView = lazy(
 
 const Main: Component = () => {
   const channel = selectedChannel;
+  const [showShortcuts, setShowShortcuts] = createSignal(false);
 
   // Load guilds on mount
   onMount(() => {
     loadGuilds();
   });
 
-  // Global search keyboard shortcut: Ctrl+Shift+F
-  const handleGlobalSearchShortcut = (e: KeyboardEvent) => {
+  // Combined global keyboard shortcut handler
+  const handleGlobalKeydown = (e: KeyboardEvent) => {
+    // Ctrl+Shift+F → toggle global search
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "F") {
       e.preventDefault();
       setShowGlobalSearch(!showGlobalSearch());
+      return;
+    }
+
+    // Ctrl+/ → toggle shortcuts dialog
+    if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+      e.preventDefault();
+      setShowShortcuts((prev) => !prev);
+      return;
+    }
+
+    // ? → toggle shortcuts dialog (only when not in an input field)
+    if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const el = document.activeElement;
+      const isInput =
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        (el instanceof HTMLElement && el.isContentEditable);
+      if (!isInput) {
+        e.preventDefault();
+        setShowShortcuts((prev) => !prev);
+      }
     }
   };
 
   createEffect(() => {
-    window.addEventListener("keydown", handleGlobalSearchShortcut);
-    onCleanup(() =>
-      window.removeEventListener("keydown", handleGlobalSearchShortcut),
-    );
+    window.addEventListener("keydown", handleGlobalKeydown);
+
+    // Listen for custom event from /? slash command
+    const handleOpenShortcuts = () => setShowShortcuts(true);
+    window.addEventListener("open-shortcuts-dialog", handleOpenShortcuts);
+
+    onCleanup(() => {
+      window.removeEventListener("keydown", handleGlobalKeydown);
+      window.removeEventListener("open-shortcuts-dialog", handleOpenShortcuts);
+    });
   });
 
   return (
     <>
       {/* Command Palette (Global) */}
       <CommandPalette />
+
+      {/* Keyboard Shortcuts Dialog */}
+      <Show when={showShortcuts()}>
+        <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />
+      </Show>
 
       {/* Global Search Overlay */}
       <Show when={showGlobalSearch()}>
