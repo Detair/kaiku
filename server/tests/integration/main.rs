@@ -9,6 +9,7 @@ mod bot_intents;
 mod channel_permissions;
 mod channels_http;
 mod connectivity_http;
+mod custom_status;
 mod dm_http;
 mod e2ee_keys;
 mod e2ee_settings;
