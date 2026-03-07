@@ -4,8 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kaiku - The Echo of Victory</title>
-    <meta name="description" content="Kaiku: A modern, high-performance voice chat built for gamers.">
+    <title>Kaiku - Your Voice. Your Server. Your Rules.</title>
+    <meta name="description"
+        content="Kaiku: Free, open-source, self-hosted voice and text chat built for gamers. Private, fast, and lightweight.">
     <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -19,12 +20,14 @@
     <div class="noise-overlay"></div>
     <div class="glow-orb orb-1"></div>
     <div class="glow-orb orb-2"></div>
+    <div class="glow-orb orb-3"></div>
 
     <nav class="navbar">
         <div class="container nav-content">
-            <div class="logo">
-                <span class="logo-text">KAIKU</span>
-            </div>
+            <a href="#home" class="logo">
+                <img src="assets/images/logo.png" alt="Kaiku Logo" class="logo-icon">
+                <span class="logo-text text-gradient">KAIKU</span>
+            </a>
             <ul class="nav-links">
                 <li><a href="#features">Features</a></li>
                 <li><a href="#how">How it Works</a></li>
@@ -37,14 +40,14 @@
     <header class="hero" id="home">
         <div class="container hero-content">
             <div class="hero-text fade-in-up">
-                <div class="badge">Next Gen Voice Chat</div>
-                <h1 class="hero-title">The <span class="text-gradient">Echo</span> of Victory.</h1>
-                <p class="hero-subtitle">Experience crystal clear, zero-latency communication built exclusively for
-                    modern gamers and esports teams. Reclaim your data sovereignty and leave the corporate noise behind.
-                </p>
+                <div class="badge">Open Source Voice Chat</div>
+                <h1 class="hero-title">Your <span class="text-gradient">Voice.</span> Your Server. Your Rules.</h1>
+                <p class="hero-subtitle">Kaiku is a free, self-hosted voice and text chat built for gaming. No tracking,
+                    no ads, no surprise changes to features you depend on. Just fast, encrypted communication that you
+                    control.</p>
                 <div class="hero-actions">
                     <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer"
-                        class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 8px;">
+                        class="btn btn-primary btn-github">
                         <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2"
                             fill="none" stroke-linecap="round" stroke-linejoin="round">
                             <path
@@ -69,83 +72,76 @@
     <section class="features" id="features">
         <div class="container">
             <div class="section-header fade-in-up scroll-trigger">
-                <h2>Engineered for <span class="text-gradient">Performance</span></h2>
-                <p>Built from the ground up to be lightweight, secure, and incredibly fast.</p>
+                <h2>What You <span class="text-gradient">Get</span></h2>
+                <p>Built to be fast, private, and out of your way.</p>
             </div>
             <div class="features-grid">
                 <div class="feature-card glass scroll-trigger stagger-1">
-                    <img src="assets/images/extracted/feat_audio.png" alt="Low Latency Audio" class="feature-image">
-                    <h3>Low Latency Audio</h3>
-                    <p>Optimized WebRTC packet routing with automatic conflict recovery ensures your tactical callouts
-                        hit fast.</p>
+                    <img src="assets/images/extracted/feat_audio.png" alt="Fast Voice" class="feature-image">
+                    <h3>Fast Voice</h3>
+                    <p>Your callouts land when they need to, not a second later. Low-latency audio that keeps up with
+                        your game.</p>
                 </div>
                 <div class="feature-card glass scroll-trigger stagger-2">
-                    <img src="assets/images/extracted/feat_workspace.png" alt="Personal Workspaces"
-                        class="feature-image">
-                    <h3>Personal Workspaces</h3>
-                    <p>Organize your favorite channels across multiple servers into dedicated tactical folders for
-                        immediate access.</p>
+                    <img src="assets/images/extracted/feat_freedom.png" alt="Your Data, Yours" class="feature-image">
+                    <h3>Your Data, Yours</h3>
+                    <p>Host it yourself. Your messages and calls are end-to-end encrypted. Nobody reads your
+                        conversations — not even us.</p>
                 </div>
                 <div class="feature-card glass scroll-trigger stagger-3">
-                    <img src="assets/images/extracted/feat_presence.png" alt="Rich Game Presence" class="feature-image">
-                    <h3>Rich Game Presence</h3>
-                    <p>Automatic process detection so you always know exactly what your pack is playing in real-time.
-                    </p>
+                    <img src="assets/images/extracted/feat_cpu.png" alt="Lightweight Client" class="feature-image">
+                    <h3>Lightweight Client</h3>
+                    <p>Built in Rust, so it barely touches your CPU or RAM. Your games get the resources, not your chat
+                        app.</p>
                 </div>
                 <div class="feature-card glass scroll-trigger stagger-1">
-                    <img src="assets/images/extracted/feat_stream.png" alt="Multi-Stream Tactics" class="feature-image">
-                    <h3>Multi-Stream Tactics</h3>
-                    <p>Share multiple video and game streams simultaneously for deep strategy breakdown and VOD reviews.
-                    </p>
+                    <img src="assets/images/extracted/feat_presence.png" alt="Game Presence" class="feature-image">
+                    <h3>Game Presence</h3>
+                    <p>Automatically shows what you and your friends are playing. No manual setup needed.</p>
                 </div>
                 <div class="feature-card glass scroll-trigger stagger-2">
-                    <img src="assets/images/extracted/feat_freedom.png" alt="Absolute Data Freedom"
-                        class="feature-image">
-                    <h3>Absolute Data Freedom</h3>
-                    <p>Stop paying with your data. Self-hosted and End-to-End Encrypted so your team's strategy and
-                        conversations stay strictly yours.</p>
+                    <img src="assets/images/extracted/feat_stream.png" alt="Screen Sharing" class="feature-image">
+                    <h3>Screen Sharing</h3>
+                    <p>Share your screen or game with multiple streams at once. Great for strategy talk or just hanging
+                        out.</p>
                 </div>
                 <div class="feature-card glass scroll-trigger stagger-3">
-                    <img src="assets/images/extracted/feat_cpu.png" alt="Minimal Footprint" class="feature-image">
-                    <h3>Minimal Footprint</h3>
-                    <p>Native Rust/Tauri architecture utilizing minimal CPU usage. Play your games without stutter or
-                        frame pacing issues.</p>
+                    <img src="assets/images/extracted/feat_workspace.png" alt="Workspaces" class="feature-image">
+                    <h3>Workspaces</h3>
+                    <p>Pin your favorite channels across different communities into one place. Quick access to the stuff
+                        you actually use.</p>
                 </div>
             </div>
         </div>
     </section>
 
-    <section class="how-it-works features" id="how">
+    <section class="how-it-works" id="how">
         <div class="container">
             <div class="section-header fade-in-up scroll-trigger">
-                <h2>How It <span class="text-gradient">Works</span></h2>
-                <p>A super high-level look at Kaiku's modern architecture.</p>
+                <h2>Built With <span class="text-gradient">Care</span></h2>
+                <p>The tech behind Kaiku — and what it means for you.</p>
             </div>
             <div class="features-grid">
                 <div class="feature-card glass scroll-trigger stagger-1">
-                    <img src="assets/images/extracted/how_frontend.png" alt="Frontend Interface" class="feature-image">
-                    <h3 style="color: var(--accent-primary); font-size: 1.5rem; margin-bottom: 0.5rem;">Frontend</h3>
-                    <h4 style="margin-bottom: 1rem; color: var(--text-light); font-size: 1.2rem;">Solid JS</h4>
-                    <p>Extreme reactivity and a premium glassmorphic UI without the virtual DOM overhead. Blazing fast
-                        and incredibly responsive.</p>
+                    <img src="assets/images/extracted/how_frontend.png" alt="The Interface" class="feature-image">
+                    <h3 class="card-title card-title--cyan">The Interface</h3>
+                    <h4 class="card-subtitle">Solid JS</h4>
+                    <p>A reactive UI framework that keeps things snappy. No lag when you scroll, switch channels, or
+                        open menus — even on older hardware.</p>
                 </div>
                 <div class="feature-card glass scroll-trigger stagger-2">
-                    <img src="assets/images/extracted/how_backend.png" alt="Backend Infrastructure"
-                        class="feature-image">
-                    <h3 style="color: var(--accent-secondary); font-size: 1.5rem; margin-bottom: 0.5rem;">Backend &
-                        Desktop</h3>
-                    <h4 style="margin-bottom: 1rem; color: var(--text-light); font-size: 1.2rem;">Tauri (Rust)</h4>
-                    <p>Native OS-level performance, deep system integration for overlays, and a microscopic memory
-                        footprint perfect for gaming.</p>
+                    <img src="assets/images/extracted/how_backend.png" alt="The Engine" class="feature-image">
+                    <h3 class="card-title card-title--purple">The Engine</h3>
+                    <h4 class="card-subtitle">Rust & Tauri</h4>
+                    <p>The app runs natively on your system instead of inside a browser. That means less RAM, less CPU,
+                        and no Electron bloat slowing down your games.</p>
                 </div>
                 <div class="feature-card glass scroll-trigger stagger-3">
-                    <img src="assets/images/extracted/how_audio.png" alt="Audio Engine Integration"
-                        class="feature-image">
-                    <h3 style="color: var(--accent-primary); font-size: 1.5rem; margin-bottom: 0.5rem;">Audio Engine
-                    </h3>
-                    <h4 style="margin-bottom: 1rem; color: var(--text-light); font-size: 1.2rem;">WebRTC & Olm</h4>
-                    <p>Fine-tuned STUN/TURN routing for flawless real-time voice communication tightly secured with true
-                        End-to-End Encryption.</p>
+                    <img src="assets/images/extracted/how_audio.png" alt="The Voice" class="feature-image">
+                    <h3 class="card-title card-title--cyan">The Voice</h3>
+                    <h4 class="card-subtitle">WebRTC & Olm</h4>
+                    <p>Industry-standard real-time audio paired with end-to-end encryption. Your voice gets there fast,
+                        and nobody can listen in.</p>
                 </div>
             </div>
         </div>
@@ -155,26 +151,26 @@
         <div class="container">
             <div class="platform-content glass scroll-trigger">
                 <div class="platform-image">
-                    <img src="assets/images/extracted/floki_join_pack.png" alt="Join the Kaiku Pack" style="width: 100%; max-width: 400px; filter: drop-shadow(0 0 20px rgba(136, 192, 208, 0.5)); border-radius: 16px;">
+                    <img src="assets/images/extracted/floki_join_pack.png" alt="Join the Kaiku Pack"
+                        class="platform-img">
                 </div>
-                <div class="platform-text">
+                <div class="platform-body">
                     <h2>Ready to join the <span class="text-gradient">Pack</span>?</h2>
-                    <p>Kaiku is open-source and in active development. Check out the repository to contribute or follow
-                        our progress.</p>
-                </div>
-                <div class="platform-downloads">
-                    <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer"
-                        class="btn btn-primary btn-large"
-                        style="display: inline-flex; align-items: center; justify-content: center; gap: 10px;">
-                        <svg viewBox="0 0 24 24" width="28" height="28" stroke="currentColor" stroke-width="2"
-                            fill="none" stroke-linecap="round" stroke-linejoin="round">
-                            <path
-                                d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22">
-                            </path>
-                        </svg>
-                        Visit GitHub
-                    </a>
-                    <p class="sys-req">Join the development on GitHub.</p>
+                    <p>Kaiku is still in development and not ready for release yet. If you like what you see, star us on
+                        GitHub and check back soon — we're building this in the open.</p>
+                    <div class="platform-actions">
+                        <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer"
+                            class="btn btn-primary btn-large btn-github">
+                            <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2"
+                                fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                <path
+                                    d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22">
+                                </path>
+                            </svg>
+                            Star on GitHub
+                        </a>
+                        <p class="sys-req">Follow our progress on GitHub.</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -183,11 +179,14 @@
     <footer>
         <div class="container footer-content">
             <div class="footer-brand">
-                <span class="logo-text">KAIKU</span>
-                <p>The premium voice chat for the modern gamer.</p>
+                <a href="#home" class="logo">
+                    <img src="assets/images/logo.png" alt="Kaiku Logo" class="logo-icon">
+                    <span class="logo-text text-gradient">KAIKU</span>
+                </a>
+                <p>Open-source voice chat built for gamers.</p>
             </div>
             <div class="footer-links">
-                <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer">Github</a>
+                <a href="https://github.com/detair/canis" target="_blank" rel="noopener noreferrer">GitHub</a>
                 <a href="https://github.com/detair/canis/tree/main/docs">Documentation</a>
                 <a href="#">Privacy</a>
             </div>
