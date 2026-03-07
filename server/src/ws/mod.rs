@@ -1835,6 +1835,74 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
     }
 }
 
+/// Spawn a background task that periodically clears expired custom statuses.
+///
+/// Runs every 60 seconds. For each expired status:
+/// 1. Clears `custom_status` to NULL in the database
+/// 2. Broadcasts `CustomStatusUpdate { custom_status: None }` to friends
+pub fn spawn_custom_status_sweep(
+    db: sqlx::PgPool,
+    redis: fred::clients::Client,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+
+            // Find expired custom statuses
+            let expired: Vec<(Uuid,)> = match sqlx::query_as(
+                r"
+                SELECT id FROM users
+                WHERE custom_status IS NOT NULL
+                  AND custom_status->>'expires_at' IS NOT NULL
+                  AND (custom_status->>'expires_at')::timestamptz <= NOW()
+                ",
+            )
+            .fetch_all(&db)
+            .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    warn!(error = %e, "Custom status sweep: query failed");
+                    continue;
+                }
+            };
+
+            if expired.is_empty() {
+                continue;
+            }
+
+            let user_ids: Vec<Uuid> = expired.into_iter().map(|(id,)| id).collect();
+            debug!(count = user_ids.len(), "Clearing expired custom statuses");
+
+            // Clear in database
+            if let Err(e) =
+                sqlx::query("UPDATE users SET custom_status = NULL WHERE id = ANY($1)")
+                    .bind(&user_ids)
+                    .execute(&db)
+                    .await
+            {
+                warn!(error = %e, "Custom status sweep: clear failed");
+                continue;
+            }
+
+            // Broadcast to friends
+            for uid in &user_ids {
+                let event = ServerEvent::CustomStatusUpdate {
+                    user_id: *uid,
+                    custom_status: None,
+                };
+                let json = match serde_json::to_string(&event) {
+                    Ok(j) => j,
+                    Err(_) => continue,
+                };
+                let channel = format!("presence:{uid}");
+                let _: Result<(), _> = redis.publish(&channel, &json).await;
+            }
+        }
+    })
+}
+
 /// Update user presence in the database.
 async fn update_presence(state: &AppState, user_id: Uuid, status: &str) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET status = $1::user_status WHERE id = $2")

@@ -238,6 +238,10 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start custom status expiry sweep (every 60 seconds)
+    let custom_status_sweep_handle =
+        vc_server::ws::spawn_custom_status_sweep(db_pool.clone(), redis.clone());
+
     info!("Voice SFU server initialized");
 
     // Initialize email service (optional - password reset will be disabled if not configured)
@@ -372,12 +376,14 @@ async fn main() -> Result<()> {
     rtp_flush_handle.abort();
     retention_handle.abort();
     voice_health_handle.abort();
+    custom_status_sweep_handle.abort();
     let _ = voice_cleanup_handle.await;
     let _ = db_cleanup_handle.await;
     let _ = webhook_worker_handle.await;
     let _ = rtp_flush_handle.await;
     let _ = retention_handle.await;
     let _ = voice_health_handle.await;
+    let _ = custom_status_sweep_handle.await;
     info!("Background cleanup tasks stopped");
 
     // 2. Flush and shut down OTel providers. Dropping these closes the channel senders
