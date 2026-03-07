@@ -72,6 +72,7 @@ export const DEFAULT_FOCUS_MODES: FocusMode[] = [
 export const DEFAULT_FOCUS_PREFERENCES: FocusPreferences = {
   modes: DEFAULT_FOCUS_MODES,
   auto_activate_global: false,
+  custom_app_rules: {},
 };
 
 // ============================================================================
@@ -105,6 +106,11 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   },
   display: DEFAULT_DISPLAY_PREFERENCES,
   focus: DEFAULT_FOCUS_PREFERENCES,
+  notifications: {
+    os_enabled: true,
+    show_content: true,
+    flash_taskbar: true,
+  },
   onboarding_completed: false,
 };
 

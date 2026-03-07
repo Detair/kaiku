@@ -71,6 +71,9 @@ const FocusSettings: Component = () => {
   const [keywordInput, setKeywordInput] = createSignal("");
   const [vipUserInput, setVipUserInput] = createSignal("");
   const [vipChannelInput, setVipChannelInput] = createSignal("");
+  const [ruleProcessInput, setRuleProcessInput] = createSignal("");
+  const [ruleCategoryInput, setRuleCategoryInput] =
+    createSignal<FocusTriggerCategory>("game");
 
   const [expandedModeId, _setExpandedModeId] = createSignal<string | null>(
     null,
@@ -134,6 +137,23 @@ const FocusSettings: Component = () => {
 
   const handleToggleAutoActivateGlobal = (enabled: boolean) => {
     updatePreference("focus", { ...focusPrefs(), auto_activate_global: enabled });
+  };
+
+  const customAppRules = createMemo(() => focusPrefs().custom_app_rules ?? {});
+
+  const handleAddCustomRule = () => {
+    const process = ruleProcessInput().trim().toLowerCase();
+    if (!process) return;
+    const category = ruleCategoryInput();
+    const updated = { ...customAppRules(), [process]: category };
+    updatePreference("focus", { ...focusPrefs(), custom_app_rules: updated });
+    setRuleProcessInput("");
+  };
+
+  const handleRemoveCustomRule = (process: string) => {
+    const updated = { ...customAppRules() };
+    delete updated[process];
+    updatePreference("focus", { ...focusPrefs(), custom_app_rules: updated });
   };
 
   const handleToggleTriggerCategory = (
@@ -255,6 +275,78 @@ const FocusSettings: Component = () => {
             </p>
           </div>
         </label>
+      </div>
+
+      {/* Custom app detection rules */}
+      <div class="p-4 rounded-xl border border-white/10 bg-surface-layer2 space-y-3">
+        <div>
+          <h4 class="text-sm font-medium text-text-primary">
+            Custom App Detection Rules
+          </h4>
+          <p class="text-xs text-text-secondary mt-0.5">
+            Map process names to trigger categories for auto-activation
+          </p>
+        </div>
+
+        {/* Existing rules list */}
+        <Show when={Object.keys(customAppRules()).length > 0}>
+          <div class="space-y-1">
+            <For each={Object.entries(customAppRules())}>
+              {([process, category]) => (
+                <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-white/5">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm text-text-primary font-mono">
+                      {process}
+                    </span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/10 text-accent-primary uppercase tracking-wide">
+                      {category}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveCustomRule(process)}
+                    class="text-text-muted hover:text-red-400 transition-colors"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+
+        {/* Add rule form */}
+        <div class="flex gap-2">
+          <input
+            type="text"
+            value={ruleProcessInput()}
+            onInput={(e) => setRuleProcessInput(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleAddCustomRule();
+            }}
+            placeholder="Process name (e.g. obs)"
+            class="flex-1 px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-xs focus:outline-none focus:border-accent-primary transition-colors"
+          />
+          <select
+            value={ruleCategoryInput()}
+            onChange={(e) =>
+              setRuleCategoryInput(
+                e.currentTarget.value as FocusTriggerCategory,
+              )
+            }
+            class="px-3 py-1.5 rounded-lg bg-surface-highlight border border-white/10 text-text-primary text-xs focus:outline-none focus:border-accent-primary transition-colors"
+          >
+            <option value="game">Game</option>
+            <option value="coding">Coding</option>
+            <option value="listening">Listening</option>
+            <option value="watching">Watching</option>
+          </select>
+          <button
+            onClick={handleAddCustomRule}
+            class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-text-primary text-xs transition-colors"
+          >
+            Add
+          </button>
+        </div>
       </div>
 
       {/* Active mode indicator */}

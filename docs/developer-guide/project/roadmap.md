@@ -16,7 +16,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
 | **Expansion** | **Phase 5** | ✅ Complete | 100% (17/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
-| **Expansion** | **Phase 6** | 🔄 In Progress | 36% (5/14) | Personal workspaces, digital library, mobile, live session toolkits, focus engine, QA polish (edit messages, emoji composer, session expiry, custom status, shortcuts, formatting, UX refinements) |
+| **Expansion** | **Phase 6** | 🔄 In Progress | 77% (10/13) | Personal workspaces, digital library, mobile, live session toolkits, focus engine, QA polish (edit messages, emoji composer, session expiry, custom status, shortcuts, formatting, UX refinements) |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing |
 | **Scale and Trust** | **Phase 10** | 📋 Planned | 0% | SaaS scaling architecture |
@@ -59,7 +59,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - ✅ Growth and onboarding (guild discovery, first-time experience, activation/retention UX).
 - ✅ Voice/media maturity (multi-stream, advanced media processing, progressive image loading).
 - Mobile strategy execution (Android-first path and shared Rust core evolution).
-- Personal workspaces, sovereign guild model, live session toolkits, focus engine, digital library.
+- Personal workspaces, live session toolkits, focus engine, digital library.
 
 ### Scale and Trust (Planned)
 - SRE foundations (SLOs, observability standards, alerting, incident playbooks) ([Design](../plans/2026-02-15-sre-foundations-design.md), [OTel Reference](../plans/2026-02-15-opentelemetry-grafana-reference-design.md), [Implementation](../plans/2026-02-15-operational-safety-implementation-plan.md)).
@@ -69,7 +69,6 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - Security verification cadence (threat-model refreshes, boundary regression suites, external testing) ([Design](../plans/2026-02-15-security-verification-cadence-design.md), [Implementation](../plans/2026-02-15-operational-safety-implementation-plan.md)).
 - SaaS and compliance readiness (limits/monetization, data governance, accessibility, identity trust) ([Design](../plans/2026-02-15-saas-compliance-readiness-design.md), [Implementation](../plans/2026-02-15-topic-2-expansion-implementation-plan.md)).
 - Infrastructure scale-out (storage and CDN architecture for large media workloads) ([Design](../plans/2026-02-15-infrastructure-scale-out-design.md), [Implementation](../plans/2026-02-15-topic-2-expansion-implementation-plan.md)).
-- Sovereign/BYO deployment options (customer-controlled storage and relay paths) ([Design](../plans/2026-02-15-sovereign-byo-deployment-design.md), [Implementation](../plans/2026-02-15-topic-2-expansion-implementation-plan.md)).
 - Reliability and operability excellence (performance budgets, chaos testing, upgrade safety, FinOps, policy-as-code, plugin security, tenancy isolation, operator supportability) ([Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md)).
 
 ---
@@ -568,22 +567,19 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 
 ## Phase 6: Competitive Differentiators & Mastery 🔄 **IN PROGRESS**
 *Goal: Surpass industry leaders with unique utility and sovereignty features.*
-- Implementation coverage: [Mobile + Workspaces](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md), [Sovereign + Live Toolkit](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md), [Focus + Library](../plans/2026-02-15-phase-6-focus-library-implementation.md).
+- Implementation coverage: [Mobile + Workspaces](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md), [Live Toolkit](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md), [Focus + Library](../plans/2026-02-15-phase-6-focus-library-implementation.md).
 
 - [ ] **[Client] Mobile Support** ([Design](../plans/2026-02-15-phase-6-mobile-workspaces-design.md), [Implementation](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md))
   - Adapt Tauri frontend for mobile or begin Flutter/Native implementation.
 - [x] **[UX] Personal Workspaces (Favorites v2)** ([Design](../plans/2026-02-15-phase-6-mobile-workspaces-design.md), [Implementation](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md)) — (#250)
   - 9 REST endpoints, 7 WebSocket events, cross-guild channel aggregation with drag-and-drop reordering.
   - Configurable limits (`MAX_WORKSPACES_PER_USER`, `MAX_ENTRIES_PER_WORKSPACE`), atomic CTE for concurrency safety, 17 integration tests.
-- [ ] **[Content] Sovereign Guild Model (BYO Infrastructure)** *(Optional — future consideration)* ([Design](../plans/2026-02-15-phase-6-sovereign-livekit-design.md), [Implementation](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md))
-  - **Context:** Provide ultimate data ownership for privacy-conscious groups.
-  - **Strategy:** Allow Guild Admins in the SaaS version to provide their own **S3 API** keys and **SFU Relay** configurations, ensuring their media and voice traffic never touches Kaiku-owned storage.
 - [ ] **[Voice] Live Session Toolkits** ([Design](../plans/2026-02-15-phase-6-sovereign-livekit-design.md), [Implementation](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md))
   - **Context:** Turn voice channels into productive spaces.
   - **Strategy:** 
     - **Gaming/Raid Kit:** Multi-timer overlays and restricted side-notes for raid leads/shot-callers.
     - **Work/Task Kit:** Shared markdown notepad and collaborative "Action Item" tracking that auto-posts summaries to the channel post-session.
-- [ ] **[UX] Context-Aware Focus Engine** ([Design](../plans/2026-02-15-phase-6-focus-library-design.md), [Implementation](../plans/2026-02-15-phase-6-focus-library-implementation.md))
+- [x] **[UX] Context-Aware Focus Engine** ([Design](../plans/2026-02-15-phase-6-focus-library-design.md), [Implementation](../plans/2026-02-15-phase-6-focus-library-implementation.md))
   - **Context:** Prevent platform fatigue with intelligent notification routing.
   - **Strategy:** Use Tauri's desktop APIs to detect active foreground apps (e.g., IDEs, DAWs). Implement **VIP/Emergency Overrides** that allow specific users or channels to bypass DND during focused work sessions.
 - [x] **[SaaS] The Digital Library (Wiki Mastery)** ([Design](../plans/2026-02-15-phase-6-focus-library-design.md), [Implementation](../plans/2026-02-15-phase-6-focus-library-implementation.md)) ✅
@@ -594,19 +590,19 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 ### QA Polish & Feature Completion (Identified 2026-03-06)
 *Items identified during comprehensive browser-based QA testing of all features.*
 
-- [ ] **[Chat] Message Editing (Client Wiring)** `Priority: High`
+- [x] **[Chat] Message Editing (Client Wiring)** `Priority: High` ✅
   - **Context:** Server API (`PATCH /api/messages/:id`) is fully implemented with validation, content filtering, and `MessageEdit` WebSocket broadcast. The client already handles incoming `message_edit` events and renders the "(edited)" indicator. The entire client-side sending path is missing.
   - **Strategy:**
     - Add `editMessage(messageId, content)` function to `tauri.ts` calling `PATCH /api/messages/:id`.
     - Add "Edit Message" item to the message context menu in `MessageItem.tsx` (only for own messages).
     - Implement inline edit UI: replace message text with a pre-filled textarea, Enter to save, Escape to cancel.
-- [ ] **[UX] Emoji Picker in Message Composer** `Priority: High`
+- [x] **[UX] Emoji Picker in Message Composer** `Priority: High` ✅
   - **Context:** The `EmojiPicker` component is fully built (search, recents, guild custom emojis, categories) but only wired into message reactions. The `MessageInput` has no emoji button — users can only insert emojis via `:query` autocomplete.
   - **Strategy:** Add an emoji button to `MessageInput` that opens the existing `PositionedEmojiPicker` and inserts the selected emoji at the cursor position in the textarea.
-- [ ] **[Auth] Session Expiry Notification** `Priority: High`
+- [x] **[Auth] Session Expiry Notification** `Priority: High` ✅
   - **Context:** When the proactive token refresh fails, the client dispatches `kaiku:session-expired` but no component listens for it. Users silently lose their session and only discover it on their next action.
   - **Strategy:** Add an event listener in `AuthGuard` or `Layout` that catches `kaiku:session-expired` and either shows a toast notification ("Session expired — please log in again") or redirects to `/login` with a message.
-- [ ] **[Social] Custom Status Backend Support** `Priority: Medium`
+- [x] **[Social] Custom Status Backend Support** `Priority: Medium` ✅ (#346)
   - **Context:** The entire client UI exists — `StatusPicker`, `CustomStatusModal` (with emoji, text, and expiry selector) — but `handleCustomStatusSave` in `UserPanel` is a no-op. The backend presence API only handles online/away/busy/offline.
   - **Strategy:** Add a `custom_status` field (text + emoji + expiry) to the presence system backend. Wire `handleCustomStatusSave` to call the new endpoint. Broadcast custom status changes via WebSocket.
 - [x] **[UX] Keyboard Shortcuts Help Dialog** `Priority: Medium` ✅
@@ -778,7 +774,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 
 ### 2026-01-28
 - Added **Phase 7: Optional SaaS Polish**: Documented low-priority commercial features (Billing, A11y, OAuth Identity, Observability) as secondary to the self-hosted focus.
-- Added **Phase 6: Competitive Mastery**: Integrated unique features including Personal Workspaces, Sovereign Guild (BYO Storage), Live Session Toolkits (Gaming/Work), and Context-Aware Focus Engine.
+- Added **Phase 6: Competitive Mastery**: Integrated unique features including Personal Workspaces, Live Session Toolkits (Gaming/Work), and Context-Aware Focus Engine.
 - Expanded Roadmap with SaaS Pillars: Added granular plans for **User Safety** (Blocking, Moderation Filters, Reporting), **Developer Ecosystem** (Webhooks, Bot Gateway), **Scale UX** (Virtualization, Toasts), **Discovery** (Guild Directory, Onboarding), and **Search**.
 - Added Roadmap Extension: Unified file size limits, Home unread summaries, Context menus, Spoilers, Mention permissions, and Message threading.
 - Added Guild Emoji Manager (PR #46) - Custom guild emojis, animated support, manager UI, and upload tools.

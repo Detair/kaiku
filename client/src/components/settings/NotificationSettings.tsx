@@ -2,10 +2,11 @@
  * Notification Settings
  *
  * Sound notification settings with sound selection, volume control, and test button.
+ * Desktop notification settings with OS notification toggles and test button.
  */
 
 import { Component, For, createSignal, createMemo } from "solid-js";
-import { Check, Volume2, Play, Moon, Clock } from "lucide-solid";
+import { Check, Volume2, Play, Moon, Clock, Bell } from "lucide-solid";
 import {
   soundSettings,
   setSoundEnabled,
@@ -19,6 +20,8 @@ import {
 } from "@/stores/sound";
 import { AVAILABLE_SOUNDS, type SoundInfo } from "@/lib/sound/types";
 import { testSound } from "@/lib/sound";
+import { preferences, updatePreference } from "@/stores/preferences";
+import { sendOsNotification } from "@/lib/notifications";
 
 const NotificationSettings: Component = () => {
   const [isTesting, setIsTesting] = createSignal(false);
@@ -255,6 +258,91 @@ const NotificationSettings: Component = () => {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Desktop Notifications */}
+      <div>
+        <h3 class="text-lg font-semibold mb-4 text-text-primary flex items-center gap-2">
+          <Bell class="w-5 h-5" />
+          Desktop Notifications
+        </h3>
+
+        <p class="text-sm text-text-secondary mb-4">
+          Show native OS notifications when the window is not focused
+        </p>
+
+        <div class="space-y-3">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={preferences().notifications?.os_enabled ?? true}
+              onChange={(e) =>
+                updatePreference("notifications", {
+                  ...(preferences().notifications ?? { os_enabled: true, show_content: true, flash_taskbar: true }),
+                  os_enabled: e.currentTarget.checked,
+                })
+              }
+              class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
+            />
+            <span class="text-text-primary">Enable desktop notifications</span>
+          </label>
+
+          <label
+            class="flex items-center gap-3 cursor-pointer"
+            classList={{
+              "opacity-50 pointer-events-none": !(preferences().notifications?.os_enabled ?? true),
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={preferences().notifications?.show_content ?? true}
+              onChange={(e) =>
+                updatePreference("notifications", {
+                  ...(preferences().notifications ?? { os_enabled: true, show_content: true, flash_taskbar: true }),
+                  show_content: e.currentTarget.checked,
+                })
+              }
+              class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
+            />
+            <span class="text-text-primary">Show message content in notifications</span>
+          </label>
+
+          <label
+            class="flex items-center gap-3 cursor-pointer"
+            classList={{
+              "opacity-50 pointer-events-none": !(preferences().notifications?.os_enabled ?? true),
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={preferences().notifications?.flash_taskbar ?? true}
+              onChange={(e) =>
+                updatePreference("notifications", {
+                  ...(preferences().notifications ?? { os_enabled: true, show_content: true, flash_taskbar: true }),
+                  flash_taskbar: e.currentTarget.checked,
+                })
+              }
+              class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
+            />
+            <span class="text-text-primary">Flash taskbar on notification</span>
+          </label>
+        </div>
+
+        <button
+          onClick={() => {
+            sendOsNotification(
+              { type: "message_dm", channelId: "test", isDm: true },
+              { username: "Kaiku", content: "This is a test notification!", guildName: null, channelName: null },
+              preferences().notifications?.show_content ?? true,
+            );
+          }}
+          disabled={!(preferences().notifications?.os_enabled ?? true)}
+          class="mt-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-highlight hover:bg-white/10
+                 text-text-primary text-sm font-medium transition-colors disabled:opacity-50"
+        >
+          <Bell class="w-4 h-4" />
+          Send test notification
+        </button>
       </div>
 
       {/* Info text */}

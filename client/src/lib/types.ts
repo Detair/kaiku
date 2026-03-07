@@ -719,6 +719,7 @@ export interface FocusMode {
 export interface FocusPreferences {
   modes: FocusMode[];
   auto_activate_global: boolean;
+  custom_app_rules: Record<string, FocusTriggerCategory>;
 }
 
 export interface FocusState {
@@ -726,6 +727,12 @@ export interface FocusState {
   auto_activated: boolean;
   activated_at: string | null;
   triggering_category: FocusTriggerCategory | null;
+}
+
+export interface NotificationPreferences {
+  os_enabled: boolean;
+  show_content: boolean;
+  flash_taskbar: boolean;
 }
 
 // User Preferences (synced across devices)
@@ -769,6 +776,9 @@ export interface UserPreferences {
 
   // Focus mode preferences
   focus: FocusPreferences;
+
+  // Desktop notification preferences
+  notifications: NotificationPreferences;
 
   // Onboarding completion flag
   onboarding_completed: boolean;

@@ -29,6 +29,13 @@ import {
 } from "@/stores/sound";
 import { evaluateFocusPolicy } from "@/stores/focus";
 import { currentUser } from "@/stores/auth";
+import {
+  sendOsNotification,
+  initNotifications,
+  cleanupNotifications,
+  type NotificationContext,
+} from "@/lib/notifications";
+import { preferences } from "@/stores/preferences";
 
 // ============================================================================
 // Constants
@@ -75,6 +82,9 @@ export async function initSoundService(): Promise<void> {
     await preloadRingSound();
   }
 
+  // Initialize OS notifications
+  await initNotifications();
+
   // Handle pending sound if AudioContext was suspended
   if (typeof document !== "undefined") {
     const playPending = async () => {
@@ -99,6 +109,7 @@ export async function initSoundService(): Promise<void> {
 export function cleanupSoundService(): void {
   // Stop any active ring
   stopRinging();
+  cleanupNotifications();
 
   if (!isTauri()) {
     cleanupTabLeader();
@@ -114,7 +125,10 @@ export function cleanupSoundService(): void {
  * Play a notification sound for the given event.
  * Handles eligibility checking, cooldown, and platform routing.
  */
-export async function playNotification(event: SoundEvent): Promise<void> {
+export async function playNotification(
+  event: SoundEvent,
+  ctx?: NotificationContext,
+): Promise<void> {
   // Quick exit: focus policy (handles DND/quiet hours, focus mode, VIP overrides)
   if (evaluateFocusPolicy(event) === "suppress") {
     console.debug("[Sound] Suppressed by focus policy");
@@ -155,6 +169,16 @@ export async function playNotification(event: SoundEvent): Promise<void> {
 
   // Play the sound
   lastSoundTime = now;
+
+  // Send OS notification when window is not focused
+  if (ctx) {
+    const osEnabled = preferences().notifications?.os_enabled ?? true;
+    if (osEnabled) {
+      const showContent = preferences().notifications?.show_content ?? true;
+      sendOsNotification(event, ctx, showContent);
+    }
+  }
+
   await playSoundInternal(event);
 }
 
@@ -235,5 +259,6 @@ export async function testSound(soundId?: SoundOption): Promise<void> {
 // ============================================================================
 
 export * from "./types";
+export type { NotificationContext } from "@/lib/notifications";
 export { isTabLeader };
 export { startRinging, stopRinging, isRinging } from "./ring";

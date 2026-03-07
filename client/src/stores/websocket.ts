@@ -47,6 +47,7 @@ import {
   handleUserUnblocked,
 } from "./friends";
 import { playNotification } from "@/lib/sound";
+import type { NotificationContext } from "@/lib/notifications";
 import {
   getChannel,
   channelsState,
@@ -157,15 +158,29 @@ function handleMessageNotification(message: Message): void {
     eventType = "message_channel";
   }
 
-  // Play notification
-  playNotification({
-    type: eventType,
-    channelId: message.channel_id,
-    isDm,
-    mentionType: message.mention_type as MentionType,
-    authorId: message.author.id,
-    content: message.content,
-  });
+  // Build notification context for OS notifications
+  const guild = isDm ? null : guildsState.guilds.find((g) =>
+    g.channels?.some((c: { id: string }) => c.id === message.channel_id)
+  );
+  const notifCtx: NotificationContext = {
+    username: message.author.display_name || message.author.username,
+    content: message.encrypted ? null : message.content,
+    guildName: guild?.name ?? null,
+    channelName: channel?.name ?? null,
+  };
+
+  // Play notification with OS notification context
+  playNotification(
+    {
+      type: eventType,
+      channelId: message.channel_id,
+      isDm,
+      mentionType: message.mention_type as MentionType,
+      authorId: message.author.id,
+      content: message.content,
+    },
+    notifCtx,
+  );
 }
 
 /**
@@ -1958,14 +1973,28 @@ function handleThreadNotification(message: Message): void {
   const channel = getChannel(message.channel_id);
   const isDm = channel?.channel_type === "dm" || channel?.guild_id === null;
 
-  playNotification({
-    type: "message_thread",
-    channelId: message.channel_id,
-    isDm,
-    mentionType: message.mention_type as MentionType,
-    authorId: message.author.id,
-    content: message.content,
-  });
+  // Build notification context for OS notifications
+  const guild = isDm ? null : guildsState.guilds.find((g) =>
+    g.channels?.some((c: { id: string }) => c.id === message.channel_id)
+  );
+  const notifCtx: NotificationContext = {
+    username: message.author.display_name || message.author.username,
+    content: message.encrypted ? null : message.content,
+    guildName: guild?.name ?? null,
+    channelName: channel?.name ?? null,
+  };
+
+  playNotification(
+    {
+      type: "message_thread",
+      channelId: message.channel_id,
+      isDm,
+      mentionType: message.mention_type as MentionType,
+      authorId: message.author.id,
+      content: message.content,
+    },
+    notifCtx,
+  );
 }
 
 // Reaction event handlers
