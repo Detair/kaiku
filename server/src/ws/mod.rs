@@ -1141,14 +1141,49 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     };
 
     match get_friends_presence(&state.db, user_id).await {
-        Ok(friend_presence) => {
-            for (friend_id, status) in friend_presence {
-                let event = ServerEvent::PresenceUpdate {
-                    user_id: friend_id,
-                    status,
+        Ok(snapshots) => {
+            for snap in snapshots {
+                // Always send base presence
+                let presence_event = ServerEvent::PresenceUpdate {
+                    user_id: snap.user_id,
+                    status: snap.status.clone(),
                 };
-                if tx.send(event).await.is_err() {
+                if tx.send(presence_event).await.is_err() {
                     break;
+                }
+
+                let is_offline = snap.status == "offline";
+
+                // Send activity if present and user is not offline
+                if !is_offline {
+                    if let Some(activity_json) = snap.activity {
+                        if let Ok(activity) =
+                            serde_json::from_value::<crate::presence::Activity>(activity_json)
+                        {
+                            let activity_event = ServerEvent::RichPresenceUpdate {
+                                user_id: snap.user_id,
+                                activity: Some(activity),
+                            };
+                            if tx.send(activity_event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+
+                    // Send custom status if present and user is not offline
+                    if let Some(cs_json) = snap.custom_status {
+                        if let Ok(cs) =
+                            serde_json::from_value::<crate::presence::CustomStatus>(cs_json)
+                        {
+                            let cs_event = ServerEvent::CustomStatusUpdate {
+                                user_id: snap.user_id,
+                                custom_status: Some(cs),
+                            };
+                            if tx.send(cs_event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1831,18 +1866,29 @@ async fn get_user_friends(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Uuid>,
     Ok(friends.into_iter().map(|(id,)| id).collect())
 }
 
+/// Snapshot of a friend's full presence state for the connect flow.
+#[derive(Debug, sqlx::FromRow)]
+struct FriendPresenceSnapshot {
+    user_id: Uuid,
+    status: String,
+    activity: Option<serde_json::Value>,
+    custom_status: Option<serde_json::Value>,
+}
+
 async fn get_friends_presence(
     db: &sqlx::PgPool,
     user_id: Uuid,
-) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
-    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+) -> Result<Vec<FriendPresenceSnapshot>, sqlx::Error> {
+    let rows: Vec<FriendPresenceSnapshot> = sqlx::query_as(
         r"
         SELECT
             CASE
                 WHEN f.requester_id = $1 THEN f.addressee_id
                 ELSE f.requester_id
-            END as friend_id,
-            u.status::text as status
+            END as user_id,
+            u.status::text as status,
+            u.activity,
+            u.custom_status
         FROM friendships f
         JOIN users u ON u.id = CASE
             WHEN f.requester_id = $1 THEN f.addressee_id
