@@ -57,6 +57,17 @@ pub struct ActivityState {
     last_activity: Option<crate::presence::Activity>,
 }
 
+/// State for custom status rate limiting and deduplication.
+#[derive(Default)]
+pub struct CustomStatusState {
+    /// Last custom status update timestamp.
+    last_update: Option<Instant>,
+    /// Last custom status data for deduplication.
+    /// `None` = never sent, `Some(None)` = cleared, `Some(Some(..))` = active status.
+    #[allow(clippy::option_option)]
+    last_custom_status: Option<Option<crate::presence::CustomStatus>>,
+}
+
 /// WebSocket protocol header name for authentication.
 const WS_PROTOCOL_PREFIX: &str = "access_token.";
 
@@ -196,6 +207,11 @@ pub enum ClientEvent {
     /// Set user status (online, away, busy, offline).
     SetStatus { status: crate::db::UserStatus },
 
+    /// Set or clear custom status (text + emoji + optional expiry).
+    SetCustomStatus {
+        custom_status: Option<crate::presence::CustomStatus>,
+    },
+
     /// Subscribe to admin events (requires elevated admin).
     AdminSubscribe,
     /// Unsubscribe from admin events.
@@ -224,6 +240,7 @@ impl ClientEvent {
             Self::VoiceWebcamStop { .. } => "voice_webcam_stop",
             Self::SetActivity { .. } => "set_activity",
             Self::SetStatus { .. } => "set_status",
+            Self::SetCustomStatus { .. } => "set_custom_status",
             Self::AdminSubscribe => "admin_subscribe",
             Self::AdminUnsubscribe => "admin_unsubscribe",
         }
@@ -576,6 +593,12 @@ pub enum ServerEvent {
     RichPresenceUpdate {
         user_id: Uuid,
         activity: Option<crate::presence::Activity>,
+    },
+
+    /// Custom status update for a user.
+    CustomStatusUpdate {
+        user_id: Uuid,
+        custom_status: Option<crate::presence::CustomStatus>,
     },
 
     /// Generic entity patch for efficient state sync.
@@ -1224,6 +1247,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
     // Activity rate limiting state
     let mut activity_state = ActivityState::default();
+    let mut custom_status_state = CustomStatusState::default();
 
     // Handle incoming messages
     while let Some(msg) = ws_receiver.next().await {
@@ -1237,6 +1261,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                     &subscribed_channels,
                     &admin_subscribed,
                     &mut activity_state,
+                    &mut custom_status_state,
                 )
                 .await
                 {
@@ -1281,9 +1306,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 /// Handle a client message.
 ///
 /// **Internal:** Exposed for integration tests only.
-#[allow(clippy::implicit_hasher)]
+#[allow(clippy::implicit_hasher, clippy::too_many_arguments)]
 #[tracing::instrument(
-    skip(state, tx, subscribed_channels, admin_subscribed, activity_state, text),
+    skip(state, tx, subscribed_channels, admin_subscribed, activity_state, custom_status_state, text),
     fields(user_id = %user_id)
 )]
 pub async fn handle_client_message(
@@ -1294,6 +1319,7 @@ pub async fn handle_client_message(
     subscribed_channels: &Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: &Arc<tokio::sync::RwLock<bool>>,
     activity_state: &mut ActivityState,
+    custom_status_state: &mut CustomStatusState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let event: ClientEvent = serde_json::from_str(text)?;
     crate::observability::metrics::record_ws_message(event.variant_name());
@@ -1479,7 +1505,71 @@ pub async fn handle_client_message(
                 status: status_str.to_string(),
             };
             broadcast_presence_update(state, user_id, &event).await;
+
+            // Hide custom status when going offline/invisible
+            if matches!(status, crate::db::UserStatus::Offline) {
+                let hide_event = ServerEvent::CustomStatusUpdate {
+                    user_id,
+                    custom_status: None,
+                };
+                broadcast_presence_update(state, user_id, &hide_event).await;
+            }
+
             debug!("User {} set status to {}", user_id, status_str);
+        }
+
+        ClientEvent::SetCustomStatus { custom_status } => {
+            // Validate if setting (not clearing)
+            if let Some(ref cs) = custom_status {
+                cs.validate()
+                    .map_err(|e| format!("Invalid custom status: {e}"))?;
+            }
+
+            // Rate limiting
+            let now = Instant::now();
+            if let Some(last_update) = custom_status_state.last_update {
+                let elapsed = now.duration_since(last_update);
+                if elapsed < ACTIVITY_UPDATE_INTERVAL {
+                    let remaining = ACTIVITY_UPDATE_INTERVAL.saturating_sub(elapsed);
+                    return Err(format!(
+                        "Rate limited: wait {} seconds before next custom status update",
+                        remaining.as_secs() + 1
+                    )
+                    .into());
+                }
+            }
+
+            // Deduplication
+            if custom_status_state.last_custom_status.as_ref() == Some(&custom_status) {
+                debug!(
+                    "Skipping custom status update: unchanged for user={}",
+                    user_id
+                );
+                return Ok(());
+            }
+
+            // Persist to database
+            let json_value = custom_status
+                .as_ref()
+                .and_then(|cs| serde_json::to_value(cs).ok());
+            sqlx::query("UPDATE users SET custom_status = $1 WHERE id = $2")
+                .bind(&json_value)
+                .bind(user_id)
+                .execute(&state.db)
+                .await
+                .map_err(|e| format!("Failed to update custom status: {e}"))?;
+
+            // Update rate limiting state
+            custom_status_state.last_update = Some(now);
+            custom_status_state.last_custom_status = Some(custom_status.clone());
+
+            // Broadcast to presence subscribers
+            let event = ServerEvent::CustomStatusUpdate {
+                user_id,
+                custom_status,
+            };
+            broadcast_presence_update(state, user_id, &event).await;
+            debug!("User {} updated custom status", user_id);
         }
 
         ClientEvent::AdminSubscribe => {
@@ -1672,7 +1762,8 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                     let should_filter = match &event {
                         ServerEvent::PresenceUpdate { user_id: uid, .. }
-                        | ServerEvent::RichPresenceUpdate { user_id: uid, .. } => {
+                        | ServerEvent::RichPresenceUpdate { user_id: uid, .. }
+                        | ServerEvent::CustomStatusUpdate { user_id: uid, .. } => {
                             params.blocked_users.read().await.contains(uid)
                         }
                         _ => false,
