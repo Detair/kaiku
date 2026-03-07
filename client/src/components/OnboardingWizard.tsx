@@ -25,8 +25,6 @@ import {
   Check,
   ChevronRight,
   ChevronLeft,
-  Mic,
-  Compass,
   Users,
 } from "lucide-solid";
 import {
@@ -42,6 +40,11 @@ import {
   type ThemeDefinition,
 } from "@/stores/theme";
 import { authState } from "@/stores/auth";
+import flokiWelcome from "@/assets/images/floki_onboarding_welcome.png";
+import flokiTheme from "@/assets/images/floki_onboard_theme.png";
+import flokiMic from "@/assets/images/floki_onboard_mic.png";
+import flokiJoin from "@/assets/images/floki_onboard_join.png";
+import flokiDone from "@/assets/images/floki_onboard_done.png";
 import { joinViaInviteCode } from "@/stores/guilds";
 import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
@@ -309,6 +312,7 @@ const OnboardingWizard: Component = () => {
             {/* Step 0: Welcome */}
             <Show when={step() === 0}>
               <div class="text-center mb-6">
+                <img src={flokiWelcome} alt="Floki waving hello" class="w-24 h-24 mx-auto mb-3 object-contain" loading="lazy" />
                 <h2 class="text-2xl font-bold text-text-primary">
                   Welcome to Kaiku
                 </h2>
@@ -343,6 +347,7 @@ const OnboardingWizard: Component = () => {
             {/* Step 1: Theme */}
             <Show when={step() === 1}>
               <div class="text-center mb-6">
+                <img src={flokiTheme} alt="Floki painting with colors" class="w-20 h-20 mx-auto mb-3 object-contain" loading="lazy" />
                 <h2 class="text-xl font-bold text-text-primary">
                   Pick a Theme
                 </h2>
@@ -397,7 +402,7 @@ const OnboardingWizard: Component = () => {
             {/* Step 2: Mic Setup */}
             <Show when={step() === 2}>
               <div class="text-center mb-4">
-                <Mic class="w-8 h-8 text-accent-primary mx-auto mb-2" />
+                <img src={flokiMic} alt="Floki with gaming headset" class="w-20 h-20 mx-auto mb-2 object-contain" loading="lazy" />
                 <h2 class="text-xl font-bold text-text-primary">Mic Setup</h2>
                 <p class="text-sm text-text-secondary mt-1">
                   Test your microphone and speakers. You can skip this step.
@@ -417,7 +422,7 @@ const OnboardingWizard: Component = () => {
             {/* Step 3: Join a Server */}
             <Show when={step() === 3}>
               <div class="text-center mb-4">
-                <Compass class="w-8 h-8 text-accent-primary mx-auto mb-2" />
+                <img src={flokiJoin} alt="Floki exploring server islands" class="w-20 h-20 mx-auto mb-2 object-contain" loading="lazy" />
                 <h2 class="text-xl font-bold text-text-primary">
                   Join a Server
                 </h2>
@@ -609,9 +614,7 @@ const OnboardingWizard: Component = () => {
             {/* Step 4: Done */}
             <Show when={step() === 4}>
               <div class="text-center py-6">
-                <div class="w-16 h-16 rounded-full bg-accent-primary/20 flex items-center justify-center mx-auto mb-4">
-                  <Check class="w-8 h-8 text-accent-primary" />
-                </div>
+                <img src={flokiDone} alt="Floki celebrating" class="w-28 h-28 mx-auto mb-4 object-contain" loading="lazy" />
                 <h2 class="text-2xl font-bold text-text-primary">
                   You're All Set!
                 </h2>

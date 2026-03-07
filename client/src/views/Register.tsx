@@ -4,6 +4,7 @@ import { register, loginWithOidc, authState, clearError } from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { Github, Chrome, KeyRound, ShieldAlert } from "lucide-solid";
+import flokiRegister from "@/assets/images/floki_auth_register.png";
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -185,7 +186,11 @@ const Register: Component = () => {
 
   return (
     <div class="flex items-center justify-center min-h-screen bg-background-primary py-8">
-      <div class="w-full max-w-md p-8 bg-background-secondary rounded-lg shadow-lg">
+      <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
+        <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
+          <img src={flokiRegister} alt="Floki holding membership badge" class="w-full max-w-xs object-contain" loading="lazy" />
+        </div>
+        <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
           Create an account
         </h1>
@@ -399,6 +404,7 @@ const Register: Component = () => {
             Login
           </A>
         </p>
+        </div>
       </div>
     </div>
   );

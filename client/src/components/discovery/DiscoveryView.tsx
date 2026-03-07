@@ -14,6 +14,7 @@ import {
   onMount,
 } from "solid-js";
 import { Search, ChevronLeft, ChevronRight } from "lucide-solid";
+import flokiThinking from "@/assets/emotes/floki_emote_2.png";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds } from "@/lib/tauri";
 import { guildsState } from "@/stores/guilds";
@@ -190,7 +191,7 @@ const DiscoveryView: Component = () => {
         {/* Empty state */}
         <Show when={!loading() && !error() && guilds().length === 0}>
           <div class="flex flex-col items-center justify-center py-16 text-center">
-            <Search class="w-10 h-10 text-text-secondary opacity-30 mb-3" />
+            <img src={flokiThinking} alt="" class="w-16 h-16 object-contain mb-3" loading="lazy" />
             <p class="text-text-secondary text-sm">
               {query()
                 ? "No servers found matching your search."

@@ -43,6 +43,7 @@ import type {
 } from "@/lib/types";
 import Avatar from "@/components/ui/Avatar";
 import { formatTimestamp } from "@/lib/utils";
+import flokiThinking from "@/assets/emotes/floki_emote_2.png";
 import DOMPurify from "dompurify";
 import SearchSyntaxHelp from "./SearchSyntaxHelp";
 import { createVirtualizer } from "@/lib/virtualizer";
@@ -359,7 +360,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           }
         >
           <div class="flex flex-col items-center justify-center py-8 text-text-secondary">
-            <Search class="w-12 h-12 mb-3 opacity-50" />
+            <img src={flokiThinking} alt="" class="w-14 h-14 object-contain mb-3" loading="lazy" />
             <p class="text-sm">No results found</p>
             <p class="text-xs mt-1">Try different keywords</p>
           </div>

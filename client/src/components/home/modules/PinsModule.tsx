@@ -6,7 +6,6 @@
 
 import { Component, Show, For, createSignal, onMount } from "solid-js";
 import {
-  Pin,
   FileText,
   Link,
   MessageSquare,
@@ -14,6 +13,7 @@ import {
   Trash2,
   ExternalLink,
 } from "lucide-solid";
+import flokiCool from "@/assets/emotes/floki_emote_4.png";
 import { pins, loadPins, createPin, deletePin, updatePin } from "@/stores/pins";
 import type { Pin as PinItem, PinType } from "@/lib/types";
 import CollapsibleModule from "./CollapsibleModule";
@@ -228,7 +228,7 @@ const PinsModule: Component = () => {
         {/* Empty state */}
         <Show when={pins().length === 0 && !isAdding()}>
           <div class="text-center py-4">
-            <Pin class="w-8 h-8 text-text-secondary mx-auto mb-2 opacity-50" />
+            <img src={flokiCool} alt="" class="w-10 h-10 mx-auto mb-2 object-contain" loading="lazy" />
             <p class="text-sm text-text-secondary">No pins yet</p>
             <p class="text-xs text-text-muted mt-1">
               Save notes and links for quick access

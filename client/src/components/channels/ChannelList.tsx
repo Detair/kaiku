@@ -55,6 +55,7 @@ import CreateChannelModal from "./CreateChannelModal";
 import ChannelSettingsModal from "./ChannelSettingsModal";
 import MicrophoneTest from "../voice/MicrophoneTest";
 import VoiceParticipants from "../voice/VoiceParticipants";
+import flokiHappy from "@/assets/emotes/floki_emote_1.png";
 import {
   dragState,
   startDrag,
@@ -640,6 +641,7 @@ const ChannelList: Component = () => {
         }
       >
         <div class="px-2 py-4 text-center text-text-secondary text-sm">
+          <img src={flokiHappy} alt="" class="w-10 h-10 mx-auto mb-1 object-contain" loading="lazy" />
           No channels yet
         </div>
       </Show>

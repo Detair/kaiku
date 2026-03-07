@@ -79,3 +79,34 @@ This document tracks the specific text prompts used to generate the Kaiku brandi
 
 ### Content Filters & Safety (`floki_feat_safety.png` - *Pending Generation*)
 > `[BASE PROMPT] The dog is standing guard, holding a glowing purple and cyan energy shield that is blocking out negative spiky "spam" icons, symbolizing Content Filters and Safety.`
+
+---
+
+## 5. Client UI Illustrations (Planned 2026-03-07)
+
+### Auth: Login (`floki_auth_welcome.png`)
+> `[BASE PROMPT] The dog is sitting confidently in front of a glowing doorway portal made of cyan light, looking welcoming and friendly, one paw raised in greeting. A subtle keyhole shape glows in the portal center. Highly detailed, minimalist background, transparent background feel.`
+
+### Auth: Register (`floki_auth_register.png`)
+> `[BASE PROMPT] The dog is excitedly holding up a glowing cyan ID badge or membership card, tail wagging, looking proud and eager to join. A faint aurora purple sparkle trail follows the card. Highly detailed, minimalist background, transparent background feel.`
+
+### Auth: Forgot / Reset Password (`floki_auth_forgot.png`)
+> `[BASE PROMPT] The dog is carefully turning a glowing combination lock, concentrating with tongue slightly out, a floating holographic key materializing nearby. Highly detailed, minimalist background, transparent background feel.`
+
+### Onboarding: Welcome (`floki_onboard_welcome.png`)
+> `[BASE PROMPT] The dog is waving enthusiastically with both paws, standing on a glowing cyan welcome mat, a floating holographic name tag hovering beside him ready to be filled in. Highly detailed, minimalist background, transparent background feel.`
+
+### Onboarding: Theme Selection (`floki_onboard_theme.png`)
+> `[BASE PROMPT] The dog is holding a glowing paint roller, painting the air with streaks of cyan and purple light, surrounded by floating color palette swatches in a semicircle. Highly detailed, minimalist background, transparent background feel.`
+
+### Onboarding: Mic Setup (`floki_onboard_mic.png`)
+> `[BASE PROMPT] The dog is wearing a sleek gaming headset with glowing cyan ear cups and an aurora purple mic boom, testing the microphone with sound wave rings emanating outward. Highly detailed, minimalist background, transparent background feel.`
+
+### Onboarding: Join a Server (`floki_onboard_join.png`)
+> `[BASE PROMPT] The dog is looking through a glowing cyan telescope or spyglass at distant floating server islands connected by aurora light bridges, tail wagging with excitement. Highly detailed, minimalist background, transparent background feel.`
+
+### Onboarding: All Set (`floki_onboard_done.png`)
+> `[BASE PROMPT] The dog is celebrating with a triumphant howl, confetti made of tiny cyan and purple geometric shapes raining down, a glowing checkmark circle behind him. Highly detailed, minimalist background, transparent background feel.`
+
+### Home View: Idle Dashboard (`floki_home_idle.png`)
+> `[BASE PROMPT] The dog is relaxing at a cozy futuristic desk, leaning back comfortably, with softly glowing dual monitors showing chat interfaces, a warm cup of coffee nearby, looking content and at ease. Highly detailed, minimalist background, transparent background feel.`

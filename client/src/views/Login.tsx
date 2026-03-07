@@ -10,6 +10,7 @@ import {
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { Github, Chrome, KeyRound, ShieldCheck } from "lucide-solid";
+import flokiWelcome from "@/assets/images/floki_auth_welcome.png";
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -188,7 +189,13 @@ const Login: Component = () => {
 
   return (
     <div class="flex items-center justify-center min-h-screen bg-background-primary">
-      <div class="w-full max-w-md p-8 bg-background-secondary rounded-lg shadow-lg">
+      <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
+        {/* Left: Floki illustration */}
+        <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
+          <img src={flokiWelcome} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="lazy" />
+        </div>
+        {/* Right: Form */}
+        <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
           Welcome back!
         </h1>
@@ -421,6 +428,7 @@ const Login: Component = () => {
             </A>
           </p>
         </Show>
+        </div>
       </div>
     </div>
   );

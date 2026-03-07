@@ -16,6 +16,7 @@ import {
   MessageSquare,
   RefreshCw,
 } from "lucide-solid";
+import flokiHappy from "@/assets/emotes/floki_emote_1.png";
 import MessageItem from "./MessageItem";
 import {
   messagesState,
@@ -358,9 +359,7 @@ const MessageList: Component<MessageListProps> = (props) => {
         when={!loading() && messages().length === 0 && !messagesState.error}
       >
         <div class="flex flex-col items-center justify-center h-full text-center px-4">
-          <div class="w-20 h-20 bg-surface-layer2 rounded-full flex items-center justify-center mb-4">
-            <span class="text-4xl">👋</span>
-          </div>
+          <img src={flokiHappy} alt="" class="w-16 h-16 object-contain mb-4" loading="lazy" />
           <h3 class="text-lg font-semibold text-text-primary mb-2">
             No messages yet
           </h3>

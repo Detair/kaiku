@@ -14,6 +14,7 @@ import UserPanel from "@/components/layout/UserPanel";
 import AddFriend from "@/components/social/AddFriend";
 import SearchPanel from "@/components/search/SearchPanel";
 import { createVirtualizer } from "@/lib/virtualizer";
+import flokiThinking from "@/assets/emotes/floki_emote_2.png";
 
 const HomeSidebar: Component = () => {
   const [showNewMessage, setShowNewMessage] = createSignal(false);
@@ -137,6 +138,7 @@ const HomeSidebar: Component = () => {
               when={dmsState.dms.length > 0}
               fallback={
                 <div class="text-center py-8 px-4">
+                  <img src={flokiThinking} alt="" class="w-12 h-12 mx-auto mb-2 object-contain" loading="lazy" />
                   <p class="text-text-secondary text-sm">
                     No conversations yet
                   </p>

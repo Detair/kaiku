@@ -13,7 +13,8 @@ import {
   onMount,
   onCleanup,
 } from "solid-js";
-import { Inbox, Hash, CheckCheck } from "lucide-solid";
+import { Hash, CheckCheck } from "lucide-solid";
+import flokiParty from "@/assets/emotes/floki_emote_3.png";
 import {
   getUnreadAggregate,
   markAllGuildChannelsRead,
@@ -311,7 +312,7 @@ const UnreadModule: Component = () => {
             }
           >
             <div class="flex flex-col items-center justify-center py-4 text-center">
-              <Inbox class="w-8 h-8 text-text-secondary mb-2 opacity-50" />
+              <img src={flokiParty} alt="" class="w-12 h-12 mb-2 object-contain" loading="lazy" />
               <p class="text-sm text-text-secondary">All caught up!</p>
               <p class="text-xs text-text-muted mt-1">No unread messages</p>
             </div>
