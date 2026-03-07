@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   updateStatus: vi.fn(),
-  updateCustomStatus: vi.fn(),
+  getBrowserWebSocket: vi.fn(() => null),
 }));
 
 vi.mock("@/lib/idleDetector", () => ({
@@ -33,7 +33,7 @@ vi.mock("@/stores/friends", () => ({
   setFriendsState: vi.fn(),
 }));
 
-import { updateCustomStatus, updateStatus } from "@/lib/tauri";
+import { updateStatus } from "@/lib/tauri";
 import { startIdleDetection, stopIdleDetection } from "@/lib/idleDetector";
 import { currentUser } from "@/stores/auth";
 import { setFriendsState } from "@/stores/friends";
@@ -42,6 +42,7 @@ import {
   setPresenceState,
   updateUserPresence,
   updateUserActivity,
+  updateUserCustomStatus,
   setInitialPresence,
   getUserStatus,
   isUserOnline,
@@ -265,21 +266,14 @@ describe("presence store", () => {
   });
 
   describe("setMyCustomStatus", () => {
-    it("updates server and local custom status", async () => {
-      vi.mocked(updateCustomStatus).mockResolvedValue(undefined);
-
+    it("updates local custom status", async () => {
       await setMyCustomStatus({ text: "In queue", emoji: "🎮" });
 
-      expect(updateCustomStatus).toHaveBeenCalledWith({
-        text: "In queue",
-        emoji: "🎮",
-      }, "Me");
       expect(presenceState.users["me"].customStatus?.text).toBe("In queue");
       expect(presenceState.users["me"].customStatus?.emoji).toBe("🎮");
     });
 
     it("clears custom status", async () => {
-      vi.mocked(updateCustomStatus).mockResolvedValue(undefined);
       setPresenceState("users", "me", {
         status: "online",
         customStatus: { text: "Busy" },
@@ -287,8 +281,37 @@ describe("presence store", () => {
 
       await setMyCustomStatus(null);
 
-      expect(updateCustomStatus).toHaveBeenCalledWith(null, "Me");
       expect(presenceState.users["me"].customStatus).toBeNull();
+    });
+  });
+
+  describe("updateUserCustomStatus", () => {
+    it("sets custom status for existing user", () => {
+      setPresenceState("users", "user-1", { status: "online" });
+
+      updateUserCustomStatus("user-1", { text: "Gaming", emoji: "🎮" });
+
+      expect(presenceState.users["user-1"].customStatus?.text).toBe("Gaming");
+      expect(presenceState.users["user-1"].customStatus?.emoji).toBe("🎮");
+      expect(presenceState.users["user-1"].status).toBe("online");
+    });
+
+    it("creates user entry if not present", () => {
+      updateUserCustomStatus("new-user", { text: "Hello" });
+
+      expect(presenceState.users["new-user"].status).toBe("offline");
+      expect(presenceState.users["new-user"].customStatus?.text).toBe("Hello");
+    });
+
+    it("clears custom status with null", () => {
+      setPresenceState("users", "user-1", {
+        status: "online",
+        customStatus: { text: "Busy" },
+      });
+
+      updateUserCustomStatus("user-1", null);
+
+      expect(presenceState.users["user-1"].customStatus).toBeNull();
     });
   });
 

@@ -8,12 +8,17 @@ import { createStore } from "solid-js/store";
 import * as tauri from "@/lib/tauri";
 import type {
   Activity,
+  CustomStatus,
   Message,
   ServerEvent,
   ThreadInfo,
   UserStatus,
 } from "@/lib/types";
-import { updateUserActivity, updateUserPresence } from "./presence";
+import {
+  updateUserActivity,
+  updateUserCustomStatus,
+  updateUserPresence,
+} from "./presence";
 import {
   addMessage,
   removeMessage,
@@ -307,6 +312,13 @@ export async function initWebSocket(): Promise<void> {
           event.payload.activity,
         );
         updateUserActivity(event.payload.user_id, event.payload.activity);
+      }),
+    );
+
+    // Custom status events
+    pending.push(
+      listen<{ user_id: string; custom_status: CustomStatus | null }>("ws:custom_status_update", (event) => {
+        updateUserCustomStatus(event.payload.user_id, event.payload.custom_status);
       }),
     );
 
@@ -957,6 +969,10 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "rich_presence_update":
       console.log("Rich presence update:", event.user_id, event.activity);
       updateUserActivity(event.user_id, event.activity);
+      break;
+
+    case "custom_status_update":
+      updateUserCustomStatus(event.user_id, event.custom_status);
       break;
 
     case "voice_offer":

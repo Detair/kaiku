@@ -80,7 +80,6 @@ import type {
   TracesResponse,
   ObsLinksResponse,
   ObsTimeRange,
-  CustomStatus,
 } from "./types";
 
 // Re-export types for convenience
@@ -738,48 +737,6 @@ export async function updateStatus(
   browserWs?.send(
     JSON.stringify({ type: "set_status", status: statusMap[status] ?? "online" }),
   );
-}
-
-export async function updateCustomStatus(
-  status: CustomStatus | null,
-  displayName?: string,
-): Promise<void> {
-  const statusMessage = status
-    ? `${status.emoji ? `${status.emoji} ` : ""}${status.text}`.trim()
-    : null;
-  const requestPayload: Record<string, string | null> = {
-    status_message: statusMessage,
-  };
-
-  if (displayName && displayName.trim().length > 0) {
-    requestPayload.display_name = displayName;
-  }
-
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_profile", {
-      request: requestPayload,
-    });
-  }
-
-  try {
-    await httpRequest("POST", "/auth/me", requestPayload);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error ?? "");
-
-    if (
-      statusMessage === null &&
-      message.includes("No fields to update")
-    ) {
-      await httpRequest("POST", "/auth/me", {
-        ...requestPayload,
-        status_message: "",
-      });
-      return;
-    }
-
-    throw error;
-  }
 }
 
 export async function register(

@@ -18,7 +18,7 @@ import {
   stopIdleDetection,
   setIdleTimeout,
 } from "@/lib/idleDetector";
-import { updateCustomStatus, updateStatus } from "@/lib/tauri";
+import { getBrowserWebSocket, updateStatus } from "@/lib/tauri";
 import { preferences } from "./preferences";
 import { currentUser, updateUser } from "./auth";
 import { setFriendsState } from "./friends";
@@ -157,6 +157,23 @@ export function updateUserActivity(
           activity,
         };
       }
+    }),
+  );
+}
+
+/**
+ * Handle incoming CustomStatusUpdate from server.
+ */
+export function updateUserCustomStatus(
+  userId: string,
+  customStatus: CustomStatus | null,
+): void {
+  setPresenceState(
+    produce((state) => {
+      if (!state.users[userId]) {
+        state.users[userId] = { status: "offline" };
+      }
+      state.users[userId].customStatus = customStatus;
     }),
   );
 }
@@ -403,8 +420,28 @@ export async function setMyCustomStatus(
   if (!user) return;
 
   try {
-    await updateCustomStatus(status, user.display_name);
+    // Send via WebSocket
+    if (isTauri) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("ws_send", {
+        message: JSON.stringify({
+          type: "set_custom_status",
+          custom_status: status,
+        }),
+      });
+    } else {
+      const ws = getBrowserWebSocket();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            type: "set_custom_status",
+            custom_status: status,
+          }),
+        );
+      }
+    }
 
+    // Update local state
     setPresenceState(
       produce((state) => {
         if (!state.users[user.id]) {
