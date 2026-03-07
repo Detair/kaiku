@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Layout areas (ServerRail, Sidebar, Main Stage) now separated by solid border lines for clearer visual structure
 
 ### Added
+- Custom status backend support: users can set a text + emoji status with optional expiry via WebSocket. Server enforces validation (128-char text, 10-emoji limit, Unicode safety including Zalgo prevention), broadcasts updates to friends in real time, and runs a 60-second expiry sweep. Custom status is hidden when offline/invisible. Connect flow now sends full presence snapshot (status + activity + custom status) to fix pre-existing gap.
 - Floki mascot branding throughout the client — illustrations on login, register, and password reset screens (side-by-side layout), per-step illustrations in onboarding wizard, idle dashboard image on home view, and Floki emotes replacing generic icons in empty states
 - Session expiry notification — automatic token refresh when returning to background tabs, silent retry on session loss, and non-dismissable modal prompting re-login when session is truly expired (#341)
 - Inline message editing — edit own messages via context menu or hover pencil button with Enter to save, Escape to cancel

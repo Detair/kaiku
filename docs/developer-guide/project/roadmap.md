@@ -16,7 +16,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
 | **Expansion** | **Phase 5** | ✅ Complete | 100% (17/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
-| **Expansion** | **Phase 6** | 🔄 In Progress | 14% (2/14) | Personal workspaces, digital library, mobile, live session toolkits, focus engine, QA polish (edit messages, emoji composer, session expiry, custom status, shortcuts, formatting, UX refinements) |
+| **Expansion** | **Phase 6** | 🔄 In Progress | 21% (3/14) | Personal workspaces, digital library, mobile, live session toolkits, focus engine, QA polish (edit messages, emoji composer, session expiry, custom status, shortcuts, formatting, UX refinements) |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing |
 | **Scale and Trust** | **Phase 10** | 📋 Planned | 0% | SaaS scaling architecture |
@@ -606,7 +606,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - [ ] **[Auth] Session Expiry Notification** `Priority: High`
   - **Context:** When the proactive token refresh fails, the client dispatches `kaiku:session-expired` but no component listens for it. Users silently lose their session and only discover it on their next action.
   - **Strategy:** Add an event listener in `AuthGuard` or `Layout` that catches `kaiku:session-expired` and either shows a toast notification ("Session expired — please log in again") or redirects to `/login` with a message.
-- [ ] **[Social] Custom Status Backend Support** `Priority: Medium`
+- [x] **[Social] Custom Status Backend Support** `Priority: Medium` ✅
   - **Context:** The entire client UI exists — `StatusPicker`, `CustomStatusModal` (with emoji, text, and expiry selector) — but `handleCustomStatusSave` in `UserPanel` is a no-op. The backend presence API only handles online/away/busy/offline.
   - **Strategy:** Add a `custom_status` field (text + emoji + expiry) to the presence system backend. Wire `handleCustomStatusSave` to call the new endpoint. Broadcast custom status changes via WebSocket.
 - [ ] **[UX] Keyboard Shortcuts Help Dialog** `Priority: Medium`
