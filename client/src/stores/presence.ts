@@ -424,8 +424,8 @@ export async function setMyCustomStatus(
       customStatusClearTimer = null;
     }
 
-    if (status?.expiresAt) {
-      const expiresAtMs = Date.parse(status.expiresAt);
+    if (status?.expires_at) {
+      const expiresAtMs = Date.parse(status.expires_at);
       if (Number.isFinite(expiresAtMs)) {
         const delayMs = expiresAtMs - Date.now();
         if (delayMs > 0) {

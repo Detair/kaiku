@@ -69,7 +69,7 @@ export interface CustomStatus {
   /** Optional emoji to show with the status. */
   emoji?: string;
   /** ISO timestamp when the custom status expires. */
-  expiresAt?: string;
+  expires_at?: string;
 }
 
 /** Extended presence data with activity. */
@@ -421,6 +421,8 @@ export type ClientEvent =
   // Webcam events
   | { type: "voice_webcam_start"; channel_id: string; quality: string }
   | { type: "voice_webcam_stop"; channel_id: string }
+  // Custom status events
+  | { type: "set_custom_status"; custom_status: CustomStatus | null }
   // Admin events
   | { type: "admin_subscribe" }
   | { type: "admin_unsubscribe" };
@@ -443,6 +445,7 @@ export type ServerEvent =
   | { type: "typing_stop"; channel_id: string; user_id: string }
   | { type: "presence_update"; user_id: string; status: UserStatus }
   | { type: "rich_presence_update"; user_id: string; activity: Activity | null }
+  | { type: "custom_status_update"; user_id: string; custom_status: CustomStatus | null }
   | { type: "voice_offer"; channel_id: string; sdp: string }
   | { type: "voice_ice_candidate"; channel_id: string; candidate: string }
   | {

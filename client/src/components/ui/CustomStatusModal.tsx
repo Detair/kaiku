@@ -31,13 +31,13 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
     if (!text().trim()) {
       props.onSave(null);
     } else {
-      const expiresAt = expiryMinutes()
+      const expires_at = expiryMinutes()
         ? new Date(Date.now() + expiryMinutes()! * 60 * 1000).toISOString()
         : undefined;
       props.onSave({
         text: text().trim(),
         emoji: emoji() || undefined,
-        expiresAt,
+        expires_at,
       });
     }
     props.onClose();
