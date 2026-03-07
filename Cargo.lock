@@ -10094,6 +10094,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-opentelemetry-instrumentation-sdk",
  "tracing-subscriber",
+ "unicode-segmentation",
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",

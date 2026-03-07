@@ -2,12 +2,22 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Maximum length for activity name.
 pub const MAX_ACTIVITY_NAME_LEN: usize = 128;
 
 /// Maximum length for activity details.
 pub const MAX_ACTIVITY_DETAILS_LEN: usize = 256;
+
+/// Maximum length for custom status text.
+pub const MAX_CUSTOM_STATUS_TEXT_LEN: usize = 128;
+
+/// Maximum grapheme clusters for custom status emoji.
+pub const MAX_CUSTOM_STATUS_EMOJI_GRAPHEMES: usize = 10;
+
+/// Maximum combining marks per base character.
+const MAX_COMBINING_MARKS_PER_BASE: usize = 3;
 
 /// Type of activity the user is engaged in.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,6 +28,94 @@ pub enum ActivityType {
     Watching,
     Coding,
     Custom,
+}
+
+/// Returns true if the character is an unsafe Unicode format or override character.
+fn is_unsafe_unicode(c: char) -> bool {
+    (c.is_control() && c != ' ' && c != '\n')
+        || matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}') // zero-width chars
+        || matches!(c, '\u{202C}' | '\u{202D}' | '\u{202E}') // bidi overrides
+}
+
+/// Check if a Unicode character is a combining mark.
+///
+/// Covers the main combining mark blocks used in Zalgo text attacks.
+const fn is_combining_mark(c: char) -> bool {
+    let cp = c as u32;
+    matches!(cp,
+        0x0300..=0x036F   // Combining Diacritical Marks
+        | 0x1AB0..=0x1AFF // Combining Diacritical Marks Extended
+        | 0x1DC0..=0x1DFF // Combining Diacritical Marks Supplement
+        | 0x20D0..=0x20FF // Combining Diacritical Marks for Symbols
+        | 0xFE20..=0xFE2F // Combining Half Marks
+    )
+}
+
+/// Validate text for unsafe Unicode characters and combining mark abuse.
+///
+/// Reusable across custom status, activity names, display names, etc.
+pub fn validate_unicode_text(text: &str, max_chars: usize) -> Result<(), &'static str> {
+    if text.chars().count() > max_chars {
+        return Err("Text too long");
+    }
+
+    if text.chars().any(is_unsafe_unicode) {
+        return Err("Text contains invalid characters");
+    }
+
+    // Check for Zalgo-style combining mark abuse
+    let mut combining_count: usize = 0;
+    for c in text.chars() {
+        if is_combining_mark(c) {
+            combining_count += 1;
+            if combining_count > MAX_COMBINING_MARKS_PER_BASE {
+                return Err("Too many combining marks on a single character");
+            }
+        } else {
+            combining_count = 0;
+        }
+    }
+
+    Ok(())
+}
+
+/// Custom status set by a user (text + optional emoji + optional expiry).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct CustomStatus {
+    /// Display text for the custom status.
+    pub text: String,
+    /// Optional emoji (max 10 grapheme clusters).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
+    /// When the custom status expires (UTC).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl CustomStatus {
+    /// Validate custom status data. Returns an error message if invalid.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let trimmed = self.text.trim();
+        if trimmed.is_empty() {
+            return Err("Custom status text cannot be empty");
+        }
+        validate_unicode_text(trimmed, MAX_CUSTOM_STATUS_TEXT_LEN)?;
+
+        if let Some(ref emoji) = self.emoji {
+            if emoji.graphemes(true).count() > MAX_CUSTOM_STATUS_EMOJI_GRAPHEMES {
+                return Err("Emoji field too long (max 10 emoji)");
+            }
+            validate_unicode_text(emoji, MAX_CUSTOM_STATUS_TEXT_LEN)?;
+        }
+
+        if let Some(expires_at) = self.expires_at {
+            if expires_at <= Utc::now() {
+                return Err("Expiry time must be in the future");
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Rich presence activity data.
@@ -41,25 +139,9 @@ impl Activity {
         if self.name.is_empty() {
             return Err("Activity name cannot be empty");
         }
-        if self.name.len() > MAX_ACTIVITY_NAME_LEN {
-            return Err("Activity name too long (max 128 characters)");
-        }
+        validate_unicode_text(&self.name, MAX_ACTIVITY_NAME_LEN)?;
         if let Some(ref details) = self.details {
-            if details.len() > MAX_ACTIVITY_DETAILS_LEN {
-                return Err("Activity details too long (max 256 characters)");
-            }
-        }
-        // Check for control characters (potential injection)
-        if self.name.chars().any(|c| c.is_control() && c != ' ') {
-            return Err("Activity name contains invalid characters");
-        }
-        if let Some(ref details) = self.details {
-            if details
-                .chars()
-                .any(|c| c.is_control() && c != ' ' && c != '\n')
-            {
-                return Err("Activity details contains invalid characters");
-            }
+            validate_unicode_text(details, MAX_ACTIVITY_DETAILS_LEN)?;
         }
         Ok(())
     }
@@ -291,5 +373,131 @@ mod tests {
                 "Round-trip failed for {activity_type:?}"
             );
         }
+    }
+
+    // --- validate_unicode_text tests ---
+
+    #[test]
+    fn test_validate_unicode_text_valid() {
+        assert!(validate_unicode_text("Hello world", 128).is_ok());
+        assert!(validate_unicode_text("Café ☕", 128).is_ok());
+        assert!(validate_unicode_text("a\u{0301}", 128).is_ok());
+    }
+
+    #[test]
+    fn test_validate_unicode_text_too_long() {
+        let long = "a".repeat(129);
+        assert!(validate_unicode_text(&long, 128).is_err());
+    }
+
+    #[test]
+    fn test_validate_unicode_text_control_chars() {
+        assert!(validate_unicode_text("hello\x00world", 128).is_err());
+        assert!(validate_unicode_text("hello\x1Fworld", 128).is_err());
+    }
+
+    #[test]
+    fn test_validate_unicode_text_allows_newlines() {
+        assert!(validate_unicode_text("line1\nline2", 128).is_ok());
+    }
+
+    #[test]
+    fn test_validate_unicode_text_format_chars() {
+        assert!(validate_unicode_text("hello\u{200B}world", 128).is_err());
+        assert!(validate_unicode_text("hello\u{200D}world", 128).is_err());
+        assert!(validate_unicode_text("hello\u{200C}world", 128).is_err());
+    }
+
+    #[test]
+    fn test_validate_unicode_text_bidi_overrides() {
+        assert!(validate_unicode_text("hello\u{202E}world", 128).is_err());
+        assert!(validate_unicode_text("hello\u{202D}world", 128).is_err());
+        assert!(validate_unicode_text("hello\u{202C}world", 128).is_err());
+    }
+
+    #[test]
+    fn test_validate_unicode_text_combining_mark_limit() {
+        // 3 combining marks on one base: OK
+        let ok = "a\u{0301}\u{0302}\u{0303}";
+        assert!(validate_unicode_text(ok, 128).is_ok());
+
+        // 4 combining marks on one base: rejected (Zalgo)
+        let zalgo = "a\u{0301}\u{0302}\u{0303}\u{0304}";
+        assert!(validate_unicode_text(zalgo, 128).is_err());
+    }
+
+    // --- CustomStatus tests ---
+
+    #[test]
+    fn test_custom_status_validate_valid() {
+        let status = CustomStatus {
+            text: "In a meeting".to_string(),
+            emoji: Some("📅".to_string()),
+            expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        };
+        assert!(status.validate().is_ok());
+    }
+
+    #[test]
+    fn test_custom_status_validate_no_emoji() {
+        let status = CustomStatus {
+            text: "Busy".to_string(),
+            emoji: None,
+            expires_at: None,
+        };
+        assert!(status.validate().is_ok());
+    }
+
+    #[test]
+    fn test_custom_status_validate_empty_text() {
+        let status = CustomStatus {
+            text: "   ".to_string(),
+            emoji: None,
+            expires_at: None,
+        };
+        assert!(status.validate().is_err());
+    }
+
+    #[test]
+    fn test_custom_status_validate_text_too_long() {
+        let status = CustomStatus {
+            text: "a".repeat(129),
+            emoji: None,
+            expires_at: None,
+        };
+        assert!(status.validate().is_err());
+    }
+
+    #[test]
+    fn test_custom_status_validate_emoji_too_many_graphemes() {
+        let status = CustomStatus {
+            text: "hi".to_string(),
+            emoji: Some("🎮🎵🎨🎭🎪🎫🎬🎤🎧🎼🎹".to_string()), // 11 emoji
+            expires_at: None,
+        };
+        assert!(status.validate().is_err());
+    }
+
+    #[test]
+    fn test_custom_status_validate_expires_at_in_past() {
+        let status = CustomStatus {
+            text: "hi".to_string(),
+            emoji: None,
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+        };
+        assert!(status.validate().is_err());
+    }
+
+    #[test]
+    fn test_custom_status_serialization() {
+        let status = CustomStatus {
+            text: "In queue".to_string(),
+            emoji: Some("🎮".to_string()),
+            expires_at: None,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"text\":\"In queue\""));
+        assert!(json.contains("\"emoji\":\"🎮\""));
+        assert!(!json.contains("\"expires_at\"")); // skipped when None
     }
 }

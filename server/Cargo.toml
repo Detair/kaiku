@@ -104,6 +104,9 @@ blurhash.workspace = true
 # String matching
 aho-corasick.workspace = true
 
+# Unicode
+unicode-segmentation = "1.12"
+
 # Lock-free concurrent data structures
 dashmap.workspace = true
 
