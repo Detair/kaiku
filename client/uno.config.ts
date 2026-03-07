@@ -51,6 +51,11 @@ export default defineConfig({
         border: "var(--color-error-border)",
         text: "var(--color-error-text)",
       },
+      border: {
+        subtle: "var(--color-border-subtle)",
+        DEFAULT: "var(--color-border-default)",
+        solid: "var(--color-border-solid)",
+      },
       // Legacy compatibility (maps to new theme system)
       primary: {
         DEFAULT: "var(--color-accent-primary)",
@@ -107,6 +112,9 @@ export default defineConfig({
     "text-white",
     "border-white/5",
     "border-white/10",
+    "border-border-subtle",
+    "border-border-solid",
+    "border-border-default",
     "relative",
     "z-10",
     "bg-status-success/20",
