@@ -54,6 +54,7 @@ const ReportsPanel: Component = () => {
     null,
   );
   const [statsLoading, setStatsLoading] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
 
   // Resolve dialog state
   const [resolveReportId, setResolveReportId] = createSignal<string | null>(
@@ -69,6 +70,7 @@ const ReportsPanel: Component = () => {
 
   const loadReports = async () => {
     setIsLoading(true);
+    setLoadError(null);
     try {
       const offset = (page() - 1) * PAGE_SIZE;
       const result = await tauri.adminListReports(
@@ -81,6 +83,12 @@ const ReportsPanel: Component = () => {
       setTotal(result.total);
     } catch (err) {
       console.error("[Admin] Failed to load reports:", err);
+      setLoadError("Failed to load reports. Ensure your session is elevated.");
+      showToast({
+        type: "error",
+        title: "Failed to load reports",
+        duration: 8000,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -252,6 +260,17 @@ const ReportsPanel: Component = () => {
             </div>
           }
         >
+          <Show when={loadError()}>
+            <div class="flex flex-col items-center justify-center p-12 gap-3">
+              <p class="text-sm text-status-danger">{loadError()}</p>
+              <button
+                onClick={loadReports}
+                class="px-3 py-1.5 text-xs rounded bg-surface-highlight text-text-primary hover:bg-surface-layer2 transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          </Show>
           <Show
             when={reports().length > 0}
             fallback={
