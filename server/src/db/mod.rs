@@ -92,7 +92,13 @@ pub async fn create_redis_client(redis_url: &str) -> Result<fred::clients::Clien
     use fred::prelude::*;
 
     let config = Config::from_url(redis_url)?;
-    let client = Client::new(config, None, None, None);
+
+    // Explicit reconnect policy: constant 100ms delay, unlimited retries.
+    // Default is 2000ms which causes a 2-second stall on every request
+    // when the connection drops between requests.
+    let policy = ReconnectPolicy::new_constant(0, 100);
+
+    let client = Client::new(config, None, None, Some(policy));
     client.connect();
     client.wait_for_connect().await?;
 

@@ -51,10 +51,7 @@ pub fn router() -> Router<AppState> {
             post(handlers::dismiss_discovery_prompt),
         )
         // Banner upload
-        .route(
-            "/{id}/banner",
-            post(handlers::upload_guild_banner),
-        )
+        .route("/{id}/banner", post(handlers::upload_guild_banner))
         // Role routes
         .route(
             "/{id}/roles",

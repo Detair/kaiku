@@ -1668,7 +1668,11 @@ async fn build_batch_thread_infos(
 
         let participant_avatars: Vec<Option<String>> = participant_ids
             .iter()
-            .map(|uid| user_map.get(uid).and_then(|u| crate::api::files::maybe_file_url(u.avatar_url.clone())))
+            .map(|uid| {
+                user_map
+                    .get(uid)
+                    .and_then(|u| crate::api::files::maybe_file_url(u.avatar_url.clone()))
+            })
             .collect();
 
         // Determine unread status

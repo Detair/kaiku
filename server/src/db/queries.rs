@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, QueryBuilder, Row};
-use tracing::error;
+use tracing::{debug, error};
 use uuid::Uuid;
 
 use super::models::{
@@ -1874,7 +1874,14 @@ pub async fn get_oidc_provider_by_slug(pool: &PgPool, slug: &str) -> sqlx::Resul
         .fetch_one(pool)
         .await
         .map_err(|e| {
-            error!(error = %e, slug = %slug, "Failed to get OIDC provider by slug");
+            match &e {
+                sqlx::Error::RowNotFound => {
+                    debug!(slug = %slug, "OIDC provider not found by slug");
+                }
+                _ => {
+                    error!(error = %e, slug = %slug, "Failed to get OIDC provider by slug");
+                }
+            }
             e
         })
 }

@@ -16,6 +16,7 @@ pub fn file_url(s3_key: &str) -> String {
 
 /// Transform an optional S3 key to an API file URL.
 /// Returns None if input is None, or if it already starts with /api/ or http.
+#[allow(clippy::single_option_map)]
 pub fn maybe_file_url(s3_key: Option<String>) -> Option<String> {
     match s3_key {
         Some(key) if key.starts_with("/api/") || key.starts_with("http") => Some(key),
@@ -36,14 +37,14 @@ fn content_type_from_key(key: &str) -> &'static str {
 }
 
 /// Serve a file from S3 storage.
-pub async fn serve(
-    State(state): State<AppState>,
-    Path(key): Path<String>,
-) -> impl IntoResponse {
+pub async fn serve(State(state): State<AppState>, Path(key): Path<String>) -> impl IntoResponse {
     let s3 = match &state.s3 {
         Some(s3) => s3,
         None => {
-            return (StatusCode::SERVICE_UNAVAILABLE, "File storage not configured")
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "File storage not configured",
+            )
                 .into_response()
         }
     };
