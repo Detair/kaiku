@@ -39,8 +39,8 @@ export default defineConfig({
         primary: "var(--color-text-primary)",
         secondary: "var(--color-text-secondary)",
         input: "var(--color-text-input)",
-        "on-accent": "var(--color-text-on-accent)",
       },
+      "on-accent": "var(--color-text-on-accent)",
       accent: {
         primary: "var(--color-accent-primary)",
         danger: "var(--color-accent-danger)",
