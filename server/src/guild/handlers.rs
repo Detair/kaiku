@@ -4,11 +4,11 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::QueryBuilder;
 use uuid::Uuid;
 use validator::Validate;
-use chrono::Utc;
 
 use crate::util::format_file_size;
 
@@ -1470,17 +1470,13 @@ pub async fn upload_guild_banner(
     mut multipart: Multipart,
 ) -> Result<Json<Guild>, GuildError> {
     // Check permission
-    let _ctx = require_guild_permission(
-        &state.db,
-        guild_id,
-        auth.id,
-        GuildPermissions::MANAGE_GUILD,
-    )
-    .await
-    .map_err(|e| match e {
-        PermissionError::NotGuildMember => GuildError::Forbidden,
-        other => GuildError::Permission(other),
-    })?;
+    let _ctx =
+        require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_GUILD)
+            .await
+            .map_err(|e| match e {
+                PermissionError::NotGuildMember => GuildError::Forbidden,
+                other => GuildError::Permission(other),
+            })?;
 
     // Check if S3 is configured
     let s3 = state
@@ -1512,7 +1508,9 @@ pub async fn upload_guild_banner(
         }
     }
 
-    let data = file_data.ok_or(GuildError::Validation("No banner file provided".to_string()))?;
+    let data = file_data.ok_or(GuildError::Validation(
+        "No banner file provided".to_string(),
+    ))?;
 
     // Validate file size (using 5MB limit for banners)
     let max_size = 5 * 1024 * 1024;
