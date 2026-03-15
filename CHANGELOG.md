@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed REMB bitrate conversion that could produce incorrect values from NaN or infinite f32, potentially disrupting simulcast layer switching (#368)
+- Fixed 2-second delay on HTTP requests caused by missing Redis reconnect policy (#390)
+- Fixed noisy OIDC error logs on server startup when no provider is configured (#387)
 - Guild Settings modal updated to be fully responsive (`w-[90vw] md:w-[800px]`), and Safety tab active sections text contrast improved for readability
 - Improved contrast and visibility of admin elevation badges, formatting toolbar icons, server rail icons, settings modal backdrop, and user panel across all 4 themes
 - Friend request accept/decline buttons enlarged with stronger backgrounds for better visibility
