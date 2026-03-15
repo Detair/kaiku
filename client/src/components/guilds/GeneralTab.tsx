@@ -257,7 +257,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
               <div class="flex items-center gap-2 mt-3">
                 <button
                   onClick={handleSetUpDiscovery}
-                  class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover transition-colors"
+                  class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover transition-colors"
                 >
                   Set up
                 </button>
@@ -400,7 +400,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
                 <button
                   onClick={handleAddTag}
                   disabled={saving() || !tagInput().trim()}
-                  class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
+                  class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors"
                 >
                   Add
                 </button>
@@ -430,7 +430,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
               <button
                 onClick={handleBannerSave}
                 disabled={saving()}
-                class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
+                class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors"
               >
                 Save
               </button>

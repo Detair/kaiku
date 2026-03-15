@@ -97,7 +97,7 @@ const PinsModule: Component = () => {
                 onClick={() => setAddType("note")}
                 class={`flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors ${
                   addType() === "note"
-                    ? "bg-accent-primary text-white"
+                    ? "bg-accent-primary text-on-accent"
                     : "bg-white/10 text-text-secondary hover:bg-white/20"
                 }`}
               >
@@ -107,7 +107,7 @@ const PinsModule: Component = () => {
                 onClick={() => setAddType("link")}
                 class={`flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors ${
                   addType() === "link"
-                    ? "bg-accent-primary text-white"
+                    ? "bg-accent-primary text-on-accent"
                     : "bg-white/10 text-text-secondary hover:bg-white/20"
                 }`}
               >
@@ -140,7 +140,7 @@ const PinsModule: Component = () => {
               <button
                 onClick={handleCreate}
                 disabled={!newContent().trim()}
-                class="px-3 py-1.5 rounded text-sm bg-accent-primary text-white hover:bg-accent-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-3 py-1.5 rounded text-sm bg-accent-primary text-on-accent hover:bg-accent-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Save
               </button>
@@ -214,7 +214,7 @@ const PinsModule: Component = () => {
                     </button>
                     <button
                       onClick={() => saveEdit(pin.id)}
-                      class="px-2 py-1 rounded text-xs bg-accent-primary text-white hover:bg-accent-primary/80"
+                      class="px-2 py-1 rounded text-xs bg-accent-primary text-on-accent hover:bg-accent-primary/80"
                     >
                       Save
                     </button>

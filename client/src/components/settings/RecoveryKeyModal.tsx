@@ -156,7 +156,7 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
             <button
               onClick={props.onConfirm}
               disabled={!confirmed() || props.isLoading}
-              class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-white transition-colors"
+              class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-on-accent transition-colors"
             >
               <Show when={props.isLoading}>
                 <Loader2 class="w-4 h-4 animate-spin" />

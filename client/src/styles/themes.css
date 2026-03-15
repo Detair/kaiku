@@ -25,6 +25,7 @@
  * --color-accent-danger      Delete actions, errors, destructive UI
  * --color-accent-success     Online status, success messages, confirmations
  * --color-accent-warning     Warnings, pending states, caution indicators
+ * --color-text-on-accent    Text color for use on accent-primary backgrounds
  * --color-border-subtle      Faint dividers between content sections
  * --color-border-default     Visible borders on inputs, cards, panels
  * --color-selection-bg       Text selection highlight background

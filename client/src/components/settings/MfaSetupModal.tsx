@@ -122,7 +122,7 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
             <Match when={step() === "qr"}>
               <div class="space-y-4">
                 <div class="flex items-center gap-2 text-sm text-text-secondary">
-                  <div class="w-6 h-6 rounded-full bg-accent-primary text-white flex items-center justify-center text-xs font-bold">
+                  <div class="w-6 h-6 rounded-full bg-accent-primary text-on-accent flex items-center justify-center text-xs font-bold">
                     1
                   </div>
                   <span>Scan the QR code with your authenticator app</span>
@@ -210,7 +210,7 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
             <Match when={step() === "verify"}>
               <form onSubmit={handleVerify} class="space-y-4">
                 <div class="flex items-center gap-2 text-sm text-text-secondary">
-                  <div class="w-6 h-6 rounded-full bg-accent-primary text-white flex items-center justify-center text-xs font-bold">
+                  <div class="w-6 h-6 rounded-full bg-accent-primary text-on-accent flex items-center justify-center text-xs font-bold">
                     2
                   </div>
                   <span>Enter the code from your authenticator app</span>

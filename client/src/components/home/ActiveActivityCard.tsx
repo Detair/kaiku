@@ -15,7 +15,7 @@ const ActiveActivityCard: Component<ActiveActivityCardProps> = (props) => {
     <div class="p-3 bg-surface-layer2 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
       <div class="flex items-center gap-3 mb-2">
         {/* Avatar */}
-        <div class="relative w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center text-xs font-bold text-white">
+        <div class="relative w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center text-xs font-bold text-on-accent">
           <Show
             when={props.avatarUrl}
             fallback={props.displayName.charAt(0).toUpperCase()}

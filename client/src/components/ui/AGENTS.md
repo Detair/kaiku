@@ -241,7 +241,7 @@ Prefer composable components over monolithic props:
 Components use Tailwind-compatible utilities via UnoCSS:
 
 ```tsx
-<button class="px-4 py-2 bg-accent-primary text-white rounded-lg hover:opacity-90">
+<button class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg hover:opacity-90">
   Click me
 </button>
 ```

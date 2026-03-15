@@ -134,7 +134,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
             <button
               type="button"
               onClick={handleSubmit}
-              class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isJoining() || !inviteCode()}
             >
               {isJoining() ? "Joining..." : "Join Server"}

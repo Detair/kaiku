@@ -262,7 +262,7 @@ const ReportsPanel: Component = () => {
         >
           <Show when={loadError()}>
             <div class="flex flex-col items-center justify-center p-12 gap-3">
-              <p class="text-sm text-status-danger">{loadError()}</p>
+              <p class="text-sm text-status-error">{loadError()}</p>
               <button
                 onClick={loadReports}
                 class="px-3 py-1.5 text-xs rounded bg-surface-highlight text-text-primary hover:bg-surface-layer2 transition-colors"
@@ -271,14 +271,15 @@ const ReportsPanel: Component = () => {
               </button>
             </div>
           </Show>
-          <Show
-            when={reports().length > 0}
-            fallback={
-              <div class="flex items-center justify-center p-12 text-text-secondary text-sm">
-                No reports found.
-              </div>
-            }
-          >
+          <Show when={!loadError()}>
+            <Show
+              when={reports().length > 0}
+              fallback={
+                <div class="flex items-center justify-center p-12 text-text-secondary text-sm">
+                  No reports found.
+                </div>
+              }
+            >
             <table class="w-full text-sm">
               <thead>
                 <tr class="border-b border-white/10 text-text-secondary text-xs uppercase tracking-wide">
@@ -360,6 +361,7 @@ const ReportsPanel: Component = () => {
                 </For>
               </tbody>
             </table>
+          </Show>
           </Show>
         </Show>
       </div>

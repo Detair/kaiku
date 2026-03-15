@@ -117,7 +117,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
             </button>
             <button
               onClick={handleSave}
-              class="px-4 py-2 bg-accent-primary rounded-lg text-white hover:bg-accent-primary/90 transition-colors"
+              class="px-4 py-2 bg-accent-primary rounded-lg text-on-accent hover:bg-accent-primary/90 transition-colors"
             >
               Save
             </button>

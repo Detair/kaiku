@@ -137,7 +137,7 @@ const DiscoveryView: Component = () => {
               class="px-3 py-2 transition-colors"
               aria-pressed={sort() === "members"}
               classList={{
-                "bg-accent-primary text-white": sort() === "members",
+                "bg-accent-primary text-on-accent": sort() === "members",
                 "bg-surface-layer2 text-text-secondary hover:text-text-primary":
                   sort() !== "members",
               }}
@@ -152,7 +152,7 @@ const DiscoveryView: Component = () => {
               class="px-3 py-2 transition-colors"
               aria-pressed={sort() === "newest"}
               classList={{
-                "bg-accent-primary text-white": sort() === "newest",
+                "bg-accent-primary text-on-accent": sort() === "newest",
                 "bg-surface-layer2 text-text-secondary hover:text-text-primary":
                   sort() !== "newest",
               }}
@@ -180,7 +180,7 @@ const DiscoveryView: Component = () => {
             <Show when={!isPermanentError()}>
               <button
                 onClick={fetchGuilds}
-                class="mt-3 px-4 py-2 text-sm bg-accent-primary text-white rounded-lg hover:bg-accent-hover"
+                class="mt-3 px-4 py-2 text-sm bg-accent-primary text-on-accent rounded-lg hover:bg-accent-hover"
               >
                 Retry
               </button>

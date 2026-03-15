@@ -445,7 +445,7 @@ const OnboardingWizard: Component = () => {
                   onClick={() => setJoinTab("discover")}
                   class="flex-1 px-3 py-2 transition-colors"
                   classList={{
-                    "bg-accent-primary text-white": joinTab() === "discover",
+                    "bg-accent-primary text-on-accent": joinTab() === "discover",
                     "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                       joinTab() !== "discover",
                   }}
@@ -460,7 +460,7 @@ const OnboardingWizard: Component = () => {
                   onClick={() => setJoinTab("invite")}
                   class="flex-1 px-3 py-2 transition-colors"
                   classList={{
-                    "bg-accent-primary text-white": joinTab() === "invite",
+                    "bg-accent-primary text-on-accent": joinTab() === "invite",
                     "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                       joinTab() !== "invite",
                   }}
@@ -495,7 +495,7 @@ const OnboardingWizard: Component = () => {
                       <Show when={!discoveryPermanent()}>
                         <button
                           onClick={loadDiscoveryGuilds}
-                          class="mt-2 px-3 py-1 text-xs bg-accent-primary text-white rounded-lg hover:bg-accent-hover"
+                          class="mt-2 px-3 py-1 text-xs bg-accent-primary text-on-accent rounded-lg hover:bg-accent-hover"
                         >
                           Retry
                         </button>
@@ -564,7 +564,7 @@ const OnboardingWizard: Component = () => {
                                 disabled={isJoined()}
                                 class="px-2 py-1 text-[10px] font-medium rounded transition-colors flex-shrink-0"
                                 classList={{
-                                  "bg-accent-primary text-white hover:bg-accent-hover":
+                                  "bg-accent-primary text-on-accent hover:bg-accent-hover":
                                     !isJoined(),
                                   "bg-white/10 text-text-secondary cursor-default":
                                     isJoined(),
@@ -603,7 +603,7 @@ const OnboardingWizard: Component = () => {
                   <button
                     onClick={handleJoinInvite}
                     disabled={!inviteCode().trim() || joiningInvite()}
-                    class="w-full py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
+                    class="w-full py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors"
                   >
                     {joiningInvite() ? "Joining..." : "Join Server"}
                   </button>
@@ -659,7 +659,7 @@ const OnboardingWizard: Component = () => {
                   <button
                     onClick={complete}
                     data-testid="onboarding-get-started"
-                    class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover transition-colors"
+                    class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover transition-colors"
                   >
                     Get Started
                     <ChevronRight class="w-4 h-4" />
@@ -672,7 +672,7 @@ const OnboardingWizard: Component = () => {
                   }
                   data-testid="onboarding-next"
                   disabled={savingName()}
-                  class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
+                  class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors"
                 >
                   {savingName()
                     ? "Saving..."

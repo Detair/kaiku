@@ -153,7 +153,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
               data-testid="new-dm-submit"
               onClick={handleCreate}
               disabled={selectedIds().length === 0 || isCreating()}
-              class="w-full py-2 bg-accent-primary text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+              class="w-full py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isCreating()
                 ? "Creating..."

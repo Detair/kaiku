@@ -440,7 +440,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                   onClick={handleSave}
                   data-testid="role-editor-save"
                   disabled={isSaving() || !hasChanges() || !name().trim()}
-                  class="px-4 py-2 rounded-lg bg-accent-primary text-white font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
           {isSaving()
             ? "Saving..."

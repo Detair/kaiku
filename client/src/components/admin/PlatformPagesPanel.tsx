@@ -71,7 +71,7 @@ const PlatformPagesPanel: Component = () => {
                   type="button"
                   data-testid="new-platform-page"
                   onClick={() => setIsCreating(true)}
-                  class="px-3 py-1.5 rounded-lg text-sm font-medium bg-accent-primary text-white hover:bg-accent-primary/90 transition-colors inline-flex items-center gap-2"
+                  class="px-3 py-1.5 rounded-lg text-sm font-medium bg-accent-primary text-on-accent hover:bg-accent-primary/90 transition-colors inline-flex items-center gap-2"
                 >
                   <Plus class="w-4 h-4" />
                   New Platform Page
