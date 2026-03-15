@@ -26,7 +26,7 @@ import {
   adminDeleteOidcProvider,
 } from "@/lib/tauri";
 import type { AuthMethodsConfig, AdminOidcProvider } from "@/lib/types";
-import { adminState } from "@/stores/admin";
+import { adminState, checkAdminStatus } from "@/stores/admin";
 
 function providerIcon(hint: string | null) {
   switch (hint) {
@@ -99,7 +99,10 @@ const AdminSettings: Component = () => {
     }
   };
 
-  onMount(loadSettings);
+  onMount(() => {
+    checkAdminStatus();
+    loadSettings();
+  });
 
   const saveAuthSettings = async (
     methods?: AuthMethodsConfig,
