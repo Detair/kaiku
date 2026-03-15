@@ -50,6 +50,7 @@
   --color-text-input: #eceff4;
   --color-accent-primary: #88c0d0;
   --color-accent-primary-hover: #7ab0c0;
+  --color-text-on-accent: #2E3440;
   --color-accent-danger: #bf616a;
   --color-accent-success: #a3be8c;
   --color-accent-warning: #ebcb8b;
@@ -84,6 +85,7 @@
   --color-text-input: #fdf6e3;
   --color-accent-primary: #268bd2;
   --color-accent-primary-hover: #1a7dc4;
+  --color-text-on-accent: #fdf6e3;
   --color-accent-danger: #dc322f;
   --color-accent-success: #859900;
   --color-accent-warning: #b58900;
@@ -110,6 +112,7 @@
   --color-text-input: #073642;
   --color-accent-primary: #268bd2;
   --color-accent-primary-hover: #1a7dc4;
+  --color-text-on-accent: #fdf6e3;
   --color-accent-danger: #dc322f;
   --color-accent-success: #859900;
   --color-accent-warning: #b58900;
@@ -150,6 +153,7 @@
   /* Accents — muted jewel tones */
   --color-accent-primary: #7bae7f;
   --color-accent-primary-hover: #6b9e6f;
+  --color-text-on-accent: #2c2418;
   --color-accent-danger: #c06050;
   --color-accent-success: #8db87e;
   --color-accent-warning: #d4a854;
@@ -180,6 +184,7 @@
   --color-text-input: #eceff4;
   --color-accent-primary: #88c0d0;
   --color-accent-primary-hover: #7ab0c0;
+  --color-text-on-accent: #2E3440;
   --color-accent-danger: #bf616a;
   --color-accent-success: #a3be8c;
   --color-accent-warning: #ebcb8b;

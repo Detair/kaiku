@@ -250,7 +250,7 @@ const AdminDashboard: Component = () => {
                     <div class="flex gap-3">
                       <button
                         onClick={() => setActivePanel("users")}
-                        class="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-white font-medium transition-colors hover:bg-accent-primary/90"
+                        class="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90"
                       >
                         <Users class="w-4 h-4" />
                         Manage Users

@@ -39,6 +39,7 @@ export default defineConfig({
         primary: "var(--color-text-primary)",
         secondary: "var(--color-text-secondary)",
         input: "var(--color-text-input)",
+        "on-accent": "var(--color-text-on-accent)",
       },
       accent: {
         primary: "var(--color-accent-primary)",
@@ -80,7 +81,7 @@ export default defineConfig({
   shortcuts: {
     // Buttons
     "btn": "px-4 py-2 rounded-xl font-medium transition-all duration-200",
-    "btn-primary": "btn bg-accent-primary hover:bg-accent-primary/80 text-white",
+    "btn-primary": "btn bg-accent-primary hover:bg-accent-primary/80 text-on-accent",
     "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-white",
 
     // Input fields
@@ -110,6 +111,7 @@ export default defineConfig({
     "text-accent-primary",
     "text-accent-danger",
     "text-white",
+    "text-on-accent",
     "border-white/5",
     "border-white/10",
     "border-border-subtle",

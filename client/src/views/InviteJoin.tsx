@@ -64,7 +64,7 @@ const InviteJoin: Component = () => {
           <div class="text-text-secondary mb-4">{errorMessage()}</div>
           <button
             onClick={() => navigate("/")}
-            class="px-4 py-2 bg-accent-primary text-white rounded-lg hover:opacity-90"
+            class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg hover:opacity-90"
           >
             Go Home
           </button>

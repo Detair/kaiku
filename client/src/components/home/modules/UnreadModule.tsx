@@ -356,7 +356,7 @@ const UnreadModule: Component = () => {
                                 {channel.channel_name}
                               </span>
                             </div>
-                            <span class="px-1.5 py-0.5 text-xs font-medium bg-accent-primary text-white rounded flex-shrink-0">
+                            <span class="px-1.5 py-0.5 text-xs font-medium bg-accent-primary text-on-accent rounded flex-shrink-0">
                               {channel.unread_count}
                             </span>
                           </button>
@@ -394,7 +394,7 @@ const UnreadModule: Component = () => {
                       <span class="text-sm text-text-primary truncate group-hover:text-accent-primary">
                         {dm.channel_name}
                       </span>
-                      <span class="px-1.5 py-0.5 text-xs font-medium bg-accent-primary text-white rounded flex-shrink-0">
+                      <span class="px-1.5 py-0.5 text-xs font-medium bg-accent-primary text-on-accent rounded flex-shrink-0">
                         {dm.unread_count}
                       </span>
                     </button>

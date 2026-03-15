@@ -143,7 +143,7 @@ const ServerRail: Component = () => {
 
                 {/* Unread badge */}
                 <Show when={getGuildUnreadCount(guild.id) > 0}>
-                  <div class="absolute -bottom-0.5 -right-0.5 min-w-4 h-4 px-1 bg-accent-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center pointer-events-none">
+                  <div class="absolute -bottom-0.5 -right-0.5 min-w-4 h-4 px-1 bg-accent-primary text-on-accent text-[10px] font-bold rounded-full flex items-center justify-center pointer-events-none">
                     {getGuildUnreadCount(guild.id) > 99
                       ? "99+"
                       : getGuildUnreadCount(guild.id)}

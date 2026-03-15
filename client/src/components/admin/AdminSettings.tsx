@@ -429,7 +429,7 @@ const AdminSettings: Component = () => {
                     setShowAddProvider(true);
                     applyPreset("");
                   }}
-                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary text-white text-xs font-medium hover:bg-accent-primary/90 transition-colors"
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-xs font-medium hover:bg-accent-primary/90 transition-colors"
                 >
                   <Plus class="w-3.5 h-3.5" />
                   Add Provider
@@ -679,7 +679,7 @@ const AdminSettings: Component = () => {
                 <div class="flex gap-2 pt-2">
                   <button
                     onClick={handleCreateProvider}
-                    class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-primary text-white text-sm font-medium hover:bg-accent-primary/90 transition-colors"
+                    class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors"
                     disabled={
                       state.isSaving ||
                       !addForm.slug ||
