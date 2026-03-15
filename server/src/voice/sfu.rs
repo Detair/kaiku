@@ -1,6 +1,6 @@
 //! Selective Forwarding Unit Implementation
 //!
-//! Manages voice rooms and WebRTC peer connections for real-time audio.
+//! Manages voice rooms and WebRTC peer connections for real-time audio and video.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,9 +27,7 @@ use super::error::VoiceError;
 use super::peer::Peer;
 use super::rate_limit::VoiceStatsLimiter;
 use super::screen_share::ScreenShareInfo;
-use super::track::{
-    spawn_rtcp_reader, spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter,
-};
+use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
 use crate::config::Config;
@@ -582,7 +580,7 @@ impl SfuServer {
         let channel_id = peer.channel_id;
 
         peer.peer_connection
-            .on_track(Box::new(move |track, receiver, _transceiver| {
+            .on_track(Box::new(move |track, _receiver, _transceiver| {
                 let pw = peer_weak.clone();
                 let rw = room_weak.clone();
                 let uid = user_id;
@@ -681,11 +679,6 @@ impl SfuServer {
                         track.clone(),
                         room.track_router.clone(),
                     );
-
-                    // Spawn RTCP reader for REMB processing on video tracks.
-                    if source_type.is_video() {
-                        spawn_rtcp_reader(uid, source_type, layer, receiver.clone());
-                    }
 
                     // Only create subscriber tracks for the primary layer (High)
                     // or non-simulcast tracks. Secondary simulcast layers (Medium,
