@@ -113,7 +113,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
                     <p class="text-sm text-red-400 mb-3">{error()}</p>
                     <button
                       onClick={generateQr}
-                      class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-white text-sm font-medium"
+                      class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                     >
                       Try again
                     </button>
@@ -141,7 +141,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
                   <p class="text-sm text-text-secondary mb-2">Code expired</p>
                   <button
                     onClick={generateQr}
-                    class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-white text-sm font-medium"
+                    class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                   >
                     Generate new code
                   </button>

@@ -226,7 +226,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
             props.channel.unread_count > 0
           }
         >
-          <span class="ml-auto flex-shrink-0 min-w-5 h-5 px-1.5 bg-accent-primary text-white text-xs font-bold rounded-full flex items-center justify-center">
+          <span class="ml-auto flex-shrink-0 min-w-5 h-5 px-1.5 bg-accent-primary text-on-accent text-xs font-bold rounded-full flex items-center justify-center">
             {props.channel.unread_count > 99
               ? "99+"
               : props.channel.unread_count}

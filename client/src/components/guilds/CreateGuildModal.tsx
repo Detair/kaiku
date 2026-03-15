@@ -287,7 +287,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 type="submit"
                 onClick={handleNext}
                 data-testid="create-guild-next"
-                class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={!name().trim()}
               >
                 Next
@@ -384,7 +384,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                         <button
                           onClick={handleAddTag}
                           disabled={isCreating() || !tagInput().trim()}
-                          class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
+                          class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                           Add
                         </button>
@@ -566,7 +566,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 type="submit"
                 onClick={handleCreate}
                 data-testid="create-guild-submit"
-                class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={isCreating()}
               >
                 {isCreating() ? "Creating..." : "Create Server"}

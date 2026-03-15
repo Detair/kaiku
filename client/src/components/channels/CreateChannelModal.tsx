@@ -213,7 +213,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
               type="submit"
               onClick={handleSubmit}
               data-testid="create-channel-submit"
-              class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isCreating() || !name().trim()}
             >
               {isCreating() ? "Creating..." : "Create Channel"}

@@ -212,7 +212,7 @@ const AuditLogPanel: Component = () => {
 
             <button
               onClick={applyFilter}
-              class="px-4 py-2 rounded-lg bg-accent-primary text-white font-medium text-sm transition-colors hover:bg-accent-primary/90"
+              class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium text-sm transition-colors hover:bg-accent-primary/90"
             >
               Apply
             </button>

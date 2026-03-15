@@ -99,7 +99,7 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
         </div>
 
         <Show when={canManageEmojis()}>
-          <label class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-white text-sm font-medium hover:bg-accent-primary/90 transition-colors cursor-pointer">
+          <label class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors cursor-pointer">
             <Show when={isUploading()} fallback={<Upload class="w-4 h-4" />}>
               <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             </Show>

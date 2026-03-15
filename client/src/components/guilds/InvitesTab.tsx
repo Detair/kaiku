@@ -121,7 +121,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
             data-testid="create-invite-button"
             onClick={handleCreate}
             disabled={isCreating()}
-            class="flex items-center gap-2 px-4 py-2 bg-accent-primary text-white rounded-lg font-medium hover:opacity-90 disabled:opacity-50 mt-5"
+            class="flex items-center gap-2 px-4 py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 disabled:opacity-50 mt-5"
           >
             <Plus class="w-4 h-4" />
             {isCreating() ? "Creating..." : "Create"}

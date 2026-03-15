@@ -331,7 +331,7 @@ const FriendItem: Component<FriendItemProps> = (props) => {
     <div class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors">
       {/* Avatar */}
       <div class="relative">
-        <div class="w-10 h-10 rounded-full bg-accent-primary flex items-center justify-center font-semibold text-white">
+        <div class="w-10 h-10 rounded-full bg-accent-primary flex items-center justify-center font-semibold text-on-accent">
           {props.friend.display_name.charAt(0).toUpperCase()}
         </div>
         <Show when={props.friend.is_online && props.tab !== "blocked"}>

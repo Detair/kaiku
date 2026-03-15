@@ -427,7 +427,7 @@ const MessageList: Component<MessageListProps> = (props) => {
           <p class="text-text-secondary max-w-sm mb-4">{messagesState.error}</p>
           <button
             onClick={() => loadInitialMessages(props.channelId)}
-            class="px-4 py-2 bg-accent-primary text-white rounded-lg font-medium hover:opacity-90 transition-opacity"
+            class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity"
           >
             Retry
           </button>
@@ -500,7 +500,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       <Show when={hasNewMessages()}>
         <button
           onClick={() => scrollToBottom(true)}
-          class="fixed bottom-24 left-1/2 transform -translate-x-1/2 bg-accent-primary hover:bg-accent-primary/90 text-white px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2 transition-all z-10 font-medium"
+          class="fixed bottom-24 left-1/2 transform -translate-x-1/2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2 transition-all z-10 font-medium"
         >
           <ChevronDown class="w-4 h-4" />
           <span>

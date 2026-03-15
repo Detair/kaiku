@@ -139,7 +139,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                 <button
                                     type="submit"
                                     disabled={isLoading() || !currentPassword() || !newPassword() || !confirmPassword()}
-                                    class="px-5 py-2 bg-accent-primary text-white rounded-xl font-medium hover:bg-accent-primary/90 transition-colors disabled:bg-surface-highlight disabled:text-text-secondary flex items-center justify-center min-w-[120px]"
+                                    class="px-5 py-2 bg-accent-primary text-on-accent rounded-xl font-medium hover:bg-accent-primary/90 transition-colors disabled:bg-surface-highlight disabled:text-text-secondary flex items-center justify-center min-w-[120px]"
                                 >
                                     {isLoading() ? (
                                         <div class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />

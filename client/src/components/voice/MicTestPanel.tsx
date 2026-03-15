@@ -251,7 +251,7 @@ function MicTestPanel(props: MicTestPanelProps) {
         >
           <button
             onClick={startTest}
-            class="flex-1 px-3 py-2 bg-accent-primary hover:bg-accent-hover text-white rounded-lg transition-colors text-sm"
+            class="flex-1 px-3 py-2 bg-accent-primary hover:bg-accent-hover text-on-accent rounded-lg transition-colors text-sm"
           >
             Start Test
           </button>

@@ -626,7 +626,7 @@ const CommandCenterPanel: Component = () => {
                   onClick={() => handleRouteSortChange("latency")}
                   class="px-2 py-0.5 text-xs rounded transition-colors"
                   classList={{
-                    "bg-accent-primary/20 text-accent-primary":
+                    "bg-accent-primary/20 text-text-primary":
                       routeSort() === "latency",
                     "text-text-secondary hover:text-text-primary":
                       routeSort() !== "latency",
@@ -638,7 +638,7 @@ const CommandCenterPanel: Component = () => {
                   onClick={() => handleRouteSortChange("errors")}
                   class="px-2 py-0.5 text-xs rounded transition-colors"
                   classList={{
-                    "bg-accent-primary/20 text-accent-primary":
+                    "bg-accent-primary/20 text-text-primary":
                       routeSort() === "errors",
                     "text-text-secondary hover:text-text-primary":
                       routeSort() !== "errors",

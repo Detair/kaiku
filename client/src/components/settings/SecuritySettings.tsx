@@ -390,7 +390,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
             <Show when={!isMfaEnabled()}>
               <button
                 onClick={() => setShowMfaSetup(true)}
-                class="flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-white text-sm font-medium"
+                class="flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
               >
                 <ShieldCheck class="w-4 h-4" />
                 Enable MFA
@@ -548,7 +548,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 disabled={isSavingClipboard()}
                 class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                 classList={{
-                  "bg-accent-primary text-white":
+                  "bg-accent-primary text-on-accent":
                     clipboardSettings()?.protection_level === "minimal",
                   "bg-white/10 text-text-secondary hover:bg-white/20":
                     clipboardSettings()?.protection_level !== "minimal",
@@ -561,7 +561,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 disabled={isSavingClipboard()}
                 class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                 classList={{
-                  "bg-accent-primary text-white":
+                  "bg-accent-primary text-on-accent":
                     clipboardSettings()?.protection_level === "standard",
                   "bg-white/10 text-text-secondary hover:bg-white/20":
                     clipboardSettings()?.protection_level !== "standard",
@@ -574,7 +574,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 disabled={isSavingClipboard()}
                 class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                 classList={{
-                  "bg-accent-primary text-white":
+                  "bg-accent-primary text-on-accent":
                     clipboardSettings()?.protection_level === "strict",
                   "bg-white/10 text-text-secondary hover:bg-white/20":
                     clipboardSettings()?.protection_level !== "strict",
@@ -662,7 +662,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
           </p>
           <button
             onClick={() => setShowQrLogin(true)}
-            class="flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-white text-sm font-medium"
+            class="flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
           >
             <Smartphone class="w-4 h-4" />
             Link Mobile Device

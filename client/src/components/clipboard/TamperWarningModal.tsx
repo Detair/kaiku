@@ -97,7 +97,7 @@ const TamperWarningModal: Component<TamperWarningModalProps> = (props) => {
           <div class="flex gap-3 px-6 py-4 border-t border-white/10">
             <button
               onClick={props.onCancel}
-              class="flex-1 px-4 py-2.5 bg-accent-primary hover:bg-accent-primary/90 rounded-lg font-medium text-white transition-colors"
+              class="flex-1 px-4 py-2.5 bg-accent-primary hover:bg-accent-primary/90 rounded-lg font-medium text-on-accent transition-colors"
             >
               Cancel (Safe)
             </button>

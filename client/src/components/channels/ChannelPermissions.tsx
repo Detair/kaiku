@@ -426,7 +426,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                   onClick={handleSaveOverride}
                   data-testid="channel-permissions-save"
                   disabled={isSaving()}
-                  class="px-4 py-2 rounded-lg bg-accent-primary text-white font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50"
+                  class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50"
                 >
                   {isSaving() ? "Saving..." : "Save"}
                 </button>

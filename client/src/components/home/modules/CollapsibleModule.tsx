@@ -44,7 +44,7 @@ const CollapsibleModule: Component<CollapsibleModuleProps> = (props) => {
           </Show>
           <span class="font-semibold text-text-primary">{props.title}</span>
           <Show when={props.badge && props.badge > 0}>
-            <span class="px-1.5 py-0.5 text-xs font-medium bg-accent-primary text-white rounded-full">
+            <span class="px-1.5 py-0.5 text-xs font-medium bg-accent-primary text-on-accent rounded-full">
               {props.badge}
             </span>
           </Show>

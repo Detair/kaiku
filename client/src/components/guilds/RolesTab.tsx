@@ -161,7 +161,7 @@ const RolesTab: Component<RolesTabProps> = (props) => {
           <button
             onClick={() => props.onCreateRole()}
             data-testid="roles-tab-create-role"
-            class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-white text-sm font-medium hover:bg-accent-primary/90 transition-colors"
+            class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors"
           >
             <Plus class="w-4 h-4" />
             New Role
