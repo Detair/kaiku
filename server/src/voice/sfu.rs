@@ -1,6 +1,6 @@
 //! Selective Forwarding Unit Implementation
 //!
-//! Manages voice rooms and WebRTC peer connections for real-time audio.
+//! Manages voice rooms and WebRTC peer connections for real-time audio and video.
 
 use std::collections::HashMap;
 use std::sync::Arc;
