@@ -476,7 +476,9 @@ pub fn spawn_rtcp_reader(
                     .as_any()
                     .downcast_ref::<ReceiverEstimatedMaximumBitrate>()
                 {
-                    // REMB bitrate is f32 bps; convert to u64 for logging.
+                    if !remb.bitrate.is_finite() || remb.bitrate < 0.0 {
+                        continue;
+                    }
                     let bitrate = remb.bitrate as u64;
                     tracing::trace!(
                         source = %source_user_id,
@@ -521,6 +523,9 @@ pub fn spawn_subscriber_remb_reader(
                     .as_any()
                     .downcast_ref::<ReceiverEstimatedMaximumBitrate>()
                 {
+                    if !remb.bitrate.is_finite() || remb.bitrate < 0.0 {
+                        continue;
+                    }
                     let bitrate = remb.bitrate as u64;
                     tracing::trace!(
                         subscriber = %subscriber_id,
