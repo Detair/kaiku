@@ -580,7 +580,7 @@ impl SfuServer {
         let channel_id = peer.channel_id;
 
         peer.peer_connection
-            .on_track(Box::new(move |track, receiver, _transceiver| {
+            .on_track(Box::new(move |track, _receiver, _transceiver| {
                 let pw = peer_weak.clone();
                 let rw = room_weak.clone();
                 let uid = user_id;
