@@ -21,8 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Screen share limits now use atomic Redis Lua script for reliable concurrent slot management
 - Default theme updated to CachyOS Nordic color palette with true Nord Polar Night surfaces and Snow Storm text, aligning the client with the landing page
 - Layout areas (ServerRail, Sidebar, Main Stage) now separated by solid border lines for clearer visual structure
+- Removed redundant source-side RTCP reader that spawned 3 extra tokio tasks per simulcast screen share (#370)
 
 ### Fixed
+- Fixed REMB bitrate conversion that could produce incorrect values from NaN or infinite f32, potentially disrupting simulcast layer switching (#368)
 - Guild Settings modal updated to be fully responsive (`w-[90vw] md:w-[800px]`), and Safety tab active sections text contrast improved for readability
 - Improved contrast and visibility of admin elevation badges, formatting toolbar icons, server rail icons, settings modal backdrop, and user panel across all 4 themes
 - Friend request accept/decline buttons enlarged with stronger backgrounds for better visibility
