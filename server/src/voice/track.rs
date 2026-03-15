@@ -12,7 +12,6 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::track::track_remote::TrackRemote;
@@ -451,51 +450,6 @@ pub fn spawn_rtp_forwarder(
              source_type = ?source_type,
              layer = ?layer,
              "RTP forwarder stopped"
-        );
-    });
-}
-
-/// Spawn a task to read RTCP packets (e.g. REMB) from an `RTCRtpReceiver`.
-///
-/// Reads REMB from the **source** side for observability logging only.
-/// Actual per-subscriber REMB routing is handled by
-/// [`spawn_subscriber_remb_reader`], which reads from the subscriber's
-/// `RTCRtpSender` and drives automatic layer switching.
-pub fn spawn_rtcp_reader(
-    source_user_id: Uuid,
-    source_type: TrackSource,
-    layer: Layer,
-    receiver: Arc<RTCRtpReceiver>,
-) {
-    tokio::spawn(async move {
-        use webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
-
-        while let Ok((packets, _)) = receiver.read_rtcp().await {
-            for pkt in &packets {
-                if let Some(remb) = pkt
-                    .as_any()
-                    .downcast_ref::<ReceiverEstimatedMaximumBitrate>()
-                {
-                    if !remb.bitrate.is_finite() || remb.bitrate < 0.0 {
-                        continue;
-                    }
-                    let bitrate = remb.bitrate as u64;
-                    tracing::trace!(
-                        source = %source_user_id,
-                        source_type = ?source_type,
-                        layer = ?layer,
-                        bitrate,
-                        "REMB received"
-                    );
-                }
-            }
-        }
-
-        debug!(
-            source = %source_user_id,
-            source_type = ?source_type,
-            layer = ?layer,
-            "RTCP reader stopped"
         );
     });
 }

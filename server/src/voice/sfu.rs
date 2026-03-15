@@ -27,9 +27,7 @@ use super::error::VoiceError;
 use super::peer::Peer;
 use super::rate_limit::VoiceStatsLimiter;
 use super::screen_share::ScreenShareInfo;
-use super::track::{
-    spawn_rtcp_reader, spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter,
-};
+use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
 use crate::config::Config;
@@ -681,11 +679,6 @@ impl SfuServer {
                         track.clone(),
                         room.track_router.clone(),
                     );
-
-                    // Spawn RTCP reader for REMB processing on video tracks.
-                    if source_type.is_video() {
-                        spawn_rtcp_reader(uid, source_type, layer, receiver.clone());
-                    }
 
                     // Only create subscriber tracks for the primary layer (High)
                     // or non-simulcast tracks. Secondary simulcast layers (Medium,
