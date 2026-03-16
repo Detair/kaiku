@@ -56,9 +56,19 @@ a.auth-link:hover {
   text-decoration-thickness: 2px;
 }
 
-/* Input and textarea styling */
+/* Input, textarea and select styling */
 input,
 textarea {
+  color: var(--color-text-input);
+  background-color: var(--color-surface-layer2);
+}
+
+select {
+  color: var(--color-text-input);
+  background-color: var(--color-surface-layer2);
+}
+
+select option {
   color: var(--color-text-input);
   background-color: var(--color-surface-layer2);
 }
