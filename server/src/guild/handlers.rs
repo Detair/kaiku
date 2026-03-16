@@ -150,7 +150,7 @@ pub async fn create_guild(
 ) -> Result<Json<Guild>, GuildError> {
     // Validate request
     body.validate()
-        .map_err(|e| GuildError::Validation(e.to_string()))?;
+        .map_err(|e| GuildError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Validate tags if provided
     if let Some(ref tags) = body.tags {
@@ -388,7 +388,7 @@ pub async fn update_guild(
 ) -> Result<Json<Guild>, GuildError> {
     // Validate request
     body.validate()
-        .map_err(|e| GuildError::Validation(e.to_string()))?;
+        .map_err(|e| GuildError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Verify ownership
     let owner_check: Option<(Uuid,)> = sqlx::query_as("SELECT owner_id FROM guilds WHERE id = $1")
@@ -684,6 +684,12 @@ pub async fn list_channels(
     auth: AuthUser,
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<Vec<ChannelWithUnread>>, GuildError> {
+    // Verify membership before fetching channels
+    let is_member = db::is_guild_member(&state.db, guild_id, auth.id).await?;
+    if !is_member {
+        return Err(GuildError::Forbidden);
+    }
+
     let all_channels = db::get_guild_channels(&state.db, guild_id).await?;
     let all_channel_ids: Vec<Uuid> = all_channels.iter().map(|c| c.id).collect();
 

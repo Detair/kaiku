@@ -289,7 +289,7 @@ pub async fn create_emoji(
         name: name_str.clone(),
     };
     if let Err(e) = req.validate() {
-        return Err(EmojiError::Validation(e.to_string()));
+        return Err(EmojiError::Validation(crate::validation::format_validation_errors(&e)));
     }
 
     // Validate actual file content using magic bytes (don't trust client-provided MIME type)
@@ -439,7 +439,7 @@ pub async fn update_emoji(
     Json(req): Json<UpdateEmojiRequest>,
 ) -> Result<Json<GuildEmoji>, EmojiError> {
     if let Err(e) = req.validate() {
-        return Err(EmojiError::Validation(e.to_string()));
+        return Err(EmojiError::Validation(crate::validation::format_validation_errors(&e)));
     }
 
     // Check ownership or MANAGE_GUILD permission

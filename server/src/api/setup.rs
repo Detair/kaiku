@@ -286,7 +286,7 @@ pub async fn complete(
 ) -> Result<StatusCode, SetupError> {
     // Validate input
     body.validate()
-        .map_err(|e| SetupError::Validation(e.to_string()))?;
+        .map_err(|e| SetupError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Use transaction for atomic setup completion
     let mut tx = state.db.begin().await.map_err(|e| {

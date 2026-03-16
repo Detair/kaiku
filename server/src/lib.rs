@@ -24,6 +24,7 @@ pub mod presence;
 pub mod ratelimit;
 pub mod social;
 pub mod util;
+pub mod validation;
 pub mod voice;
 pub mod webhooks;
 pub mod workspaces;
