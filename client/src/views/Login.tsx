@@ -388,7 +388,7 @@ const Login: Component = () => {
               <div class="text-right">
                 <A
                   href="/forgot-password"
-                  class="text-sm text-primary hover:underline"
+                  class="text-sm text-primary auth-link"
                 >
                   Forgot password?
                 </A>
@@ -439,7 +439,7 @@ const Login: Component = () => {
 
           <p class="text-center text-sm text-text-secondary mt-4">
             Don't have an account?{" "}
-            <A href="/register" class="text-primary hover:underline">
+            <A href="/register" class="text-primary auth-link">
               Register
             </A>
           </p>

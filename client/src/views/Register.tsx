@@ -431,7 +431,7 @@ const Register: Component = () => {
 
         <p class="text-center text-sm text-text-secondary mt-4">
           Already have an account?{" "}
-          <A href="/login" class="text-primary hover:underline">
+          <A href="/login" class="text-primary auth-link">
             Login
           </A>
         </p>

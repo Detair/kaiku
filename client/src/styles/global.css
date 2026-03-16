@@ -47,12 +47,12 @@ select:focus-visible {
 }
 
 /* Links should have non-color visual indicator (WCAG) */
-a[class*="text-primary"] {
+a.auth-link {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-a[class*="text-primary"]:hover {
+a.auth-link:hover {
   text-decoration-thickness: 2px;
 }
 

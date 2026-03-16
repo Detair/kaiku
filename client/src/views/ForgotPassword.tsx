@@ -144,7 +144,7 @@ const ForgotPassword: Component = () => {
             </button>
 
             <p class="text-center text-sm text-text-secondary mt-4">
-              <A href="/login" class="text-primary hover:underline">
+              <A href="/login" class="text-primary auth-link">
                 Back to Login
               </A>
             </p>
@@ -167,7 +167,7 @@ const ForgotPassword: Component = () => {
               Enter Reset Code
             </A>
             <p class="text-center text-sm text-text-secondary">
-              <A href="/login" class="text-primary hover:underline">
+              <A href="/login" class="text-primary auth-link">
                 Back to Login
               </A>
             </p>

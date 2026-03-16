@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Milestone: Phase 6 - Competitive Differentiators & Mastery
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
+### Added
+- Password visibility toggle on all password fields (login, register, reset password)
+- Skip-to-content keyboard navigation link
+- Open Graph and Twitter Card meta tags for link previews
+- Dynamic page titles per auth page (Login, Create Account, Forgot Password, Reset Password)
+- `--color-text-muted` design token across all themes for helper text hierarchy
+
 ### Changed
 - Screen share WebSocket events now include `stream_id` field — clients must update to handle multi-stream protocol (#356)
 - Default `max_screen_shares` per channel increased from 1 to 6 to support multi-stream sharing (#356)
@@ -30,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed poor text contrast on accent-colored backgrounds by introducing a `text-on-accent` design token across all themes (#386)
 - Admin Settings panel now checks elevation state on mount, hiding the warning when session is already elevated (#389)
 - Admin Reports panel now shows an error state with retry button instead of silently failing (#388)
+- Fixed invisible primary buttons caused by CSS reset overriding UnoCSS utility backgrounds
+- Fixed missing label/input associations and autocomplete attributes on auth forms (breaks screen readers and password managers)
+- Fixed missing client-side username format validation on register page
+- Fixed error messages missing ARIA `role="alert"` on login and register pages
+- Improved error text and required asterisk color contrast to meet WCAG AA (4.5:1)
+- Replaced default Vite favicon with Kaiku branded SVG favicon
+- Added `color-scheme: dark light` meta tag for proper browser dark mode controls
+- Server URL field now auto-detected and hidden for browser users on forgot/reset password pages
 - Guild Settings modal updated to be fully responsive (`w-[90vw] md:w-[800px]`), and Safety tab active sections text contrast improved for readability
 - Improved contrast and visibility of admin elevation badges, formatting toolbar icons, server rail icons, settings modal backdrop, and user panel across all 4 themes
 - Friend request accept/decline buttons enlarged with stronger backgrounds for better visibility
