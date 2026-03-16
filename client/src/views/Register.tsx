@@ -290,7 +290,7 @@ const Register: Component = () => {
           <form onSubmit={handleRegister} class="space-y-4">
             <div>
               <label for="register-username" class="block text-sm font-medium text-text-secondary mb-1">
-                Username <span class="text-danger">*</span>
+                Username <span class="text-error-text">*</span>
               </label>
               <input
                 id="register-username"
@@ -350,7 +350,7 @@ const Register: Component = () => {
 
             <div>
               <label for="register-password" class="block text-sm font-medium text-text-secondary mb-1">
-                Password <span class="text-danger">*</span>
+                Password <span class="text-error-text">*</span>
               </label>
               <input
                 id="register-password"
@@ -370,7 +370,7 @@ const Register: Component = () => {
 
             <div>
               <label for="register-confirm-password" class="block text-sm font-medium text-text-secondary mb-1">
-                Confirm Password <span class="text-danger">*</span>
+                Confirm Password <span class="text-error-text">*</span>
               </label>
               <input
                 id="register-confirm-password"
@@ -389,6 +389,7 @@ const Register: Component = () => {
 
             <Show when={error()}>
               <div
+                role="alert"
                 class="p-3 rounded-md text-sm"
                 style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
               >
@@ -420,6 +421,7 @@ const Register: Component = () => {
         {/* Error display when no local form */}
         <Show when={!showLocalRegister() && !isClosed() && error()}>
           <div
+            role="alert"
             class="p-3 rounded-md text-sm"
             style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
           >

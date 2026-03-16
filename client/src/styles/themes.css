@@ -62,7 +62,7 @@
   --color-selection-text: #242933;
   --color-error-bg: rgba(191, 97, 106, 0.15);
   --color-error-border: rgba(191, 97, 106, 0.4);
-  --color-error-text: #f0a0a8;
+  --color-error-text: #f4b8bf;
 
   /* UI Icons */
   --icon-accept: url('../assets/icons/accept_request_icon.png');
@@ -196,7 +196,7 @@
   --color-selection-text: #242933;
   --color-error-bg: rgba(191, 97, 106, 0.15);
   --color-error-border: rgba(191, 97, 106, 0.4);
-  --color-error-text: #f0a0a8;
+  --color-error-text: #f4b8bf;
 
   /* UI Icons */
   --icon-accept: url('../assets/icons/accept_request_icon.png');
