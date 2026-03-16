@@ -9,7 +9,7 @@ const SessionExpiredModal: Component = () => {
 
   onMount(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") handleLogin();
+      if (e.key === "Escape" && authState.sessionExpired) handleLogin();
     };
     document.addEventListener("keydown", handleKeyDown);
     onCleanup(() => document.removeEventListener("keydown", handleKeyDown));

@@ -405,11 +405,9 @@ const Register: Component = () => {
             </Show>
 
             <p class="text-xs text-text-muted text-center">
-              By creating an account, you agree to the server's{" "}
-              <a href="/pages/terms-of-service" target="_blank" class="text-primary auth-link">Terms of Service</a>
-              {" "}and{" "}
-              <a href="/pages/privacy-policy" target="_blank" class="text-primary auth-link">Privacy Policy</a>
-              , if applicable.
+              By creating an account, you agree to the server's
+              Terms of Service and Privacy Policy, if applicable.
+              These are available in the server's Library after login.
             </p>
 
             <button

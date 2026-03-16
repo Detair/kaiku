@@ -1,8 +1,9 @@
-import { Component } from "solid-js";
+import { Component, onCleanup } from "solid-js";
 import { A } from "@solidjs/router";
 
 const NotFound: Component = () => {
   document.title = "Page Not Found | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
 
   return (
     <div class="flex items-center justify-center min-h-screen bg-background-primary">

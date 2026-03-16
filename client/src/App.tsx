@@ -295,6 +295,7 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/invite/:code" component={InvitePage} />
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />
+    <Route path="/guilds/:guildId/library" component={MainPage} />
     <Route path="/admin" component={AdminPage} />
     <Route path="/settings/connection" component={ConnectionHistoryPage} />
     <Route path="/settings/bots/:id/commands" component={BotCommandsPage} />

@@ -32,6 +32,7 @@ import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";
 import KeyboardShortcutsDialog from "@/components/ui/KeyboardShortcutsDialog";
+import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { selectedChannel } from "@/stores/channels";
 import { loadGuilds, guildsState, isDiscoveryActive, isGuildOwner } from "@/stores/guilds";
 import { memberHasPermission } from "@/stores/permissions";
@@ -207,9 +208,11 @@ const Main: Component = () => {
 
             {/* Guild Library */}
             <Match when={isLibraryRoute()}>
-              <Suspense fallback={<div class="flex-1 bg-surface-layer1" />}>
-                <LibraryViewRoute />
-              </Suspense>
+              <LazyErrorBoundary name="LibraryView">
+                <Suspense fallback={<div class="flex-1 bg-surface-layer1" />}>
+                  <LibraryViewRoute />
+                </Suspense>
+              </LazyErrorBoundary>
             </Match>
 
             {/* Guild Page */}

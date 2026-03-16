@@ -23,22 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--color-text-muted` design token across all themes for helper text hierarchy
 - ARIA `banner` and `contentinfo` landmarks for screen reader navigation
 - Username and display name tooltips on hover in user panel
-- 404 page at `/404` for unmatched routes
-- Terms of Service and Privacy Policy links on register page (links to server-managed pages)
+- 404 page available at `/404`
+- Terms of Service and Privacy Policy notice on register page
 
 ### Changed
 - Library page now uses theme-aware colors instead of hardcoded zinc palette
 - Library now renders in the main section with sidebar visible, with a close button
 - Discover Servers page now keeps sidebar visible instead of hiding it
 - Native `<select>` elements styled with theme colors (onboarding device selection)
-
-### Fixed (continued)
-- All 14 modals now dismiss on Escape key press
-- Fixed heading hierarchy skip (H1 → H3) in message list — now uses H2
-- Fixed onboarding completion image showing transparency checkerboard
-- Removed misleading dropdown chevron from server header (no dropdown exists)
-
-### Changed
 - Screen share WebSocket events now include `stream_id` field — clients must update to handle multi-stream protocol (#356)
 - Default `max_screen_shares` per channel increased from 1 to 6 to support multi-stream sharing (#356)
 - Screen share limits now use atomic Redis Lua script for reliable concurrent slot management
@@ -47,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed redundant source-side RTCP reader that spawned 3 extra tokio tasks per simulcast screen share (#370)
 
 ### Fixed
+- All 14 modals now dismiss on Escape key press
+- Fixed heading hierarchy skip (H1 → H3) in message list — now uses H2
+- Fixed onboarding completion image showing transparency checkerboard
+- Removed misleading dropdown chevron from server header (no dropdown exists)
 - Fixed REMB bitrate conversion that could produce incorrect values from NaN or infinite f32, potentially disrupting simulcast layer switching (#368)
 - Fixed 2-second delay on every HTTP request caused by webhook worker BRPOP blocking the shared Redis connection (#390)
 - Fixed noisy OIDC error logs on server startup when no provider is configured (#387)
