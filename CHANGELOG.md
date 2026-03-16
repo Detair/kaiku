@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Changed
+- Replaced Traefik + external Stoat Caddy with self-contained Caddy reverse proxy in docker-compose, simplifying deployment to a single stack
+- Added security headers (CSP, HSTS, X-Frame-Options) to SPA responses via Caddyfile
 - Screen share WebSocket events now include `stream_id` field — clients must update to handle multi-stream protocol (#356)
 - Default `max_screen_shares` per channel increased from 1 to 6 to support multi-stream sharing (#356)
 - Screen share limits now use atomic Redis Lua script for reliable concurrent slot management
@@ -37,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Screen share encoder no longer busy-waits, reducing idle CPU usage via `recv_timeout`
 - Theater mode screen share viewer now correctly aligns with sidebar instead of using hardcoded offset
 - Volume mute toggle now remembers pre-mute level and restores it on unmute
+
+### Security
+- Validation error responses no longer echo submitted field values (e.g., passwords)
+- Added `Strict-Transport-Security` header to all API responses
+- Non-guild-members now receive 403 instead of empty 200 on channel listing
+- Display names are now rejected if they contain HTML tags
 
 ### Added
 - Guild banner image upload support in the Create New Guild dialog with drag-and-drop and local image preview
