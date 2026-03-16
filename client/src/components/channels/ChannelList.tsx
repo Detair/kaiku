@@ -306,7 +306,7 @@ const ChannelList: Component = () => {
     if (result.sourceType === "channel") {
       if (result.targetType === "channel") {
         // Channel dropped on channel - reorder
-        moveChannel(
+        await moveChannel(
           result.sourceId,
           result.targetId,
           result.position as "before" | "after",
@@ -314,7 +314,7 @@ const ChannelList: Component = () => {
       } else if (result.targetType === "category") {
         // Channel dropped on category - move to that category
         if (result.position === "inside") {
-          moveChannelToCategory(result.sourceId, result.targetId);
+          await moveChannelToCategory(result.sourceId, result.targetId);
         }
       }
     } else if (result.sourceType === "category") {
@@ -333,12 +333,12 @@ const ChannelList: Component = () => {
   };
 
   // Handle drop on uncategorized section
-  const handleUncategorizedDrop = (e: DragEvent) => {
+  const handleUncategorizedDrop = async (e: DragEvent) => {
     e.preventDefault();
     const result = getDragResult();
 
     if (result.sourceType === "channel" && result.sourceId) {
-      moveChannelToCategory(result.sourceId, null);
+      await moveChannelToCategory(result.sourceId, null);
     }
 
     endDrag();
