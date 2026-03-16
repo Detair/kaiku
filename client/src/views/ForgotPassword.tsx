@@ -58,7 +58,7 @@ const ForgotPassword: Component = () => {
     <div class="flex items-center justify-center min-h-screen bg-background-primary">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={flokiForgot} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="lazy" />
+          <img src={flokiForgot} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="eager" />
         </div>
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">

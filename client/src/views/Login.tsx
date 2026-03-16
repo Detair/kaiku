@@ -194,7 +194,7 @@ const Login: Component = () => {
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         {/* Left: Floki illustration */}
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={flokiWelcome} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="lazy" />
+          <img src={flokiWelcome} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="eager" />
         </div>
         {/* Right: Form */}
         <div class="w-full lg:w-1/2 p-8">
