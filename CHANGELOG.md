@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Open Graph and Twitter Card meta tags for link previews
 - Dynamic page titles per auth page (Login, Create Account, Forgot Password, Reset Password)
 - `--color-text-muted` design token across all themes for helper text hierarchy
+- ARIA `banner` and `contentinfo` landmarks for screen reader navigation
+- Username and display name tooltips on hover in user panel
+
+### Changed
+- Library page now uses theme-aware colors instead of hardcoded zinc palette
+
+### Fixed (continued)
+- All 14 modals now dismiss on Escape key press
+- Fixed heading hierarchy skip (H1 → H3) in message list — now uses H2
+- Fixed onboarding completion image showing transparency checkerboard
 
 ### Changed
 - Screen share WebSocket events now include `stream_id` field — clients must update to handle multi-stream protocol (#356)
