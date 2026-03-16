@@ -38,7 +38,7 @@ body {
   color: var(--color-selection-text);
 }
 
-/* Visible focus indicators for interactive elements */
+/* Visible focus indicators for buttons, links, and selects (inputs use focus:ring via input-field shortcut) */
 button:focus-visible,
 a:focus-visible,
 select:focus-visible {
@@ -46,7 +46,7 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
-/* Links should have non-color visual indicator (WCAG) */
+/* Auth page links: underline as non-color visual indicator per WCAG 1.4.1 */
 a.auth-link {
   text-decoration: underline;
   text-underline-offset: 2px;

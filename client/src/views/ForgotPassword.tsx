@@ -1,9 +1,10 @@
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { A } from "@solidjs/router";
 import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ForgotPassword: Component = () => {
   document.title = "Forgot Password | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const storedUrl =
@@ -25,7 +26,7 @@ const ForgotPassword: Component = () => {
       setError("Server URL is required");
       return;
     }
-    if (!email().trim() || !email().includes("@")) {
+    if (!email().trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email())) {
       setError("Please enter a valid email address");
       return;
     }
@@ -42,14 +43,17 @@ const ForgotPassword: Component = () => {
       );
 
       if (!res.ok) {
-        const data = await res.json().catch(() => null);
+        const data = await res.json().catch((e) => {
+          console.warn("[ForgotPassword] Could not parse error response:", e.message);
+          return null;
+        });
         throw new Error(data?.message || `Request failed (${res.status})`);
       }
 
       setSuccess(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "An error occurred";
-      setError(message);
+      setError(isTauri ? message : `${message} (server: ${serverUrl()})`);
     } finally {
       setIsLoading(false);
     }

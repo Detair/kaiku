@@ -1,10 +1,11 @@
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
 import PasswordInput from "@/components/ui/PasswordInput";
 import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ResetPassword: Component = () => {
   document.title = "Reset Password | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -55,14 +56,17 @@ const ResetPassword: Component = () => {
       );
 
       if (!res.ok) {
-        const data = await res.json().catch(() => null);
+        const data = await res.json().catch((e) => {
+          console.warn("[ResetPassword] Could not parse error response:", e.message);
+          return null;
+        });
         throw new Error(data?.message || `Request failed (${res.status})`);
       }
 
       setSuccess(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "An error occurred";
-      setError(message);
+      setError(isTauri ? message : `${message} (server: ${serverUrl()})`);
     } finally {
       setIsLoading(false);
     }

@@ -1,8 +1,16 @@
 import { Component, createSignal, JSX, splitProps } from "solid-js";
 import { Eye, EyeOff } from "lucide-solid";
 
-type PasswordInputProps = Omit<JSX.InputHTMLAttributes<HTMLInputElement>, "type">;
+type PasswordInputProps = Omit<JSX.InputHTMLAttributes<HTMLInputElement>, "type" | "children">;
 
+/**
+ * Password field with visibility toggle.
+ * Accepts all `<input>` props except `type` (managed internally).
+ * Renders a wrapper `<div>` around the native `<input>`.
+ * The toggle button uses `tabIndex={-1}` to stay out of the form's
+ * tab order — keyboard users interact via the browser's built-in
+ * password reveal or autocomplete instead.
+ */
 const PasswordInput: Component<PasswordInputProps> = (props) => {
   const [local, inputProps] = splitProps(props, ["class"]);
   const [visible, setVisible] = createSignal(false);

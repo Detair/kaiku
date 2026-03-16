@@ -1,4 +1,4 @@
-import { Component, createSignal, createResource, Show, For } from "solid-js";
+import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { register, loginWithOidc, authState, clearError } from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
@@ -22,6 +22,7 @@ function providerIcon(hint: string | null) {
 
 const Register: Component = () => {
   document.title = "Create Account | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -40,7 +41,8 @@ const Register: Component = () => {
     if (!url.trim()) return null;
     try {
       return await fetchServerSettings(url);
-    } catch {
+    } catch (err) {
+      console.warn("[Register] Failed to fetch server settings:", err instanceof Error ? err.message : err);
       return null;
     }
   });
@@ -100,7 +102,10 @@ const Register: Component = () => {
       );
       navigate("/", { replace: true });
     } catch (err) {
-      // Error is already set in auth store
+      if (!authState.error) {
+        const msg = err instanceof Error ? err.message : "Registration failed. Please try again.";
+        setLocalError(msg);
+      }
     }
   };
 
@@ -143,8 +148,10 @@ const Register: Component = () => {
             .then(() => {
               navigate("/", { replace: true });
             })
-            .catch(() => {
-              // Error is set in auth store
+            .catch((err) => {
+              if (!authState.error) {
+                setLocalError(err instanceof Error ? err.message : "SSO registration failed");
+              }
             })
             .finally(() => {
               setOidcLoading(null);

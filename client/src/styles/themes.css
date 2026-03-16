@@ -38,6 +38,7 @@
  * ACCESSIBILITY:
  * Ensure text-primary achieves >=7:1 contrast on surface-base (AAA).
  * Ensure text-secondary achieves >=4.5:1 contrast on surface-layer1 (AA).
+ * Ensure text-muted achieves >=3:1 contrast on surface-layer1 (AA for UI components).
  * Use https://webaim.org/resources/contrastchecker/ to verify.
  */
 

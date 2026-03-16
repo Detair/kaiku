@@ -1,4 +1,4 @@
-import { Component, createSignal, createResource, Show, For } from "solid-js";
+import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import {
   login,
@@ -28,6 +28,7 @@ function providerIcon(hint: string | null) {
 
 const Login: Component = () => {
   document.title = "Login | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -44,7 +45,8 @@ const Login: Component = () => {
     if (!url.trim()) return null;
     try {
       return await fetchServerSettings(url);
-    } catch {
+    } catch (err) {
+      console.warn("[Login] Failed to fetch server settings:", err instanceof Error ? err.message : err);
       return null;
     }
   });
@@ -94,9 +96,9 @@ const Login: Component = () => {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === "MFA_REQUIRED") {
         setMfaCode("");
-        // Error is not set — mfaRequired flag drives the UI
+      } else if (!authState.error) {
+        setLocalError(msg || "Login failed. Please try again.");
       }
-      // Other errors are already set in auth store
     }
   };
 
@@ -145,8 +147,10 @@ const Login: Component = () => {
             .then(() => {
               navigate("/", { replace: true });
             })
-            .catch(() => {
-              // Error is set in auth store
+            .catch((err) => {
+              if (!authState.error) {
+                setLocalError(err instanceof Error ? err.message : "SSO login failed");
+              }
             })
             .finally(() => {
               setOidcLoading(null);
