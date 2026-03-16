@@ -23,14 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--color-text-muted` design token across all themes for helper text hierarchy
 - ARIA `banner` and `contentinfo` landmarks for screen reader navigation
 - Username and display name tooltips on hover in user panel
+- 404 page at `/404` for unmatched routes
+- Terms of Service and Privacy Policy links on register page (links to server-managed pages)
 
 ### Changed
 - Library page now uses theme-aware colors instead of hardcoded zinc palette
+- Library now renders in the main section with sidebar visible, with a close button
+- Discover Servers page now keeps sidebar visible instead of hiding it
+- Native `<select>` elements styled with theme colors (onboarding device selection)
 
 ### Fixed (continued)
 - All 14 modals now dismiss on Escape key press
 - Fixed heading hierarchy skip (H1 → H3) in message list — now uses H2
 - Fixed onboarding completion image showing transparency checkerboard
+- Removed misleading dropdown chevron from server header (no dropdown exists)
 
 ### Changed
 - Screen share WebSocket events now include `stream_id` field — clients must update to handle multi-stream protocol (#356)
