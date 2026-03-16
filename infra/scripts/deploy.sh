@@ -27,8 +27,8 @@ export PATH="$HOME/.bun/bin:$PATH"
 cd /opt/kaiku && git pull
 cd client
 echo "VITE_SERVER_URL=https://kaiku.pmind.de" > .env.production
-bun install --frozen-lockfile 2>&1 | tail -1
-bun run build 2>&1 | tail -2
+bun install --frozen-lockfile
+bun run build
 docker cp dist/. canis-caddy:/srv/kaiku/
 REMOTE
     echo "[+] Client deployed."
