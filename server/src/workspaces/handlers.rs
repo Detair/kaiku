@@ -50,7 +50,7 @@ pub async fn create_workspace(
     };
     request
         .validate()
-        .map_err(|e| WorkspaceError::Validation(e.to_string()))?;
+        .map_err(|e| WorkspaceError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     if let Some(icon) = request.icon.as_ref() {
         if icon.chars().count() > MAX_WORKSPACE_ICON_LENGTH {
@@ -229,7 +229,7 @@ pub async fn update_workspace(
     };
     request
         .validate()
-        .map_err(|e| WorkspaceError::Validation(e.to_string()))?;
+        .map_err(|e| WorkspaceError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     if let Some(Some(icon)) = request.icon.as_ref() {
         if icon.chars().count() > MAX_WORKSPACE_ICON_LENGTH {

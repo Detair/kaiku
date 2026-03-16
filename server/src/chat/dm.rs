@@ -281,7 +281,7 @@ pub async fn create_dm(
     Json(body): Json<CreateDMRequest>,
 ) -> Result<(StatusCode, Json<DMResponse>), ChannelError> {
     body.validate()
-        .map_err(|e| ChannelError::Validation(e.to_string()))?;
+        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check for duplicate participant IDs
     let mut unique_ids = body.participant_ids.clone();
@@ -581,7 +581,7 @@ pub async fn update_dm_name(
     Json(body): Json<UpdateDMNameRequest>,
 ) -> Result<Json<DMResponse>, ChannelError> {
     body.validate()
-        .map_err(|e| ChannelError::Validation(e.to_string()))?;
+        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Verify channel exists and is a DM
     let channel = db::find_channel_by_id(&state.db, channel_id)

@@ -57,14 +57,6 @@ services:
       - "${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}:${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}/udp"
     networks:
       - voicechat
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.voicechat.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.voicechat.entrypoints=websecure"
-      - "traefik.http.routers.voicechat.tls.certresolver=letsencrypt"
-      - "traefik.http.services.voicechat.loadbalancer.server.port=8080"
-      # WebSocket support
-      - "traefik.http.middlewares.voicechat-ws.headers.customrequestheaders.Connection=Upgrade"
 
   # ==========================================================================
   # PostgreSQL Database (Bitnami hardened image)
@@ -108,28 +100,49 @@ services:
       retries: 5
 
   # ==========================================================================
-  # Traefik Reverse Proxy
+  # Caddy — Reverse Proxy & SPA Server
   # ==========================================================================
-  traefik:
-    image: traefik:v3.0
-    container_name: canis-traefik
+  caddy:
+    image: caddy:2-alpine
+    container_name: canis-caddy
     restart: unless-stopped
-    command:
-      - "--api.dashboard=false"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
-      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - letsencrypt:/letsencrypt
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - client_dist:/srv/kaiku
+    environment:
+      - DOMAIN=${DOMAIN}
+      - ACME_EMAIL=${ACME_EMAIL}
+    networks:
+      - voicechat
+
+  # ==========================================================================
+  # coturn — STUN/TURN Server for NAT Traversal
+  # ==========================================================================
+  coturn:
+    image: coturn/coturn:latest
+    container_name: canis-coturn
+    restart: unless-stopped
+    command:
+      - "-n"
+      - "--realm=${DOMAIN}"
+      - "--fingerprint"
+      - "--lt-cred-mech"
+      - "--user=${TURN_USERNAME:-kaiku}:${TURN_CREDENTIAL}"
+      - "--external-ip=${PUBLIC_IP}"
+      - "--listening-port=3478"
+      - "--min-port=49152"
+      - "--max-port=49200"
+      - "--log-file=stdout"
+      - "--no-cli"
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49152-49200:49152-49200/udp"
     networks:
       - voicechat
 
@@ -241,7 +254,9 @@ networks:
 volumes:
   postgres_data:
   valkey_data:
-  letsencrypt:
+  caddy_data:
+  caddy_config:
+  client_dist:
   prometheus_data:
   tempo_data:
   loki_data:

@@ -492,6 +492,10 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
         axum::http::HeaderName::from_static("referrer-policy"),
         axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
+    headers.insert(
+        axum::http::HeaderName::from_static("strict-transport-security"),
+        axum::http::HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
+    );
     response
 }
 

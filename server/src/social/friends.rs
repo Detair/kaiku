@@ -27,7 +27,7 @@ pub async fn send_friend_request(
     Json(body): Json<SendFriendRequestBody>,
 ) -> Result<Json<Friendship>, SocialError> {
     body.validate()
-        .map_err(|e| SocialError::Validation(e.to_string()))?;
+        .map_err(|e| SocialError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Find the target user by username
     let target_user: Uuid =

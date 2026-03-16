@@ -420,7 +420,7 @@ pub async fn register(
 ) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
     // Validate input first
     body.validate()
-        .map_err(|e| AuthError::Validation(e.to_string()))?;
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check if local auth is allowed
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
@@ -467,6 +467,10 @@ pub async fn register(
 
     // Set display name (default to username if not provided)
     let display_name = body.display_name.as_deref().unwrap_or(&body.username);
+
+    // Validate display name for unicode safety (control chars, bidi overrides, Zalgo, HTML)
+    crate::presence::validate_unicode_text(display_name, 64)
+        .map_err(|e| AuthError::Validation(format!("display_name: {e}")))?;
 
     // Start transaction for atomic first-user detection and admin grant
     let mut tx = state.db.begin().await.map_err(|e| {
@@ -1372,7 +1376,7 @@ pub async fn update_profile(
 ) -> AuthResult<Json<UpdateProfileResponse>> {
     // Validate request
     body.validate()
-        .map_err(|e| AuthError::Validation(e.to_string()))?;
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Validate display_name for unicode safety (control chars, bidi overrides, Zalgo)
     if let Some(ref display_name) = body.display_name {
@@ -1474,7 +1478,7 @@ pub async fn update_password(
     Json(body): Json<UpdatePasswordRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
     body.validate()
-        .map_err(|e| AuthError::Validation(e.to_string()))?;
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     let user = find_user_by_id(&state.db, auth_user.id)
         .await

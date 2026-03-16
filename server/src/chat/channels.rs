@@ -163,7 +163,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<ChannelResponse>), ChannelError> {
     // Validate input
     body.validate()
-        .map_err(|e| ChannelError::Validation(e.to_string()))?;
+        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Parse channel type
     let channel_type = match body.channel_type.to_lowercase().as_str() {
@@ -310,7 +310,7 @@ pub async fn update(
 ) -> Result<Json<ChannelResponse>, ChannelError> {
     // Validate input
     body.validate()
-        .map_err(|e| ChannelError::Validation(e.to_string()))?;
+        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check channel exists
     let _ = db::find_channel_by_id(&state.db, id)

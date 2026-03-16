@@ -140,10 +140,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       this.setState("connecting");
 
-      // Create peer connection
-      const config: RTCConfiguration = {
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      };
+      // Fetch ICE servers (STUN + TURN) from the API
+      const config = await this.fetchIceConfig();
 
       this.peerConnection = new RTCPeerConnection(config);
       this.setupPeerConnectionHandlers();
@@ -1039,6 +1037,61 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   // Private helper methods
+
+  private async fetchIceConfig(): Promise<RTCConfiguration> {
+    const fallback: RTCConfiguration = {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    };
+    try {
+      const { getServerUrl, getAccessToken } = await import("@/lib/tauri");
+      const serverUrl = getServerUrl();
+      const token = getAccessToken();
+      if (!token) {
+        console.warn("[BrowserVoiceAdapter] No access token, skipping ICE server fetch");
+        return fallback;
+      }
+      const res = await fetch(`${serverUrl}/api/voice/ice-servers`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        console.error(
+          `[BrowserVoiceAdapter] ICE server fetch failed: HTTP ${res.status}. ` +
+          `TURN unavailable — users behind restrictive NATs may not connect.`,
+        );
+        Sentry.addBreadcrumb({
+          category: "voice",
+          message: `ICE config fetch failed: ${res.status}`,
+          level: "error",
+        });
+        return fallback;
+      }
+      const data = await res.json();
+      const iceServers: RTCIceServer[] = (data.ice_servers ?? []).map(
+        (s: { urls: string[]; username?: string; credential?: string }) => ({
+          urls: s.urls,
+          ...(s.username && { username: s.username }),
+          ...(s.credential && { credential: s.credential }),
+        }),
+      );
+      if (iceServers.length > 0) {
+        const hasTurn = iceServers.some((s) =>
+          (Array.isArray(s.urls) ? s.urls : [s.urls]).some((u) => u.startsWith("turn:")),
+        );
+        console.log(`[BrowserVoiceAdapter] ICE config: ${iceServers.length} servers, TURN=${hasTurn}`);
+        return { iceServers };
+      }
+      return fallback;
+    } catch (err) {
+      console.error("[BrowserVoiceAdapter] ICE server fetch exception, using fallback STUN", err);
+      Sentry.addBreadcrumb({
+        category: "voice",
+        message: "ICE config fetch exception",
+        data: { error: err instanceof Error ? err.message : String(err) },
+        level: "error",
+      });
+      return fallback;
+    }
+  }
 
   private setState(state: VoiceConnectionState) {
     this.state = state;
