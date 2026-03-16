@@ -1,5 +1,6 @@
 import { Component, createSignal, Show } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
+import PasswordInput from "@/components/ui/PasswordInput";
 import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ResetPassword: Component = () => {
@@ -131,9 +132,8 @@ const ResetPassword: Component = () => {
               >
                 New Password
               </label>
-              <input
+              <PasswordInput
                 id="rp-new-password"
-                type="password"
                 class="input-field"
                 name="new-password"
                 autocomplete="new-password"
@@ -154,9 +154,8 @@ const ResetPassword: Component = () => {
               >
                 Confirm Password
               </label>
-              <input
+              <PasswordInput
                 id="rp-confirm-password"
-                type="password"
                 class="input-field"
                 name="confirm-password"
                 autocomplete="new-password"

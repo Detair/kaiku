@@ -10,6 +10,7 @@ import {
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { Github, Chrome, KeyRound, ShieldCheck } from "lucide-solid";
+import PasswordInput from "@/components/ui/PasswordInput";
 import flokiWelcome from "@/assets/images/floki_auth_welcome.png";
 
 /** Map icon_hint to a Lucide icon component. */
@@ -370,9 +371,8 @@ const Login: Component = () => {
                 <label for="login-password" class="block text-sm font-medium text-text-secondary mb-1">
                   Password
                 </label>
-                <input
+                <PasswordInput
                   id="login-password"
-                  type="password"
                   class="input-field"
                   name="password"
                   autocomplete="current-password"

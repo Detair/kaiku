@@ -4,6 +4,7 @@ import { register, loginWithOidc, authState, clearError } from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { Github, Chrome, KeyRound, ShieldAlert } from "lucide-solid";
+import PasswordInput from "@/components/ui/PasswordInput";
 import flokiRegister from "@/assets/images/floki_auth_register.png";
 
 /** Map icon_hint to a Lucide icon component. */
@@ -353,9 +354,8 @@ const Register: Component = () => {
               <label for="register-password" class="block text-sm font-medium text-text-secondary mb-1">
                 Password <span class="text-error-text">*</span>
               </label>
-              <input
+              <PasswordInput
                 id="register-password"
-                type="password"
                 class="input-field"
                 name="new-password"
                 autocomplete="new-password"
@@ -373,9 +373,8 @@ const Register: Component = () => {
               <label for="register-confirm-password" class="block text-sm font-medium text-text-secondary mb-1">
                 Confirm Password <span class="text-error-text">*</span>
               </label>
-              <input
+              <PasswordInput
                 id="register-confirm-password"
-                type="password"
                 class="input-field"
                 name="confirm-password"
                 autocomplete="new-password"
