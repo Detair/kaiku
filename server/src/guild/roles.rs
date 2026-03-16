@@ -197,7 +197,7 @@ pub async fn create_role(
     Json(body): Json<CreateRoleRequest>,
 ) -> Result<Json<RoleResponse>, RoleError> {
     body.validate()
-        .map_err(|e| RoleError::Validation(e.to_string()))?;
+        .map_err(|e| RoleError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     let ctx =
         require_guild_permission(&state.db, guild_id, auth.id, GuildPermissions::MANAGE_ROLES)

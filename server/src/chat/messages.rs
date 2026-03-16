@@ -464,7 +464,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<MessageResponse>), MessageError> {
     // Validate input
     body.validate()
-        .map_err(|e| MessageError::Validation(e.to_string()))?;
+        .map_err(|e| MessageError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check channel exists
     let channel = db::find_channel_by_id(&state.db, channel_id)
@@ -1136,7 +1136,7 @@ pub async fn update(
 ) -> Result<Json<MessageResponse>, MessageError> {
     // Validate input
     body.validate()
-        .map_err(|e| MessageError::Validation(e.to_string()))?;
+        .map_err(|e| MessageError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Load message to check permissions
     let existing_message = db::find_message_by_id(&state.db, id)

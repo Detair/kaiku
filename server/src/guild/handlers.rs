@@ -150,7 +150,7 @@ pub async fn create_guild(
 ) -> Result<Json<Guild>, GuildError> {
     // Validate request
     body.validate()
-        .map_err(|e| GuildError::Validation(e.to_string()))?;
+        .map_err(|e| GuildError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Validate tags if provided
     if let Some(ref tags) = body.tags {
@@ -388,7 +388,7 @@ pub async fn update_guild(
 ) -> Result<Json<Guild>, GuildError> {
     // Validate request
     body.validate()
-        .map_err(|e| GuildError::Validation(e.to_string()))?;
+        .map_err(|e| GuildError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Verify ownership
     let owner_check: Option<(Uuid,)> = sqlx::query_as("SELECT owner_id FROM guilds WHERE id = $1")

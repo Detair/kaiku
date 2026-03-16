@@ -420,7 +420,7 @@ pub async fn register(
 ) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
     // Validate input first
     body.validate()
-        .map_err(|e| AuthError::Validation(e.to_string()))?;
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check if local auth is allowed
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
@@ -1372,7 +1372,7 @@ pub async fn update_profile(
 ) -> AuthResult<Json<UpdateProfileResponse>> {
     // Validate request
     body.validate()
-        .map_err(|e| AuthError::Validation(e.to_string()))?;
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Validate display_name for unicode safety (control chars, bidi overrides, Zalgo)
     if let Some(ref display_name) = body.display_name {
@@ -1474,7 +1474,7 @@ pub async fn update_password(
     Json(body): Json<UpdatePasswordRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
     body.validate()
-        .map_err(|e| AuthError::Validation(e.to_string()))?;
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     let user = find_user_by_id(&state.db, auth_user.id)
         .await

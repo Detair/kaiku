@@ -31,7 +31,7 @@ pub async fn create_report(
     Json(body): Json<CreateReportRequest>,
 ) -> Result<Json<ReportResponse>, ReportError> {
     body.validate()
-        .map_err(|e| ReportError::Validation(e.to_string()))?;
+        .map_err(|e| ReportError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Cannot report yourself
     if body.target_user_id == auth.id {
