@@ -38,6 +38,7 @@ export default defineConfig({
       text: {
         primary: "var(--color-text-primary)",
         secondary: "var(--color-text-secondary)",
+        muted: "var(--color-text-muted)",
         input: "var(--color-text-input)",
       },
       "on-accent": "var(--color-text-on-accent)",
