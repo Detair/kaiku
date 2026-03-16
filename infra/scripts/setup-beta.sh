@@ -157,8 +157,8 @@ fi
 if command -v ufw &>/dev/null; then
     log "Configuring UFW firewall..."
     ufw allow 22/tcp comment "SSH" 2>/dev/null || true
-    ufw allow 80/tcp comment "HTTP (Traefik)" 2>/dev/null || true
-    ufw allow 443/tcp comment "HTTPS (Traefik)" 2>/dev/null || true
+    ufw allow 80/tcp comment "HTTP (Caddy)" 2>/dev/null || true
+    ufw allow 443/tcp comment "HTTPS (Caddy)" 2>/dev/null || true
     ufw allow 10000:10100/udp comment "WebRTC RTP" 2>/dev/null || true
     ufw --force enable 2>/dev/null || true
     log "UFW configured: SSH, HTTP, HTTPS, WebRTC"
@@ -211,7 +211,7 @@ echo ""
 echo "  Useful commands:"
 echo "    cd ${INSTALL_DIR}/infra/compose"
 echo "    docker compose logs -f server       # Server logs"
-echo "    docker compose logs -f traefik      # TLS/proxy logs"
+echo "    docker compose logs -f caddy        # TLS/proxy logs"
 echo "    docker compose --profile monitoring ps  # All service status"
 echo ""
 echo "  Update:"
