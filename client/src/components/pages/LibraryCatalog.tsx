@@ -15,6 +15,7 @@ import {
   ChevronRight,
   FileText,
   Settings,
+  X,
 } from "lucide-solid";
 import type { PageListItem, PageCategory } from "@/lib/types";
 
@@ -23,6 +24,7 @@ interface LibraryCatalogProps {
   pages: PageListItem[];
   categories: PageCategory[];
   canManage?: boolean;
+  onClose?: () => void;
   onPageClick?: (page: PageListItem) => void;
   onNewPage?: (categoryId?: string) => void;
   onManageCategories?: () => void;
@@ -113,6 +115,7 @@ export default function LibraryCatalog(props: LibraryCatalogProps) {
           <BookOpen class="w-6 h-6 text-text-secondary" />
           <h1 class="text-xl font-semibold">Library</h1>
         </div>
+        <div class="flex items-center gap-2">
         <Show when={props.canManage}>
           <button
             type="button"
@@ -123,6 +126,17 @@ export default function LibraryCatalog(props: LibraryCatalogProps) {
             Manage Categories
           </button>
         </Show>
+        <Show when={props.onClose}>
+          <button
+            type="button"
+            class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+            onClick={() => props.onClose?.()}
+            title="Close Library"
+          >
+            <X class="w-5 h-5" />
+          </button>
+        </Show>
+        </div>
       </div>
 
       {/* Search */}

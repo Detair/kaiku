@@ -18,6 +18,7 @@ import Main from "./views/Main";
 // Views (lazy: not part of main flow)
 const ForgotPassword = lazy(() => import("./views/ForgotPassword"));
 const ResetPassword = lazy(() => import("./views/ResetPassword"));
+const NotFound = lazy(() => import("./views/NotFound"));
 const ThemeDemo = lazy(() => import("./pages/ThemeDemo"));
 const InviteJoin = lazy(() => import("./views/InviteJoin"));
 const PageViewRoute = lazy(() => import("./views/PageViewRoute"));
@@ -29,7 +30,6 @@ const BotSlashCommands = lazy(
   () => import("./pages/settings/BotSlashCommands"),
 );
 const BotWebhooks = lazy(() => import("./pages/settings/BotWebhooks"));
-const LibraryViewRoute = lazy(() => import("./views/LibraryViewRoute"));
 
 // Components
 import AuthGuard from "./components/auth/AuthGuard";
@@ -274,19 +274,13 @@ const BotWebhooksPage = () => (
   </Layout>
 );
 
-// Protected library wrapper
-const ProtectedLibrary: Component = () => (
-  <AuthGuard>
-    <LazyErrorBoundary name="LibraryView">
+const NotFoundPage = () => (
+  <Layout>
+    <LazyErrorBoundary name="NotFound">
       <Suspense fallback={<PageFallback />}>
-        <LibraryViewRoute />
+        <NotFound />
       </Suspense>
     </LazyErrorBoundary>
-  </AuthGuard>
-);
-const LibraryPage = () => (
-  <Layout>
-    <ProtectedLibrary />
   </Layout>
 );
 
@@ -301,11 +295,11 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/invite/:code" component={InvitePage} />
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />
-    <Route path="/guilds/:guildId/library" component={LibraryPage} />
     <Route path="/admin" component={AdminPage} />
     <Route path="/settings/connection" component={ConnectionHistoryPage} />
     <Route path="/settings/bots/:id/commands" component={BotCommandsPage} />
     <Route path="/settings/bots/:id/webhooks" component={BotWebhooksPage} />
+    <Route path="/404" component={NotFoundPage} />
     <Route path="/*" component={MainPage} />
   </>
 );
