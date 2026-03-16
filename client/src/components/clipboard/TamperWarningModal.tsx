@@ -5,7 +5,7 @@
  * This could indicate malware modifying the clipboard.
  */
 
-import { Component } from "solid-js";
+import { Component, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { AlertTriangle, X, ShieldAlert } from "lucide-solid";
 import type { CopyContext } from "@/lib/clipboard";
@@ -33,6 +33,14 @@ function getContextLabel(context: CopyContext | null): string {
 }
 
 const TamperWarningModal: Component<TamperWarningModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onCancel();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const handleBackdropClick = (e: MouseEvent) => {
     if (e.target === e.currentTarget) {
       props.onCancel();

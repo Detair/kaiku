@@ -1,9 +1,10 @@
-import { Component, createSignal, createResource, Show, For } from "solid-js";
+import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { register, loginWithOidc, authState, clearError } from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { Github, Chrome, KeyRound, ShieldAlert } from "lucide-solid";
+import PasswordInput from "@/components/ui/PasswordInput";
 import flokiRegister from "@/assets/images/floki_auth_register.png";
 
 /** Map icon_hint to a Lucide icon component. */
@@ -20,6 +21,8 @@ function providerIcon(hint: string | null) {
 }
 
 const Register: Component = () => {
+  document.title = "Create Account | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -38,7 +41,8 @@ const Register: Component = () => {
     if (!url.trim()) return null;
     try {
       return await fetchServerSettings(url);
-    } catch {
+    } catch (err) {
+      console.warn("[Register] Failed to fetch server settings:", err instanceof Error ? err.message : err);
       return null;
     }
   });
@@ -67,6 +71,14 @@ const Register: Component = () => {
       setLocalError("Username must be at least 3 characters");
       return;
     }
+    if (username().length > 32) {
+      setLocalError("Username must be 32 characters or fewer");
+      return;
+    }
+    if (!/^[a-z0-9_]+$/.test(username())) {
+      setLocalError("Username can only contain lowercase letters, numbers, and underscores");
+      return;
+    }
     if (!password()) {
       setLocalError("Password is required");
       return;
@@ -90,7 +102,10 @@ const Register: Component = () => {
       );
       navigate("/", { replace: true });
     } catch (err) {
-      // Error is already set in auth store
+      if (!authState.error) {
+        const msg = err instanceof Error ? err.message : "Registration failed. Please try again.";
+        setLocalError(msg);
+      }
     }
   };
 
@@ -133,8 +148,10 @@ const Register: Component = () => {
             .then(() => {
               navigate("/", { replace: true });
             })
-            .catch(() => {
-              // Error is set in auth store
+            .catch((err) => {
+              if (!authState.error) {
+                setLocalError(err instanceof Error ? err.message : "SSO registration failed");
+              }
             })
             .finally(() => {
               setOidcLoading(null);
@@ -187,8 +204,8 @@ const Register: Component = () => {
   return (
     <div class="flex items-center justify-center min-h-screen bg-background-primary py-8">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
-        <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={flokiRegister} alt="Floki holding membership badge" class="w-full max-w-xs object-contain" loading="lazy" />
+        <div class="hidden lg:flex w-1/2 items-start justify-center pt-16 p-8 bg-surface-base">
+          <img src={flokiRegister} alt="Floki holding membership badge" class="w-full max-w-xs object-contain" loading="eager" />
         </div>
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
@@ -200,12 +217,15 @@ const Register: Component = () => {
 
         <Show when={isTauri}>
           <div class="mb-4">
-            <label class="block text-sm font-medium text-text-secondary mb-1">
+            <label for="register-server-url" class="block text-sm font-medium text-text-secondary mb-1">
               Server URL
             </label>
             <input
+              id="register-server-url"
               type="url"
               class="input-field"
+              name="url"
+              autocomplete="url"
               data-testid="register-server-url"
               placeholder="https://chat.example.com"
               value={serverUrl()}
@@ -276,16 +296,22 @@ const Register: Component = () => {
 
         {/* Local Registration Form */}
         <Show when={showLocalRegister()}>
-          <form onSubmit={handleRegister} class="space-y-4">
+          <form onSubmit={handleRegister} method="post" noValidate class="space-y-4">
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
-                Username <span class="text-danger">*</span>
+              <label for="register-username" class="block text-sm font-medium text-text-secondary mb-1">
+                Username <span class="text-error-text">*</span>
               </label>
               <input
+                id="register-username"
                 type="text"
                 class="input-field"
+                name="username"
+                autocomplete="username"
                 data-testid="register-username"
                 placeholder="Choose a username"
+                pattern="^[a-z0-9_]{3,32}$"
+                minLength={3}
+                maxLength={32}
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
                 disabled={authState.isLoading}
@@ -298,12 +324,15 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="register-email" class="block text-sm font-medium text-text-secondary mb-1">
                 Email <span class="text-text-muted">(optional)</span>
               </label>
               <input
+                id="register-email"
                 type="email"
                 class="input-field"
+                name="email"
+                autocomplete="email"
                 placeholder="your@email.com"
                 value={email()}
                 onInput={(e) => setEmail(e.currentTarget.value)}
@@ -312,12 +341,15 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="register-display-name" class="block text-sm font-medium text-text-secondary mb-1">
                 Display Name <span class="text-text-muted">(optional)</span>
               </label>
               <input
+                id="register-display-name"
                 type="text"
                 class="input-field"
+                name="name"
+                autocomplete="name"
                 placeholder="How others will see you"
                 value={displayName()}
                 onInput={(e) => setDisplayName(e.currentTarget.value)}
@@ -326,12 +358,14 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
-                Password <span class="text-danger">*</span>
+              <label for="register-password" class="block text-sm font-medium text-text-secondary mb-1">
+                Password <span class="text-error-text">*</span>
               </label>
-              <input
-                type="password"
+              <PasswordInput
+                id="register-password"
                 class="input-field"
+                name="new-password"
+                autocomplete="new-password"
                 data-testid="register-password"
                 placeholder="Create a password"
                 value={password()}
@@ -343,12 +377,14 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
-                Confirm Password <span class="text-danger">*</span>
+              <label for="register-confirm-password" class="block text-sm font-medium text-text-secondary mb-1">
+                Confirm Password <span class="text-error-text">*</span>
               </label>
-              <input
-                type="password"
+              <PasswordInput
+                id="register-confirm-password"
                 class="input-field"
+                name="confirm-password"
+                autocomplete="new-password"
                 data-testid="register-password-confirm"
                 placeholder="Confirm your password"
                 value={confirmPassword()}
@@ -360,12 +396,19 @@ const Register: Component = () => {
 
             <Show when={error()}>
               <div
+                role="alert"
                 class="p-3 rounded-md text-sm"
                 style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
               >
                 {error()}
               </div>
             </Show>
+
+            <p class="text-xs text-text-muted text-center">
+              By creating an account, you agree to the server's
+              Terms of Service and Privacy Policy, if applicable.
+              These are available in the server's Library after login.
+            </p>
 
             <button
               type="submit"
@@ -391,6 +434,7 @@ const Register: Component = () => {
         {/* Error display when no local form */}
         <Show when={!showLocalRegister() && !isClosed() && error()}>
           <div
+            role="alert"
             class="p-3 rounded-md text-sm"
             style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
           >
@@ -400,7 +444,7 @@ const Register: Component = () => {
 
         <p class="text-center text-sm text-text-secondary mt-4">
           Already have an account?{" "}
-          <A href="/login" class="text-primary hover:underline">
+          <A href="/login" class="text-primary auth-link">
             Login
           </A>
         </p>

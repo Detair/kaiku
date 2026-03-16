@@ -5,7 +5,7 @@
  * User must acknowledge saving the key before continuing.
  */
 
-import { Component, createSignal, Show, For } from "solid-js";
+import { Component, createSignal, Show, For, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import {
   Copy,
@@ -38,6 +38,14 @@ interface RecoveryKeyModalProps {
 }
 
 const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [confirmed, setConfirmed] = createSignal(false);
   const [copied, setCopied] = createSignal(false);
 

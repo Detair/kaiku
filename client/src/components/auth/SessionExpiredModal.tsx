@@ -1,4 +1,4 @@
-import { Component, Show } from "solid-js";
+import { Component, Show, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { useNavigate } from "@solidjs/router";
 import { LogIn } from "lucide-solid";
@@ -6,6 +6,14 @@ import { authState, setAuthState, logout } from "@/stores/auth";
 
 const SessionExpiredModal: Component = () => {
   const navigate = useNavigate();
+
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && authState.sessionExpired) handleLogin();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
 
   const handleLogin = async () => {
     try {

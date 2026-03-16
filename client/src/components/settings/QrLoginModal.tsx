@@ -6,7 +6,7 @@
  * The QR code includes a single-use token with a countdown timer.
  */
 
-import { Component, createSignal, onCleanup, Show } from "solid-js";
+import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
 import { X, Smartphone } from "lucide-solid";
 import QRCode from "qrcode";
 import { qrLoginCreate } from "@/lib/tauri";
@@ -18,6 +18,14 @@ interface QrLoginModalProps {
 }
 
 const QrLoginModal: Component<QrLoginModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [qrDataUrl, setQrDataUrl] = createSignal<string | null>(null);
   const [isLoading, setIsLoading] = createSignal(false);
   const [error, setError] = createSignal("");

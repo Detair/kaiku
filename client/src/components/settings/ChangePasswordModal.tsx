@@ -1,4 +1,4 @@
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { AlertCircle, CheckCircle2, X } from "lucide-solid";
 import { updatePassword, revokeAllOtherSessions } from "@/lib/tauri";
 
@@ -7,6 +7,14 @@ interface ChangePasswordModalProps {
 }
 
 const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
+    onMount(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Escape") props.onClose();
+        };
+        document.addEventListener("keydown", handleKeyDown);
+        onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+    });
+
     const [currentPassword, setCurrentPassword] = createSignal("");
     const [newPassword, setNewPassword] = createSignal("");
     const [confirmPassword, setConfirmPassword] = createSignal("");

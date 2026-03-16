@@ -1,15 +1,19 @@
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
+import PasswordInput from "@/components/ui/PasswordInput";
 import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ResetPassword: Component = () => {
+  document.title = "Reset Password | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
+  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const [searchParams] = useSearchParams();
-  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
+  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const storedUrl =
     typeof localStorage !== "undefined"
       ? localStorage.getItem("serverUrl") || ""
       : "";
-  const initialUrl = searchParams.serverUrl || storedUrl || defaultServerUrl;
+  const initialUrl = searchParams.serverUrl || (isTauri ? storedUrl : "") || defaultServerUrl;
   const [serverUrl, setServerUrl] = createSignal(initialUrl);
   const [token, setToken] = createSignal("");
   const [newPassword, setNewPassword] = createSignal("");
@@ -52,14 +56,17 @@ const ResetPassword: Component = () => {
       );
 
       if (!res.ok) {
-        const data = await res.json().catch(() => null);
+        const data = await res.json().catch((e) => {
+          console.warn("[ResetPassword] Could not parse error response:", e.message);
+          return null;
+        });
         throw new Error(data?.message || `Request failed (${res.status})`);
       }
 
       setSuccess(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "An error occurred";
-      setError(message);
+      setError(isTauri ? message : `${message} (server: ${serverUrl()})`);
     } finally {
       setIsLoading(false);
     }
@@ -69,7 +76,7 @@ const ResetPassword: Component = () => {
     <div class="flex items-center justify-center min-h-screen bg-background-primary">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={flokiForgot} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="lazy" />
+          <img src={flokiForgot} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="eager" />
         </div>
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
@@ -80,25 +87,29 @@ const ResetPassword: Component = () => {
         </p>
 
         <Show when={!success()}>
-          <form onSubmit={handleSubmit} class="space-y-4">
-            <div>
-              <label
-                for="rp-server-url"
-                class="block text-sm font-medium text-text-secondary mb-1"
-              >
-                Server URL
-              </label>
-              <input
-                id="rp-server-url"
-                type="url"
-                class="input-field"
-                placeholder="https://chat.example.com"
-                value={serverUrl()}
-                onInput={(e) => setServerUrl(e.currentTarget.value)}
-                disabled={isLoading()}
-                required
-              />
-            </div>
+          <form onSubmit={handleSubmit} method="post" noValidate class="space-y-4">
+            <Show when={isTauri}>
+              <div>
+                <label
+                  for="rp-server-url"
+                  class="block text-sm font-medium text-text-secondary mb-1"
+                >
+                  Server URL
+                </label>
+                <input
+                  id="rp-server-url"
+                  type="url"
+                  class="input-field"
+                  name="url"
+                  autocomplete="url"
+                  placeholder="https://chat.example.com"
+                  value={serverUrl()}
+                  onInput={(e) => setServerUrl(e.currentTarget.value)}
+                  disabled={isLoading()}
+                  required
+                />
+              </div>
+            </Show>
 
             <div>
               <label
@@ -111,12 +122,13 @@ const ResetPassword: Component = () => {
                 id="rp-token"
                 type="text"
                 class="input-field"
+                name="token"
+                autocomplete="off"
                 placeholder="Paste reset code from email"
                 value={token()}
                 onInput={(e) => setToken(e.currentTarget.value)}
                 disabled={isLoading()}
                 required
-                autocomplete="off"
               />
             </div>
 
@@ -127,10 +139,11 @@ const ResetPassword: Component = () => {
               >
                 New Password
               </label>
-              <input
+              <PasswordInput
                 id="rp-new-password"
-                type="password"
                 class="input-field"
+                name="new-password"
+                autocomplete="new-password"
                 placeholder="Enter new password"
                 value={newPassword()}
                 onInput={(e) => setNewPassword(e.currentTarget.value)}
@@ -148,10 +161,11 @@ const ResetPassword: Component = () => {
               >
                 Confirm Password
               </label>
-              <input
+              <PasswordInput
                 id="rp-confirm-password"
-                type="password"
                 class="input-field"
+                name="confirm-password"
+                autocomplete="new-password"
                 placeholder="Confirm new password"
                 value={confirmPassword()}
                 onInput={(e) => setConfirmPassword(e.currentTarget.value)}
@@ -189,7 +203,7 @@ const ResetPassword: Component = () => {
             </button>
 
             <p class="text-center text-sm text-text-secondary mt-4">
-              <A href="/login" class="text-primary hover:underline">
+              <A href="/login" class="text-primary auth-link">
                 Back to Login
               </A>
             </p>

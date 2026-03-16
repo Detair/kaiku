@@ -72,7 +72,7 @@ const UserPanel: Component = () => {
 
   return (
     <>
-      <div class="mt-auto p-3 bg-surface-base/80 border-t border-border-subtle relative">
+      <div role="contentinfo" class="mt-auto p-3 bg-surface-base/80 border-t border-border-subtle relative">
         <Show when={showStatusPicker()}>
           <div
             class="fixed inset-0 z-40 cursor-default"
@@ -103,10 +103,10 @@ const UserPanel: Component = () => {
                 showStatus
               />
               <div class="flex-1 min-w-0">
-                <div class="text-sm font-semibold text-text-primary truncate">
+                <div class="text-sm font-semibold text-text-primary truncate" title={user()!.display_name}>
                   {user()!.display_name}
                 </div>
-                <div class="text-xs text-text-secondary truncate">
+                <div class="text-xs text-text-secondary truncate" title={`@${user()!.username}`}>
                   @{user()!.username}
                 </div>
                 <Show when={currentCustomStatusText()}>

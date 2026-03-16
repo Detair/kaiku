@@ -19,7 +19,7 @@ import {
   Suspense,
 } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { ChevronDown, Settings, Search, BookOpen } from "lucide-solid";
+import { Settings, Search, BookOpen } from "lucide-solid";
 import { getActiveGuild } from "@/stores/guilds";
 import { loadFavorites } from "@/stores/favorites";
 import { clearSearch } from "@/stores/search";
@@ -93,12 +93,11 @@ const Sidebar: Component = () => {
   return (
     <aside class="w-[240px] flex flex-col bg-surface-layer2 z-10 transition-all duration-300 border-r border-border-solid relative overflow-hidden">
       {/* Server Header with Settings */}
-      <header class="h-12 px-4 flex items-center justify-between border-b border-border-subtle group">
+      <header role="banner" class="h-12 px-4 flex items-center justify-between border-b border-border-subtle group">
         <div class="flex items-center gap-2 flex-1 min-w-0 rounded-lg -ml-2 px-2 py-1">
           <h1 class="font-bold text-lg text-text-primary truncate">
             {activeGuild()?.name || "Kaiku"}
           </h1>
-          <ChevronDown class="w-4 h-4 text-text-secondary flex-shrink-0" />
         </div>
 
         {/* Settings gear - only show when in a guild */}

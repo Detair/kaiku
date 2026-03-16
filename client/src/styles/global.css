@@ -38,9 +38,37 @@ body {
   color: var(--color-selection-text);
 }
 
-/* Input and textarea styling */
+/* Visible focus indicators for buttons, links, and selects (inputs use focus:ring via input-field shortcut) */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+/* Auth page links: underline as non-color visual indicator per WCAG 1.4.1 */
+a.auth-link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a.auth-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Input, textarea and select styling */
 input,
 textarea {
+  color: var(--color-text-input);
+  background-color: var(--color-surface-layer2);
+}
+
+select {
+  color: var(--color-text-input);
+  background-color: var(--color-surface-layer2);
+}
+
+select option {
   color: var(--color-text-input);
   background-color: var(--color-surface-layer2);
 }

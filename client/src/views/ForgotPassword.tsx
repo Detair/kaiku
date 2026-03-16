@@ -1,14 +1,17 @@
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { A } from "@solidjs/router";
 import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ForgotPassword: Component = () => {
-  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
+  document.title = "Forgot Password | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
+  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const storedUrl =
     typeof localStorage !== "undefined"
       ? localStorage.getItem("serverUrl") || ""
       : "";
-  const [serverUrl, setServerUrl] = createSignal(storedUrl || defaultServerUrl);
+  const [serverUrl, setServerUrl] = createSignal(isTauri ? (storedUrl || defaultServerUrl) : defaultServerUrl);
   const [email, setEmail] = createSignal("");
   const [error, setError] = createSignal("");
   const [success, setSuccess] = createSignal(false);
@@ -23,7 +26,7 @@ const ForgotPassword: Component = () => {
       setError("Server URL is required");
       return;
     }
-    if (!email().trim() || !email().includes("@")) {
+    if (!email().trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email())) {
       setError("Please enter a valid email address");
       return;
     }
@@ -40,14 +43,17 @@ const ForgotPassword: Component = () => {
       );
 
       if (!res.ok) {
-        const data = await res.json().catch(() => null);
+        const data = await res.json().catch((e) => {
+          console.warn("[ForgotPassword] Could not parse error response:", e.message);
+          return null;
+        });
         throw new Error(data?.message || `Request failed (${res.status})`);
       }
 
       setSuccess(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "An error occurred";
-      setError(message);
+      setError(isTauri ? message : `${message} (server: ${serverUrl()})`);
     } finally {
       setIsLoading(false);
     }
@@ -57,7 +63,7 @@ const ForgotPassword: Component = () => {
     <div class="flex items-center justify-center min-h-screen bg-background-primary">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={flokiForgot} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="lazy" />
+          <img src={flokiForgot} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="eager" />
         </div>
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
@@ -68,25 +74,29 @@ const ForgotPassword: Component = () => {
         </p>
 
         <Show when={!success()}>
-          <form onSubmit={handleSubmit} class="space-y-4">
-            <div>
-              <label
-                for="fp-server-url"
-                class="block text-sm font-medium text-text-secondary mb-1"
-              >
-                Server URL
-              </label>
-              <input
-                id="fp-server-url"
-                type="url"
-                class="input-field"
-                placeholder="https://chat.example.com"
-                value={serverUrl()}
-                onInput={(e) => setServerUrl(e.currentTarget.value)}
-                disabled={isLoading()}
-                required
-              />
-            </div>
+          <form onSubmit={handleSubmit} method="post" noValidate class="space-y-4">
+            <Show when={isTauri}>
+              <div>
+                <label
+                  for="fp-server-url"
+                  class="block text-sm font-medium text-text-secondary mb-1"
+                >
+                  Server URL
+                </label>
+                <input
+                  id="fp-server-url"
+                  type="url"
+                  class="input-field"
+                  name="url"
+                  autocomplete="url"
+                  placeholder="https://chat.example.com"
+                  value={serverUrl()}
+                  onInput={(e) => setServerUrl(e.currentTarget.value)}
+                  disabled={isLoading()}
+                  required
+                />
+              </div>
+            </Show>
 
             <div>
               <label
@@ -99,6 +109,8 @@ const ForgotPassword: Component = () => {
                 id="fp-email"
                 type="email"
                 class="input-field"
+                name="email"
+                autocomplete="email"
                 placeholder="you@example.com"
                 value={email()}
                 onInput={(e) => setEmail(e.currentTarget.value)}
@@ -136,7 +148,7 @@ const ForgotPassword: Component = () => {
             </button>
 
             <p class="text-center text-sm text-text-secondary mt-4">
-              <A href="/login" class="text-primary hover:underline">
+              <A href="/login" class="text-primary auth-link">
                 Back to Login
               </A>
             </p>
@@ -159,7 +171,7 @@ const ForgotPassword: Component = () => {
               Enter Reset Code
             </A>
             <p class="text-center text-sm text-text-secondary">
-              <A href="/login" class="text-primary hover:underline">
+              <A href="/login" class="text-primary auth-link">
                 Back to Login
               </A>
             </p>

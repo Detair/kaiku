@@ -5,7 +5,7 @@
  * (https://example.com/invite/aBcD1234).
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { X } from "lucide-solid";
 import { joinViaInviteCode } from "@/stores/guilds";
 import { Portal } from "solid-js/web";
@@ -33,6 +33,14 @@ function extractInviteCode(input: string): string | null {
 }
 
 const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [input, setInput] = createSignal("");
   const [isJoining, setIsJoining] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);

@@ -4,7 +4,7 @@
  * Modal for creating a new DM conversation.
  */
 
-import { Component, createSignal, For, Show, createMemo } from "solid-js";
+import { Component, createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Search, Check } from "lucide-solid";
 import { friendsState, loadFriends } from "@/stores/friends";
@@ -17,6 +17,14 @@ interface NewMessageModalProps {
 }
 
 const NewMessageModal: Component<NewMessageModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [search, setSearch] = createSignal("");
   const [selectedIds, setSelectedIds] = createSignal<string[]>([]);
   const [isCreating, setIsCreating] = createSignal(false);

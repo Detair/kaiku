@@ -1,4 +1,4 @@
-import { Component, createSignal, createResource, Show, For } from "solid-js";
+import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import {
   login,
@@ -10,6 +10,7 @@ import {
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { Github, Chrome, KeyRound, ShieldCheck } from "lucide-solid";
+import PasswordInput from "@/components/ui/PasswordInput";
 import flokiWelcome from "@/assets/images/floki_auth_welcome.png";
 
 /** Map icon_hint to a Lucide icon component. */
@@ -26,6 +27,8 @@ function providerIcon(hint: string | null) {
 }
 
 const Login: Component = () => {
+  document.title = "Login | Kaiku";
+  onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -42,7 +45,8 @@ const Login: Component = () => {
     if (!url.trim()) return null;
     try {
       return await fetchServerSettings(url);
-    } catch {
+    } catch (err) {
+      console.warn("[Login] Failed to fetch server settings:", err instanceof Error ? err.message : err);
       return null;
     }
   });
@@ -92,9 +96,9 @@ const Login: Component = () => {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === "MFA_REQUIRED") {
         setMfaCode("");
-        // Error is not set — mfaRequired flag drives the UI
+      } else if (!authState.error) {
+        setLocalError(msg || "Login failed. Please try again.");
       }
-      // Other errors are already set in auth store
     }
   };
 
@@ -143,8 +147,10 @@ const Login: Component = () => {
             .then(() => {
               navigate("/", { replace: true });
             })
-            .catch(() => {
-              // Error is set in auth store
+            .catch((err) => {
+              if (!authState.error) {
+                setLocalError(err instanceof Error ? err.message : "SSO login failed");
+              }
             })
             .finally(() => {
               setOidcLoading(null);
@@ -192,7 +198,7 @@ const Login: Component = () => {
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         {/* Left: Floki illustration */}
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={flokiWelcome} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="lazy" />
+          <img src={flokiWelcome} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="eager" />
         </div>
         {/* Right: Form */}
         <div class="w-full lg:w-1/2 p-8">
@@ -205,12 +211,15 @@ const Login: Component = () => {
 
         <Show when={isTauri}>
           <div class="mb-4">
-            <label class="block text-sm font-medium text-text-secondary mb-1">
+            <label for="login-server-url" class="block text-sm font-medium text-text-secondary mb-1">
               Server URL
             </label>
             <input
+              id="login-server-url"
               type="url"
               class="input-field"
+              name="url"
+              autocomplete="url"
               placeholder="https://chat.example.com"
               value={serverUrl()}
               onInput={(e) => handleServerUrlChange(e.currentTarget.value)}
@@ -224,7 +233,7 @@ const Login: Component = () => {
 
         {/* MFA Code Step */}
         <Show when={authState.mfaRequired}>
-          <form onSubmit={handleLogin} class="space-y-4">
+          <form onSubmit={handleLogin} method="post" noValidate class="space-y-4">
             <div class="flex items-center gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg">
               <ShieldCheck class="w-5 h-5 text-accent-primary flex-shrink-0" />
               <p class="text-sm text-text-secondary">
@@ -234,12 +243,15 @@ const Login: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="login-mfa-code" class="block text-sm font-medium text-text-secondary mb-1">
                 MFA Code
               </label>
               <input
+                id="login-mfa-code"
                 type="text"
                 class="input-field font-mono text-center text-lg tracking-widest"
+                name="one-time-code"
+                autocomplete="one-time-code"
                 placeholder="000000"
                 value={mfaCode()}
                 onInput={(e) =>
@@ -257,6 +269,7 @@ const Login: Component = () => {
 
             <Show when={error()}>
               <div
+                role="alert"
                 class="p-3 rounded-md text-sm"
                 style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
               >
@@ -338,14 +351,17 @@ const Login: Component = () => {
 
           {/* Local Login Form */}
           <Show when={showLocalLogin()}>
-            <form onSubmit={handleLogin} class="space-y-4">
+            <form onSubmit={handleLogin} method="post" noValidate class="space-y-4">
               <div>
-                <label class="block text-sm font-medium text-text-secondary mb-1">
+                <label for="login-username" class="block text-sm font-medium text-text-secondary mb-1">
                   Username
                 </label>
                 <input
+                  id="login-username"
                   type="text"
                   class="input-field"
+                  name="username"
+                  autocomplete="username"
                   placeholder="Enter your username"
                   data-testid="login-username"
                   value={username()}
@@ -356,12 +372,14 @@ const Login: Component = () => {
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-text-secondary mb-1">
+                <label for="login-password" class="block text-sm font-medium text-text-secondary mb-1">
                   Password
                 </label>
-                <input
-                  type="password"
+                <PasswordInput
+                  id="login-password"
                   class="input-field"
+                  name="password"
+                  autocomplete="current-password"
                   placeholder="Enter your password"
                   data-testid="login-password"
                   value={password()}
@@ -374,7 +392,7 @@ const Login: Component = () => {
               <div class="text-right">
                 <A
                   href="/forgot-password"
-                  class="text-sm text-primary hover:underline"
+                  class="text-sm text-primary auth-link"
                 >
                   Forgot password?
                 </A>
@@ -382,6 +400,7 @@ const Login: Component = () => {
 
               <Show when={error()}>
                 <div
+                  role="alert"
                   class="p-3 rounded-md text-sm"
                   data-testid="login-error"
                   style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
@@ -414,6 +433,7 @@ const Login: Component = () => {
           {/* Error display when no local login form */}
           <Show when={!showLocalLogin() && error()}>
             <div
+              role="alert"
               class="p-3 rounded-md text-sm"
               style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
             >
@@ -423,7 +443,7 @@ const Login: Component = () => {
 
           <p class="text-center text-sm text-text-secondary mt-4">
             Don't have an account?{" "}
-            <A href="/register" class="text-primary hover:underline">
+            <A href="/register" class="text-primary auth-link">
               Register
             </A>
           </p>

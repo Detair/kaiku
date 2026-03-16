@@ -15,7 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Milestone: Phase 6 - Competitive Differentiators & Mastery
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
+### Added
+- Password visibility toggle on all password fields (login, register, reset password)
+- Skip-to-content keyboard navigation link
+- Open Graph and Twitter Card meta tags for link previews
+- Dynamic page titles per auth page (Login, Create Account, Forgot Password, Reset Password)
+- `--color-text-muted` design token across all themes for helper text hierarchy
+- ARIA `banner` and `contentinfo` landmarks for screen reader navigation
+- Username and display name tooltips on hover in user panel
+- 404 page available at `/404`
+- Terms of Service and Privacy Policy notice on register page
+
 ### Changed
+- Library page now uses theme-aware colors instead of hardcoded zinc palette
+- Library now renders in the main section with sidebar visible, with a close button
+- Discover Servers page now keeps sidebar visible instead of hiding it
+- Native `<select>` elements styled with theme colors (onboarding device selection)
 - Replaced Traefik + external Stoat Caddy with self-contained Caddy reverse proxy in docker-compose, simplifying deployment to a single stack
 - Added security headers (CSP, HSTS, X-Frame-Options) to SPA responses via Caddyfile
 - Screen share WebSocket events now include `stream_id` field — clients must update to handle multi-stream protocol (#356)
@@ -26,12 +41,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed redundant source-side RTCP reader that spawned 3 extra tokio tasks per simulcast screen share (#370)
 
 ### Fixed
+- All 14 modals now dismiss on Escape key press
+- Fixed heading hierarchy skip (H1 → H3) in message list — now uses H2
+- Fixed onboarding completion image showing transparency checkerboard
+- Removed misleading dropdown chevron from server header (no dropdown exists)
 - Fixed REMB bitrate conversion that could produce incorrect values from NaN or infinite f32, potentially disrupting simulcast layer switching (#368)
 - Fixed 2-second delay on every HTTP request caused by webhook worker BRPOP blocking the shared Redis connection (#390)
 - Fixed noisy OIDC error logs on server startup when no provider is configured (#387)
 - Fixed poor text contrast on accent-colored backgrounds by introducing a `text-on-accent` design token across all themes (#386)
 - Admin Settings panel now checks elevation state on mount, hiding the warning when session is already elevated (#389)
 - Admin Reports panel now shows an error state with retry button instead of silently failing (#388)
+- Fixed invisible primary buttons caused by CSS reset overriding UnoCSS utility backgrounds
+- Fixed missing label/input associations and autocomplete attributes on auth forms (breaks screen readers and password managers)
+- Fixed missing client-side username format validation on register page
+- Fixed error messages missing ARIA `role="alert"` on all auth pages
+- Improved error text and required asterisk color contrast to meet WCAG AA (4.5:1)
+- Replaced default Vite favicon with Kaiku branded SVG favicon
+- Fixed missing `color-scheme` meta tag for proper browser dark mode controls
+- Server URL field now auto-detected and hidden for browser users on forgot/reset password pages
 - Guild Settings modal updated to be fully responsive (`w-[90vw] md:w-[800px]`), and Safety tab active sections text contrast improved for readability
 - Improved contrast and visibility of admin elevation badges, formatting toolbar icons, server rail icons, settings modal backdrop, and user panel across all 4 themes
 - Friend request accept/decline buttons enlarged with stronger backgrounds for better visibility

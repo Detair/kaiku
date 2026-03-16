@@ -74,7 +74,7 @@ const LibraryViewRoute: Component = () => {
         when={!pagesState.isLoading}
         fallback={
           <div class="flex-1 flex items-center justify-center">
-            <div class="text-zinc-400">Loading library...</div>
+            <div class="text-text-secondary">Loading library...</div>
           </div>
         }
       >
@@ -83,6 +83,7 @@ const LibraryViewRoute: Component = () => {
           pages={getGuildPagesFromState(params.guildId)}
           categories={getGuildCategoriesFromState(params.guildId)}
           canManage={canManage()}
+          onClose={() => navigate(`/guilds/${params.guildId}`)}
           onPageClick={handlePageClick}
           onNewPage={handleNewPage}
           onManageCategories={() => setShowCategoryManager(true)}

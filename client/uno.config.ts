@@ -38,6 +38,7 @@ export default defineConfig({
       text: {
         primary: "var(--color-text-primary)",
         secondary: "var(--color-text-secondary)",
+        muted: "var(--color-text-muted)",
         input: "var(--color-text-input)",
       },
       "on-accent": "var(--color-text-on-accent)",
@@ -80,19 +81,19 @@ export default defineConfig({
   },
   shortcuts: {
     // Buttons
-    "btn": "px-4 py-2 rounded-xl font-medium transition-all duration-200",
+    "btn": "px-4 py-2 rounded-lg font-medium transition-all duration-200",
     "btn-primary": "btn bg-accent-primary hover:bg-accent-primary/80 text-on-accent",
     "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-white",
 
     // Input fields
-    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-xl text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/50 border border-white/5",
+    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-lg text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
 
     // Panels and Cards
-    "panel": "bg-surface-layer2 rounded-xl border border-white/5",
-    "card": "bg-surface-layer1 rounded-xl p-4 hover:bg-surface-highlight transition-colors",
+    "panel": "bg-surface-layer2 rounded-lg border border-white/5",
+    "card": "bg-surface-layer1 rounded-lg p-4 hover:bg-surface-highlight transition-colors",
 
     // Interactive items
-    "item-hover": "rounded-xl px-2 py-1 hover:bg-white/5 transition-colors cursor-pointer",
+    "item-hover": "rounded-lg px-2 py-1 hover:bg-white/5 transition-colors cursor-pointer",
 
     // Animations
     "animate-slide-up": "animate-[slideUp_0.2s_ease-out]",
