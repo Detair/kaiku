@@ -1046,10 +1046,25 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const { getServerUrl, getAccessToken } = await import("@/lib/tauri");
       const serverUrl = getServerUrl();
       const token = getAccessToken();
+      if (!token) {
+        console.warn("[BrowserVoiceAdapter] No access token, skipping ICE server fetch");
+        return fallback;
+      }
       const res = await fetch(`${serverUrl}/api/voice/ice-servers`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) return fallback;
+      if (!res.ok) {
+        console.error(
+          `[BrowserVoiceAdapter] ICE server fetch failed: HTTP ${res.status}. ` +
+          `TURN unavailable — users behind restrictive NATs may not connect.`,
+        );
+        Sentry.addBreadcrumb({
+          category: "voice",
+          message: `ICE config fetch failed: ${res.status}`,
+          level: "error",
+        });
+        return fallback;
+      }
       const data = await res.json();
       const iceServers: RTCIceServer[] = (data.ice_servers ?? []).map(
         (s: { urls: string[]; username?: string; credential?: string }) => ({
@@ -1058,9 +1073,22 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           ...(s.credential && { credential: s.credential }),
         }),
       );
-      return iceServers.length > 0 ? { iceServers } : fallback;
+      if (iceServers.length > 0) {
+        const hasTurn = iceServers.some((s) =>
+          (Array.isArray(s.urls) ? s.urls : [s.urls]).some((u) => u.startsWith("turn:")),
+        );
+        console.log(`[BrowserVoiceAdapter] ICE config: ${iceServers.length} servers, TURN=${hasTurn}`);
+        return { iceServers };
+      }
+      return fallback;
     } catch (err) {
-      console.warn("[BrowserVoiceAdapter] Failed to fetch ICE servers, using fallback STUN", err);
+      console.error("[BrowserVoiceAdapter] ICE server fetch exception, using fallback STUN", err);
+      Sentry.addBreadcrumb({
+        category: "voice",
+        message: "ICE config fetch exception",
+        data: { error: err instanceof Error ? err.message : String(err) },
+        level: "error",
+      });
       return fallback;
     }
   }
