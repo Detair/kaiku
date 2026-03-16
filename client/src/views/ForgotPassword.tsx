@@ -10,7 +10,7 @@ const ForgotPassword: Component = () => {
     typeof localStorage !== "undefined"
       ? localStorage.getItem("serverUrl") || ""
       : "";
-  const [serverUrl, setServerUrl] = createSignal(storedUrl || defaultServerUrl);
+  const [serverUrl, setServerUrl] = createSignal(isTauri ? (storedUrl || defaultServerUrl) : defaultServerUrl);
   const [email, setEmail] = createSignal("");
   const [error, setError] = createSignal("");
   const [success, setSuccess] = createSignal(false);

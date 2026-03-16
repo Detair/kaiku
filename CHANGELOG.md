@@ -40,10 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed invisible primary buttons caused by CSS reset overriding UnoCSS utility backgrounds
 - Fixed missing label/input associations and autocomplete attributes on auth forms (breaks screen readers and password managers)
 - Fixed missing client-side username format validation on register page
-- Fixed error messages missing ARIA `role="alert"` on login and register pages
+- Fixed error messages missing ARIA `role="alert"` on all auth pages
 - Improved error text and required asterisk color contrast to meet WCAG AA (4.5:1)
 - Replaced default Vite favicon with Kaiku branded SVG favicon
-- Added `color-scheme: dark light` meta tag for proper browser dark mode controls
+- Fixed missing `color-scheme` meta tag for proper browser dark mode controls
 - Server URL field now auto-detected and hidden for browser users on forgot/reset password pages
 - Guild Settings modal updated to be fully responsive (`w-[90vw] md:w-[800px]`), and Safety tab active sections text contrast improved for readability
 - Improved contrast and visibility of admin elevation badges, formatting toolbar icons, server rail icons, settings modal backdrop, and user panel across all 4 themes

@@ -18,7 +18,8 @@
  * --color-surface-layer2     Nested panels, dropdowns, popovers
  * --color-surface-highlight  Active/selected/hovered items
  * --color-text-primary       Main text, headings (high contrast required)
- * --color-text-secondary     Muted text: timestamps, hints, descriptions
+ * --color-text-secondary     Secondary text: timestamps, hints, descriptions
+ * --color-text-muted         Tertiary text: helper hints, optional labels, de-emphasized captions
  * --color-text-input         Text inside input fields
  * --color-accent-primary     Buttons, links, active indicators
  * --color-accent-primary-hover  Hovered state of accent-primary
