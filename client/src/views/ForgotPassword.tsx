@@ -80,6 +80,8 @@ const ForgotPassword: Component = () => {
                 id="fp-server-url"
                 type="url"
                 class="input-field"
+                name="url"
+                autocomplete="url"
                 placeholder="https://chat.example.com"
                 value={serverUrl()}
                 onInput={(e) => setServerUrl(e.currentTarget.value)}
@@ -99,6 +101,8 @@ const ForgotPassword: Component = () => {
                 id="fp-email"
                 type="email"
                 class="input-field"
+                name="email"
+                autocomplete="email"
                 placeholder="you@example.com"
                 value={email()}
                 onInput={(e) => setEmail(e.currentTarget.value)}

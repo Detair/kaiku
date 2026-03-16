@@ -205,12 +205,15 @@ const Login: Component = () => {
 
         <Show when={isTauri}>
           <div class="mb-4">
-            <label class="block text-sm font-medium text-text-secondary mb-1">
+            <label for="login-server-url" class="block text-sm font-medium text-text-secondary mb-1">
               Server URL
             </label>
             <input
+              id="login-server-url"
               type="url"
               class="input-field"
+              name="url"
+              autocomplete="url"
               placeholder="https://chat.example.com"
               value={serverUrl()}
               onInput={(e) => handleServerUrlChange(e.currentTarget.value)}
@@ -234,12 +237,15 @@ const Login: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="login-mfa-code" class="block text-sm font-medium text-text-secondary mb-1">
                 MFA Code
               </label>
               <input
+                id="login-mfa-code"
                 type="text"
                 class="input-field font-mono text-center text-lg tracking-widest"
+                name="one-time-code"
+                autocomplete="one-time-code"
                 placeholder="000000"
                 value={mfaCode()}
                 onInput={(e) =>
@@ -340,12 +346,15 @@ const Login: Component = () => {
           <Show when={showLocalLogin()}>
             <form onSubmit={handleLogin} class="space-y-4">
               <div>
-                <label class="block text-sm font-medium text-text-secondary mb-1">
+                <label for="login-username" class="block text-sm font-medium text-text-secondary mb-1">
                   Username
                 </label>
                 <input
+                  id="login-username"
                   type="text"
                   class="input-field"
+                  name="username"
+                  autocomplete="username"
                   placeholder="Enter your username"
                   data-testid="login-username"
                   value={username()}
@@ -356,12 +365,15 @@ const Login: Component = () => {
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-text-secondary mb-1">
+                <label for="login-password" class="block text-sm font-medium text-text-secondary mb-1">
                   Password
                 </label>
                 <input
+                  id="login-password"
                   type="password"
                   class="input-field"
+                  name="password"
+                  autocomplete="current-password"
                   placeholder="Enter your password"
                   data-testid="login-password"
                   value={password()}

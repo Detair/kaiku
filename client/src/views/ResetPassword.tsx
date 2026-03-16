@@ -92,6 +92,8 @@ const ResetPassword: Component = () => {
                 id="rp-server-url"
                 type="url"
                 class="input-field"
+                name="url"
+                autocomplete="url"
                 placeholder="https://chat.example.com"
                 value={serverUrl()}
                 onInput={(e) => setServerUrl(e.currentTarget.value)}
@@ -111,12 +113,13 @@ const ResetPassword: Component = () => {
                 id="rp-token"
                 type="text"
                 class="input-field"
+                name="token"
+                autocomplete="off"
                 placeholder="Paste reset code from email"
                 value={token()}
                 onInput={(e) => setToken(e.currentTarget.value)}
                 disabled={isLoading()}
                 required
-                autocomplete="off"
               />
             </div>
 
@@ -131,6 +134,8 @@ const ResetPassword: Component = () => {
                 id="rp-new-password"
                 type="password"
                 class="input-field"
+                name="new-password"
+                autocomplete="new-password"
                 placeholder="Enter new password"
                 value={newPassword()}
                 onInput={(e) => setNewPassword(e.currentTarget.value)}
@@ -152,6 +157,8 @@ const ResetPassword: Component = () => {
                 id="rp-confirm-password"
                 type="password"
                 class="input-field"
+                name="confirm-password"
+                autocomplete="new-password"
                 placeholder="Confirm new password"
                 value={confirmPassword()}
                 onInput={(e) => setConfirmPassword(e.currentTarget.value)}

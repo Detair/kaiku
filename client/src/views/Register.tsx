@@ -200,12 +200,15 @@ const Register: Component = () => {
 
         <Show when={isTauri}>
           <div class="mb-4">
-            <label class="block text-sm font-medium text-text-secondary mb-1">
+            <label for="register-server-url" class="block text-sm font-medium text-text-secondary mb-1">
               Server URL
             </label>
             <input
+              id="register-server-url"
               type="url"
               class="input-field"
+              name="url"
+              autocomplete="url"
               data-testid="register-server-url"
               placeholder="https://chat.example.com"
               value={serverUrl()}
@@ -278,12 +281,15 @@ const Register: Component = () => {
         <Show when={showLocalRegister()}>
           <form onSubmit={handleRegister} class="space-y-4">
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="register-username" class="block text-sm font-medium text-text-secondary mb-1">
                 Username <span class="text-danger">*</span>
               </label>
               <input
+                id="register-username"
                 type="text"
                 class="input-field"
+                name="username"
+                autocomplete="username"
                 data-testid="register-username"
                 placeholder="Choose a username"
                 value={username()}
@@ -298,12 +304,15 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="register-email" class="block text-sm font-medium text-text-secondary mb-1">
                 Email <span class="text-text-muted">(optional)</span>
               </label>
               <input
+                id="register-email"
                 type="email"
                 class="input-field"
+                name="email"
+                autocomplete="email"
                 placeholder="your@email.com"
                 value={email()}
                 onInput={(e) => setEmail(e.currentTarget.value)}
@@ -312,12 +321,15 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="register-display-name" class="block text-sm font-medium text-text-secondary mb-1">
                 Display Name <span class="text-text-muted">(optional)</span>
               </label>
               <input
+                id="register-display-name"
                 type="text"
                 class="input-field"
+                name="name"
+                autocomplete="name"
                 placeholder="How others will see you"
                 value={displayName()}
                 onInput={(e) => setDisplayName(e.currentTarget.value)}
@@ -326,12 +338,15 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="register-password" class="block text-sm font-medium text-text-secondary mb-1">
                 Password <span class="text-danger">*</span>
               </label>
               <input
+                id="register-password"
                 type="password"
                 class="input-field"
+                name="new-password"
+                autocomplete="new-password"
                 data-testid="register-password"
                 placeholder="Create a password"
                 value={password()}
@@ -343,12 +358,15 @@ const Register: Component = () => {
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label for="register-confirm-password" class="block text-sm font-medium text-text-secondary mb-1">
                 Confirm Password <span class="text-danger">*</span>
               </label>
               <input
+                id="register-confirm-password"
                 type="password"
                 class="input-field"
+                name="confirm-password"
+                autocomplete="new-password"
                 data-testid="register-password-confirm"
                 placeholder="Confirm your password"
                 value={confirmPassword()}
