@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Screen share encoder no longer busy-waits, reducing idle CPU usage via `recv_timeout`
 - Theater mode screen share viewer now correctly aligns with sidebar instead of using hardcoded offset
 - Volume mute toggle now remembers pre-mute level and restores it on unmute
+- Browser voice now uses server-provided STUN/TURN configuration instead of hardcoded STUN-only
 
 ### Security
 - Validation error responses no longer echo submitted field values (e.g., passwords)
@@ -47,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Display names are now rejected if they contain HTML tags
 
 ### Added
+- coturn TURN server in Docker Compose for reliable voice behind restrictive NATs
 - Guild banner image upload support in the Create New Guild dialog with drag-and-drop and local image preview
 - Transparent backgrounds for all application icons via an automated NumPy processing script
 - Headless Agent Rules added to AGENTS.md to ensure reliable non-interactive shell command execution

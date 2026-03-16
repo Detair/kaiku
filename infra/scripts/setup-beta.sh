@@ -124,6 +124,7 @@ if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
     VALKEY_PASSWORD=$(openssl rand -base64 16)
     GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16)
+    TURN_CREDENTIAL=$(openssl rand -hex 16)
 
     log "Writing ${ENV_FILE}..."
     cp "${INSTALL_DIR}/infra/compose/.env.beta" "$ENV_FILE"
@@ -135,11 +136,16 @@ if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     sed -i "s|MFA_ENCRYPTION_KEY=CHANGEME|MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY}|" "$ENV_FILE"
     sed -i "s|VALKEY_PASSWORD=CHANGEME|VALKEY_PASSWORD=${VALKEY_PASSWORD}|" "$ENV_FILE"
     sed -i "s|GRAFANA_ADMIN_PASSWORD=CHANGEME|GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}|" "$ENV_FILE"
+    sed -i "s|TURN_CREDENTIAL=CHANGEME|TURN_CREDENTIAL=${TURN_CREDENTIAL}|" "$ENV_FILE"
 
-    # Detect public IP for WebRTC
+    # Detect public IP for WebRTC and TURN
     if [[ -n "$SERVER_IP" && "$SERVER_IP" != "unknown" ]]; then
-        sed -i "s|# PUBLIC_IP=.*|PUBLIC_IP=${SERVER_IP}|" "$ENV_FILE"
-        log "Set PUBLIC_IP=${SERVER_IP}"
+        sed -i "s|PUBLIC_IP=CHANGEME|PUBLIC_IP=${SERVER_IP}|" "$ENV_FILE"
+        sed -i "s|TURN_SERVER=CHANGEME_TURN|TURN_SERVER=turn:${DOMAIN}:3478|" "$ENV_FILE"
+        log "Set PUBLIC_IP=${SERVER_IP}, TURN_SERVER=turn:${DOMAIN}:3478"
+    else
+        sed -i "s|TURN_SERVER=CHANGEME_TURN|TURN_SERVER=turn:${DOMAIN}:3478|" "$ENV_FILE"
+        warn "PUBLIC_IP could not be detected. Set it manually in ${ENV_FILE} for TURN to work."
     fi
 
     chmod 600 "$ENV_FILE"
@@ -159,11 +165,14 @@ if command -v ufw &>/dev/null; then
     ufw allow 22/tcp comment "SSH" 2>/dev/null || true
     ufw allow 80/tcp comment "HTTP (Caddy)" 2>/dev/null || true
     ufw allow 443/tcp comment "HTTPS (Caddy)" 2>/dev/null || true
+    ufw allow 3478/tcp comment "TURN (coturn)" 2>/dev/null || true
+    ufw allow 3478/udp comment "TURN (coturn)" 2>/dev/null || true
     ufw allow 10000:10100/udp comment "WebRTC RTP" 2>/dev/null || true
+    ufw allow 49152:49200/udp comment "TURN relay (coturn)" 2>/dev/null || true
     ufw --force enable 2>/dev/null || true
-    log "UFW configured: SSH, HTTP, HTTPS, WebRTC"
+    log "UFW configured: SSH, HTTP, HTTPS, TURN, WebRTC"
 else
-    warn "UFW not installed. Ensure ports 80, 443 (TCP) and 10000-10100 (UDP) are open."
+    warn "UFW not installed. Ensure ports 80, 443 (TCP), 3478 (TCP+UDP), 10000-10100 (UDP), and 49152-49200 (UDP) are open."
 fi
 
 # --- Step 5: Backup Cron -----------------------------------------------------
