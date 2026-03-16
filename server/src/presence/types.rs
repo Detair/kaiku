@@ -59,6 +59,11 @@ pub fn validate_unicode_text(text: &str, max_chars: usize) -> Result<(), &'stati
         return Err("Text too long");
     }
 
+    // Reject HTML tags as defense-in-depth against stored XSS
+    if text.contains('<') && text.contains('>') {
+        return Err("Text must not contain HTML tags");
+    }
+
     if text.chars().any(is_unsafe_unicode) {
         return Err("Text contains invalid characters");
     }

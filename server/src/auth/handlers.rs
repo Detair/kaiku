@@ -468,6 +468,10 @@ pub async fn register(
     // Set display name (default to username if not provided)
     let display_name = body.display_name.as_deref().unwrap_or(&body.username);
 
+    // Validate display name for unicode safety (control chars, bidi overrides, Zalgo, HTML)
+    crate::presence::validate_unicode_text(display_name, 64)
+        .map_err(|e| AuthError::Validation(format!("display_name: {e}")))?;
+
     // Start transaction for atomic first-user detection and admin grant
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(
