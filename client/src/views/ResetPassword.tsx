@@ -5,8 +5,9 @@ import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ResetPassword: Component = () => {
   document.title = "Reset Password | Kaiku";
+  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const [searchParams] = useSearchParams();
-  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
+  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const storedUrl =
     typeof localStorage !== "undefined"
       ? localStorage.getItem("serverUrl") || ""
@@ -83,26 +84,28 @@ const ResetPassword: Component = () => {
 
         <Show when={!success()}>
           <form onSubmit={handleSubmit} method="post" noValidate class="space-y-4">
-            <div>
-              <label
-                for="rp-server-url"
-                class="block text-sm font-medium text-text-secondary mb-1"
-              >
-                Server URL
-              </label>
-              <input
-                id="rp-server-url"
-                type="url"
-                class="input-field"
-                name="url"
-                autocomplete="url"
-                placeholder="https://chat.example.com"
-                value={serverUrl()}
-                onInput={(e) => setServerUrl(e.currentTarget.value)}
-                disabled={isLoading()}
-                required
-              />
-            </div>
+            <Show when={isTauri}>
+              <div>
+                <label
+                  for="rp-server-url"
+                  class="block text-sm font-medium text-text-secondary mb-1"
+                >
+                  Server URL
+                </label>
+                <input
+                  id="rp-server-url"
+                  type="url"
+                  class="input-field"
+                  name="url"
+                  autocomplete="url"
+                  placeholder="https://chat.example.com"
+                  value={serverUrl()}
+                  onInput={(e) => setServerUrl(e.currentTarget.value)}
+                  disabled={isLoading()}
+                  required
+                />
+              </div>
+            </Show>
 
             <div>
               <label

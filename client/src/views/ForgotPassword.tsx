@@ -4,7 +4,8 @@ import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ForgotPassword: Component = () => {
   document.title = "Forgot Password | Kaiku";
-  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
+  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+  const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const storedUrl =
     typeof localStorage !== "undefined"
       ? localStorage.getItem("serverUrl") || ""
@@ -70,26 +71,28 @@ const ForgotPassword: Component = () => {
 
         <Show when={!success()}>
           <form onSubmit={handleSubmit} method="post" noValidate class="space-y-4">
-            <div>
-              <label
-                for="fp-server-url"
-                class="block text-sm font-medium text-text-secondary mb-1"
-              >
-                Server URL
-              </label>
-              <input
-                id="fp-server-url"
-                type="url"
-                class="input-field"
-                name="url"
-                autocomplete="url"
-                placeholder="https://chat.example.com"
-                value={serverUrl()}
-                onInput={(e) => setServerUrl(e.currentTarget.value)}
-                disabled={isLoading()}
-                required
-              />
-            </div>
+            <Show when={isTauri}>
+              <div>
+                <label
+                  for="fp-server-url"
+                  class="block text-sm font-medium text-text-secondary mb-1"
+                >
+                  Server URL
+                </label>
+                <input
+                  id="fp-server-url"
+                  type="url"
+                  class="input-field"
+                  name="url"
+                  autocomplete="url"
+                  placeholder="https://chat.example.com"
+                  value={serverUrl()}
+                  onInput={(e) => setServerUrl(e.currentTarget.value)}
+                  disabled={isLoading()}
+                  required
+                />
+              </div>
+            </Show>
 
             <div>
               <label
