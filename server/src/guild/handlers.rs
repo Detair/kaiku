@@ -684,6 +684,12 @@ pub async fn list_channels(
     auth: AuthUser,
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<Vec<ChannelWithUnread>>, GuildError> {
+    // Verify membership before fetching channels
+    let is_member = db::is_guild_member(&state.db, guild_id, auth.id).await?;
+    if !is_member {
+        return Err(GuildError::Forbidden);
+    }
+
     let all_channels = db::get_guild_channels(&state.db, guild_id).await?;
     let all_channel_ids: Vec<Uuid> = all_channels.iter().map(|c| c.id).collect();
 
