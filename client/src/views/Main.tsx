@@ -185,9 +185,7 @@ const Main: Component = () => {
       <AppShell
         showServerRail={true}
         sidebar={
-          isDiscoveryActive() ? (
-            <></>
-          ) : guildsState.activeGuildId === null ? (
+          guildsState.activeGuildId === null ? (
             <HomeSidebar />
           ) : undefined
         }
