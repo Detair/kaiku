@@ -67,6 +67,14 @@ const Register: Component = () => {
       setLocalError("Username must be at least 3 characters");
       return;
     }
+    if (username().length > 32) {
+      setLocalError("Username must be 32 characters or fewer");
+      return;
+    }
+    if (!/^[a-z0-9_]+$/.test(username())) {
+      setLocalError("Username can only contain lowercase letters, numbers, and underscores");
+      return;
+    }
     if (!password()) {
       setLocalError("Password is required");
       return;
@@ -292,6 +300,9 @@ const Register: Component = () => {
                 autocomplete="username"
                 data-testid="register-username"
                 placeholder="Choose a username"
+                pattern="^[a-z0-9_]{3,32}$"
+                minLength={3}
+                maxLength={32}
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
                 disabled={authState.isLoading}
