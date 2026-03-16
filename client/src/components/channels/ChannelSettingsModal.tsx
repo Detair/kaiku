@@ -2,7 +2,7 @@
  * ChannelSettingsModal - Channel settings with permissions tab
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Hash, Settings, Shield, Check, Bell, BellOff } from "lucide-solid";
 import { channelsState } from "@/stores/channels";
@@ -27,6 +27,14 @@ type TabId = "overview" | "permissions";
 
 const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
   const [activeTab, setActiveTab] = createSignal<TabId>("overview");
+
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
 
   const channel = () =>
     channelsState.channels.find((c) => c.id === props.channelId);

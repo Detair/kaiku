@@ -4,7 +4,7 @@
  * Simple form for channel creation with name and type selection.
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { X, Hash, Mic } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
 import { Portal } from "solid-js/web";
@@ -20,6 +20,14 @@ interface CreateChannelModalProps {
 }
 
 const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [name, setName] = createSignal("");
   const [channelType, setChannelType] = createSignal<"text" | "voice">(
     props.initialType || "text",

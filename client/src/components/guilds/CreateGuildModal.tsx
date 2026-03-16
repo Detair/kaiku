@@ -5,7 +5,7 @@
  * Step 2: Discovery setup (toggle, tags, banner URL, preview)
  */
 
-import { Component, createSignal, createMemo, Show, For } from "solid-js";
+import { Component, createSignal, createMemo, Show, For, onMount, onCleanup } from "solid-js";
 import { X } from "lucide-solid";
 import { createGuild } from "@/stores/guilds";
 import * as tauri from "@/lib/tauri";
@@ -19,6 +19,14 @@ const TAG_REGEX = /^[a-zA-Z0-9-]+$/;
 const MAX_TAGS = 5;
 
 const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   // Step state: 1 = name/description, 2 = discovery setup
   const [step, setStep] = createSignal<1 | 2>(1);
 

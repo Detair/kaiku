@@ -4,7 +4,7 @@
  * Modal for accepting pages with scroll-to-bottom requirement.
  */
 
-import { Show, createSignal, onMount } from "solid-js";
+import { Show, createSignal, onMount, onCleanup } from "solid-js";
 import { X, Check, ChevronDown } from "lucide-solid";
 import type { Page } from "@/lib/types";
 import { SCROLL_TOLERANCE } from "@/lib/pageConstants";
@@ -19,6 +19,14 @@ interface PageAcceptanceModalProps {
 }
 
 export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !props.isBlocking) props.onClose?.();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [hasScrolledToBottom, setHasScrolledToBottom] = createSignal(false);
   const [isAccepting, setIsAccepting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);

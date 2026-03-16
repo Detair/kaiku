@@ -7,7 +7,7 @@
  * 3. Display backup codes with copy/download
  */
 
-import { Component, createSignal, Show, Match, Switch } from "solid-js";
+import { Component, createSignal, Show, Match, Switch, onMount, onCleanup } from "solid-js";
 import { X, ShieldCheck, QrCode, KeyRound } from "lucide-solid";
 import { mfaSetup, mfaVerify } from "@/lib/tauri";
 import type { MfaSetupResponse } from "@/lib/tauri";
@@ -23,6 +23,14 @@ interface MfaSetupModalProps {
 }
 
 const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [step, setStep] = createSignal<Step>("qr");
   const [setupData, setSetupData] = createSignal<MfaSetupResponse | null>(null);
   const [verifyCode, setVerifyCode] = createSignal("");

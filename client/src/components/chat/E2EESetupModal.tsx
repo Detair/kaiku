@@ -11,6 +11,7 @@ import {
   createEffect,
   Show,
   For,
+  onMount,
   onCleanup,
 } from "solid-js";
 import { Portal } from "solid-js/web";
@@ -62,6 +63,14 @@ async function generateRecoveryKey(): Promise<RecoveryKey> {
 }
 
 const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [recoveryKey, setRecoveryKey] = createSignal<RecoveryKey | null>(null);
   const [hasSaved, setHasSaved] = createSignal(false);
   const [isLoading, setIsLoading] = createSignal(false);

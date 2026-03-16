@@ -5,7 +5,7 @@
  * and expiry time.
  */
 
-import { Component, createSignal, For } from "solid-js";
+import { Component, createSignal, For, onMount, onCleanup } from "solid-js";
 import type { CustomStatus } from "@/lib/types";
 
 interface CustomStatusModalProps {
@@ -23,6 +23,14 @@ const expiryOptions = [
 ];
 
 const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
+  onMount(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  });
+
   const [text, setText] = createSignal(props.currentStatus?.text ?? "");
   const [emoji, setEmoji] = createSignal(props.currentStatus?.emoji ?? "");
   const [expiryMinutes, setExpiryMinutes] = createSignal<number | null>(null);
