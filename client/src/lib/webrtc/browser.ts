@@ -140,10 +140,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       this.setState("connecting");
 
-      // Create peer connection
-      const config: RTCConfiguration = {
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      };
+      // Fetch ICE servers (STUN + TURN) from the API
+      const config = await this.fetchIceConfig();
 
       this.peerConnection = new RTCPeerConnection(config);
       this.setupPeerConnectionHandlers();
@@ -1039,6 +1037,33 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   // Private helper methods
+
+  private async fetchIceConfig(): Promise<RTCConfiguration> {
+    const fallback: RTCConfiguration = {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    };
+    try {
+      const { getServerUrl, getAccessToken } = await import("@/lib/tauri");
+      const serverUrl = getServerUrl();
+      const token = getAccessToken();
+      const res = await fetch(`${serverUrl}/api/voice/ice-servers`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return fallback;
+      const data = await res.json();
+      const iceServers: RTCIceServer[] = (data.ice_servers ?? []).map(
+        (s: { urls: string[]; username?: string; credential?: string }) => ({
+          urls: s.urls,
+          ...(s.username && { username: s.username }),
+          ...(s.credential && { credential: s.credential }),
+        }),
+      );
+      return iceServers.length > 0 ? { iceServers } : fallback;
+    } catch (err) {
+      console.warn("[BrowserVoiceAdapter] Failed to fetch ICE servers, using fallback STUN", err);
+      return fallback;
+    }
+  }
 
   private setState(state: VoiceConnectionState) {
     this.state = state;
