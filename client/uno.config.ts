@@ -85,7 +85,7 @@ export default defineConfig({
     "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-white",
 
     // Input fields
-    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-xl text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/50 border border-white/5",
+    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-xl text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
 
     // Panels and Cards
     "panel": "bg-surface-layer2 rounded-xl border border-white/5",

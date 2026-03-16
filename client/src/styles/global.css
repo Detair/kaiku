@@ -38,6 +38,24 @@ body {
   color: var(--color-selection-text);
 }
 
+/* Visible focus indicators for interactive elements */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+/* Links should have non-color visual indicator (WCAG) */
+a[class*="text-primary"] {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a[class*="text-primary"]:hover {
+  text-decoration-thickness: 2px;
+}
+
 /* Input and textarea styling */
 input,
 textarea {
