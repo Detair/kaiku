@@ -87,7 +87,15 @@ const Layout: Component<ParentProps> = (props) => {
 
   return (
     <div class="h-screen bg-background-tertiary text-text-primary">
-      {props.children}
+      <a
+        href="#main-content"
+        class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-accent-primary focus:text-on-accent focus:rounded-lg focus:text-sm focus:font-medium"
+      >
+        Skip to content
+      </a>
+      <div id="main-content">
+        {props.children}
+      </div>
       <ToastContainer />
       <SessionExpiredModal />
       <ContextMenuContainer />
