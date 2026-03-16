@@ -227,7 +227,7 @@ const Login: Component = () => {
 
         {/* MFA Code Step */}
         <Show when={authState.mfaRequired}>
-          <form onSubmit={handleLogin} class="space-y-4">
+          <form onSubmit={handleLogin} method="post" noValidate class="space-y-4">
             <div class="flex items-center gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg">
               <ShieldCheck class="w-5 h-5 text-accent-primary flex-shrink-0" />
               <p class="text-sm text-text-secondary">
@@ -345,7 +345,7 @@ const Login: Component = () => {
 
           {/* Local Login Form */}
           <Show when={showLocalLogin()}>
-            <form onSubmit={handleLogin} class="space-y-4">
+            <form onSubmit={handleLogin} method="post" noValidate class="space-y-4">
               <div>
                 <label for="login-username" class="block text-sm font-medium text-text-secondary mb-1">
                   Username

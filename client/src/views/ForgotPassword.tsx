@@ -68,7 +68,7 @@ const ForgotPassword: Component = () => {
         </p>
 
         <Show when={!success()}>
-          <form onSubmit={handleSubmit} class="space-y-4">
+          <form onSubmit={handleSubmit} method="post" noValidate class="space-y-4">
             <div>
               <label
                 for="fp-server-url"

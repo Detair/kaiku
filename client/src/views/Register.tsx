@@ -287,7 +287,7 @@ const Register: Component = () => {
 
         {/* Local Registration Form */}
         <Show when={showLocalRegister()}>
-          <form onSubmit={handleRegister} class="space-y-4">
+          <form onSubmit={handleRegister} method="post" noValidate class="space-y-4">
             <div>
               <label for="register-username" class="block text-sm font-medium text-text-secondary mb-1">
                 Username <span class="text-error-text">*</span>
