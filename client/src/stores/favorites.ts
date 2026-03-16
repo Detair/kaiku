@@ -100,8 +100,9 @@ async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
   }
 
   // HTTP fallback for browser
-  const token = localStorage.getItem("vc:token");
-  const baseUrl = import.meta.env.VITE_API_URL || "";
+  const { getAccessToken, getServerUrl } = await import("@/lib/tauri");
+  const token = getAccessToken();
+  const baseUrl = getServerUrl();
 
   const response = await fetch(`${baseUrl}${endpoint}`, {
     ...options,
