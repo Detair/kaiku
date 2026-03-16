@@ -469,7 +469,7 @@ impl SfuServer {
                 urls: vec![turn.clone()],
                 username: self.config.turn_username.clone().unwrap_or_default(),
                 credential: self.config.turn_credential.clone().unwrap_or_default(),
-                ..Default::default()
+                credential_type: webrtc::ice_transport::ice_credential_type::RTCIceCredentialType::Password,
             });
         }
 
