@@ -133,7 +133,7 @@ services:
       - "--fingerprint"
       - "--lt-cred-mech"
       - "--user=${TURN_USERNAME:-kaiku}:${TURN_CREDENTIAL}"
-      - "--external-ip=${PUBLIC_IP:-}"
+      - "--external-ip=${PUBLIC_IP}"
       - "--listening-port=3478"
       - "--min-port=49152"
       - "--max-port=49200"
