@@ -27,5 +27,9 @@ pub fn format_validation_errors(errors: &ValidationErrors) -> String {
             }
         }
     }
+    // Fallback for struct-level errors not captured by field_errors()
+    if out.is_empty() && !errors.is_empty() {
+        out = "Validation failed".to_string();
+    }
     out
 }
