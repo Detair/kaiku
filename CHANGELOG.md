@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed REMB bitrate conversion that could produce incorrect values from NaN or infinite f32, potentially disrupting simulcast layer switching (#368)
-- Fixed 2-second delay on HTTP requests caused by missing Redis reconnect policy (#390)
+- Fixed 2-second delay on every HTTP request caused by webhook worker BRPOP blocking the shared Redis connection (#390)
 - Fixed noisy OIDC error logs on server startup when no provider is configured (#387)
 - Fixed poor text contrast on accent-colored backgrounds by introducing a `text-on-accent` design token across all themes (#386)
 - Admin Settings panel now checks elevation state on mount, hiding the warning when session is already elevated (#389)

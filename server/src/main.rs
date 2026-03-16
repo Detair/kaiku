@@ -53,8 +53,10 @@ async fn main() -> Result<()> {
     let voice_health_handle =
         vc_server::observability::voice::spawn_voice_health_task(db_pool.clone());
 
-    // Initialize Redis
+    // Initialize Redis (two clients: one for the app, one for the webhook
+    // delivery worker whose BRPOP blocks the connection)
     let redis = db::create_redis_client(&config.redis_url).await?;
+    let redis_webhook = db::create_redis_client(&config.redis_url).await?;
 
     // Initialize S3 client (optional - file uploads will be disabled if not configured)
     // Skip initialization if S3 credentials aren't available (Config fields or env vars)
@@ -343,7 +345,7 @@ async fn main() -> Result<()> {
         .map(std::sync::Arc::new);
     let webhook_worker_handle = tokio::spawn(vc_server::webhooks::delivery::spawn_delivery_worker(
         db_pool.clone(),
-        redis.clone(),
+        redis_webhook,
         webhook_http_client,
         webhook_encryption_key,
     ));
