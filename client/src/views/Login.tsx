@@ -26,6 +26,7 @@ function providerIcon(hint: string | null) {
 }
 
 const Login: Component = () => {
+  document.title = "Login | Kaiku";
   const navigate = useNavigate();
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;

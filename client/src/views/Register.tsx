@@ -20,6 +20,7 @@ function providerIcon(hint: string | null) {
 }
 
 const Register: Component = () => {
+  document.title = "Create Account | Kaiku";
   const navigate = useNavigate();
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;

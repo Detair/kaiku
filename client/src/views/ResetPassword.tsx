@@ -3,6 +3,7 @@ import { A, useSearchParams } from "@solidjs/router";
 import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ResetPassword: Component = () => {
+  document.title = "Reset Password | Kaiku";
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
   const storedUrl =

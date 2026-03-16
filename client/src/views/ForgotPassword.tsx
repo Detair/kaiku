@@ -3,6 +3,7 @@ import { A } from "@solidjs/router";
 import flokiForgot from "@/assets/images/floki_auth_forgot.png";
 
 const ForgotPassword: Component = () => {
+  document.title = "Forgot Password | Kaiku";
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || "";
   const storedUrl =
     typeof localStorage !== "undefined"
