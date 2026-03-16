@@ -106,17 +106,17 @@ export default function LibraryCatalog(props: LibraryCatalogProps) {
   const hasFilteredResults = createMemo(() => filteredPages().length > 0);
 
   return (
-    <div class="flex flex-col h-full bg-zinc-900 text-white">
+    <div class="flex flex-col h-full bg-surface-layer1 text-text-primary">
       {/* Header */}
-      <div class="flex items-center justify-between px-6 py-4 border-b border-zinc-700">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-border-default">
         <div class="flex items-center gap-3">
-          <BookOpen class="w-6 h-6 text-zinc-300" />
+          <BookOpen class="w-6 h-6 text-text-secondary" />
           <h1 class="text-xl font-semibold">Library</h1>
         </div>
         <Show when={props.canManage}>
           <button
             type="button"
-            class="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-300 rounded-md hover:bg-zinc-700 transition-colors"
+            class="flex items-center gap-2 px-3 py-1.5 text-sm text-text-secondary rounded-md hover:bg-surface-highlight transition-colors"
             onClick={() => props.onManageCategories?.()}
           >
             <Settings class="w-4 h-4" />
@@ -128,13 +128,13 @@ export default function LibraryCatalog(props: LibraryCatalogProps) {
       {/* Search */}
       <div class="px-6 py-3">
         <div class="relative">
-          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
           <input
             type="text"
             placeholder="Search pages..."
             value={searchText()}
             onInput={(e) => setSearchText(e.currentTarget.value)}
-            class="w-full pl-10 pr-4 py-2 bg-zinc-800 border border-zinc-700 rounded-md text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition-colors"
+            class="input-field pl-10"
           />
         </div>
       </div>
@@ -144,10 +144,10 @@ export default function LibraryCatalog(props: LibraryCatalogProps) {
         <Show
           when={hasAnyPages() || props.canManage}
           fallback={
-            <div class="flex flex-col items-center justify-center py-16 text-zinc-400">
-              <FileText class="w-12 h-12 mb-4 text-zinc-600" />
+            <div class="flex flex-col items-center justify-center py-16 text-text-secondary">
+              <FileText class="w-12 h-12 mb-4 text-text-muted" />
               <p class="text-lg font-medium mb-1">No pages yet</p>
-              <p class="text-sm text-zinc-500">
+              <p class="text-sm text-text-muted">
                 This library doesn't have any pages.
               </p>
             </div>
@@ -156,10 +156,10 @@ export default function LibraryCatalog(props: LibraryCatalogProps) {
           <Show
             when={hasFilteredResults() || !searchText().trim()}
             fallback={
-              <div class="flex flex-col items-center justify-center py-16 text-zinc-400">
-                <Search class="w-12 h-12 mb-4 text-zinc-600" />
+              <div class="flex flex-col items-center justify-center py-16 text-text-secondary">
+                <Search class="w-12 h-12 mb-4 text-text-muted" />
                 <p class="text-lg font-medium mb-1">No results</p>
-                <p class="text-sm text-zinc-500">
+                <p class="text-sm text-text-muted">
                   No pages match "{searchText()}"
                 </p>
               </div>
@@ -225,17 +225,17 @@ function CategorySection(props: CategorySectionProps) {
       {/* Category header */}
       <button
         type="button"
-        class="flex items-center gap-2 w-full py-2 text-left text-sm font-medium text-zinc-300 hover:text-white transition-colors"
+        class="flex items-center gap-2 w-full py-2 text-left text-sm font-medium text-text-secondary hover:text-text-primary transition-colors"
         onClick={() => props.onToggle()}
       >
         <Show
           when={props.expanded}
-          fallback={<ChevronRight class="w-4 h-4 text-zinc-500" />}
+          fallback={<ChevronRight class="w-4 h-4 text-text-muted" />}
         >
-          <ChevronDown class="w-4 h-4 text-zinc-500" />
+          <ChevronDown class="w-4 h-4 text-text-muted" />
         </Show>
         <span>{props.name}</span>
-        <span class="text-xs text-zinc-500">({props.pages.length})</span>
+        <span class="text-xs text-text-muted">({props.pages.length})</span>
       </button>
 
       {/* Category content */}
@@ -245,18 +245,18 @@ function CategorySection(props: CategorySectionProps) {
             {(page) => (
               <button
                 type="button"
-                class="bg-zinc-800 rounded-lg p-4 border border-zinc-700 text-left hover:bg-zinc-700 transition-colors cursor-pointer"
+                class="bg-surface-layer2 rounded-lg p-4 border border-border-default text-left hover:bg-surface-highlight transition-colors cursor-pointer"
                 onClick={() => props.onPageClick?.(page)}
               >
                 <div class="flex items-start gap-3">
-                  <FileText class="w-5 h-5 text-zinc-400 mt-0.5 shrink-0" />
+                  <FileText class="w-5 h-5 text-text-secondary mt-0.5 shrink-0" />
                   <div class="min-w-0 flex-1">
-                    <h3 class="text-sm font-medium text-white truncate">
+                    <h3 class="text-sm font-medium text-text-primary truncate">
                       {page.title}
                     </h3>
                     <div class="flex items-center gap-2 mt-1.5">
                       <Show when={page.updated_at}>
-                        <span class="text-xs text-zinc-500">
+                        <span class="text-xs text-text-muted">
                           {formatDate(page.updated_at!)}
                         </span>
                       </Show>
@@ -276,7 +276,7 @@ function CategorySection(props: CategorySectionProps) {
           <Show when={props.canManage}>
             <button
               type="button"
-              class="flex items-center justify-center gap-2 rounded-lg p-4 border border-dashed border-zinc-700 text-zinc-400 hover:text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 transition-colors cursor-pointer"
+              class="flex items-center justify-center gap-2 rounded-lg p-4 border border-dashed border-border-default text-text-secondary hover:text-text-primary hover:border-accent-primary/50 hover:bg-surface-layer2 transition-colors cursor-pointer"
               onClick={() => props.onNewPage?.()}
             >
               <Plus class="w-4 h-4" />

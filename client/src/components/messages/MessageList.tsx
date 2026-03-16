@@ -378,9 +378,9 @@ const MessageList: Component<MessageListProps> = (props) => {
           <div class="w-16 h-16 bg-surface-layer2 rounded-full flex items-center justify-center mb-3">
             <MessageSquare class="w-8 h-8 text-text-secondary" />
           </div>
-          <h3 class="text-lg font-semibold text-text-primary mb-1">
+          <h2 class="text-lg font-semibold text-text-primary mb-1">
             Beginning of conversation
-          </h3>
+          </h2>
           <p class="text-sm text-text-secondary">
             This is the start of the message history.
           </p>
