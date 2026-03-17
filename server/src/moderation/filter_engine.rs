@@ -189,7 +189,7 @@ impl FilterEngine {
     }
 
     /// Returns true if this engine has no active filters.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.keyword_matcher.is_none() && self.regex_patterns.is_empty()
     }
 }

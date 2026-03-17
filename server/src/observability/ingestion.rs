@@ -13,7 +13,6 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use opentelemetry::trace::TraceContextExt as _;
 use opentelemetry::KeyValue;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
@@ -133,14 +132,10 @@ where
         let mut visitor = LogEventVisitor::default();
         event.record(&mut visitor);
 
-        // Extract trace context from the current span.
+        // Extract trace context from the current span's OtelData.
         //
-        // We read from `OtelData.parent_cx` which holds the parent span's
-        // context. The trace_id is correct (shared across the whole trace);
-        // the span_id reflects the parent span — a minor inaccuracy that
-        // is acceptable for native log correlation. Extracting the *current*
-        // span's OTel span ID would require accessing the span builder's
-        // internal state, which is version-fragile.
+        // In tracing-opentelemetry 0.32+, OtelData exposes trace_id() and
+        // span_id() methods that return the IDs once the context is built.
         let (trace_id, span_id) = ctx
             .current_span()
             .id()
@@ -148,14 +143,12 @@ where
             .map(|span| {
                 let extensions = span.extensions();
                 if let Some(otel_data) = extensions.get::<tracing_opentelemetry::OtelData>() {
-                    let parent_cx = &otel_data.parent_cx;
-                    let span_ref = parent_cx.span();
-                    let sc = span_ref.span_context();
-                    if sc.is_valid() {
-                        return (
-                            Some(sc.trace_id().to_string()),
-                            Some(sc.span_id().to_string()),
-                        );
+                    if let (Some(t), Some(s)) = (otel_data.trace_id(), otel_data.span_id()) {
+                        if t != opentelemetry::trace::TraceId::INVALID
+                            && s != opentelemetry::trace::SpanId::INVALID
+                        {
+                            return (Some(t.to_string()), Some(s.to_string()));
+                        }
                     }
                 }
                 (None, None)
@@ -290,6 +283,13 @@ impl opentelemetry_sdk::trace::SpanProcessor for NativeSpanProcessor {
     fn shutdown(&self) -> opentelemetry_sdk::error::OTelSdkResult {
         Ok(())
     }
+
+    fn shutdown_with_timeout(
+        &self,
+        _timeout: std::time::Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -318,137 +318,195 @@ impl NativeMetricExporter {
     fn process_metric(
         &self,
         metric_name: &str,
-        data: &dyn opentelemetry_sdk::metrics::data::Aggregation,
+        data: &opentelemetry_sdk::metrics::data::AggregatedMetrics,
         cardinality: &mut HashMap<String, usize>,
     ) {
-        use opentelemetry_sdk::metrics::data::{Gauge, Histogram, Sum};
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
 
-        let any = data.as_any();
-
-        // Try Sum<u64> (counters)
-        if let Some(sum) = any.downcast_ref::<Sum<u64>>() {
-            for dp in &sum.data_points {
-                self.emit_sample(metric_name, &dp.attributes, cardinality, |labels| {
-                    CapturedMetricSample {
-                        ts: Utc::now(),
-                        metric_name: metric_name.to_owned(),
-                        scope: "cluster".to_owned(),
-                        labels,
-                        value_count: Some(dp.value as i64),
-                        value_sum: None,
-                        value_p50: None,
-                        value_p95: None,
-                        value_p99: None,
+        match data {
+            AggregatedMetrics::U64(metric_data) => match metric_data {
+                MetricData::Sum(sum) => {
+                    for dp in sum.data_points() {
+                        let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+                        self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                            CapturedMetricSample {
+                                ts: Utc::now(),
+                                metric_name: metric_name.to_owned(),
+                                scope: "cluster".to_owned(),
+                                labels,
+                                value_count: Some(dp.value() as i64),
+                                value_sum: None,
+                                value_p50: None,
+                                value_p95: None,
+                                value_p99: None,
+                            }
+                        });
                     }
-                });
-            }
-            return;
+                }
+                MetricData::Gauge(gauge) => {
+                    for dp in gauge.data_points() {
+                        let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+                        self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                            CapturedMetricSample {
+                                ts: Utc::now(),
+                                metric_name: metric_name.to_owned(),
+                                scope: "cluster".to_owned(),
+                                labels,
+                                value_count: Some(dp.value() as i64),
+                                value_sum: None,
+                                value_p50: None,
+                                value_p95: None,
+                                value_p99: None,
+                            }
+                        });
+                    }
+                }
+                MetricData::Histogram(hist) => {
+                    self.process_histogram(metric_name, hist, cardinality);
+                }
+                MetricData::ExponentialHistogram(_) => {}
+            },
+            AggregatedMetrics::I64(metric_data) => match metric_data {
+                MetricData::Sum(sum) => {
+                    for dp in sum.data_points() {
+                        let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+                        self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                            CapturedMetricSample {
+                                ts: Utc::now(),
+                                metric_name: metric_name.to_owned(),
+                                scope: "cluster".to_owned(),
+                                labels,
+                                value_count: Some(dp.value()),
+                                value_sum: None,
+                                value_p50: None,
+                                value_p95: None,
+                                value_p99: None,
+                            }
+                        });
+                    }
+                }
+                MetricData::Gauge(gauge) => {
+                    for dp in gauge.data_points() {
+                        let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+                        self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                            CapturedMetricSample {
+                                ts: Utc::now(),
+                                metric_name: metric_name.to_owned(),
+                                scope: "cluster".to_owned(),
+                                labels,
+                                value_count: Some(dp.value()),
+                                value_sum: None,
+                                value_p50: None,
+                                value_p95: None,
+                                value_p99: None,
+                            }
+                        });
+                    }
+                }
+                MetricData::Histogram(hist) => {
+                    self.process_histogram(metric_name, hist, cardinality);
+                }
+                MetricData::ExponentialHistogram(_) => {}
+            },
+            AggregatedMetrics::F64(metric_data) => match metric_data {
+                MetricData::Sum(sum) => {
+                    for dp in sum.data_points() {
+                        let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+                        self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                            CapturedMetricSample {
+                                ts: Utc::now(),
+                                metric_name: metric_name.to_owned(),
+                                scope: "cluster".to_owned(),
+                                labels,
+                                value_count: None,
+                                value_sum: Some(dp.value()),
+                                value_p50: None,
+                                value_p95: None,
+                                value_p99: None,
+                            }
+                        });
+                    }
+                }
+                MetricData::Gauge(gauge) => {
+                    for dp in gauge.data_points() {
+                        let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+                        self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                            CapturedMetricSample {
+                                ts: Utc::now(),
+                                metric_name: metric_name.to_owned(),
+                                scope: "cluster".to_owned(),
+                                labels,
+                                value_count: None,
+                                value_sum: Some(dp.value()),
+                                value_p50: None,
+                                value_p95: None,
+                                value_p99: None,
+                            }
+                        });
+                    }
+                }
+                MetricData::Histogram(hist) => {
+                    for dp in hist.data_points() {
+                        let bounds: Vec<f64> = dp.bounds().collect();
+                        let bucket_counts: Vec<u64> = dp.bucket_counts().collect();
+                        let count = dp.count();
+                        let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+                        self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                            let p50 =
+                                percentile_from_histogram(&bounds, &bucket_counts, count, 0.50);
+                            let p95 =
+                                percentile_from_histogram(&bounds, &bucket_counts, count, 0.95);
+                            let p99 =
+                                percentile_from_histogram(&bounds, &bucket_counts, count, 0.99);
+
+                            CapturedMetricSample {
+                                ts: Utc::now(),
+                                metric_name: metric_name.to_owned(),
+                                scope: "cluster".to_owned(),
+                                labels,
+                                value_count: Some(count as i64),
+                                value_sum: Some(dp.sum()),
+                                value_p50: p50,
+                                value_p95: p95,
+                                value_p99: p99,
+                            }
+                        });
+                    }
+                }
+                MetricData::ExponentialHistogram(_) => {}
+            },
         }
+    }
 
-        // Try Sum<i64> (up-down counters)
-        if let Some(sum) = any.downcast_ref::<Sum<i64>>() {
-            for dp in &sum.data_points {
-                self.emit_sample(metric_name, &dp.attributes, cardinality, |labels| {
-                    CapturedMetricSample {
-                        ts: Utc::now(),
-                        metric_name: metric_name.to_owned(),
-                        scope: "cluster".to_owned(),
-                        labels,
-                        value_count: Some(dp.value),
-                        value_sum: None,
-                        value_p50: None,
-                        value_p95: None,
-                        value_p99: None,
-                    }
-                });
-            }
-            return;
-        }
+    /// Process a u64/i64 histogram (no f64 sum available, so emit count only).
+    fn process_histogram<T: Copy>(
+        &self,
+        metric_name: &str,
+        hist: &opentelemetry_sdk::metrics::data::Histogram<T>,
+        cardinality: &mut HashMap<String, usize>,
+    ) {
+        for dp in hist.data_points() {
+            let bounds: Vec<f64> = dp.bounds().collect();
+            let bucket_counts: Vec<u64> = dp.bucket_counts().collect();
+            let count = dp.count();
+            let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
+            self.emit_sample(metric_name, &attrs, cardinality, |labels| {
+                let p50 = percentile_from_histogram(&bounds, &bucket_counts, count, 0.50);
+                let p95 = percentile_from_histogram(&bounds, &bucket_counts, count, 0.95);
+                let p99 = percentile_from_histogram(&bounds, &bucket_counts, count, 0.99);
 
-        // Try Sum<f64>
-        if let Some(sum) = any.downcast_ref::<Sum<f64>>() {
-            for dp in &sum.data_points {
-                self.emit_sample(metric_name, &dp.attributes, cardinality, |labels| {
-                    CapturedMetricSample {
-                        ts: Utc::now(),
-                        metric_name: metric_name.to_owned(),
-                        scope: "cluster".to_owned(),
-                        labels,
-                        value_count: None,
-                        value_sum: Some(dp.value),
-                        value_p50: None,
-                        value_p95: None,
-                        value_p99: None,
-                    }
-                });
-            }
-            return;
-        }
-
-        // Try Histogram<f64>
-        if let Some(hist) = any.downcast_ref::<Histogram<f64>>() {
-            for dp in &hist.data_points {
-                self.emit_sample(metric_name, &dp.attributes, cardinality, |labels| {
-                    let p50 =
-                        percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.50);
-                    let p95 =
-                        percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.95);
-                    let p99 =
-                        percentile_from_histogram(&dp.bounds, &dp.bucket_counts, dp.count, 0.99);
-
-                    CapturedMetricSample {
-                        ts: Utc::now(),
-                        metric_name: metric_name.to_owned(),
-                        scope: "cluster".to_owned(),
-                        labels,
-                        value_count: Some(dp.count as i64),
-                        value_sum: Some(dp.sum),
-                        value_p50: p50,
-                        value_p95: p95,
-                        value_p99: p99,
-                    }
-                });
-            }
-            return;
-        }
-
-        // Try Gauge<u64>
-        if let Some(gauge) = any.downcast_ref::<Gauge<u64>>() {
-            for dp in &gauge.data_points {
-                self.emit_sample(metric_name, &dp.attributes, cardinality, |labels| {
-                    CapturedMetricSample {
-                        ts: Utc::now(),
-                        metric_name: metric_name.to_owned(),
-                        scope: "cluster".to_owned(),
-                        labels,
-                        value_count: Some(dp.value as i64),
-                        value_sum: None,
-                        value_p50: None,
-                        value_p95: None,
-                        value_p99: None,
-                    }
-                });
-            }
-            return;
-        }
-
-        // Try Gauge<f64>
-        if let Some(gauge) = any.downcast_ref::<Gauge<f64>>() {
-            for dp in &gauge.data_points {
-                self.emit_sample(metric_name, &dp.attributes, cardinality, |labels| {
-                    CapturedMetricSample {
-                        ts: Utc::now(),
-                        metric_name: metric_name.to_owned(),
-                        scope: "cluster".to_owned(),
-                        labels,
-                        value_count: None,
-                        value_sum: Some(dp.value),
-                        value_p50: None,
-                        value_p95: None,
-                        value_p99: None,
-                    }
-                });
-            }
+                CapturedMetricSample {
+                    ts: Utc::now(),
+                    metric_name: metric_name.to_owned(),
+                    scope: "cluster".to_owned(),
+                    labels,
+                    value_count: Some(count as i64),
+                    value_sum: None,
+                    value_p50: p50,
+                    value_p95: p95,
+                    value_p99: p99,
+                }
+            });
         }
     }
 
@@ -481,13 +539,13 @@ impl NativeMetricExporter {
 impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for NativeMetricExporter {
     async fn export(
         &self,
-        metrics: &mut opentelemetry_sdk::metrics::data::ResourceMetrics,
+        metrics: &opentelemetry_sdk::metrics::data::ResourceMetrics,
     ) -> opentelemetry_sdk::error::OTelSdkResult {
         let mut cardinality: HashMap<String, usize> = HashMap::new();
 
-        for scope_metrics in &metrics.scope_metrics {
-            for metric in &scope_metrics.metrics {
-                self.process_metric(&metric.name, metric.data.as_ref(), &mut cardinality);
+        for scope_metrics in metrics.scope_metrics() {
+            for metric in scope_metrics.metrics() {
+                self.process_metric(metric.name(), metric.data(), &mut cardinality);
             }
         }
 
@@ -498,7 +556,10 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for NativeMetricEx
         Ok(())
     }
 
-    fn shutdown(&self) -> opentelemetry_sdk::error::OTelSdkResult {
+    fn shutdown_with_timeout(
+        &self,
+        _timeout: std::time::Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
         Ok(())
     }
 

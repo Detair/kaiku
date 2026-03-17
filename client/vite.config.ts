@@ -43,14 +43,13 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
-    commonjsOptions: {
-      transformMixedEsModules: true,
+  },
+  ...(process.env.NODE_ENV === "production" && {
+    define: {
+      "console.log": "(() => {})",
+      "console.debug": "(() => {})",
     },
-  },
-  esbuild: {
-    drop: process.env.NODE_ENV === "production" ? ["debugger"] : [],
-    pure: process.env.NODE_ENV === "production" ? ["console.log", "console.debug"] : [],
-  },
+  }),
   // Prevent vite from obscuring rust errors
   clearScreen: false,
 });

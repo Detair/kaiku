@@ -23,7 +23,11 @@ pub fn format_validation_errors(errors: &ValidationErrors) -> String {
                     .iter()
                     .filter(|(k, _)| k.as_ref() != "value")
                     .collect();
-                let _ = write!(out, "{field}: Validation error: {} {safe_params:?}", err.code);
+                let _ = write!(
+                    out,
+                    "{field}: Validation error: {} {safe_params:?}",
+                    err.code
+                );
             }
         }
     }
