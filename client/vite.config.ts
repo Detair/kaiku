@@ -44,6 +44,12 @@ export default defineConfig({
   build: {
     target: "esnext",
   },
+  ...(process.env.NODE_ENV === "production" && {
+    define: {
+      "console.log": "(() => {})",
+      "console.debug": "(() => {})",
+    },
+  }),
   // Prevent vite from obscuring rust errors
   clearScreen: false,
 });
