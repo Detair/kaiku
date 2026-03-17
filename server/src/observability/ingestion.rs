@@ -143,10 +143,10 @@ where
             .map(|span| {
                 let extensions = span.extensions();
                 if let Some(otel_data) = extensions.get::<tracing_opentelemetry::OtelData>() {
-                    let tid = otel_data.trace_id().map(|t| t.to_string());
-                    let sid = otel_data.span_id().map(|s| s.to_string());
-                    if tid.is_some() {
-                        return (tid, sid);
+                    if let (Some(t), Some(s)) = (otel_data.trace_id(), otel_data.span_id()) {
+                        if t != opentelemetry::trace::TraceId::INVALID {
+                            return (Some(t.to_string()), Some(s.to_string()));
+                        }
                     }
                 }
                 (None, None)
