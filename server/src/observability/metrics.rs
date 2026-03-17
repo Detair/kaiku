@@ -459,10 +459,7 @@ impl<E> FailureCountingMetricExporter<E> {
 }
 
 impl<E: PushMetricExporter> PushMetricExporter for FailureCountingMetricExporter<E> {
-    async fn export(
-        &self,
-        metrics: &ResourceMetrics,
-    ) -> opentelemetry_sdk::error::OTelSdkResult {
+    async fn export(&self, metrics: &ResourceMetrics) -> opentelemetry_sdk::error::OTelSdkResult {
         let result = self.inner.export(metrics).await;
         if result.is_err() {
             record_otel_export_failure();

@@ -8,9 +8,9 @@ use std::sync::LazyLock;
 
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType};
 use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    EndpointMaybeSet, EndpointNotSet, EndpointSet, IssuerUrl, Nonce,
-    OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet,
+    EndpointNotSet, EndpointSet, IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, Scope,
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -148,8 +148,7 @@ impl OidcProviderManager {
         issuer_url: &str,
     ) -> anyhow::Result<DiscoveredClient> {
         let issuer = IssuerUrl::new(issuer_url.to_string())?;
-        let metadata =
-            CoreProviderMetadata::discover_async(issuer, &self.http_client).await?;
+        let metadata = CoreProviderMetadata::discover_async(issuer, &self.http_client).await?;
 
         let client_secret = self.decrypt_secret(&row.client_secret_encrypted)?;
 
