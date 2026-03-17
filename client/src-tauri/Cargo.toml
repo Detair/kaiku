@@ -36,7 +36,7 @@ smol_str.workspace = true
 # Audio
 cpal = "0.17"
 opus = "0.3"
-rodio = "0.21"
+rodio = "0.22"
 # nnnoiseless = "0.5"
 
 # Serialization
@@ -68,7 +68,7 @@ vpx-encode = { version = "0.3", features = ["vp9"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Process scanning
-sysinfo = "0.34"
+sysinfo = "0.38"
 
 # Clipboard
 arboard = "3"
@@ -90,8 +90,8 @@ anyhow.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
-sentry = { version = "0.36", features = ["tracing", "backtrace", "contexts", "panic"] }
-sentry-tracing = "0.36"
+sentry = { version = "0.47", features = ["tracing", "backtrace", "contexts", "panic"] }
+sentry-tracing = "0.47"
 
 [dev-dependencies]
 tempfile = "3"

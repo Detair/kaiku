@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourorg/voicechat"
-rust-version = "1.82"
+rust-version = "1.93"
 authors = ["Kaiku Contributors"]
 description = "Self-hosted voice and text chat platform"
 keywords = ["voip", "chat", "webrtc", "e2ee"]
@@ -25,7 +25,7 @@ futures = "0.3"
 
 # Web Framework
 axum = { version = "0.8", features = ["ws", "multipart", "macros"] }
-axum-extra = { version = "0.10", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
 time = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "request-id", "util"] }
@@ -50,7 +50,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Auth
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 argon2 = "0.5"
 totp-rs = { version = "5", features = ["gen_secret", "qr", "otpauth"] }
 openidconnect = "3"
