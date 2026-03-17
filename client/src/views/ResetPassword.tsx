@@ -13,7 +13,9 @@ const ResetPassword: Component = () => {
     typeof localStorage !== "undefined"
       ? localStorage.getItem("serverUrl") || ""
       : "";
-  const initialUrl = searchParams.serverUrl || (isTauri ? storedUrl : "") || defaultServerUrl;
+  const rawServerUrl = searchParams.serverUrl;
+  const paramServerUrl = Array.isArray(rawServerUrl) ? rawServerUrl[0] : rawServerUrl;
+  const initialUrl = paramServerUrl || (isTauri ? storedUrl : "") || defaultServerUrl;
   const [serverUrl, setServerUrl] = createSignal(initialUrl);
   const [token, setToken] = createSignal("");
   const [newPassword, setNewPassword] = createSignal("");

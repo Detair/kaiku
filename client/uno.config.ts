@@ -1,8 +1,7 @@
-import { defineConfig, presetUno, presetIcons } from "unocss";
+import { defineConfig, presetIcons } from "unocss";
 
 export default defineConfig({
   presets: [
-    presetUno(),
     presetIcons({
       scale: 1.2,
       cdn: "https://esm.sh/",
@@ -128,12 +127,13 @@ export default defineConfig({
     "text-status-error",
     "text-status-warning",
   ],
+  preflights: [
+    {
+      getCSS: () => `@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }`,
+    },
+  ],
   rules: [
     [/^animate-\[slideUp/, () => ({
-      "@keyframes slideUp": `{
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
-      }`,
       animation: "slideUp 0.2s ease-out",
     })],
   ],
