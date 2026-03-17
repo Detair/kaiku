@@ -144,7 +144,9 @@ where
                 let extensions = span.extensions();
                 if let Some(otel_data) = extensions.get::<tracing_opentelemetry::OtelData>() {
                     if let (Some(t), Some(s)) = (otel_data.trace_id(), otel_data.span_id()) {
-                        if t != opentelemetry::trace::TraceId::INVALID {
+                        if t != opentelemetry::trace::TraceId::INVALID
+                            && s != opentelemetry::trace::SpanId::INVALID
+                        {
                             return (Some(t.to_string()), Some(s.to_string()));
                         }
                     }
