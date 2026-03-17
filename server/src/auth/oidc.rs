@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType};
-use openidconnect::reqwest::async_http_client;
 use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
+    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
+    EndpointMaybeSet, EndpointNotSet, EndpointSet, IssuerUrl, Nonce,
     OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
 };
 use rand::Rng;
@@ -21,6 +21,19 @@ use uuid::Uuid;
 
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use crate::db::{self, OidcProviderRow, PublicOidcProvider};
+
+/// Type alias for the OIDC client returned by `from_provider_metadata`.
+///
+/// Discovery sets `AuthUrl`, but `TokenUrl` and `UserInfoUrl` are `EndpointMaybeSet`
+/// (they might not be in the provider metadata).
+type DiscoveredClient = CoreClient<
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointMaybeSet,
+    EndpointMaybeSet,
+>;
 
 /// User info extracted from an OIDC/OAuth2 provider.
 #[derive(Debug, Clone)]
@@ -56,13 +69,24 @@ pub struct OidcFlowState {
 struct CachedProvider {
     row: OidcProviderRow,
     /// Pre-built openidconnect client (only for OIDC discovery providers).
-    oidc_client: Option<CoreClient>,
+    oidc_client: Option<DiscoveredClient>,
 }
 
 /// Manages OIDC/OAuth2 providers loaded from the database.
 pub struct OidcProviderManager {
     providers: RwLock<HashMap<String, CachedProvider>>,
     encryption_key: Vec<u8>,
+    http_client: reqwest::Client,
+}
+
+/// Build a shared reqwest client for OIDC operations.
+///
+/// Disables redirects to prevent SSRF via authorization server responses.
+fn build_oidc_http_client() -> reqwest::Client {
+    reqwest::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Failed to build OIDC HTTP client")
 }
 
 impl OidcProviderManager {
@@ -71,6 +95,7 @@ impl OidcProviderManager {
         Self {
             providers: RwLock::new(HashMap::new()),
             encryption_key,
+            http_client: build_oidc_http_client(),
         }
     }
 
@@ -121,9 +146,10 @@ impl OidcProviderManager {
         &self,
         row: &OidcProviderRow,
         issuer_url: &str,
-    ) -> anyhow::Result<CoreClient> {
+    ) -> anyhow::Result<DiscoveredClient> {
         let issuer = IssuerUrl::new(issuer_url.to_string())?;
-        let metadata = CoreProviderMetadata::discover_async(issuer, async_http_client).await?;
+        let metadata =
+            CoreProviderMetadata::discover_async(issuer, &self.http_client).await?;
 
         let client_secret = self.decrypt_secret(&row.client_secret_encrypted)?;
 
@@ -245,14 +271,15 @@ impl OidcProviderManager {
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
 
         if let Some(ref client) = cached.oidc_client {
-            // OIDC flow
+            // OIDC flow — exchange_code returns Result because TokenUrl is MaybeSet
             let token_response = client
                 .exchange_code(AuthorizationCode::new(code.to_string()))
+                .map_err(|e| anyhow::anyhow!("Token endpoint not configured: {e}"))?
                 .set_redirect_uri(std::borrow::Cow::Owned(RedirectUrl::new(
                     redirect_uri.to_string(),
                 )?))
                 .set_pkce_verifier(verifier)
-                .request_async(async_http_client)
+                .request_async(&self.http_client)
                 .await
                 .map_err(|e| anyhow::anyhow!("Token exchange failed: {e}"))?;
 
@@ -376,6 +403,7 @@ impl OidcProviderManager {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No OIDC client"))?;
 
+        // user_info returns Result because UserInfoUrl is MaybeSet
         let userinfo_endpoint = client
             .user_info(
                 openidconnect::AccessToken::new(access_token.to_string()),
@@ -387,7 +415,7 @@ impl OidcProviderManager {
             openidconnect::EmptyAdditionalClaims,
             openidconnect::core::CoreGenderClaim,
         > = userinfo_endpoint
-            .request_async(async_http_client)
+            .request_async(&self.http_client)
             .await
             .map_err(|e| anyhow::anyhow!("Userinfo request failed: {e}"))?;
 
