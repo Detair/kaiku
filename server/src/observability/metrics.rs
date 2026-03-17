@@ -461,7 +461,7 @@ impl<E> FailureCountingMetricExporter<E> {
 impl<E: PushMetricExporter> PushMetricExporter for FailureCountingMetricExporter<E> {
     async fn export(
         &self,
-        metrics: &mut ResourceMetrics,
+        metrics: &ResourceMetrics,
     ) -> opentelemetry_sdk::error::OTelSdkResult {
         let result = self.inner.export(metrics).await;
         if result.is_err() {
@@ -474,8 +474,11 @@ impl<E: PushMetricExporter> PushMetricExporter for FailureCountingMetricExporter
         self.inner.force_flush()
     }
 
-    fn shutdown(&self) -> opentelemetry_sdk::error::OTelSdkResult {
-        self.inner.shutdown()
+    fn shutdown_with_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
     }
 
     fn temporality(&self) -> opentelemetry_sdk::metrics::Temporality {
