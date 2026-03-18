@@ -129,6 +129,7 @@ jobs:
         run: cargo nextest run --all-features --workspace --exclude vc-client -j 4
 
       - name: Run integration tests (ignored, require DB/Valkey)
+        if: always()
         timeout-minutes: 10
         run: cargo nextest run --all-features --workspace --exclude vc-client -j 2 --run-ignored ignored-only --no-fail-fast
 
