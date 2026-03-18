@@ -149,7 +149,7 @@ const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (
           <button
             onClick={handleStart}
             disabled={loading()}
-            class="px-4 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+            class="px-4 py-2 text-sm bg-accent-primary text-on-accent rounded-lg hover:bg-accent-primary/90 transition-colors disabled:opacity-50"
           >
             {loading() ? "Starting..." : "Start Sharing"}
           </button>

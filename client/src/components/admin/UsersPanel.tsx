@@ -343,7 +343,7 @@ const UsersPanel: Component = () => {
                   disabled={
                     !adminState.isElevated || adminState.isBulkActionLoading
                   }
-                  class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-white text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-on-danger text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Ban class="w-4 h-4" />
                   Bulk Ban
@@ -693,7 +693,7 @@ const UsersPanel: Component = () => {
                     <button
                       onClick={() => setShowBanDialog(true)}
                       disabled={!adminState.isElevated || actionLoading()}
-                      class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Ban class="w-4 h-4" />
                       Ban User
@@ -703,7 +703,7 @@ const UsersPanel: Component = () => {
                   <button
                     onClick={handleUnban}
                     disabled={!adminState.isElevated || actionLoading()}
-                    class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-success text-white font-medium transition-colors hover:bg-status-success/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-success text-on-success font-medium transition-colors hover:bg-status-success/90 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <CheckCircle class="w-4 h-4" />
                     {actionLoading() ? "Processing..." : "Unban User"}
@@ -775,7 +775,7 @@ const UsersPanel: Component = () => {
                 <button
                   onClick={handleBan}
                   disabled={!banReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading() ? "Banning..." : "Confirm Ban"}
                 </button>
@@ -839,7 +839,7 @@ const UsersPanel: Component = () => {
                 <button
                   onClick={handleBulkBan}
                   disabled={!bulkBanReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading()
                     ? "Banning..."
@@ -915,7 +915,7 @@ const UsersPanel: Component = () => {
                     deleteConfirmText() !== selectedUser()?.username ||
                     actionLoading()
                   }
-                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {actionLoading() ? "Deleting..." : "Delete Permanently"}
                 </button>

@@ -41,6 +41,8 @@ export default defineConfig({
         input: "var(--color-text-input)",
       },
       "on-accent": "var(--color-text-on-accent)",
+      "on-success": "var(--color-text-on-success)",
+      "on-danger": "var(--color-text-on-danger)",
       accent: {
         primary: "var(--color-accent-primary)",
         danger: "var(--color-accent-danger)",
@@ -112,6 +114,8 @@ export default defineConfig({
     "text-accent-danger",
     "text-white",
     "text-on-accent",
+    "text-on-success",
+    "text-on-danger",
     "border-white/5",
     "border-white/10",
     "border-border-subtle",
