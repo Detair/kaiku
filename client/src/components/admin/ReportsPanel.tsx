@@ -9,7 +9,6 @@ import {
   Component,
   Show,
   For,
-  onMount,
   createSignal,
   createMemo,
   createEffect,
@@ -111,13 +110,6 @@ const ReportsPanel: Component = () => {
       setStatsLoading(false);
     }
   };
-
-  onMount(() => {
-    if (adminState.isElevated) {
-      loadReports();
-      loadStats();
-    }
-  });
 
   createEffect(() => {
     if (adminState.isElevated) {
