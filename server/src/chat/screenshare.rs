@@ -266,11 +266,11 @@ pub async fn stop(
     Path(channel_id): Path<Uuid>,
     Json(req): Json<ScreenShareStopRequest>,
 ) -> Result<(), ScreenShareError> {
-    let room = state
-        .sfu
-        .get_room(channel_id)
-        .await
-        .ok_or(ScreenShareError::NotInChannel)?;
+    // If there is no active SFU room for this channel, the stream cannot exist —
+    // treat stop as a no-op (idempotent) and return immediately.
+    let Some(room) = state.sfu.get_room(channel_id).await else {
+        return Ok(());
+    };
 
     // Find the specific stream and verify ownership
     let share_info = {
@@ -278,15 +278,16 @@ pub async fn stop(
         shares.get(&req.stream_id).cloned()
     };
 
-    let info = share_info.ok_or_else(|| {
+    // If the stream doesn't exist, stopping is a no-op (idempotent).
+    let Some(info) = share_info else {
         warn!(
             channel_id = %channel_id,
             stream_id = %req.stream_id,
             user_id = %user.id,
-            "Screen share stream not found"
+            "Screen share stream not found — treating stop as no-op"
         );
-        ScreenShareError::NotInChannel
-    })?;
+        return Ok(());
+    };
 
     // Verify the requesting user owns the stream
     if info.user_id != user.id {

@@ -38,6 +38,7 @@ use vc_server::chat::S3Client;
 use vc_server::config::Config;
 use vc_server::db;
 use vc_server::permissions::GuildPermissions;
+use vc_server::voice::screen_share::ScreenShareLimiter;
 use vc_server::voice::sfu::SfuServer;
 
 // ============================================================================
@@ -236,6 +237,48 @@ impl TestApp {
         }
     }
 
+    /// Create a test app with a real `ScreenShareLimiter` backed by Redis.
+    ///
+    /// Use this for screen share integration tests that call the `/screenshare/check`,
+    /// `/screenshare/start`, or `/screenshare/stop` endpoints — those handlers return
+    /// 500 when `screen_share_limiter` is `None`.
+    pub async fn with_screen_share_limiter() -> Self {
+        let pool = shared_pool().await.clone();
+        let config = shared_config().await.clone();
+        let redis = db::create_redis_client(&config.redis_url)
+            .await
+            .expect("Failed to connect to test Redis");
+        let sfu =
+            SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
+
+        let mut limiter = ScreenShareLimiter::new(redis.clone());
+        limiter
+            .init()
+            .await
+            .expect("Failed to initialize ScreenShareLimiter");
+
+        let state = AppState::new(AppStateConfig {
+            db: pool.clone(),
+            redis,
+            config: config.clone(),
+            s3: None,
+            sfu,
+            rate_limiter: None,
+            screen_share_limiter: Some(limiter),
+            email: None,
+            oidc_manager: None,
+            http_client: reqwest::Client::new(),
+        });
+        let router = create_router(state);
+        let config = Arc::new(config);
+
+        Self {
+            router,
+            pool,
+            config,
+        }
+    }
+
     /// Create a test app with a custom config (for limit testing).
     pub async fn with_config(config: Config) -> Self {
         let pool = shared_pool().await.clone();
@@ -375,6 +418,8 @@ pub struct TestServer {
 /// let resp = client.get(format!("{}/api/health", server.url)).send().await?;
 /// ```
 pub async fn spawn_test_server(router: Router) -> TestServer {
+    use std::net::SocketAddr;
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("Failed to bind test server");
@@ -382,9 +427,12 @@ pub async fn spawn_test_server(router: Router) -> TestServer {
     let url = format!("http://{addr}");
 
     let handle = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .await
-            .expect("Test server failed");
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("Test server failed");
     });
 
     TestServer {

@@ -59,11 +59,15 @@ async fn create_rate_limited_app(limits: RateLimits) -> (super::helpers::TestSer
 }
 
 /// Test that requests under the rate limit succeed and over-limit returns 429.
+///
+/// Uses GET /api/discover/guilds which is covered by `rate_limit_by_ip` +
+/// `RateLimitCategory::Search` in the public discovery router.
 #[tokio::test]
 #[ignore] // Requires Redis
 async fn test_http_rate_limiting_returns_429() {
     let limits = RateLimits {
-        read: LimitConfig {
+        // Use the Search category — this is what the discovery public router applies.
+        search: LimitConfig {
             requests: 3,
             window_secs: 60,
         },
@@ -73,10 +77,10 @@ async fn test_http_rate_limiting_returns_429() {
     let (server, _config) = create_rate_limited_app(limits).await;
     let client = reqwest::Client::new();
 
-    // First 3 requests should succeed (200 from setup/status)
+    // First 3 requests should succeed (200 from public guild discovery)
     for i in 0..3 {
         let resp = client
-            .get(format!("{}/api/setup/status", server.url))
+            .get(format!("{}/api/discover/guilds", server.url))
             .send()
             .await
             .expect("Request failed");
@@ -90,7 +94,7 @@ async fn test_http_rate_limiting_returns_429() {
 
     // 4th request should be rate limited
     let resp = client
-        .get(format!("{}/api/setup/status", server.url))
+        .get(format!("{}/api/discover/guilds", server.url))
         .send()
         .await
         .expect("Request failed");
@@ -109,11 +113,15 @@ async fn test_http_rate_limiting_returns_429() {
 }
 
 /// Test that rate limit headers are present in responses.
+///
+/// Uses GET /api/discover/guilds which is covered by `rate_limit_by_ip` +
+/// `RateLimitCategory::Search` in the public discovery router.
 #[tokio::test]
 #[ignore] // Requires Redis
 async fn test_http_rate_limit_headers() {
     let limits = RateLimits {
-        read: LimitConfig {
+        // Use the Search category — this is what the discovery public router applies.
+        search: LimitConfig {
             requests: 10,
             window_secs: 60,
         },
@@ -124,7 +132,7 @@ async fn test_http_rate_limit_headers() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(format!("{}/api/setup/status", server.url))
+        .get(format!("{}/api/discover/guilds", server.url))
         .send()
         .await
         .expect("Request failed");
@@ -154,7 +162,7 @@ async fn test_request_ids_are_unique() {
 
     for _ in 0..10 {
         let resp = client
-            .get(format!("{}/api/setup/status", server.url))
+            .get(format!("{}/api/discover/guilds", server.url))
             .send()
             .await
             .expect("Request failed");

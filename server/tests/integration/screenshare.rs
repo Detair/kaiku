@@ -439,9 +439,8 @@ async fn test_screen_share_check_requires_auth() {
 
 /// Screen share check endpoint requires `SCREEN_SHARE` permission.
 #[tokio::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
 async fn test_screen_share_check_requires_permission() {
-    let app = TestApp::new().await;
+    let app = TestApp::with_screen_share_limiter().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     // Guild with VIEW_CHANNEL + VOICE_CONNECT but NOT SCREEN_SHARE
@@ -476,9 +475,8 @@ async fn test_screen_share_check_requires_permission() {
 
 /// Screen share check allows permitted users.
 #[tokio::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
 async fn test_screen_share_check_allowed() {
-    let app = TestApp::new().await;
+    let app = TestApp::with_screen_share_limiter().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL
@@ -547,9 +545,8 @@ async fn test_screen_share_start_requires_room_membership() {
 
 /// Screen share stop is a no-op when not sharing.
 #[tokio::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
 async fn test_screen_share_stop_noop() {
-    let app = TestApp::new().await;
+    let app = TestApp::with_screen_share_limiter().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL
