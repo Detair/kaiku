@@ -12,6 +12,7 @@ import {
   onMount,
   createSignal,
   createMemo,
+  createEffect,
 } from "solid-js";
 import {
   Flag,
@@ -112,8 +113,17 @@ const ReportsPanel: Component = () => {
   };
 
   onMount(() => {
-    loadReports();
-    loadStats();
+    if (adminState.isElevated) {
+      loadReports();
+      loadStats();
+    }
+  });
+
+  createEffect(() => {
+    if (adminState.isElevated) {
+      loadReports();
+      loadStats();
+    }
   });
 
   const handlePageChange = (newPage: number) => {
