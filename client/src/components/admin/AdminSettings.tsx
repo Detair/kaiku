@@ -100,7 +100,9 @@ const AdminSettings: Component = () => {
   };
 
   onMount(() => {
-    checkAdminStatus();
+    if (!adminState.isElevated) {
+      checkAdminStatus();
+    }
     loadSettings();
   });
 
