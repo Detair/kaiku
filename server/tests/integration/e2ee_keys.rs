@@ -253,7 +253,7 @@ async fn test_device_registration() {
     let pool = create_test_pool().await;
 
     // Create test user
-    let username = format!("test_device_{}", Uuid::new_v4());
+    let username = format!("test_device_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     // Generate mock identity keys
@@ -293,7 +293,7 @@ async fn test_device_upsert_on_same_identity_key() {
     let pool = create_test_pool().await;
 
     // Create test user
-    let username = format!("test_upsert_{}", Uuid::new_v4());
+    let username = format!("test_upsert_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     // Generate identity keys (same for both inserts)
@@ -360,7 +360,7 @@ async fn test_prekey_upload() {
     let pool = create_test_pool().await;
 
     // Create test user and device
-    let username = format!("test_prekey_{}", Uuid::new_v4());
+    let username = format!("test_prekey_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     let (identity_ed25519, identity_curve25519) = generate_mock_identity_keys();
@@ -420,8 +420,8 @@ async fn test_prekey_claim_single() {
     let pool = create_test_pool().await;
 
     // Create owner and claimer users
-    let owner_username = format!("test_owner_{}", Uuid::new_v4());
-    let claimer_username = format!("test_claimer_{}", Uuid::new_v4());
+    let owner_username = format!("test_owner_{}", &Uuid::new_v4().to_string()[..8]);
+    let claimer_username = format!("test_claimer_{}", &Uuid::new_v4().to_string()[..8]);
 
     let owner = create_test_user(&pool, &owner_username).await;
     let claimer = create_test_user(&pool, &claimer_username).await;
@@ -501,8 +501,8 @@ async fn test_prekey_claim_when_exhausted() {
     let pool = create_test_pool().await;
 
     // Create owner and claimer
-    let owner_username = format!("test_exhausted_{}", Uuid::new_v4());
-    let claimer_username = format!("test_claimer_ex_{}", Uuid::new_v4());
+    let owner_username = format!("test_exhausted_{}", &Uuid::new_v4().to_string()[..8]);
+    let claimer_username = format!("test_claimer_ex_{}", &Uuid::new_v4().to_string()[..8]);
 
     let owner = create_test_user(&pool, &owner_username).await;
     let claimer = create_test_user(&pool, &claimer_username).await;
@@ -557,7 +557,7 @@ async fn test_prekey_duplicate_upload_ignored() {
     let pool = create_test_pool().await;
 
     // Create test user and device
-    let username = format!("test_dup_prekey_{}", Uuid::new_v4());
+    let username = format!("test_dup_prekey_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     let (identity_ed25519, identity_curve25519) = generate_mock_identity_keys();
@@ -631,7 +631,7 @@ async fn test_key_backup_upload_and_retrieve() {
     let pool = create_test_pool().await;
 
     // Create test user
-    let username = format!("test_backup_{}", Uuid::new_v4());
+    let username = format!("test_backup_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     // Generate backup data
@@ -686,7 +686,7 @@ async fn test_key_backup_upsert() {
     let pool = create_test_pool().await;
 
     // Create test user
-    let username = format!("test_backup_upsert_{}", Uuid::new_v4());
+    let username = format!("test_backup_upsert_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     // Upload first backup
@@ -758,7 +758,7 @@ async fn test_backup_status_no_backup() {
     let pool = create_test_pool().await;
 
     // Create test user (no backup)
-    let username = format!("test_no_backup_{}", Uuid::new_v4());
+    let username = format!("test_no_backup_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     // Check status
@@ -781,7 +781,7 @@ async fn test_get_user_device_keys() {
     let pool = create_test_pool().await;
 
     // Create test user with multiple devices
-    let username = format!("test_multi_device_{}", Uuid::new_v4());
+    let username = format!("test_multi_device_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
 
     // Create 3 devices
@@ -830,7 +830,7 @@ async fn test_concurrent_prekey_claims_unique() {
     let pool = create_test_pool().await;
 
     // Create owner
-    let owner_username = format!("test_concurrent_{}", Uuid::new_v4());
+    let owner_username = format!("test_concurrent_{}", &Uuid::new_v4().to_string()[..8]);
     let owner = create_test_user(&pool, &owner_username).await;
 
     // Create device with prekeys
@@ -863,7 +863,7 @@ async fn test_concurrent_prekey_claims_unique() {
     // Create 5 claimers
     let mut claimer_ids = Vec::new();
     for i in 0..5 {
-        let claimer_username = format!("test_claimer_{}_{}", i, Uuid::new_v4());
+        let claimer_username = format!("test_claimer_{}_{}", i, &Uuid::new_v4().to_string()[..8]);
         let claimer = create_test_user(&pool, &claimer_username).await;
         claimer_ids.push(claimer.id);
     }

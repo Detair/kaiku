@@ -142,7 +142,7 @@ async fn test_user_registration_creates_user() {
     let pool = create_test_pool().await;
 
     // Generate unique username for test
-    let username = format!("test_user_{}", uuid::Uuid::new_v4());
+    let username = format!("test_user_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password = "Test123!@#";
     let display_name = "Test User";
 
@@ -171,7 +171,7 @@ async fn test_user_registration_creates_user() {
 async fn test_duplicate_username_rejected() {
     let pool = create_test_pool().await;
 
-    let username = format!("test_dup_{}", uuid::Uuid::new_v4());
+    let username = format!("test_dup_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
 
     // Create first user
@@ -198,7 +198,7 @@ async fn test_session_creation_and_lookup() {
     let pool = create_test_pool().await;
 
     // Create a test user first
-    let username = format!("test_session_{}", uuid::Uuid::new_v4());
+    let username = format!("test_session_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
     let user = vc_server::db::create_user(&pool, &username, "Session Test", None, &password_hash)
         .await
@@ -252,7 +252,7 @@ async fn test_session_revocation() {
     let pool = create_test_pool().await;
 
     // Create a test user
-    let username = format!("test_revoke_{}", uuid::Uuid::new_v4());
+    let username = format!("test_revoke_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
     let user = vc_server::db::create_user(&pool, &username, "Revoke Test", None, &password_hash)
         .await
@@ -321,7 +321,7 @@ async fn test_expired_session_not_found() {
     let pool = create_test_pool().await;
 
     // Create a test user
-    let username = format!("test_expired_{}", uuid::Uuid::new_v4());
+    let username = format!("test_expired_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
     let user = vc_server::db::create_user(&pool, &username, "Expired Test", None, &password_hash)
         .await

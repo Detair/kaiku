@@ -226,8 +226,8 @@ async fn test_system_admin_check() {
     let pool = create_test_pool().await;
 
     // Create test users
-    let admin_username = format!("test_admin_{}", Uuid::new_v4());
-    let regular_username = format!("test_regular_{}", Uuid::new_v4());
+    let admin_username = format!("test_admin_{}", &Uuid::new_v4().to_string()[..8]);
+    let regular_username = format!("test_regular_{}", &Uuid::new_v4().to_string()[..8]);
 
     let admin_user = create_test_user(&pool, &admin_username).await;
     let regular_user = create_test_user(&pool, &regular_username).await;
@@ -262,7 +262,7 @@ async fn test_elevation_session_creation() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_elevate_{}", Uuid::new_v4());
+    let admin_username = format!("test_elevate_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
 
@@ -307,7 +307,7 @@ async fn test_elevation_session_lookup() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_lookup_{}", Uuid::new_v4());
+    let admin_username = format!("test_lookup_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
     let session_id = create_session(&pool, admin_user.id).await;
@@ -351,7 +351,7 @@ async fn test_elevation_expiry_excludes_expired_sessions() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_expiry_{}", Uuid::new_v4());
+    let admin_username = format!("test_expiry_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
     let session_id = create_session(&pool, admin_user.id).await;
@@ -402,7 +402,7 @@ async fn test_de_elevation_removes_sessions() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_de_elev_{}", Uuid::new_v4());
+    let admin_username = format!("test_de_elev_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
     let session_id = create_session(&pool, admin_user.id).await;
@@ -451,7 +451,7 @@ async fn test_elevation_upsert_updates_expiry() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_upsert_{}", Uuid::new_v4());
+    let admin_username = format!("test_upsert_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
     let session_id = create_session(&pool, admin_user.id).await;
@@ -514,7 +514,7 @@ async fn test_non_admin_cannot_have_elevated_session() {
     let pool = create_test_pool().await;
 
     // Create test regular user (not an admin)
-    let regular_username = format!("test_nonadmin_{}", Uuid::new_v4());
+    let regular_username = format!("test_nonadmin_{}", &Uuid::new_v4().to_string()[..8]);
     let regular_user = create_test_user(&pool, &regular_username).await;
     let session_id = create_session(&pool, regular_user.id).await;
 
@@ -571,7 +571,7 @@ async fn test_elevation_with_reason_stored() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_reason_{}", Uuid::new_v4());
+    let admin_username = format!("test_reason_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
     let session_id = create_session(&pool, admin_user.id).await;
@@ -614,7 +614,7 @@ async fn test_elevation_without_reason() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_no_reason_{}", Uuid::new_v4());
+    let admin_username = format!("test_no_reason_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
     let session_id = create_session(&pool, admin_user.id).await;
@@ -645,7 +645,7 @@ async fn test_elevation_ip_address_stored() {
     let pool = create_test_pool().await;
 
     // Create test admin user
-    let admin_username = format!("test_ip_{}", Uuid::new_v4());
+    let admin_username = format!("test_ip_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
     grant_system_admin(&pool, admin_user.id, admin_user.id).await;
     let session_id = create_session(&pool, admin_user.id).await;
