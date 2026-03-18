@@ -281,15 +281,15 @@ const LevelBadge: Component<{ level: string }> = (props) => {
   const colors = () => {
     switch (props.level) {
       case "ERROR":
-        return "bg-red-500/20 text-red-400";
+        return "bg-status-error/20 text-status-error";
       case "WARN":
-        return "bg-yellow-500/20 text-yellow-400";
+        return "bg-status-warning/20 text-status-warning";
       case "INFO":
-        return "bg-blue-500/20 text-blue-400";
+        return "bg-accent-primary/20 text-accent-primary";
       case "DEBUG":
-        return "bg-gray-500/20 text-gray-400";
+        return "bg-surface-highlight text-text-secondary";
       default:
-        return "bg-gray-500/20 text-gray-400";
+        return "bg-surface-highlight text-text-secondary";
     }
   };
 
@@ -307,12 +307,12 @@ const LevelBadge: Component<{ level: string }> = (props) => {
 const StatusBadge: Component<{ statusCode: string | null; isError: boolean }> =
   (props) => {
     const color = () => {
-      if (props.isError) return "bg-red-500/20 text-red-400";
+      if (props.isError) return "bg-status-error/20 text-status-error";
       const code = parseInt(props.statusCode ?? "", 10);
-      if (isNaN(code)) return "bg-gray-500/20 text-gray-400";
-      if (code >= 500) return "bg-red-500/20 text-red-400";
-      if (code >= 400) return "bg-yellow-500/20 text-yellow-400";
-      return "bg-green-500/20 text-green-400";
+      if (isNaN(code)) return "bg-surface-highlight text-text-secondary";
+      if (code >= 500) return "bg-status-error/20 text-status-error";
+      if (code >= 400) return "bg-status-warning/20 text-status-warning";
+      return "bg-status-success/20 text-status-success";
     };
 
     return (
