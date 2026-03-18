@@ -181,7 +181,9 @@ async fn grant_system_admin(pool: &sqlx::PgPool, user_id: Uuid, granted_by: Uuid
 #[allow(dead_code)]
 async fn create_session(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
     let session_id = Uuid::now_v7();
-    let token_hash = vc_server::auth::hash_token("test_session_token");
+    // Use a unique token per invocation to avoid unique constraint violations
+    // when multiple tests create sessions in the same test database.
+    let token_hash = vc_server::auth::hash_token(&format!("test_session_token_{}", Uuid::new_v4()));
     let expires_at = Utc::now() + Duration::hours(24);
 
     sqlx::query(

@@ -84,7 +84,7 @@ async fn create_test_channel(
     sqlx::query(
         r"
         INSERT INTO channels (id, guild_id, name, channel_type)
-        VALUES ($1, $2, $3, $4)
+        VALUES ($1, $2, $3, $4::channel_type)
         ",
     )
     .bind(channel_id)

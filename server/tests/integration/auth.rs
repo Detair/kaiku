@@ -327,18 +327,19 @@ async fn test_expired_session_not_found() {
         .await
         .expect("User creation should succeed");
 
-    // Create an expired session (in the past)
+    // Create an expired session (already past its expires_at).
+    // The check constraint requires expires_at > created_at, so both timestamps
+    // must be in the past with expires_at after created_at.
     let token_hash = vc_server::auth::hash_token("expired_token");
-    let expires_at = chrono::Utc::now() - chrono::Duration::hours(1); // Expired 1 hour ago
-
-    // Directly insert expired session (bypassing normal creation)
-    sqlx::query("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
-        .bind(user.id)
-        .bind(&token_hash)
-        .bind(expires_at)
-        .execute(&pool)
-        .await
-        .expect("Session insert should succeed");
+    sqlx::query(
+        "INSERT INTO sessions (user_id, token_hash, created_at, expires_at) \
+         VALUES ($1, $2, NOW() - INTERVAL '3 hours', NOW() - INTERVAL '1 hour')",
+    )
+    .bind(user.id)
+    .bind(&token_hash)
+    .execute(&pool)
+    .await
+    .expect("Session insert should succeed");
 
     // Lookup should NOT find expired session
     let found = vc_server::db::find_session_by_token_hash(&pool, &token_hash)
