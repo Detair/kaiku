@@ -308,7 +308,7 @@ async fn main() -> Result<()> {
 
                 // Load providers from database
                 if let Err(e) = manager.load_providers(&db_pool).await {
-                    tracing::warn!(error = %e, "Failed to load OIDC providers");
+                    tracing::info!(error = %e, "OIDC providers not loaded (optional)");
                 }
 
                 info!("OIDC provider manager initialized");
