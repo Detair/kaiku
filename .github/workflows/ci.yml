@@ -128,9 +128,9 @@ jobs:
         timeout-minutes: 20
         run: cargo nextest run --all-features --workspace --exclude vc-client -j 4
 
-      - name: Run @everyone security test
-        timeout-minutes: 5
-        run: cargo nextest run --all-features -p vc-server -E 'test(test_cannot_grant_dangerous_permissions_to_everyone)' --run-ignored ignored-only
+      - name: Run integration tests (ignored, require DB/Valkey)
+        timeout-minutes: 10
+        run: cargo nextest run --all-features --workspace --exclude vc-client -j 4 --run-ignored ignored-only
 
   # ===========================================================================
   # License Check
