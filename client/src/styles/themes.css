@@ -58,6 +58,8 @@
   --color-accent-danger: #bf616a;
   --color-accent-success: #a3be8c;
   --color-accent-warning: #ebcb8b;
+  --color-text-on-success: #2E3440;
+  --color-text-on-danger: #ECEFF4;
   --color-border-subtle: rgba(216, 222, 233, 0.06);
   --color-border-default: rgba(216, 222, 233, 0.12);
   --color-border-solid: #4C566A;
@@ -94,6 +96,8 @@
   --color-accent-danger: #dc322f;
   --color-accent-success: #859900;
   --color-accent-warning: #b58900;
+  --color-text-on-success: #fdf6e3;
+  --color-text-on-danger: #fdf6e3;
   --color-border-subtle: rgba(147, 161, 161, 0.1);
   --color-border-default: rgba(147, 161, 161, 0.15);
   --color-border-solid: #0e4c5a;
@@ -122,6 +126,8 @@
   --color-accent-danger: #dc322f;
   --color-accent-success: #859900;
   --color-accent-warning: #b58900;
+  --color-text-on-success: #002b36;
+  --color-text-on-danger: #fdf6e3;
   --color-border-subtle: rgba(0, 43, 54, 0.1);
   --color-border-default: rgba(0, 43, 54, 0.15);
   --color-border-solid: #c9c2b1;
@@ -164,6 +170,8 @@
   --color-accent-danger: #c06050;
   --color-accent-success: #8db87e;
   --color-accent-warning: #d4a854;
+  --color-text-on-success: #2c2418;
+  --color-text-on-danger: #f5e6d0;
 
   /* Borders — subtle wood grain feel */
   --color-border-subtle: rgba(232, 216, 196, 0.08);
@@ -196,6 +204,8 @@
   --color-accent-danger: #bf616a;
   --color-accent-success: #a3be8c;
   --color-accent-warning: #ebcb8b;
+  --color-text-on-success: #2E3440;
+  --color-text-on-danger: #ECEFF4;
   --color-border-subtle: rgba(216, 222, 233, 0.06);
   --color-border-default: rgba(216, 222, 233, 0.12);
   --color-border-solid: #4C566A;
