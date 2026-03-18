@@ -124,9 +124,13 @@ jobs:
       - name: Run migrations
         run: sqlx migrate run --source server/migrations
 
-      - name: Run all tests (including ignored integration tests)
+      - name: Run tests
         timeout-minutes: 20
-        run: cargo nextest run --all-features --workspace --exclude vc-client -j 4 --run-ignored all
+        run: cargo nextest run --all-features --workspace --exclude vc-client -j 4
+
+      - name: Run integration tests (ignored, require DB/Valkey)
+        timeout-minutes: 10
+        run: cargo nextest run --all-features --workspace --exclude vc-client -j 2 --run-ignored ignored-only --no-fail-fast
 
   # ===========================================================================
   # License Check
