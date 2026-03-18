@@ -142,7 +142,7 @@ async fn test_user_registration_creates_user() {
     let pool = create_test_pool().await;
 
     // Generate unique username for test
-    let username = format!("test_user_{}", uuid::Uuid::new_v4());
+    let username = format!("test_user_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password = "Test123!@#";
     let display_name = "Test User";
 
@@ -171,7 +171,7 @@ async fn test_user_registration_creates_user() {
 async fn test_duplicate_username_rejected() {
     let pool = create_test_pool().await;
 
-    let username = format!("test_dup_{}", uuid::Uuid::new_v4());
+    let username = format!("test_dup_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
 
     // Create first user
@@ -198,7 +198,7 @@ async fn test_session_creation_and_lookup() {
     let pool = create_test_pool().await;
 
     // Create a test user first
-    let username = format!("test_session_{}", uuid::Uuid::new_v4());
+    let username = format!("test_session_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
     let user = vc_server::db::create_user(&pool, &username, "Session Test", None, &password_hash)
         .await
@@ -252,7 +252,7 @@ async fn test_session_revocation() {
     let pool = create_test_pool().await;
 
     // Create a test user
-    let username = format!("test_revoke_{}", uuid::Uuid::new_v4());
+    let username = format!("test_revoke_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
     let user = vc_server::db::create_user(&pool, &username, "Revoke Test", None, &password_hash)
         .await
@@ -321,24 +321,25 @@ async fn test_expired_session_not_found() {
     let pool = create_test_pool().await;
 
     // Create a test user
-    let username = format!("test_expired_{}", uuid::Uuid::new_v4());
+    let username = format!("test_expired_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
     let user = vc_server::db::create_user(&pool, &username, "Expired Test", None, &password_hash)
         .await
         .expect("User creation should succeed");
 
-    // Create an expired session (in the past)
+    // Create an expired session (already past its expires_at).
+    // The check constraint requires expires_at > created_at, so both timestamps
+    // must be in the past with expires_at after created_at.
     let token_hash = vc_server::auth::hash_token("expired_token");
-    let expires_at = chrono::Utc::now() - chrono::Duration::hours(1); // Expired 1 hour ago
-
-    // Directly insert expired session (bypassing normal creation)
-    sqlx::query("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
-        .bind(user.id)
-        .bind(&token_hash)
-        .bind(expires_at)
-        .execute(&pool)
-        .await
-        .expect("Session insert should succeed");
+    sqlx::query(
+        "INSERT INTO sessions (user_id, token_hash, created_at, expires_at) \
+         VALUES ($1, $2, NOW() - INTERVAL '3 hours', NOW() - INTERVAL '1 hour')",
+    )
+    .bind(user.id)
+    .bind(&token_hash)
+    .execute(&pool)
+    .await
+    .expect("Session insert should succeed");
 
     // Lookup should NOT find expired session
     let found = vc_server::db::find_session_by_token_hash(&pool, &token_hash)

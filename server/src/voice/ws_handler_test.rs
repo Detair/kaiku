@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     use fred::prelude::*;
@@ -10,6 +11,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::config::Config;
+    use crate::ratelimit::{LimitConfig, RateLimitConfig, RateLimiter, RateLimits};
     use crate::voice::{error, sfu, ws_handler};
     use crate::ws::{ClientEvent, ServerEvent};
 
@@ -197,7 +199,6 @@ mod tests {
     }
 
     #[sqlx::test]
-    #[ignore = "Requires Redis-backed rate limiter configuration"]
     async fn test_rate_limiting_blocks_rapid_joins(
         pool: PgPool,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -210,17 +211,34 @@ mod tests {
         // Create test channel
         let channel_id = create_test_channel(&pool, "Rate Limit Test", guild_id).await?;
 
-        // Create SFU server
-        let config = Arc::new(Config::default_for_test());
-        let sfu = Arc::new(sfu::SfuServer::new(config, None)?);
+        // Create Redis client and build a rate limiter with voice_join limit of 1 per 60s.
+        // This ensures the second VoiceJoin in the same window is blocked.
+        let redis = create_test_redis().await;
+        let rl_config = RateLimitConfig {
+            enabled: true,
+            redis_key_prefix: format!("test:vj:{}", uuid::Uuid::new_v4()),
+            fail_open: false,
+            trust_proxy: false,
+            allowlist: HashSet::new(),
+            limits: RateLimits {
+                voice_join: LimitConfig {
+                    requests: 1,
+                    window_secs: 60,
+                },
+                ..RateLimits::default()
+            },
+        };
+        let mut rate_limiter = RateLimiter::new(redis, rl_config);
+        rate_limiter.init().await.expect("Failed to init rate limiter");
 
-        // Create Redis client
-        let _redis = create_test_redis().await;
+        // Create SFU server with the rate limiter wired in.
+        let config = Arc::new(Config::default_for_test());
+        let sfu = Arc::new(sfu::SfuServer::new(config, Some(rate_limiter))?);
 
         // Create channel for server events
         let (tx, _rx) = mpsc::channel::<ServerEvent>(10);
 
-        // First join should succeed
+        // First join should succeed (1/1 voice_join budget consumed)
         ws_handler::handle_voice_event(
             &sfu,
             &pool,
@@ -231,7 +249,7 @@ mod tests {
         )
         .await?;
 
-        // Immediate second join should fail with rate limit error
+        // Immediate second join should fail with rate limit error (budget exhausted)
         let result = ws_handler::handle_voice_event(
             &sfu,
             &pool,

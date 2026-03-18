@@ -439,17 +439,26 @@ async fn test_screen_share_check_requires_auth() {
 
 /// Screen share check endpoint requires `SCREEN_SHARE` permission.
 #[tokio::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
 async fn test_screen_share_check_requires_permission() {
-    let app = TestApp::new().await;
-    let (user_id, _username) = create_test_user(&app.pool).await;
+    let app = TestApp::with_screen_share_limiter().await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let (member_id, _) = create_test_user(&app.pool).await;
 
     // Guild with VIEW_CHANNEL + VOICE_CONNECT but NOT SCREEN_SHARE
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::VOICE_CONNECT;
-    let guild_id = create_guild_with_default_role(&app.pool, user_id, perms).await;
+    let guild_id = create_guild_with_default_role(&app.pool, owner_id, perms).await;
     let channel_id = create_voice_channel(&app.pool, guild_id, "voice-test").await;
 
-    let token = generate_access_token(&app.config, user_id);
+    // Add a non-owner member who only has the @everyone role permissions
+    sqlx::query("INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)")
+        .bind(member_id)
+        .bind(guild_id)
+        .execute(&app.pool)
+        .await
+        .expect("Failed to add member");
+
+    // Use the non-owner member (owner bypasses permission checks)
+    let token = generate_access_token(&app.config, member_id);
     let body = serde_json::json!({
         "stream_id": Uuid::new_v4(),
         "quality": "medium",
@@ -476,9 +485,8 @@ async fn test_screen_share_check_requires_permission() {
 
 /// Screen share check allows permitted users.
 #[tokio::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
 async fn test_screen_share_check_allowed() {
-    let app = TestApp::new().await;
+    let app = TestApp::with_screen_share_limiter().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL
@@ -547,9 +555,8 @@ async fn test_screen_share_start_requires_room_membership() {
 
 /// Screen share stop is a no-op when not sharing.
 #[tokio::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
 async fn test_screen_share_stop_noop() {
-    let app = TestApp::new().await;
+    let app = TestApp::with_screen_share_limiter().await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL

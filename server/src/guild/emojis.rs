@@ -246,6 +246,22 @@ pub async fn create_emoji(
         return Err(EmojiError::GuildNotFound);
     }
 
+    // Fast-path limit check: reject before parsing the multipart body or touching S3.
+    // The definitive check (under advisory lock) happens again inside the transaction
+    // to prevent races, but this early check avoids wasting bandwidth and avoids
+    // returning a confusing Storage error when S3 is absent.
+    let emoji_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_emojis WHERE guild_id = $1")
+            .bind(guild_id)
+            .fetch_one(&state.db)
+            .await?;
+    if emoji_count >= state.config.max_emojis_per_guild {
+        return Err(EmojiError::LimitExceeded(format!(
+            "Maximum number of emojis per guild reached ({})",
+            state.config.max_emojis_per_guild
+        )));
+    }
+
     let s3 = state
         .s3
         .as_ref()

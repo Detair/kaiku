@@ -331,7 +331,6 @@ async fn test_bot_limit() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires S3 storage for emoji upload"]
 async fn test_emoji_limit() {
     let app = TestApp::with_config(low_limit_config()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
