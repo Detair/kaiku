@@ -52,7 +52,7 @@ const SessionExpiredModal: Component = () => {
               <div class="flex justify-end">
                 <button
                   onClick={handleLogin}
-                  class="px-4 py-2 rounded-lg bg-primary text-white font-medium transition-colors hover:bg-primary/90"
+                  class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90"
                 >
                   Log in
                 </button>
