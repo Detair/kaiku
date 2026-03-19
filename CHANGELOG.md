@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed redundant source-side RTCP reader that spawned 3 extra tokio tasks per simulcast screen share (#370)
 
 ### Fixed
+- WebSocket reconnect now restores channel subscriptions and reloads messages, preventing silent message loss after network interruptions
+- Added reconnection toast notification so users can see when the connection is being re-established
+- Server-side WebSocket heartbeat (30s ping/pong) now detects and cleans up dead connections that would otherwise leak resources
 - All 14 modals now dismiss on Escape key press
 - Fixed heading hierarchy skip (H1 → H3) in message list — now uses H2
 - Fixed onboarding completion image showing transparency checkerboard

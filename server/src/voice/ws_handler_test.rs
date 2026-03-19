@@ -13,7 +13,7 @@ mod tests {
     use crate::config::Config;
     use crate::ratelimit::{LimitConfig, RateLimitConfig, RateLimiter, RateLimits};
     use crate::voice::{error, sfu, ws_handler};
-    use crate::ws::{ClientEvent, ServerEvent};
+    use crate::ws::{ClientEvent, OutboundMsg, ServerEvent};
 
     /// Helper to create a test Redis client.
     async fn create_test_redis() -> Client {
@@ -167,7 +167,7 @@ mod tests {
         let _redis = create_test_redis().await;
 
         // Create channel for server events
-        let (tx, mut rx) = mpsc::channel::<ServerEvent>(10);
+        let (tx, mut rx) = mpsc::channel::<OutboundMsg>(10);
 
         // Join voice channel
         ws_handler::handle_voice_event(
@@ -181,11 +181,13 @@ mod tests {
         .await?;
 
         // Verify VoiceOffer was sent
-        let event = rx.recv().await.expect("Should receive VoiceOffer");
+        let msg = rx.recv().await.expect("Should receive VoiceOffer");
+        let OutboundMsg::Event(event) = msg else { panic!("Expected Event") };
         assert!(matches!(event, ServerEvent::VoiceOffer { .. }));
 
         // Verify VoiceRoomState includes username
-        let event = rx.recv().await.expect("Should receive VoiceRoomState");
+        let msg = rx.recv().await.expect("Should receive VoiceRoomState");
+        let OutboundMsg::Event(event) = msg else { panic!("Expected Event") };
         match event {
             ServerEvent::VoiceRoomState { participants, .. } => {
                 assert_eq!(participants.len(), 1);
@@ -236,7 +238,7 @@ mod tests {
         let sfu = Arc::new(sfu::SfuServer::new(config, Some(rate_limiter))?);
 
         // Create channel for server events
-        let (tx, _rx) = mpsc::channel::<ServerEvent>(10);
+        let (tx, _rx) = mpsc::channel::<OutboundMsg>(10);
 
         // First join should succeed (1/1 voice_join budget consumed)
         ws_handler::handle_voice_event(
@@ -296,8 +298,8 @@ mod tests {
         let _redis = create_test_redis().await;
 
         // Create channels for server events
-        let (tx1, _rx1) = mpsc::channel::<ServerEvent>(10);
-        let (tx2, _rx2) = mpsc::channel::<ServerEvent>(10);
+        let (tx1, _rx1) = mpsc::channel::<OutboundMsg>(10);
+        let (tx2, _rx2) = mpsc::channel::<OutboundMsg>(10);
 
         // Both users should be able to join
         ws_handler::handle_voice_event(

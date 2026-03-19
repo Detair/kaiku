@@ -32,7 +32,7 @@ use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
 use crate::config::Config;
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
-use crate::ws::ServerEvent;
+use crate::ws::{OutboundMsg, ServerEvent};
 
 /// Default maximum participants per room.
 const DEFAULT_MAX_PARTICIPANTS: usize = 25;
@@ -220,7 +220,7 @@ impl Room {
     /// which could delay peer additions/removals during broadcasts.
     pub async fn broadcast_except(&self, exclude_user_id: Uuid, event: ServerEvent) {
         // Clone sender handles to release lock before I/O
-        let senders: Vec<(Uuid, mpsc::Sender<ServerEvent>)> = {
+        let senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)> = {
             let peers = self.peers.read().await;
             peers
                 .iter()
@@ -231,7 +231,7 @@ impl Room {
 
         // Send without holding the lock
         for (user_id, tx) in senders {
-            if let Err(e) = tx.send(event.clone()).await {
+            if let Err(e) = tx.send(OutboundMsg::Event(event.clone())).await {
                 warn!(user_id = %user_id, error = %e, "Failed to send event to peer");
             }
         }
@@ -242,7 +242,7 @@ impl Room {
     /// Clones the peer list before sending to avoid holding the lock during I/O.
     pub async fn broadcast_all(&self, event: ServerEvent) {
         // Clone sender handles to release lock before I/O
-        let senders: Vec<(Uuid, mpsc::Sender<ServerEvent>)> = {
+        let senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)> = {
             let peers = self.peers.read().await;
             peers
                 .iter()
@@ -252,7 +252,7 @@ impl Room {
 
         // Send without holding the lock
         for (user_id, tx) in senders {
-            if let Err(e) = tx.send(event.clone()).await {
+            if let Err(e) = tx.send(OutboundMsg::Event(event.clone())).await {
                 warn!(user_id = %user_id, error = %e, "Failed to send event to peer");
             }
         }
@@ -521,7 +521,7 @@ impl SfuServer {
         username: String,
         display_name: String,
         channel_id: Uuid,
-        signal_tx: mpsc::Sender<ServerEvent>,
+        signal_tx: mpsc::Sender<OutboundMsg>,
     ) -> Result<Arc<Peer>, VoiceError> {
         let config = self.rtc_config();
         let peer = Peer::new(
@@ -756,10 +756,10 @@ impl SfuServer {
                             Ok(json) => {
                                 if let Ok(candidate_str) = serde_json::to_string(&json) {
                                     if let Err(e) = tx
-                                        .send(ServerEvent::VoiceIceCandidate {
+                                        .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
                                             channel_id: cid,
                                             candidate: candidate_str,
-                                        })
+                                        }))
                                         .await
                                     {
                                         tracing::error!(
@@ -787,10 +787,10 @@ impl SfuServer {
             .set_local_description(offer.clone())
             .await?;
         peer.signal_tx
-            .send(ServerEvent::VoiceOffer {
+            .send(OutboundMsg::Event(ServerEvent::VoiceOffer {
                 channel_id: peer.channel_id,
                 sdp: offer.sdp,
-            })
+            }))
             .await
             .map_err(|e| VoiceError::Signaling(e.to_string()))?;
         Ok(())

@@ -24,7 +24,9 @@ import {
   removeMessage,
   messagesState,
   setMessagesState,
+  loadInitialMessages,
 } from "./messages";
+import { showToast, dismissToast } from "@/components/ui/Toast";
 import {
   addThreadReply,
   removeThreadReply,
@@ -211,8 +213,12 @@ export async function initWebSocket(): Promise<void> {
       listen("ws:connected", () => {
         const connectDuration = Date.now() - connectStartTime;
         Sentry.addBreadcrumb({ category: "ws", message: "connected", data: { duration_ms: connectDuration }, level: "info" });
-        setWsState({ status: "connected", reconnectAttempt: 0, error: null });
-        window.dispatchEvent(new Event("ws-connected"));
+        if (wsState.reconnectAttempt > 0) {
+          handleReconnect();
+        } else {
+          setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+          window.dispatchEvent(new Event("ws-connected"));
+        }
       }),
     );
 
@@ -225,6 +231,13 @@ export async function initWebSocket(): Promise<void> {
     pending.push(
       listen<number>("ws:reconnecting", (event) => {
         setWsState({ status: "reconnecting", reconnectAttempt: event.payload });
+        showToast({
+          type: "warning",
+          title: "Reconnecting...",
+          message: `Attempt ${event.payload}`,
+          id: "ws-reconnect",
+          duration: 0,
+        });
       }),
     );
 
@@ -1450,6 +1463,47 @@ export async function reinitWebSocketListeners(): Promise<void> {
 }
 
 /**
+ * Handle post-reconnect recovery: re-subscribe channels, reload messages, dismiss toast.
+ * Snapshots current subscribed channels before resetting state, then re-subscribes and reloads.
+ */
+async function handleReconnect(): Promise<void> {
+  const channelsToResubscribe = [...wsState.subscribedChannels];
+  const channelsToReload = Object.keys(messagesState.byChannel).filter(
+    (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,
+  );
+
+  // Clear subscribed set so subscribeChannel() early-return guard allows re-subscription
+  setWsState("subscribedChannels", new Set());
+  setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+
+  // Re-subscribe and reload in parallel
+  await Promise.all([
+    Promise.all(
+      channelsToResubscribe.map((id) =>
+        subscribeChannel(id).catch((err) =>
+          console.error("[WS] Failed to re-subscribe channel", id, err),
+        ),
+      ),
+    ),
+    Promise.all(
+      channelsToReload.map((id) =>
+        loadInitialMessages(id).catch((err) =>
+          console.error("[WS] Failed to reload messages for channel", id, err),
+        ),
+      ),
+    ),
+  ]);
+
+  console.info(
+    `[WS] Reconnect recovery complete: ${channelsToResubscribe.length} channels re-subscribed, ${channelsToReload.length} channels reloaded`,
+  );
+
+  // Signal connection ready after subscriptions are restored
+  window.dispatchEvent(new Event("ws-connected"));
+  dismissToast("ws-reconnect");
+}
+
+/**
  * Connect to the WebSocket server.
  */
 export async function connect(): Promise<void> {
@@ -1460,7 +1514,11 @@ export async function connect(): Promise<void> {
     // In browser mode, wsConnect resolves after onopen; update store state here
     // (Tauri mode updates via the ws:connected event listener instead)
     if (!isTauri) {
-      setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+      if (wsState.subscribedChannels.size > 0) {
+        await handleReconnect();
+      } else {
+        setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+      }
     }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
