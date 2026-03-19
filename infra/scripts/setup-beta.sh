@@ -120,7 +120,14 @@ fi
 if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     log "Generating secrets..."
     POSTGRES_PASSWORD=$(openssl rand -base64 24)
-    JWT_SECRET=$(openssl rand -hex 32)
+
+    # Generate Ed25519 key pair for JWT signing (EdDSA)
+    JWT_PEM_FILE=$(mktemp)
+    openssl genpkey -algorithm Ed25519 -out "$JWT_PEM_FILE" 2>/dev/null
+    JWT_PRIVATE_KEY=$(base64 -w0 < "$JWT_PEM_FILE")
+    JWT_PUBLIC_KEY=$(openssl pkey -in "$JWT_PEM_FILE" -pubout 2>/dev/null | base64 -w0)
+    rm -f "$JWT_PEM_FILE"
+
     MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
     VALKEY_PASSWORD=$(openssl rand -base64 16)
     GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16)
@@ -132,7 +139,8 @@ if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     # Replace CHANGEME placeholders with generated secrets
     sed -i "s|ACME_EMAIL=CHANGEME@pmind.de|ACME_EMAIL=${ACME_EMAIL}|" "$ENV_FILE"
     sed -i "s|POSTGRES_PASSWORD=CHANGEME|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" "$ENV_FILE"
-    sed -i "s|JWT_SECRET=CHANGEME|JWT_SECRET=${JWT_SECRET}|" "$ENV_FILE"
+    sed -i "s|JWT_PRIVATE_KEY=CHANGEME|JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}|" "$ENV_FILE"
+    sed -i "s|JWT_PUBLIC_KEY=CHANGEME|JWT_PUBLIC_KEY=${JWT_PUBLIC_KEY}|" "$ENV_FILE"
     sed -i "s|MFA_ENCRYPTION_KEY=CHANGEME|MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY}|" "$ENV_FILE"
     sed -i "s|VALKEY_PASSWORD=CHANGEME|VALKEY_PASSWORD=${VALKEY_PASSWORD}|" "$ENV_FILE"
     sed -i "s|GRAFANA_ADMIN_PASSWORD=CHANGEME|GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}|" "$ENV_FILE"

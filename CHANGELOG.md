@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WebSocket authentication now uses `Sec-WebSocket-Protocol` header instead of URL query parameter, preventing JWT token exposure in reverse proxy logs
 
 ### Fixed
+- Beta deployment now correctly generates Ed25519 JWT key pair instead of unused HMAC secret — fresh deployments no longer fail on startup
 - WebSocket reconnect now restores channel subscriptions and reloads messages, preventing silent message loss after network interruptions
 - Added reconnection toast notification so users can see when the connection is being re-established
 - Server-side WebSocket heartbeat (30s ping/pong) now detects and cleans up dead connections that would otherwise leak resources
