@@ -225,6 +225,7 @@ export async function initWebSocket(): Promise<void> {
     pending.push(
       listen("ws:disconnected", () => {
         setWsState({ status: "disconnected" });
+        dismissToast("ws-reconnect");
       }),
     );
 

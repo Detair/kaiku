@@ -3,6 +3,17 @@
  */
 
 /**
+ * Get the display name for a voice participant with fallback chain.
+ */
+export function getParticipantDisplayName(participant: {
+  user_id: string;
+  display_name?: string | null;
+  username?: string | null;
+}): string {
+  return participant.display_name || participant.username || participant.user_id.slice(0, 8);
+}
+
+/**
  * Format a timestamp for display.
  * Shows time only for today, date and time for older messages.
  */
