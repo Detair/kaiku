@@ -1155,10 +1155,14 @@ pub async fn handler(
         }
     };
 
-    // Verify user still exists and is not banned/deleted
-    match db::find_user_by_id(&state.db, user_id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
+    // Verify user still exists (lightweight existence check, not full row fetch)
+    match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+        .bind(user_id)
+        .fetch_one(&state.db)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
             return error_response(401, "User not found");
         }
         Err(e) => {

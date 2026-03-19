@@ -15,7 +15,7 @@ import {
 } from "@/stores/voice";
 import { getChannel } from "@/stores/channels";
 import { startViewing } from "@/stores/screenShareViewer";
-import { formatElapsedTime } from "@/lib/utils";
+import { formatElapsedTime, getParticipantDisplayName } from "@/lib/utils";
 import { QualityIndicator } from "./QualityIndicator";
 import { QualityTooltip } from "./QualityTooltip";
 import type { ConnectionMetrics } from "@/lib/webrtc/types";
@@ -138,10 +138,10 @@ const VoicePanel: Component = () => {
                     title={participant.muted ? "Muted" : undefined}
                   >
                     <div class="w-4 h-4 rounded-full bg-accent-primary/20 flex items-center justify-center text-accent-primary">
-                      {(participant.display_name || participant.username || participant.user_id).charAt(0).toUpperCase()}
+                      {getParticipantDisplayName(participant).charAt(0).toUpperCase()}
                     </div>
                     <span class="truncate max-w-20">
-                      {participant.display_name || participant.username || participant.user_id.slice(0, 8)}
+                      {getParticipantDisplayName(participant)}
                     </span>
                     {participant.screen_sharing && (
                       <button

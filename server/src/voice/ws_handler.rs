@@ -24,6 +24,17 @@ use super::webcam::WebcamInfo;
 use super::Quality;
 use crate::ws::{ClientEvent, OutboundMsg, ServerEvent, VoiceParticipant};
 
+/// Map a permission error to a voice error, logging database errors instead of masking them.
+fn map_permission_error(e: crate::permissions::PermissionError, context: &str) -> VoiceError {
+    match e {
+        crate::permissions::PermissionError::DatabaseError(msg) => {
+            error!(error = %msg, "Database error during {context}");
+            VoiceError::Signaling(format!("Permission check failed: {msg}"))
+        }
+        _ => VoiceError::Unauthorized,
+    }
+}
+
 /// Handle a voice-related client event.
 pub async fn handle_voice_event(
     sfu: &Arc<SfuServer>,
@@ -142,13 +153,7 @@ async fn handle_join(
     // Check if user has VIEW_CHANNEL and VOICE_CONNECT permissions
     let ctx = crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
-        .map_err(|e| match &e {
-            crate::permissions::PermissionError::DatabaseError(msg) => {
-                error!(error = %msg, "Database error during voice permission check");
-                VoiceError::Signaling(format!("Permission check failed: {msg}"))
-            }
-            _ => VoiceError::Unauthorized,
-        })?;
+        .map_err(|e| map_permission_error(e, "voice join"))?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::VOICE_CONNECT) {
         return Err(VoiceError::Unauthorized);
@@ -304,13 +309,7 @@ async fn handle_leave(
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
-        .map_err(|e| match &e {
-            crate::permissions::PermissionError::DatabaseError(msg) => {
-                error!(error = %msg, "Database error during voice leave permission check");
-                VoiceError::Signaling(format!("Permission check failed: {msg}"))
-            }
-            _ => VoiceError::Unauthorized,
-        })?;
+        .map_err(|e| map_permission_error(e, "voice leave"))?;
 
     let room = sfu
         .get_room(channel_id)
@@ -621,13 +620,7 @@ async fn handle_screen_share_start(
     // Check if user has VIEW_CHANNEL and SCREEN_SHARE permissions
     let ctx = crate::permissions::require_channel_access(pool, params.user_id, params.channel_id)
         .await
-        .map_err(|e| match &e {
-            crate::permissions::PermissionError::DatabaseError(msg) => {
-                error!(error = %msg, "Database error during screen share permission check");
-                VoiceError::Signaling(format!("Permission check failed: {msg}"))
-            }
-            _ => VoiceError::Unauthorized,
-        })?;
+        .map_err(|e| map_permission_error(e, "screen share"))?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::SCREEN_SHARE) {
         return Err(VoiceError::Unauthorized);
