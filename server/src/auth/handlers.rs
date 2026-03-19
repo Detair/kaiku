@@ -472,6 +472,11 @@ pub async fn register(
     crate::presence::validate_unicode_text(display_name, 64)
         .map_err(|e| AuthError::Validation(format!("display_name: {e}")))?;
 
+    // Resolve GeoIP before the transaction to avoid holding a connection during HTTP call
+    let user_agent = extract_user_agent(&headers);
+    let geo =
+        geoip::resolve_location(&state.http_client, &state.config.geoip_api_url, &addr.ip()).await;
+
     // Start transaction for atomic first-user detection and admin grant
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(
@@ -580,10 +585,6 @@ pub async fn register(
     // Store refresh token session (inline to use transaction)
     let token_hash = hash_token(&tokens.refresh_token);
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-    let user_agent = extract_user_agent(&headers);
-
-    let geo =
-        geoip::resolve_location(&state.http_client, &state.config.geoip_api_url, &addr.ip()).await;
     let city = geo.as_ref().and_then(|g| g.city.as_deref());
     let country = geo.as_ref().and_then(|g| g.country.as_deref());
 
@@ -886,6 +887,11 @@ pub async fn refresh_token(
 
     let token_hash = hash_token(&raw_token);
 
+    // Resolve GeoIP before the transaction to avoid holding a connection during HTTP call
+    let user_agent = extract_user_agent(&headers);
+    let geo =
+        geoip::resolve_location(&state.http_client, &state.config.geoip_api_url, &addr.ip()).await;
+
     // Wrap session lookup, deletion, and creation in a transaction with FOR UPDATE
     // to prevent race conditions in token rotation.
     let mut tx = state.db.begin().await?;
@@ -936,10 +942,6 @@ pub async fn refresh_token(
     // Store new refresh token session within the transaction
     let new_token_hash = hash_token(&new_tokens.refresh_token);
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-    let user_agent = extract_user_agent(&headers);
-
-    let geo =
-        geoip::resolve_location(&state.http_client, &state.config.geoip_api_url, &addr.ip()).await;
     let city = geo.as_ref().and_then(|g| g.city.as_deref());
     let country = geo.as_ref().and_then(|g| g.country.as_deref());
 

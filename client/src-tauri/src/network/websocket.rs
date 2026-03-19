@@ -9,8 +9,9 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{connect_async, tungstenite};
 use tracing::{debug, error, info, warn};
 
 /// Client events sent to the server.
@@ -428,12 +429,9 @@ async fn connection_loop(
             return;
         }
 
-        // Build WebSocket URL
-        let ws_url = build_ws_url(&server_url, &token);
-        info!(
-            "Connecting to WebSocket: {}",
-            ws_url.split('?').next().unwrap_or(&ws_url)
-        );
+        // Build WebSocket URL and request with token in Sec-WebSocket-Protocol header
+        let ws_url = build_ws_url(&server_url);
+        info!("Connecting to WebSocket: {}", ws_url);
 
         if attempt > 0 {
             *status.write().await = ConnectionStatus::Reconnecting { attempt };
@@ -443,8 +441,15 @@ async fn connection_loop(
             let _ = app.emit("ws:connecting", ());
         }
 
-        // Try to connect
-        match connect_async(&ws_url).await {
+        // Try to connect with token in Sec-WebSocket-Protocol header (not URL)
+        let request = match build_ws_request(&ws_url, &token) {
+            Ok(req) => req,
+            Err(e) => {
+                error!("Failed to build WebSocket request: {}", e);
+                continue;
+            }
+        };
+        match connect_async(request).await {
             Ok((ws_stream, _)) => {
                 info!("WebSocket connected");
                 attempt = 0;
@@ -534,12 +539,32 @@ async fn connection_loop(
     }
 }
 
-/// Build the WebSocket URL with authentication token.
-fn build_ws_url(server_url: &str, token: &str) -> String {
+/// Build the WebSocket URL (without token — token goes in protocol header).
+fn build_ws_url(server_url: &str) -> String {
     let base = server_url
         .replace("http://", "ws://")
         .replace("https://", "wss://");
-    format!("{}/ws?token={}", base.trim_end_matches('/'), token)
+    format!("{}/ws", base.trim_end_matches('/'))
+}
+
+/// Build a WebSocket handshake request with the JWT in the Sec-WebSocket-Protocol header.
+/// This avoids exposing the token in URL query parameters (which get logged by proxies).
+fn build_ws_request(
+    ws_url: &str,
+    token: &str,
+) -> Result<tungstenite::http::Request<()>, tungstenite::error::Error> {
+    let mut request = ws_url.into_client_request()?;
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("access_token.{}, access_token", token)
+            .parse()
+            .map_err(|_| {
+                tungstenite::error::Error::Url(
+                    tungstenite::error::UrlError::NoPathOrQuery,
+                )
+            })?,
+    );
+    Ok(request)
 }
 
 /// Handle a message from the server.
