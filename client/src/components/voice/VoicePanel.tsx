@@ -138,11 +138,10 @@ const VoicePanel: Component = () => {
                     title={participant.muted ? "Muted" : undefined}
                   >
                     <div class="w-4 h-4 rounded-full bg-accent-primary/20 flex items-center justify-center text-accent-primary">
-                      {/* Using first letter as avatar fallback for simplicity */}
-                      {participant.user_id.charAt(0).toUpperCase()}
+                      {(participant.display_name || participant.username || participant.user_id).charAt(0).toUpperCase()}
                     </div>
                     <span class="truncate max-w-20">
-                      {participant.user_id.slice(0, 8)}
+                      {participant.display_name || participant.username || participant.user_id.slice(0, 8)}
                     </span>
                     {participant.screen_sharing && (
                       <button

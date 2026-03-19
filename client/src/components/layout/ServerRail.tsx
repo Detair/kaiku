@@ -23,6 +23,7 @@ import {
   getGuildUnreadCount,
   selectDiscovery,
   isDiscoveryActive,
+  loadGuilds,
 } from "@/stores/guilds";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 
@@ -153,6 +154,17 @@ const ServerRail: Component = () => {
             );
           }}
         </For>
+
+        {/* Guild load error */}
+        <Show when={guildsState.error}>
+          <button
+            class="w-12 h-12 flex items-center justify-center bg-error-bg/20 rounded-full cursor-pointer text-error-text hover:bg-error-bg/30 transition-colors"
+            title={`Failed to load servers: ${guildsState.error}. Click to retry.`}
+            onClick={() => loadGuilds()}
+          >
+            !
+          </button>
+        </Show>
       </div>
 
       {/* Separator before action buttons */}

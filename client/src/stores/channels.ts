@@ -489,5 +489,17 @@ export async function moveChannelToCategory(
   }
 }
 
+/**
+ * Apply a partial update to a channel in the store (from Patch events).
+ */
+export function patchChannel(
+  channelId: string,
+  diff: Record<string, unknown>,
+): void {
+  const idx = channelsState.channels.findIndex((c) => c.id === channelId);
+  if (idx === -1) return;
+  setChannelsState("channels", idx, (prev) => ({ ...prev, ...diff }));
+}
+
 // Export the store for reading
 export { channelsState, setChannelsState };

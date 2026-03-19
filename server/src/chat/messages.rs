@@ -260,6 +260,9 @@ pub struct CursorPaginatedResponse<T> {
 /// Detect mention type in message content.
 /// Returns the highest priority mention type found.
 pub fn detect_mention_type(content: &str, author_username: Option<&str>) -> Option<MentionType> {
+    static MENTION_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"@(\w+)").unwrap());
+
     // Check for @everyone first (highest priority for notifications)
     if content.contains("@everyone") {
         return Some(MentionType::Everyone);
@@ -271,8 +274,7 @@ pub fn detect_mention_type(content: &str, author_username: Option<&str>) -> Opti
     }
 
     // Check for direct @username mentions (excluding self-mentions)
-    // Simple pattern: @word where word is alphanumeric/underscore
-    let mention_pattern = regex::Regex::new(r"@(\w+)").ok()?;
+    let mention_pattern = &*MENTION_RE;
     for cap in mention_pattern.captures_iter(content) {
         let mentioned = &cap[1];
         // Skip if mentioning self

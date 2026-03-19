@@ -1,5 +1,5 @@
 import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
-import { A, useNavigate } from "@solidjs/router";
+import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   login,
   loginWithOidc,
@@ -90,7 +90,13 @@ const Login: Component = () => {
         password(),
         authState.mfaRequired ? mfaCode() : undefined,
       );
-      navigate("/", { replace: true });
+      // Navigate to returnUrl if valid (relative path only), otherwise home
+      const [params] = useSearchParams();
+      const returnUrl = params.returnUrl;
+      const target = returnUrl && returnUrl.startsWith("/") && !returnUrl.startsWith("//")
+        ? returnUrl
+        : "/";
+      navigate(target, { replace: true });
     } catch (err) {
       // MFA_REQUIRED is handled by the store — just reset MFA code input
       const msg = err instanceof Error ? err.message : String(err);
