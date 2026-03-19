@@ -22,7 +22,7 @@ use webrtc::track::track_remote::TrackRemote;
 
 use super::error::VoiceError;
 use super::track_types::TrackSource;
-use crate::ws::ServerEvent;
+use crate::ws::OutboundMsg;
 
 /// Represents a user's WebRTC connection to the SFU.
 pub struct Peer {
@@ -45,7 +45,7 @@ pub struct Peer {
     /// Whether the user is muted.
     pub muted: RwLock<bool>,
     /// Channel to send signaling messages back to the user.
-    pub signal_tx: mpsc::Sender<ServerEvent>,
+    pub signal_tx: mpsc::Sender<OutboundMsg>,
     /// Unique session identifier for this connection.
     pub session_id: Uuid,
     /// Timestamp when this peer connected.
@@ -65,7 +65,7 @@ impl Peer {
         channel_id: Uuid,
         api: &API,
         config: RTCConfiguration,
-        signal_tx: mpsc::Sender<ServerEvent>,
+        signal_tx: mpsc::Sender<OutboundMsg>,
     ) -> Result<Self, VoiceError> {
         let peer_connection = api.new_peer_connection(config).await?;
 

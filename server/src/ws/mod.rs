@@ -1162,6 +1162,14 @@ pub async fn handler(
         .on_upgrade(move |socket| handle_socket(socket, state, user_id))
 }
 
+/// Internal outbound message envelope for the WebSocket sender task.
+/// Separates serializable server events from raw WS control frames (Ping).
+#[derive(Debug)]
+pub enum OutboundMsg {
+    Event(ServerEvent),
+    Ping,
+}
+
 /// Handle WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     use futures::stream::{SplitSink, SplitStream};
@@ -1169,7 +1177,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         socket.split();
 
     // Channel for sending messages to the WebSocket
-    let (tx, mut rx) = mpsc::channel::<ServerEvent>(100);
+    let (tx, mut rx) = mpsc::channel::<OutboundMsg>(100);
 
     // Track subscribed channels
     let subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
@@ -1188,7 +1196,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     crate::observability::metrics::record_ws_connect();
 
     // Send ready event
-    let _ = tx.send(ServerEvent::Ready { user_id }).await;
+    let _ = tx.send(OutboundMsg::Event(ServerEvent::Ready { user_id })).await;
 
     // Fetch user's friends for presence subscriptions
     let friend_ids = match get_user_friends(&state.db, user_id).await {
@@ -1214,7 +1222,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                     user_id: snap.user_id,
                     status: snap.status.clone(),
                 };
-                if tx.send(presence_event).await.is_err() {
+                if tx.send(OutboundMsg::Event(presence_event)).await.is_err() {
                     break;
                 }
 
@@ -1230,7 +1238,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                                 user_id: snap.user_id,
                                 activity: Some(activity),
                             };
-                            if tx.send(activity_event).await.is_err() {
+                            if tx.send(OutboundMsg::Event(activity_event)).await.is_err() {
                                 break;
                             }
                         }
@@ -1245,7 +1253,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                                 user_id: snap.user_id,
                                 custom_status: Some(cs),
                             };
-                            if tx.send(cs_event).await.is_err() {
+                            if tx.send(OutboundMsg::Event(cs_event)).await.is_err() {
                                 break;
                             }
                         }
@@ -1329,17 +1337,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
     // Spawn task to forward events to WebSocket
     let sender_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let msg = match serde_json::to_string(&event) {
-                Ok(json) => json,
-                Err(e) => {
-                    error!("Failed to serialize event: {}", e);
-                    continue;
-                }
+        while let Some(msg) = rx.recv().await {
+            let send_result = match msg {
+                OutboundMsg::Event(event) => match serde_json::to_string(&event) {
+                    Ok(json) => ws_sender.send(Message::Text(json.into())).await,
+                    Err(e) => {
+                        error!("Failed to serialize event: {}", e);
+                        continue;
+                    }
+                },
+                OutboundMsg::Ping => ws_sender.send(Message::Ping(vec![].into())).await,
             };
-
-            let send_result: Result<(), axum::Error> =
-                ws_sender.send(Message::Text(msg.into())).await;
             if send_result.is_err() {
                 break;
             }
@@ -1349,43 +1357,68 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     // Per-connection mutable state for rate limiting and deduplication
     let mut msg_state = ClientMessageState::default();
 
-    // Handle incoming messages
-    while let Some(msg) = ws_receiver.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                if let Err(e) = handle_client_message(
-                    &text,
-                    user_id,
-                    &state,
-                    &tx,
-                    &subscribed_channels,
-                    &admin_subscribed,
-                    &mut msg_state,
-                )
-                .await
-                {
-                    warn!("Error handling message: {}", e);
-                    let _ = tx
-                        .send(ServerEvent::Error {
-                            code: "message_error".to_string(),
-                            message: e.to_string(),
-                        })
-                        .await;
+    // Server-side heartbeat: detect dead connections via Ping/Pong
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping_interval.tick().await; // consume the immediate first tick
+    let mut awaiting_pong = false;
+
+    // Handle incoming messages with heartbeat
+    loop {
+        tokio::select! {
+            msg = ws_receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Err(e) = handle_client_message(
+                            &text,
+                            user_id,
+                            &state,
+                            &tx,
+                            &subscribed_channels,
+                            &admin_subscribed,
+                            &mut msg_state,
+                        )
+                        .await
+                        {
+                            warn!("Error handling message: {}", e);
+                            let _ = tx
+                                .send(OutboundMsg::Event(ServerEvent::Error {
+                                    code: "message_error".to_string(),
+                                    message: e.to_string(),
+                                }))
+                                .await;
+                        }
+                    }
+                    Some(Ok(Message::Ping(_data))) => {
+                        // Axum handles pong automatically
+                        debug!("Received ping from user={}", user_id);
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        awaiting_pong = false;
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        info!("WebSocket closed: user={}", user_id);
+                        break;
+                    }
+                    Some(Err(e)) => {
+                        warn!("WebSocket error: {}", e);
+                        break;
+                    }
+                    None => break,
+                    _ => {}
                 }
             }
-            Ok(Message::Ping(_data)) => {
-                // Axum handles pong automatically, but we can respond too
-                debug!("Received ping from user={}", user_id);
+
+            _ = ping_interval.tick() => {
+                if awaiting_pong || sender_handle.is_finished() {
+                    info!("WebSocket ping timeout: user={}", user_id);
+                    break;
+                }
+                awaiting_pong = true;
+                if tx.send(OutboundMsg::Ping).await.is_err() {
+                    break;
+                }
             }
-            Ok(Message::Close(_)) => {
-                info!("WebSocket closed: user={}", user_id);
-                break;
-            }
-            Err(e) => {
-                warn!("WebSocket error: {}", e);
-                break;
-            }
-            _ => {}
         }
     }
 
@@ -1414,7 +1447,7 @@ pub async fn handle_client_message(
     text: &str,
     user_id: Uuid,
     state: &AppState,
-    tx: &mpsc::Sender<ServerEvent>,
+    tx: &mpsc::Sender<OutboundMsg>,
     subscribed_channels: &Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: &Arc<tokio::sync::RwLock<bool>>,
     msg_state: &mut ClientMessageState,
@@ -1424,7 +1457,7 @@ pub async fn handle_client_message(
 
     match event {
         ClientEvent::Ping => {
-            tx.send(ServerEvent::Pong).await?;
+            tx.send(OutboundMsg::Event(ServerEvent::Pong)).await?;
         }
 
         ClientEvent::Subscribe { channel_id } => {
@@ -1433,10 +1466,10 @@ pub async fn handle_client_message(
                 .await?
                 .is_none()
             {
-                tx.send(ServerEvent::Error {
+                tx.send(OutboundMsg::Event(ServerEvent::Error {
                     code: "channel_not_found".to_string(),
                     message: "Channel not found".to_string(),
-                })
+                }))
                 .await?;
                 return Ok(());
             }
@@ -1446,10 +1479,10 @@ pub async fn handle_client_message(
                 .await
                 .is_err()
             {
-                tx.send(ServerEvent::Error {
+                tx.send(OutboundMsg::Event(ServerEvent::Error {
                     code: "forbidden".to_string(),
                     message: "You don't have permission to view this channel".to_string(),
-                })
+                }))
                 .await?;
                 return Ok(());
             }
@@ -1457,13 +1490,13 @@ pub async fn handle_client_message(
             // Add to subscribed channels
             subscribed_channels.write().await.insert(channel_id);
 
-            tx.send(ServerEvent::Subscribed { channel_id }).await?;
+            tx.send(OutboundMsg::Event(ServerEvent::Subscribed { channel_id })).await?;
             debug!("User {} subscribed to channel {}", user_id, channel_id);
         }
 
         ClientEvent::Unsubscribe { channel_id } => {
             subscribed_channels.write().await.remove(&channel_id);
-            tx.send(ServerEvent::Unsubscribed { channel_id }).await?;
+            tx.send(OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id })).await?;
             debug!("User {} unsubscribed from channel {}", user_id, channel_id);
         }
 
@@ -1538,10 +1571,10 @@ pub async fn handle_client_message(
             .await
             {
                 warn!("Voice event error: {}", e);
-                tx.send(ServerEvent::VoiceError {
+                tx.send(OutboundMsg::Event(ServerEvent::VoiceError {
                     code: "voice_error".to_string(),
                     message: e.to_string(),
-                })
+                }))
                 .await?;
             }
         }
@@ -1676,10 +1709,10 @@ pub async fn handle_client_message(
             let is_elevated =
                 crate::admin::is_elevated_admin(&state.redis, &state.db, user_id).await;
             if !is_elevated {
-                tx.send(ServerEvent::Error {
+                tx.send(OutboundMsg::Event(ServerEvent::Error {
                     code: "admin_not_elevated".to_string(),
                     message: "Must be an elevated admin to subscribe to admin events".to_string(),
-                })
+                }))
                 .await?;
                 return Ok(());
             }
@@ -1699,7 +1732,7 @@ pub async fn handle_client_message(
 
 /// Parameters for the Redis pub/sub handler.
 struct HandlePubsubParams {
-    tx: mpsc::Sender<ServerEvent>,
+    tx: mpsc::Sender<OutboundMsg>,
     subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
     blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
@@ -1808,7 +1841,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                             };
                             drop(blocked);
 
-                            if !should_filter && params.tx.send(event).await.is_err() {
+                            if !should_filter && params.tx.send(OutboundMsg::Event(event)).await.is_err() {
                                 break;
                             }
                         }
@@ -1835,7 +1868,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                         _ => {}
                     }
 
-                    if params.tx.send(event).await.is_err() {
+                    if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
                         break;
                     }
                 }
@@ -1847,7 +1880,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             if *params.admin_subscribed.read().await {
                 if let Some(payload) = message.value.as_str() {
                     if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                        if params.tx.send(event).await.is_err() {
+                        if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
                             break;
                         }
                     }
@@ -1868,7 +1901,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                         _ => false,
                     };
 
-                    if !should_filter && params.tx.send(event).await.is_err() {
+                    if !should_filter && params.tx.send(OutboundMsg::Event(event)).await.is_err() {
                         break;
                     }
                 }
@@ -1879,7 +1912,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             // Forward all user-targeted events (read sync, etc.)
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    if params.tx.send(event).await.is_err() {
+                    if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
                         break;
                     }
                 }
@@ -1890,7 +1923,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    if params.tx.send(event).await.is_err() {
+                    if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
                         break;
                     }
                 }

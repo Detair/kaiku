@@ -22,7 +22,7 @@ use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
 use super::Quality;
-use crate::ws::{ClientEvent, ServerEvent, VoiceParticipant};
+use crate::ws::{ClientEvent, OutboundMsg, ServerEvent, VoiceParticipant};
 
 /// Handle a voice-related client event.
 pub async fn handle_voice_event(
@@ -30,7 +30,7 @@ pub async fn handle_voice_event(
     pool: &PgPool,
     user_id: Uuid,
     event: ClientEvent,
-    tx: &mpsc::Sender<ServerEvent>,
+    tx: &mpsc::Sender<OutboundMsg>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
 ) -> Result<(), VoiceError> {
     match event {
@@ -135,7 +135,7 @@ async fn handle_join(
     pool: &PgPool,
     user_id: Uuid,
     channel_id: Uuid,
-    tx: &mpsc::Sender<ServerEvent>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
 
@@ -231,10 +231,10 @@ async fn handle_join(
     }
 
     let offer = sfu.create_offer(&peer).await?;
-    tx.send(ServerEvent::VoiceOffer {
+    tx.send(OutboundMsg::Event(ServerEvent::VoiceOffer {
         channel_id,
         sdp: offer.sdp,
-    })
+    }))
     .await
     .map_err(|e| VoiceError::Signaling(e.to_string()))?;
 
@@ -255,12 +255,12 @@ async fn handle_join(
     let screen_shares = room.get_screen_shares().await;
     let webcams = room.get_webcams().await;
 
-    tx.send(ServerEvent::VoiceRoomState {
+    tx.send(OutboundMsg::Event(ServerEvent::VoiceRoomState {
         channel_id,
         participants,
         screen_shares,
         webcams,
-    })
+    }))
     .await
     .map_err(|e| VoiceError::Signaling(e.to_string()))?;
 
@@ -997,7 +997,7 @@ async fn handle_set_layer_preference(
     target_user_id: Uuid,
     track_source: TrackSource,
     preferred_layer: LayerPreference,
-    tx: &mpsc::Sender<ServerEvent>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(
         user_id = %user_id,
@@ -1025,12 +1025,12 @@ async fn handle_set_layer_preference(
         preferred_layer,
     ) {
         // Notify the viewer of the layer change
-        tx.send(ServerEvent::VoiceLayerChanged {
+        tx.send(OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
             channel_id,
             source_user_id: target_user_id,
             track_source,
             active_layer: new_layer,
-        })
+        }))
         .await
         .map_err(|e| VoiceError::Signaling(e.to_string()))?;
     }

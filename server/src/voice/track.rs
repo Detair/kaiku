@@ -465,7 +465,7 @@ pub fn spawn_subscriber_remb_reader(
     source_user_id: Uuid,
     source_type: TrackSource,
     sender: Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>,
-    signal_tx: mpsc::Sender<crate::ws::ServerEvent>,
+    signal_tx: mpsc::Sender<crate::ws::OutboundMsg>,
     channel_id: Uuid,
 ) {
     tokio::spawn(async move {
@@ -505,12 +505,12 @@ pub fn spawn_subscriber_remb_reader(
                         );
 
                         let _ = signal_tx
-                            .send(crate::ws::ServerEvent::VoiceLayerChanged {
+                            .send(crate::ws::OutboundMsg::Event(crate::ws::ServerEvent::VoiceLayerChanged {
                                 channel_id,
                                 source_user_id,
                                 track_source: source_type,
                                 active_layer: new_layer,
-                            })
+                            }))
                             .await;
                     }
                 }
