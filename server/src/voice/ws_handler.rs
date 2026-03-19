@@ -304,7 +304,13 @@ async fn handle_leave(
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
-        .map_err(|_e: crate::permissions::PermissionError| VoiceError::Unauthorized)?;
+        .map_err(|e| match &e {
+            crate::permissions::PermissionError::DatabaseError(msg) => {
+                error!(error = %msg, "Database error during voice leave permission check");
+                VoiceError::Signaling(format!("Permission check failed: {msg}"))
+            }
+            _ => VoiceError::Unauthorized,
+        })?;
 
     let room = sfu
         .get_room(channel_id)
@@ -615,7 +621,13 @@ async fn handle_screen_share_start(
     // Check if user has VIEW_CHANNEL and SCREEN_SHARE permissions
     let ctx = crate::permissions::require_channel_access(pool, params.user_id, params.channel_id)
         .await
-        .map_err(|_e: crate::permissions::PermissionError| VoiceError::Unauthorized)?;
+        .map_err(|e| match &e {
+            crate::permissions::PermissionError::DatabaseError(msg) => {
+                error!(error = %msg, "Database error during screen share permission check");
+                VoiceError::Signaling(format!("Permission check failed: {msg}"))
+            }
+            _ => VoiceError::Unauthorized,
+        })?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::SCREEN_SHARE) {
         return Err(VoiceError::Unauthorized);
