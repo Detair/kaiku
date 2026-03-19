@@ -11,14 +11,22 @@
 import { createSignal, createEffect, onMount, Show } from "solid-js";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
-import mermaid from "mermaid";
-
-// Initialize mermaid with strict security
+// Mermaid is loaded dynamically to avoid bundling ~1.8MB in the main chunk.
+// It's only needed when the Pages feature is actually used.
+let mermaidModule: typeof import("mermaid") extends Promise<infer T> ? T : never;
 let mermaidInitialized = false;
 
-function initMermaid() {
+async function loadMermaid() {
+  if (!mermaidModule) {
+    mermaidModule = await import("mermaid");
+  }
+  return mermaidModule.default;
+}
+
+async function initMermaid() {
   if (mermaidInitialized) return;
 
+  const mermaid = await loadMermaid();
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
@@ -322,6 +330,7 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
       try {
         // Use version + index for unique IDs (version is unique per render cycle)
         const id = `mermaid-v${version}-${index}`;
+        const mermaid = await loadMermaid();
         const { svg } = await mermaid.render(id, code.trim());
 
         // Check if render is still current (race condition guard)

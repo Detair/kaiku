@@ -185,14 +185,17 @@ pub enum ServerEvent {
     ScreenShareStarted {
         channel_id: String,
         user_id: String,
+        stream_id: String,
         username: String,
         source_label: String,
         has_audio: bool,
         quality: String,
+        started_at: String,
     },
     ScreenShareStopped {
         channel_id: String,
         user_id: String,
+        stream_id: String,
         reason: String,
     },
     ScreenShareQualityChanged {
@@ -340,6 +343,52 @@ pub enum ServerEvent {
         entity_type: String,
         entity_id: String,
         diff: serde_json::Value,
+    },
+    // Workspace events
+    WorkspaceCreated {
+        workspace: serde_json::Value,
+    },
+    WorkspaceUpdated {
+        workspace: serde_json::Value,
+    },
+    WorkspaceDeleted {
+        workspace_id: String,
+    },
+    WorkspaceReordered {
+        workspaces: Vec<serde_json::Value>,
+    },
+    WorkspaceEntryAdded {
+        workspace_id: String,
+        entry: serde_json::Value,
+    },
+    WorkspaceEntryRemoved {
+        workspace_id: String,
+        entry_id: String,
+    },
+    WorkspaceEntriesReordered {
+        workspace_id: String,
+        entries: Vec<serde_json::Value>,
+    },
+    // Content filter events
+    AdminModerationBlocked {
+        guild_id: String,
+        user_id: String,
+        channel_id: String,
+        category: String,
+    },
+    // Bot command responses
+    CommandResponse {
+        interaction_id: String,
+        content: String,
+        command_name: String,
+        bot_name: String,
+        channel_id: String,
+        ephemeral: bool,
+    },
+    CommandResponseTimeout {
+        interaction_id: String,
+        command_name: String,
+        channel_id: String,
     },
 }
 
@@ -649,6 +698,19 @@ fn handle_server_message(app: &AppHandle, text: &str) {
                 ServerEvent::PreferencesUpdated { .. } => "ws:preferences_updated",
                 // State sync
                 ServerEvent::Patch { .. } => "ws:patch",
+                // Workspace events
+                ServerEvent::WorkspaceCreated { .. } => "ws:workspace_created",
+                ServerEvent::WorkspaceUpdated { .. } => "ws:workspace_updated",
+                ServerEvent::WorkspaceDeleted { .. } => "ws:workspace_deleted",
+                ServerEvent::WorkspaceReordered { .. } => "ws:workspace_reordered",
+                ServerEvent::WorkspaceEntryAdded { .. } => "ws:workspace_entry_added",
+                ServerEvent::WorkspaceEntryRemoved { .. } => "ws:workspace_entry_removed",
+                ServerEvent::WorkspaceEntriesReordered { .. } => "ws:workspace_entries_reordered",
+                // Content filter events
+                ServerEvent::AdminModerationBlocked { .. } => "ws:admin_moderation_blocked",
+                // Bot command responses
+                ServerEvent::CommandResponse { .. } => "ws:command_response",
+                ServerEvent::CommandResponseTimeout { .. } => "ws:command_response_timeout",
             };
 
             if let Err(e) = app.emit(event_name, &event) {

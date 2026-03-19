@@ -1155,6 +1155,18 @@ pub async fn handler(
         }
     };
 
+    // Verify user still exists and is not banned/deleted
+    match db::find_user_by_id(&state.db, user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return error_response(401, "User not found");
+        }
+        Err(e) => {
+            warn!("Database error during WS auth: {}", e);
+            return error_response(503, "Service temporarily unavailable");
+        }
+    }
+
     // Respond with the protocol to confirm (required for WebSocket handshake)
     ws.protocols(["access_token"])
         .max_message_size(256 * 1024)

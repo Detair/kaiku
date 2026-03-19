@@ -4,11 +4,11 @@ import UnoCSS from "unocss/vite";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import path from "path";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [
     UnoCSS(),
     solidPlugin(),
-    basicSsl(),
+    ...(mode !== "production" ? [basicSsl()] : []),
   ],
   resolve: {
     alias: {
@@ -44,7 +44,7 @@ export default defineConfig({
   build: {
     target: "esnext",
   },
-  ...(process.env.NODE_ENV === "production" && {
+  ...(mode === "production" && {
     define: {
       "console.log": "(() => {})",
       "console.debug": "(() => {})",
@@ -52,4 +52,4 @@ export default defineConfig({
   }),
   // Prevent vite from obscuring rust errors
   clearScreen: false,
-});
+}));

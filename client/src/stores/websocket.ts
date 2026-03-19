@@ -2305,6 +2305,13 @@ async function handlePatchEvent(
       }
       break;
 
+    case "channel":
+      {
+        const { patchChannel } = await import("@/stores/channels");
+        patchChannel(entityId, diff);
+      }
+      break;
+
     default:
       console.warn(`[WebSocket] Unknown patch entity type: ${entityType}`);
   }

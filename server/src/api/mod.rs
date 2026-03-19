@@ -18,7 +18,7 @@ pub mod unread;
 use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, FromRef, State};
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state, Next};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
@@ -445,7 +445,9 @@ pub(crate) struct HealthResponse {
         (status = 200, description = "Service health status", body = HealthResponse),
     ),
 )]
-pub(crate) async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
+pub(crate) async fn health_check(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<HealthResponse>) {
     // Check database connectivity
     let db_ok = sqlx::query("SELECT 1").fetch_one(&state.db).await.is_ok();
 
@@ -453,14 +455,21 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> Json<HealthRe
     let redis_ok = state.redis.ping::<String>(None).await.is_ok();
 
     // Determine overall status
-    let status = if db_ok && redis_ok { "ok" } else { "degraded" };
+    let (status, http_status) = if db_ok && redis_ok {
+        ("ok", StatusCode::OK)
+    } else {
+        ("degraded", StatusCode::SERVICE_UNAVAILABLE)
+    };
 
-    Json(HealthResponse {
-        status,
-        database: db_ok,
-        redis: redis_ok,
-        rate_limiting: state.rate_limiter.is_some(),
-    })
+    (
+        http_status,
+        Json(HealthResponse {
+            status,
+            database: db_ok,
+            redis: redis_ok,
+            rate_limiting: state.rate_limiter.is_some(),
+        }),
+    )
 }
 
 /// Middleware that counts HTTP error responses (4xx/5xx).

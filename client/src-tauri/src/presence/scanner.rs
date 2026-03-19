@@ -15,7 +15,7 @@ impl ProcessScanner {
     pub fn new() -> Self {
         Self {
             system: System::new_with_specifics(
-                RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
+                RefreshKind::nothing().with_processes(ProcessRefreshKind::new()),
             ),
             games_db: GamesDatabase::load(),
         }

@@ -48,6 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WebSocket reconnect now restores channel subscriptions and reloads messages, preventing silent message loss after network interruptions
 - Added reconnection toast notification so users can see when the connection is being re-established
 - Server-side WebSocket heartbeat (30s ping/pong) now detects and cleans up dead connections that would otherwise leak resources
+- Voice permission check no longer masks database errors as "Unauthorized"
+- Health check endpoint now returns HTTP 503 when database or Redis is unreachable
+- Deleted or banned users with valid JWT tokens can no longer connect to the WebSocket
+- Voice panel now shows participant usernames instead of truncated UUIDs
+- Login now honors `returnUrl` parameter after auth redirect
+- Server list now shows error state with retry button when guild loading fails
+- Channel name/topic changes via API are now reflected live via Patch events
+- Mention detection regex is now compiled once instead of on every message
+- Added missing Tauri WebSocket event variants (workspace sync, bot commands, admin moderation)
+- Added missing `stream_id` field to screen share events in Tauri client
+- `console.log` stripping now works correctly in production builds
+- Mermaid diagram library is now lazy-loaded, reducing main bundle size by ~1.8MB
+- Presence scanner now uses minimal process info collection at startup
 - Token refresh and registration no longer hold database transactions during GeoIP HTTP calls, preventing connection pool exhaustion under slow network conditions
 - All 14 modals now dismiss on Escape key press
 - Fixed heading hierarchy skip (H1 → H3) in message list — now uses H2
