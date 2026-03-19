@@ -442,7 +442,8 @@ pub(crate) struct HealthResponse {
     path = "/health",
     tag = "health",
     responses(
-        (status = 200, description = "Service health status", body = HealthResponse),
+        (status = 200, description = "Service healthy", body = HealthResponse),
+        (status = 503, description = "Service degraded — database or Redis unreachable", body = HealthResponse),
     ),
 )]
 pub(crate) async fn health_check(

@@ -494,8 +494,11 @@ async fn connection_loop(
         let request = match build_ws_request(&ws_url, &token) {
             Ok(req) => req,
             Err(e) => {
-                error!("Failed to build WebSocket request: {}", e);
-                continue;
+                error!("Failed to build WebSocket request (invalid token?): {}", e);
+                // Token won't change between attempts — break to avoid infinite spin
+                *status.write().await = ConnectionStatus::Disconnected;
+                let _ = app.emit("ws:disconnected", ());
+                return;
             }
         };
         match connect_async(request).await {

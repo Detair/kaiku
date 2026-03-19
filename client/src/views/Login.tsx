@@ -30,6 +30,7 @@ const Login: Component = () => {
   document.title = "Login | Kaiku";
   onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl, setServerUrl] = createSignal(defaultServerUrl);
@@ -91,8 +92,7 @@ const Login: Component = () => {
         authState.mfaRequired ? mfaCode() : undefined,
       );
       // Navigate to returnUrl if valid (relative path only), otherwise home
-      const [params] = useSearchParams();
-      const returnUrl = params.returnUrl;
+      const returnUrl = searchParams.returnUrl;
       const target = returnUrl && returnUrl.startsWith("/") && !returnUrl.startsWith("//")
         ? returnUrl
         : "/";

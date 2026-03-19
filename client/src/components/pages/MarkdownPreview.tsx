@@ -13,7 +13,7 @@ import { Marked } from "marked";
 import DOMPurify from "dompurify";
 // Mermaid is loaded dynamically to avoid bundling ~1.8MB in the main chunk.
 // It's only needed when the Pages feature is actually used.
-let mermaidModule: typeof import("mermaid") extends Promise<infer T> ? T : never;
+let mermaidModule: Awaited<typeof import("mermaid")> | undefined;
 let mermaidInitialized = false;
 
 async function loadMermaid() {
