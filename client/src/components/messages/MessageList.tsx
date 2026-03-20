@@ -476,6 +476,7 @@ const MessageList: Component<MessageListProps> = (props) => {
         >
           <For each={virtualizer.getVirtualItems()}>
             {(virtualItem) => {
+              if (!virtualItem || virtualItem.index == null) return null;
               const item = () => messagesWithCompact()[virtualItem.index];
               const isHighlighted = () =>
                 item()?.message.id != null &&
@@ -491,7 +492,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                   class={isHighlighted() ? "message-highlight" : undefined}
                   style={{
                     position: "absolute",
-                    top: `${virtualItem.start}px`,
+                    top: `${virtualItem.start ?? 0}px`,
                     width: "100%",
                   }}
                 >

@@ -28,7 +28,7 @@ export function createVirtualizer(options: VirtualizerOptions) {
   });
 
   return {
-    getVirtualItems: (): VirtualItem[] => virtualizer.getVirtualItems(),
+    getVirtualItems: (): VirtualItem[] => virtualizer.getVirtualItems()?.filter(Boolean) ?? [],
     getTotalSize: (): number => virtualizer.getTotalSize(),
     getScrollElement: options.getScrollElement,
     scrollToIndex: (
