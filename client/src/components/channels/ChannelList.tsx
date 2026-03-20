@@ -360,11 +360,16 @@ const ChannelList: Component = () => {
     return dragState.draggingId === id;
   };
 
-  // Render the insertion line indicator
-  const DropIndicatorLine = () => (
-    <div class="relative h-1 my-0.5 transition-all duration-150">
-      <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[4px] rounded-full" style="background-color: var(--color-accent-primary)" />
-      <div class="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full" style="background-color: var(--color-accent-primary)" />
+  // Render a drop indicator slot — always in DOM, animates open when active
+  const DropSlot = (props: { active: boolean }) => (
+    <div
+      class="overflow-hidden transition-all duration-150"
+      style={{ height: props.active ? "8px" : "0px" }}
+    >
+      <div class="flex items-center h-full px-1">
+        <div class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: var(--color-accent-primary)" />
+        <div class="flex-1 rounded-full" style="height: 3px; background-color: var(--color-accent-primary)" />
+      </div>
     </div>
   );
 
@@ -384,9 +389,7 @@ const ChannelList: Component = () => {
 
     return (
       <>
-        <Show when={dropPos() === "before"}>
-          <DropIndicatorLine />
-        </Show>
+        <DropSlot active={dropPos() === "before"} />
         <div
           class="transition-all duration-150"
           classList={{
@@ -431,9 +434,7 @@ const ChannelList: Component = () => {
             <VoiceParticipants channelId={channel.id} />
           </Show>
         </div>
-        <Show when={dropPos() === "after"}>
-          <DropIndicatorLine />
-        </Show>
+        <DropSlot active={dropPos() === "after"} />
       </>
     );
   };
@@ -461,9 +462,7 @@ const ChannelList: Component = () => {
 
     return (
       <>
-        <Show when={dropPos() === "before"}>
-          <DropIndicatorLine />
-        </Show>
+        <DropSlot active={dropPos() === "before"} />
         <div
           class="mt-1 transition-all duration-150"
           classList={{
@@ -505,9 +504,7 @@ const ChannelList: Component = () => {
             </div>
           </Show>
         </div>
-        <Show when={dropPos() === "after"}>
-          <DropIndicatorLine />
-        </Show>
+        <DropSlot active={dropPos() === "after"} />
       </>
     );
   };
@@ -523,9 +520,7 @@ const ChannelList: Component = () => {
 
     return (
       <>
-        <Show when={dropPos() === "before"}>
-          <DropIndicatorLine />
-        </Show>
+        <DropSlot active={dropPos() === "before"} />
         <div
           class="mb-2 transition-all duration-150"
           classList={{
@@ -573,9 +568,7 @@ const ChannelList: Component = () => {
             </div>
           </Show>
         </div>
-        <Show when={dropPos() === "after"}>
-          <DropIndicatorLine />
-        </Show>
+        <DropSlot active={dropPos() === "after"} />
       </>
     );
   };
