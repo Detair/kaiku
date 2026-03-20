@@ -216,6 +216,31 @@ pub async fn create(
             )));
         }
 
+        // Validate channel type against category type restriction
+        if let Some(cat_id) = body.category_id {
+            let cat_type: Option<(String,)> = sqlx::query_as(
+                "SELECT category_type::TEXT FROM channel_categories WHERE id = $1",
+            )
+            .bind(cat_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if let Some((cat_type,)) = cat_type {
+                let channel_type_str = match &channel_type {
+                    db::ChannelType::Text => "text",
+                    db::ChannelType::Voice => "voice",
+                    db::ChannelType::Dm => "dm",
+                };
+                if (cat_type == "text" && channel_type_str != "text")
+                    || (cat_type == "voice" && channel_type_str != "voice")
+                {
+                    return Err(ChannelError::Validation(format!(
+                        "This category only allows {cat_type} channels"
+                    )));
+                }
+            }
+        }
+
         let position: i32 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(position), 0) + 1 FROM channels WHERE category_id IS NOT DISTINCT FROM $1",
         )

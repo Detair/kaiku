@@ -1849,10 +1849,11 @@ export async function createGuildCategory(
   guildId: string,
   name: string,
   parentId?: string,
+  categoryType?: string,
 ): Promise<ChannelCategory> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_guild_category", { guildId, name, parentId });
+    return invoke("create_guild_category", { guildId, name, parentId, categoryType });
   }
 
   return httpRequest<ChannelCategory>(
@@ -1861,6 +1862,7 @@ export async function createGuildCategory(
     {
       name,
       parent_id: parentId,
+      category_type: categoryType ?? "mixed",
     },
   );
 }

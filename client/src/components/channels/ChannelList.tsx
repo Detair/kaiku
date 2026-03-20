@@ -37,6 +37,7 @@ import {
   loadGuildCategories,
   getTopLevelCategories,
   getSubcategories,
+  getCategory,
   isCategoryCollapsed,
   toggleCategoryCollapse,
   reorderCategories,
@@ -303,18 +304,43 @@ const ChannelList: Component = () => {
       return;
     }
 
+    // Helper: check if a channel type is allowed in a category
+    const isCategoryTypeAllowed = (channelId: string, targetCategoryId: string): boolean => {
+      const channel = channelsState.channels.find((c) => c.id === channelId);
+      const category = getCategory(targetCategoryId);
+      if (!channel || !category || category.category_type === "mixed") return true;
+      const allowed = category.category_type === channel.channel_type;
+      if (!allowed) {
+        showToast({
+          type: "warning",
+          title: "Cannot move channel",
+          message: `${channel.channel_type === "voice" ? "Voice" : "Text"} channels can't be moved to a ${category.category_type}-only category.`,
+          duration: 5000,
+        });
+      }
+      return allowed;
+    };
+
     // Handle the drop based on source and target types
     if (result.sourceType === "channel") {
       if (result.targetType === "channel") {
         // Channel dropped on channel - reorder (possibly across categories)
+        const targetChannel = channelsState.channels.find((c) => c.id === result.targetId);
+        if (targetChannel?.category_id && !isCategoryTypeAllowed(result.sourceId, targetChannel.category_id)) {
+          endDrag();
+          return;
+        }
         await moveChannel(
           result.sourceId,
           result.targetId,
           result.position as "before" | "after",
         );
       } else if (result.targetType === "category") {
-        // Channel dropped on category header - move into that category
-        // "before" = insert at top, "after"/"inside" = insert at bottom
+        // Channel dropped on category header - validate type
+        if (!isCategoryTypeAllowed(result.sourceId, result.targetId)) {
+          endDrag();
+          return;
+        }
         await moveChannelToCategory(
           result.sourceId,
           result.targetId,
@@ -493,6 +519,7 @@ const ChannelList: Component = () => {
                 collapsed={isCollapsed()}
                 hasUnread={categoryHasUnread(subcategory.id)}
                 isSubcategory={true}
+                categoryType={subcategory.category_type}
                 onToggle={() => toggleCategoryCollapse(subcategory.id)}
                 onCreateChannel={
                   canManageChannels()
@@ -552,6 +579,7 @@ const ChannelList: Component = () => {
                 collapsed={isCollapsed()}
                 hasUnread={categoryHasUnread(category.id)}
                 isSubcategory={false}
+                categoryType={category.category_type}
                 onToggle={() => toggleCategoryCollapse(category.id)}
                 onCreateChannel={
                   canManageChannels()

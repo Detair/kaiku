@@ -19,6 +19,16 @@ use crate::permissions::{require_guild_permission, GuildPermissions, PermissionE
 // Types
 // ============================================================================
 
+/// Category type restriction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
+#[sqlx(type_name = "category_type", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum CategoryType {
+    Mixed,
+    Text,
+    Voice,
+}
+
 /// Category response model.
 #[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Category {
@@ -27,6 +37,7 @@ pub struct Category {
     pub name: String,
     pub position: i32,
     pub parent_id: Option<Uuid>,
+    pub category_type: CategoryType,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -36,6 +47,12 @@ pub struct CreateCategoryRequest {
     pub name: String,
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    #[serde(default = "default_category_type")]
+    pub category_type: CategoryType,
+}
+
+const fn default_category_type() -> CategoryType {
+    CategoryType::Mixed
 }
 
 /// Request to update a category.
@@ -45,6 +62,7 @@ pub struct UpdateCategoryRequest {
     pub position: Option<i32>,
     /// None = don't change, Some(None) = clear parent, Some(Some(id)) = set parent
     pub parent_id: Option<Option<Uuid>>,
+    pub category_type: Option<CategoryType>,
 }
 
 /// Request to reorder multiple categories.
@@ -156,7 +174,7 @@ pub async fn list_categories(
 
     let categories = sqlx::query_as::<_, Category>(
         r"
-        SELECT id, guild_id, name, position, parent_id, created_at
+        SELECT id, guild_id, name, position, parent_id, category_type, created_at
         FROM channel_categories
         WHERE guild_id = $1
         ORDER BY position
@@ -237,19 +255,20 @@ pub async fn create_category(
     let category_id = Uuid::now_v7();
     let category = sqlx::query_as::<_, Category>(
         r"
-        INSERT INTO channel_categories (id, guild_id, name, parent_id, position)
-        VALUES ($1, $2, $3, $4, (
+        INSERT INTO channel_categories (id, guild_id, name, parent_id, category_type, position)
+        VALUES ($1, $2, $3, $4, $5, (
             SELECT COALESCE(MAX(position) + 1, 0)
             FROM channel_categories
             WHERE guild_id = $2 AND parent_id IS NOT DISTINCT FROM $4
         ))
-        RETURNING id, guild_id, name, position, parent_id, created_at
+        RETURNING id, guild_id, name, position, parent_id, category_type, created_at
         ",
     )
     .bind(category_id)
     .bind(guild_id)
     .bind(&body.name)
     .bind(body.parent_id)
+    .bind(body.category_type)
     .fetch_one(&state.db)
     .await?;
 
@@ -341,6 +360,30 @@ pub async fn update_category(
         }
     }
 
+    // If changing category_type, validate no conflicting channels exist
+    if let Some(new_type) = &body.category_type {
+        if *new_type != CategoryType::Mixed {
+            let conflicting_type = match new_type {
+                CategoryType::Text => "voice",
+                CategoryType::Voice => "text",
+                CategoryType::Mixed => unreachable!(),
+            };
+            let has_conflicts = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM channels WHERE category_id = $1 AND channel_type::TEXT = $2)",
+            )
+            .bind(category_id)
+            .bind(conflicting_type)
+            .fetch_one(&state.db)
+            .await?;
+
+            if has_conflicts {
+                return Err(CategoryError::Validation(format!(
+                    "Cannot change to {new_type:?} — category contains {conflicting_type} channels"
+                )));
+            }
+        }
+    }
+
     // Build and execute update query
     let category = sqlx::query_as::<_, Category>(
         r"
@@ -348,17 +391,19 @@ pub async fn update_category(
         SET
             name = COALESCE($3, name),
             position = COALESCE($4, position),
-            parent_id = CASE WHEN $5 THEN $6 ELSE parent_id END
+            parent_id = CASE WHEN $5 THEN $6 ELSE parent_id END,
+            category_type = COALESCE($7, category_type)
         WHERE id = $1 AND guild_id = $2
-        RETURNING id, guild_id, name, position, parent_id, created_at
+        RETURNING id, guild_id, name, position, parent_id, category_type, created_at
         ",
     )
     .bind(category_id)
     .bind(guild_id)
     .bind(&body.name)
     .bind(body.position)
-    .bind(body.parent_id.is_some()) // whether to update parent_id
-    .bind(body.parent_id.flatten()) // the new parent_id value
+    .bind(body.parent_id.is_some())
+    .bind(body.parent_id.flatten())
+    .bind(body.category_type)
     .fetch_optional(&state.db)
     .await?
     .ok_or(CategoryError::NotFound)?;

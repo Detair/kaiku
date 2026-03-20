@@ -8,7 +8,7 @@
  */
 
 import { Component, createSignal, For, Show, onMount } from "solid-js";
-import { Pencil, Trash2, Plus, Check, X, ChevronRight } from "lucide-solid";
+import { Pencil, Trash2, Plus, Check, X, ChevronRight, Hash, Volume2, Layers } from "lucide-solid";
 import {
   categoriesState,
   loadGuildCategories,
@@ -31,6 +31,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
   const [addingSubcategoryFor, setAddingSubcategoryFor] = createSignal<string | null>(null);
   const [subCategoryName, setSubCategoryName] = createSignal("");
   const [isCreating, setIsCreating] = createSignal(false);
+  const [newCategoryType, setNewCategoryType] = createSignal<"mixed" | "text" | "voice">("mixed");
 
   onMount(() => {
     loadGuildCategories(props.guildId);
@@ -38,12 +39,29 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
 
   const topLevel = () => getTopLevelCategories(props.guildId);
 
+  const typeIcon = (type: string) => {
+    switch (type) {
+      case "text": return <Hash class="w-3.5 h-3.5" />;
+      case "voice": return <Volume2 class="w-3.5 h-3.5" />;
+      default: return <Layers class="w-3.5 h-3.5" />;
+    }
+  };
+
+  const typeLabel = (type: string) => {
+    switch (type) {
+      case "text": return "Text only";
+      case "voice": return "Voice only";
+      default: return "Mixed";
+    }
+  };
+
   const handleCreate = async () => {
     const name = newCategoryName().trim();
     if (!name) return;
     setIsCreating(true);
-    await createCategory(props.guildId, name);
+    await createCategory(props.guildId, name, undefined, newCategoryType());
     setNewCategoryName("");
+    setNewCategoryType("mixed");
     setIsCreating(false);
   };
 
@@ -81,7 +99,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
     if (success) setDeletingId(null);
   };
 
-  const renderCategoryRow = (categoryId: string, name: string, isSubcat: boolean) => {
+  const renderCategoryRow = (categoryId: string, name: string, isSubcat: boolean, catType: string = "mixed") => {
     const isEditing = () => editingId() === categoryId;
     const isDeleting = () => deletingId() === categoryId;
 
@@ -127,6 +145,11 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
           }
         >
           <span class="flex-1 text-sm text-text-primary truncate">{name}</span>
+          <Show when={catType !== "mixed"}>
+            <span class="flex items-center gap-1 text-[11px] text-text-muted px-1.5 py-0.5 rounded bg-white/5 shrink-0">
+              {typeIcon(catType)} {typeLabel(catType)}
+            </span>
+          </Show>
           <Show when={!isDeleting()}>
             <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
               <Show when={!isSubcat}>
@@ -191,7 +214,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
       </div>
 
       {/* Create new category */}
-      <div class="flex gap-2">
+      <div class="flex gap-2 items-center">
         <input
           type="text"
           placeholder="New category name"
@@ -201,10 +224,25 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
           class="flex-1 px-3 py-2 bg-surface-layer2 rounded-lg text-sm text-text-primary border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary placeholder-text-secondary"
           disabled={isCreating()}
         />
+        <div class="flex rounded-lg border border-white/10 overflow-hidden shrink-0">
+          {(["mixed", "text", "voice"] as const).map((t) => (
+            <button
+              onClick={() => setNewCategoryType(t)}
+              class="px-2 py-2 text-xs transition-colors"
+              classList={{
+                "bg-accent-primary text-on-accent": newCategoryType() === t,
+                "bg-surface-layer2 text-text-secondary hover:text-text-primary": newCategoryType() !== t,
+              }}
+              title={typeLabel(t)}
+            >
+              {typeIcon(t)}
+            </button>
+          ))}
+        </div>
         <button
           onClick={handleCreate}
           disabled={!newCategoryName().trim() || isCreating()}
-          class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
         >
           Add
         </button>
@@ -229,11 +267,11 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
                 const subs = () => getSubcategories(props.guildId, category.id);
                 return (
                   <>
-                    {renderCategoryRow(category.id, category.name, false)}
+                    {renderCategoryRow(category.id, category.name, false, category.category_type)}
 
                     {/* Subcategories */}
                     <For each={subs()}>
-                      {(sub) => renderCategoryRow(sub.id, sub.name, true)}
+                      {(sub) => renderCategoryRow(sub.id, sub.name, true, sub.category_type)}
                     </For>
 
                     {/* Add subcategory inline form */}

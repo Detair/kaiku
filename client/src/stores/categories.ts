@@ -345,9 +345,10 @@ export async function createCategory(
   guildId: string,
   name: string,
   parentId?: string,
+  categoryType?: string,
 ): Promise<ChannelCategory | null> {
   try {
-    const category = await tauri.createGuildCategory(guildId, name, parentId);
+    const category = await tauri.createGuildCategory(guildId, name, parentId, categoryType);
     // Add to local store
     const existing = categoriesState.categories[guildId] ?? [];
     setCategoriesState("categories", guildId, [...existing, category]);

@@ -219,12 +219,15 @@ export interface ChannelWithUnread extends Channel {
   unread_count: number;
 }
 
+export type CategoryType = "mixed" | "text" | "voice";
+
 export interface ChannelCategory {
   id: string;
   guild_id: string;
   name: string;
   position: number;
   parent_id: string | null;
+  category_type: CategoryType;
   collapsed: boolean;
   created_at: string;
 }

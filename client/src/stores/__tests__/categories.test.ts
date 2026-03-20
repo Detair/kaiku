@@ -45,6 +45,7 @@ function createCategory(
     name,
     position,
     parent_id: parentId,
+    category_type: "mixed" as const,
     collapsed,
     created_at: new Date().toISOString(),
   };
