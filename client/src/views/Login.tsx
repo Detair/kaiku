@@ -92,7 +92,8 @@ const Login: Component = () => {
         authState.mfaRequired ? mfaCode() : undefined,
       );
       // Navigate to returnUrl if valid (relative path only), otherwise home
-      const returnUrl = searchParams.returnUrl;
+      const raw = searchParams.returnUrl;
+      const returnUrl = Array.isArray(raw) ? raw[0] : raw;
       const target = returnUrl && returnUrl.startsWith("/") && !returnUrl.startsWith("//")
         ? returnUrl
         : "/";
