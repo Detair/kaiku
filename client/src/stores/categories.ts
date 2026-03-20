@@ -339,6 +339,79 @@ export async function reorderCategories(
 }
 
 /**
+ * Create a new category in a guild.
+ */
+export async function createCategory(
+  guildId: string,
+  name: string,
+  parentId?: string,
+): Promise<ChannelCategory | null> {
+  try {
+    const category = await tauri.createGuildCategory(guildId, name, parentId);
+    // Add to local store
+    const existing = categoriesState.categories[guildId] ?? [];
+    setCategoriesState("categories", guildId, [...existing, category]);
+    return category;
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error("Failed to create category:", error);
+    showToast({ type: "error", title: "Failed to create category", message: error, duration: 8000 });
+    return null;
+  }
+}
+
+/**
+ * Update a category (rename, move, etc.).
+ */
+export async function updateCategory(
+  guildId: string,
+  categoryId: string,
+  updates: { name?: string; position?: number; parentId?: string | null },
+): Promise<boolean> {
+  try {
+    const updated = await tauri.updateGuildCategory(guildId, categoryId, updates);
+    // Update in local store
+    const existing = categoriesState.categories[guildId] ?? [];
+    setCategoriesState(
+      "categories",
+      guildId,
+      existing.map((c) => (c.id === categoryId ? updated : c)),
+    );
+    return true;
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error("Failed to update category:", error);
+    showToast({ type: "error", title: "Failed to update category", message: error, duration: 8000 });
+    return false;
+  }
+}
+
+/**
+ * Delete a category. Channels in it move to uncategorized.
+ */
+export async function deleteCategory(
+  guildId: string,
+  categoryId: string,
+): Promise<boolean> {
+  try {
+    await tauri.deleteGuildCategory(guildId, categoryId);
+    // Remove from local store (including subcategories)
+    const existing = categoriesState.categories[guildId] ?? [];
+    setCategoriesState(
+      "categories",
+      guildId,
+      existing.filter((c) => c.id !== categoryId && c.parent_id !== categoryId),
+    );
+    return true;
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error("Failed to delete category:", error);
+    showToast({ type: "error", title: "Failed to delete category", message: error, duration: 8000 });
+    return false;
+  }
+}
+
+/**
  * Check if a category is a subcategory (has a parent).
  */
 export function isSubcategory(categoryId: string): boolean {
