@@ -121,7 +121,7 @@ impl Default for RateLimits {
                 window_secs: 60,
             },
             read: LimitConfig {
-                requests: 200,
+                requests: 1000,
                 window_secs: 60,
             },
             ws_connect: LimitConfig {
@@ -315,7 +315,7 @@ mod tests {
         let limits = RateLimits::default();
         assert_eq!(limits.auth_login.requests, 3);
         assert_eq!(limits.auth_login.window_secs, 60);
-        assert_eq!(limits.read.requests, 200);
+        assert_eq!(limits.read.requests, 1000);
         assert_eq!(limits.failed_auth.max_failures, 10);
         assert_eq!(limits.failed_auth.block_duration_secs, 900);
     }
