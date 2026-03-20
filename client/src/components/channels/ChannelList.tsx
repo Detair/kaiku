@@ -234,6 +234,7 @@ const ChannelList: Component = () => {
     _categoryId: string | null,
   ) => {
     e.preventDefault();
+    e.stopPropagation(); // Prevent bubbling to category handler which would overwrite the drop target
     if (!canManageChannels()) return;
     if (!dragState.isDragging) return;
 
