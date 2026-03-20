@@ -150,15 +150,14 @@ const MessageList: Component<MessageListProps> = (props) => {
 
   // --- Scroll to bottom ---
   const scrollToBottom = (smooth = true) => {
-    const count = messagesWithCompact().length;
-    if (count > 0) {
-      virtualizer.scrollToIndex(count - 1, {
-        align: "end",
-        behavior: smooth ? "smooth" : "auto",
-      });
-      setHasNewMessages(false);
-      setNewMessageCount(0);
-    }
+    if (!containerRef) return;
+    // Use direct DOM scroll — bypasses virtualizer measurement timing issues
+    containerRef.scrollTo({
+      top: containerRef.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
+    setHasNewMessages(false);
+    setNewMessageCount(0);
   };
 
   // --- Scroll to a specific message and highlight it ---
@@ -343,8 +342,13 @@ const MessageList: Component<MessageListProps> = (props) => {
         }
       }
 
-      if (isAtBottom()) {
-        setTimeout(() => scrollToBottom(true), 50);
+      // Always scroll when the user sends a message (optimistic messages have pending: prefix)
+      const msgs = messages();
+      const lastMsg = msgs[msgs.length - 1];
+      const isOwnSend = lastMsg?.id?.startsWith("pending:");
+
+      if (isOwnSend || isAtBottom()) {
+        requestAnimationFrame(() => scrollToBottom(!isOwnSend));
       } else {
         setHasNewMessages(true);
         setNewMessageCount(
@@ -354,20 +358,17 @@ const MessageList: Component<MessageListProps> = (props) => {
     } else if (currentCount > 0 && prevMessageCount === 0) {
       // Initial load complete
       if (pendingHighlightId) {
-        // Try to scroll to the pending highlight message
-        setTimeout(() => {
+        requestAnimationFrame(() => {
           if (pendingHighlightId) {
             const found = scrollToMessage(pendingHighlightId);
             if (!found) {
-              // Message not in buffer (too old) — fall back to bottom
               pendingHighlightId = null;
               scrollToBottom(false);
             }
           }
-        }, 50);
+        });
       } else {
-        // No highlight — scroll to bottom instantly
-        setTimeout(() => scrollToBottom(false), 50);
+        requestAnimationFrame(() => scrollToBottom(false));
       }
     }
 
