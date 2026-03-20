@@ -98,12 +98,13 @@ const MessageList: Component<MessageListProps> = (props) => {
       const item = messagesWithCompact()[index];
       if (!item) return 96;
       const msg = item.message;
+      const content = msg.content || "";
+      const attachments = msg.attachments || [];
 
       // Base: header (avatar + name + timestamp) or compact (no header)
       let estimate = item.isCompact ? 8 : 52;
 
       // Count content lines (~22px each)
-      const content = msg.content;
       let contentHeight = 0;
 
       // Handle code blocks: count their lines with monospace sizing (~20px/line + 32px padding)
@@ -113,23 +114,23 @@ const MessageList: Component<MessageListProps> = (props) => {
 
       for (const block of codeBlocks) {
         const blockLines = block.split("\n").length;
-        contentHeight += blockLines * 20 + 32; // monospace lines + padding/border
+        contentHeight += blockLines * 20 + 32;
       }
 
       // Regular text lines (outside code blocks)
       const textLines = withoutCode.split("\n");
       contentHeight += textLines.length * 22;
 
-      estimate += Math.max(contentHeight, 22); // at least one line
+      estimate += Math.max(contentHeight, 22);
 
       // Images (~320px from max-h-80)
-      const imageCount = msg.attachments?.filter((a) =>
+      const imageCount = attachments.filter((a) =>
         a.mime_type?.startsWith("image/"),
-      ).length ?? 0;
+      ).length;
       if (imageCount > 0) estimate += imageCount * 320;
 
       // Non-image attachments (~48px each)
-      const fileCount = (msg.attachments?.length ?? 0) - imageCount;
+      const fileCount = attachments.length - imageCount;
       if (fileCount > 0) estimate += fileCount * 48;
 
       // Reactions row (~36px)
