@@ -401,11 +401,12 @@ export async function moveChannel(
   setChannelsState("channels", updatedChannels);
 
   // Prepare channel positions for server - only channels in the affected category
+  // Ensure category_id is null (not undefined) to prevent JSON serialization issues
   const channelPositions: tauri.ChannelPosition[] = categoryChannels.map(
     (c, idx) => ({
       id: c.id,
       position: idx,
-      category_id: c.id === channelId ? targetCategoryId : c.category_id,
+      category_id: (c.id === channelId ? targetCategoryId : c.category_id) ?? null,
     }),
   );
 
@@ -428,10 +429,12 @@ export async function moveChannel(
  *
  * @param channelId - The channel being moved
  * @param newCategoryId - The new category ID (null for uncategorized)
+ * @param insertAt - Where to insert: "start" (top of category) or "end" (bottom, default)
  */
 export async function moveChannelToCategory(
   channelId: string,
   newCategoryId: string | null,
+  insertAt: "start" | "end" = "end",
 ): Promise<void> {
   const channel = channelsState.channels.find((c) => c.id === channelId);
 
@@ -446,43 +449,66 @@ export async function moveChannelToCategory(
     return;
   }
 
-  // Get channels in the target category to determine position
-  const categoryChannels = channelsState.channels
-    .filter((c) => c.category_id === newCategoryId)
+  const oldCategoryId = channel.category_id;
+
+  // Build the new category's channel list with the moved channel inserted
+  const newCategoryChannels = channelsState.channels
+    .filter((c) => c.category_id === newCategoryId && c.id !== channelId)
     .sort((a, b) => a.position - b.position);
 
-  // Add to end of category
-  const newPosition = categoryChannels.length;
+  if (insertAt === "start") {
+    newCategoryChannels.unshift({ ...channel, category_id: newCategoryId });
+  } else {
+    newCategoryChannels.push({ ...channel, category_id: newCategoryId });
+  }
 
+  // Re-index old category (if different) to close the gap
+  const oldCategoryChannels = oldCategoryId !== newCategoryId
+    ? channelsState.channels
+        .filter((c) => c.category_id === oldCategoryId && c.id !== channelId)
+        .sort((a, b) => a.position - b.position)
+    : [];
+
+  // Optimistic local update
   const updatedChannels = channelsState.channels.map((c) => {
+    // Moved channel
     if (c.id === channelId) {
-      return {
-        ...c,
-        category_id: newCategoryId,
-        position: newPosition,
-      };
+      const idx = newCategoryChannels.findIndex((nc) => nc.id === channelId);
+      return { ...c, category_id: newCategoryId, position: idx };
+    }
+    // Channels in the new category
+    const newIdx = newCategoryChannels.findIndex((nc) => nc.id === c.id);
+    if (newIdx !== -1) {
+      return { ...c, position: newIdx };
+    }
+    // Channels in the old category (re-index)
+    const oldIdx = oldCategoryChannels.findIndex((oc) => oc.id === c.id);
+    if (oldIdx !== -1) {
+      return { ...c, position: oldIdx };
     }
     return c;
   });
 
-  // Optimistic local update
   setChannelsState("channels", updatedChannels);
 
-  // Persist to server - just the moved channel
+  // Send all affected channels to server (both old and new category)
   const channelPositions: tauri.ChannelPosition[] = [
-    {
-      id: channelId,
-      position: newPosition,
-      category_id: newCategoryId,
-    },
+    ...newCategoryChannels.map((c, idx) => ({
+      id: c.id,
+      position: idx,
+      category_id: newCategoryId ?? null,
+    })),
+    ...oldCategoryChannels.map((c, idx) => ({
+      id: c.id,
+      position: idx,
+      category_id: oldCategoryId ?? null,
+    })),
   ];
 
   try {
     await tauri.reorderGuildChannels(guildId, channelPositions);
-    console.log("[Channels] Channel moved to category and persisted to server");
   } catch (err) {
     console.error("[Channels] Failed to persist category move:", err);
-    // Reload channels to sync with server state
     if (guildId) {
       await loadChannelsForGuild(guildId);
     }

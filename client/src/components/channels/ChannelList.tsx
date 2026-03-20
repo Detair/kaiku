@@ -305,17 +305,20 @@ const ChannelList: Component = () => {
     // Handle the drop based on source and target types
     if (result.sourceType === "channel") {
       if (result.targetType === "channel") {
-        // Channel dropped on channel - reorder
+        // Channel dropped on channel - reorder (possibly across categories)
         await moveChannel(
           result.sourceId,
           result.targetId,
           result.position as "before" | "after",
         );
       } else if (result.targetType === "category") {
-        // Channel dropped on category - move to that category
-        if (result.position === "inside") {
-          await moveChannelToCategory(result.sourceId, result.targetId);
-        }
+        // Channel dropped on category header - move into that category
+        // "before" = insert at top, "after"/"inside" = insert at bottom
+        await moveChannelToCategory(
+          result.sourceId,
+          result.targetId,
+          result.position === "before" ? "start" : "end",
+        );
       }
     } else if (result.sourceType === "category") {
       if (result.targetType === "category" && result.position) {
