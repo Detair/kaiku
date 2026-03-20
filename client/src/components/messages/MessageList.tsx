@@ -95,54 +95,42 @@ const MessageList: Component<MessageListProps> = (props) => {
     },
     getScrollElement: () => containerRef ?? null,
     estimateSize: (index: number) => {
-      const item = messagesWithCompact()[index];
-      if (!item) return 96;
-      const msg = item.message;
-      const content = msg.content || "";
-      const attachments = msg.attachments || [];
+      try {
+        const item = messagesWithCompact()[index];
+        if (!item?.message) return 96;
+        const msg = item.message;
+        const content = msg.content || "";
+        const attachments = msg.attachments || [];
 
-      // Base: header (avatar + name + timestamp) or compact (no header)
-      let estimate = item.isCompact ? 8 : 52;
+        // Base: header (avatar + name + timestamp) or compact (no header)
+        let estimate = item.isCompact ? 8 : 52;
 
-      // Count content lines (~22px each)
-      let contentHeight = 0;
+        // Content lines (~22px each), with code blocks handled separately
+        let contentHeight = 0;
+        const codeBlockRegex = /```[\s\S]*?```/g;
+        const codeBlocks = content.match(codeBlockRegex) || [];
+        const textOnly = content.replace(codeBlockRegex, "");
 
-      // Handle code blocks: count their lines with monospace sizing (~20px/line + 32px padding)
-      const codeBlockPattern = /```[\s\S]*?```/g;
-      const withoutCode = content.replace(codeBlockPattern, "");
-      const codeBlocks = content.match(codeBlockPattern) || [];
+        for (const block of codeBlocks) {
+          contentHeight += block.split("\n").length * 20 + 32;
+        }
+        contentHeight += textOnly.split("\n").length * 22;
 
-      for (const block of codeBlocks) {
-        const blockLines = block.split("\n").length;
-        contentHeight += blockLines * 20 + 32;
+        estimate += Math.max(contentHeight, 22);
+
+        // Attachments
+        for (const a of attachments) {
+          estimate += a.mime_type?.startsWith("image/") ? 320 : 48;
+        }
+
+        // Reactions (~36px) and thread indicator (~28px)
+        if (msg.reactions?.length) estimate += 36;
+        if (msg.thread_reply_count) estimate += 28;
+
+        return estimate + 16; // padding
+      } catch {
+        return 96;
       }
-
-      // Regular text lines (outside code blocks)
-      const textLines = withoutCode.split("\n");
-      contentHeight += textLines.length * 22;
-
-      estimate += Math.max(contentHeight, 22);
-
-      // Images (~320px from max-h-80)
-      const imageCount = attachments.filter((a) =>
-        a.mime_type?.startsWith("image/"),
-      ).length;
-      if (imageCount > 0) estimate += imageCount * 320;
-
-      // Non-image attachments (~48px each)
-      const fileCount = attachments.length - imageCount;
-      if (fileCount > 0) estimate += fileCount * 48;
-
-      // Reactions row (~36px)
-      if (msg.reactions && msg.reactions.length > 0) estimate += 36;
-
-      // Thread reply indicator (~28px)
-      if (msg.thread_reply_count && msg.thread_reply_count > 0) estimate += 28;
-
-      // Padding/margins
-      estimate += 16;
-
-      return estimate;
     },
     overscan: 5,
   });
