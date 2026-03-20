@@ -3,7 +3,7 @@
 # ============================================================================
 # Build Stage - Rust compilation
 # ============================================================================
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.93-bookworm AS builder
 
 WORKDIR /build
 
