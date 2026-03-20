@@ -379,6 +379,7 @@ const ChannelList: Component = () => {
   // ============================================================================
 
   // Render a single channel (text or voice) with drag support
+  // Single container handles ALL drag events + contains DropSlots
   const renderChannel = (
     channel: ChannelWithUnread,
     categoryId: string | null,
@@ -389,19 +390,20 @@ const ChannelList: Component = () => {
     const dragging = () => isDragging(channel.id);
 
     return (
-      <>
+      <div
+        draggable={draggable}
+        onDragStart={(e) => handleDragStart(e, channel.id, "channel")}
+        onDragEnd={handleDragEnd}
+        onDragOver={(e) => handleChannelDragOver(e, channel.id, categoryId)}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => { e.stopPropagation(); handleDrop(e); }}
+      >
         <DropSlot active={dropPos() === "before"} />
         <div
           class="transition-all duration-150"
           classList={{
             "opacity-30 border border-dashed border-white/20 rounded-lg": dragging(),
           }}
-          draggable={draggable}
-          onDragStart={(e) => handleDragStart(e, channel.id, "channel")}
-          onDragEnd={handleDragEnd}
-          onDragOver={(e) => handleChannelDragOver(e, channel.id, categoryId)}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
         >
           <div class="flex items-center group">
             <Show when={draggable}>
@@ -436,7 +438,7 @@ const ChannelList: Component = () => {
           </Show>
         </div>
         <DropSlot active={dropPos() === "after"} />
-      </>
+      </div>
     );
   };
 
@@ -462,7 +464,14 @@ const ChannelList: Component = () => {
     const dragging = () => isDragging(subcategory.id);
 
     return (
-      <>
+      <div
+        draggable={draggable}
+        onDragStart={(e) => handleDragStart(e, subcategory.id, "category")}
+        onDragEnd={handleDragEnd}
+        onDragOver={(e) => handleCategoryDragOver(e, subcategory.id, true)}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => { e.stopPropagation(); handleDrop(e); }}
+      >
         <DropSlot active={dropPos() === "before"} />
         <div
           class="mt-1 transition-all duration-150"
@@ -470,12 +479,6 @@ const ChannelList: Component = () => {
             "opacity-30 border border-dashed border-white/20 rounded-lg": dragging(),
             "bg-accent-primary/10 ring-2 ring-accent-primary/30 rounded-lg": dropPos() === "inside",
           }}
-          draggable={draggable}
-          onDragStart={(e) => handleDragStart(e, subcategory.id, "category")}
-          onDragEnd={handleDragEnd}
-          onDragOver={(e) => handleCategoryDragOver(e, subcategory.id, true)}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
         >
           <div class="flex items-center group">
             <Show when={draggable}>
@@ -506,7 +509,7 @@ const ChannelList: Component = () => {
           </Show>
         </div>
         <DropSlot active={dropPos() === "after"} />
-      </>
+      </div>
     );
   };
 
@@ -520,7 +523,14 @@ const ChannelList: Component = () => {
     const dragging = () => isDragging(category.id);
 
     return (
-      <>
+      <div
+        draggable={draggable}
+        onDragStart={(e) => handleDragStart(e, category.id, "category")}
+        onDragEnd={handleDragEnd}
+        onDragOver={(e) => handleCategoryDragOver(e, category.id, false)}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => { e.stopPropagation(); handleDrop(e); }}
+      >
         <DropSlot active={dropPos() === "before"} />
         <div
           class="mb-2 transition-all duration-150"
@@ -528,12 +538,6 @@ const ChannelList: Component = () => {
             "opacity-30 border border-dashed border-white/20 rounded-lg": dragging(),
             "bg-accent-primary/10 ring-2 ring-accent-primary/30 rounded-lg": dropPos() === "inside",
           }}
-          draggable={draggable}
-          onDragStart={(e) => handleDragStart(e, category.id, "category")}
-          onDragEnd={handleDragEnd}
-          onDragOver={(e) => handleCategoryDragOver(e, category.id, false)}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
         >
           <div class="flex items-center group">
             <Show when={draggable}>
@@ -570,7 +574,7 @@ const ChannelList: Component = () => {
           </Show>
         </div>
         <DropSlot active={dropPos() === "after"} />
-      </>
+      </div>
     );
   };
 
