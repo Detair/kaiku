@@ -99,19 +99,47 @@ const MessageList: Component<MessageListProps> = (props) => {
       if (!item) return 96;
       const msg = item.message;
 
-      let estimate = item.isCompact ? 48 : 96;
+      // Base: header (avatar + name + timestamp) or compact (no header)
+      let estimate = item.isCompact ? 8 : 52;
 
-      // Images are tall (~320px from max-h-80)
-      const hasImage = msg.attachments?.some((a) =>
+      // Count content lines (~22px each)
+      const content = msg.content;
+      let contentHeight = 0;
+
+      // Handle code blocks: count their lines with monospace sizing (~20px/line + 32px padding)
+      const codeBlockPattern = /```[\s\S]*?```/g;
+      const withoutCode = content.replace(codeBlockPattern, "");
+      const codeBlocks = content.match(codeBlockPattern) || [];
+
+      for (const block of codeBlocks) {
+        const blockLines = block.split("\n").length;
+        contentHeight += blockLines * 20 + 32; // monospace lines + padding/border
+      }
+
+      // Regular text lines (outside code blocks)
+      const textLines = withoutCode.split("\n");
+      contentHeight += textLines.length * 22;
+
+      estimate += Math.max(contentHeight, 22); // at least one line
+
+      // Images (~320px from max-h-80)
+      const imageCount = msg.attachments?.filter((a) =>
         a.mime_type?.startsWith("image/"),
-      );
-      if (hasImage) estimate = 400;
+      ).length ?? 0;
+      if (imageCount > 0) estimate += imageCount * 320;
 
-      // Code blocks add height
-      if (msg.content.includes("```")) estimate = Math.max(estimate, 200);
+      // Non-image attachments (~48px each)
+      const fileCount = (msg.attachments?.length ?? 0) - imageCount;
+      if (fileCount > 0) estimate += fileCount * 48;
 
-      // Reactions add ~36px
+      // Reactions row (~36px)
       if (msg.reactions && msg.reactions.length > 0) estimate += 36;
+
+      // Thread reply indicator (~28px)
+      if (msg.thread_reply_count && msg.thread_reply_count > 0) estimate += 28;
+
+      // Padding/margins
+      estimate += 16;
 
       return estimate;
     },
@@ -469,7 +497,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                   data-index={virtualItem.index}
                   ref={(el) => {
                     el.setAttribute("data-index", String(virtualItem.index));
-                    queueMicrotask(() => virtualizer.measureElement(el));
+                    virtualizer.measureElement(el);
                   }}
                   class={isHighlighted() ? "message-highlight" : undefined}
                   style={{
