@@ -344,28 +344,26 @@ const ChannelList: Component = () => {
     endDrag();
   };
 
-  // Get drop indicator classes
-  const getDropIndicatorClasses = (id: string, type: DraggableType): string => {
+  // Check drop position for an item
+  const getDropPosition = (id: string, type: DraggableType) => {
     if (dragState.dropTargetId !== id || dragState.dropTargetType !== type) {
-      return "";
+      return null;
     }
-
-    switch (dragState.dropPosition) {
-      case "before":
-        return "border-t-2 border-accent-primary";
-      case "after":
-        return "border-b-2 border-accent-primary";
-      case "inside":
-        return "bg-accent-primary/10 ring-2 ring-accent-primary/30";
-      default:
-        return "";
-    }
+    return dragState.dropPosition;
   };
 
   // Check if item is being dragged
   const isDragging = (id: string): boolean => {
     return dragState.draggingId === id;
   };
+
+  // Render the insertion line indicator
+  const DropIndicatorLine = () => (
+    <div class="relative h-1 my-0.5 transition-all duration-150">
+      <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[4px] rounded-full" style="background-color: var(--color-accent-primary)" />
+      <div class="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full" style="background-color: var(--color-accent-primary)" />
+    </div>
+  );
 
   // ============================================================================
   // Render Functions
@@ -378,51 +376,62 @@ const ChannelList: Component = () => {
   ) => {
     const isVoice = channel.channel_type === "voice";
     const draggable = canManageChannels();
+    const dropPos = () => getDropPosition(channel.id, "channel");
+    const dragging = () => isDragging(channel.id);
 
     return (
-      <div
-        class={`transition-all duration-150 ${getDropIndicatorClasses(channel.id, "channel")} ${
-          isDragging(channel.id) ? "opacity-50" : ""
-        }`}
-        draggable={draggable}
-        onDragStart={(e) => handleDragStart(e, channel.id, "channel")}
-        onDragEnd={handleDragEnd}
-        onDragOver={(e) => handleChannelDragOver(e, channel.id, categoryId)}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div class="flex items-center group">
-          <Show when={draggable}>
-            <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity mr-1">
-              <GripVertical class="w-3 h-3" />
-            </div>
-          </Show>
-          <div class="flex-1">
-            <ChannelItem
-              channel={channel}
-              isSelected={
-                !isVoice && channelsState.selectedChannelId === channel.id
-              }
-              onClick={
-                isVoice
-                  ? () => handleVoiceChannelClick(channel.id)
-                  : () => selectChannel(channel.id)
-              }
-              onSettings={
-                canManageChannels()
-                  ? () => setSettingsChannelId(channel.id)
-                  : undefined
-              }
-              guildId={activeGuild()?.id}
-              guildName={activeGuild()?.name}
-              guildIcon={activeGuild()?.icon_url}
-            />
-          </div>
-        </div>
-        <Show when={isVoice}>
-          <VoiceParticipants channelId={channel.id} />
+      <>
+        <Show when={dropPos() === "before"}>
+          <DropIndicatorLine />
         </Show>
-      </div>
+        <div
+          class="transition-all duration-150"
+          classList={{
+            "opacity-30 border border-dashed border-white/20 rounded-lg": dragging(),
+          }}
+          draggable={draggable}
+          onDragStart={(e) => handleDragStart(e, channel.id, "channel")}
+          onDragEnd={handleDragEnd}
+          onDragOver={(e) => handleChannelDragOver(e, channel.id, categoryId)}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div class="flex items-center group">
+            <Show when={draggable}>
+              <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity mr-1">
+                <GripVertical class="w-3 h-3" />
+              </div>
+            </Show>
+            <div class="flex-1">
+              <ChannelItem
+                channel={channel}
+                isSelected={
+                  !isVoice && channelsState.selectedChannelId === channel.id
+                }
+                onClick={
+                  isVoice
+                    ? () => handleVoiceChannelClick(channel.id)
+                    : () => selectChannel(channel.id)
+                }
+                onSettings={
+                  canManageChannels()
+                    ? () => setSettingsChannelId(channel.id)
+                    : undefined
+                }
+                guildId={activeGuild()?.id}
+                guildName={activeGuild()?.name}
+                guildIcon={activeGuild()?.icon_url}
+              />
+            </div>
+          </div>
+          <Show when={isVoice}>
+            <VoiceParticipants channelId={channel.id} />
+          </Show>
+        </div>
+        <Show when={dropPos() === "after"}>
+          <DropIndicatorLine />
+        </Show>
+      </>
     );
   };
 
@@ -444,47 +453,59 @@ const ChannelList: Component = () => {
   const renderSubcategory = (subcategory: ChannelCategory) => {
     const isCollapsed = () => isCategoryCollapsed(subcategory.id);
     const draggable = canManageChannels();
+    const dropPos = () => getDropPosition(subcategory.id, "category");
+    const dragging = () => isDragging(subcategory.id);
 
     return (
-      <div
-        class={`mt-1 transition-all duration-150 ${getDropIndicatorClasses(subcategory.id, "category")} ${
-          isDragging(subcategory.id) ? "opacity-50" : ""
-        }`}
-        draggable={draggable}
-        onDragStart={(e) => handleDragStart(e, subcategory.id, "category")}
-        onDragEnd={handleDragEnd}
-        onDragOver={(e) => handleCategoryDragOver(e, subcategory.id, true)}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div class="flex items-center group">
-          <Show when={draggable}>
-            <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity">
-              <GripVertical class="w-3 h-3" />
+      <>
+        <Show when={dropPos() === "before"}>
+          <DropIndicatorLine />
+        </Show>
+        <div
+          class="mt-1 transition-all duration-150"
+          classList={{
+            "opacity-30 border border-dashed border-white/20 rounded-lg": dragging(),
+            "bg-accent-primary/10 ring-2 ring-accent-primary/30 rounded-lg": dropPos() === "inside",
+          }}
+          draggable={draggable}
+          onDragStart={(e) => handleDragStart(e, subcategory.id, "category")}
+          onDragEnd={handleDragEnd}
+          onDragOver={(e) => handleCategoryDragOver(e, subcategory.id, true)}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div class="flex items-center group">
+            <Show when={draggable}>
+              <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                <GripVertical class="w-3 h-3" />
+              </div>
+            </Show>
+            <div class="flex-1">
+              <CategoryHeader
+                id={subcategory.id}
+                name={subcategory.name}
+                collapsed={isCollapsed()}
+                hasUnread={categoryHasUnread(subcategory.id)}
+                isSubcategory={true}
+                onToggle={() => toggleCategoryCollapse(subcategory.id)}
+                onCreateChannel={
+                  canManageChannels()
+                    ? () => openCreateModal("text", subcategory.id)
+                    : undefined
+                }
+              />
+            </div>
+          </div>
+          <Show when={!isCollapsed()}>
+            <div class="ml-3 border-l-2 border-white/10 pl-1">
+              {renderCategoryChannels(subcategory.id)}
             </div>
           </Show>
-          <div class="flex-1">
-            <CategoryHeader
-              id={subcategory.id}
-              name={subcategory.name}
-              collapsed={isCollapsed()}
-              hasUnread={categoryHasUnread(subcategory.id)}
-              isSubcategory={true}
-              onToggle={() => toggleCategoryCollapse(subcategory.id)}
-              onCreateChannel={
-                canManageChannels()
-                  ? () => openCreateModal("text", subcategory.id)
-                  : undefined
-              }
-            />
-          </div>
         </div>
-        <Show when={!isCollapsed()}>
-          <div class="ml-3 border-l-2 border-white/10 pl-1">
-            {renderCategoryChannels(subcategory.id)}
-          </div>
+        <Show when={dropPos() === "after"}>
+          <DropIndicatorLine />
         </Show>
-      </div>
+      </>
     );
   };
 
@@ -494,53 +515,65 @@ const ChannelList: Component = () => {
     const subcategories = guildId ? getSubcategories(guildId, category.id) : [];
     const isCollapsed = () => isCategoryCollapsed(category.id);
     const draggable = canManageChannels();
+    const dropPos = () => getDropPosition(category.id, "category");
+    const dragging = () => isDragging(category.id);
 
     return (
-      <div
-        class={`mb-2 transition-all duration-150 ${getDropIndicatorClasses(category.id, "category")} ${
-          isDragging(category.id) ? "opacity-50" : ""
-        }`}
-        draggable={draggable}
-        onDragStart={(e) => handleDragStart(e, category.id, "category")}
-        onDragEnd={handleDragEnd}
-        onDragOver={(e) => handleCategoryDragOver(e, category.id, false)}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div class="flex items-center group">
-          <Show when={draggable}>
-            <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity">
-              <GripVertical class="w-3 h-3" />
+      <>
+        <Show when={dropPos() === "before"}>
+          <DropIndicatorLine />
+        </Show>
+        <div
+          class="mb-2 transition-all duration-150"
+          classList={{
+            "opacity-30 border border-dashed border-white/20 rounded-lg": dragging(),
+            "bg-accent-primary/10 ring-2 ring-accent-primary/30 rounded-lg": dropPos() === "inside",
+          }}
+          draggable={draggable}
+          onDragStart={(e) => handleDragStart(e, category.id, "category")}
+          onDragEnd={handleDragEnd}
+          onDragOver={(e) => handleCategoryDragOver(e, category.id, false)}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div class="flex items-center group">
+            <Show when={draggable}>
+              <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                <GripVertical class="w-3 h-3" />
+              </div>
+            </Show>
+            <div class="flex-1">
+              <CategoryHeader
+                id={category.id}
+                name={category.name}
+                collapsed={isCollapsed()}
+                hasUnread={categoryHasUnread(category.id)}
+                isSubcategory={false}
+                onToggle={() => toggleCategoryCollapse(category.id)}
+                onCreateChannel={
+                  canManageChannels()
+                    ? () => openCreateModal("text", category.id)
+                    : undefined
+                }
+              />
+            </div>
+          </div>
+          <Show when={!isCollapsed()}>
+            <div class="space-y-0.5 mt-0.5">
+              {/* Direct channels in this category */}
+              {renderCategoryChannels(category.id)}
+
+              {/* Subcategories */}
+              <For each={subcategories}>
+                {(subcategory) => renderSubcategory(subcategory)}
+              </For>
             </div>
           </Show>
-          <div class="flex-1">
-            <CategoryHeader
-              id={category.id}
-              name={category.name}
-              collapsed={isCollapsed()}
-              hasUnread={categoryHasUnread(category.id)}
-              isSubcategory={false}
-              onToggle={() => toggleCategoryCollapse(category.id)}
-              onCreateChannel={
-                canManageChannels()
-                  ? () => openCreateModal("text", category.id)
-                  : undefined
-              }
-            />
-          </div>
         </div>
-        <Show when={!isCollapsed()}>
-          <div class="space-y-0.5 mt-0.5">
-            {/* Direct channels in this category */}
-            {renderCategoryChannels(category.id)}
-
-            {/* Subcategories */}
-            <For each={subcategories}>
-              {(subcategory) => renderSubcategory(subcategory)}
-            </For>
-          </div>
+        <Show when={dropPos() === "after"}>
+          <DropIndicatorLine />
         </Show>
-      </div>
+      </>
     );
   };
 
