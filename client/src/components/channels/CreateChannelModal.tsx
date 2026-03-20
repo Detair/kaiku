@@ -7,6 +7,7 @@
 import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { X, Hash, Mic } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
+import { getCategory } from "@/stores/categories";
 import { Portal } from "solid-js/web";
 import { showToast } from "@/components/ui/Toast";
 
@@ -28,12 +29,22 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
     onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
   });
 
+  // If the category restricts channel type, lock the selector
+  const categoryTypeRestriction = () => {
+    if (!props.categoryId) return null;
+    const cat = getCategory(props.categoryId);
+    if (!cat || cat.category_type === "mixed") return null;
+    return cat.category_type as "text" | "voice";
+  };
+
   const [name, setName] = createSignal("");
   const [channelType, setChannelType] = createSignal<"text" | "voice">(
-    props.initialType || "text",
+    categoryTypeRestriction() ?? props.initialType ?? "text",
   );
   const [isCreating, setIsCreating] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+
+  const isTypeLocked = () => categoryTypeRestriction() !== null;
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
@@ -105,13 +116,16 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                 <div class="flex gap-3">
                   <button
                     type="button"
-                    onClick={() => setChannelType("text")}
+                    onClick={() => !isTypeLocked() && setChannelType("text")}
+                    disabled={isTypeLocked() && channelType() !== "text"}
                     class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
                     classList={{
                       "border-accent-primary bg-accent-primary/10":
                         channelType() === "text",
                       "border-white/10 hover:border-white/20":
-                        channelType() !== "text",
+                        channelType() !== "text" && !isTypeLocked(),
+                      "border-white/5 opacity-40 cursor-not-allowed":
+                        isTypeLocked() && channelType() !== "text",
                     }}
                   >
                     <div
@@ -129,13 +143,16 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setChannelType("voice")}
+                    onClick={() => !isTypeLocked() && setChannelType("voice")}
+                    disabled={isTypeLocked() && channelType() !== "voice"}
                     class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
                     classList={{
                       "border-accent-primary bg-accent-primary/10":
                         channelType() === "voice",
                       "border-white/10 hover:border-white/20":
-                        channelType() !== "voice",
+                        channelType() !== "voice" && !isTypeLocked(),
+                      "border-white/5 opacity-40 cursor-not-allowed":
+                        isTypeLocked() && channelType() !== "voice",
                     }}
                   >
                     <div

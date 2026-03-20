@@ -9,7 +9,8 @@
  */
 
 import { Component, createSignal, Show } from "solid-js";
-import { ChevronDown, ChevronRight, Plus, Settings } from "lucide-solid";
+import { ChevronDown, ChevronRight, Plus, Settings, Hash, Volume2 } from "lucide-solid";
+import type { CategoryType } from "@/lib/types";
 
 interface CategoryHeaderProps {
   /** Category ID */
@@ -22,6 +23,8 @@ interface CategoryHeaderProps {
   hasUnread: boolean;
   /** Whether this is a subcategory (nested under another category) */
   isSubcategory: boolean;
+  /** Category type restriction */
+  categoryType?: CategoryType;
   /** Callback when expand/collapse is toggled */
   onToggle: () => void;
   /** Callback when "create channel" button is clicked (only shown if provided) */
@@ -61,6 +64,14 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
       >
         {props.name}
       </span>
+
+      {/* Category type icon */}
+      <Show when={props.categoryType === "text"}>
+        <span title="Text only"><Hash class="w-3 h-3 text-text-muted shrink-0" /></span>
+      </Show>
+      <Show when={props.categoryType === "voice"}>
+        <span title="Voice only"><Volume2 class="w-3 h-3 text-text-muted shrink-0" /></span>
+      </Show>
 
       {/* Unread indicator - shown when collapsed and has unread */}
       <Show when={props.hasUnread && props.collapsed}>

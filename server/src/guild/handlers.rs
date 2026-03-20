@@ -807,6 +807,35 @@ pub async fn reorder_channels(
     let mut tx = state.db.begin().await?;
 
     for ch in &body.channels {
+        // Validate category type restriction when moving to a new category
+        if let Some(cat_id) = ch.category_id {
+            let cat_type: Option<(String,)> = sqlx::query_as(
+                "SELECT category_type::TEXT FROM channel_categories WHERE id = $1",
+            )
+            .bind(cat_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if let Some((cat_type,)) = cat_type {
+                if cat_type != "mixed" {
+                    let ch_type: Option<(String,)> = sqlx::query_as(
+                        "SELECT channel_type::TEXT FROM channels WHERE id = $1",
+                    )
+                    .bind(ch.id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+
+                    if let Some((ch_type,)) = ch_type {
+                        if cat_type != ch_type {
+                            return Err(GuildError::Validation(format!(
+                                "Cannot move {ch_type} channel to {cat_type}-only category"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         sqlx::query(
             r"
             UPDATE channels
