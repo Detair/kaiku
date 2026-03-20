@@ -1,6 +1,6 @@
 import {
   Component,
-  For,
+  Index,
   Show,
   createEffect,
   on,
@@ -95,42 +95,38 @@ const MessageList: Component<MessageListProps> = (props) => {
     },
     getScrollElement: () => containerRef ?? null,
     estimateSize: (index: number) => {
-      try {
-        const item = messagesWithCompact()[index];
-        if (!item?.message) return 96;
-        const msg = item.message;
-        const content = msg.content || "";
-        const attachments = msg.attachments || [];
+      const item = messagesWithCompact()[index];
+      if (!item?.message) return 96;
+      const msg = item.message;
+      const content = msg.content || "";
+      const attachments = msg.attachments || [];
 
-        // Base: header (avatar + name + timestamp) or compact (no header)
-        let estimate = item.isCompact ? 8 : 52;
+      // Base: header (avatar + name + timestamp) or compact (no header)
+      let estimate = item.isCompact ? 8 : 52;
 
-        // Content lines (~22px each), with code blocks handled separately
-        let contentHeight = 0;
-        const codeBlockRegex = /```[\s\S]*?```/g;
-        const codeBlocks = content.match(codeBlockRegex) || [];
-        const textOnly = content.replace(codeBlockRegex, "");
+      // Content lines (~22px each), with code blocks handled separately
+      let contentHeight = 0;
+      const codeBlockRegex = /```[\s\S]*?```/g;
+      const codeBlocks = content.match(codeBlockRegex) || [];
+      const textOnly = content.replace(codeBlockRegex, "");
 
-        for (const block of codeBlocks) {
-          contentHeight += block.split("\n").length * 20 + 32;
-        }
-        contentHeight += textOnly.split("\n").length * 22;
-
-        estimate += Math.max(contentHeight, 22);
-
-        // Attachments
-        for (const a of attachments) {
-          estimate += a.mime_type?.startsWith("image/") ? 320 : 48;
-        }
-
-        // Reactions (~36px) and thread indicator (~28px)
-        if (msg.reactions?.length) estimate += 36;
-        if (msg.thread_reply_count) estimate += 28;
-
-        return estimate + 16; // padding
-      } catch {
-        return 96;
+      for (const block of codeBlocks) {
+        contentHeight += block.split("\n").length * 20 + 32;
       }
+      contentHeight += textOnly.split("\n").length * 22;
+
+      estimate += Math.max(contentHeight, 22);
+
+      // Attachments
+      for (const a of attachments) {
+        estimate += a.mime_type?.startsWith("image/") ? 320 : 48;
+      }
+
+      // Reactions (~36px) and thread indicator (~28px)
+      if (msg.reactions?.length) estimate += 36;
+      if (msg.thread_reply_count) estimate += 28;
+
+      return estimate + 16; // padding
     },
     overscan: 5,
   });
@@ -474,26 +470,26 @@ const MessageList: Component<MessageListProps> = (props) => {
             position: "relative",
           }}
         >
-          <For each={virtualizer.getVirtualItems()}>
+          <Index each={virtualizer.getVirtualItems()}>
             {(virtualItem) => {
-              if (!virtualItem || virtualItem.index == null) return null;
-              const item = () => messagesWithCompact()[virtualItem.index];
+              const item = () => messagesWithCompact()[virtualItem().index];
               const isHighlighted = () =>
                 item()?.message.id != null &&
                 highlightedId() === item()?.message.id;
               return (
                 <div
                   role="listitem"
-                  data-index={virtualItem.index}
+                  data-index={virtualItem().index}
                   ref={(el) => {
-                    el.setAttribute("data-index", String(virtualItem.index));
-                    virtualizer.measureElement(el);
+                    queueMicrotask(() => virtualizer.measureElement(el));
                   }}
                   class={isHighlighted() ? "message-highlight" : undefined}
                   style={{
                     position: "absolute",
-                    top: `${virtualItem.start ?? 0}px`,
+                    top: 0,
+                    left: 0,
                     width: "100%",
+                    transform: `translateY(${virtualItem().start}px)`,
                   }}
                 >
                   {(() => {
@@ -510,7 +506,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                 </div>
               );
             }}
-          </For>
+          </Index>
         </div>
       </Show>
 

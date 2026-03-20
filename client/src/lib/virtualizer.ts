@@ -12,13 +12,15 @@ interface VirtualizerOptions {
   overscan?: number;
 }
 
-interface ScrollToIndexOptions {
-  align?: "start" | "center" | "end" | "auto";
-  behavior?: "auto" | "smooth";
-}
-
+/**
+ * Thin wrapper around TanStack Virtual's createVirtualizer for Solid.js.
+ *
+ * Returns the TanStack virtualizer directly to preserve Solid's reactive
+ * tracking. Previous versions wrapped methods in arrow functions which
+ * could break reactivity in edge cases.
+ */
 export function createVirtualizer(options: VirtualizerOptions) {
-  const virtualizer = createTanStackVirtualizer({
+  return createTanStackVirtualizer({
     get count() {
       return options.count;
     },
@@ -26,21 +28,4 @@ export function createVirtualizer(options: VirtualizerOptions) {
     estimateSize: options.estimateSize,
     overscan: options.overscan ?? 0,
   });
-
-  return {
-    getVirtualItems: (): VirtualItem[] => virtualizer.getVirtualItems()?.filter(Boolean) ?? [],
-    getTotalSize: (): number => virtualizer.getTotalSize(),
-    getScrollElement: options.getScrollElement,
-    scrollToIndex: (
-      index: number,
-      scrollOptions: ScrollToIndexOptions = {},
-    ) => {
-      virtualizer.scrollToIndex(index, scrollOptions);
-    },
-    measureElement: (node: Element | null | undefined) => {
-      if (node) {
-        virtualizer.measureElement(node as HTMLElement);
-      }
-    },
-  };
 }
