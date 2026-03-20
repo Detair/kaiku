@@ -16,6 +16,7 @@ import {
   Bot,
   Settings,
   BarChart3,
+  LayoutList,
 } from "lucide-solid";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
@@ -27,6 +28,7 @@ import EmojisTab from "./EmojisTab";
 import BotsTab from "./BotsTab";
 import SafetyTab from "./SafetyTab";
 import UsageTab from "./UsageTab";
+import CategoriesTab from "./CategoriesTab";
 import RoleEditor from "./RoleEditor";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
@@ -41,6 +43,7 @@ type TabId =
   | "general"
   | "invites"
   | "members"
+  | "categories"
   | "roles"
   | "emojis"
   | "bots"
@@ -97,6 +100,15 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
     );
 
   const canManageBots = () => canManageGuild();
+
+  const canManageChannels = () =>
+    isOwner() ||
+    memberHasPermission(
+      props.guildId,
+      authState.user?.id || "",
+      isOwner(),
+      PermissionBits.MANAGE_CHANNELS,
+    );
 
   const handleBackdropClick = (e: MouseEvent) => {
     if (e.target === e.currentTarget) {
@@ -191,6 +203,21 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               <Users class="w-4 h-4" />
               Members
             </button>
+            <Show when={canManageChannels()}>
+              <button
+                onClick={() => setActiveTab("categories")}
+                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
+                classList={{
+                  "text-accent-primary border-b-2 border-accent-primary":
+                    activeTab() === "categories",
+                  "text-text-secondary hover:text-text-primary":
+                    activeTab() !== "categories",
+                }}
+              >
+                <LayoutList class="w-4 h-4" />
+                Categories
+              </button>
+            </Show>
             <button
               onClick={() => setActiveTab("usage")}
               class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
@@ -277,6 +304,9 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </Show>
             <Show when={activeTab() === "members"}>
               <MembersTab guildId={props.guildId} isOwner={isOwner()} />
+            </Show>
+            <Show when={activeTab() === "categories" && canManageChannels()}>
+              <CategoriesTab guildId={props.guildId} />
             </Show>
             <Show when={activeTab() === "usage"}>
               <UsageTab guildId={props.guildId} />
