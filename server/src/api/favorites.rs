@@ -197,7 +197,7 @@ pub async fn list_favorites(
         SELECT
             fc.channel_id,
             c.name as channel_name,
-            c.channel_type,
+            c.channel_type::TEXT as channel_type,
             fc.guild_id,
             g.name as guild_name,
             g.icon_url as guild_icon,
