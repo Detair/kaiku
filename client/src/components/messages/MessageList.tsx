@@ -469,7 +469,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                   data-index={virtualItem.index}
                   ref={(el) => {
                     el.setAttribute("data-index", String(virtualItem.index));
-                    virtualizer.measureElement(el);
+                    queueMicrotask(() => virtualizer.measureElement(el));
                   }}
                   class={isHighlighted() ? "message-highlight" : undefined}
                   style={{

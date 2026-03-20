@@ -225,7 +225,7 @@ const Main: Component = () => {
             {/* Channel Chat */}
             <Match when={channel()}>
               <div class="flex flex-1 min-w-0 h-full overflow-hidden">
-                <div class="flex-1 flex flex-col min-w-0">
+                <div class="flex-1 flex flex-col min-w-0 min-h-0">
                   {/* Channel Header */}
                   <header class="h-12 px-4 flex items-center border-b border-white/5 bg-surface-layer1 shadow-sm">
                     <Show
