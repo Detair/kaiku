@@ -353,25 +353,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     try {
-      // Count transceivers BEFORE applying the offer
-      const countBefore = this.peerConnection.getTransceivers().length;
-
       // Set remote description
       await this.peerConnection.setRemoteDescription({
         type: "offer",
         sdp,
       });
 
-      // Add pending screen share tracks to NEW transceivers created by the offer.
-      // New transceivers appear at the end of the list after setRemoteDescription.
-      if (this.pendingScreenShares.size > 0) {
-        const allTransceivers = this.peerConnection.getTransceivers();
-        const newTransceivers = allTransceivers.slice(countBefore);
-        console.log(`[BrowserVoiceAdapter] New transceivers from offer: ${newTransceivers.length}, pending shares: ${this.pendingScreenShares.size}`);
-        this.addPendingScreenSharesTo(newTransceivers);
-      }
-
-      // Create answer
+      // Create answer — tracks already added via addTrack() are included
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
 
@@ -797,16 +785,27 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.handleScreenShareEnded(streamId);
       };
 
-      // Don't add to peer connection yet — store as pending.
-      // The track will be added in handleOffer() after the server sends
-      // a renegotiation offer with the recv transceiver for this stream.
-      const quality = options?.quality ?? "medium";
-      this.pendingScreenShares.set(streamId, { stream, quality });
+      // Add track directly to peer connection. The server will add a
+      // recv transceiver and renegotiate — the browser handles matching
+      // the track to the right transceiver via the offer/answer exchange.
+      const videoSender = this.peerConnection.addTrack(videoTrack, stream);
 
-      console.log("[BrowserVoiceAdapter] Screen share captured (pending)", {
+      // Add audio track if present
+      const audioTrack = stream.getAudioTracks()[0];
+      let audioSender: RTCRtpSender | null = null;
+      if (audioTrack) {
+        audioSender = this.peerConnection.addTrack(audioTrack, stream);
+      }
+
+      this.screenShares.set(streamId, {
+        stream,
+        videoSender,
+        audioSender,
+      });
+
+      console.warn("[BrowserVoiceAdapter] Screen share track added directly", {
         streamId,
-        hasAudio: !!stream.getAudioTracks().length,
-        quality,
+        hasAudio: !!audioTrack,
       });
 
       return { ok: true, value: undefined };
@@ -891,65 +890,6 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         error: { type: "unknown", message: "Screen share failed unexpectedly" },
       };
     }
-  }
-
-  /**
-   * Add pending screen share tracks to specific transceivers.
-   * Uses the NEW transceivers that appeared after setRemoteDescription
-   * (they're at the end of the transceiver list).
-   */
-  private addPendingScreenSharesTo(newTransceivers: RTCRtpTransceiver[]): void {
-    if (!this.peerConnection) return;
-
-    let tIdx = 0;
-    for (const [streamId, pending] of this.pendingScreenShares) {
-      const videoTrack = pending.stream.getVideoTracks()[0];
-      if (!videoTrack) continue;
-
-      // Find the next new video transceiver
-      let transceiver: RTCRtpTransceiver | undefined;
-      while (tIdx < newTransceivers.length) {
-        const t = newTransceivers[tIdx++];
-        // The server creates dummy VP8 tracks — check if this is a video transceiver
-        // by looking at the SDP mid or just try it (first new ones are video for screen share)
-        transceiver = t;
-        break;
-      }
-
-      if (!transceiver) {
-        console.warn("[BrowserVoiceAdapter] No new transceiver for pending screen share:", streamId);
-        continue;
-      }
-
-      // Set direction to sendrecv and replace the dummy/null track with our real track
-      transceiver.direction = "sendrecv";
-      transceiver.sender.replaceTrack(videoTrack).then(() => {
-        console.log("[BrowserVoiceAdapter] Screen share track set on transceiver:", streamId);
-      }).catch((err) => {
-        console.error("[BrowserVoiceAdapter] Failed to set screen share track:", err);
-      });
-
-      // Add audio track if present (as a separate track)
-      const audioTrack = pending.stream.getAudioTracks()[0];
-      let audioSender: RTCRtpSender | null = null;
-      if (audioTrack && tIdx < newTransceivers.length) {
-        const audioTransceiver = newTransceivers[tIdx++];
-        audioTransceiver.direction = "sendrecv";
-        audioTransceiver.sender.replaceTrack(audioTrack).catch(console.error);
-        audioSender = audioTransceiver.sender;
-      }
-
-      // Move from pending to active
-      this.screenShares.set(streamId, {
-        stream: pending.stream,
-        videoSender: transceiver.sender,
-        audioSender,
-      });
-
-      console.log("[BrowserVoiceAdapter] Pending screen share activated:", streamId);
-    }
-
-    this.pendingScreenShares.clear();
   }
 
   async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
