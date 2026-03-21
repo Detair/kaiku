@@ -28,6 +28,7 @@ import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import ThreadSidebar from "@/components/messages/ThreadSidebar";
+import VoiceChannelView from "@/components/voice/VoiceChannelView";
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";
@@ -261,18 +262,23 @@ const Main: Component = () => {
                     </div>
                   </header>
 
-                  {/* Messages */}
-                  <MessageList channelId={channel()!.id} />
-
-                  {/* Typing Indicator */}
-                  <TypingIndicator channelId={channel()!.id} />
-
-                  {/* Message Input */}
-                  <MessageInput
-                    channelId={channel()!.id}
-                    channelName={channel()!.name}
-                    guildId={guildsState.activeGuildId ?? undefined}
-                  />
+                  <Show
+                    when={channel()?.channel_type !== "voice"}
+                    fallback={
+                      <VoiceChannelView
+                        channelId={channel()!.id}
+                        channelName={channel()!.name}
+                      />
+                    }
+                  >
+                    <MessageList channelId={channel()!.id} />
+                    <TypingIndicator channelId={channel()!.id} />
+                    <MessageInput
+                      channelId={channel()!.id}
+                      channelName={channel()!.name}
+                      guildId={guildsState.activeGuildId ?? undefined}
+                    />
+                  </Show>
                 </div>
 
                 {/* Thread Sidebar */}
