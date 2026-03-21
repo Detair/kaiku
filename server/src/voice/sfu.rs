@@ -771,6 +771,7 @@ impl SfuServer {
                                         .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
                                             channel_id: cid,
                                             candidate: candidate_str,
+                                            pc_type: "publisher".to_string(),
                                         }))
                                         .await
                                     {

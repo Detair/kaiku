@@ -56,9 +56,20 @@ pub async fn handle_voice_event(
         ClientEvent::VoiceAnswer { channel_id, sdp } => {
             handle_answer(sfu, user_id, channel_id, &sdp).await
         }
+        ClientEvent::VoicePublisherOffer { .. } => {
+            // TODO(dual-pc): Will be handled in Task 4
+            debug!("VoicePublisherOffer received but not yet implemented");
+            Ok(())
+        }
+        ClientEvent::VoiceSubscriberAnswer { .. } => {
+            // TODO(dual-pc): Will be handled in Task 4
+            debug!("VoiceSubscriberAnswer received but not yet implemented");
+            Ok(())
+        }
         ClientEvent::VoiceIceCandidate {
             channel_id,
             candidate,
+            pc_type: _,
         } => handle_ice_candidate(sfu, user_id, channel_id, &candidate).await,
         ClientEvent::VoiceMute { channel_id } => handle_mute(sfu, user_id, channel_id, true).await,
         ClientEvent::VoiceUnmute { channel_id } => {

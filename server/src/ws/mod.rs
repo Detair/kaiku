@@ -103,6 +103,11 @@ fn extract_token_from_protocol(headers: &HeaderMap) -> Option<String> {
         })
 }
 
+/// Default `pc_type` for backward compatibility with old clients.
+fn default_pc_type() -> String {
+    "publisher".to_string()
+}
+
 /// Client-to-server events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -148,12 +153,29 @@ pub enum ClientEvent {
         /// SDP answer.
         sdp: String,
     },
+    /// Client sends SDP offer for publisher `PeerConnection` (mic, screen, webcam tracks)
+    VoicePublisherOffer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP offer.
+        sdp: String,
+    },
+    /// Client sends SDP answer for subscriber `PeerConnection` (receiving other users' tracks)
+    VoiceSubscriberAnswer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP answer.
+        sdp: String,
+    },
     /// Send ICE candidate to server
     VoiceIceCandidate {
         /// Voice channel.
         channel_id: Uuid,
         /// ICE candidate string.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
+        #[serde(default = "default_pc_type")]
+        pc_type: String,
     },
     /// Mute self in voice channel
     VoiceMute {
@@ -259,6 +281,8 @@ impl ClientEvent {
             Self::VoiceJoin { .. } => "voice_join",
             Self::VoiceLeave { .. } => "voice_leave",
             Self::VoiceAnswer { .. } => "voice_answer",
+            Self::VoicePublisherOffer { .. } => "voice_publisher_offer",
+            Self::VoiceSubscriberAnswer { .. } => "voice_subscriber_answer",
             Self::VoiceIceCandidate { .. } => "voice_ice_candidate",
             Self::VoiceMute { .. } => "voice_mute",
             Self::VoiceUnmute { .. } => "voice_unmute",
@@ -428,12 +452,28 @@ pub enum ServerEvent {
         /// SDP offer.
         sdp: String,
     },
+    /// Server sends SDP answer to client's publisher offer
+    VoicePublisherAnswer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP answer.
+        sdp: String,
+    },
+    /// Server sends SDP offer for subscriber `PeerConnection`
+    VoiceSubscriberOffer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP offer.
+        sdp: String,
+    },
     /// ICE candidate from server
     VoiceIceCandidate {
         /// Voice channel.
         channel_id: Uuid,
         /// ICE candidate string.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
+        pc_type: String,
     },
     /// User joined voice channel
     VoiceUserJoined {
@@ -1567,6 +1607,8 @@ pub async fn handle_client_message(
         ClientEvent::VoiceJoin { .. }
         | ClientEvent::VoiceLeave { .. }
         | ClientEvent::VoiceAnswer { .. }
+        | ClientEvent::VoicePublisherOffer { .. }
+        | ClientEvent::VoiceSubscriberAnswer { .. }
         | ClientEvent::VoiceIceCandidate { .. }
         | ClientEvent::VoiceMute { .. }
         | ClientEvent::VoiceUnmute { .. }
@@ -2083,4 +2125,92 @@ async fn get_friends_presence(
     .await?;
 
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_publisher_offer_serialization() {
+        let event = ClientEvent::VoicePublisherOffer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_publisher_offer"));
+        let parsed: ClientEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientEvent::VoicePublisherOffer { sdp, .. } => assert_eq!(sdp, "v=0\r\n"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_subscriber_answer_serialization() {
+        let event = ClientEvent::VoiceSubscriberAnswer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_subscriber_answer"));
+        let parsed: ClientEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientEvent::VoiceSubscriberAnswer { sdp, .. } => assert_eq!(sdp, "v=0\r\n"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_subscriber_offer_serialization() {
+        let event = ServerEvent::VoiceSubscriberOffer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_subscriber_offer"));
+    }
+
+    #[test]
+    fn test_publisher_answer_serialization() {
+        let event = ServerEvent::VoicePublisherAnswer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_publisher_answer"));
+    }
+
+    #[test]
+    fn test_ice_candidate_pc_type_default() {
+        // Old clients send without pc_type — should default to "publisher"
+        let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:..."}"#;
+        let parsed: ClientEvent = serde_json::from_str(json).unwrap();
+        match parsed {
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, "publisher"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_ice_candidate_pc_type_explicit() {
+        // New clients send with explicit pc_type
+        let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:...","pc_type":"subscriber"}"#;
+        let parsed: ClientEvent = serde_json::from_str(json).unwrap();
+        match parsed {
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, "subscriber"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_server_ice_candidate_includes_pc_type() {
+        let event = ServerEvent::VoiceIceCandidate {
+            channel_id: Uuid::nil(),
+            candidate: "candidate:...".to_string(),
+            pc_type: "subscriber".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"pc_type\":\"subscriber\""));
+    }
 }
