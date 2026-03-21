@@ -24,32 +24,33 @@ const qualityTextColors: Record<QualityLevel, string> = {
 };
 
 export const QualityIndicator: Component<QualityIndicatorProps> = (props) => {
-  const isLoading = () => props.metrics === null || props.metrics === "unknown";
   const metrics = () =>
     typeof props.metrics === "object" ? props.metrics : null;
 
   return (
     <div class={`inline-flex items-center ${props.class ?? ""}`}>
       <Show
-        when={!isLoading()}
+        when={metrics()}
         fallback={
           <div class="w-2 h-2 rounded-full bg-text-secondary animate-pulse" />
         }
       >
-        <Show
-          when={props.mode === "circle"}
-          fallback={
-            <span
-              class={`text-xs font-mono ${qualityTextColors[metrics()!.quality]}`}
-            >
-              {metrics()!.latency}ms
-            </span>
-          }
-        >
-          <div
-            class={`w-2 h-2 rounded-full ${qualityColors[metrics()!.quality]}`}
-          />
-        </Show>
+        {(m) => (
+          <Show
+            when={props.mode === "circle"}
+            fallback={
+              <span
+                class={`text-xs font-mono ${qualityTextColors[m().quality]}`}
+              >
+                {m().latency}ms
+              </span>
+            }
+          >
+            <div
+              class={`w-2 h-2 rounded-full ${qualityColors[m().quality]}`}
+            />
+          </Show>
+        )}
       </Show>
     </div>
   );
