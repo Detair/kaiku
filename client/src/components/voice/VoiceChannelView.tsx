@@ -7,9 +7,10 @@
  */
 
 import { Component, For, Show, createMemo } from "solid-js";
-import { Users, MonitorPlay } from "lucide-solid";
-import { voiceState, getParticipants, joinVoice, getParticipantMetrics } from "@/stores/voice";
+import { Users, MonitorPlay, MonitorOff } from "lucide-solid";
+import { voiceState, getParticipants, joinVoice, getParticipantMetrics, stopScreenShare } from "@/stores/voice";
 import { startViewing } from "@/stores/screenShareViewer";
+import { authState } from "@/stores/auth";
 import VoiceControls from "./VoiceControls";
 import { QualityIndicator } from "./QualityIndicator";
 import { showToast } from "@/components/ui/Toast";
@@ -139,25 +140,37 @@ const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
               </h3>
               <div class="flex flex-wrap gap-3">
                 <For each={screenShares()}>
-                  {(share) => (
-                    <button
-                      onClick={() => startViewing(share.stream_id)}
-                      class="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-layer2 hover:bg-surface-highlight text-text-primary text-sm transition-colors"
-                    >
-                      <MonitorPlay class="w-4 h-4 text-text-secondary" />
-                      {share.username}'s screen
-                      <Show
-                        when={
-                          share.source_label &&
-                          share.source_label !== "Screen"
-                        }
-                      >
-                        <span class="text-text-secondary">
-                          ({share.source_label})
-                        </span>
-                      </Show>
-                    </button>
-                  )}
+                  {(share) => {
+                    const isOwn = () => share.user_id === authState.user?.id;
+                    return (
+                      <div class="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            if (!isOwn()) startViewing(share.stream_id);
+                          }}
+                          class="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-layer2 hover:bg-surface-highlight text-text-primary text-sm transition-colors"
+                          classList={{ "cursor-default": isOwn() }}
+                        >
+                          <MonitorPlay class="w-4 h-4 text-text-secondary" />
+                          {isOwn() ? "Your screen" : `${share.username}'s screen`}
+                          <Show
+                            when={share.source_label && share.source_label !== "Screen"}
+                          >
+                            <span class="text-text-secondary">({share.source_label})</span>
+                          </Show>
+                        </button>
+                        <Show when={isOwn()}>
+                          <button
+                            onClick={() => stopScreenShare(share.stream_id)}
+                            class="p-2 rounded-lg bg-accent-danger/20 text-text-primary hover:bg-accent-danger/30 transition-colors"
+                            title="Stop sharing"
+                          >
+                            <MonitorOff class="w-4 h-4" />
+                          </button>
+                        </Show>
+                      </div>
+                    );
+                  }}
                 </For>
               </div>
             </div>

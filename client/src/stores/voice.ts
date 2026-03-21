@@ -776,16 +776,6 @@ export async function startScreenShare(
   }
 
   setVoiceState({ screenSharing: true });
-
-  // Register local screen share track so the user can view their own share
-  const videoTrack = adapter.getScreenShareTrack(streamId);
-  if (videoTrack) {
-    const { currentUser } = await import("@/stores/auth");
-    const user = currentUser();
-    const { addAvailableTrack } = await import("@/stores/screenShareViewer");
-    addAvailableTrack(streamId, videoTrack, user?.id || "", user?.username || "You", sourceLabel);
-  }
-
   return { ok: true };
 }
 
