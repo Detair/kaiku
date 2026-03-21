@@ -152,12 +152,22 @@ const MessageList: Component<MessageListProps> = (props) => {
   const scrollToBottom = (smooth = true) => {
     if (!containerRef) return;
     // Use direct DOM scroll — bypasses virtualizer measurement timing issues
+    // Double rAF ensures the virtualizer has updated scrollHeight
     containerRef.scrollTo({
       top: containerRef.scrollHeight,
       behavior: smooth ? "smooth" : "auto",
     });
     setHasNewMessages(false);
     setNewMessageCount(0);
+    // Verify scroll landed at bottom after DOM settles — if not, retry
+    requestAnimationFrame(() => {
+      if (containerRef && !checkIfAtBottom()) {
+        containerRef.scrollTo({
+          top: containerRef.scrollHeight,
+          behavior: "auto",
+        });
+      }
+    });
   };
 
   // --- Scroll to a specific message and highlight it ---
