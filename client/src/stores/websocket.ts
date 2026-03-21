@@ -408,18 +408,25 @@ export async function initWebSocket(): Promise<void> {
       }),
     );
 
-    // Voice events (Tauri → frontend parity with browser mode)
+    // Voice events (Tauri → frontend parity with browser mode) — dual PeerConnection
     pending.push(
-      listen<{ channel_id: string; sdp: string }>("ws:voice_offer", async (event) => {
-        await handleVoiceOffer(event.payload.channel_id, event.payload.sdp);
+      listen<{ channel_id: string; sdp: string }>("ws:voice_publisher_answer", async (event) => {
+        await handleVoicePublisherAnswer(event.payload.channel_id, event.payload.sdp);
       }),
     );
 
     pending.push(
-      listen<{ channel_id: string; candidate: string }>("ws:voice_ice_candidate", async (event) => {
+      listen<{ channel_id: string; sdp: string }>("ws:voice_subscriber_offer", async (event) => {
+        await handleVoiceSubscriberOffer(event.payload.channel_id, event.payload.sdp);
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; candidate: string; pc_type?: string }>("ws:voice_ice_candidate", async (event) => {
         await handleVoiceIceCandidate(
           event.payload.channel_id,
           event.payload.candidate,
+          event.payload.pc_type || "publisher",
         );
       }),
     );
@@ -1047,17 +1054,25 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       updateUserCustomStatus(event.user_id, event.custom_status);
       break;
 
-    case "voice_offer":
+    case "voice_publisher_answer":
       console.log(
-        "[WebSocket] Handling voice_offer for channel:",
+        "[WebSocket] Handling voice_publisher_answer for channel:",
         event.channel_id,
       );
-      await handleVoiceOffer(event.channel_id, event.sdp);
+      await handleVoicePublisherAnswer(event.channel_id, event.sdp);
+      break;
+
+    case "voice_subscriber_offer":
+      console.log(
+        "[WebSocket] Handling voice_subscriber_offer for channel:",
+        event.channel_id,
+      );
+      await handleVoiceSubscriberOffer(event.channel_id, event.sdp);
       break;
 
     case "voice_ice_candidate":
       // ICE candidates must be processed immediately for NAT traversal
-      await handleVoiceIceCandidate(event.channel_id, event.candidate);
+      await handleVoiceIceCandidate(event.channel_id, event.candidate, event.pc_type || "publisher");
       break;
 
     case "voice_user_joined":
@@ -1678,44 +1693,59 @@ export function isConnected(): boolean {
   return wsState.status === "connected";
 }
 
-// Voice event handlers
+// Voice event handlers — dual PeerConnection model
 
-async function handleVoiceOffer(channelId: string, sdp: string): Promise<void> {
+async function handleVoicePublisherAnswer(channelId: string, sdp: string): Promise<void> {
   try {
-    // Use getVoiceAdapter() for faster access (offer should arrive after join)
     const { getVoiceAdapter } = await import("@/lib/webrtc");
     const adapter = getVoiceAdapter();
 
     if (!adapter) {
-      console.error("[WebSocket] No voice adapter available for offer");
+      console.error("[WebSocket] No voice adapter available for publisher answer");
       return;
     }
 
-    const result = await adapter.handleOffer(channelId, sdp);
-
-    if (result.ok) {
-      // Send answer back to server
-      await tauri.wsSend({
-        type: "voice_answer",
-        channel_id: channelId,
-        sdp: result.value,
-      });
-      console.log("[WebSocket] Voice answer sent successfully");
-    } else {
-      console.error("Failed to handle voice offer:", JSON.stringify(result.error));
-      // If connection failed and retriable, the adapter will handle reconnection
-      if ((result.error as any)?.retriable) {
-        console.log("[WebSocket] Voice offer failed but retriable — will retry on next offer");
-      }
+    const result = await adapter.handlePublisherAnswer(channelId, sdp);
+    if (!result.ok) {
+      console.error("[WS] handlePublisherAnswer failed:", result.error);
     }
   } catch (err) {
-    console.error("Error handling voice offer:", err);
+    console.error("Error handling publisher answer:", err);
+  }
+}
+
+async function handleVoiceSubscriberOffer(channelId: string, sdp: string): Promise<void> {
+  try {
+    const { getVoiceAdapter } = await import("@/lib/webrtc");
+    const adapter = getVoiceAdapter();
+
+    if (!adapter) {
+      console.error("[WebSocket] No voice adapter available for subscriber offer");
+      return;
+    }
+
+    const result = await adapter.handleSubscriberOffer(channelId, sdp);
+    if (!result.ok) {
+      console.error("[WS] handleSubscriberOffer failed:", result.error);
+      return;
+    }
+
+    // Send subscriber answer back to server
+    await tauri.wsSend({
+      type: "voice_subscriber_answer",
+      channel_id: channelId,
+      sdp: result.value,
+    });
+    console.log("[WebSocket] Subscriber answer sent successfully");
+  } catch (err) {
+    console.error("Error handling subscriber offer:", err);
   }
 }
 
 async function handleVoiceIceCandidate(
   channelId: string,
   candidate: string,
+  pcType: string = "publisher",
 ): Promise<void> {
   const startTime = performance.now();
 
@@ -1729,15 +1759,15 @@ async function handleVoiceIceCandidate(
       return;
     }
 
-    const result = await adapter.handleIceCandidate(channelId, candidate);
+    const result = await adapter.handleIceCandidate(channelId, candidate, pcType);
 
     const elapsed = performance.now() - startTime;
     console.log(
-      `[WebSocket] ICE candidate processed in ${elapsed.toFixed(2)}ms`,
+      `[WebSocket] ICE candidate (${pcType}) processed in ${elapsed.toFixed(2)}ms`,
     );
 
     if (!result.ok) {
-      console.error("Failed to handle ICE candidate:", result.error);
+      console.error(`Failed to handle ICE candidate (${pcType}):`, result.error);
     }
   } catch (err) {
     console.error("Error handling ICE candidate:", err);

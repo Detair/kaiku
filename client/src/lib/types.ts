@@ -487,8 +487,9 @@ export type ServerEvent =
   | { type: "presence_update"; user_id: string; status: UserStatus }
   | { type: "rich_presence_update"; user_id: string; activity: Activity | null }
   | { type: "custom_status_update"; user_id: string; custom_status: CustomStatus | null }
-  | { type: "voice_offer"; channel_id: string; sdp: string }
-  | { type: "voice_ice_candidate"; channel_id: string; candidate: string }
+  | { type: "voice_publisher_answer"; channel_id: string; sdp: string }
+  | { type: "voice_subscriber_offer"; channel_id: string; sdp: string }
+  | { type: "voice_ice_candidate"; channel_id: string; candidate: string; pc_type?: string }
   | {
       type: "voice_user_joined";
       channel_id: string;

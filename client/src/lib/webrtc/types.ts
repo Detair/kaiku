@@ -202,11 +202,13 @@ export interface VoiceAdapter {
   setDeafen(deafened: boolean): Promise<VoiceResult<void>>;
   setNoiseSuppression(enabled: boolean): Promise<VoiceResult<void>>;
 
-  // Signaling (called by WebSocket store)
-  handleOffer(channelId: string, sdp: string): Promise<VoiceResult<string>>; // Returns answer SDP
+  // Signaling (called by WebSocket store) — dual PeerConnection model
+  handlePublisherAnswer(channelId: string, sdp: string): Promise<VoiceResult<void>>;
+  handleSubscriberOffer(channelId: string, sdp: string): Promise<VoiceResult<string>>; // Returns answer SDP
   handleIceCandidate(
     channelId: string,
     candidate: string,
+    pcType?: string,
   ): Promise<VoiceResult<void>>;
 
   // State
