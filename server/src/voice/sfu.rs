@@ -102,9 +102,9 @@ impl Room {
         // remove it and replace with the new one instead of rejecting
         if let Some(old_peer) = peers.remove(&peer.user_id) {
             tracing::info!(user_id = %peer.user_id, "Replacing stale voice peer");
-            // Close old peer connection
-            if let Err(e) = old_peer.peer_connection.close().await {
-                tracing::warn!(user_id = %peer.user_id, error = %e, "Failed to close stale peer connection");
+            // Close old peer connections
+            if let Err(e) = old_peer.close().await {
+                tracing::warn!(user_id = %peer.user_id, error = %e, "Failed to close stale peer connections");
             }
         }
 
@@ -520,7 +520,7 @@ impl SfuServer {
         }
     }
 
-    /// Create a new peer connection for a user.
+    /// Create a new peer with two PeerConnections (publisher + subscriber).
     pub async fn create_peer(
         &self,
         user_id: Uuid,
@@ -530,51 +530,95 @@ impl SfuServer {
         signal_tx: mpsc::Sender<OutboundMsg>,
     ) -> Result<Arc<Peer>, VoiceError> {
         let config = self.rtc_config();
-        let peer = Peer::new(
-            user_id,
-            username,
-            display_name,
-            channel_id,
-            &self.api,
-            config,
-            signal_tx,
-        )
-        .await?;
-        let peer = Arc::new(peer);
 
-        // Add recvonly transceivers
-        // Always add Audio (mic)
-        peer.add_recv_transceiver(RTPCodecType::Audio).await?;
-        // Always add Video (screen) to prepare m-lines
-        peer.add_recv_transceiver(RTPCodecType::Video).await?;
+        // Create two PeerConnections: one for publishing, one for subscribing
+        let publisher_pc = Arc::new(
+            self.api
+                .new_peer_connection(config.clone())
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
+        );
+        let subscriber_pc = Arc::new(
+            self.api
+                .new_peer_connection(config)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
+        );
 
-        // Set up connection state handler
-        let peer_weak = Arc::downgrade(&peer);
-        let uid = user_id;
-        let cid = channel_id;
+        let peer = Arc::new(
+            Peer::new(
+                user_id,
+                username,
+                display_name,
+                channel_id,
+                publisher_pc.clone(),
+                subscriber_pc.clone(),
+                signal_tx,
+            )
+            .await,
+        );
 
-        peer.peer_connection
-            .on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
-                let pw = peer_weak.clone();
-                Box::pin(async move {
-                    debug!(
-                        user_id = %uid,
-                        channel_id = %cid,
-                        state = ?state,
-                        "Peer connection state changed"
-                    );
+        // Set up connection state handler for publisher PC
+        {
+            let peer_weak = Arc::downgrade(&peer);
+            let uid = user_id;
+            let cid = channel_id;
+            publisher_pc.on_peer_connection_state_change(Box::new(
+                move |state: RTCPeerConnectionState| {
+                    let pw = peer_weak.clone();
+                    Box::pin(async move {
+                        debug!(
+                            user_id = %uid,
+                            channel_id = %cid,
+                            pc = "publisher",
+                            state = ?state,
+                            "Peer connection state changed"
+                        );
 
-                    match state {
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            if let Some(_peer) = pw.upgrade() {
-                                // Peer will be cleaned up by the handler
-                                warn!(user_id = %uid, "Peer connection failed/disconnected");
+                        match state {
+                            RTCPeerConnectionState::Failed
+                            | RTCPeerConnectionState::Disconnected => {
+                                if let Some(_peer) = pw.upgrade() {
+                                    warn!(user_id = %uid, pc = "publisher", "Peer connection failed/disconnected");
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
-                    }
-                })
-            }));
+                    })
+                },
+            ));
+        }
+
+        // Set up connection state handler for subscriber PC
+        {
+            let peer_weak = Arc::downgrade(&peer);
+            let uid = user_id;
+            let cid = channel_id;
+            subscriber_pc.on_peer_connection_state_change(Box::new(
+                move |state: RTCPeerConnectionState| {
+                    let pw = peer_weak.clone();
+                    Box::pin(async move {
+                        debug!(
+                            user_id = %uid,
+                            channel_id = %cid,
+                            pc = "subscriber",
+                            state = ?state,
+                            "Peer connection state changed"
+                        );
+
+                        match state {
+                            RTCPeerConnectionState::Failed
+                            | RTCPeerConnectionState::Disconnected => {
+                                if let Some(_peer) = pw.upgrade() {
+                                    warn!(user_id = %uid, pc = "subscriber", "Peer connection failed/disconnected");
+                                }
+                            }
+                            _ => {}
+                        }
+                    })
+                },
+            ));
+        }
 
         Ok(peer)
     }
@@ -586,7 +630,7 @@ impl SfuServer {
         let user_id = peer.user_id;
         let channel_id = peer.channel_id;
 
-        peer.peer_connection
+        peer.publisher_pc
             .on_track(Box::new(move |track, _receiver, _transceiver| {
                 let pw = peer_weak.clone();
                 let rw = room_weak.clone();
@@ -752,92 +796,154 @@ impl SfuServer {
             }));
     }
 
-    /// Set up ICE candidate handler for a peer.
+    /// Set up ICE candidate handlers for both publisher and subscriber PCs.
     pub fn setup_ice_handler(&self, peer: &Arc<Peer>) {
-        let signal_tx = peer.signal_tx.clone();
-        let channel_id = peer.channel_id;
+        // Publisher ICE handler
+        {
+            let signal_tx = peer.signal_tx.clone();
+            let channel_id = peer.channel_id;
 
-        peer.peer_connection
-            .on_ice_candidate(Box::new(move |candidate| {
-                let tx = signal_tx.clone();
-                let cid = channel_id;
+            peer.publisher_pc
+                .on_ice_candidate(Box::new(move |candidate| {
+                    let tx = signal_tx.clone();
+                    let cid = channel_id;
 
-                Box::pin(async move {
-                    if let Some(c) = candidate {
-                        match c.to_json() {
-                            Ok(json) => {
-                                if let Ok(candidate_str) = serde_json::to_string(&json) {
-                                    if let Err(e) = tx
-                                        .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
-                                            channel_id: cid,
-                                            candidate: candidate_str,
-                                            pc_type: "publisher".to_string(),
-                                        }))
-                                        .await
-                                    {
-                                        tracing::error!(
-                                            channel_id = %cid,
-                                            error = %e,
-                                            "Failed to send ICE candidate - connection may fail"
-                                        );
+                    Box::pin(async move {
+                        if let Some(c) = candidate {
+                            match c.to_json() {
+                                Ok(json) => {
+                                    if let Ok(candidate_str) = serde_json::to_string(&json) {
+                                        if let Err(e) = tx
+                                            .send(OutboundMsg::Event(
+                                                ServerEvent::VoiceIceCandidate {
+                                                    channel_id: cid,
+                                                    candidate: candidate_str,
+                                                    pc_type: "publisher".to_string(),
+                                                },
+                                            ))
+                                            .await
+                                        {
+                                            tracing::error!(
+                                                channel_id = %cid,
+                                                pc = "publisher",
+                                                error = %e,
+                                                "Failed to send ICE candidate - connection may fail"
+                                            );
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Failed to serialize ICE candidate");
+                                Err(e) => {
+                                    warn!(pc = "publisher", error = %e, "Failed to serialize ICE candidate");
+                                }
                             }
                         }
-                    }
-                })
-            }));
+                    })
+                }));
+        }
+
+        // Subscriber ICE handler
+        {
+            let signal_tx = peer.signal_tx.clone();
+            let channel_id = peer.channel_id;
+
+            peer.subscriber_pc
+                .on_ice_candidate(Box::new(move |candidate| {
+                    let tx = signal_tx.clone();
+                    let cid = channel_id;
+
+                    Box::pin(async move {
+                        if let Some(c) = candidate {
+                            match c.to_json() {
+                                Ok(json) => {
+                                    if let Ok(candidate_str) = serde_json::to_string(&json) {
+                                        if let Err(e) = tx
+                                            .send(OutboundMsg::Event(
+                                                ServerEvent::VoiceIceCandidate {
+                                                    channel_id: cid,
+                                                    candidate: candidate_str,
+                                                    pc_type: "subscriber".to_string(),
+                                                },
+                                            ))
+                                            .await
+                                        {
+                                            tracing::error!(
+                                                channel_id = %cid,
+                                                pc = "subscriber",
+                                                error = %e,
+                                                "Failed to send ICE candidate - connection may fail"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(pc = "subscriber", error = %e, "Failed to serialize ICE candidate");
+                                }
+                            }
+                        }
+                    })
+                }));
+        }
     }
 
-    /// Trigger renegotiation by creating a new offer and sending it to the peer.
-    /// Used after dynamically adding/removing tracks mid-session.
-    pub async fn renegotiate(peer: &Peer) -> Result<(), VoiceError> {
-        let offer = peer.peer_connection.create_offer(None).await?;
-        peer.peer_connection
+    /// Handle a publisher offer from the client -- server creates answer.
+    pub async fn handle_publisher_offer(
+        peer: &Arc<Peer>,
+        sdp: String,
+    ) -> Result<String, VoiceError> {
+        let offer = RTCSessionDescription::offer(sdp)
+            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        peer.publisher_pc.set_remote_description(offer).await?;
+        let answer = peer.publisher_pc.create_answer(None).await?;
+        peer.publisher_pc
+            .set_local_description(answer.clone())
+            .await?;
+        Ok(answer.sdp)
+    }
+
+    /// Handle a subscriber answer from the client.
+    pub async fn handle_subscriber_answer(
+        peer: &Arc<Peer>,
+        sdp: String,
+    ) -> Result<(), VoiceError> {
+        let answer = RTCSessionDescription::answer(sdp)
+            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        peer.subscriber_pc.set_remote_description(answer).await?;
+        Ok(())
+    }
+
+    /// Trigger renegotiation on the subscriber PC by creating a new offer
+    /// and sending it to the peer. Used after dynamically adding/removing tracks.
+    pub async fn renegotiate(peer: &Arc<Peer>) -> Result<(), VoiceError> {
+        let offer = peer.subscriber_pc.create_offer(None).await?;
+        peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        peer.signal_tx
-            .send(OutboundMsg::Event(ServerEvent::VoiceOffer {
+        let _ = peer
+            .signal_tx
+            .send(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
                 channel_id: peer.channel_id,
                 sdp: offer.sdp,
             }))
-            .await
-            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+            .await;
         Ok(())
     }
 
-    /// Create an offer for a peer.
-    pub async fn create_offer(&self, peer: &Peer) -> Result<RTCSessionDescription, VoiceError> {
-        let offer = peer.peer_connection.create_offer(None).await?;
-        peer.peer_connection
-            .set_local_description(offer.clone())
-            .await?;
-        Ok(offer)
-    }
-
-    /// Handle an answer from a peer.
-    pub async fn handle_answer(&self, peer: &Peer, sdp: &str) -> Result<(), VoiceError> {
-        let answer = RTCSessionDescription::answer(sdp.to_string())
-            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
-
-        peer.peer_connection.set_remote_description(answer).await?;
-        Ok(())
-    }
-
-    /// Handle an ICE candidate from a peer.
+    /// Handle an ICE candidate from a peer, routed by pc_type.
     pub async fn handle_ice_candidate(
-        &self,
-        peer: &Peer,
+        peer: &Arc<Peer>,
         candidate_str: &str,
+        pc_type: &str,
     ) -> Result<(), VoiceError> {
         let candidate: webrtc::ice_transport::ice_candidate::RTCIceCandidateInit =
             serde_json::from_str(candidate_str)
                 .map_err(|e| VoiceError::Signaling(format!("Invalid ICE candidate: {e}")))?;
 
-        peer.peer_connection.add_ice_candidate(candidate).await?;
+        let pc = if pc_type == "subscriber" {
+            &peer.subscriber_pc
+        } else {
+            &peer.publisher_pc
+        };
+        pc.add_ice_candidate(candidate).await?;
 
         Ok(())
     }
