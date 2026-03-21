@@ -221,7 +221,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Clean up all screen shares and webcam first
     if (this.screenShares.size > 0) {
-      this.cleanupAllScreenShares();
+      await this.stopAllScreenShares();
     }
     if (this.webcamStream) {
       this.cleanupWebcamState();
@@ -792,170 +792,89 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       return { ok: false, error: { type: "not_connected" } };
     }
 
-    const streamId = options?.streamId ?? crypto.randomUUID();
-
     try {
-      // Request display media with quality constraints
+      const streamId = options?.streamId ?? crypto.randomUUID();
+
+      // Capture screen with quality constraints
       const constraints = this.getDisplayMediaConstraints(
         options?.quality ?? "medium",
       );
-
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: constraints.video,
         audio: options?.withAudio ?? false,
       });
 
-      // Get the video track
+      // Add video track to publisher PC
       const videoTrack = stream.getVideoTracks()[0];
-      if (!videoTrack) {
-        stream.getTracks().forEach((t) => t.stop());
-        return {
-          ok: false,
-          error: { type: "unknown", message: "No video track in stream" },
-        };
-      }
-
-      // Listen for track ending (user clicked "Stop sharing" in browser UI)
-      videoTrack.onended = () => {
-        console.log("[BrowserVoiceAdapter] Screen share track ended by user, streamId:", streamId);
-        this.handleScreenShareEnded(streamId);
-      };
-
-      // Add screen share tracks to publisherPC. In the dual-PC model,
-      // addTrack triggers onnegotiationneeded which re-offers automatically.
       const videoSender = this.publisherPC.addTrack(videoTrack, stream);
-      const audioTrack = stream.getAudioTracks()[0];
+
+      // Add audio track if present
       let audioSender: RTCRtpSender | null = null;
+      const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
         audioSender = this.publisherPC.addTrack(audioTrack, stream);
       }
+
+      // onnegotiationneeded fires automatically -> creates offer -> server answers -> RTP flows
+
+      // Handle user stopping share via browser UI
+      videoTrack.onended = () => {
+        console.log("[BrowserVoiceAdapter] Screen share track ended by user, streamId:", streamId);
+        this.stopScreenShare(streamId);
+      };
+
+      // Store for cleanup
       this.screenShares.set(streamId, { stream, videoSender, audioSender });
 
-      console.log("[BrowserVoiceAdapter] Screen share tracks added to publisherPC", streamId);
+      console.log("[BrowserVoiceAdapter] Screen share started, streamId:", streamId);
 
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[BrowserVoiceAdapter] Failed to start screen share:", err);
-
-      // Handle specific errors with actionable messages
-      if (err instanceof DOMException) {
-        switch (err.name) {
-          case "NotAllowedError":
-            return {
-              ok: false,
-              error: {
-                type: "permission_denied",
-                message:
-                  "Screen share permission denied. Please allow screen sharing in your browser.",
-              },
-            };
-          case "AbortError":
-            return {
-              ok: false,
-              error: {
-                type: "cancelled",
-                message: "Screen share cancelled",
-              },
-            };
-          case "NotFoundError":
-            return {
-              ok: false,
-              error: {
-                type: "not_found",
-                message: "No screen or window found to share",
-              },
-            };
-          case "NotReadableError":
-            return {
-              ok: false,
-              error: {
-                type: "hardware_error",
-                message:
-                  "Could not access screen. Another app may be blocking screen capture.",
-              },
-            };
-          case "OverconstrainedError":
-            return {
-              ok: false,
-              error: {
-                type: "constraint_error",
-                message:
-                  "Screen share quality settings not supported by your system",
-              },
-            };
-          default:
-            return {
-              ok: false,
-              error: {
-                type: "unknown",
-                message: `Screen share failed: ${err.message}`,
-              },
-            };
-        }
-      }
-
-      // Handle other error types
-      if (err instanceof Error) {
-        console.error("[BrowserVoiceAdapter] Screen share error details:", {
-          name: err.name,
-          message: err.message,
-          stack: err.stack,
-        });
-        return {
-          ok: false,
-          error: {
-            type: "unknown",
-            message: `Screen share failed: ${err.message}. Try closing other video applications.`,
-          },
-        };
-      }
-
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Screen share failed unexpectedly" },
-      };
+      return { ok: false, error: this.mapScreenShareError(err) };
     }
   }
 
   async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
-    if (streamId) {
-      // Stop a specific stream
-      const entry = this.screenShares.get(streamId);
-      if (!entry) {
-        return {
-          ok: false,
-          error: { type: "unknown", message: `Screen share not found: ${streamId}` },
-        };
-      }
-
-      try {
-        this.cleanupSingleScreenShare(streamId, entry);
-        console.log("[BrowserVoiceAdapter] Screen share stopped:", streamId);
-        return { ok: true, value: undefined };
-      } catch (err) {
-        console.error("[BrowserVoiceAdapter] Failed to stop screen share:", err);
-        return { ok: false, error: { type: "unknown", message: String(err) } };
-      }
+    if (!this.publisherPC) {
+      return { ok: false, error: { type: "not_connected" } };
     }
 
-    // No streamId — stop the first (or only) stream for backward compat
-    if (this.screenShares.size === 0) {
+    const targetId = streamId || this.screenShares.keys().next().value;
+    if (!targetId) {
       return {
         ok: false,
-        error: { type: "unknown", message: "Not sharing screen" },
+        error: { type: "unknown", message: "No active screen share" },
       };
     }
 
-    try {
-      const firstId = this.screenShares.keys().next().value!;
-      const firstEntry = this.screenShares.get(firstId)!;
-      this.cleanupSingleScreenShare(firstId, firstEntry);
-      console.log("[BrowserVoiceAdapter] Screen share stopped:", firstId);
-      return { ok: true, value: undefined };
-    } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to stop screen share:", err);
-      return { ok: false, error: { type: "unknown", message: String(err) } };
+    const share = this.screenShares.get(targetId);
+    if (!share) {
+      return {
+        ok: false,
+        error: { type: "unknown", message: `Screen share ${targetId} not found` },
+      };
     }
+
+    // Remove tracks from publisher PC
+    this.publisherPC.removeTrack(share.videoSender);
+    if (share.audioSender) {
+      this.publisherPC.removeTrack(share.audioSender);
+    }
+
+    // Stop media tracks
+    share.stream.getTracks().forEach((t) => t.stop());
+
+    // onnegotiationneeded fires automatically -> renegotiates
+
+    this.screenShares.delete(targetId);
+
+    // Notify listeners
+    this.eventHandlers.onScreenShareStopped?.("", targetId, "user_stopped");
+
+    console.log("[BrowserVoiceAdapter] Screen share stopped:", targetId);
+
+    return { ok: true, value: undefined };
   }
 
   async stopAllScreenShares(): Promise<VoiceResult<void>> {
@@ -963,14 +882,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       return { ok: true, value: undefined };
     }
 
-    try {
-      this.cleanupAllScreenShares();
-      console.log("[BrowserVoiceAdapter] All screen shares stopped");
-      return { ok: true, value: undefined };
-    } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to stop all screen shares:", err);
-      return { ok: false, error: { type: "unknown", message: String(err) } };
+    // Collect IDs first to avoid mutating map during iteration
+    const streamIds = [...this.screenShares.keys()];
+    for (const id of streamIds) {
+      await this.stopScreenShare(id);
     }
+
+    console.log("[BrowserVoiceAdapter] All screen shares stopped");
+    return { ok: true, value: undefined };
   }
 
   // Webcam
@@ -1147,56 +1066,40 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     };
   }
 
-  private handleScreenShareEnded(streamId: string): void {
-    const entry = this.screenShares.get(streamId);
-    if (entry) {
-      this.cleanupSingleScreenShare(streamId, entry);
-    }
-    // Notify via event handler - need to get user ID
-    // For browser, we don't easily have our own user ID here, so pass empty
-    this.eventHandlers.onScreenShareStopped?.("", streamId, "user_stopped");
-  }
-
   /**
-   * Clean up a single screen share stream.
+   * Map screen share errors to typed VoiceError with actionable messages.
    */
-  private cleanupSingleScreenShare(
-    streamId: string,
-    entry: { stream: MediaStream; videoSender: RTCRtpSender; audioSender: RTCRtpSender | null },
-  ): void {
-    // Remove tracks from publisher peer connection
-    if (this.publisherPC) {
-      if (entry.audioSender) {
-        this.publisherPC.removeTrack(entry.audioSender);
+  private mapScreenShareError(err: unknown): VoiceError {
+    if (err instanceof DOMException) {
+      switch (err.name) {
+        case "NotAllowedError":
+          return {
+            type: "permission_denied",
+            message: "Screen share permission denied. Please allow screen sharing in your browser.",
+          };
+        case "AbortError":
+          return { type: "cancelled", message: "Screen share cancelled" };
+        case "NotFoundError":
+          return { type: "not_found", message: "No screen or window found to share" };
+        case "NotReadableError":
+          return {
+            type: "hardware_error",
+            message: "Could not access screen. Another app may be blocking screen capture.",
+          };
+        case "OverconstrainedError":
+          return {
+            type: "constraint_error",
+            message: "Screen share quality settings not supported by your system",
+          };
+        default:
+          return { type: "unknown", message: `Screen share failed: ${err.message}` };
       }
-      this.publisherPC.removeTrack(entry.videoSender);
     }
 
-    // Stop the stream tracks
-    entry.stream.getTracks().forEach((track) => track.stop());
-
-    // Remove from map
-    this.screenShares.delete(streamId);
-  }
-
-  /**
-   * Clean up all active screen shares (for disconnect/leave).
-   */
-  private cleanupAllScreenShares(): void {
-    for (const [, entry] of this.screenShares) {
-      // Remove tracks from publisher peer connection
-      if (this.publisherPC) {
-        if (entry.audioSender) {
-          this.publisherPC.removeTrack(entry.audioSender);
-        }
-        this.publisherPC.removeTrack(entry.videoSender);
-      }
-
-      // Stop the stream tracks
-      entry.stream.getTracks().forEach((track) => track.stop());
-    }
-
-    this.screenShares.clear();
+    return {
+      type: "unknown",
+      message: err instanceof Error ? err.message : "Screen share failed unexpectedly",
+    };
   }
 
   private cleanupWebcamState(): void {
