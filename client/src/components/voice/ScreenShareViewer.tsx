@@ -78,10 +78,18 @@ const ScreenShareViewer: Component = () => {
     if (track && videoRef) {
       const stream = new MediaStream([track]);
       videoRef.srcObject = stream;
+      videoRef.muted = true; // Required for autoplay policy
       setAutoplayBlocked(false);
-      videoRef.play().catch((err) => {
-        console.warn("[ScreenShareViewer] Autoplay blocked:", err);
-        setAutoplayBlocked(true);
+      // Delay play to let DOM settle — prevents AbortError from element re-mount
+      requestAnimationFrame(() => {
+        if (videoRef && videoRef.srcObject) {
+          videoRef.play().catch((err) => {
+            if (err.name !== "AbortError") {
+              console.warn("[ScreenShareViewer] Autoplay blocked:", err);
+              setAutoplayBlocked(true);
+            }
+          });
+        }
       });
     }
   });
