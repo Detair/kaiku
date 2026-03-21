@@ -797,9 +797,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       ].filter(Boolean));
 
       const videoTransceiver = transceivers.find(t => {
-        const isVideo = t.sender.track?.kind === "video" ||
-          t.receiver.track?.kind === "video" ||
-          t.mid !== null && !usedSenders.has(t.sender);
+        // Check if this is a video transceiver by examining receiver track kind,
+        // sender track kind, or codec capabilities
+        const recvKind = t.receiver?.track?.kind;
+        const sendKind = t.sender?.track?.kind;
+        const codecKind = t.sender.getParameters().codecs?.[0]?.mimeType?.startsWith("video/");
+        const isVideo = recvKind === "video" || sendKind === "video" || codecKind;
         return isVideo && !usedSenders.has(t.sender);
       });
 
