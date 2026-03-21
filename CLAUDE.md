@@ -18,6 +18,14 @@ cargo deny check licenses
 - Client CPU (Idle): <1%
 - Startup: <3s
 
+### UI Contrast Rules (KRITISCH)
+- **Text on backgrounds**: Use `text-text-primary` (not accent colors) for any text that must be readable. Accent colors are for decorative indicators only.
+- **Selected/active states**: Use `text-text-primary` + `bg-accent-primary/20` (or higher opacity). Never use `text-accent-primary` on `bg-accent-primary/*` — same hue, poor contrast.
+- **Interactive text opacity**: Never use `opacity-*` below 50% on text the user needs to read. `text-text-secondary` is the minimum readable tier.
+- **White-on-dark overlays**: `text-white/40` and below are invisible on dark themes. Use `text-text-muted` instead.
+- **WCAG targets**: text-primary ≥7:1 on surface-base (AAA), text-secondary ≥4.5:1 on surface-layer1 (AA), text-muted ≥3:1 (AA for UI components).
+- **Verify**: When adding colored text on colored backgrounds, check with https://webaim.org/resources/contrastchecker/
+
 ### Security-Basics
 - TLS 1.3 für alle Verbindungen
 - Passwörter: Argon2id
