@@ -177,7 +177,10 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                 return (
                   <div
                     data-index={virtualItem.index}
-                    ref={(el) => virtualizer.measureElement(el)}
+                    ref={(el) => {
+                      el.setAttribute("data-index", String(virtualItem.index));
+                      queueMicrotask(() => virtualizer.measureElement(el));
+                    }}
                     style={{
                       position: "absolute",
                       top: `${virtualItem.start}px`,
