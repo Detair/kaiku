@@ -50,6 +50,8 @@ const MessageList: Component<MessageListProps> = (props) => {
 
   // Track scroll state
   const [isAtBottom, setIsAtBottom] = createSignal(true);
+  /** Timestamp until which we force-stick to bottom (handles measurement reflow) */
+  let stickyBottomUntil = 0;
   const [hasNewMessages, setHasNewMessages] = createSignal(false);
   const [newMessageCount, setNewMessageCount] = createSignal(0);
   const [paginationError, setPaginationError] = createSignal<string | null>(
@@ -140,6 +142,14 @@ const MessageList: Component<MessageListProps> = (props) => {
 
   // --- Handle scroll ---
   const handleScroll = () => {
+    // If in sticky-bottom mode (after sending), force re-scroll on any reflow
+    if (Date.now() < stickyBottomUntil && containerRef) {
+      if (!checkIfAtBottom()) {
+        containerRef.scrollTo({ top: containerRef.scrollHeight, behavior: "auto" });
+        return; // Don't update isAtBottom while sticky
+      }
+    }
+
     const atBottom = checkIfAtBottom();
     setIsAtBottom(atBottom);
     if (atBottom) {
@@ -149,27 +159,23 @@ const MessageList: Component<MessageListProps> = (props) => {
   };
 
   // --- Scroll to bottom ---
-  const scrollToBottom = (smooth = true) => {
+  const scrollToBottom = (sticky = false) => {
     if (!containerRef) return;
     const count = messagesWithCompact().length;
     if (count === 0) return;
 
-    // Primary: virtualizer knows exact position even before DOM paints
+    // Activate sticky mode — keeps re-scrolling for 500ms to handle
+    // virtualizer measurement reflows that shrink scrollHeight
+    if (sticky) {
+      stickyBottomUntil = Date.now() + 500;
+    }
+
     virtualizer.scrollToIndex(count - 1, {
       align: "end",
-      behavior: smooth ? "smooth" : "auto",
+      behavior: "auto",
     });
     setHasNewMessages(false);
     setNewMessageCount(0);
-
-    // Backup: after DOM settles, verify with direct scroll if needed
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (containerRef && !checkIfAtBottom()) {
-          containerRef.scrollTo({ top: containerRef.scrollHeight, behavior: "auto" });
-        }
-      });
-    });
   };
 
   // --- Scroll to a specific message and highlight it ---
@@ -360,7 +366,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       const isOwnSend = lastMsg?.id?.startsWith("pending:");
 
       if (isOwnSend || isAtBottom()) {
-        requestAnimationFrame(() => scrollToBottom(!isOwnSend));
+        requestAnimationFrame(() => scrollToBottom(isOwnSend));
       } else {
         setHasNewMessages(true);
         setNewMessageCount(
