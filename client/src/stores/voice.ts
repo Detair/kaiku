@@ -416,6 +416,9 @@ export async function joinVoice(channelId: string): Promise<void> {
     const adapter = await createVoiceAdapter();
 
     // Set up adapter event handlers
+    // Track remote audio elements for cleanup
+    const remoteAudioElements = new Map<string, HTMLAudioElement>();
+
     adapter.setEventHandlers({
       onStateChange: (state) => {
         const stateMap = {
@@ -426,9 +429,43 @@ export async function joinVoice(channelId: string): Promise<void> {
           reconnecting: "connecting" as const,
         };
         setVoiceState({ state: stateMap[state] });
+        // Clean up audio elements on disconnect
+        if (state === "disconnected") {
+          for (const [, el] of remoteAudioElements) {
+            el.srcObject = null;
+            el.remove();
+          }
+          remoteAudioElements.clear();
+        }
       },
       onError: (error) => {
         setVoiceState({ error });
+      },
+      onRemoteTrack: (remoteTrack) => {
+        console.log("[Voice] Remote audio track received:", remoteTrack.userId);
+        // Create an audio element to play the remote user's audio
+        const audio = new Audio();
+        audio.srcObject = remoteTrack.stream;
+        audio.autoplay = true;
+        // Remove old element for this user if exists
+        const old = remoteAudioElements.get(remoteTrack.userId);
+        if (old) {
+          old.srcObject = null;
+          old.remove();
+        }
+        remoteAudioElements.set(remoteTrack.userId, audio);
+        audio.play().catch((err) => {
+          console.warn("[Voice] Audio autoplay blocked:", err);
+        });
+      },
+      onRemoteTrackRemoved: (userId) => {
+        console.log("[Voice] Remote audio track removed:", userId);
+        const el = remoteAudioElements.get(userId);
+        if (el) {
+          el.srcObject = null;
+          el.remove();
+          remoteAudioElements.delete(userId);
+        }
       },
       onLocalMuteChange: (muted) => {
         setVoiceState({ muted });

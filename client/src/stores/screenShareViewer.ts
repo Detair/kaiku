@@ -93,13 +93,8 @@ export function addAvailableTrack(
   newTracks.set(streamId, { track, userId, username, sourceLabel });
   setViewerState({ availableTracks: newTracks });
 
-  // Auto-start viewing if no stream is currently being viewed
-  if (!viewerState.viewingStreamId) {
-    setViewerState({
-      viewingStreamId: streamId,
-      videoTrack: track,
-    });
-  }
+  // Don't auto-open the viewer — let VoiceChannelView handle display.
+  // Users click to view from VoiceChannelView's screen share section.
 }
 
 /**
