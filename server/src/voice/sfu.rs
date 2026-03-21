@@ -98,8 +98,14 @@ impl Room {
             });
         }
 
-        if peers.contains_key(&peer.user_id) {
-            return Err(VoiceError::AlreadyJoined);
+        // If the user already has a peer (stale session from a previous connection),
+        // remove it and replace with the new one instead of rejecting
+        if let Some(old_peer) = peers.remove(&peer.user_id) {
+            tracing::info!(user_id = %peer.user_id, "Replacing stale voice peer");
+            // Close old peer connection
+            if let Err(e) = old_peer.peer_connection.close().await {
+                tracing::warn!(user_id = %peer.user_id, error = %e, "Failed to close stale peer connection");
+            }
         }
 
         peers.insert(peer.user_id, peer);
