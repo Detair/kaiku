@@ -85,15 +85,26 @@ impl Peer {
         })
     }
 
-    /// Add a recvonly transceiver for receiving media from the client.
+    /// Add a transceiver for media exchange with the client.
     /// Uses a dummy track with a unique stream ID to prevent duplicate
     /// a=msid lines in the SDP offer (browsers reject duplicate msid).
+    /// Video transceivers use Sendrecv so the client can use replaceTrack
+    /// to start sending without renegotiation.
+    /// Audio transceivers use Recvonly.
     pub async fn add_recv_transceiver(&self, kind: RTPCodecType) -> Result<(), VoiceError> {
         let unique_id = Uuid::now_v7().to_string();
         let mime = if kind == RTPCodecType::Video {
             "video/VP8".to_string()
         } else {
             "audio/opus".to_string()
+        };
+
+        // Video: sendrecv so client can replaceTrack without renegotiation
+        // Audio: recvonly (server only receives mic audio)
+        let direction = if kind == RTPCodecType::Video {
+            RTCRtpTransceiverDirection::Sendrecv
+        } else {
+            RTCRtpTransceiverDirection::Recvonly
         };
 
         let dummy_track = Arc::new(TrackLocalStaticRTP::new(
@@ -109,7 +120,7 @@ impl Peer {
             .add_transceiver_from_track(
                 dummy_track as Arc<dyn TrackLocal + Send + Sync>,
                 Some(RTCRtpTransceiverInit {
-                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    direction,
                     send_encodings: vec![],
                 }),
             )

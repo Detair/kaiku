@@ -689,18 +689,17 @@ async fn handle_screen_share_start(
             .await;
     }
 
-    // Don't add a new recv VIDEO transceiver — the client uses replaceTrack
-    // on the pre-allocated video transceiver from the initial join.
-    // But we MUST renegotiate so the direction change (recvonly → sendrecv)
-    // takes effect and RTP packets can flow.
+    // No new video transceiver needed — the pre-allocated sendrecv video
+    // transceiver is reused via replaceTrack. No renegotiation needed either
+    // since the transceiver is already sendrecv.
     if params.has_audio {
         if let Err(e) = peer.add_recv_transceiver(RTPCodecType::Audio).await {
             warn!(user_id = %params.user_id, error = %e, "Failed to add audio transceiver for screen audio");
         }
-    }
-    // Renegotiate to activate the direction change on the video transceiver
-    if let Err(e) = SfuServer::renegotiate(&peer).await {
-        warn!(user_id = %params.user_id, error = %e, "Failed to renegotiate after screen share start");
+        // Only renegotiate if audio transceiver was added
+        if let Err(e) = SfuServer::renegotiate(&peer).await {
+            warn!(user_id = %params.user_id, error = %e, "Failed to renegotiate after screen audio add");
+        }
     }
 
     // Get username for the info
