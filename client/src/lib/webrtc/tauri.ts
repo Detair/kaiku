@@ -318,6 +318,14 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   }
 
   /**
+   * Get the video track for a local screen share.
+   * Tauri uses native capture — no MediaStreamTrack available.
+   */
+  getScreenShareTrack(_streamId: string): MediaStreamTrack | null {
+    return null;
+  }
+
+  /**
    * Enumerate native capture sources (monitors and windows).
    */
   async enumerateCaptureSources(): Promise<CaptureSource[] | null> {
