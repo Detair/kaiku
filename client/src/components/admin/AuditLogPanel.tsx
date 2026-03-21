@@ -203,7 +203,7 @@ const AuditLogPanel: Component = () => {
               onClick={() => setShowFilters(!showFilters())}
               class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary": showFilters(),
+                "bg-accent-primary/20 text-text-primary": showFilters(),
               }}
               title="Advanced filters"
             >
@@ -289,12 +289,12 @@ const AuditLogPanel: Component = () => {
             <div class="flex items-center gap-2 flex-wrap text-sm">
               <span class="text-text-secondary">Active filters:</span>
               <Show when={adminState.auditLogFilters.action}>
-                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-text-primary">
                   prefix: {adminState.auditLogFilters.action}
                 </span>
               </Show>
               <Show when={adminState.auditLogFilters.actionType}>
-                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-text-primary">
                   type:{" "}
                   {ACTION_TYPES.find(
                     (t) => t.value === adminState.auditLogFilters.actionType,
@@ -302,7 +302,7 @@ const AuditLogPanel: Component = () => {
                 </span>
               </Show>
               <Show when={adminState.auditLogFilters.fromDate}>
-                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-text-primary">
                   from:{" "}
                   {new Date(
                     adminState.auditLogFilters.fromDate!,
@@ -310,7 +310,7 @@ const AuditLogPanel: Component = () => {
                 </span>
               </Show>
               <Show when={adminState.auditLogFilters.toDate}>
-                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                <span class="px-2 py-0.5 rounded bg-accent-primary/20 text-text-primary">
                   to:{" "}
                   {new Date(
                     adminState.auditLogFilters.toDate!,

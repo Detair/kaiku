@@ -35,7 +35,7 @@ export const LazyErrorBoundary: Component<
           <div class="flex flex-col items-center justify-center gap-3 p-6 text-text-secondary">
             <p class="text-sm">Failed to load this section.</p>
             <button
-              class="px-4 py-2 text-sm bg-accent-primary/20 text-accent-primary rounded-lg hover:bg-accent-primary/30 transition-colors"
+              class="px-4 py-2 text-sm bg-accent-primary/20 text-text-primary rounded-lg hover:bg-accent-primary/30 transition-colors"
               onClick={reset}
             >
               Try again

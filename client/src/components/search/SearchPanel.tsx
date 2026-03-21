@@ -224,7 +224,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           onClick={() => setShowFilters(!showFilters())}
           class="ml-2 p-1.5 rounded transition-colors"
           classList={{
-            "text-accent-primary bg-accent-primary/10": showFilters(),
+            "text-text-primary bg-accent-primary/20": showFilters(),
             "text-text-secondary hover:text-text-primary": !showFilters(),
           }}
           title="Toggle filters"
@@ -249,7 +249,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
             disabled={!props.channelId}
             class="px-2.5 py-1 rounded text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             classList={{
-              "bg-accent-primary/20 text-accent-primary": scope() === "channel",
+              "bg-accent-primary/20 text-text-primary": scope() === "channel",
               "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                 scope() !== "channel",
             }}
@@ -261,7 +261,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
             onClick={() => setScope("guild")}
             class="px-2.5 py-1 rounded text-xs font-medium transition-colors"
             classList={{
-              "bg-accent-primary/20 text-accent-primary": scope() === "guild",
+              "bg-accent-primary/20 text-text-primary": scope() === "guild",
               "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                 scope() !== "guild",
             }}
@@ -273,7 +273,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
             onClick={() => setScope("all")}
             class="px-2.5 py-1 rounded text-xs font-medium transition-colors"
             classList={{
-              "bg-accent-primary/20 text-accent-primary": scope() === "all",
+              "bg-accent-primary/20 text-text-primary": scope() === "all",
               "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                 scope() !== "all",
             }}
@@ -295,7 +295,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               }}
               class="px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary":
+                "bg-accent-primary/20 text-text-primary":
                   sortOrder() === "relevance",
                 "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                   sortOrder() !== "relevance",
@@ -310,7 +310,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               }}
               class="px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary":
+                "bg-accent-primary/20 text-text-primary":
                   sortOrder() === "date",
                 "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                   sortOrder() !== "date",
@@ -372,7 +372,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               }}
               class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary":
+                "bg-accent-primary/20 text-text-primary":
                   hasFilter() === "link",
                 "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                   hasFilter() !== "link",
@@ -388,7 +388,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               }}
               class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
               classList={{
-                "bg-accent-primary/20 text-accent-primary":
+                "bg-accent-primary/20 text-text-primary":
                   hasFilter() === "file",
                 "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                   hasFilter() !== "file",

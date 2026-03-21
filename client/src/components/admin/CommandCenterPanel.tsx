@@ -116,7 +116,7 @@ const TimeRangePills: Component<{
           onClick={() => props.onChange(range.value)}
           class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-accent-primary":
+            "bg-accent-primary/20 text-text-primary":
               props.selected === range.value,
             "text-text-secondary hover:text-text-primary hover:bg-white/5":
               props.selected !== range.value,
@@ -285,7 +285,7 @@ const LevelBadge: Component<{ level: string }> = (props) => {
       case "WARN":
         return "bg-status-warning/20 text-status-warning";
       case "INFO":
-        return "bg-accent-primary/20 text-accent-primary";
+        return "bg-accent-primary/20 text-text-primary";
       case "DEBUG":
         return "bg-surface-highlight text-text-secondary";
       default:

@@ -183,7 +183,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                 <button
                   onClick={() => setShowRolePicker(!showRolePicker())}
                   data-testid="channel-permissions-add-role"
-                  class="flex items-center gap-2 px-3 py-1.5 text-sm text-accent-primary hover:bg-accent-primary/10 rounded-lg transition-colors"
+                  class="flex items-center gap-2 px-3 py-1.5 text-sm text-text-primary hover:bg-accent-primary/10 rounded-lg transition-colors"
                 >
                   <Plus class="w-4 h-4" />
                   Add Role

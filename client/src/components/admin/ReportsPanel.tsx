@@ -331,7 +331,7 @@ const ReportsPanel: Component = () => {
                                 !adminState.isElevated || actionLoading()
                               }
                               title="Claim"
-                              class="p-1.5 rounded-lg text-text-secondary hover:text-blue-400 hover:bg-blue-400/10 transition-colors disabled:opacity-30"
+                              class="p-1.5 rounded-lg text-text-secondary hover:text-blue-400 hover:bg-blue-400/10 transition-colors disabled:opacity-50"
                             >
                               <UserCheck class="w-4 h-4" />
                             </button>
@@ -351,7 +351,7 @@ const ReportsPanel: Component = () => {
                                 !adminState.isElevated || actionLoading()
                               }
                               title="Resolve"
-                              class="p-1.5 rounded-lg text-text-secondary hover:text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-30"
+                              class="p-1.5 rounded-lg text-text-secondary hover:text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-50"
                             >
                               <CheckCircle class="w-4 h-4" />
                             </button>
@@ -376,7 +376,7 @@ const ReportsPanel: Component = () => {
             <button
               onClick={() => handlePageChange(page() - 1)}
               disabled={page() <= 1}
-              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-30"
+              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50"
             >
               <ChevronLeft class="w-4 h-4" />
             </button>
@@ -386,7 +386,7 @@ const ReportsPanel: Component = () => {
             <button
               onClick={() => handlePageChange(page() + 1)}
               disabled={page() >= totalPages()}
-              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-30"
+              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50"
             >
               <ChevronRight class="w-4 h-4" />
             </button>

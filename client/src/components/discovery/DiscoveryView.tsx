@@ -222,7 +222,7 @@ const DiscoveryView: Component = () => {
                 }
                 disabled={offset() === 0}
                 aria-label="Previous page"
-                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-30 disabled:cursor-default transition-colors"
+                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-50 disabled:cursor-default transition-colors"
               >
                 <ChevronLeft class="w-4 h-4" />
               </button>
@@ -233,7 +233,7 @@ const DiscoveryView: Component = () => {
                 onClick={() => setOffset((prev) => prev + PAGE_SIZE)}
                 disabled={offset() + PAGE_SIZE >= total()}
                 aria-label="Next page"
-                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-30 disabled:cursor-default transition-colors"
+                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-50 disabled:cursor-default transition-colors"
               >
                 <ChevronRight class="w-4 h-4" />
               </button>

@@ -229,7 +229,7 @@ const KeyBindInput: Component<{
                 <Show
                     when={!capturing()}
                     fallback={
-                        <div class="flex-1 px-3 py-2 rounded-lg border-2 border-accent-primary bg-accent-primary/10 text-accent-primary text-sm animate-pulse">
+                        <div class="flex-1 px-3 py-2 rounded-lg border-2 border-accent-primary bg-accent-primary/20 text-text-primary text-sm animate-pulse">
                             Press any key... (Esc to cancel)
                         </div>
                     }
