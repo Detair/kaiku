@@ -13,7 +13,7 @@ import {
   getParticipants,
   getLocalMetrics,
 } from "@/stores/voice";
-import { getChannel } from "@/stores/channels";
+import { getChannel, selectChannel } from "@/stores/channels";
 import { startViewing } from "@/stores/screenShareViewer";
 import { formatElapsedTime, getParticipantDisplayName } from "@/lib/utils";
 import { QualityIndicator } from "./QualityIndicator";
@@ -79,9 +79,15 @@ const VoicePanel: Component = () => {
                 "text-amber-400 animate-pulse": isConnecting(),
               }}
             />
-            <div class="min-w-0">
+            <div
+              class="min-w-0 cursor-pointer"
+              onClick={() => {
+                const chId = voiceState.channelId;
+                if (chId) selectChannel(chId);
+              }}
+            >
               <div
-                class="text-xs font-semibold"
+                class="text-xs font-semibold hover:underline"
                 classList={{
                   "text-accent-success": isConnected(),
                   "text-amber-400 animate-pulse": isConnecting(),
@@ -90,7 +96,7 @@ const VoicePanel: Component = () => {
                 {isConnected() ? "Voice Connected" : "Connecting..."}
               </div>
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
-                <span>{channel()?.name || "Voice Channel"}</span>
+                <span class="hover:text-text-primary transition-colors">{channel()?.name || "Voice Channel"}</span>
                 <Show when={isConnected()}>
                   <span class="text-text-secondary/50">&middot;</span>
                   <span class="font-mono">{elapsedTime()}</span>
