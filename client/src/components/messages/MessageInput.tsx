@@ -72,8 +72,11 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     const draft = getDraft(channelId);
     setContent(draft);
     setShowEmojiPicker(false);
-    // Resize after setting content
-    setTimeout(() => resizeTextarea(), 0);
+    // Resize after setting content, then focus for immediate typing
+    setTimeout(() => {
+      resizeTextarea();
+      textareaRef?.focus();
+    }, 0);
   });
 
   // Auto-resize textarea with RAF batching
