@@ -116,7 +116,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       data-testid={testId}
       class="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors"
       classList={{
-        "bg-accent-primary/15 text-accent-primary": activeTab() === tab,
+        "bg-accent-primary/20 text-text-primary font-semibold": activeTab() === tab,
         "text-text-secondary hover:text-text-primary hover:bg-white/5": activeTab() !== tab,
       }}
     >
@@ -152,11 +152,22 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
             <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-xl bg-accent-primary/20 flex items-center justify-center">
-                <span class="text-lg font-bold text-accent-primary">
-                  {guild()?.name.charAt(0).toUpperCase()}
-                </span>
-              </div>
+              <Show
+                when={guild()?.icon_url}
+                fallback={
+                  <div class="w-10 h-10 rounded-xl bg-accent-primary/20 flex items-center justify-center">
+                    <span class="text-lg font-bold text-accent-primary">
+                      {guild()?.name.charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                }
+              >
+                <img
+                  src={guild()!.icon_url!}
+                  alt={guild()?.name}
+                  class="w-10 h-10 rounded-xl object-cover"
+                />
+              </Show>
               <div>
                 <h2 class="text-lg font-bold text-text-primary">
                   {guild()?.name}
