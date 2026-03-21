@@ -28,13 +28,6 @@ const QUALITY_BITRATES: Record<ScreenShareQuality, number> = {
   premium: 6_000_000, // 1080p60
 };
 
-/** Max framerate for the highest simulcast layer, keyed by quality. */
-const QUALITY_FRAMERATES: Record<ScreenShareQuality, number> = {
-  low: 15,
-  medium: 30,
-  high: 30,
-  premium: 60,
-};
 
 /** Build 3-layer simulcast encodings (high / medium / low). */
 function simulcastEncodings(
@@ -921,29 +914,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const videoTrack = pending.stream.getVideoTracks()[0];
       if (!videoTrack) continue;
 
-      const qualityBitrate = QUALITY_BITRATES[pending.quality as keyof typeof QUALITY_BITRATES] ?? QUALITY_BITRATES.medium;
-      const qualityFramerate = QUALITY_FRAMERATES[pending.quality as keyof typeof QUALITY_FRAMERATES] ?? QUALITY_FRAMERATES.medium;
-
       // Change direction to sendonly and set the track
       transceiver.direction = "sendonly";
       await transceiver.sender.replaceTrack(videoTrack);
-
-      // Set encoding parameters for simulcast
-      try {
-        const params = transceiver.sender.getParameters();
-        if (!params.encodings || params.encodings.length === 0) {
-          params.encodings = simulcastEncodings(qualityBitrate, qualityFramerate);
-        } else {
-          const targets = simulcastEncodings(qualityBitrate, qualityFramerate);
-          params.encodings = params.encodings.map((enc, i) => ({
-            ...enc,
-            ...(targets[i] ?? {}),
-          }));
-        }
-        await transceiver.sender.setParameters(params);
-      } catch (e) {
-        console.warn("[BrowserVoiceAdapter] Failed to set encoding params:", e);
-      }
 
       // Add audio track if present
       const audioTrack = pending.stream.getAudioTracks()[0];
