@@ -785,19 +785,49 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.handleScreenShareEnded(streamId);
       };
 
-      // Add track immediately. The server will then add a recv transceiver
-      // and renegotiate. The browser matches the existing local track to the
-      // server's transceiver during the offer/answer exchange.
-      const videoSender = this.peerConnection.addTrack(videoTrack, stream);
+      // Use replaceTrack on the pre-allocated video transceiver from the
+      // initial join. This avoids renegotiation entirely — RTP flows
+      // immediately through the existing negotiated transceiver.
+      // Find an existing video transceiver that isn't already sending a
+      // screen share or webcam track.
+      const transceivers = this.peerConnection.getTransceivers();
+      const usedSenders = new Set([
+        ...Array.from(this.screenShares.values()).map(s => s.videoSender),
+        this.webcamSender,
+      ].filter(Boolean));
 
-      const audioTrack = stream.getAudioTracks()[0];
-      let audioSender: RTCRtpSender | null = null;
-      if (audioTrack) {
-        audioSender = this.peerConnection.addTrack(audioTrack, stream);
+      const videoTransceiver = transceivers.find(t => {
+        const isVideo = t.sender.track?.kind === "video" ||
+          t.receiver.track?.kind === "video" ||
+          t.mid !== null && !usedSenders.has(t.sender);
+        return isVideo && !usedSenders.has(t.sender);
+      });
+
+      if (videoTransceiver) {
+        // replaceTrack on existing transceiver — no renegotiation needed
+        await videoTransceiver.sender.replaceTrack(videoTrack);
+        videoTransceiver.direction = "sendrecv";
+        console.warn("[BrowserVoiceAdapter] Screen share via replaceTrack on existing transceiver", streamId);
+
+        const audioTrack = stream.getAudioTracks()[0];
+        let audioSender: RTCRtpSender | null = null;
+        if (audioTrack) {
+          // Audio needs a separate transceiver — use addTrack for audio
+          audioSender = this.peerConnection.addTrack(audioTrack, stream);
+        }
+
+        this.screenShares.set(streamId, { stream, videoSender: videoTransceiver.sender, audioSender });
+      } else {
+        // Fallback: no pre-allocated transceiver, use addTrack
+        console.warn("[BrowserVoiceAdapter] No existing video transceiver, using addTrack fallback", streamId);
+        const videoSender = this.peerConnection.addTrack(videoTrack, stream);
+        const audioTrack = stream.getAudioTracks()[0];
+        let audioSender: RTCRtpSender | null = null;
+        if (audioTrack) {
+          audioSender = this.peerConnection.addTrack(audioTrack, stream);
+        }
+        this.screenShares.set(streamId, { stream, videoSender, audioSender });
       }
-
-      this.screenShares.set(streamId, { stream, videoSender, audioSender });
-      console.warn("[BrowserVoiceAdapter] Screen share track added", streamId);
 
       return { ok: true, value: undefined };
     } catch (err) {

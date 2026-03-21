@@ -689,19 +689,17 @@ async fn handle_screen_share_start(
             .await;
     }
 
-    // Add recv transceivers for the incoming tracks
-    if let Err(e) = peer.add_recv_transceiver(RTPCodecType::Video).await {
-        warn!(user_id = %params.user_id, error = %e, "Failed to add video transceiver for screen share");
-    }
+    // Don't add new recv transceivers — the client uses replaceTrack on the
+    // pre-allocated video transceiver from the initial join. This avoids
+    // renegotiation issues that caused video tracks to not flow.
+    // Audio screen share still needs a new transceiver.
     if params.has_audio {
         if let Err(e) = peer.add_recv_transceiver(RTPCodecType::Audio).await {
             warn!(user_id = %params.user_id, error = %e, "Failed to add audio transceiver for screen audio");
         }
-    }
-
-    // Renegotiate so the client sees the new transceivers
-    if let Err(e) = SfuServer::renegotiate(&peer).await {
-        warn!(user_id = %params.user_id, error = %e, "Failed to renegotiate after screen share transceiver add");
+        if let Err(e) = SfuServer::renegotiate(&peer).await {
+            warn!(user_id = %params.user_id, error = %e, "Failed to renegotiate after screen audio transceiver add");
+        }
     }
 
     // Get username for the info
