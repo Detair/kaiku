@@ -353,16 +353,22 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     try {
+      // Count transceivers BEFORE applying the offer
+      const countBefore = this.peerConnection.getTransceivers().length;
+
       // Set remote description
       await this.peerConnection.setRemoteDescription({
         type: "offer",
         sdp,
       });
 
-      // Add any pending screen share tracks to matching transceivers
-      // (the server just added recv transceivers for these in its offer)
+      // Add pending screen share tracks to NEW transceivers created by the offer.
+      // New transceivers appear at the end of the list after setRemoteDescription.
       if (this.pendingScreenShares.size > 0) {
-        await this.addPendingScreenSharesToTransceivers();
+        const allTransceivers = this.peerConnection.getTransceivers();
+        const newTransceivers = allTransceivers.slice(countBefore);
+        console.log(`[BrowserVoiceAdapter] New transceivers from offer: ${newTransceivers.length}, pending shares: ${this.pendingScreenShares.size}`);
+        this.addPendingScreenSharesTo(newTransceivers);
       }
 
       // Create answer
@@ -888,32 +894,55 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   /**
-   * Add pending screen share tracks to the peer connection's transceivers.
-   * Called from handleOffer() after setRemoteDescription — the server's offer
-   * now contains recv transceivers for each pending screen share.
+   * Add pending screen share tracks to specific transceivers.
+   * Uses the NEW transceivers that appeared after setRemoteDescription
+   * (they're at the end of the transceiver list).
    */
-  private async addPendingScreenSharesToTransceivers(): Promise<void> {
-    if (!this.peerConnection || this.pendingScreenShares.size === 0) return;
+  private addPendingScreenSharesTo(newTransceivers: RTCRtpTransceiver[]): void {
+    if (!this.peerConnection) return;
 
+    let tIdx = 0;
     for (const [streamId, pending] of this.pendingScreenShares) {
       const videoTrack = pending.stream.getVideoTracks()[0];
       if (!videoTrack) continue;
 
-      // Use addTrack — the browser automatically matches to the right
-      // transceiver (the one the server created for this screen share).
-      const videoSender = this.peerConnection.addTrack(videoTrack, pending.stream);
+      // Find the next new video transceiver
+      let transceiver: RTCRtpTransceiver | undefined;
+      while (tIdx < newTransceivers.length) {
+        const t = newTransceivers[tIdx++];
+        // The server creates dummy VP8 tracks — check if this is a video transceiver
+        // by looking at the SDP mid or just try it (first new ones are video for screen share)
+        transceiver = t;
+        break;
+      }
 
-      // Add audio track if present
+      if (!transceiver) {
+        console.warn("[BrowserVoiceAdapter] No new transceiver for pending screen share:", streamId);
+        continue;
+      }
+
+      // Set direction to sendrecv and replace the dummy/null track with our real track
+      transceiver.direction = "sendrecv";
+      transceiver.sender.replaceTrack(videoTrack).then(() => {
+        console.log("[BrowserVoiceAdapter] Screen share track set on transceiver:", streamId);
+      }).catch((err) => {
+        console.error("[BrowserVoiceAdapter] Failed to set screen share track:", err);
+      });
+
+      // Add audio track if present (as a separate track)
       const audioTrack = pending.stream.getAudioTracks()[0];
       let audioSender: RTCRtpSender | null = null;
-      if (audioTrack) {
-        audioSender = this.peerConnection.addTrack(audioTrack, pending.stream);
+      if (audioTrack && tIdx < newTransceivers.length) {
+        const audioTransceiver = newTransceivers[tIdx++];
+        audioTransceiver.direction = "sendrecv";
+        audioTransceiver.sender.replaceTrack(audioTrack).catch(console.error);
+        audioSender = audioTransceiver.sender;
       }
 
       // Move from pending to active
       this.screenShares.set(streamId, {
         stream: pending.stream,
-        videoSender,
+        videoSender: transceiver.sender,
         audioSender,
       });
 
