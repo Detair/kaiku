@@ -148,8 +148,24 @@ Currently suppressed in browser.ts. For client-initiated offers, this event shou
 
 Additional time for: browser compatibility testing, glare edge cases, multi-user scenarios, webrtc-rs debugging.
 
+## Spike Results
+
+### Spike 1: sendrecv + replaceTrack — FAILED (2026-03-21)
+
+Changed server video transceiver from `Recvonly` to `Sendrecv`. Client uses `replaceTrack(videoTrack)` on the pre-allocated transceiver. No renegotiation.
+
+**Result:** Zero video RTP packets reached the server. `replaceTrack` does not activate video sending on a transceiver negotiated with a dummy track, regardless of direction. The dummy track's codec negotiation is likely incompatible with the real video track's RTP stream.
+
+**Conclusion:** `replaceTrack` cannot be used with dummy-track transceivers. The transceiver must be negotiated with the actual video track (or null track with matching codec) for RTP to flow.
+
+### Spike 2: Client-initiated offers — NOT YET TESTED
+
+This is the remaining path. Must validate:
+1. webrtc-rs supports `set_remote_description(client_offer)` on a connection where the server was the original offerer
+2. Glare handling when both sides create offers simultaneously
+
 ## Next Steps
 
-1. **Start with Spike 1:** Change `add_recv_transceiver` to use `sendrecv` direction (not `recvonly`). Test if `replaceTrack` activates continuous RTP flow.
-2. If that works, implement proper screen share lifecycle (start/stop/cleanup) on this simpler foundation.
-3. Only fall back to client-initiated offers if the `sendrecv` approach fails.
+1. **Spike 2:** Test webrtc-rs client-initiated offer support in isolation
+2. If it works, implement bidirectional offer/answer with glare handling
+3. Estimated effort: 14-20 hours (dedicated session)
