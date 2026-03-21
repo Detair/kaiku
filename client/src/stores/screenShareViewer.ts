@@ -92,6 +92,14 @@ export function addAvailableTrack(
   const newTracks = new Map(viewerState.availableTracks);
   newTracks.set(streamId, { track, userId, username, sourceLabel });
   setViewerState({ availableTracks: newTracks });
+
+  // Auto-start viewing if no stream is currently being viewed
+  if (!viewerState.viewingStreamId) {
+    setViewerState({
+      viewingStreamId: streamId,
+      videoTrack: track,
+    });
+  }
 }
 
 /**
