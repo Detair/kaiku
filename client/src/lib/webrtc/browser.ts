@@ -895,49 +895,25 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private async addPendingScreenSharesToTransceivers(): Promise<void> {
     if (!this.peerConnection || this.pendingScreenShares.size === 0) return;
 
-    // Find unused recvonly video transceivers from the server's offer
-    const transceivers = this.peerConnection.getTransceivers();
-    // Find transceivers where we should send video but haven't set a real track yet.
-    // After setRemoteDescription, server's recvonly m-line becomes sendonly on client.
-    // The sender may have a dummy track (from server's msid fix) or null.
-    const availableVideoTransceivers = transceivers.filter((t) => {
-      const isSendDirection = t.direction === "sendonly" || t.direction === "sendrecv";
-      const isVideo = t.sender.track?.kind === "video" || t.receiver.track?.kind === "video";
-      // Check if this transceiver already has one of our active screen share tracks
-      const isAlreadyUsed = [...this.screenShares.values()].some(
-        (s) => s.videoSender === t.sender,
-      );
-      return isSendDirection && isVideo && !isAlreadyUsed;
-    });
-
-    console.log("[BrowserVoiceAdapter] Available video transceivers for pending shares:",
-      availableVideoTransceivers.length, "pending:", this.pendingScreenShares.size);
-
     for (const [streamId, pending] of this.pendingScreenShares) {
-      const transceiver = availableVideoTransceivers.shift();
-      if (!transceiver) {
-        console.warn("[BrowserVoiceAdapter] No matching transceiver for pending screen share:", streamId);
-        continue;
-      }
-
       const videoTrack = pending.stream.getVideoTracks()[0];
       if (!videoTrack) continue;
 
-      // Set the track on the transceiver
-      transceiver.direction = "sendonly";
-      await transceiver.sender.replaceTrack(videoTrack);
+      // Use addTrack — the browser automatically matches to the right
+      // transceiver (the one the server created for this screen share).
+      const videoSender = this.peerConnection.addTrack(videoTrack, pending.stream);
 
       // Add audio track if present
       const audioTrack = pending.stream.getAudioTracks()[0];
       let audioSender: RTCRtpSender | null = null;
       if (audioTrack) {
-        audioSender = this.peerConnection!.addTrack(audioTrack, pending.stream);
+        audioSender = this.peerConnection.addTrack(audioTrack, pending.stream);
       }
 
       // Move from pending to active
       this.screenShares.set(streamId, {
         stream: pending.stream,
-        videoSender: transceiver.sender,
+        videoSender,
         audioSender,
       });
 
