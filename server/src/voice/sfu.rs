@@ -700,6 +700,12 @@ impl SfuServer {
 
                     // Create subscriber tracks for all existing peers
                     let other_peers = room.get_other_peers(uid).await;
+                    info!(
+                        source = %uid,
+                        source_type = ?source_type,
+                        other_peer_count = other_peers.len(),
+                        "Forwarding track to subscribers"
+                    );
                     for other_peer in other_peers {
                         if let Ok(local_track) = room
                             .track_router
