@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Username and display name tooltips on hover in user panel
 - 404 page available at `/404`
 - Terms of Service and Privacy Policy notice on register page
+- Category management UI in guild settings — create, rename, delete categories and subcategories (#433)
+- Category type restriction — categories can be set to text-only, voice-only, or mixed; enforced on channel create, move, and drag-and-drop with warning toast (#434)
+- Guild settings modal now uses vertical sidebar navigation instead of horizontal tabs — scales to any number of sections (#435)
 
 ### Changed
 - Library page now uses theme-aware colors instead of hardcoded zinc palette
@@ -44,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WebSocket authentication now uses `Sec-WebSocket-Protocol` header instead of URL query parameter, preventing JWT token exposure in reverse proxy logs
 
 ### Fixed
+- Restored `presetUno()` in UnoCSS config — accidentally removed in dependency update, breaking all frontend styling (#418)
+- Favorites API no longer returns database error — cast PostgreSQL `channel_type` enum to TEXT (#419)
+- Read rate limit increased from 200 to 1000 requests/minute — login burst no longer triggers 429 errors (#420)
+- Messages no longer overlap in chat — rewrote virtualizer to use TanStack Virtual directly, preserving Solid.js reactive tracking (#421, #423, #425, #426, #427)
+- Sending a message now reliably auto-scrolls to the new message (#428)
+- Channel drag-and-drop now shows a prominent insertion line indicator instead of barely-visible borders (#422)
+- Channel drag-and-drop between categories now works reliably — fixed event propagation, container architecture, and position serialization (#429, #430, #431, #432)
+- Rate limits doubled across the board — Write: 60/min, Read: 2000/min, WS: 120/min (#436)
+- Auto-scroll on own message send now verifies and retries if virtualizer hadn't updated scrollHeight (#436)
 - Beta deployment now correctly generates Ed25519 JWT key pair instead of unused HMAC secret — fresh deployments no longer fail on startup
 - WebSocket reconnect now restores channel subscriptions and reloads messages, preventing silent message loss after network interruptions
 - Added reconnection toast notification so users can see when the connection is being re-established
