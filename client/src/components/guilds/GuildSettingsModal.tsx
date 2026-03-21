@@ -156,7 +156,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 when={guild()?.icon_url}
                 fallback={
                   <div class="w-10 h-10 rounded-xl bg-accent-primary/20 flex items-center justify-center">
-                    <span class="text-lg font-bold text-accent-primary">
+                    <span class="text-lg font-bold text-text-primary">
                       {guild()?.name.charAt(0).toUpperCase()}
                     </span>
                   </div>
