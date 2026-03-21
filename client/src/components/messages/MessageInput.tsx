@@ -460,8 +460,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     setIsDragging(false);
 
     if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-      // Add all dropped files to pending
       Array.from(e.dataTransfer.files).forEach(addPendingFile);
+      textareaRef?.focus();
     }
   };
 
@@ -474,6 +474,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       if (files) {
         Array.from(files).forEach(addPendingFile);
       }
+      textareaRef?.focus();
     };
     input.click();
   };
