@@ -796,14 +796,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.webcamSender,
       ].filter(Boolean));
 
+      // Server creates transceivers in order: audio (0), video (1).
+      // Use index 1 (video) if available and not already used.
+      // Log all transceivers for debugging.
+      console.warn("[BrowserVoiceAdapter] Transceivers for replaceTrack:",
+        transceivers.map((t, i) => `[${i}] mid=${t.mid} recv=${t.receiver?.track?.kind ?? 'null'} send=${t.sender?.track?.kind ?? 'null'} dir=${t.direction}`).join(", "));
+
       const videoTransceiver = transceivers.find(t => {
-        // Check if this is a video transceiver by examining receiver track kind,
-        // sender track kind, or codec capabilities
-        const recvKind = t.receiver?.track?.kind;
-        const sendKind = t.sender?.track?.kind;
-        const codecKind = t.sender.getParameters().codecs?.[0]?.mimeType?.startsWith("video/");
-        const isVideo = recvKind === "video" || sendKind === "video" || codecKind;
-        return isVideo && !usedSenders.has(t.sender);
+        // Match by receiver track kind (most reliable — set from server's offer)
+        if (t.receiver?.track?.kind === "video" && !usedSenders.has(t.sender)) return true;
+        // Match by sender track kind
+        if (t.sender?.track?.kind === "video" && !usedSenders.has(t.sender)) return true;
+        return false;
       });
 
       if (videoTransceiver) {
