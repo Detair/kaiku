@@ -50,8 +50,8 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
       disabled={voiceState.state !== "connected" || atLimit()}
       class={`p-2 rounded-full transition-colors ${
         voiceState.screenSharing
-          ? "bg-success/20 text-success hover:bg-success/30 hover:text-success"
-          : "bg-background-secondary text-text-secondary hover:bg-background-primary hover:text-text-primary"
+          ? "bg-accent-success/20 text-text-primary hover:bg-accent-success/30"
+          : "bg-surface-layer2 text-text-secondary hover:bg-surface-highlight hover:text-text-primary"
       } ${atLimit() ? "opacity-50 cursor-not-allowed" : ""}`}
       title={buttonTitle()}
     >

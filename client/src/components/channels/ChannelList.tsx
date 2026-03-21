@@ -45,7 +45,6 @@ import {
 } from "@/stores/categories";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
-import { joinVoice, leaveVoice, isInChannel } from "@/stores/voice";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
 import type { ChannelWithUnread, ChannelCategory } from "@/lib/types";
@@ -172,24 +171,9 @@ const ChannelList: Component = () => {
     );
   };
 
-  const handleVoiceChannelClick = async (channelId: string) => {
-    // Always select the channel so the main view shows VoiceChannelView
+  const handleVoiceChannelClick = (channelId: string) => {
+    // Just select the channel — VoiceChannelView handles join/leave
     selectChannel(channelId);
-
-    if (isInChannel(channelId)) {
-      await leaveVoice();
-    } else {
-      try {
-        await joinVoice(channelId);
-      } catch (err) {
-        console.error("Failed to join voice:", err);
-        showToast({
-          type: "error",
-          title: "Could not join voice channel. Please try again.",
-          duration: 8000,
-        });
-      }
-    }
   };
 
   const openCreateModal = (
