@@ -902,8 +902,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // The sender may have a dummy track (from server's msid fix) or null.
     const availableVideoTransceivers = transceivers.filter((t) => {
       const isSendDirection = t.direction === "sendonly" || t.direction === "sendrecv";
-      const isVideo = t.sender.track?.kind === "video" || t.receiver.track?.kind === "video" ||
-        t.mid !== null; // has a negotiated m-line
+      const isVideo = t.sender.track?.kind === "video" || t.receiver.track?.kind === "video";
       // Check if this transceiver already has one of our active screen share tracks
       const isAlreadyUsed = [...this.screenShares.values()].some(
         (s) => s.videoSender === t.sender,
