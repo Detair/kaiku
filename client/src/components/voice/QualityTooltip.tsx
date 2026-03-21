@@ -32,10 +32,10 @@ function getMetricStatus(
 }
 
 export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
-  const latencyStatus = () => getMetricStatus(props.metrics.latency, "latency");
-  const lossStatus = () =>
-    getMetricStatus(props.metrics.packetLoss, "packetLoss");
-  const jitterStatus = () => getMetricStatus(props.metrics.jitter, "jitter");
+  const m = () => props.metrics;
+  const latencyStatus = () => m() ? getMetricStatus(m()!.latency, "latency") : "ok" as const;
+  const lossStatus = () => m() ? getMetricStatus(m()!.packetLoss, "packetLoss") : "ok" as const;
+  const jitterStatus = () => m() ? getMetricStatus(m()!.jitter, "jitter") : "ok" as const;
 
   const statusIcon = (status: "ok" | "warning" | "critical") => {
     switch (status) {
@@ -77,7 +77,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
                   : "text-text-secondary"
               }
             >
-              {props.metrics.latency}ms
+              {m()?.latency}ms
             </span>
             <span class={statusColor(latencyStatus())}>
               {statusIcon(latencyStatus())}
@@ -95,7 +95,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
                   : "text-text-secondary"
               }
             >
-              {props.metrics.packetLoss.toFixed(1)}%
+              {m()?.packetLoss?.toFixed(1) ?? "0.0"}%
             </span>
             <span class={statusColor(lossStatus())}>
               {statusIcon(lossStatus())}
@@ -113,7 +113,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
                   : "text-text-secondary"
               }
             >
-              {props.metrics.jitter}ms
+              {m()?.jitter}ms
             </span>
             <span class={statusColor(jitterStatus())}>
               {statusIcon(jitterStatus())}
@@ -127,7 +127,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
       <div class="text-xs text-text-secondary">
         Quality:{" "}
         <span class="text-text-primary">
-          {qualityLabels[props.metrics.quality]}
+          {qualityLabels[m()?.quality ?? "unknown"]}
         </span>
       </div>
     </div>
