@@ -167,7 +167,7 @@ const MessageList: Component<MessageListProps> = (props) => {
     // Activate sticky mode — keeps re-scrolling for 500ms to handle
     // virtualizer measurement reflows that shrink scrollHeight
     if (sticky) {
-      stickyBottomUntil = Date.now() + 500;
+      stickyBottomUntil = Date.now() + 1500;
     }
 
     virtualizer.scrollToIndex(count - 1, {
@@ -366,7 +366,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       const isOwnSend = lastMsg?.id?.startsWith("pending:");
 
       if (isOwnSend || isAtBottom()) {
-        requestAnimationFrame(() => scrollToBottom(isOwnSend));
+        requestAnimationFrame(() => scrollToBottom(true));
       } else {
         setHasNewMessages(true);
         setNewMessageCount(
@@ -374,19 +374,19 @@ const MessageList: Component<MessageListProps> = (props) => {
         );
       }
     } else if (currentCount > 0 && prevMessageCount === 0) {
-      // Initial load complete
+      // Initial load complete — sticky to absorb measurement reflows
       if (pendingHighlightId) {
         requestAnimationFrame(() => {
           if (pendingHighlightId) {
             const found = scrollToMessage(pendingHighlightId);
             if (!found) {
               pendingHighlightId = null;
-              scrollToBottom(false);
+              scrollToBottom(true);
             }
           }
         });
       } else {
-        requestAnimationFrame(() => scrollToBottom(false));
+        requestAnimationFrame(() => scrollToBottom(true));
       }
     }
 
