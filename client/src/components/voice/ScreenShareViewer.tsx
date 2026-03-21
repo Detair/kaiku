@@ -78,19 +78,22 @@ const ScreenShareViewer: Component = () => {
     if (track && videoRef) {
       const stream = new MediaStream([track]);
       videoRef.srcObject = stream;
-      videoRef.muted = true; // Required for autoplay policy
+      videoRef.muted = true;
       setAutoplayBlocked(false);
-      // Delay play to let DOM settle — prevents AbortError from element re-mount
-      requestAnimationFrame(() => {
-        if (videoRef && videoRef.srcObject) {
-          videoRef.play().catch((err) => {
-            if (err.name !== "AbortError") {
-              console.warn("[ScreenShareViewer] Autoplay blocked:", err);
-              setAutoplayBlocked(true);
-            }
-          });
-        }
-      });
+
+      // Retry play with increasing delays until it succeeds
+      const tryPlay = (attempt: number) => {
+        if (!videoRef || !videoRef.srcObject) return;
+        videoRef.play().catch((err) => {
+          if (err.name === "AbortError" && attempt < 3) {
+            setTimeout(() => tryPlay(attempt + 1), 100 * (attempt + 1));
+          } else if (err.name !== "AbortError") {
+            console.warn("[ScreenShareViewer] Autoplay blocked:", err);
+            setAutoplayBlocked(true);
+          }
+        });
+      };
+      requestAnimationFrame(() => tryPlay(0));
     }
   });
 
@@ -479,6 +482,7 @@ const SpotlightView: Component<{
           ref={props.videoRef}
           autoplay
           playsinline
+          muted
           class="max-w-full max-h-full object-contain"
         />
         <Show when={props.autoplayBlocked}>
@@ -616,6 +620,7 @@ const TheaterView: Component<{
           ref={props.videoRef}
           autoplay
           playsinline
+          muted
           class="max-w-full max-h-full object-contain"
         />
         <Show when={props.autoplayBlocked}>
