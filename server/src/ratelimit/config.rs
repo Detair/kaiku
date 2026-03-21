@@ -109,35 +109,35 @@ impl Default for RateLimits {
                 window_secs: 60,
             },
             auth_other: LimitConfig {
-                requests: 20,
+                requests: 40,
                 window_secs: 60,
             },
             write: LimitConfig {
-                requests: 30,
-                window_secs: 60,
-            },
-            social: LimitConfig {
-                requests: 20,
-                window_secs: 60,
-            },
-            read: LimitConfig {
-                requests: 1000,
-                window_secs: 60,
-            },
-            ws_connect: LimitConfig {
-                requests: 10,
-                window_secs: 60,
-            },
-            ws_message: LimitConfig {
                 requests: 60,
                 window_secs: 60,
             },
+            social: LimitConfig {
+                requests: 40,
+                window_secs: 60,
+            },
+            read: LimitConfig {
+                requests: 2000,
+                window_secs: 60,
+            },
+            ws_connect: LimitConfig {
+                requests: 20,
+                window_secs: 60,
+            },
+            ws_message: LimitConfig {
+                requests: 120,
+                window_secs: 60,
+            },
             voice_join: LimitConfig {
-                requests: 5, // 5 joins per minute should be plenty for normal use
+                requests: 10,
                 window_secs: 60,
             },
             search: LimitConfig {
-                requests: 15,
+                requests: 30,
                 window_secs: 60,
             },
             data_governance: LimitConfig {
@@ -315,7 +315,7 @@ mod tests {
         let limits = RateLimits::default();
         assert_eq!(limits.auth_login.requests, 3);
         assert_eq!(limits.auth_login.window_secs, 60);
-        assert_eq!(limits.read.requests, 1000);
+        assert_eq!(limits.read.requests, 2000);
         assert_eq!(limits.failed_auth.max_failures, 10);
         assert_eq!(limits.failed_auth.block_duration_secs, 900);
     }
