@@ -138,11 +138,17 @@ export function removeAvailableTrack(streamId: string): void {
  * as available, uses the existing track; otherwise this is a no-op
  * (use addAvailableTrack first).
  */
-export function startViewing(streamId: string): void {
+export function startViewing(streamId: string, retries = 0): void {
   const info = viewerState.availableTracks.get(streamId);
   if (!info) {
+    // The WebSocket broadcast arrives before the WebRTC track.
+    // Retry a few times to wait for addAvailableTrack to register it.
+    if (retries < 10) {
+      setTimeout(() => startViewing(streamId, retries + 1), 500);
+      return;
+    }
     console.warn(
-      "[ScreenShareViewer] Cannot start viewing — no track for stream:",
+      "[ScreenShareViewer] Cannot start viewing — no track for stream after retries:",
       streamId,
     );
     return;
