@@ -250,7 +250,7 @@ function startMetricsLoop(): void {
         const sessionId = voiceState.sessionId;
         if (sessionId && voiceState.channelId) {
           tauri.wsSend({
-            type: "VoiceStats",
+            type: "voice_stats",
             channel_id: voiceState.channelId,
             session_id: sessionId,
             latency: metrics.latency,
