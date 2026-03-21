@@ -359,7 +359,33 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         sdp,
       });
 
-      // Create answer — tracks already added via addTrack() are included
+      // Add pending screen share tracks AFTER setRemoteDescription (so the
+      // server's recv transceiver exists) and BEFORE createAnswer (so the
+      // answer includes the track). addTrack() auto-matches to the right
+      // transceiver because the browser just created it from the offer.
+      if (this.pendingScreenShares.size > 0) {
+        for (const [streamId, pending] of this.pendingScreenShares) {
+          const videoTrack = pending.stream.getVideoTracks()[0];
+          if (!videoTrack) continue;
+
+          const videoSender = this.peerConnection.addTrack(videoTrack, pending.stream);
+          const audioTrack = pending.stream.getAudioTracks()[0];
+          let audioSender: RTCRtpSender | null = null;
+          if (audioTrack) {
+            audioSender = this.peerConnection.addTrack(audioTrack, pending.stream);
+          }
+
+          this.screenShares.set(streamId, {
+            stream: pending.stream,
+            videoSender,
+            audioSender,
+          });
+          console.warn("[BrowserVoiceAdapter] Pending screen share added to peer connection:", streamId);
+        }
+        this.pendingScreenShares.clear();
+      }
+
+      // Create answer — includes the newly added tracks
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
 
@@ -785,28 +811,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.handleScreenShareEnded(streamId);
       };
 
-      // Add track directly to peer connection. The server will add a
-      // recv transceiver and renegotiate — the browser handles matching
-      // the track to the right transceiver via the offer/answer exchange.
-      const videoSender = this.peerConnection.addTrack(videoTrack, stream);
-
-      // Add audio track if present
-      const audioTrack = stream.getAudioTracks()[0];
-      let audioSender: RTCRtpSender | null = null;
-      if (audioTrack) {
-        audioSender = this.peerConnection.addTrack(audioTrack, stream);
-      }
-
-      this.screenShares.set(streamId, {
-        stream,
-        videoSender,
-        audioSender,
-      });
-
-      console.warn("[BrowserVoiceAdapter] Screen share track added directly", {
-        streamId,
-        hasAudio: !!audioTrack,
-      });
+      // Store as pending — track will be added in handleOffer() AFTER
+      // setRemoteDescription but BEFORE createAnswer. This is critical:
+      // addTrack() must happen after the server's offer creates the recv
+      // transceiver, so the browser can match them correctly.
+      this.pendingScreenShares.set(streamId, { stream, quality: options?.quality ?? "medium" });
+      console.warn("[BrowserVoiceAdapter] Screen share captured (pending)", streamId);
 
       return { ok: true, value: undefined };
     } catch (err) {
