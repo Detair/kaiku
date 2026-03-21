@@ -811,9 +811,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       });
 
       if (videoTransceiver) {
-        // replaceTrack on existing transceiver — no renegotiation needed
-        await videoTransceiver.sender.replaceTrack(videoTrack);
+        // Change direction FIRST so the next offer/answer reflects it
         videoTransceiver.direction = "sendrecv";
+        await videoTransceiver.sender.replaceTrack(videoTrack);
+        // Server will renegotiate — the answer will include this track
         console.warn("[BrowserVoiceAdapter] Screen share via replaceTrack on existing transceiver", streamId);
 
         const audioTrack = stream.getAudioTracks()[0];
