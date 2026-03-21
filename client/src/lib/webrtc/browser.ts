@@ -1304,6 +1304,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const track = event.track;
       const stream = event.streams[0];
 
+      if (!stream) {
+        console.warn(`[BrowserVoiceAdapter] Remote ${track.kind} track received WITHOUT stream association — cannot identify source`);
+        return;
+      }
+
       // Parse stream ID format: "{userId}:{sourceType}" using Display format
       // (e.g. "uuid:webcam", "uuid:screen_video:stream_uuid", "uuid:microphone")
       // Split on first colon only to get [userId, sourceType]
@@ -1312,7 +1317,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const sourceType = colonIdx > 0 ? stream.id.slice(colonIdx + 1) : "";
 
       console.log(
-        `[BrowserVoiceAdapter] Remote ${track.kind} track received, source: ${sourceType}, from: ${userId}`,
+        `[BrowserVoiceAdapter] Remote ${track.kind} track received, source: ${sourceType}, from: ${userId}, streamId: ${stream.id}`,
       );
 
       if (track.kind === "video") {
