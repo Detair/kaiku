@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
@@ -199,6 +199,12 @@ impl TrackRouter {
                 }
             }
         }
+    }
+
+    /// Count subscribers for a specific source track (for debugging).
+    pub fn subscription_count(&self, source_user_id: Uuid, source_type: TrackSource) -> usize {
+        let key = (source_user_id, source_type);
+        self.subscriptions.get(&key).map(|s| s.len()).unwrap_or(0)
     }
 
     /// Remove a subscriber from a specific source track.
@@ -416,10 +422,23 @@ pub fn spawn_rtp_forwarder(
 ) {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 1500]; // MTU size
+        let mut packet_count: u64 = 0;
 
         loop {
             match track.read(&mut buf).await {
                 Ok((packet, _attributes)) => {
+                    packet_count += 1;
+                    if packet_count == 1 || packet_count.is_multiple_of(500) {
+                        let sub_count = router.subscription_count(source_user_id, source_type);
+                        info!(
+                            source = %source_user_id,
+                            source_type = ?source_type,
+                            layer = ?layer,
+                            packet_count = packet_count,
+                            subscribers = sub_count,
+                            "RTP forwarder active"
+                        );
+                    }
                     // Forward the RTP packet to all subscribers whose active layer matches.
                     router
                         .forward_rtp(source_user_id, source_type, layer, &packet)
