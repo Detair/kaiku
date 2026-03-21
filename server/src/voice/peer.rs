@@ -1,9 +1,9 @@
 //! WebRTC Peer Connection Management
 //!
-//! Each participant has two PeerConnections:
-//! - **publisher_pc**: receives tracks FROM the client (mic, screen, webcam).
+//! Each participant has two `PeerConnection`s:
+//! - **`publisher_pc`**: receives tracks FROM the client (mic, screen, webcam).
 //!   The client creates offers for this connection.
-//! - **subscriber_pc**: sends tracks TO the client (other users' audio,
+//! - **`subscriber_pc`**: sends tracks TO the client (other users' audio,
 //!   screen shares, webcams). The server creates offers for this connection.
 
 use std::collections::HashMap;
@@ -24,7 +24,7 @@ use crate::ws::OutboundMsg;
 
 /// Represents a user's WebRTC connection to the SFU.
 ///
-/// Uses two PeerConnections (dual-PC architecture) to cleanly separate
+/// Uses two `PeerConnection`s (dual-PC architecture) to cleanly separate
 /// upstream (publish) and downstream (subscribe) media flows.
 pub struct Peer {
     /// User ID.
@@ -41,10 +41,10 @@ pub struct Peer {
     /// Sends tracks TO client (other users' audio, screen shares). Server creates offers.
     pub subscriber_pc: Arc<RTCPeerConnection>,
 
-    /// Tracks received from this peer (on publisher_pc).
+    /// Tracks received from this peer (on `publisher_pc`).
     /// Map: `TrackSource` -> remote track
     pub incoming_tracks: RwLock<HashMap<TrackSource, Arc<TrackRemote>>>,
-    /// Tracks being forwarded to this peer (on subscriber_pc).
+    /// Tracks being forwarded to this peer (on `subscriber_pc`).
     /// Map: `(source_user_id, source_type)` -> local track
     outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), Arc<TrackLocalStaticRTP>>>,
 
@@ -97,7 +97,7 @@ impl Peer {
     }
 
     /// Add an outgoing track to forward media from another user.
-    /// The track is added to the subscriber PeerConnection.
+    /// The track is added to the subscriber `PeerConnection`.
     /// Returns the `RTCRtpSender` so callers can read RTCP feedback (e.g. REMB).
     pub async fn add_outgoing_track(
         &self,
@@ -142,7 +142,7 @@ impl Peer {
         }
     }
 
-    /// Returns the number of outgoing tracks on the subscriber PeerConnection.
+    /// Returns the number of outgoing tracks on the subscriber `PeerConnection`.
     pub async fn outgoing_tracks_count(&self) -> usize {
         self.outgoing_tracks.read().await.len()
     }

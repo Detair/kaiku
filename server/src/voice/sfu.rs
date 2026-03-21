@@ -520,7 +520,7 @@ impl SfuServer {
         }
     }
 
-    /// Create a new peer with two PeerConnections (publisher + subscriber).
+    /// Create a new peer with two `PeerConnection`s (publisher + subscriber).
     pub async fn create_peer(
         &self,
         user_id: Uuid,
@@ -928,7 +928,7 @@ impl SfuServer {
         Ok(())
     }
 
-    /// Handle an ICE candidate from a peer, routed by pc_type.
+    /// Handle an ICE candidate from a peer, routed by `pc_type`.
     pub async fn handle_ice_candidate(
         peer: &Arc<Peer>,
         candidate_str: &str,
