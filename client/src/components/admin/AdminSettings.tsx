@@ -474,7 +474,7 @@ const AdminSettings: Component = () => {
                             classList={{
                               "bg-status-success/20 text-status-success":
                                 provider.enabled,
-                              "bg-white/10 text-text-muted": !provider.enabled,
+                              "bg-white/10 text-text-secondary": !provider.enabled,
                             }}
                           >
                             {provider.enabled ? "Enabled" : "Disabled"}

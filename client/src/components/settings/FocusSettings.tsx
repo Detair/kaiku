@@ -298,7 +298,7 @@ const FocusSettings: Component = () => {
                     <span class="text-sm text-text-primary font-mono">
                       {process}
                     </span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/10 text-accent-primary uppercase tracking-wide">
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary uppercase tracking-wide">
                       {category}
                     </span>
                   </div>
@@ -402,12 +402,12 @@ const FocusSettings: Component = () => {
                       {mode.name}
                     </span>
                     <Show when={mode.builtin}>
-                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-text-muted uppercase tracking-wide">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-text-secondary uppercase tracking-wide">
                         built-in
                       </span>
                     </Show>
                     <Show when={isActive()}>
-                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-accent-primary uppercase tracking-wide">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary uppercase tracking-wide">
                         active
                       </span>
                     </Show>
@@ -516,7 +516,7 @@ const FocusSettings: Component = () => {
                                 }
                                 class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
                                 classList={{
-                                  "border-accent-primary bg-accent-primary/10 text-accent-primary":
+                                  "border-accent-primary bg-accent-primary/20 text-text-primary":
                                     isSelected(),
                                   "border-white/10 text-text-secondary hover:border-white/20":
                                     !isSelected(),

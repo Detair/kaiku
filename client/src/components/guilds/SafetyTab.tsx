@@ -435,7 +435,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
               </p>
               <button
                 onClick={() => setShowAddPattern(true)}
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary/20 text-accent-primary text-sm font-medium hover:bg-accent-primary/30 transition-colors"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary/20 text-text-primary text-sm font-medium hover:bg-accent-primary/30 transition-colors"
               >
                 <Plus class="w-4 h-4" />
                 Add Pattern

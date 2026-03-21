@@ -160,7 +160,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         class="w-full flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all duration-200 group cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50"
         classList={{
           // Voice connected/connecting state (green glow)
-          "bg-accent-primary/10 text-accent-primary border border-accent-primary/30":
+          "bg-accent-primary/20 text-text-primary border border-accent-primary/30":
             isActive(),
           // Pulsing border while connecting
           "animate-pulse": isConnecting(),
