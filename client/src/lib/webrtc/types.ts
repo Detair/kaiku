@@ -241,6 +241,8 @@ export interface VoiceAdapter {
   getScreenShareInfo(streamId?: string): { streamId: string; hasAudio: boolean; sourceLabel: string } | null;
   /** Get info for all active screen shares. */
   getAllScreenShareInfo(): { streamId: string; hasAudio: boolean; sourceLabel: string }[];
+  /** Get the video track for a local screen share. */
+  getScreenShareTrack(streamId: string): MediaStreamTrack | null;
   /** Enumerate native capture sources (Tauri only). Returns null if not supported. */
   enumerateCaptureSources?(): Promise<CaptureSource[] | null>;
 

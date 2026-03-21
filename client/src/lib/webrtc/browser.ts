@@ -725,6 +725,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   /**
+   * Get the video track for a local screen share.
+   */
+  getScreenShareTrack(streamId: string): MediaStreamTrack | null {
+    const entry = this.screenShares.get(streamId);
+    return entry?.stream.getVideoTracks()[0] ?? null;
+  }
+
+  /**
    * Get info for all active screen shares.
    */
   getAllScreenShareInfo(): { streamId: string; hasAudio: boolean; sourceLabel: string }[] {
