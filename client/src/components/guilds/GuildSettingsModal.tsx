@@ -110,6 +110,21 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       PermissionBits.MANAGE_CHANNELS,
     );
 
+  const navItem = (tab: TabId, Icon: Component<{ class?: string }>, label: string, testId?: string) => (
+    <button
+      onClick={() => setActiveTab(tab)}
+      data-testid={testId}
+      class="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+      classList={{
+        "bg-accent-primary/15 text-accent-primary": activeTab() === tab,
+        "text-text-secondary hover:text-text-primary hover:bg-white/5": activeTab() !== tab,
+      }}
+    >
+      <Icon class="w-4 h-4 shrink-0" />
+      {label}
+    </button>
+  );
+
   const handleBackdropClick = (e: MouseEvent) => {
     if (e.target === e.currentTarget) {
       props.onClose();
@@ -131,7 +146,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
         tabIndex={-1}
       >
         <div
-          class="border border-white/10 rounded-2xl w-[90vw] md:w-[800px] max-w-4xl max-h-[85vh] flex flex-col shadow-2xl"
+          class="border border-white/10 rounded-2xl w-[90vw] md:w-[900px] max-w-5xl max-h-[85vh] flex flex-col shadow-2xl"
           style="background-color: var(--color-surface-base)"
         >
           {/* Header */}
@@ -157,145 +172,37 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </button>
           </div>
 
-          {/* Tabs */}
-          <div class="flex border-b border-white/10">
-            <Show when={canManageGuild()}>
-              <button
-                onClick={() => setActiveTab("general")}
-                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-                classList={{
-                  "text-accent-primary border-b-2 border-accent-primary":
-                    activeTab() === "general",
-                  "text-text-secondary hover:text-text-primary":
-                    activeTab() !== "general",
-                }}
-              >
-                <Settings class="w-4 h-4" />
-                General
-              </button>
-            </Show>
-            <Show when={isOwner()}>
-              <button
-                onClick={() => setActiveTab("invites")}
-                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-                classList={{
-                  "text-accent-primary border-b-2 border-accent-primary":
-                    activeTab() === "invites",
-                  "text-text-secondary hover:text-text-primary":
-                    activeTab() !== "invites",
-                }}
-              >
-                <Link class="w-4 h-4" />
-                Invites
-              </button>
-            </Show>
-            <button
-              onClick={() => setActiveTab("members")}
-              data-testid="guild-settings-tab-members"
-              class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-              classList={{
-                "text-accent-primary border-b-2 border-accent-primary":
-                  activeTab() === "members",
-                "text-text-secondary hover:text-text-primary":
-                  activeTab() !== "members",
-              }}
-            >
-              <Users class="w-4 h-4" />
-              Members
-            </button>
-            <Show when={canManageChannels()}>
-              <button
-                onClick={() => setActiveTab("categories")}
-                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-                classList={{
-                  "text-accent-primary border-b-2 border-accent-primary":
-                    activeTab() === "categories",
-                  "text-text-secondary hover:text-text-primary":
-                    activeTab() !== "categories",
-                }}
-              >
-                <LayoutList class="w-4 h-4" />
-                Categories
-              </button>
-            </Show>
-            <button
-              onClick={() => setActiveTab("usage")}
-              class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-              classList={{
-                "text-accent-primary border-b-2 border-accent-primary":
-                  activeTab() === "usage",
-                "text-text-secondary hover:text-text-primary":
-                  activeTab() !== "usage",
-              }}
-            >
-              <BarChart3 class="w-4 h-4" />
-              Usage
-            </button>
-            <Show when={canManageEmojis()}>
-              <button
-                onClick={() => setActiveTab("emojis")}
-                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-                classList={{
-                  "text-accent-primary border-b-2 border-accent-primary":
-                    activeTab() === "emojis",
-                  "text-text-secondary hover:text-text-primary":
-                    activeTab() !== "emojis",
-                }}
-              >
-                <Smile class="w-4 h-4" />
-                Emojis
-              </button>
-            </Show>
-            <Show when={canManageBots()}>
-              <button
-                onClick={() => setActiveTab("bots")}
-                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-                classList={{
-                  "text-accent-primary border-b-2 border-accent-primary":
-                    activeTab() === "bots",
-                  "text-text-secondary hover:text-text-primary":
-                    activeTab() !== "bots",
-                }}
-              >
-                <Bot class="w-4 h-4" />
-                Bots
-              </button>
-            </Show>
-            <Show when={canManageGuild()}>
-              <button
-                onClick={() => setActiveTab("safety")}
-                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-                classList={{
-                  "text-accent-primary border-b-2 border-accent-primary":
-                    activeTab() === "safety",
-                  "text-text-secondary hover:text-text-primary":
-                    activeTab() !== "safety",
-                }}
-              >
-                <ShieldAlert class="w-4 h-4" />
-                Safety
-              </button>
-            </Show>
-            <Show when={canManageRoles()}>
-              <button
-                onClick={() => setActiveTab("roles")}
-                data-testid="guild-settings-tab-roles"
-                class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
-                classList={{
-                  "text-accent-primary border-b-2 border-accent-primary":
-                    activeTab() === "roles",
-                  "text-text-secondary hover:text-text-primary":
-                    activeTab() !== "roles",
-                }}
-              >
-                <Shield class="w-4 h-4" />
-                Roles
-              </button>
-            </Show>
-          </div>
+          {/* Sidebar + Content */}
+          <div class="flex flex-1 min-h-0">
+            {/* Sidebar Navigation */}
+            <nav class="w-48 shrink-0 border-r border-white/10 py-3 px-2 overflow-y-auto">
+              <Show when={canManageGuild()}>
+                {navItem("general", Settings, "General")}
+              </Show>
+              <Show when={isOwner()}>
+                {navItem("invites", Link, "Invites")}
+              </Show>
+              {navItem("members", Users, "Members", "guild-settings-tab-members")}
+              <Show when={canManageChannels()}>
+                {navItem("categories", LayoutList, "Categories")}
+              </Show>
+              {navItem("usage", BarChart3, "Usage")}
+              <Show when={canManageEmojis()}>
+                {navItem("emojis", Smile, "Emojis")}
+              </Show>
+              <Show when={canManageBots()}>
+                {navItem("bots", Bot, "Bots")}
+              </Show>
+              <Show when={canManageGuild()}>
+                {navItem("safety", ShieldAlert, "Safety")}
+              </Show>
+              <Show when={canManageRoles()}>
+                {navItem("roles", Shield, "Roles", "guild-settings-tab-roles")}
+              </Show>
+            </nav>
 
-          {/* Content */}
-          <div class="flex-1 overflow-y-auto">
+            {/* Content */}
+            <div class="flex-1 overflow-y-auto min-h-0">
             <Show when={activeTab() === "general" && canManageGuild()}>
               <GeneralTab guildId={props.guildId} />
             </Show>
@@ -345,6 +252,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 />
               </Show>
             </Show>
+            </div>
           </div>
         </div>
       </div>
