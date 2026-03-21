@@ -86,11 +86,28 @@ impl Peer {
     }
 
     /// Add a recvonly transceiver for receiving media from the client.
-    /// Used for pre-negotiating slots (e.g. for initial mic).
+    /// Uses a dummy track with a unique stream ID to prevent duplicate
+    /// a=msid lines in the SDP offer (browsers reject duplicate msid).
     pub async fn add_recv_transceiver(&self, kind: RTPCodecType) -> Result<(), VoiceError> {
+        let unique_id = Uuid::now_v7().to_string();
+        let mime = if kind == RTPCodecType::Video {
+            "video/VP8".to_string()
+        } else {
+            "audio/opus".to_string()
+        };
+
+        let dummy_track = Arc::new(TrackLocalStaticRTP::new(
+            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                mime_type: mime,
+                ..Default::default()
+            },
+            format!("recv-{unique_id}"),
+            format!("recv-stream-{unique_id}"),
+        ));
+
         self.peer_connection
-            .add_transceiver_from_kind(
-                kind,
+            .add_transceiver_from_track(
+                dummy_track as Arc<dyn TrackLocal + Send + Sync>,
                 Some(RTCRtpTransceiverInit {
                     direction: RTCRtpTransceiverDirection::Recvonly,
                     send_encodings: vec![],
