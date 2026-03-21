@@ -411,14 +411,6 @@ export async function joinVoice(channelId: string): Promise<void> {
       await leaveVoice();
     }
 
-    // Always send voice_leave first to clean up any stale server session
-    // (e.g., from a previous browser tab that didn't disconnect properly)
-    try {
-      await tauri.wsSend({ type: "voice_leave", channel_id: channelId });
-    } catch {
-      // Ignore — the user might not have been in a channel
-    }
-
     setVoiceState({ state: "connecting", channelId, error: null });
 
     const adapter = await createVoiceAdapter();
