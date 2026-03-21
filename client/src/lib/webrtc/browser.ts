@@ -72,6 +72,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     audioSender: RTCRtpSender | null;
   }> = new Map();
 
+  // Pending screen shares — captured but not yet added to peer connection
+  // (waiting for server's renegotiation offer with recv transceivers)
+  private pendingScreenShares: Map<string, {
+    stream: MediaStream;
+    quality: string;
+  }> = new Map();
+
   // Webcam state
   private webcamStream: MediaStream | null = null;
   private webcamSender: RTCRtpSender | null = null;
@@ -358,6 +365,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         type: "offer",
         sdp,
       });
+
+      // Add any pending screen share tracks to matching transceivers
+      // (the server just added recv transceivers for these in its offer)
+      if (this.pendingScreenShares.size > 0) {
+        await this.addPendingScreenSharesToTransceivers();
+      }
 
       // Create answer
       const answer = await this.peerConnection.createAnswer();
@@ -700,12 +713,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
    * Returns null if not sharing.
    */
   getScreenShareInfo(streamId?: string): { streamId: string; hasAudio: boolean; sourceLabel: string } | null {
-    if (this.screenShares.size === 0) {
+    if (this.screenShares.size === 0 && this.pendingScreenShares.size === 0) {
       return null;
     }
 
     if (streamId) {
-      const entry = this.screenShares.get(streamId);
+      const entry = this.screenShares.get(streamId) ?? this.pendingScreenShares.get(streamId);
       if (!entry) return null;
 
       const videoTrack = entry.stream.getVideoTracks()[0];
@@ -729,7 +742,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
    */
   getScreenShareTrack(streamId: string): MediaStreamTrack | null {
     const entry = this.screenShares.get(streamId);
-    return entry?.stream.getVideoTracks()[0] ?? null;
+    if (entry) return entry.stream.getVideoTracks()[0] ?? null;
+    // Also check pending shares (track captured but not yet added to peer connection)
+    const pending = this.pendingScreenShares.get(streamId);
+    return pending?.stream.getVideoTracks()[0] ?? null;
   }
 
   /**
@@ -782,36 +798,16 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.handleScreenShareEnded(streamId);
       };
 
-      // Add video track to peer connection with simulcast encodings
+      // Don't add to peer connection yet — store as pending.
+      // The track will be added in handleOffer() after the server sends
+      // a renegotiation offer with the recv transceiver for this stream.
       const quality = options?.quality ?? "medium";
-      const qualityBitrate = QUALITY_BITRATES[quality];
-      const qualityFramerate = QUALITY_FRAMERATES[quality];
-      const transceiver = this.peerConnection.addTransceiver(videoTrack, {
-        direction: "sendonly",
-        streams: [stream],
-        sendEncodings: simulcastEncodings(qualityBitrate, qualityFramerate),
-      });
-      const videoSender = transceiver.sender;
+      this.pendingScreenShares.set(streamId, { stream, quality });
 
-      // If audio track present, add it too
-      const audioTrack = stream.getAudioTracks()[0];
-      let audioSender: RTCRtpSender | null = null;
-      if (audioTrack) {
-        audioSender = this.peerConnection.addTrack(audioTrack, stream);
-      }
-
-      // Store in the multi-stream map
-      this.screenShares.set(streamId, {
-        stream,
-        videoSender,
-        audioSender,
-      });
-
-      console.log("[BrowserVoiceAdapter] Screen share started", {
+      console.log("[BrowserVoiceAdapter] Screen share captured (pending)", {
         streamId,
-        hasAudio: !!audioTrack,
-        quality: options?.quality ?? "medium",
-        totalShares: this.screenShares.size,
+        hasAudio: !!stream.getAudioTracks().length,
+        quality,
       });
 
       return { ok: true, value: undefined };
@@ -896,6 +892,77 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         error: { type: "unknown", message: "Screen share failed unexpectedly" },
       };
     }
+  }
+
+  /**
+   * Add pending screen share tracks to the peer connection's transceivers.
+   * Called from handleOffer() after setRemoteDescription — the server's offer
+   * now contains recv transceivers for each pending screen share.
+   */
+  private async addPendingScreenSharesToTransceivers(): Promise<void> {
+    if (!this.peerConnection || this.pendingScreenShares.size === 0) return;
+
+    // Find unused recvonly video transceivers from the server's offer
+    const transceivers = this.peerConnection.getTransceivers();
+    const unusedRecvTransceivers = transceivers.filter(
+      (t) =>
+        t.receiver.track?.kind === "video" &&
+        t.direction === "recvonly" &&
+        !t.sender.track,
+    );
+
+    for (const [streamId, pending] of this.pendingScreenShares) {
+      const transceiver = unusedRecvTransceivers.shift();
+      if (!transceiver) {
+        console.warn("[BrowserVoiceAdapter] No matching recv transceiver for pending screen share:", streamId);
+        continue;
+      }
+
+      const videoTrack = pending.stream.getVideoTracks()[0];
+      if (!videoTrack) continue;
+
+      const qualityBitrate = QUALITY_BITRATES[pending.quality as keyof typeof QUALITY_BITRATES] ?? QUALITY_BITRATES.medium;
+      const qualityFramerate = QUALITY_FRAMERATES[pending.quality as keyof typeof QUALITY_FRAMERATES] ?? QUALITY_FRAMERATES.medium;
+
+      // Change direction to sendonly and set the track
+      transceiver.direction = "sendonly";
+      await transceiver.sender.replaceTrack(videoTrack);
+
+      // Set encoding parameters for simulcast
+      try {
+        const params = transceiver.sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = simulcastEncodings(qualityBitrate, qualityFramerate);
+        } else {
+          const targets = simulcastEncodings(qualityBitrate, qualityFramerate);
+          params.encodings = params.encodings.map((enc, i) => ({
+            ...enc,
+            ...(targets[i] ?? {}),
+          }));
+        }
+        await transceiver.sender.setParameters(params);
+      } catch (e) {
+        console.warn("[BrowserVoiceAdapter] Failed to set encoding params:", e);
+      }
+
+      // Add audio track if present
+      const audioTrack = pending.stream.getAudioTracks()[0];
+      let audioSender: RTCRtpSender | null = null;
+      if (audioTrack) {
+        audioSender = this.peerConnection!.addTrack(audioTrack, pending.stream);
+      }
+
+      // Move from pending to active
+      this.screenShares.set(streamId, {
+        stream: pending.stream,
+        videoSender: transceiver.sender,
+        audioSender,
+      });
+
+      console.log("[BrowserVoiceAdapter] Pending screen share activated:", streamId);
+    }
+
+    this.pendingScreenShares.clear();
   }
 
   async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
