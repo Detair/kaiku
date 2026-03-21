@@ -1316,14 +1316,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const userId = colonIdx > 0 ? stream.id.slice(0, colonIdx) : stream.id;
       const sourceType = colonIdx > 0 ? stream.id.slice(colonIdx + 1) : "";
 
-      console.log(
+      console.warn(
         `[BrowserVoiceAdapter] Remote ${track.kind} track received, source: ${sourceType}, from: ${userId}, streamId: ${stream.id}`,
       );
 
       if (track.kind === "video") {
         if (sourceType === "webcam") {
           // Webcam video track
-          console.log("[BrowserVoiceAdapter] Webcam video track from:", userId);
+          console.warn("[BrowserVoiceAdapter] Webcam video track from:", userId);
           this.eventHandlers.onWebcamTrack?.(userId, track);
 
           track.onended = () => {
@@ -1336,7 +1336,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         } else {
           // Screen share video track — parse stream_id from "screen_video:uuid"
           const streamId = this.parseScreenShareStreamId(sourceType);
-          console.log(
+          console.warn(
             "[BrowserVoiceAdapter] Screen share video track from:",
             userId,
             "streamId:",
