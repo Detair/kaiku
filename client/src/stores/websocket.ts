@@ -1702,7 +1702,11 @@ async function handleVoiceOffer(channelId: string, sdp: string): Promise<void> {
       });
       console.log("[WebSocket] Voice answer sent successfully");
     } else {
-      console.error("Failed to handle voice offer:", result.error);
+      console.error("Failed to handle voice offer:", JSON.stringify(result.error));
+      // If connection failed and retriable, the adapter will handle reconnection
+      if ((result.error as any)?.retriable) {
+        console.log("[WebSocket] Voice offer failed but retriable — will retry on next offer");
+      }
     }
   } catch (err) {
     console.error("Error handling voice offer:", err);
