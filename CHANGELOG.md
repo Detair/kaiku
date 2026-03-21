@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Milestone: Phase 6 - Competitive Differentiators & Mastery
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
+### Changed
+- Voice connections use dual PeerConnection architecture (publisher + subscriber) for reliable screen sharing and multi-user scalability
+- Screen sharing uses standard WebRTC `addTrack` negotiation instead of `replaceTrack` workarounds
+
+### Fixed
+- Screen sharing video now flows between users — was blocked by single-PeerConnection offer model
+
 ### Added
 - Password visibility toggle on all password fields (login, register, reset password)
 - Skip-to-content keyboard navigation link
