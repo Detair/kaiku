@@ -173,6 +173,9 @@ const ChannelList: Component = () => {
   };
 
   const handleVoiceChannelClick = async (channelId: string) => {
+    // Always select the channel so the main view shows VoiceChannelView
+    selectChannel(channelId);
+
     if (isInChannel(channelId)) {
       await leaveVoice();
     } else {
