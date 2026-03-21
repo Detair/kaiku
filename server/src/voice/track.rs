@@ -524,12 +524,14 @@ pub fn spawn_subscriber_remb_reader(
                         );
 
                         let _ = signal_tx
-                            .send(crate::ws::OutboundMsg::Event(crate::ws::ServerEvent::VoiceLayerChanged {
-                                channel_id,
-                                source_user_id,
-                                track_source: source_type,
-                                active_layer: new_layer,
-                            }))
+                            .send(crate::ws::OutboundMsg::Event(
+                                crate::ws::ServerEvent::VoiceLayerChanged {
+                                    channel_id,
+                                    source_user_id,
+                                    track_source: source_type,
+                                    active_layer: new_layer,
+                                },
+                            ))
                             .await;
                     }
                 }

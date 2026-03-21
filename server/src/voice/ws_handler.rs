@@ -52,10 +52,6 @@ pub async fn handle_voice_event(
         ClientEvent::VoiceLeave { channel_id } => {
             handle_leave(sfu, pool, user_id, channel_id, screen_share_limiter).await
         }
-        ClientEvent::VoiceAnswer { channel_id, sdp } => {
-            warn!("received legacy VoiceAnswer, treating as subscriber answer");
-            handle_subscriber_answer(sfu, user_id, channel_id, &sdp).await
-        }
         ClientEvent::VoicePublisherOffer { channel_id, sdp } => {
             handle_publisher_offer(sfu, user_id, channel_id, &sdp).await
         }
@@ -491,10 +487,8 @@ async fn subscribe_to_existing_tracks(
                                 sender_ssrc: 0,
                                 media_ssrc: track.ssrc(),
                             };
-                            if let Err(e) = other_peer
-                                .publisher_pc
-                                .write_rtcp(&[Box::new(pli)])
-                                .await
+                            if let Err(e) =
+                                other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await
                             {
                                 warn!("Failed to send PLI: {}", e);
                             } else {

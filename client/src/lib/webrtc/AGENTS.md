@@ -23,22 +23,23 @@ Use `createVoiceAdapter()` to get platform-specific implementation:
 import { createVoiceAdapter } from "@/lib/webrtc";
 const adapter = await createVoiceAdapter();
 
-// VoiceAdapter interface (both platforms):
-await adapter.joinChannel(channelId);
-await adapter.leaveChannel();
+// VoiceAdapter interface (both platforms) — dual PeerConnection model:
+await adapter.join(channelId);
+await adapter.leave();
 await adapter.setMute(true);
-await adapter.handleOffer(channelId, sdp);
-await adapter.handleIceCandidate(channelId, candidate);
+await adapter.handlePublisherAnswer(channelId, sdp);
+await adapter.handleSubscriberOffer(channelId, sdp);
+await adapter.handleIceCandidate(channelId, candidate, pcType);
 ```
 
 ### Browser Implementation
 
-`browser.ts` handles WebRTC signaling:
+`browser.ts` handles WebRTC signaling with a dual PeerConnection model:
 
-- Creates RTCPeerConnection with STUN servers
-- Captures microphone via getUserMedia
-- Processes SDP offers/answers
-- Handles ICE candidate exchange
+- Creates two RTCPeerConnections (publisher + subscriber) with STUN/TURN servers
+- Publisher PC: captures microphone, screen share, and webcam tracks (client sends offer)
+- Subscriber PC: receives remote audio/video tracks (server sends offer)
+- Handles ICE candidate exchange with `pc_type` routing
 - Audio output via HTMLAudioElement
 - Manual cleanup of streams and connections
 
@@ -56,7 +57,7 @@ await adapter.handleIceCandidate(channelId, candidate);
 All operations return `Result<T, E>` for explicit error handling:
 
 ```typescript
-const result = await adapter.handleOffer(channelId, sdp);
+const result = await adapter.handleSubscriberOffer(channelId, sdp);
 if (result.ok) {
   const answer = result.value; // SDP answer string
 } else {

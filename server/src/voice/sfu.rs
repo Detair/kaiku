@@ -890,8 +890,8 @@ impl SfuServer {
         peer: &Arc<Peer>,
         sdp: String,
     ) -> Result<String, VoiceError> {
-        let offer = RTCSessionDescription::offer(sdp)
-            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        let offer =
+            RTCSessionDescription::offer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
         peer.publisher_pc.set_remote_description(offer).await?;
         let answer = peer.publisher_pc.create_answer(None).await?;
         peer.publisher_pc
@@ -901,12 +901,9 @@ impl SfuServer {
     }
 
     /// Handle a subscriber answer from the client.
-    pub async fn handle_subscriber_answer(
-        peer: &Arc<Peer>,
-        sdp: String,
-    ) -> Result<(), VoiceError> {
-        let answer = RTCSessionDescription::answer(sdp)
-            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+    pub async fn handle_subscriber_answer(peer: &Arc<Peer>, sdp: String) -> Result<(), VoiceError> {
+        let answer =
+            RTCSessionDescription::answer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
         peer.subscriber_pc.set_remote_description(answer).await?;
         Ok(())
     }

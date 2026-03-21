@@ -146,13 +146,6 @@ pub enum ClientEvent {
         /// Voice channel to leave.
         channel_id: Uuid,
     },
-    /// Send SDP answer to server
-    VoiceAnswer {
-        /// Voice channel.
-        channel_id: Uuid,
-        /// SDP answer.
-        sdp: String,
-    },
     /// Client sends SDP offer for publisher `PeerConnection` (mic, screen, webcam tracks)
     VoicePublisherOffer {
         /// Voice channel.
@@ -280,7 +273,6 @@ impl ClientEvent {
             Self::StopTyping { .. } => "stop_typing",
             Self::VoiceJoin { .. } => "voice_join",
             Self::VoiceLeave { .. } => "voice_leave",
-            Self::VoiceAnswer { .. } => "voice_answer",
             Self::VoicePublisherOffer { .. } => "voice_publisher_offer",
             Self::VoiceSubscriberAnswer { .. } => "voice_subscriber_answer",
             Self::VoiceIceCandidate { .. } => "voice_ice_candidate",
@@ -445,13 +437,6 @@ pub enum ServerEvent {
     },
 
     // Voice events
-    /// SDP offer from server (after `VoiceJoin`)
-    VoiceOffer {
-        /// Voice channel.
-        channel_id: Uuid,
-        /// SDP offer.
-        sdp: String,
-    },
     /// Server sends SDP answer to client's publisher offer
     VoicePublisherAnswer {
         /// Voice channel.
@@ -1252,7 +1237,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     crate::observability::metrics::record_ws_connect();
 
     // Send ready event
-    let _ = tx.send(OutboundMsg::Event(ServerEvent::Ready { user_id })).await;
+    let _ = tx
+        .send(OutboundMsg::Event(ServerEvent::Ready { user_id }))
+        .await;
 
     // Fetch user's friends for presence subscriptions
     let friend_ids = match get_user_friends(&state.db, user_id).await {
@@ -1546,13 +1533,15 @@ pub async fn handle_client_message(
             // Add to subscribed channels
             subscribed_channels.write().await.insert(channel_id);
 
-            tx.send(OutboundMsg::Event(ServerEvent::Subscribed { channel_id })).await?;
+            tx.send(OutboundMsg::Event(ServerEvent::Subscribed { channel_id }))
+                .await?;
             debug!("User {} subscribed to channel {}", user_id, channel_id);
         }
 
         ClientEvent::Unsubscribe { channel_id } => {
             subscribed_channels.write().await.remove(&channel_id);
-            tx.send(OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id })).await?;
+            tx.send(OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id }))
+                .await?;
             debug!("User {} unsubscribed from channel {}", user_id, channel_id);
         }
 
@@ -1606,7 +1595,6 @@ pub async fn handle_client_message(
         // Voice events - delegate to voice handler
         ClientEvent::VoiceJoin { .. }
         | ClientEvent::VoiceLeave { .. }
-        | ClientEvent::VoiceAnswer { .. }
         | ClientEvent::VoicePublisherOffer { .. }
         | ClientEvent::VoiceSubscriberAnswer { .. }
         | ClientEvent::VoiceIceCandidate { .. }
@@ -1899,7 +1887,9 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                             };
                             drop(blocked);
 
-                            if !should_filter && params.tx.send(OutboundMsg::Event(event)).await.is_err() {
+                            if !should_filter
+                                && params.tx.send(OutboundMsg::Event(event)).await.is_err()
+                            {
                                 break;
                             }
                         }

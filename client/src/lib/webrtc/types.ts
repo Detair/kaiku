@@ -62,7 +62,6 @@ export interface VoiceAdapterEvents {
   onRemoteTrackRemoved: (userId: string) => void;
   onLocalMuteChange: (muted: boolean) => void;
   onSpeakingChange: (speaking: boolean) => void;
-  onIceCandidate: (candidate: string) => void;
 
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;

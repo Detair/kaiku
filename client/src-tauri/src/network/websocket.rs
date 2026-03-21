@@ -611,9 +611,7 @@ fn build_ws_request(
         format!("access_token.{}, access_token", token)
             .parse()
             .map_err(|_| {
-                tungstenite::error::Error::Url(
-                    tungstenite::error::UrlError::NoPathOrQuery,
-                )
+                tungstenite::error::Error::Url(tungstenite::error::UrlError::NoPathOrQuery)
             })?,
     );
     Ok(request)

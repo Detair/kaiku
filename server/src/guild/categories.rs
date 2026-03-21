@@ -20,7 +20,9 @@ use crate::permissions::{require_guild_permission, GuildPermissions, PermissionE
 // ============================================================================
 
 /// Category type restriction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
+)]
 #[sqlx(type_name = "category_type", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum CategoryType {
