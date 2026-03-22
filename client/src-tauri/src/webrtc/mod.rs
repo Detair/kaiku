@@ -501,6 +501,57 @@ impl WebRtcClient {
         Ok(())
     }
 
+    /// Create an SDP offer for the publisher `PeerConnection`.
+    ///
+    /// The client creates the offer and sends it to the server. The server
+    /// will respond with an answer via `VoicePublisherAnswer`.
+    pub async fn create_offer(&self) -> Result<String, WebRtcError> {
+        let pc = self
+            .peer_connection
+            .read()
+            .await
+            .clone()
+            .ok_or(WebRtcError::NotConnected)?;
+
+        // Create offer
+        let offer = pc
+            .create_offer(None)
+            .await
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        // Set local description
+        pc.set_local_description(offer.clone())
+            .await
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        debug!("Publisher offer created and local description set");
+        Ok(offer.sdp)
+    }
+
+    /// Set the remote SDP answer on the publisher `PeerConnection`.
+    ///
+    /// Called after the server responds to our offer with a `VoicePublisherAnswer`.
+    pub async fn set_remote_answer(&self, sdp: &str) -> Result<(), WebRtcError> {
+        let pc = self
+            .peer_connection
+            .read()
+            .await
+            .clone()
+            .ok_or(WebRtcError::NotConnected)?;
+
+        // Parse answer SDP
+        let answer = RTCSessionDescription::answer(sdp.to_string())
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        // Set remote description
+        pc.set_remote_description(answer)
+            .await
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        debug!("Remote answer set on publisher PC");
+        Ok(())
+    }
+
     /// Handle SDP offer from server, return SDP answer
     pub async fn handle_offer(&self, sdp: &str) -> Result<String, WebRtcError> {
         let pc = self

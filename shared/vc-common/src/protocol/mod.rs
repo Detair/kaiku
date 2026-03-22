@@ -50,16 +50,16 @@ pub enum ClientEvent {
         channel_id: Uuid,
     },
 
-    /// Voice: SDP Offer
-    VoiceOffer {
+    /// Voice: SDP offer for publisher `PeerConnection` (mic, screen, webcam tracks)
+    VoicePublisherOffer {
         /// Voice channel.
         channel_id: Uuid,
         /// SDP offer.
         sdp: String,
     },
 
-    /// Voice: SDP Answer
-    VoiceAnswer {
+    /// Voice: SDP answer for subscriber `PeerConnection` (receiving other users' tracks)
+    VoiceSubscriberAnswer {
         /// Voice channel.
         channel_id: Uuid,
         /// SDP answer.
@@ -67,11 +67,13 @@ pub enum ClientEvent {
     },
 
     /// Voice: ICE Candidate
-    VoiceIce {
+    VoiceIceCandidate {
         /// Voice channel.
         channel_id: Uuid,
         /// ICE candidate.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
+        pc_type: String,
     },
 
     /// Voice: Mute self
@@ -164,34 +166,30 @@ pub enum ServerEvent {
         user_id: Uuid,
     },
 
-    /// Voice: SDP Offer from another user
-    VoiceOffer {
+    /// Voice: SDP answer to client's publisher offer
+    VoicePublisherAnswer {
         /// Voice channel.
         channel_id: Uuid,
-        /// User sending offer.
-        user_id: Uuid,
-        /// SDP offer.
-        sdp: String,
-    },
-
-    /// Voice: SDP Answer from another user
-    VoiceAnswer {
-        /// Voice channel.
-        channel_id: Uuid,
-        /// User sending answer.
-        user_id: Uuid,
         /// SDP answer.
         sdp: String,
     },
 
-    /// Voice: ICE Candidate from another user
-    VoiceIce {
+    /// Voice: SDP offer for subscriber `PeerConnection`
+    VoiceSubscriberOffer {
         /// Voice channel.
         channel_id: Uuid,
-        /// User sending candidate.
-        user_id: Uuid,
+        /// SDP offer.
+        sdp: String,
+    },
+
+    /// Voice: ICE Candidate from server
+    VoiceIceCandidate {
+        /// Voice channel.
+        channel_id: Uuid,
         /// ICE candidate.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
+        pc_type: String,
     },
 
     /// Voice: User speaking indicator

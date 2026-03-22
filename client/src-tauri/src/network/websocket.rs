@@ -14,6 +14,11 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, tungstenite};
 use tracing::{debug, error, info, warn};
 
+/// Default `pc_type` for backward compatibility with old servers.
+fn default_pc_type() -> String {
+    "publisher".to_string()
+}
+
 /// Client events sent to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -37,13 +42,19 @@ pub enum ClientEvent {
     VoiceLeave {
         channel_id: String,
     },
-    VoiceAnswer {
+    VoicePublisherOffer {
+        channel_id: String,
+        sdp: String,
+    },
+    VoiceSubscriberAnswer {
         channel_id: String,
         sdp: String,
     },
     VoiceIceCandidate {
         channel_id: String,
         candidate: String,
+        #[serde(default = "default_pc_type")]
+        pc_type: String,
     },
     VoiceMute {
         channel_id: String,
@@ -103,13 +114,18 @@ pub enum ServerEvent {
         user_id: String,
         activity: Option<serde_json::Value>,
     },
-    VoiceOffer {
+    VoicePublisherAnswer {
+        channel_id: String,
+        sdp: String,
+    },
+    VoiceSubscriberOffer {
         channel_id: String,
         sdp: String,
     },
     VoiceIceCandidate {
         channel_id: String,
         candidate: String,
+        pc_type: String,
     },
     VoiceUserJoined {
         channel_id: String,
@@ -636,7 +652,8 @@ fn handle_server_message(app: &AppHandle, text: &str) {
                 ServerEvent::TypingStop { .. } => "ws:typing_stop",
                 ServerEvent::PresenceUpdate { .. } => "ws:presence_update",
                 ServerEvent::RichPresenceUpdate { .. } => "ws:rich_presence_update",
-                ServerEvent::VoiceOffer { .. } => "ws:voice_offer",
+                ServerEvent::VoicePublisherAnswer { .. } => "ws:voice_publisher_answer",
+                ServerEvent::VoiceSubscriberOffer { .. } => "ws:voice_subscriber_offer",
                 ServerEvent::VoiceIceCandidate { .. } => "ws:voice_ice_candidate",
                 ServerEvent::VoiceUserJoined { .. } => "ws:voice_user_joined",
                 ServerEvent::VoiceUserLeft { .. } => "ws:voice_user_left",
