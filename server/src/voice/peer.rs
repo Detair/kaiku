@@ -7,6 +7,7 @@
 //!   screen shares, webcams). The server creates offers for this connection.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -60,6 +61,9 @@ pub struct Peer {
     /// The client sends e.g. `VoiceWebcamStart` before `addTrack()`, so the
     /// server can pop from this queue when `on_track` fires to identify the source.
     pending_track_sources: RwLock<Vec<TrackSource>>,
+    /// Whether this peer has already subscribed to existing tracks.
+    /// Used for robust first-offer detection instead of checking `outgoing_tracks_count`.
+    pub has_subscribed: AtomicBool,
 }
 
 impl Peer {
@@ -87,6 +91,7 @@ impl Peer {
             session_id: Uuid::now_v7(),
             connected_at: Utc::now(),
             pending_track_sources: RwLock::new(Vec::new()),
+            has_subscribed: AtomicBool::new(false),
         }
     }
 
@@ -131,7 +136,13 @@ impl Peer {
             for sender in senders {
                 if let Some(t) = sender.track().await {
                     if t.id() == track.id() {
-                        let _ = self.subscriber_pc.remove_track(&sender).await;
+                        if let Err(e) = self.subscriber_pc.remove_track(&sender).await {
+                            tracing::warn!(
+                                user_id = %self.user_id,
+                                error = %e,
+                                "failed to remove track from subscriber PC"
+                            );
+                        }
                         break;
                     }
                 }
@@ -191,8 +202,12 @@ impl Peer {
 
     /// Close both peer connections.
     pub async fn close(&self) -> Result<(), super::error::VoiceError> {
-        let _ = self.publisher_pc.close().await;
-        let _ = self.subscriber_pc.close().await;
+        if let Err(e) = self.publisher_pc.close().await {
+            tracing::warn!(user_id = %self.user_id, error = %e, "failed to close publisher PC");
+        }
+        if let Err(e) = self.subscriber_pc.close().await {
+            tracing::warn!(user_id = %self.user_id, error = %e, "failed to close subscriber PC");
+        }
         Ok(())
     }
 }

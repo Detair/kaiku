@@ -421,22 +421,36 @@ async fn handle_publisher_offer(
 
     match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {
         Ok(answer_sdp) => {
-            let _ = peer
+            if let Err(e) = peer
                 .signal_tx
                 .send(OutboundMsg::Event(ServerEvent::VoicePublisherAnswer {
                     channel_id,
                     sdp: answer_sdp,
                 }))
-                .await;
+                .await
+            {
+                tracing::error!(
+                    user_id = %user_id,
+                    channel_id = %channel_id,
+                    error = %e,
+                    "failed to send publisher answer — client connection will hang"
+                );
+                return Err(VoiceError::Signaling(
+                    "Failed to send publisher answer".to_string(),
+                ));
+            }
 
             // On first publisher offer, subscribe to existing peers' tracks
-            let needs_subscription = peer.outgoing_tracks_count().await == 0;
-            if needs_subscription {
+            if !peer
+                .has_subscribed
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
                 subscribe_to_existing_tracks(sfu, &room, &peer, user_id).await;
             }
         }
         Err(e) => {
-            error!(user_id = %user_id, error = %e, "failed to handle publisher offer");
+            tracing::error!(user_id = %user_id, error = %e, "failed to handle publisher offer");
+            return Err(e);
         }
     }
 
@@ -453,62 +467,78 @@ async fn subscribe_to_existing_tracks(
     peer: &Arc<super::peer::Peer>,
     user_id: Uuid,
 ) {
-    let peers = room.peers.read().await;
-    for (other_id, other_peer) in peers.iter() {
-        if *other_id == user_id {
-            continue;
-        }
+    // Collect peer refs under read lock, then release it before async I/O
+    let other_peers: Vec<(Uuid, Arc<super::peer::Peer>)> = {
+        let peers = room.peers.read().await;
+        peers
+            .iter()
+            .filter(|(id, _)| **id != user_id)
+            .map(|(id, p)| (*id, p.clone()))
+            .collect()
+    };
+
+    for (other_id, other_peer) in &other_peers {
         let incoming = other_peer.incoming_tracks.read().await;
         for (source_type, track) in incoming.iter() {
-            if let Ok(local_track) = room
+            match room
                 .track_router
                 .create_subscriber_track(*other_id, *source_type, peer, track)
                 .await
             {
-                match peer
-                    .add_outgoing_track(*other_id, *source_type, local_track)
-                    .await
-                {
-                    Ok(sender) => {
-                        if source_type.is_video() {
-                            spawn_subscriber_remb_reader(
-                                room.track_router.clone(),
-                                user_id,
-                                *other_id,
-                                *source_type,
-                                sender,
-                                peer.signal_tx.clone(),
-                                room.channel_id,
-                            );
-                        }
-                        if matches!(source_type, TrackSource::ScreenVideo(_)) {
-                            // Send PLI to request keyframe for late joiners
-                            let pli = PictureLossIndication {
-                                sender_ssrc: 0,
-                                media_ssrc: track.ssrc(),
-                            };
-                            if let Err(e) =
-                                other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await
-                            {
-                                warn!("Failed to send PLI: {}", e);
-                            } else {
-                                debug!("Sent PLI to source {}", other_peer.user_id);
+                Ok(local_track) => {
+                    match peer
+                        .add_outgoing_track(*other_id, *source_type, local_track)
+                        .await
+                    {
+                        Ok(sender) => {
+                            if source_type.is_video() {
+                                spawn_subscriber_remb_reader(
+                                    room.track_router.clone(),
+                                    user_id,
+                                    *other_id,
+                                    *source_type,
+                                    sender,
+                                    peer.signal_tx.clone(),
+                                    room.channel_id,
+                                );
+                            }
+                            if matches!(source_type, TrackSource::ScreenVideo(_)) {
+                                // Send PLI to request keyframe for late joiners
+                                let pli = PictureLossIndication {
+                                    sender_ssrc: 0,
+                                    media_ssrc: track.ssrc(),
+                                };
+                                if let Err(e) =
+                                    other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await
+                                {
+                                    warn!("Failed to send PLI: {}", e);
+                                } else {
+                                    debug!("Sent PLI to source {}", other_peer.user_id);
+                                }
                             }
                         }
+                        Err(e) => {
+                            warn!(
+                                source = %other_id,
+                                subscriber = %user_id,
+                                error = %e,
+                                "Failed to add outgoing track for existing peer"
+                            );
+                        }
                     }
-                    Err(e) => {
-                        warn!(
-                            source = %other_id,
-                            subscriber = %user_id,
-                            error = %e,
-                            "Failed to add outgoing track for existing peer"
-                        );
-                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        user_id = %user_id,
+                        source_user = %other_id,
+                        source = ?source_type,
+                        error = %e,
+                        "failed to create subscriber track"
+                    );
                 }
             }
         }
     }
-    drop(peers);
 
     // Renegotiate subscriber PC to send the offer with new tracks
     if peer.outgoing_tracks_count().await > 0 {

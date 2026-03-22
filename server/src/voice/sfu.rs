@@ -812,23 +812,28 @@ impl SfuServer {
                         if let Some(c) = candidate {
                             match c.to_json() {
                                 Ok(json) => {
-                                    if let Ok(candidate_str) = serde_json::to_string(&json) {
-                                        if let Err(e) = tx
-                                            .send(OutboundMsg::Event(
-                                                ServerEvent::VoiceIceCandidate {
-                                                    channel_id: cid,
-                                                    candidate: candidate_str,
-                                                    pc_type: "publisher".to_string(),
-                                                },
-                                            ))
-                                            .await
-                                        {
-                                            tracing::error!(
-                                                channel_id = %cid,
-                                                pc = "publisher",
-                                                error = %e,
-                                                "Failed to send ICE candidate - connection may fail"
-                                            );
+                                    match serde_json::to_string(&json) {
+                                        Ok(candidate_str) => {
+                                            if let Err(e) = tx
+                                                .send(OutboundMsg::Event(
+                                                    ServerEvent::VoiceIceCandidate {
+                                                        channel_id: cid,
+                                                        candidate: candidate_str,
+                                                        pc_type: "publisher".to_string(),
+                                                    },
+                                                ))
+                                                .await
+                                            {
+                                                tracing::error!(
+                                                    channel_id = %cid,
+                                                    pc = "publisher",
+                                                    error = %e,
+                                                    "Failed to send ICE candidate - connection may fail"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(pc = "publisher", error = %e, "failed to serialize ICE candidate");
                                         }
                                     }
                                 }
@@ -855,23 +860,28 @@ impl SfuServer {
                         if let Some(c) = candidate {
                             match c.to_json() {
                                 Ok(json) => {
-                                    if let Ok(candidate_str) = serde_json::to_string(&json) {
-                                        if let Err(e) = tx
-                                            .send(OutboundMsg::Event(
-                                                ServerEvent::VoiceIceCandidate {
-                                                    channel_id: cid,
-                                                    candidate: candidate_str,
-                                                    pc_type: "subscriber".to_string(),
-                                                },
-                                            ))
-                                            .await
-                                        {
-                                            tracing::error!(
-                                                channel_id = %cid,
-                                                pc = "subscriber",
-                                                error = %e,
-                                                "Failed to send ICE candidate - connection may fail"
-                                            );
+                                    match serde_json::to_string(&json) {
+                                        Ok(candidate_str) => {
+                                            if let Err(e) = tx
+                                                .send(OutboundMsg::Event(
+                                                    ServerEvent::VoiceIceCandidate {
+                                                        channel_id: cid,
+                                                        candidate: candidate_str,
+                                                        pc_type: "subscriber".to_string(),
+                                                    },
+                                                ))
+                                                .await
+                                            {
+                                                tracing::error!(
+                                                    channel_id = %cid,
+                                                    pc = "subscriber",
+                                                    error = %e,
+                                                    "Failed to send ICE candidate - connection may fail"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(pc = "subscriber", error = %e, "failed to serialize ICE candidate");
                                         }
                                     }
                                 }
@@ -915,13 +925,21 @@ impl SfuServer {
         peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        let _ = peer
+        if let Err(e) = peer
             .signal_tx
             .send(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
                 channel_id: peer.channel_id,
                 sdp: offer.sdp,
             }))
-            .await;
+            .await
+        {
+            tracing::error!(
+                user_id = %peer.user_id,
+                channel_id = %peer.channel_id,
+                error = %e,
+                "failed to send subscriber offer — client will not receive tracks"
+            );
+        }
         Ok(())
     }
 
