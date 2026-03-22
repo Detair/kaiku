@@ -182,12 +182,25 @@ impl TrackRouter {
         layer: Layer,
         rtp_packet: &RtpPacket,
     ) {
-        let key = (source_user_id, source_type);
+        let key = (source_user_id, source_type.clone());
+
+        // Check if this source has multiple simulcast layers registered.
+        // Non-simulcast sources (e.g., screen share via addTrack without RID)
+        // only have a single layer — forward to all subscribers regardless of
+        // their active_layer setting to prevent REMB-based layer selection
+        // from dropping packets when no alternative layers exist.
+        let is_simulcast = self
+            .simulcast_tracks
+            .contains_key(&(source_user_id, source_type.clone(), Layer::Low))
+            || self
+                .simulcast_tracks
+                .contains_key(&(source_user_id, source_type, Layer::Medium));
+
         // DashMap::get returns a guard that provides lock-free concurrent read access
         if let Some(subscribers) = self.subscriptions.get(&key) {
             crate::observability::metrics::record_rtp_packet_forwarded();
             for sub in subscribers.value() {
-                if sub.active_layer == layer {
+                if sub.active_layer == layer || !is_simulcast {
                     // Write RTP packet to local track (forwards to subscriber)
                     if let Err(e) = sub.local_track.write_rtp(rtp_packet).await {
                         warn!(
