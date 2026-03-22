@@ -418,7 +418,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       console.log("[BrowserVoiceAdapter] Subscriber answer created");
 
-      return { ok: true, value: answer.sdp! };
+      const answerSdp = answer.sdp;
+      if (!answerSdp) {
+        return {
+          ok: false,
+          error: {
+            type: "connection_failed" as const,
+            reason: "Browser returned empty SDP answer",
+            retriable: true,
+          },
+        };
+      }
+      return { ok: true, value: answerSdp };
     } catch (err) {
       return {
         ok: false,
@@ -1313,8 +1324,16 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Subscriber connection state (log only, publisher determines main state)
     this.subscriberPC.onconnectionstatechange = () => {
-      const state = this.subscriberPC!.connectionState;
+      const state = this.subscriberPC?.connectionState;
       console.log(`[BrowserVoiceAdapter] Subscriber connection state: ${state}`);
+
+      if (state === "failed") {
+        this.eventHandlers.onError?.({
+          type: "connection_failed",
+          reason: "Subscriber connection failed — you may not hear other participants",
+          retriable: true,
+        });
+      }
     };
   }
 

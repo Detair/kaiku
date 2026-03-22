@@ -447,8 +447,9 @@ export type ClientEvent =
   | { type: "stop_typing"; channel_id: string }
   | { type: "voice_join"; channel_id: string }
   | { type: "voice_leave"; channel_id: string }
-  | { type: "voice_answer"; channel_id: string; sdp: string }
-  | { type: "voice_ice_candidate"; channel_id: string; candidate: string }
+  | { type: "voice_publisher_offer"; channel_id: string; sdp: string }
+  | { type: "voice_subscriber_answer"; channel_id: string; sdp: string }
+  | { type: "voice_ice_candidate"; channel_id: string; candidate: string; pc_type?: string }
   | { type: "voice_mute"; channel_id: string }
   | { type: "voice_unmute"; channel_id: string }
   // Webcam events
