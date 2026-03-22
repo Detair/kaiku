@@ -97,6 +97,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   // Voice join start time for timing breadcrumb
   private joinStartTime = 0;
 
+  // Negotiation lock to prevent concurrent offers on the publisher PC
+  private isNegotiating = false;
+  private pendingNegotiation = false;
+
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
   }
@@ -355,8 +359,19 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         new RTCSessionDescription({ type: "answer", sdp }),
       );
       console.log("[BrowserVoiceAdapter] Publisher answer applied");
+
+      // Release negotiation lock
+      this.isNegotiating = false;
+
+      // Drain pending negotiation
+      if (this.pendingNegotiation) {
+        this.pendingNegotiation = false;
+        this.publisherPC.dispatchEvent(new Event("negotiationneeded"));
+      }
+
       return { ok: true, value: undefined };
     } catch (err) {
+      this.isNegotiating = false;
       return {
         ok: false,
         error: {
@@ -1122,21 +1137,30 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     if (!this.publisherPC) return;
 
     // Client-initiated negotiation: create offer and send to server
+    // Uses a negotiation lock to prevent concurrent offers when multiple
+    // tracks are added in quick succession (e.g., mic + screen share).
     this.publisherPC.onnegotiationneeded = async () => {
-      console.log("[BrowserVoiceAdapter] Publisher negotiation needed — creating offer");
+      if (!this.publisherPC) return;
+
+      if (this.isNegotiating) {
+        this.pendingNegotiation = true;
+        return;
+      }
+
+      this.isNegotiating = true;
       try {
-        const offer = await this.publisherPC!.createOffer();
-        await this.publisherPC!.setLocalDescription(offer);
+        const offer = await this.publisherPC.createOffer();
+        await this.publisherPC.setLocalDescription(offer);
 
         const { wsSend } = await import("@/lib/tauri");
-        await wsSend({
+        wsSend({
           type: "voice_publisher_offer",
           channel_id: channelId,
           sdp: offer.sdp!,
         });
-        console.log("[BrowserVoiceAdapter] Publisher offer sent");
       } catch (err) {
-        console.error("[BrowserVoiceAdapter] Failed to create/send publisher offer:", err);
+        console.error("[BrowserVoiceAdapter] Publisher negotiation failed:", err);
+        this.isNegotiating = false;
       }
     };
 
@@ -1145,14 +1169,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       if (event.candidate) {
         const candidateJson = JSON.stringify(event.candidate.toJSON());
         // Send ICE candidate with pc_type via WS
-        import("@/lib/tauri").then(({ wsSend }) => {
-          wsSend({
-            type: "voice_ice_candidate",
-            channel_id: channelId,
-            candidate: candidateJson,
-            pc_type: "publisher",
+        import("@/lib/tauri")
+          .then(({ wsSend }) =>
+            wsSend({
+              type: "voice_ice_candidate",
+              channel_id: channelId,
+              candidate: candidateJson,
+              pc_type: "publisher",
+            })
+          )
+          .catch((err) => {
+            console.error("[BrowserVoiceAdapter] Failed to send publisher ICE candidate:", err);
           });
-        });
       }
     };
 
@@ -1268,14 +1296,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.subscriberPC.onicecandidate = (event) => {
       if (event.candidate) {
         const candidateJson = JSON.stringify(event.candidate.toJSON());
-        import("@/lib/tauri").then(({ wsSend }) => {
-          wsSend({
-            type: "voice_ice_candidate",
-            channel_id: channelId,
-            candidate: candidateJson,
-            pc_type: "subscriber",
+        import("@/lib/tauri")
+          .then(({ wsSend }) =>
+            wsSend({
+              type: "voice_ice_candidate",
+              channel_id: channelId,
+              candidate: candidateJson,
+              pc_type: "subscriber",
+            })
+          )
+          .catch((err) => {
+            console.error("[BrowserVoiceAdapter] Failed to send subscriber ICE candidate:", err);
           });
-        });
       }
     };
 
@@ -1372,6 +1404,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Clear remote streams
     this.remoteStreams.clear();
+
+    // Reset negotiation lock
+    this.isNegotiating = false;
+    this.pendingNegotiation = false;
 
     // Stop mic test if running
     this.stopMicTest();
