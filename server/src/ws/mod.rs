@@ -37,6 +37,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use vc_common::protocol::PcType;
+
 use crate::api::AppState;
 use crate::auth::jwt;
 use crate::db;
@@ -104,8 +106,8 @@ fn extract_token_from_protocol(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Default `pc_type` for backward compatibility with old clients.
-fn default_pc_type() -> String {
-    "publisher".to_string()
+const fn default_pc_type() -> PcType {
+    PcType::Publisher
 }
 
 /// Client-to-server events.
@@ -166,9 +168,9 @@ pub enum ClientEvent {
         channel_id: Uuid,
         /// ICE candidate string.
         candidate: String,
-        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
+        /// Which `PeerConnection` this candidate belongs to.
         #[serde(default = "default_pc_type")]
-        pc_type: String,
+        pc_type: PcType,
     },
     /// Mute self in voice channel
     VoiceMute {
@@ -457,8 +459,8 @@ pub enum ServerEvent {
         channel_id: Uuid,
         /// ICE candidate string.
         candidate: String,
-        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
-        pc_type: String,
+        /// Which `PeerConnection` this candidate belongs to.
+        pc_type: PcType,
     },
     /// User joined voice channel
     VoiceUserJoined {
@@ -2177,7 +2179,7 @@ mod tests {
         let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:..."}"#;
         let parsed: ClientEvent = serde_json::from_str(json).unwrap();
         match parsed {
-            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, "publisher"),
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, PcType::Publisher),
             _ => panic!("wrong variant"),
         }
     }
@@ -2188,7 +2190,7 @@ mod tests {
         let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:...","pc_type":"subscriber"}"#;
         let parsed: ClientEvent = serde_json::from_str(json).unwrap();
         match parsed {
-            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, "subscriber"),
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, PcType::Subscriber),
             _ => panic!("wrong variant"),
         }
     }
@@ -2198,7 +2200,7 @@ mod tests {
         let event = ServerEvent::VoiceIceCandidate {
             channel_id: Uuid::nil(),
             candidate: "candidate:...".to_string(),
-            pc_type: "subscriber".to_string(),
+            pc_type: PcType::Subscriber,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"pc_type\":\"subscriber\""));

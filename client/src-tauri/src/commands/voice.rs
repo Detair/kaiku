@@ -12,6 +12,8 @@ use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 
+use vc_common::protocol::PcType;
+
 use crate::audio::{AudioDeviceList, FRAME_SIZE_MS, SAMPLE_RATE};
 use crate::network::ClientEvent;
 use crate::webrtc::IceServerConfig;
@@ -65,7 +67,7 @@ pub async fn join_voice(
                         .send(ClientEvent::VoiceIceCandidate {
                             channel_id,
                             candidate,
-                            pc_type: "publisher".to_string(),
+                            pc_type: PcType::Publisher,
                         })
                         .await
                     {

@@ -13,10 +13,11 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, tungstenite};
 use tracing::{debug, error, info, warn};
+use vc_common::protocol::PcType;
 
 /// Default `pc_type` for backward compatibility with old servers.
-fn default_pc_type() -> String {
-    "publisher".to_string()
+fn default_pc_type() -> PcType {
+    PcType::Publisher
 }
 
 /// Client events sent to the server.
@@ -54,7 +55,7 @@ pub enum ClientEvent {
         channel_id: String,
         candidate: String,
         #[serde(default = "default_pc_type")]
-        pc_type: String,
+        pc_type: PcType,
     },
     VoiceMute {
         channel_id: String,
@@ -125,7 +126,7 @@ pub enum ServerEvent {
     VoiceIceCandidate {
         channel_id: String,
         candidate: String,
-        pc_type: String,
+        pc_type: PcType,
     },
     VoiceUserJoined {
         channel_id: String,

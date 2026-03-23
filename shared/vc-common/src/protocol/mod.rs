@@ -7,6 +7,23 @@ use uuid::Uuid;
 
 use crate::types::{Message, UserProfile, UserStatus};
 
+/// Which `PeerConnection` an ICE candidate belongs to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PcType {
+    Publisher,
+    Subscriber,
+}
+
+impl std::fmt::Display for PcType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Publisher => write!(f, "publisher"),
+            Self::Subscriber => write!(f, "subscriber"),
+        }
+    }
+}
+
 /// Client-to-server WebSocket events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -72,8 +89,8 @@ pub enum ClientEvent {
         channel_id: Uuid,
         /// ICE candidate.
         candidate: String,
-        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
-        pc_type: String,
+        /// Which `PeerConnection` this candidate belongs to.
+        pc_type: PcType,
     },
 
     /// Voice: Mute self
@@ -188,8 +205,8 @@ pub enum ServerEvent {
         channel_id: Uuid,
         /// ICE candidate.
         candidate: String,
-        /// Which `PeerConnection` this candidate belongs to ("publisher" or "subscriber").
-        pc_type: String,
+        /// Which `PeerConnection` this candidate belongs to.
+        pc_type: PcType,
     },
 
     /// Voice: User speaking indicator

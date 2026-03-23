@@ -31,6 +31,8 @@ use super::screen_share::ScreenShareInfo;
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
+use vc_common::protocol::PcType;
+
 use crate::config::Config;
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
 use crate::ws::{OutboundMsg, ServerEvent};
@@ -697,7 +699,7 @@ impl SfuServer {
                     .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
                         channel_id,
                         candidate: candidate_str,
-                        pc_type: pc_label.to_string(),
+                        pc_type: if pc_label == "subscriber" { PcType::Subscriber } else { PcType::Publisher },
                     }))
                     .await
                 {
@@ -795,16 +797,15 @@ impl SfuServer {
     pub async fn handle_ice_candidate(
         peer: &Arc<Peer>,
         candidate_str: &str,
-        pc_type: &str,
+        pc_type: &PcType,
     ) -> Result<(), VoiceError> {
         let candidate: webrtc::ice_transport::ice_candidate::RTCIceCandidateInit =
             serde_json::from_str(candidate_str)
                 .map_err(|e| VoiceError::Signaling(format!("Invalid ICE candidate: {e}")))?;
 
-        let pc = if pc_type == "subscriber" {
-            &peer.subscriber_pc
-        } else {
-            &peer.publisher_pc
+        let pc = match pc_type {
+            PcType::Subscriber => &peer.subscriber_pc,
+            PcType::Publisher => &peer.publisher_pc,
         };
         pc.add_ice_candidate(candidate).await?;
 

@@ -21,6 +21,8 @@ use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
 use super::Quality;
+use vc_common::protocol::PcType;
+
 use crate::ws::{ClientEvent, OutboundMsg, ServerEvent, VoiceParticipant};
 
 /// Map a permission error to a voice error, logging database errors instead of masking them.
@@ -580,7 +582,7 @@ async fn handle_ice_candidate(
     user_id: Uuid,
     channel_id: Uuid,
     candidate: &str,
-    pc_type: &str,
+    pc_type: &PcType,
 ) -> Result<(), VoiceError> {
     debug!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, "Received ICE candidate");
 
