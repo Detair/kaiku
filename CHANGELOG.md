@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Screen sharing video now flows between users — was blocked by single-PeerConnection offer model
+- Screen share video renders correctly instead of showing black (switched to VP8-only codec to fix RTP payload type mismatch between publisher/subscriber sessions)
 
 ### Added
 - Password visibility toggle on all password fields (login, register, reset password)
