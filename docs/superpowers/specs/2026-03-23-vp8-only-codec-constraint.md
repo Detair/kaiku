@@ -49,34 +49,38 @@ Change the video track creation for both screen share and webcam:
 
 ### 4. Tauri RTP payloader (`client/src-tauri/src/video/rtp.rs`)
 
-Replace VP9 payload descriptor with VP8 payload descriptor per RFC 7741 section 4.2:
+Replace VP9 payload descriptor with VP8 payload descriptor per RFC 7741 section 4.2.
 
-**VP8 1-byte payload descriptor:**
+**VP8 1-byte payload descriptor (MSB-first, network byte order):**
 ```
  0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+
 |X|R|N|S|R| PID |
 +-+-+-+-+-+-+-+-+
 ```
-- X (bit 0): Extended bits present — 0
-- R (bit 1): Reserved — 0
-- N (bit 2): Non-reference frame — 0
-- S (bit 3): Start of VP8 partition — 1 for first packet of frame
-- R (bit 4): Reserved — 0
-- PID (bits 5-7): Partition index — 0
+- X (bit 7): Extended bits present — 0
+- R (bit 6): Reserved — 0
+- N (bit 5): Non-reference frame — 0
+- S (bit 4): Start of VP8 partition — 1 for first packet of frame
+- R (bit 3): Reserved — 0
+- PID (bits 2-0): Partition index — 0
 
 For the Tauri native path, this means:
 - First packet of frame: `0x10` (S=1)
 - Continuation packets: `0x00`
 
-The marker bit (last packet of frame) is set in the RTP header by webrtc-rs `TrackLocalStaticRTP::write()`, not in the payload descriptor.
+**RTP marker bit:** The marker bit must be set on the last RTP packet of each frame. `TrackLocalStaticRTP::write()` does not set it automatically. Switch to `write_rtp()` with an explicit `rtp::packet::Packet` where `header.marker = true` on the final fragment. This is required for VP8 decoders to detect frame boundaries.
 
 ### 5. Import updates
 
 - `client/src-tauri/src/commands/screen_share.rs`: `Vp9Encoder` → `Vp8Encoder`
 - `client/src-tauri/src/commands/webcam.rs`: `Vp9Encoder` → `Vp8Encoder`
 
-### 6. Module-level doc updates
+### 6. Remove VP9 feature flag (`client/src-tauri/Cargo.toml`)
+
+Change `vpx-encode = { version = "0.3", features = ["vp9"] }` to `vpx-encode = "0.3"`. VP8 is the default codec — the `vp9` feature is no longer needed and avoids linking dead VP9 code.
+
+### 7. Module-level doc updates
 
 - `client/src-tauri/src/video/mod.rs`: module doc string VP9 → VP8
 - `client/src-tauri/src/video/rtp.rs`: module doc string and struct/fn docs VP9 → VP8
@@ -84,7 +88,7 @@ The marker bit (last packet of frame) is set in the RTP header by webrtc-rs `Tra
 ## What Does Not Change
 
 - **`forward_rtp` in `track.rs`** — raw RTP forwarding logic stays the same; PT match is guaranteed by single-codec constraint
-- **Browser `startScreenShare`** — browser `addTrack` path uses whatever codec the server offers in SDP; with VP8-only on the server, browser will use VP8
+- **Browser `startScreenShare`** — browser `addTrack` triggers a browser-created offer that may list VP9 first (Chrome's default preference). The server's VP8-only MediaEngine filters out unregistered codecs during SDP negotiation and answers with only VP8. The browser accepts this and encodes as VP8. On the subscriber side, the server creates the offer with VP8-only, so the browser subscriber also uses VP8.
 - **Signaling protocol** — no WebSocket message changes
 - **Simulcast RID encodings** — unchanged (server skips layer filtering for non-simulcast sources)
 
