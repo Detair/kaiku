@@ -23,11 +23,13 @@ Fix 11 issues directly. Add a compatibility guard for the 2 Tauri dual-PC issues
 
 Currently logs the error and returns `Ok(())`. Change to return `Err(e)` so the caller can send an error event to the client. The caller (`handle_voice_event`) already has error handling that sends `VoiceError` back via WebSocket.
 
-#### 1.2 — `handle_ice_candidate` propagate errors (#4)
+**Caveat:** Verify that the client-side `websocket.ts` handler for `voice_error` events does not tear down the entire voice connection. If it does, a transient SDP error during renegotiation would disconnect the user. If the client does disconnect on `voice_error`, we should instead log + return `Ok(())` with a more descriptive warning (current behavior but with better logging).
+
+#### 1.2 — `handle_ice_candidate` log but keep swallowing (#4)
 
 **File:** `server/src/voice/ws_handler.rs:~597`
 
-Same pattern as 1.1. Return `Err(e)` instead of swallowing. The caller handles errors.
+ICE candidate failures are expected during trickle ICE (candidates arriving before remote description is set). Unlike 1.1, propagating these errors would be incorrect — they should not be session-fatal. Keep returning `Ok(())` but ensure the existing `error!` log includes `channel_id` for debuggability.
 
 #### 1.3 — `renegotiate` propagate signal send failure (#6)
 
@@ -39,14 +41,13 @@ When `signal_tx.send(...)` fails, return `Err(VoiceError::Signaling("failed to s
 
 **File:** `server/src/voice/ws_handler.rs:~758`
 
-Add `warn!` log before the `.ok()` fallback:
+Add a `warn!` log before falling back. Use `inspect_err` (stable since Rust 1.76):
 ```rust
 let max_shares = sqlx::query_scalar!(...)
     .fetch_optional(&state.db)
     .await
-    .map_err(|e| {
+    .inspect_err(|e| {
         warn!(channel_id = %channel_id, error = %e, "Failed to query max_screen_shares, using default");
-        e
     })
     .ok()
     .flatten()
@@ -59,7 +60,11 @@ Keep the fallback behavior — this is a soft error. But operators get visibilit
 
 **File:** `server/src/voice/peer.rs:~204`
 
-Change return type from `Result<(), VoiceError>` to `()`. The method already logs errors internally and always returns `Ok(())`. Callers that check `if let Err(e) = peer.close()` are dead code — remove those checks.
+Change return type from `Result<(), VoiceError>` to `()`. The method already logs errors internally and always returns `Ok(())`. Remove the `Ok(())` return.
+
+Callers that check `if let Err(e) = peer.close()` are dead code — update both call sites:
+- `sfu.rs` `add_peer()` ~line 107: `if let Err(e) = old_peer.close().await` → `old_peer.close().await`
+- `ws_handler.rs` ~line 375: same pattern → `peer.close().await`
 
 #### 1.6 — `handle_webcam_start` use `map_permission_error` (#11)
 
@@ -73,29 +78,36 @@ Replace `|_e| VoiceError::Unauthorized` with `map_permission_error(e, "webcam st
 
 **File:** `client/src/lib/webrtc/browser.ts:~1167`
 
-Add `await` before `wsSend(...)` call inside the `onnegotiationneeded` handler. The existing `catch` block already resets `this.isNegotiating = false` and calls `this.processPendingNegotiation()`, so this just makes it actually fire on send failures.
+Add `await` before `wsSend(...)` call inside the `onnegotiationneeded` handler. The existing `catch` block resets `this.isNegotiating = false`. Without `await`, a rejected `wsSend` promise is unhandled and the lock is never released. With `await`, the catch block fires and releases the lock.
+
+Note: the catch block only resets the lock — it does not drain `pendingNegotiation`. Pending negotiations are drained when `handlePublisherAnswer` (triggered by the server's answer) sets `isNegotiating = false` and dispatches a new `negotiationneeded` event. On wsSend failure, no answer will arrive, so pending negotiations remain queued until the next successful negotiation cycle. This is acceptable — the alternative (retrying immediately) could cause a rapid-fire loop.
 
 #### 2.2 — `fetchIceConfig` STUN fallback warning (#8)
 
 **File:** `client/src/lib/webrtc/browser.ts:~1013`
 
-When falling back to STUN-only, emit a warning event so the UI can inform the user:
+When falling back to STUN-only, call the warning handler so the UI can inform the user. `BrowserVoiceAdapter` uses a `this.eventHandlers` pattern (not EventEmitter), so the call is:
+
 ```typescript
-this.emit("warning", {
+this.eventHandlers.onWarning?.({
   type: "turn_unavailable",
   message: "TURN server unavailable — voice may not work on restrictive networks",
 });
 ```
 
-Check that `VoiceAdapterEvents` in `types.ts` supports a `warning` event. If not, add it.
+**Required type change:** Add `onWarning` to `VoiceAdapterEvents` in `types.ts`:
+```typescript
+onWarning?: (warning: { type: string; message: string }) => void;
+```
 
 #### 2.3 — `setOutputDevice` await `setSinkId` (#13)
 
 **File:** `client/src/lib/webrtc/browser.ts:~734`
 
-Await each `setSinkId` call. Wrap individual calls in try/catch so one failed device doesn't stop the rest:
+The current code uses `forEach` which cannot `await`. Change to a `for...of` loop over the DOM-queried audio elements (the adapter uses `document.querySelectorAll` for audio elements, not a `remoteAudioElements` map). Wrap individual `setSinkId` calls in try/catch so one failed device doesn't stop the rest:
+
 ```typescript
-for (const element of this.remoteAudioElements.values()) {
+for (const element of audioElements) {
   try {
     await (element as AudioElementWithSinkId).setSinkId(deviceId);
   } catch (err) {
@@ -104,16 +116,19 @@ for (const element of this.remoteAudioElements.values()) {
 }
 ```
 
+Check the actual DOM query pattern in `setOutputDevice` and adapt accordingly.
+
 ### Group 3: Protocol & Tauri Compatibility
 
 #### 3.1 — `pc_type` String → enum (#10)
 
 **Files:**
-- `shared/vc-common/src/protocol/mod.rs` — Add `PcType` enum, update `VoiceIceCandidate`
+- `shared/vc-common/src/protocol/mod.rs` — Add `PcType` enum, update `VoiceIceCandidate` in both `ClientEvent` and `ServerEvent`
 - `server/src/ws/mod.rs` — Update server `VoiceIceCandidate` event
-- `server/src/voice/sfu.rs` — Match on `PcType` enum instead of string comparison
+- `server/src/voice/sfu.rs` — Match on `PcType` enum in `handle_ice_candidate` (receive path) AND update `register_ice_callback` to construct `PcType::Publisher`/`PcType::Subscriber` instead of `pc_label.to_string()` (send path)
 - `server/src/voice/ws_handler.rs` — Update handler signatures
 - `client/src-tauri/src/network/websocket.rs` — Update Tauri event types
+- `client/src-tauri/src/commands/voice.rs` — Update ICE candidate construction from `pc_type: "publisher".to_string()` to `pc_type: PcType::Publisher`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,9 +169,7 @@ For `handle_voice_subscriber_offer`: Log a warning ("Tauri client does not suppo
 
 For subscriber ICE candidates with `pc_type: "subscriber"`: Same — log and discard.
 
-**File:** `client/src/stores/websocket.ts:~1734`
-
-In the subscriber offer handler, check if the adapter returned an answer. If the result is empty/undefined (Tauri path), skip sending the `voice_subscriber_answer` message. This prevents the double-send even after Tauri dual-PC is implemented.
+**Note on websocket.ts double-send (#1):** The existing `result.ok === false` check in `websocket.ts` `handleVoiceSubscriberOffer` already skips sending the answer when the adapter returns an error. With the Tauri guard returning `Ok(())` (no answer SDP), the Tauri adapter's `handleSubscriberOffer` will return `{ ok: false, error: ... }` at the TypeScript level. No additional `websocket.ts` change is needed — the existing guard handles it.
 
 ## What Does Not Change
 
