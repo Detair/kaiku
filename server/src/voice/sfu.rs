@@ -104,9 +104,7 @@ impl Room {
         if let Some(old_peer) = peers.remove(&peer.user_id) {
             tracing::info!(user_id = %peer.user_id, "Replacing stale voice peer");
             // Close old peer connections
-            if let Err(e) = old_peer.close().await {
-                tracing::warn!(user_id = %peer.user_id, error = %e, "Failed to close stale peer connections");
-            }
+            old_peer.close().await;
         }
 
         peers.insert(peer.user_id, peer);
@@ -775,21 +773,21 @@ impl SfuServer {
         peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        if let Err(e) = peer
-            .signal_tx
+        peer.signal_tx
             .send(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
                 channel_id: peer.channel_id,
                 sdp: offer.sdp,
             }))
             .await
-        {
-            tracing::error!(
-                user_id = %peer.user_id,
-                channel_id = %peer.channel_id,
-                error = %e,
-                "failed to send subscriber offer — client will not receive tracks"
-            );
-        }
+            .map_err(|e| {
+                tracing::error!(
+                    user_id = %peer.user_id,
+                    channel_id = %peer.channel_id,
+                    error = %e,
+                    "failed to send subscriber offer — client will not receive tracks"
+                );
+                VoiceError::Signaling("failed to send subscriber offer".into())
+            })?;
         Ok(())
     }
 

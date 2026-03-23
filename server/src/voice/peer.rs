@@ -201,13 +201,12 @@ impl Peer {
     }
 
     /// Close both peer connections.
-    pub async fn close(&self) -> Result<(), super::error::VoiceError> {
+    pub async fn close(&self) {
         if let Err(e) = self.publisher_pc.close().await {
             tracing::warn!(user_id = %self.user_id, error = %e, "failed to close publisher PC");
         }
         if let Err(e) = self.subscriber_pc.close().await {
             tracing::warn!(user_id = %self.user_id, error = %e, "failed to close subscriber PC");
         }
-        Ok(())
     }
 }

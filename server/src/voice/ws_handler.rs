@@ -372,9 +372,7 @@ async fn handle_leave(
         });
 
         // Close the peer connection
-        if let Err(e) = peer.close().await {
-            warn!(error = %e, "Error closing peer connection");
-        }
+        peer.close().await;
     }
 
     room.broadcast_except(
@@ -566,9 +564,12 @@ async fn handle_subscriber_answer(
         .await
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
-    if let Err(e) = SfuServer::handle_subscriber_answer(&peer, sdp.to_string()).await {
-        error!(user_id = %user_id, error = %e, "failed to handle subscriber answer");
-    }
+    SfuServer::handle_subscriber_answer(&peer, sdp.to_string())
+        .await
+        .map_err(|e| {
+            error!(user_id = %user_id, channel_id = %channel_id, error = %e, "failed to handle subscriber answer");
+            e
+        })?;
 
     Ok(())
 }
@@ -594,7 +595,7 @@ async fn handle_ice_candidate(
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
     if let Err(e) = SfuServer::handle_ice_candidate(&peer, candidate, pc_type).await {
-        error!(user_id = %user_id, pc_type = %pc_type, error = %e, "failed to add ICE candidate");
+        error!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, error = %e, "failed to add ICE candidate");
     }
 
     Ok(())
@@ -759,6 +760,9 @@ async fn handle_screen_share_start(
             .bind(params.channel_id)
             .fetch_optional(pool)
             .await
+            .inspect_err(|e| {
+                warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, using default");
+            })
             .ok()
             .flatten()
             .unwrap_or(6);
@@ -953,7 +957,7 @@ async fn handle_webcam_start(
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
-        .map_err(|_e: crate::permissions::PermissionError| VoiceError::Unauthorized)?;
+        .map_err(|e| map_permission_error(e, "webcam start"))?;
 
     // Get the room
     let room = sfu
