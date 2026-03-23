@@ -53,6 +53,7 @@ Activates automatically when a screen share starts, or manually when a user clic
 - Shows live video stream from the screen share
 - Label at bottom: "{username}'s Screen" with translucent background
 - Appears as an additional tile alongside the user's participant tile (one person can have both a participant tile and a screen share tile)
+- **Pop-out button:** Small icon button (top-right corner, visible on hover) opens the stream in a separate browser window. See "Screen Share Pop-Out" section below.
 
 ## Tile Sizing
 
@@ -92,6 +93,7 @@ Minimum tile size: 120px wide. Maximum columns: 5.
 - `VoiceTileGrid.tsx` — grid/focus layout manager, handles mode switching
 - `VoiceTile.tsx` — single tile (participant or screen share), handles click, speaking indicator, video attachment
 - `VoiceTileStrip.tsx` — the sidebar/bottom strip of unfocused tiles in focus mode
+- `ScreenSharePopOut.ts` — utility for managing pop-out windows (window.open, stream transfer, cleanup)
 
 ### Modified Components
 
@@ -109,6 +111,7 @@ Minimum tile size: 120px wide. Maximum columns: 5.
 
 - `focusedTileId: string | null` — ID of the currently focused tile. Format: `"{userId}"` for participant tiles, `"screen:{stream_id}"` for screen share tiles (where `stream_id` is `ScreenShareInfo.stream_id`, a UUID)
 - `viewMode: "grid" | "focus"` — derived from `focusedTileId` and active screen shares
+- `poppedOutStreams: Set<string>` — stream IDs of screen shares currently in pop-out windows
 
 ### Tile List Construction
 
@@ -155,6 +158,32 @@ To attach a track to a `<video>` element:
 4. Clean up on unmount: `videoElement.srcObject = null`
 
 Use a `ref` on the `<video>` element and a `createEffect` to attach/detach reactively.
+
+## Screen Share Pop-Out
+
+Screen share tiles have a pop-out button that opens the video stream in a separate browser window.
+
+### Behavior
+
+- **Trigger:** Click the pop-out icon (top-right of screen share tile, visible on hover)
+- **Opens:** `window.open()` with a minimal page containing just the `<video>` element, dark background, and the stream label
+- **Main view tile:** Stays in the grid/strip but shows a "Popped out" placeholder with a "Bring back" button instead of the video stream
+- **Close pop-out:** Closing the window (or clicking "Bring back" in the main tile) returns the stream to the inline tile
+- **Multiple pop-outs:** Each screen share can be popped out independently
+- **Focus mode interaction:** A popped-out screen share can still be the focused tile — the focus area shows the placeholder, and the actual video is in the pop-out window
+
+### Implementation
+
+- Use `window.open('', '_blank', 'width=960,height=540')` to create a minimal window
+- Write a minimal HTML document into the new window's `document` with dark background styling
+- Transfer the `MediaStream` to the pop-out window's `<video>` element via `videoEl.srcObject = stream`
+- Track pop-out state per stream: `poppedOutStreams: Set<string>` (stream IDs)
+- Listen for the pop-out window's `beforeunload` event to restore the stream to the inline tile
+- The `MediaStreamTrack` stays alive — it's shared between windows, not moved
+
+### New Component
+
+- `ScreenSharePopOut.ts` — utility module (not a component) that manages `window.open`, stream attachment, and cleanup. Exports `popOut(streamId)` and `bringBack(streamId)`.
 
 ## Styling
 
