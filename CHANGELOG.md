@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Voice connections use dual PeerConnection architecture (publisher + subscriber) for reliable screen sharing and multi-user scalability
 - Screen sharing uses standard WebRTC `addTrack` negotiation instead of `replaceTrack` workarounds
+- Voice channel view uses tile-based grid with focus mode for screen shares and webcams
+- Screen shares can be popped out to separate browser windows
 
 ### Fixed
 - Screen sharing video now flows between users — was blocked by single-PeerConnection offer model
