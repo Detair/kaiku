@@ -445,7 +445,7 @@ async fn handle_publisher_offer(
                 .has_subscribed
                 .swap(true, std::sync::atomic::Ordering::Relaxed)
             {
-                subscribe_to_existing_tracks(sfu, &room, &peer, user_id).await;
+                subscribe_to_existing_tracks(&room, &peer, user_id).await;
             }
         }
         Err(e) => {
@@ -462,7 +462,6 @@ async fn handle_publisher_offer(
 /// Creates subscriber tracks via the `TrackRouter`, adds them to the new peer's
 /// subscriber PC, and renegotiates so the client receives the offer with new tracks.
 async fn subscribe_to_existing_tracks(
-    _sfu: &Arc<SfuServer>,
     room: &Arc<super::sfu::Room>,
     peer: &Arc<super::peer::Peer>,
     user_id: Uuid,
