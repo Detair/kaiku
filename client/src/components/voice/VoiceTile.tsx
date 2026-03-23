@@ -145,25 +145,18 @@ const ScreenShareTile: Component<{
   onBringBack?: () => void;
   onStopShare?: () => void;
 }> = (props) => {
-  let videoRef: HTMLVideoElement | undefined;
-
   const trackInfo = () =>
     screenShareViewerState.availableTracks.get(props.tile.streamId);
   const hasTrack = () => !!trackInfo();
 
-  createEffect(() => {
-    if (!videoRef) return;
+  // Attach stream when video element mounts (including after bring-back remount)
+  const attachStream = (el: HTMLVideoElement) => {
     const info = trackInfo();
     if (info) {
-      videoRef.srcObject = new MediaStream([info.track]);
-    } else {
-      videoRef.srcObject = null;
+      el.srcObject = new MediaStream([info.track]);
     }
-  });
-
-  onCleanup(() => {
-    if (videoRef) videoRef.srcObject = null;
-  });
+    onCleanup(() => { el.srcObject = null; });
+  };
 
   return (
     <>
@@ -203,7 +196,7 @@ const ScreenShareTile: Component<{
           }
         >
           <video
-            ref={videoRef}
+            ref={attachStream}
             autoplay
             playsinline
             muted
