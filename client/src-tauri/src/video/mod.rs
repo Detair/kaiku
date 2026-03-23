@@ -1,6 +1,6 @@
 //! Video Encoding and RTP Module
 //!
-//! VP9 software encoding and RTP packetization for screen sharing.
+//! VP8 software encoding and RTP packetization for screen sharing.
 
 pub mod encoder;
 pub mod rtp;
