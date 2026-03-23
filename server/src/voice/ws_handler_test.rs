@@ -180,14 +180,14 @@ mod tests {
         )
         .await?;
 
-        // Verify VoiceOffer was sent
-        let msg = rx.recv().await.expect("Should receive VoiceOffer");
-        let OutboundMsg::Event(event) = msg else { panic!("Expected Event") };
-        assert!(matches!(event, ServerEvent::VoiceOffer { .. }));
+        // In the dual-PC model, the server does NOT send an initial offer.
+        // The first message should be VoiceRoomState.
 
         // Verify VoiceRoomState includes username
         let msg = rx.recv().await.expect("Should receive VoiceRoomState");
-        let OutboundMsg::Event(event) = msg else { panic!("Expected Event") };
+        let OutboundMsg::Event(event) = msg else {
+            panic!("Expected Event")
+        };
         match event {
             ServerEvent::VoiceRoomState { participants, .. } => {
                 assert_eq!(participants.len(), 1);
@@ -231,7 +231,10 @@ mod tests {
             },
         };
         let mut rate_limiter = RateLimiter::new(redis, rl_config);
-        rate_limiter.init().await.expect("Failed to init rate limiter");
+        rate_limiter
+            .init()
+            .await
+            .expect("Failed to init rate limiter");
 
         // Create SFU server with the rate limiter wired in.
         let config = Arc::new(Config::default_for_test());

@@ -1,30 +1,32 @@
 //! WebRTC Peer Connection Management
 //!
-//! Wraps `RTCPeerConnection` for each participant in a voice channel.
+//! Each participant has two `PeerConnection`s:
+//! - **`publisher_pc`**: receives tracks FROM the client (mic, screen, webcam).
+//!   The client creates offers for this connection.
+//! - **`subscriber_pc`**: sends tracks TO the client (other users' audio,
+//!   screen shares, webcams). The server creates offers for this connection.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
-use webrtc::api::API;
-use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
-use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
-use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_remote::TrackRemote;
 
-use super::error::VoiceError;
 use super::track_types::TrackSource;
 use crate::ws::OutboundMsg;
 
 /// Represents a user's WebRTC connection to the SFU.
+///
+/// Uses two `PeerConnection`s (dual-PC architecture) to cleanly separate
+/// upstream (publish) and downstream (subscribe) media flows.
 pub struct Peer {
     /// User ID.
     pub user_id: Uuid,
@@ -34,16 +36,21 @@ pub struct Peer {
     pub display_name: String,
     /// Channel ID the peer is connected to.
     pub channel_id: Uuid,
-    /// The WebRTC peer connection.
-    pub peer_connection: Arc<RTCPeerConnection>,
-    /// The incoming tracks from this peer (mic, screen).
+
+    /// Receives tracks FROM client (mic, screen, webcam). Client creates offers.
+    pub publisher_pc: Arc<RTCPeerConnection>,
+    /// Sends tracks TO client (other users' audio, screen shares). Server creates offers.
+    pub subscriber_pc: Arc<RTCPeerConnection>,
+
+    /// Tracks received from this peer (on `publisher_pc`).
     /// Map: `TrackSource` -> remote track
     pub incoming_tracks: RwLock<HashMap<TrackSource, Arc<TrackRemote>>>,
-    /// Tracks forwarded to this user (other participants' media).
+    /// Tracks being forwarded to this peer (on `subscriber_pc`).
     /// Map: `(source_user_id, source_type)` -> local track
-    pub outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), Arc<TrackLocalStaticRTP>>>,
+    outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), Arc<TrackLocalStaticRTP>>>,
+
     /// Whether the user is muted.
-    pub muted: RwLock<bool>,
+    muted: RwLock<bool>,
     /// Channel to send signaling messages back to the user.
     pub signal_tx: mpsc::Sender<OutboundMsg>,
     /// Unique session identifier for this connection.
@@ -54,27 +61,29 @@ pub struct Peer {
     /// The client sends e.g. `VoiceWebcamStart` before `addTrack()`, so the
     /// server can pop from this queue when `on_track` fires to identify the source.
     pending_track_sources: RwLock<Vec<TrackSource>>,
+    /// Whether this peer has already subscribed to existing tracks.
+    /// Used for robust first-offer detection instead of checking `outgoing_tracks_count`.
+    pub has_subscribed: AtomicBool,
 }
 
 impl Peer {
-    /// Create a new peer with a WebRTC connection.
-    pub async fn new(
+    /// Create a new peer with two WebRTC connections (publisher + subscriber).
+    pub fn new(
         user_id: Uuid,
         username: String,
         display_name: String,
         channel_id: Uuid,
-        api: &API,
-        config: RTCConfiguration,
+        publisher_pc: Arc<RTCPeerConnection>,
+        subscriber_pc: Arc<RTCPeerConnection>,
         signal_tx: mpsc::Sender<OutboundMsg>,
-    ) -> Result<Self, VoiceError> {
-        let peer_connection = api.new_peer_connection(config).await?;
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             user_id,
             username,
             display_name,
             channel_id,
-            peer_connection: Arc::new(peer_connection),
+            publisher_pc,
+            subscriber_pc,
             incoming_tracks: RwLock::new(HashMap::new()),
             outgoing_tracks: RwLock::new(HashMap::new()),
             muted: RwLock::new(false),
@@ -82,50 +91,8 @@ impl Peer {
             session_id: Uuid::now_v7(),
             connected_at: Utc::now(),
             pending_track_sources: RwLock::new(Vec::new()),
-        })
-    }
-
-    /// Add a transceiver for media exchange with the client.
-    /// Uses a dummy track with a unique stream ID to prevent duplicate
-    /// a=msid lines in the SDP offer (browsers reject duplicate msid).
-    /// Video transceivers use Sendrecv so the client can use replaceTrack
-    /// to start sending without renegotiation.
-    /// Audio transceivers use Recvonly.
-    pub async fn add_recv_transceiver(&self, kind: RTPCodecType) -> Result<(), VoiceError> {
-        let unique_id = Uuid::now_v7().to_string();
-        let mime = if kind == RTPCodecType::Video {
-            "video/VP8".to_string()
-        } else {
-            "audio/opus".to_string()
-        };
-
-        // Video: sendrecv so client can replaceTrack without renegotiation
-        // Audio: recvonly (server only receives mic audio)
-        let direction = if kind == RTPCodecType::Video {
-            RTCRtpTransceiverDirection::Sendrecv
-        } else {
-            RTCRtpTransceiverDirection::Recvonly
-        };
-
-        let dummy_track = Arc::new(TrackLocalStaticRTP::new(
-            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
-                mime_type: mime,
-                ..Default::default()
-            },
-            format!("recv-{unique_id}"),
-            format!("recv-stream-{unique_id}"),
-        ));
-
-        self.peer_connection
-            .add_transceiver_from_track(
-                dummy_track as Arc<dyn TrackLocal + Send + Sync>,
-                Some(RTCRtpTransceiverInit {
-                    direction,
-                    send_encodings: vec![],
-                }),
-            )
-            .await?;
-        Ok(())
+            has_subscribed: AtomicBool::new(false),
+        }
     }
 
     /// Set an incoming track from this peer.
@@ -135,19 +102,18 @@ impl Peer {
     }
 
     /// Add an outgoing track to forward media from another user.
+    /// The track is added to the subscriber `PeerConnection`.
     /// Returns the `RTCRtpSender` so callers can read RTCP feedback (e.g. REMB).
     pub async fn add_outgoing_track(
         &self,
         source_user_id: Uuid,
         source_type: TrackSource,
         track: Arc<TrackLocalStaticRTP>,
-    ) -> Result<Arc<RTCRtpSender>, VoiceError> {
-        // Add track to peer connection
+    ) -> Result<Arc<RTCRtpSender>, super::error::VoiceError> {
+        // Add track to subscriber peer connection
         let sender = self
-            .peer_connection
-            .add_track(
-                track.clone() as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>
-            )
+            .subscriber_pc
+            .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
 
         // Store reference
@@ -157,7 +123,7 @@ impl Peer {
         Ok(sender)
     }
 
-    /// Remove an outgoing track, also removing it from the peer connection.
+    /// Remove an outgoing track, also removing it from the subscriber peer connection.
     pub async fn remove_outgoing_track(
         &self,
         source_user_id: Uuid,
@@ -165,12 +131,18 @@ impl Peer {
     ) -> bool {
         let mut tracks = self.outgoing_tracks.write().await;
         if let Some(track) = tracks.remove(&(source_user_id, source_type)) {
-            // Remove from PeerConnection so the subscriber stops receiving it
-            let senders = self.peer_connection.get_senders().await;
+            // Remove from subscriber PeerConnection so the subscriber stops receiving it
+            let senders = self.subscriber_pc.get_senders().await;
             for sender in senders {
                 if let Some(t) = sender.track().await {
                     if t.id() == track.id() {
-                        let _ = self.peer_connection.remove_track(&sender).await;
+                        if let Err(e) = self.subscriber_pc.remove_track(&sender).await {
+                            tracing::warn!(
+                                user_id = %self.user_id,
+                                error = %e,
+                                "failed to remove track from subscriber PC"
+                            );
+                        }
                         break;
                     }
                 }
@@ -179,6 +151,11 @@ impl Peer {
         } else {
             false
         }
+    }
+
+    /// Returns the number of outgoing tracks on the subscriber `PeerConnection`.
+    pub async fn outgoing_tracks_count(&self) -> usize {
+        self.outgoing_tracks.read().await.len()
     }
 
     /// Enqueue an expected track source. Called before the client's `addTrack()`
@@ -206,12 +183,10 @@ impl Peer {
             .map(|pos| pending.remove(pos))
     }
 
-    /// Check if the peer connection is connected.
+    /// Check if either peer connection is connected.
     pub fn is_connected(&self) -> bool {
-        matches!(
-            self.peer_connection.ice_connection_state(),
-            RTCIceConnectionState::Connected | RTCIceConnectionState::Completed
-        )
+        self.publisher_pc.connection_state() == RTCPeerConnectionState::Connected
+            || self.subscriber_pc.connection_state() == RTCPeerConnectionState::Connected
     }
 
     /// Set mute state.
@@ -225,9 +200,13 @@ impl Peer {
         *self.muted.read().await
     }
 
-    /// Close the peer connection.
-    pub async fn close(&self) -> Result<(), VoiceError> {
-        self.peer_connection.close().await?;
-        Ok(())
+    /// Close both peer connections.
+    pub async fn close(&self) {
+        if let Err(e) = self.publisher_pc.close().await {
+            tracing::warn!(user_id = %self.user_id, error = %e, "failed to close publisher PC");
+        }
+        if let Err(e) = self.subscriber_pc.close().await {
+            tracing::warn!(user_id = %self.user_id, error = %e, "failed to close subscriber PC");
+        }
     }
 }

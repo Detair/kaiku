@@ -58,11 +58,11 @@ export interface RemoteTrack {
 export interface VoiceAdapterEvents {
   onStateChange: (state: VoiceConnectionState) => void;
   onError: (error: VoiceError) => void;
+  onWarning?: (warning: { type: string; message: string }) => void;
   onRemoteTrack: (track: RemoteTrack) => void;
   onRemoteTrackRemoved: (userId: string) => void;
   onLocalMuteChange: (muted: boolean) => void;
   onSpeakingChange: (speaking: boolean) => void;
-  onIceCandidate: (candidate: string) => void;
 
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;
@@ -202,11 +202,13 @@ export interface VoiceAdapter {
   setDeafen(deafened: boolean): Promise<VoiceResult<void>>;
   setNoiseSuppression(enabled: boolean): Promise<VoiceResult<void>>;
 
-  // Signaling (called by WebSocket store)
-  handleOffer(channelId: string, sdp: string): Promise<VoiceResult<string>>; // Returns answer SDP
+  // Signaling (called by WebSocket store) — dual PeerConnection model
+  handlePublisherAnswer(channelId: string, sdp: string): Promise<VoiceResult<void>>;
+  handleSubscriberOffer(channelId: string, sdp: string): Promise<VoiceResult<string>>; // Returns answer SDP
   handleIceCandidate(
     channelId: string,
     candidate: string,
+    pcType?: string,
   ): Promise<VoiceResult<void>>;
 
   // State

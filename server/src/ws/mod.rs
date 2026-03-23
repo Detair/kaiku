@@ -37,6 +37,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use vc_common::protocol::PcType;
+
 use crate::api::AppState;
 use crate::auth::jwt;
 use crate::db;
@@ -103,6 +105,11 @@ fn extract_token_from_protocol(headers: &HeaderMap) -> Option<String> {
         })
 }
 
+/// Default `pc_type` for backward compatibility with old clients.
+const fn default_pc_type() -> PcType {
+    PcType::Publisher
+}
+
 /// Client-to-server events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -141,8 +148,15 @@ pub enum ClientEvent {
         /// Voice channel to leave.
         channel_id: Uuid,
     },
-    /// Send SDP answer to server
-    VoiceAnswer {
+    /// Client sends SDP offer for publisher `PeerConnection` (mic, screen, webcam tracks)
+    VoicePublisherOffer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP offer.
+        sdp: String,
+    },
+    /// Client sends SDP answer for subscriber `PeerConnection` (receiving other users' tracks)
+    VoiceSubscriberAnswer {
         /// Voice channel.
         channel_id: Uuid,
         /// SDP answer.
@@ -154,6 +168,9 @@ pub enum ClientEvent {
         channel_id: Uuid,
         /// ICE candidate string.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to.
+        #[serde(default = "default_pc_type")]
+        pc_type: PcType,
     },
     /// Mute self in voice channel
     VoiceMute {
@@ -258,7 +275,8 @@ impl ClientEvent {
             Self::StopTyping { .. } => "stop_typing",
             Self::VoiceJoin { .. } => "voice_join",
             Self::VoiceLeave { .. } => "voice_leave",
-            Self::VoiceAnswer { .. } => "voice_answer",
+            Self::VoicePublisherOffer { .. } => "voice_publisher_offer",
+            Self::VoiceSubscriberAnswer { .. } => "voice_subscriber_answer",
             Self::VoiceIceCandidate { .. } => "voice_ice_candidate",
             Self::VoiceMute { .. } => "voice_mute",
             Self::VoiceUnmute { .. } => "voice_unmute",
@@ -421,8 +439,15 @@ pub enum ServerEvent {
     },
 
     // Voice events
-    /// SDP offer from server (after `VoiceJoin`)
-    VoiceOffer {
+    /// Server sends SDP answer to client's publisher offer
+    VoicePublisherAnswer {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// SDP answer.
+        sdp: String,
+    },
+    /// Server sends SDP offer for subscriber `PeerConnection`
+    VoiceSubscriberOffer {
         /// Voice channel.
         channel_id: Uuid,
         /// SDP offer.
@@ -434,6 +459,8 @@ pub enum ServerEvent {
         channel_id: Uuid,
         /// ICE candidate string.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to.
+        pc_type: PcType,
     },
     /// User joined voice channel
     VoiceUserJoined {
@@ -1212,7 +1239,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     crate::observability::metrics::record_ws_connect();
 
     // Send ready event
-    let _ = tx.send(OutboundMsg::Event(ServerEvent::Ready { user_id })).await;
+    let _ = tx
+        .send(OutboundMsg::Event(ServerEvent::Ready { user_id }))
+        .await;
 
     // Fetch user's friends for presence subscriptions
     let friend_ids = match get_user_friends(&state.db, user_id).await {
@@ -1506,13 +1535,15 @@ pub async fn handle_client_message(
             // Add to subscribed channels
             subscribed_channels.write().await.insert(channel_id);
 
-            tx.send(OutboundMsg::Event(ServerEvent::Subscribed { channel_id })).await?;
+            tx.send(OutboundMsg::Event(ServerEvent::Subscribed { channel_id }))
+                .await?;
             debug!("User {} subscribed to channel {}", user_id, channel_id);
         }
 
         ClientEvent::Unsubscribe { channel_id } => {
             subscribed_channels.write().await.remove(&channel_id);
-            tx.send(OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id })).await?;
+            tx.send(OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id }))
+                .await?;
             debug!("User {} unsubscribed from channel {}", user_id, channel_id);
         }
 
@@ -1566,7 +1597,8 @@ pub async fn handle_client_message(
         // Voice events - delegate to voice handler
         ClientEvent::VoiceJoin { .. }
         | ClientEvent::VoiceLeave { .. }
-        | ClientEvent::VoiceAnswer { .. }
+        | ClientEvent::VoicePublisherOffer { .. }
+        | ClientEvent::VoiceSubscriberAnswer { .. }
         | ClientEvent::VoiceIceCandidate { .. }
         | ClientEvent::VoiceMute { .. }
         | ClientEvent::VoiceUnmute { .. }
@@ -1857,7 +1889,9 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                             };
                             drop(blocked);
 
-                            if !should_filter && params.tx.send(OutboundMsg::Event(event)).await.is_err() {
+                            if !should_filter
+                                && params.tx.send(OutboundMsg::Event(event)).await.is_err()
+                            {
                                 break;
                             }
                         }
@@ -2083,4 +2117,92 @@ async fn get_friends_presence(
     .await?;
 
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_publisher_offer_serialization() {
+        let event = ClientEvent::VoicePublisherOffer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_publisher_offer"));
+        let parsed: ClientEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientEvent::VoicePublisherOffer { sdp, .. } => assert_eq!(sdp, "v=0\r\n"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_subscriber_answer_serialization() {
+        let event = ClientEvent::VoiceSubscriberAnswer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_subscriber_answer"));
+        let parsed: ClientEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientEvent::VoiceSubscriberAnswer { sdp, .. } => assert_eq!(sdp, "v=0\r\n"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_subscriber_offer_serialization() {
+        let event = ServerEvent::VoiceSubscriberOffer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_subscriber_offer"));
+    }
+
+    #[test]
+    fn test_publisher_answer_serialization() {
+        let event = ServerEvent::VoicePublisherAnswer {
+            channel_id: Uuid::nil(),
+            sdp: "v=0\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("voice_publisher_answer"));
+    }
+
+    #[test]
+    fn test_ice_candidate_pc_type_default() {
+        // Old clients send without pc_type — should default to "publisher"
+        let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:..."}"#;
+        let parsed: ClientEvent = serde_json::from_str(json).unwrap();
+        match parsed {
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, PcType::Publisher),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_ice_candidate_pc_type_explicit() {
+        // New clients send with explicit pc_type
+        let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:...","pc_type":"subscriber"}"#;
+        let parsed: ClientEvent = serde_json::from_str(json).unwrap();
+        match parsed {
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, PcType::Subscriber),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_server_ice_candidate_includes_pc_type() {
+        let event = ServerEvent::VoiceIceCandidate {
+            channel_id: Uuid::nil(),
+            candidate: "candidate:...".to_string(),
+            pc_type: PcType::Subscriber,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"pc_type\":\"subscriber\""));
+    }
 }

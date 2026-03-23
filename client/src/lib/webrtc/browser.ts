@@ -53,8 +53,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private deafened = false;
   private noiseSuppression = true;
 
-  // WebRTC
-  private peerConnection: RTCPeerConnection | null = null;
+  // WebRTC — dual PeerConnection model
+  private publisherPC: RTCPeerConnection | null = null;
+  private subscriberPC: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private remoteStreams = new Map<string, MediaStream>();
 
@@ -63,13 +64,6 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     stream: MediaStream;
     videoSender: RTCRtpSender;
     audioSender: RTCRtpSender | null;
-  }> = new Map();
-
-  // Pending screen shares — captured but not yet added to peer connection
-  // (waiting for server's renegotiation offer with recv transceivers)
-  private pendingScreenShares: Map<string, {
-    stream: MediaStream;
-    quality: string;
   }> = new Map();
 
   // Webcam state
@@ -103,6 +97,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   // Voice join start time for timing breadcrumb
   private joinStartTime = 0;
 
+  // Negotiation lock to prevent concurrent offers on the publisher PC
+  private isNegotiating = false;
+  private pendingNegotiation = false;
+
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
   }
@@ -113,13 +111,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     console.log(`[BrowserVoiceAdapter] Joining channel: ${channelId}`);
 
     // Clean up any stale connection (e.g., from WebSocket reconnect)
-    if (this.peerConnection) {
+    if (this.publisherPC || this.subscriberPC) {
       console.log("[BrowserVoiceAdapter] Cleaning up stale connection");
       this.cleanup();
     }
 
     try {
-    this.joinStartTime = Date.now();
+      this.joinStartTime = Date.now();
       this.channelId = channelId;
       this.setState("requesting_media");
 
@@ -143,16 +141,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Fetch ICE servers (STUN + TURN) from the API
       const config = await this.fetchIceConfig();
 
-      this.peerConnection = new RTCPeerConnection(config);
-      this.setupPeerConnectionHandlers();
-
-      // Add local tracks
-      this.localStream.getTracks().forEach((track) => {
-        this.peerConnection!.addTrack(track, this.localStream!);
-      });
+      // Create dual PeerConnections
+      this.publisherPC = new RTCPeerConnection(config);
+      this.subscriberPC = new RTCPeerConnection(config);
+      this.setupPublisherPC(channelId);
+      this.setupSubscriberPC(channelId);
 
       console.log(
-        "[BrowserVoiceAdapter] Peer connection created, sending voice_join",
+        "[BrowserVoiceAdapter] Dual PeerConnections created, sending voice_join",
       );
 
       // Ensure WebSocket is connected before sending
@@ -206,7 +202,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         channel_id: channelId,
       });
 
-      console.log("[BrowserVoiceAdapter] Waiting for offer from server");
+      // Add mic track to publisherPC — this triggers onnegotiationneeded
+      // which creates and sends the publisher offer automatically
+      this.localStream.getTracks().forEach((track) => {
+        this.publisherPC!.addTrack(track, this.localStream!);
+      });
+
+      console.log("[BrowserVoiceAdapter] Mic tracks added, publisher offer will be sent via onnegotiationneeded");
 
       return { ok: true, value: undefined };
     } catch (err) {
@@ -223,7 +225,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Clean up all screen shares and webcam first
     if (this.screenShares.size > 0) {
-      this.cleanupAllScreenShares();
+      await this.stopAllScreenShares();
     }
     if (this.webcamStream) {
       this.cleanupWebcamState();
@@ -324,17 +326,17 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return { ok: true, value: undefined };
   }
 
-  // Signaling
+  // Signaling — dual PeerConnection model
 
-  async handleOffer(
+  async handlePublisherAnswer(
     channelId: string,
     sdp: string,
-  ): Promise<VoiceResult<string>> {
+  ): Promise<VoiceResult<void>> {
     console.log(
-      `[BrowserVoiceAdapter] Handling offer for channel: ${channelId}`,
+      `[BrowserVoiceAdapter] Handling publisher answer for channel: ${channelId}`,
     );
 
-    if (!this.peerConnection) {
+    if (!this.publisherPC) {
       return {
         ok: false,
         error: { type: "not_connected" },
@@ -347,25 +349,87 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         error: {
           type: "server_rejected",
           code: "WRONG_CHANNEL",
-          message: `Received offer for wrong channel: ${channelId}`,
+          message: `Received publisher answer for wrong channel: ${channelId}`,
         },
       };
     }
 
     try {
-      // Set remote description
-      await this.peerConnection.setRemoteDescription({
-        type: "offer",
-        sdp,
-      });
+      await this.publisherPC.setRemoteDescription(
+        new RTCSessionDescription({ type: "answer", sdp }),
+      );
+      console.log("[BrowserVoiceAdapter] Publisher answer applied");
 
-      // Create answer — tracks already added via addTrack are included
-      const answer = await this.peerConnection.createAnswer();
-      await this.peerConnection.setLocalDescription(answer);
+      // Release negotiation lock
+      this.isNegotiating = false;
 
-      console.log("[BrowserVoiceAdapter] Answer created");
+      // Drain pending negotiation
+      if (this.pendingNegotiation) {
+        this.pendingNegotiation = false;
+        this.publisherPC.dispatchEvent(new Event("negotiationneeded"));
+      }
 
-      return { ok: true, value: answer.sdp! };
+      return { ok: true, value: undefined };
+    } catch (err) {
+      this.isNegotiating = false;
+      return {
+        ok: false,
+        error: {
+          type: "connection_failed",
+          reason: err instanceof Error ? err.message : String(err),
+          retriable: true,
+        },
+      };
+    }
+  }
+
+  async handleSubscriberOffer(
+    channelId: string,
+    sdp: string,
+  ): Promise<VoiceResult<string>> {
+    console.log(
+      `[BrowserVoiceAdapter] Handling subscriber offer for channel: ${channelId}`,
+    );
+
+    if (!this.subscriberPC) {
+      return {
+        ok: false,
+        error: { type: "not_connected" },
+      };
+    }
+
+    if (this.channelId !== channelId) {
+      return {
+        ok: false,
+        error: {
+          type: "server_rejected",
+          code: "WRONG_CHANNEL",
+          message: `Received subscriber offer for wrong channel: ${channelId}`,
+        },
+      };
+    }
+
+    try {
+      await this.subscriberPC.setRemoteDescription(
+        new RTCSessionDescription({ type: "offer", sdp }),
+      );
+      const answer = await this.subscriberPC.createAnswer();
+      await this.subscriberPC.setLocalDescription(answer);
+
+      console.log("[BrowserVoiceAdapter] Subscriber answer created");
+
+      const answerSdp = answer.sdp;
+      if (!answerSdp) {
+        return {
+          ok: false,
+          error: {
+            type: "connection_failed" as const,
+            reason: "Browser returned empty SDP answer",
+            retriable: true,
+          },
+        };
+      }
+      return { ok: true, value: answerSdp };
     } catch (err) {
       return {
         ok: false,
@@ -381,12 +445,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   async handleIceCandidate(
     channelId: string,
     candidate: string,
+    pcType: string = "publisher",
   ): Promise<VoiceResult<void>> {
     const startTime = performance.now();
 
-    if (!this.peerConnection) {
+    const pc = pcType === "subscriber" ? this.subscriberPC : this.publisherPC;
+
+    if (!pc) {
       console.warn(
-        "[BrowserVoiceAdapter] No peer connection for ICE candidate",
+        `[BrowserVoiceAdapter] No ${pcType} peer connection for ICE candidate`,
       );
       return {
         ok: false,
@@ -411,20 +478,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     try {
       // Parse and add ICE candidate immediately (critical for NAT traversal)
       const candidateInit = JSON.parse(candidate);
-      await this.peerConnection.addIceCandidate(
-        new RTCIceCandidate(candidateInit),
-      );
+      await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
 
       const elapsed = performance.now() - startTime;
       console.log(
-        `[BrowserVoiceAdapter] ICE candidate added successfully (${elapsed.toFixed(2)}ms)`,
+        `[BrowserVoiceAdapter] ICE candidate (${pcType}) added successfully (${elapsed.toFixed(2)}ms)`,
       );
 
       return { ok: true, value: undefined };
     } catch (err) {
       const elapsed = performance.now() - startTime;
       console.error(
-        `[BrowserVoiceAdapter] Failed to add ICE candidate after ${elapsed.toFixed(2)}ms:`,
+        `[BrowserVoiceAdapter] Failed to add ICE candidate (${pcType}) after ${elapsed.toFixed(2)}ms:`,
         err,
       );
 
@@ -472,25 +537,33 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
-    if (!this.peerConnection) return null;
+    if (!this.publisherPC) return null;
 
     try {
-      const stats = await this.peerConnection.getStats();
+      // RTT comes from the publisher PC's candidate-pair stats
+      const pubStats = await this.publisherPC.getStats();
       let latency = 0;
       let jitter = 0;
       let totalLost = 0;
       let totalReceived = 0;
 
-      stats.forEach((report) => {
+      pubStats.forEach((report) => {
         if (report.type === "candidate-pair" && report.state === "succeeded") {
           latency = (report.currentRoundTripTime ?? 0) * 1000;
         }
-        if (report.type === "inbound-rtp" && report.kind === "audio") {
-          totalLost += report.packetsLost ?? 0;
-          totalReceived += report.packetsReceived ?? 0;
-          jitter = Math.max(jitter, (report.jitter ?? 0) * 1000);
-        }
       });
+
+      // Inbound audio stats come from the subscriber PC (incoming tracks)
+      if (this.subscriberPC) {
+        const subStats = await this.subscriberPC.getStats();
+        subStats.forEach((report) => {
+          if (report.type === "inbound-rtp" && report.kind === "audio") {
+            totalLost += report.packetsLost ?? 0;
+            totalReceived += report.packetsReceived ?? 0;
+            jitter = Math.max(jitter, (report.jitter ?? 0) * 1000);
+          }
+        });
+      }
 
       // Calculate delta packet loss since last sample
       let packetLoss = 0;
@@ -626,7 +699,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.inputDeviceId = deviceId;
 
     // If already in a call, restart the stream with the new device
-    if (this.localStream && this.peerConnection) {
+    if (this.localStream && this.publisherPC) {
       try {
         // Stop old tracks
         this.localStream.getTracks().forEach((track) => track.stop());
@@ -643,8 +716,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.localStream =
           await navigator.mediaDevices.getUserMedia(constraints);
 
-        // Replace tracks in peer connection
-        const sender = this.peerConnection
+        // Replace tracks in publisher peer connection
+        const sender = this.publisherPC
           .getSenders()
           .find((s) => s.track?.kind === "audio");
         if (sender) {
@@ -671,11 +744,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         const audioElements = document.querySelectorAll(
           `audio[data-stream-id="${stream.id}"]`,
         );
-        audioElements.forEach((audio) => {
+        for (const audio of audioElements) {
           if ("setSinkId" in audio) {
-            (audio as AudioElementWithSinkId).setSinkId(deviceId);
+            try {
+              await (audio as AudioElementWithSinkId).setSinkId(deviceId);
+            } catch (err) {
+              console.warn("[BrowserVoiceAdapter] Failed to set sink on element:", err);
+            }
           }
-        });
+        }
       }
       return { ok: true, value: undefined };
     } catch (err) {
@@ -700,12 +777,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
    * Returns null if not sharing.
    */
   getScreenShareInfo(streamId?: string): { streamId: string; hasAudio: boolean; sourceLabel: string } | null {
-    if (this.screenShares.size === 0 && this.pendingScreenShares.size === 0) {
+    if (this.screenShares.size === 0) {
       return null;
     }
 
     if (streamId) {
-      const entry = this.screenShares.get(streamId) ?? this.pendingScreenShares.get(streamId);
+      const entry = this.screenShares.get(streamId);
       if (!entry) return null;
 
       const videoTrack = entry.stream.getVideoTracks()[0];
@@ -729,10 +806,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
    */
   getScreenShareTrack(streamId: string): MediaStreamTrack | null {
     const entry = this.screenShares.get(streamId);
-    if (entry) return entry.stream.getVideoTracks()[0] ?? null;
-    // Also check pending shares (track captured but not yet added to peer connection)
-    const pending = this.pendingScreenShares.get(streamId);
-    return pending?.stream.getVideoTracks()[0] ?? null;
+    return entry?.stream.getVideoTracks()[0] ?? null;
   }
 
   /**
@@ -752,213 +826,93 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   async startScreenShare(
     options?: ScreenShareOptions,
   ): Promise<VoiceResult<void>> {
-    if (!this.peerConnection) {
+    if (!this.publisherPC) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
-    const streamId = options?.streamId ?? crypto.randomUUID();
-
     try {
-      // Request display media with quality constraints
+      const streamId = options?.streamId ?? crypto.randomUUID();
+
+      // Capture screen with quality constraints
       const constraints = this.getDisplayMediaConstraints(
         options?.quality ?? "medium",
       );
-
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: constraints.video,
         audio: options?.withAudio ?? false,
       });
 
-      // Get the video track
+      // Add video track to publisher PC
       const videoTrack = stream.getVideoTracks()[0];
-      if (!videoTrack) {
-        stream.getTracks().forEach((t) => t.stop());
-        return {
-          ok: false,
-          error: { type: "unknown", message: "No video track in stream" },
-        };
+      const videoSender = this.publisherPC.addTrack(videoTrack, stream);
+
+      // Add audio track if present
+      let audioSender: RTCRtpSender | null = null;
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioSender = this.publisherPC.addTrack(audioTrack, stream);
       }
 
-      // Listen for track ending (user clicked "Stop sharing" in browser UI)
+      // onnegotiationneeded fires automatically -> creates offer -> server answers -> RTP flows
+
+      // Handle user stopping share via browser UI
       videoTrack.onended = () => {
         console.log("[BrowserVoiceAdapter] Screen share track ended by user, streamId:", streamId);
-        this.handleScreenShareEnded(streamId);
+        this.stopScreenShare(streamId);
       };
 
-      // Use replaceTrack on the pre-allocated video transceiver from the
-      // initial join. This avoids renegotiation entirely — RTP flows
-      // immediately through the existing negotiated transceiver.
-      // Find an existing video transceiver that isn't already sending a
-      // screen share or webcam track.
-      const transceivers = this.peerConnection.getTransceivers();
-      const usedSenders = new Set([
-        ...Array.from(this.screenShares.values()).map(s => s.videoSender),
-        this.webcamSender,
-      ].filter(Boolean));
+      // Store for cleanup
+      this.screenShares.set(streamId, { stream, videoSender, audioSender });
 
-      // Server creates transceivers in order: audio (0), video (1).
-      // Use index 1 (video) if available and not already used.
-      // Log all transceivers for debugging.
-      console.warn("[BrowserVoiceAdapter] Transceivers for replaceTrack:",
-        transceivers.map((t, i) => `[${i}] mid=${t.mid} recv=${t.receiver?.track?.kind ?? 'null'} send=${t.sender?.track?.kind ?? 'null'} dir=${t.direction}`).join(", "));
-
-      const videoTransceiver = transceivers.find(t => {
-        // Match by receiver track kind (most reliable — set from server's offer)
-        if (t.receiver?.track?.kind === "video" && !usedSenders.has(t.sender)) return true;
-        // Match by sender track kind
-        if (t.sender?.track?.kind === "video" && !usedSenders.has(t.sender)) return true;
-        return false;
-      });
-
-      if (videoTransceiver) {
-        // Transceiver is already sendrecv (server creates it that way).
-        // replaceTrack activates sending immediately — no renegotiation needed.
-        await videoTransceiver.sender.replaceTrack(videoTrack);
-        console.warn("[BrowserVoiceAdapter] Screen share via replaceTrack on existing transceiver", streamId);
-
-        const audioTrack = stream.getAudioTracks()[0];
-        let audioSender: RTCRtpSender | null = null;
-        if (audioTrack) {
-          // Audio needs a separate transceiver — use addTrack for audio
-          audioSender = this.peerConnection.addTrack(audioTrack, stream);
-        }
-
-        this.screenShares.set(streamId, { stream, videoSender: videoTransceiver.sender, audioSender });
-      } else {
-        // Fallback: no pre-allocated transceiver, use addTrack
-        console.warn("[BrowserVoiceAdapter] No existing video transceiver, using addTrack fallback", streamId);
-        const videoSender = this.peerConnection.addTrack(videoTrack, stream);
-        const audioTrack = stream.getAudioTracks()[0];
-        let audioSender: RTCRtpSender | null = null;
-        if (audioTrack) {
-          audioSender = this.peerConnection.addTrack(audioTrack, stream);
-        }
-        this.screenShares.set(streamId, { stream, videoSender, audioSender });
-      }
+      console.log("[BrowserVoiceAdapter] Screen share started, streamId:", streamId);
 
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[BrowserVoiceAdapter] Failed to start screen share:", err);
-
-      // Handle specific errors with actionable messages
-      if (err instanceof DOMException) {
-        switch (err.name) {
-          case "NotAllowedError":
-            return {
-              ok: false,
-              error: {
-                type: "permission_denied",
-                message:
-                  "Screen share permission denied. Please allow screen sharing in your browser.",
-              },
-            };
-          case "AbortError":
-            return {
-              ok: false,
-              error: {
-                type: "cancelled",
-                message: "Screen share cancelled",
-              },
-            };
-          case "NotFoundError":
-            return {
-              ok: false,
-              error: {
-                type: "not_found",
-                message: "No screen or window found to share",
-              },
-            };
-          case "NotReadableError":
-            return {
-              ok: false,
-              error: {
-                type: "hardware_error",
-                message:
-                  "Could not access screen. Another app may be blocking screen capture.",
-              },
-            };
-          case "OverconstrainedError":
-            return {
-              ok: false,
-              error: {
-                type: "constraint_error",
-                message:
-                  "Screen share quality settings not supported by your system",
-              },
-            };
-          default:
-            return {
-              ok: false,
-              error: {
-                type: "unknown",
-                message: `Screen share failed: ${err.message}`,
-              },
-            };
-        }
-      }
-
-      // Handle other error types
-      if (err instanceof Error) {
-        console.error("[BrowserVoiceAdapter] Screen share error details:", {
-          name: err.name,
-          message: err.message,
-          stack: err.stack,
-        });
-        return {
-          ok: false,
-          error: {
-            type: "unknown",
-            message: `Screen share failed: ${err.message}. Try closing other video applications.`,
-          },
-        };
-      }
-
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Screen share failed unexpectedly" },
-      };
+      return { ok: false, error: this.mapScreenShareError(err) };
     }
   }
 
   async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
-    if (streamId) {
-      // Stop a specific stream
-      const entry = this.screenShares.get(streamId);
-      if (!entry) {
-        return {
-          ok: false,
-          error: { type: "unknown", message: `Screen share not found: ${streamId}` },
-        };
-      }
-
-      try {
-        this.cleanupSingleScreenShare(streamId, entry);
-        console.log("[BrowserVoiceAdapter] Screen share stopped:", streamId);
-        return { ok: true, value: undefined };
-      } catch (err) {
-        console.error("[BrowserVoiceAdapter] Failed to stop screen share:", err);
-        return { ok: false, error: { type: "unknown", message: String(err) } };
-      }
+    if (!this.publisherPC) {
+      return { ok: false, error: { type: "not_connected" } };
     }
 
-    // No streamId — stop the first (or only) stream for backward compat
-    if (this.screenShares.size === 0) {
+    const targetId = streamId || this.screenShares.keys().next().value;
+    if (!targetId) {
       return {
         ok: false,
-        error: { type: "unknown", message: "Not sharing screen" },
+        error: { type: "unknown", message: "No active screen share" },
       };
     }
 
-    try {
-      const firstId = this.screenShares.keys().next().value!;
-      const firstEntry = this.screenShares.get(firstId)!;
-      this.cleanupSingleScreenShare(firstId, firstEntry);
-      console.log("[BrowserVoiceAdapter] Screen share stopped:", firstId);
-      return { ok: true, value: undefined };
-    } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to stop screen share:", err);
-      return { ok: false, error: { type: "unknown", message: String(err) } };
+    const share = this.screenShares.get(targetId);
+    if (!share) {
+      return {
+        ok: false,
+        error: { type: "unknown", message: `Screen share ${targetId} not found` },
+      };
     }
+
+    // Remove tracks from publisher PC
+    this.publisherPC.removeTrack(share.videoSender);
+    if (share.audioSender) {
+      this.publisherPC.removeTrack(share.audioSender);
+    }
+
+    // Stop media tracks
+    share.stream.getTracks().forEach((t) => t.stop());
+
+    // onnegotiationneeded fires automatically -> renegotiates
+
+    this.screenShares.delete(targetId);
+
+    // Notify listeners
+    this.eventHandlers.onScreenShareStopped?.("", targetId, "user_stopped");
+
+    console.log("[BrowserVoiceAdapter] Screen share stopped:", targetId);
+
+    return { ok: true, value: undefined };
   }
 
   async stopAllScreenShares(): Promise<VoiceResult<void>> {
@@ -966,14 +920,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       return { ok: true, value: undefined };
     }
 
-    try {
-      this.cleanupAllScreenShares();
-      console.log("[BrowserVoiceAdapter] All screen shares stopped");
-      return { ok: true, value: undefined };
-    } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to stop all screen shares:", err);
-      return { ok: false, error: { type: "unknown", message: String(err) } };
+    // Collect IDs first to avoid mutating map during iteration
+    const streamIds = [...this.screenShares.keys()];
+    for (const id of streamIds) {
+      await this.stopScreenShare(id);
     }
+
+    console.log("[BrowserVoiceAdapter] All screen shares stopped");
+    return { ok: true, value: undefined };
   }
 
   // Webcam
@@ -983,7 +937,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   async startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
-    if (!this.peerConnection) {
+    if (!this.publisherPC) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
@@ -1023,9 +977,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.cleanupWebcamState();
       };
 
-      // Add video track to peer connection with simulcast encodings
+      // Add video track to publisher peer connection with simulcast encodings
       const webcamBitrate = QUALITY_BITRATES[options?.quality ?? "medium"];
-      const webcamTransceiver = this.peerConnection.addTransceiver(videoTrack, {
+      const webcamTransceiver = this.publisherPC.addTransceiver(videoTrack, {
         direction: "sendonly",
         streams: [stream],
         sendEncodings: simulcastEncodings(webcamBitrate),
@@ -1093,6 +1047,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           message: `ICE config fetch failed: ${res.status}`,
           level: "error",
         });
+        this.eventHandlers.onWarning?.({
+          type: "turn_unavailable",
+          message: "TURN server unavailable — voice may not work on restrictive networks",
+        });
         return fallback;
       }
       const data = await res.json();
@@ -1118,6 +1076,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         message: "ICE config fetch exception",
         data: { error: err instanceof Error ? err.message : String(err) },
         level: "error",
+      });
+      this.eventHandlers.onWarning?.({
+        type: "turn_unavailable",
+        message: "TURN server unavailable — voice may not work on restrictive networks",
       });
       return fallback;
     }
@@ -1150,62 +1112,46 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     };
   }
 
-  private handleScreenShareEnded(streamId: string): void {
-    const entry = this.screenShares.get(streamId);
-    if (entry) {
-      this.cleanupSingleScreenShare(streamId, entry);
-    }
-    // Notify via event handler - need to get user ID
-    // For browser, we don't easily have our own user ID here, so pass empty
-    this.eventHandlers.onScreenShareStopped?.("", streamId, "user_stopped");
-  }
-
   /**
-   * Clean up a single screen share stream.
+   * Map screen share errors to typed VoiceError with actionable messages.
    */
-  private cleanupSingleScreenShare(
-    streamId: string,
-    entry: { stream: MediaStream; videoSender: RTCRtpSender; audioSender: RTCRtpSender | null },
-  ): void {
-    // Remove tracks from peer connection
-    if (this.peerConnection) {
-      if (entry.audioSender) {
-        this.peerConnection.removeTrack(entry.audioSender);
+  private mapScreenShareError(err: unknown): VoiceError {
+    if (err instanceof DOMException) {
+      switch (err.name) {
+        case "NotAllowedError":
+          return {
+            type: "permission_denied",
+            message: "Screen share permission denied. Please allow screen sharing in your browser.",
+          };
+        case "AbortError":
+          return { type: "cancelled", message: "Screen share cancelled" };
+        case "NotFoundError":
+          return { type: "not_found", message: "No screen or window found to share" };
+        case "NotReadableError":
+          return {
+            type: "hardware_error",
+            message: "Could not access screen. Another app may be blocking screen capture.",
+          };
+        case "OverconstrainedError":
+          return {
+            type: "constraint_error",
+            message: "Screen share quality settings not supported by your system",
+          };
+        default:
+          return { type: "unknown", message: `Screen share failed: ${err.message}` };
       }
-      this.peerConnection.removeTrack(entry.videoSender);
     }
 
-    // Stop the stream tracks
-    entry.stream.getTracks().forEach((track) => track.stop());
-
-    // Remove from map
-    this.screenShares.delete(streamId);
-  }
-
-  /**
-   * Clean up all active screen shares (for disconnect/leave).
-   */
-  private cleanupAllScreenShares(): void {
-    for (const [, entry] of this.screenShares) {
-      // Remove tracks from peer connection
-      if (this.peerConnection) {
-        if (entry.audioSender) {
-          this.peerConnection.removeTrack(entry.audioSender);
-        }
-        this.peerConnection.removeTrack(entry.videoSender);
-      }
-
-      // Stop the stream tracks
-      entry.stream.getTracks().forEach((track) => track.stop());
-    }
-
-    this.screenShares.clear();
+    return {
+      type: "unknown",
+      message: err instanceof Error ? err.message : "Screen share failed unexpectedly",
+    };
   }
 
   private cleanupWebcamState(): void {
-    // Remove track from peer connection
-    if (this.peerConnection && this.webcamSender) {
-      this.peerConnection.removeTrack(this.webcamSender);
+    // Remove track from publisher peer connection
+    if (this.publisherPC && this.webcamSender) {
+      this.publisherPC.removeTrack(this.webcamSender);
     }
 
     // Stop the stream tracks
@@ -1218,27 +1164,69 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.webcamSender = null;
   }
 
-  private setupPeerConnectionHandlers() {
-    if (!this.peerConnection) return;
+  private setupPublisherPC(channelId: string) {
+    if (!this.publisherPC) return;
 
-    // ICE candidate handler
-    this.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        const candidateJson = JSON.stringify(event.candidate.toJSON());
-        this.eventHandlers.onIceCandidate?.(candidateJson);
+    // Client-initiated negotiation: create offer and send to server
+    // Uses a negotiation lock to prevent concurrent offers when multiple
+    // tracks are added in quick succession (e.g., mic + screen share).
+    this.publisherPC.onnegotiationneeded = async () => {
+      if (!this.publisherPC) return;
+
+      if (this.isNegotiating) {
+        this.pendingNegotiation = true;
+        return;
+      }
+
+      this.isNegotiating = true;
+      try {
+        const offer = await this.publisherPC.createOffer();
+        await this.publisherPC.setLocalDescription(offer);
+
+        const { wsSend } = await import("@/lib/tauri");
+        await wsSend({
+          type: "voice_publisher_offer",
+          channel_id: channelId,
+          sdp: offer.sdp!,
+        });
+      } catch (err) {
+        console.error("[BrowserVoiceAdapter] Publisher negotiation failed:", err);
+        this.isNegotiating = false;
       }
     };
 
-    // Connection state change
-    this.peerConnection.onconnectionstatechange = () => {
-      const state = this.peerConnection!.connectionState;
-      console.log(`[BrowserVoiceAdapter] Connection state: ${state}`);
+    // ICE candidate handler for publisher
+    this.publisherPC.onicecandidate = (event) => {
+      if (event.candidate) {
+        const candidateJson = JSON.stringify(event.candidate.toJSON());
+        // Send ICE candidate with pc_type via WS
+        import("@/lib/tauri")
+          .then(({ wsSend }) =>
+            wsSend({
+              type: "voice_ice_candidate",
+              channel_id: channelId,
+              candidate: candidateJson,
+              pc_type: "publisher",
+            })
+          )
+          .catch((err) => {
+            console.error("[BrowserVoiceAdapter] Failed to send publisher ICE candidate:", err);
+          });
+      }
+    };
+
+    // Connection state change — publisher PC determines connected state
+    this.publisherPC.onconnectionstatechange = () => {
+      const state = this.publisherPC!.connectionState;
+      console.log(`[BrowserVoiceAdapter] Publisher connection state: ${state}`);
 
       switch (state) {
         case "connected":
           this.setState("connected");
-          const elapsed = Date.now() - this.joinStartTime;
-          Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
+          {
+            const elapsed = Date.now() - this.joinStartTime;
+            Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
+          }
           this.startVAD(); // Start Voice Activity Detection
           break;
         case "disconnected":
@@ -1249,7 +1237,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           this.setState("disconnected");
           this.eventHandlers.onError?.({
             type: "connection_failed",
-            reason: "Peer connection failed",
+            reason: "Publisher peer connection failed",
             retriable: true,
           });
           break;
@@ -1259,16 +1247,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           break;
       }
     };
+  }
 
-    // Server-driven renegotiation: suppress browser-initiated negotiation
-    this.peerConnection.onnegotiationneeded = () => {
-      console.log(
-        "[BrowserVoiceAdapter] Negotiation needed (server-driven, ignoring)",
-      );
-    };
+  private setupSubscriberPC(channelId: string) {
+    if (!this.subscriberPC) return;
 
-    // Remote track handler
-    this.peerConnection.ontrack = (event) => {
+    // Remote track handler — all remote tracks arrive on subscriberPC
+    this.subscriberPC.ontrack = (event) => {
       const track = event.track;
       const stream = event.streams[0];
 
@@ -1284,14 +1269,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const userId = colonIdx > 0 ? stream.id.slice(0, colonIdx) : stream.id;
       const sourceType = colonIdx > 0 ? stream.id.slice(colonIdx + 1) : "";
 
-      console.warn(
-        `[BrowserVoiceAdapter] Remote ${track.kind} track received, source: ${sourceType}, from: ${userId}, streamId: ${stream.id}`,
+      console.log(
+        `[BrowserVoiceAdapter] Remote ${track.kind} track received on subscriberPC, source: ${sourceType}, from: ${userId}, streamId: ${stream.id}`,
       );
 
       if (track.kind === "video") {
         if (sourceType === "webcam") {
           // Webcam video track
-          console.warn("[BrowserVoiceAdapter] Webcam video track from:", userId);
+          console.log("[BrowserVoiceAdapter] Webcam video track from:", userId);
           this.eventHandlers.onWebcamTrack?.(userId, track);
 
           track.onended = () => {
@@ -1304,7 +1289,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         } else {
           // Screen share video track — parse stream_id from "screen_video:uuid"
           const streamId = this.parseScreenShareStreamId(sourceType);
-          console.warn(
+          console.log(
             "[BrowserVoiceAdapter] Screen share video track from:",
             userId,
             "streamId:",
@@ -1335,6 +1320,39 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           this.remoteStreams.delete(userId);
           this.eventHandlers.onRemoteTrackRemoved?.(userId);
         };
+      }
+    };
+
+    // ICE candidate handler for subscriber
+    this.subscriberPC.onicecandidate = (event) => {
+      if (event.candidate) {
+        const candidateJson = JSON.stringify(event.candidate.toJSON());
+        import("@/lib/tauri")
+          .then(({ wsSend }) =>
+            wsSend({
+              type: "voice_ice_candidate",
+              channel_id: channelId,
+              candidate: candidateJson,
+              pc_type: "subscriber",
+            })
+          )
+          .catch((err) => {
+            console.error("[BrowserVoiceAdapter] Failed to send subscriber ICE candidate:", err);
+          });
+      }
+    };
+
+    // Subscriber connection state (log only, publisher determines main state)
+    this.subscriberPC.onconnectionstatechange = () => {
+      const state = this.subscriberPC?.connectionState;
+      console.log(`[BrowserVoiceAdapter] Subscriber connection state: ${state}`);
+
+      if (state === "failed") {
+        this.eventHandlers.onError?.({
+          type: "connection_failed",
+          reason: "Subscriber connection failed — you may not hear other participants",
+          retriable: true,
+        });
       }
     };
   }
@@ -1401,7 +1419,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // Stop VAD
     this.stopVAD();
 
-    // Stop all screen shares (stop media tracks before closing peer connection)
+    // Stop all screen shares (stop media tracks before closing peer connections)
     for (const entry of this.screenShares.values()) {
       entry.stream.getTracks().forEach((track) => track.stop());
     }
@@ -1413,14 +1431,22 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       this.localStream = null;
     }
 
-    // Close peer connection
-    if (this.peerConnection) {
-      this.peerConnection.close();
-      this.peerConnection = null;
+    // Close both peer connections
+    if (this.publisherPC) {
+      this.publisherPC.close();
+      this.publisherPC = null;
+    }
+    if (this.subscriberPC) {
+      this.subscriberPC.close();
+      this.subscriberPC = null;
     }
 
     // Clear remote streams
     this.remoteStreams.clear();
+
+    // Reset negotiation lock
+    this.isNegotiating = false;
+    this.pendingNegotiation = false;
 
     // Stop mic test if running
     this.stopMicTest();

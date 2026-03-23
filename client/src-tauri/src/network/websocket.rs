@@ -13,6 +13,12 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, tungstenite};
 use tracing::{debug, error, info, warn};
+use vc_common::protocol::PcType;
+
+/// Default `pc_type` for backward compatibility with old servers.
+fn default_pc_type() -> PcType {
+    PcType::Publisher
+}
 
 /// Client events sent to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,13 +43,19 @@ pub enum ClientEvent {
     VoiceLeave {
         channel_id: String,
     },
-    VoiceAnswer {
+    VoicePublisherOffer {
+        channel_id: String,
+        sdp: String,
+    },
+    VoiceSubscriberAnswer {
         channel_id: String,
         sdp: String,
     },
     VoiceIceCandidate {
         channel_id: String,
         candidate: String,
+        #[serde(default = "default_pc_type")]
+        pc_type: PcType,
     },
     VoiceMute {
         channel_id: String,
@@ -103,13 +115,18 @@ pub enum ServerEvent {
         user_id: String,
         activity: Option<serde_json::Value>,
     },
-    VoiceOffer {
+    VoicePublisherAnswer {
+        channel_id: String,
+        sdp: String,
+    },
+    VoiceSubscriberOffer {
         channel_id: String,
         sdp: String,
     },
     VoiceIceCandidate {
         channel_id: String,
         candidate: String,
+        pc_type: PcType,
     },
     VoiceUserJoined {
         channel_id: String,
@@ -611,9 +628,7 @@ fn build_ws_request(
         format!("access_token.{}, access_token", token)
             .parse()
             .map_err(|_| {
-                tungstenite::error::Error::Url(
-                    tungstenite::error::UrlError::NoPathOrQuery,
-                )
+                tungstenite::error::Error::Url(tungstenite::error::UrlError::NoPathOrQuery)
             })?,
     );
     Ok(request)
@@ -638,7 +653,8 @@ fn handle_server_message(app: &AppHandle, text: &str) {
                 ServerEvent::TypingStop { .. } => "ws:typing_stop",
                 ServerEvent::PresenceUpdate { .. } => "ws:presence_update",
                 ServerEvent::RichPresenceUpdate { .. } => "ws:rich_presence_update",
-                ServerEvent::VoiceOffer { .. } => "ws:voice_offer",
+                ServerEvent::VoicePublisherAnswer { .. } => "ws:voice_publisher_answer",
+                ServerEvent::VoiceSubscriberOffer { .. } => "ws:voice_subscriber_offer",
                 ServerEvent::VoiceIceCandidate { .. } => "ws:voice_ice_candidate",
                 ServerEvent::VoiceUserJoined { .. } => "ws:voice_user_joined",
                 ServerEvent::VoiceUserLeft { .. } => "ws:voice_user_left",

@@ -154,7 +154,7 @@ impl WebRtcClient {
             )
             .map_err(|e| WebRtcError::ApiError(e.to_string()))?;
 
-        // Register VP9 video codec (preferred, matching server PT 98)
+        // Register VP8 video codec (only video codec — matches server PT 96)
         let video_rtcp_feedback = vec![
             RTCPFeedback {
                 typ: "goog-remb".to_string(),
@@ -178,51 +178,13 @@ impl WebRtcClient {
             .register_codec(
                 RTCRtpCodecParameters {
                     capability: RTCRtpCodecCapability {
-                        mime_type: "video/VP9".to_string(),
-                        clock_rate: 90000,
-                        channels: 0,
-                        sdp_fmtp_line: "profile-id=0".to_string(),
-                        rtcp_feedback: video_rtcp_feedback.clone(),
-                    },
-                    payload_type: 98,
-                    ..Default::default()
-                },
-                RTPCodecType::Video,
-            )
-            .map_err(|e| WebRtcError::ApiError(e.to_string()))?;
-
-        // Register VP8 video codec (fallback, matching server PT 96)
-        media_engine
-            .register_codec(
-                RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
                         mime_type: "video/VP8".to_string(),
                         clock_rate: 90000,
                         channels: 0,
                         sdp_fmtp_line: String::new(),
-                        rtcp_feedback: video_rtcp_feedback.clone(),
-                    },
-                    payload_type: 96,
-                    ..Default::default()
-                },
-                RTPCodecType::Video,
-            )
-            .map_err(|e| WebRtcError::ApiError(e.to_string()))?;
-
-        // Register H.264 video codec (matching server PT 102)
-        media_engine
-            .register_codec(
-                RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: "video/H264".to_string(),
-                        clock_rate: 90000,
-                        channels: 0,
-                        sdp_fmtp_line:
-                            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                                .to_string(),
                         rtcp_feedback: video_rtcp_feedback,
                     },
-                    payload_type: 102,
+                    payload_type: 96,
                     ..Default::default()
                 },
                 RTPCodecType::Video,
@@ -369,10 +331,10 @@ impl WebRtcClient {
         // streams from the capture pipeline (future work).
         let video_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
-                mime_type: "video/VP9".to_string(),
+                mime_type: "video/VP8".to_string(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "profile-id=0".to_string(),
+                sdp_fmtp_line: String::new(),
                 rtcp_feedback: vec![],
             },
             "screen-video".to_string(),
@@ -395,10 +357,10 @@ impl WebRtcClient {
         // Same simulcast RID setup as screen share — see TODO above.
         let webcam_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
-                mime_type: "video/VP9".to_string(),
+                mime_type: "video/VP8".to_string(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "profile-id=0".to_string(),
+                sdp_fmtp_line: String::new(),
                 rtcp_feedback: vec![],
             },
             "webcam-video".to_string(),
@@ -437,13 +399,29 @@ impl WebRtcClient {
         pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
             let on_ice_candidate = on_ice_candidate.clone();
             Box::pin(async move {
-                if let Some(candidate) = candidate {
-                    if let Ok(json) = candidate.to_json() {
-                        if let Ok(callback) = on_ice_candidate.try_read() {
-                            if let Some(ref cb) = *callback {
-                                cb(serde_json::to_string(&json).unwrap_or_default());
-                            }
+                let Some(candidate) = candidate else { return };
+                let json = match candidate.to_json() {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to convert ICE candidate to JSON");
+                        return;
+                    }
+                };
+                let candidate_str = match serde_json::to_string(&json) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to serialize ICE candidate JSON");
+                        return;
+                    }
+                };
+                match on_ice_candidate.try_read() {
+                    Ok(callback) => {
+                        if let Some(ref cb) = *callback {
+                            cb(candidate_str);
                         }
+                    }
+                    Err(_) => {
+                        tracing::warn!("ICE candidate callback lock contended — candidate dropped");
                     }
                 }
             })
@@ -498,6 +476,57 @@ impl WebRtcClient {
             },
         ));
 
+        Ok(())
+    }
+
+    /// Create an SDP offer for the publisher `PeerConnection`.
+    ///
+    /// The client creates the offer and sends it to the server. The server
+    /// will respond with an answer via `VoicePublisherAnswer`.
+    pub async fn create_offer(&self) -> Result<String, WebRtcError> {
+        let pc = self
+            .peer_connection
+            .read()
+            .await
+            .clone()
+            .ok_or(WebRtcError::NotConnected)?;
+
+        // Create offer
+        let offer = pc
+            .create_offer(None)
+            .await
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        // Set local description
+        pc.set_local_description(offer.clone())
+            .await
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        debug!("Publisher offer created and local description set");
+        Ok(offer.sdp)
+    }
+
+    /// Set the remote SDP answer on the publisher `PeerConnection`.
+    ///
+    /// Called after the server responds to our offer with a `VoicePublisherAnswer`.
+    pub async fn set_remote_answer(&self, sdp: &str) -> Result<(), WebRtcError> {
+        let pc = self
+            .peer_connection
+            .read()
+            .await
+            .clone()
+            .ok_or(WebRtcError::NotConnected)?;
+
+        // Parse answer SDP
+        let answer = RTCSessionDescription::answer(sdp.to_string())
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        // Set remote description
+        pc.set_remote_description(answer)
+            .await
+            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+
+        debug!("Remote answer set on publisher PC");
         Ok(())
     }
 

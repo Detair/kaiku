@@ -18,6 +18,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
@@ -30,6 +31,8 @@ use super::screen_share::ScreenShareInfo;
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
+use vc_common::protocol::PcType;
+
 use crate::config::Config;
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
 use crate::ws::{OutboundMsg, ServerEvent};
@@ -102,10 +105,8 @@ impl Room {
         // remove it and replace with the new one instead of rejecting
         if let Some(old_peer) = peers.remove(&peer.user_id) {
             tracing::info!(user_id = %peer.user_id, "Replacing stale voice peer");
-            // Close old peer connection
-            if let Err(e) = old_peer.peer_connection.close().await {
-                tracing::warn!(user_id = %peer.user_id, error = %e, "Failed to close stale peer connection");
-            }
+            // Close old peer connections
+            old_peer.close().await;
         }
 
         peers.insert(peer.user_id, peer);
@@ -313,42 +314,7 @@ impl SfuServer {
             )
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
-        // Register VP9 video codec (preferred)
-        media_engine
-            .register_codec(
-                RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: "video/VP9".to_string(),
-                        clock_rate: 90000,
-                        channels: 0,
-                        sdp_fmtp_line: "profile-id=0".to_string(),
-                        rtcp_feedback: vec![
-                            RTCPFeedback {
-                                typ: "goog-remb".to_string(),
-                                parameter: String::new(),
-                            },
-                            RTCPFeedback {
-                                typ: "ccm".to_string(),
-                                parameter: "fir".to_string(),
-                            },
-                            RTCPFeedback {
-                                typ: "nack".to_string(),
-                                parameter: String::new(),
-                            },
-                            RTCPFeedback {
-                                typ: "nack".to_string(),
-                                parameter: "pli".to_string(),
-                            },
-                        ],
-                    },
-                    payload_type: 98,
-                    ..Default::default()
-                },
-                RTPCodecType::Video,
-            )
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-
-        // Register VP8 video codec (fallback)
+        // Register VP8 video codec (only video codec — ensures consistent PT across sessions)
         media_engine
             .register_codec(
                 RTCRtpCodecParameters {
@@ -377,43 +343,6 @@ impl SfuServer {
                         ],
                     },
                     payload_type: 96,
-                    ..Default::default()
-                },
-                RTPCodecType::Video,
-            )
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-
-        // Register H.264 video codec (for desktop clients with hardware encoding)
-        media_engine
-            .register_codec(
-                RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: "video/H264".to_string(),
-                        clock_rate: 90000,
-                        channels: 0,
-                        sdp_fmtp_line:
-                            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                                .to_string(),
-                        rtcp_feedback: vec![
-                            RTCPFeedback {
-                                typ: "goog-remb".to_string(),
-                                parameter: String::new(),
-                            },
-                            RTCPFeedback {
-                                typ: "ccm".to_string(),
-                                parameter: "fir".to_string(),
-                            },
-                            RTCPFeedback {
-                                typ: "nack".to_string(),
-                                parameter: String::new(),
-                            },
-                            RTCPFeedback {
-                                typ: "nack".to_string(),
-                                parameter: "pli".to_string(),
-                            },
-                        ],
-                    },
-                    payload_type: 102,
                     ..Default::default()
                 },
                 RTPCodecType::Video,
@@ -520,7 +449,7 @@ impl SfuServer {
         }
     }
 
-    /// Create a new peer connection for a user.
+    /// Create a new peer with two `PeerConnection`s (publisher + subscriber).
     pub async fn create_peer(
         &self,
         user_id: Uuid,
@@ -530,51 +459,34 @@ impl SfuServer {
         signal_tx: mpsc::Sender<OutboundMsg>,
     ) -> Result<Arc<Peer>, VoiceError> {
         let config = self.rtc_config();
-        let peer = Peer::new(
+
+        // Create two PeerConnections: one for publishing, one for subscribing
+        let publisher_pc = Arc::new(
+            self.api
+                .new_peer_connection(config.clone())
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
+        );
+        let subscriber_pc = Arc::new(
+            self.api
+                .new_peer_connection(config)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
+        );
+
+        let peer = Arc::new(Peer::new(
             user_id,
             username,
             display_name,
             channel_id,
-            &self.api,
-            config,
+            publisher_pc.clone(),
+            subscriber_pc.clone(),
             signal_tx,
-        )
-        .await?;
-        let peer = Arc::new(peer);
+        ));
 
-        // Add recvonly transceivers
-        // Always add Audio (mic)
-        peer.add_recv_transceiver(RTPCodecType::Audio).await?;
-        // Always add Video (screen) to prepare m-lines
-        peer.add_recv_transceiver(RTPCodecType::Video).await?;
-
-        // Set up connection state handler
-        let peer_weak = Arc::downgrade(&peer);
-        let uid = user_id;
-        let cid = channel_id;
-
-        peer.peer_connection
-            .on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
-                let pw = peer_weak.clone();
-                Box::pin(async move {
-                    debug!(
-                        user_id = %uid,
-                        channel_id = %cid,
-                        state = ?state,
-                        "Peer connection state changed"
-                    );
-
-                    match state {
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                            if let Some(_peer) = pw.upgrade() {
-                                // Peer will be cleaned up by the handler
-                                warn!(user_id = %uid, "Peer connection failed/disconnected");
-                            }
-                        }
-                        _ => {}
-                    }
-                })
-            }));
+        // Set up connection state handlers for both PCs
+        Self::register_pc_state_handler(&publisher_pc, &peer, user_id, channel_id, "publisher");
+        Self::register_pc_state_handler(&subscriber_pc, &peer, user_id, channel_id, "subscriber");
 
         Ok(peer)
     }
@@ -586,7 +498,7 @@ impl SfuServer {
         let user_id = peer.user_id;
         let channel_id = peer.channel_id;
 
-        peer.peer_connection
+        peer.publisher_pc
             .on_track(Box::new(move |track, _receiver, _transceiver| {
                 let pw = peer_weak.clone();
                 let rw = room_weak.clone();
@@ -752,91 +664,150 @@ impl SfuServer {
             }));
     }
 
-    /// Set up ICE candidate handler for a peer.
+    /// Set up ICE candidate handlers for both publisher and subscriber PCs.
     pub fn setup_ice_handler(&self, peer: &Arc<Peer>) {
-        let signal_tx = peer.signal_tx.clone();
-        let channel_id = peer.channel_id;
-
-        peer.peer_connection
-            .on_ice_candidate(Box::new(move |candidate| {
-                let tx = signal_tx.clone();
-                let cid = channel_id;
-
-                Box::pin(async move {
-                    if let Some(c) = candidate {
-                        match c.to_json() {
-                            Ok(json) => {
-                                if let Ok(candidate_str) = serde_json::to_string(&json) {
-                                    if let Err(e) = tx
-                                        .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
-                                            channel_id: cid,
-                                            candidate: candidate_str,
-                                        }))
-                                        .await
-                                    {
-                                        tracing::error!(
-                                            channel_id = %cid,
-                                            error = %e,
-                                            "Failed to send ICE candidate - connection may fail"
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Failed to serialize ICE candidate");
-                            }
-                        }
-                    }
-                })
-            }));
+        Self::register_ice_callback(&peer.publisher_pc, peer.signal_tx.clone(), peer.channel_id, "publisher");
+        Self::register_ice_callback(&peer.subscriber_pc, peer.signal_tx.clone(), peer.channel_id, "subscriber");
     }
 
-    /// Trigger renegotiation by creating a new offer and sending it to the peer.
-    /// Used after dynamically adding/removing tracks mid-session.
-    pub async fn renegotiate(peer: &Peer) -> Result<(), VoiceError> {
-        let offer = peer.peer_connection.create_offer(None).await?;
-        peer.peer_connection
+    /// Register an ICE candidate callback on a single `PeerConnection`.
+    fn register_ice_callback(
+        pc: &Arc<RTCPeerConnection>,
+        signal_tx: mpsc::Sender<OutboundMsg>,
+        channel_id: Uuid,
+        pc_label: &'static str,
+    ) {
+        pc.on_ice_candidate(Box::new(move |candidate| {
+            let tx = signal_tx.clone();
+            Box::pin(async move {
+                let Some(c) = candidate else { return };
+                let json = match c.to_json() {
+                    Ok(j) => j,
+                    Err(e) => {
+                        warn!(pc = pc_label, error = %e, "Failed to convert ICE candidate to JSON");
+                        return;
+                    }
+                };
+                let candidate_str = match serde_json::to_string(&json) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!(pc = pc_label, error = %e, "Failed to serialize ICE candidate");
+                        return;
+                    }
+                };
+                if let Err(e) = tx
+                    .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
+                        channel_id,
+                        candidate: candidate_str,
+                        pc_type: if pc_label == "subscriber" { PcType::Subscriber } else { PcType::Publisher },
+                    }))
+                    .await
+                {
+                    tracing::error!(
+                        channel_id = %channel_id,
+                        pc = pc_label,
+                        error = %e,
+                        "Failed to send ICE candidate - connection may fail"
+                    );
+                }
+            })
+        }));
+    }
+
+    /// Register a connection state change handler on a single `PeerConnection`.
+    fn register_pc_state_handler(
+        pc: &Arc<RTCPeerConnection>,
+        peer: &Arc<Peer>,
+        user_id: Uuid,
+        channel_id: Uuid,
+        pc_label: &'static str,
+    ) {
+        let peer_weak = Arc::downgrade(peer);
+        pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+            let pw = peer_weak.clone();
+            Box::pin(async move {
+                debug!(
+                    user_id = %user_id,
+                    channel_id = %channel_id,
+                    pc = pc_label,
+                    state = ?state,
+                    "Peer connection state changed"
+                );
+
+                if matches!(
+                    state,
+                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
+                ) && pw.upgrade().is_some()
+                {
+                    warn!(user_id = %user_id, pc = pc_label, "Peer connection failed/disconnected");
+                }
+            })
+        }));
+    }
+
+    /// Handle a publisher offer from the client -- server creates answer.
+    pub async fn handle_publisher_offer(
+        peer: &Arc<Peer>,
+        sdp: String,
+    ) -> Result<String, VoiceError> {
+        let offer =
+            RTCSessionDescription::offer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        peer.publisher_pc.set_remote_description(offer).await?;
+        let answer = peer.publisher_pc.create_answer(None).await?;
+        peer.publisher_pc
+            .set_local_description(answer.clone())
+            .await?;
+        Ok(answer.sdp)
+    }
+
+    /// Handle a subscriber answer from the client.
+    pub async fn handle_subscriber_answer(peer: &Arc<Peer>, sdp: String) -> Result<(), VoiceError> {
+        let answer =
+            RTCSessionDescription::answer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        peer.subscriber_pc.set_remote_description(answer).await?;
+        Ok(())
+    }
+
+    /// Trigger renegotiation on the subscriber PC by creating a new offer
+    /// and sending it to the peer. Used after dynamically adding/removing tracks.
+    pub async fn renegotiate(peer: &Arc<Peer>) -> Result<(), VoiceError> {
+        let offer = peer.subscriber_pc.create_offer(None).await?;
+        peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
         peer.signal_tx
-            .send(OutboundMsg::Event(ServerEvent::VoiceOffer {
+            .send(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
                 channel_id: peer.channel_id,
                 sdp: offer.sdp,
             }))
             .await
-            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(
+                    user_id = %peer.user_id,
+                    channel_id = %peer.channel_id,
+                    error = %e,
+                    "failed to send subscriber offer — client will not receive tracks"
+                );
+                VoiceError::Signaling("failed to send subscriber offer".into())
+            })?;
         Ok(())
     }
 
-    /// Create an offer for a peer.
-    pub async fn create_offer(&self, peer: &Peer) -> Result<RTCSessionDescription, VoiceError> {
-        let offer = peer.peer_connection.create_offer(None).await?;
-        peer.peer_connection
-            .set_local_description(offer.clone())
-            .await?;
-        Ok(offer)
-    }
-
-    /// Handle an answer from a peer.
-    pub async fn handle_answer(&self, peer: &Peer, sdp: &str) -> Result<(), VoiceError> {
-        let answer = RTCSessionDescription::answer(sdp.to_string())
-            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
-
-        peer.peer_connection.set_remote_description(answer).await?;
-        Ok(())
-    }
-
-    /// Handle an ICE candidate from a peer.
+    /// Handle an ICE candidate from a peer, routed by `pc_type`.
     pub async fn handle_ice_candidate(
-        &self,
-        peer: &Peer,
+        peer: &Arc<Peer>,
         candidate_str: &str,
+        pc_type: &PcType,
     ) -> Result<(), VoiceError> {
         let candidate: webrtc::ice_transport::ice_candidate::RTCIceCandidateInit =
             serde_json::from_str(candidate_str)
                 .map_err(|e| VoiceError::Signaling(format!("Invalid ICE candidate: {e}")))?;
 
-        peer.peer_connection.add_ice_candidate(candidate).await?;
+        let pc = match pc_type {
+            PcType::Subscriber => &peer.subscriber_pc,
+            PcType::Publisher => &peer.publisher_pc,
+        };
+        pc.add_ice_candidate(candidate).await?;
 
         Ok(())
     }

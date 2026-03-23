@@ -9,7 +9,6 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
@@ -22,6 +21,8 @@ use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
 use super::Quality;
+use vc_common::protocol::PcType;
+
 use crate::ws::{ClientEvent, OutboundMsg, ServerEvent, VoiceParticipant};
 
 /// Map a permission error to a voice error, logging database errors instead of masking them.
@@ -53,13 +54,17 @@ pub async fn handle_voice_event(
         ClientEvent::VoiceLeave { channel_id } => {
             handle_leave(sfu, pool, user_id, channel_id, screen_share_limiter).await
         }
-        ClientEvent::VoiceAnswer { channel_id, sdp } => {
-            handle_answer(sfu, user_id, channel_id, &sdp).await
+        ClientEvent::VoicePublisherOffer { channel_id, sdp } => {
+            handle_publisher_offer(sfu, user_id, channel_id, &sdp).await
+        }
+        ClientEvent::VoiceSubscriberAnswer { channel_id, sdp } => {
+            handle_subscriber_answer(sfu, user_id, channel_id, &sdp).await
         }
         ClientEvent::VoiceIceCandidate {
             channel_id,
             candidate,
-        } => handle_ice_candidate(sfu, user_id, channel_id, &candidate).await,
+            pc_type,
+        } => handle_ice_candidate(sfu, user_id, channel_id, &candidate, &pc_type).await,
         ClientEvent::VoiceMute { channel_id } => handle_mute(sfu, user_id, channel_id, true).await,
         ClientEvent::VoiceUnmute { channel_id } => {
             handle_mute(sfu, user_id, channel_id, false).await
@@ -191,63 +196,9 @@ async fn handle_join(
 
     room.add_peer(peer.clone()).await?;
 
-    let other_peers = room.get_other_peers(user_id).await;
-    for other_peer in other_peers {
-        let incoming_tracks = other_peer.incoming_tracks.read().await;
-        for (source_type, track) in incoming_tracks.iter() {
-            if let Ok(local_track) = room
-                .track_router
-                .create_subscriber_track(other_peer.user_id, *source_type, &peer, track)
-                .await
-            {
-                match peer
-                    .add_outgoing_track(other_peer.user_id, *source_type, local_track)
-                    .await
-                {
-                    Ok(sender) => {
-                        if source_type.is_video() {
-                            spawn_subscriber_remb_reader(
-                                room.track_router.clone(),
-                                peer.user_id,
-                                other_peer.user_id,
-                                *source_type,
-                                sender,
-                                peer.signal_tx.clone(),
-                                room.channel_id,
-                            );
-                        }
-                        if matches!(source_type, TrackSource::ScreenVideo(_)) {
-                            // Send PLI to request keyframe for late joiners
-                            let pli = PictureLossIndication {
-                                sender_ssrc: 0,
-                                media_ssrc: track.ssrc(),
-                            };
-                            if let Err(e) = other_peer
-                                .peer_connection
-                                .write_rtcp(&[Box::new(pli)])
-                                .await
-                            {
-                                warn!("Failed to send PLI: {}", e);
-                            } else {
-                                debug!("Sent PLI to source {}", other_peer.user_id);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to add outgoing track: {}", e);
-                    }
-                }
-            }
-        }
-    }
-
-    let offer = sfu.create_offer(&peer).await?;
-    tx.send(OutboundMsg::Event(ServerEvent::VoiceOffer {
-        channel_id,
-        sdp: offer.sdp,
-    }))
-    .await
-    .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+    // In the dual-PC model, the server does NOT send an initial offer.
+    // The client will send a VoicePublisherOffer after joining, which
+    // triggers subscribe_to_existing_tracks() on the first offer.
 
     let participants: Vec<VoiceParticipant> = room
         .get_participant_info()
@@ -423,9 +374,7 @@ async fn handle_leave(
         });
 
         // Close the peer connection
-        if let Err(e) = peer.close().await {
-            warn!(error = %e, "Error closing peer connection");
-        }
+        peer.close().await;
     }
 
     room.broadcast_except(
@@ -448,14 +397,17 @@ async fn handle_leave(
     Ok(())
 }
 
-/// Handle an SDP answer from a client.
-async fn handle_answer(
+/// Handle a publisher SDP offer from the client.
+///
+/// The client creates offers for the publisher PC (mic, screen, webcam tracks).
+/// On the first offer, we also subscribe this peer to existing peers' tracks.
+async fn handle_publisher_offer(
     sfu: &Arc<SfuServer>,
     user_id: Uuid,
     channel_id: Uuid,
     sdp: &str,
 ) -> Result<(), VoiceError> {
-    debug!(user_id = %user_id, channel_id = %channel_id, "Received SDP answer");
+    debug!(user_id = %user_id, channel_id = %channel_id, "Received publisher offer");
 
     let room = sfu
         .get_room(channel_id)
@@ -467,25 +419,172 @@ async fn handle_answer(
         .await
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
-    sfu.handle_answer(&peer, sdp).await?;
+    match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {
+        Ok(answer_sdp) => {
+            if let Err(e) = peer
+                .signal_tx
+                .send(OutboundMsg::Event(ServerEvent::VoicePublisherAnswer {
+                    channel_id,
+                    sdp: answer_sdp,
+                }))
+                .await
+            {
+                tracing::error!(
+                    user_id = %user_id,
+                    channel_id = %channel_id,
+                    error = %e,
+                    "failed to send publisher answer — client connection will hang"
+                );
+                return Err(VoiceError::Signaling(
+                    "Failed to send publisher answer".to_string(),
+                ));
+            }
 
-    debug!(
-        user_id = %user_id,
-        channel_id = %channel_id,
-        "SDP answer processed"
-    );
+            // On first publisher offer, subscribe to existing peers' tracks
+            if !peer
+                .has_subscribed
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                subscribe_to_existing_tracks(&room, &peer, user_id).await;
+            }
+        }
+        Err(e) => {
+            tracing::error!(user_id = %user_id, error = %e, "failed to handle publisher offer");
+            return Err(e);
+        }
+    }
 
     Ok(())
 }
 
-/// Handle an ICE candidate from a client.
+/// Subscribe a newly joined peer to all existing peers' incoming tracks.
+///
+/// Creates subscriber tracks via the `TrackRouter`, adds them to the new peer's
+/// subscriber PC, and renegotiates so the client receives the offer with new tracks.
+async fn subscribe_to_existing_tracks(
+    room: &Arc<super::sfu::Room>,
+    peer: &Arc<super::peer::Peer>,
+    user_id: Uuid,
+) {
+    // Collect peer refs under read lock, then release it before async I/O
+    let other_peers: Vec<(Uuid, Arc<super::peer::Peer>)> = {
+        let peers = room.peers.read().await;
+        peers
+            .iter()
+            .filter(|(id, _)| **id != user_id)
+            .map(|(id, p)| (*id, p.clone()))
+            .collect()
+    };
+
+    for (other_id, other_peer) in &other_peers {
+        let incoming = other_peer.incoming_tracks.read().await;
+        for (source_type, track) in incoming.iter() {
+            match room
+                .track_router
+                .create_subscriber_track(*other_id, *source_type, peer, track)
+                .await
+            {
+                Ok(local_track) => {
+                    match peer
+                        .add_outgoing_track(*other_id, *source_type, local_track)
+                        .await
+                    {
+                        Ok(sender) => {
+                            if source_type.is_video() {
+                                spawn_subscriber_remb_reader(
+                                    room.track_router.clone(),
+                                    user_id,
+                                    *other_id,
+                                    *source_type,
+                                    sender,
+                                    peer.signal_tx.clone(),
+                                    room.channel_id,
+                                );
+                            }
+                            if matches!(source_type, TrackSource::ScreenVideo(_)) {
+                                // Send PLI to request keyframe for late joiners
+                                let pli = PictureLossIndication {
+                                    sender_ssrc: 0,
+                                    media_ssrc: track.ssrc(),
+                                };
+                                if let Err(e) =
+                                    other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await
+                                {
+                                    warn!("Failed to send PLI: {}", e);
+                                } else {
+                                    debug!("Sent PLI to source {}", other_peer.user_id);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                source = %other_id,
+                                subscriber = %user_id,
+                                error = %e,
+                                "Failed to add outgoing track for existing peer"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        user_id = %user_id,
+                        source_user = %other_id,
+                        source = ?source_type,
+                        error = %e,
+                        "failed to create subscriber track"
+                    );
+                }
+            }
+        }
+    }
+
+    // Renegotiate subscriber PC to send the offer with new tracks
+    if peer.outgoing_tracks_count().await > 0 {
+        if let Err(e) = SfuServer::renegotiate(peer).await {
+            error!(user_id = %user_id, error = %e, "failed to renegotiate subscriber after join");
+        }
+    }
+}
+
+/// Handle a subscriber SDP answer from the client.
+async fn handle_subscriber_answer(
+    sfu: &Arc<SfuServer>,
+    user_id: Uuid,
+    channel_id: Uuid,
+    sdp: &str,
+) -> Result<(), VoiceError> {
+    debug!(user_id = %user_id, channel_id = %channel_id, "Received subscriber answer");
+
+    let room = sfu
+        .get_room(channel_id)
+        .await
+        .ok_or(VoiceError::RoomNotFound(channel_id))?;
+
+    let peer = room
+        .get_peer(user_id)
+        .await
+        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+
+    SfuServer::handle_subscriber_answer(&peer, sdp.to_string())
+        .await
+        .map_err(|e| {
+            error!(user_id = %user_id, channel_id = %channel_id, error = %e, "failed to handle subscriber answer");
+            e
+        })?;
+
+    Ok(())
+}
+
+/// Handle an ICE candidate from a client, routed by `pc_type`.
 async fn handle_ice_candidate(
     sfu: &Arc<SfuServer>,
     user_id: Uuid,
     channel_id: Uuid,
     candidate: &str,
+    pc_type: &PcType,
 ) -> Result<(), VoiceError> {
-    debug!(user_id = %user_id, channel_id = %channel_id, "Received ICE candidate");
+    debug!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, "Received ICE candidate");
 
     let room = sfu
         .get_room(channel_id)
@@ -497,7 +596,9 @@ async fn handle_ice_candidate(
         .await
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
-    sfu.handle_ice_candidate(&peer, candidate).await?;
+    if let Err(e) = SfuServer::handle_ice_candidate(&peer, candidate, pc_type).await {
+        error!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, error = %e, "failed to add ICE candidate");
+    }
 
     Ok(())
 }
@@ -661,6 +762,9 @@ async fn handle_screen_share_start(
             .bind(params.channel_id)
             .fetch_optional(pool)
             .await
+            .inspect_err(|e| {
+                warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, using default");
+            })
             .ok()
             .flatten()
             .unwrap_or(6);
@@ -689,18 +793,8 @@ async fn handle_screen_share_start(
             .await;
     }
 
-    // No new video transceiver needed — the pre-allocated sendrecv video
-    // transceiver is reused via replaceTrack. No renegotiation needed either
-    // since the transceiver is already sendrecv.
-    if params.has_audio {
-        if let Err(e) = peer.add_recv_transceiver(RTPCodecType::Audio).await {
-            warn!(user_id = %params.user_id, error = %e, "Failed to add audio transceiver for screen audio");
-        }
-        // Only renegotiate if audio transceiver was added
-        if let Err(e) = SfuServer::renegotiate(&peer).await {
-            warn!(user_id = %params.user_id, error = %e, "Failed to renegotiate after screen audio add");
-        }
-    }
+    // In the dual-PC model, the client adds tracks to the publisher PC
+    // and sends a new offer. No server-side transceiver allocation needed.
 
     // Get username for the info
     let username = peer.username.clone();
@@ -865,7 +959,7 @@ async fn handle_webcam_start(
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
-        .map_err(|_e: crate::permissions::PermissionError| VoiceError::Unauthorized)?;
+        .map_err(|e| map_permission_error(e, "webcam start"))?;
 
     // Get the room
     let room = sfu
@@ -890,15 +984,8 @@ async fn handle_webcam_start(
     // Queue pending track source so setup_track_handler identifies it as Webcam
     peer.push_pending_source(TrackSource::Webcam).await;
 
-    // Add recv transceiver for the incoming webcam video track
-    if let Err(e) = peer.add_recv_transceiver(RTPCodecType::Video).await {
-        warn!(user_id = %user_id, error = %e, "Failed to add video transceiver for webcam");
-    }
-
-    // Renegotiate so the client sees the new transceiver
-    if let Err(e) = SfuServer::renegotiate(&peer).await {
-        warn!(user_id = %user_id, error = %e, "Failed to renegotiate after webcam transceiver add");
-    }
+    // In the dual-PC model, the client adds tracks to the publisher PC
+    // and sends a new offer. No server-side transceiver allocation needed.
 
     // Get username for the info
     let username = peer.username.clone();

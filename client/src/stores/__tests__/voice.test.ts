@@ -15,7 +15,8 @@ const mockAdapter = {
   isScreenSharing: vi.fn().mockReturnValue(false),
   startWebcam: vi.fn(),
   stopWebcam: vi.fn(),
-  handleOffer: vi.fn(),
+  handlePublisherAnswer: vi.fn(),
+  handleSubscriberOffer: vi.fn(),
   handleIceCandidate: vi.fn(),
 };
 

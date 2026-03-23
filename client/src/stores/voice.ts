@@ -514,15 +514,6 @@ export async function joinVoice(channelId: string): Promise<void> {
           removeAvailableTrack(userId);
         });
       },
-      onIceCandidate: (candidate) => {
-        import("@/lib/tauri").then(({ wsSend }) => {
-          wsSend({
-            type: "voice_ice_candidate",
-            channel_id: channelId,
-            candidate,
-          });
-        });
-      },
     });
 
     const result = await adapter.join(channelId);

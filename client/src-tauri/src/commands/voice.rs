@@ -12,6 +12,8 @@ use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 
+use vc_common::protocol::PcType;
+
 use crate::audio::{AudioDeviceList, FRAME_SIZE_MS, SAMPLE_RATE};
 use crate::network::ClientEvent;
 use crate::webrtc::IceServerConfig;
@@ -20,7 +22,8 @@ use crate::AppState;
 /// Join a voice channel.
 ///
 /// Initializes audio pipeline and WebRTC, sends `VoiceJoin` to server.
-/// Server will respond with `VoiceOffer` which should be handled by `handle_voice_offer`.
+/// After joining, the client creates a publisher offer and sends it via
+/// `VoicePublisherOffer`. The server responds with `VoicePublisherAnswer`.
 #[command]
 pub async fn join_voice(
     channel_id: String,
@@ -50,7 +53,7 @@ pub async fn join_voice(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Set up ICE candidate callback to send candidates to server
+    // Set up ICE candidate callback to send candidates to server (publisher PC)
     let ws = state.websocket.clone();
     let channel_id_clone = channel_id.clone();
     voice_state
@@ -64,6 +67,7 @@ pub async fn join_voice(
                         .send(ClientEvent::VoiceIceCandidate {
                             channel_id,
                             candidate,
+                            pc_type: PcType::Publisher,
                         })
                         .await
                     {
@@ -96,63 +100,68 @@ pub async fn join_voice(
 
     voice_state.channel_id = Some(channel_id.clone());
 
+    // Create publisher offer
+    let offer_sdp = voice_state
+        .webrtc
+        .create_offer()
+        .await
+        .map_err(|e| e.to_string())?;
+
     // Send VoiceJoin to server via WebSocket
     let ws = state.websocket.read().await;
     if let Some(ws_manager) = ws.as_ref() {
         ws_manager
-            .send(ClientEvent::VoiceJoin { channel_id })
+            .send(ClientEvent::VoiceJoin {
+                channel_id: channel_id.clone(),
+            })
             .await
             .map_err(|e| format!("Failed to send VoiceJoin: {e}"))?;
+
+        // Send publisher offer
+        ws_manager
+            .send(ClientEvent::VoicePublisherOffer {
+                channel_id,
+                sdp: offer_sdp,
+            })
+            .await
+            .map_err(|e| format!("Failed to send VoicePublisherOffer: {e}"))?;
     } else {
         return Err("WebSocket not connected".into());
     }
 
-    info!("VoiceJoin sent, waiting for server offer");
+    info!("VoiceJoin + VoicePublisherOffer sent, waiting for server answer");
     Ok(())
 }
 
-/// Handle SDP offer from server and return answer.
+/// Handle SDP answer from server for the publisher `PeerConnection`.
 ///
-/// Called when frontend receives <ws:voice_offer> event.
+/// Called when frontend receives `ws:voice_publisher_answer` event.
+/// Sets the remote description (answer) on the publisher PC and starts audio.
 #[command]
-pub async fn handle_voice_offer(
+pub async fn handle_voice_publisher_answer(
     channel_id: String,
     sdp: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    info!("Handling voice offer for channel: {}", channel_id);
+    info!("Handling publisher answer for channel: {}", channel_id);
 
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
-    // Verify we're joining this channel
+    // Verify we're in this channel
     if voice_state.channel_id.as_ref() != Some(&channel_id) {
         return Err(format!(
-            "Received offer for wrong channel: {} (expected {:?})",
+            "Received publisher answer for wrong channel: {} (expected {:?})",
             channel_id, voice_state.channel_id
         ));
     }
 
-    // Handle the offer and get answer
-    let answer = voice_state
+    // Set the remote description (answer) on the publisher PC
+    voice_state
         .webrtc
-        .handle_offer(&sdp)
+        .set_remote_answer(&sdp)
         .await
         .map_err(|e| e.to_string())?;
-
-    // Send answer to server
-    let ws = state.websocket.read().await;
-    if let Some(ws_manager) = ws.as_ref() {
-        ws_manager
-            .send(ClientEvent::VoiceAnswer {
-                channel_id: channel_id.clone(),
-                sdp: answer,
-            })
-            .await
-            .map_err(|e| format!("Failed to send VoiceAnswer: {e}"))?;
-    } else {
-        return Err("WebSocket not connected".into());
-    }
 
     // Start audio capture
     let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
@@ -182,20 +191,45 @@ pub async fn handle_voice_offer(
         error!("No local track available for audio sending");
     }
 
-    info!("Voice answer sent, audio started");
+    info!("Publisher answer set, audio started");
+    Ok(())
+}
+
+/// Handle SDP offer from server for the subscriber `PeerConnection`.
+///
+/// Called when frontend receives `ws:voice_subscriber_offer` event.
+/// Creates an answer and sends it back to the server.
+#[command]
+#[allow(unused_variables)]
+pub async fn handle_voice_subscriber_offer(
+    channel_id: String,
+    sdp: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // TODO(dual-pc): Tauri client uses a single PeerConnection. Applying a
+    // subscriber offer to the publisher PC would corrupt its SDP state.
+    // Ignore subscriber offers until Tauri gets its own dual-PC implementation.
+    warn!(
+        channel_id = %channel_id,
+        "Tauri client does not support dual-PC subscriber offers yet — ignoring"
+    );
     Ok(())
 }
 
 /// Handle ICE candidate from server.
 ///
-/// Called when frontend receives <ws:voice_ice_candidate> event.
+/// Called when frontend receives `ws:voice_ice_candidate` event.
 #[command]
 pub async fn handle_voice_ice_candidate(
     channel_id: String,
     candidate: String,
+    pc_type: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    debug!("Handling ICE candidate for channel: {}", channel_id);
+    debug!(
+        "Handling ICE candidate for channel: {} (pc_type: {})",
+        channel_id, pc_type
+    );
 
     let voice = state.voice.read().await;
     let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
@@ -205,6 +239,12 @@ pub async fn handle_voice_ice_candidate(
         return Err(format!(
             "Received ICE candidate for wrong channel: {channel_id}"
         ));
+    }
+
+    // TODO(dual-pc): Tauri uses a single PC — only handle publisher candidates.
+    if pc_type == "subscriber" {
+        warn!(channel_id = %channel_id, "Tauri client ignoring subscriber ICE candidate");
+        return Ok(());
     }
 
     voice_state

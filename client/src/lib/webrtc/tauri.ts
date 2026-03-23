@@ -134,18 +134,32 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
   }
 
-  // Signaling
+  // Signaling — dual PeerConnection model
+  // Note: Tauri backend handles WebRTC internally; these are thin wrappers
 
-  async handleOffer(
+  async handlePublisherAnswer(
+    channelId: string,
+    sdp: string,
+  ): Promise<VoiceResult<void>> {
+    console.log(`[TauriVoiceAdapter] Handling publisher answer for channel: ${channelId}`);
+
+    try {
+      await invoke("handle_voice_publisher_answer", { channelId, sdp });
+      return { ok: true, value: undefined };
+    } catch (err) {
+      return { ok: false, error: this.mapTauriError(err) };
+    }
+  }
+
+  async handleSubscriberOffer(
     channelId: string,
     sdp: string,
   ): Promise<VoiceResult<string>> {
-    console.log(`[TauriVoiceAdapter] Handling offer for channel: ${channelId}`);
+    console.log(`[TauriVoiceAdapter] Handling subscriber offer for channel: ${channelId}`);
 
     try {
-      await invoke("handle_voice_offer", { channelId, sdp });
-      // Note: The answer is sent automatically by the Tauri backend
-      return { ok: true, value: "" };
+      const answer = await invoke<string>("handle_voice_subscriber_offer", { channelId, sdp });
+      return { ok: true, value: answer };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };
     }
@@ -154,11 +168,12 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   async handleIceCandidate(
     channelId: string,
     candidate: string,
+    pcType: string = "publisher",
   ): Promise<VoiceResult<void>> {
     const startTime = performance.now();
 
     try {
-      await invoke("handle_voice_ice_candidate", { channelId, candidate });
+      await invoke("handle_voice_ice_candidate", { channelId, candidate, pcType });
 
       const elapsed = performance.now() - startTime;
       console.log(

@@ -7,6 +7,23 @@ use uuid::Uuid;
 
 use crate::types::{Message, UserProfile, UserStatus};
 
+/// Which `PeerConnection` an ICE candidate belongs to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PcType {
+    Publisher,
+    Subscriber,
+}
+
+impl std::fmt::Display for PcType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Publisher => write!(f, "publisher"),
+            Self::Subscriber => write!(f, "subscriber"),
+        }
+    }
+}
+
 /// Client-to-server WebSocket events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -50,16 +67,16 @@ pub enum ClientEvent {
         channel_id: Uuid,
     },
 
-    /// Voice: SDP Offer
-    VoiceOffer {
+    /// Voice: SDP offer for publisher `PeerConnection` (mic, screen, webcam tracks)
+    VoicePublisherOffer {
         /// Voice channel.
         channel_id: Uuid,
         /// SDP offer.
         sdp: String,
     },
 
-    /// Voice: SDP Answer
-    VoiceAnswer {
+    /// Voice: SDP answer for subscriber `PeerConnection` (receiving other users' tracks)
+    VoiceSubscriberAnswer {
         /// Voice channel.
         channel_id: Uuid,
         /// SDP answer.
@@ -67,11 +84,13 @@ pub enum ClientEvent {
     },
 
     /// Voice: ICE Candidate
-    VoiceIce {
+    VoiceIceCandidate {
         /// Voice channel.
         channel_id: Uuid,
         /// ICE candidate.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to.
+        pc_type: PcType,
     },
 
     /// Voice: Mute self
@@ -164,34 +183,30 @@ pub enum ServerEvent {
         user_id: Uuid,
     },
 
-    /// Voice: SDP Offer from another user
-    VoiceOffer {
+    /// Voice: SDP answer to client's publisher offer
+    VoicePublisherAnswer {
         /// Voice channel.
         channel_id: Uuid,
-        /// User sending offer.
-        user_id: Uuid,
-        /// SDP offer.
-        sdp: String,
-    },
-
-    /// Voice: SDP Answer from another user
-    VoiceAnswer {
-        /// Voice channel.
-        channel_id: Uuid,
-        /// User sending answer.
-        user_id: Uuid,
         /// SDP answer.
         sdp: String,
     },
 
-    /// Voice: ICE Candidate from another user
-    VoiceIce {
+    /// Voice: SDP offer for subscriber `PeerConnection`
+    VoiceSubscriberOffer {
         /// Voice channel.
         channel_id: Uuid,
-        /// User sending candidate.
-        user_id: Uuid,
+        /// SDP offer.
+        sdp: String,
+    },
+
+    /// Voice: ICE Candidate from server
+    VoiceIceCandidate {
+        /// Voice channel.
+        channel_id: Uuid,
         /// ICE candidate.
         candidate: String,
+        /// Which `PeerConnection` this candidate belongs to.
+        pc_type: PcType,
     },
 
     /// Voice: User speaking indicator

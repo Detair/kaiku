@@ -218,12 +218,11 @@ pub async fn create(
 
         // Validate channel type against category type restriction
         if let Some(cat_id) = body.category_id {
-            let cat_type: Option<(String,)> = sqlx::query_as(
-                "SELECT category_type::TEXT FROM channel_categories WHERE id = $1",
-            )
-            .bind(cat_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+            let cat_type: Option<(String,)> =
+                sqlx::query_as("SELECT category_type::TEXT FROM channel_categories WHERE id = $1")
+                    .bind(cat_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
 
             if let Some((cat_type,)) = cat_type {
                 let channel_type_str = match &channel_type {
