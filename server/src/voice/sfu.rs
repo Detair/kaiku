@@ -640,6 +640,18 @@ impl SfuServer {
                                             room.channel_id,
                                         );
                                     }
+                                    // Request keyframe so new subscribers don't wait for a natural one
+                                    if matches!(source_type, TrackSource::ScreenVideo(_)) {
+                                        let pli = webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
+                                            sender_ssrc: 0,
+                                            media_ssrc: track.ssrc(),
+                                        };
+                                        if let Err(e) = peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
+                                            warn!("Failed to send PLI to publisher: {}", e);
+                                        } else {
+                                            debug!(source = %uid, "Sent PLI to publisher for new screen share subscribers");
+                                        }
+                                    }
                                     // Renegotiate so subscriber receives updated SDP
                                     if let Err(e) = Self::renegotiate(&other_peer).await {
                                         warn!(
