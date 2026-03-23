@@ -28,7 +28,7 @@ export function calculateGrid(n: number, containerWidth: number, containerHeight
     const actualW = Math.min(tileW, tileH * ASPECT_RATIO);
     const actualH = actualW / ASPECT_RATIO;
 
-    if (actualW < MIN_TILE_WIDTH) continue;
+    if (cols > 1 && actualW < MIN_TILE_WIDTH) continue;
 
     const coverage = (actualW * actualH * n) / (containerWidth * containerHeight);
     if (coverage > bestCoverage) {

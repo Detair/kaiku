@@ -44,6 +44,7 @@ export function popOut(
   doc.body.appendChild(labelEl);
 
   win.addEventListener("beforeunload", () => {
+    video.srcObject = null;
     popOutWindows.delete(streamId);
     onClose();
   });

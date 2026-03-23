@@ -20,6 +20,7 @@ import type { VoiceParticipant } from "@/lib/types";
 import type { ScreenShareInfo } from "@/lib/webrtc/types";
 import { authState } from "@/stores/auth";
 import { viewerState } from "@/stores/screenShareViewer";
+import { stopScreenShare } from "@/stores/voice";
 import VoiceTile from "./VoiceTile";
 import type { TileData } from "./VoiceTile";
 import VoiceTileStrip from "./VoiceTileStrip";
@@ -75,7 +76,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
   });
 
   // ---- Auto-focus logic ----
-  let prevScreenShareCount = 0;
+  const [prevShareCount, setPrevShareCount] = createSignal(0);
 
   createEffect(() => {
     const shares = props.screenShares;
@@ -83,7 +84,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
     const localUserId = authState.user?.id;
 
     // Screen shares went from 0 to 1+ — auto-focus first remote share
-    if (prevScreenShareCount === 0 && currentCount > 0) {
+    if (prevShareCount() === 0 && currentCount > 0) {
       const firstRemote = shares.find((s) => s.user_id !== localUserId);
       if (firstRemote) {
         setFocusedTileId(`screen:${firstRemote.stream_id}`);
@@ -101,7 +102,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
       }
     }
 
-    prevScreenShareCount = currentCount;
+    setPrevShareCount(currentCount);
   });
 
   // ---- View mode ----
@@ -136,7 +137,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
     }
   };
 
-  // ---- Pop-out wiring (stubs until screenSharePopOut utility is created) ----
+  // ---- Pop-out wiring ----
   const handlePopOut = (streamId: string) => {
     const trackInfo = viewerState.availableTracks.get(streamId);
     if (!trackInfo) {
@@ -243,6 +244,11 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
                       ? () => handleBringBack(tile.streamId)
                       : undefined
                   }
+                  onStopShare={
+                    tile.type === "screen_share" && tile.userId === authState.user?.id
+                      ? () => stopScreenShare(tile.streamId)
+                      : undefined
+                  }
                 />
               </div>
             )}
@@ -290,6 +296,15 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
                           )
                       : undefined
                   }
+                  onStopShare={
+                    tile().type === "screen_share" &&
+                    (tile() as Extract<TileData, { type: "screen_share" }>).userId === authState.user?.id
+                      ? () =>
+                          stopScreenShare(
+                            (tile() as Extract<TileData, { type: "screen_share" }>).streamId,
+                          )
+                      : undefined
+                  }
                 />
               )}
             </Show>
@@ -304,6 +319,14 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
               poppedOutStreams={poppedOutStreams()}
               onPopOut={handlePopOut}
               onBringBack={handleBringBack}
+              onStopShare={(streamId) => {
+                const tile = tiles().find(
+                  (t) => t.type === "screen_share" && t.streamId === streamId,
+                ) as Extract<TileData, { type: "screen_share" }> | undefined;
+                if (tile && tile.userId === authState.user?.id) {
+                  stopScreenShare(streamId);
+                }
+              }}
             />
           </Show>
         </div>

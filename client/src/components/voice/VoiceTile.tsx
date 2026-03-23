@@ -6,7 +6,7 @@
  */
 
 import { Component, Show, createEffect, onCleanup } from "solid-js";
-import { MicOff, Monitor, ExternalLink, Undo2 } from "lucide-solid";
+import { MicOff, Monitor, ExternalLink, Undo2, MonitorOff } from "lucide-solid";
 import { getTrack as getWebcamTrack } from "@/stores/webcamViewer";
 import { viewerState as screenShareViewerState } from "@/stores/screenShareViewer";
 
@@ -38,6 +38,7 @@ interface VoiceTileProps {
   poppedOut?: boolean;
   onPopOut?: () => void;
   onBringBack?: () => void;
+  onStopShare?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +143,7 @@ const ScreenShareTile: Component<{
   poppedOut: boolean;
   onPopOut?: () => void;
   onBringBack?: () => void;
+  onStopShare?: () => void;
 }> = (props) => {
   let videoRef: HTMLVideoElement | undefined;
 
@@ -185,7 +187,7 @@ const ScreenShareTile: Component<{
               <span class="text-xs text-text-muted">Popped out</span>
               <Show when={props.onBringBack}>
                 <button
-                  class="mt-1 text-xs text-accent-primary hover:text-accent-primary-hover px-2 py-1 rounded bg-surface-highlight transition-colors"
+                  class="mt-1 text-xs text-text-primary hover:text-text-secondary px-2 py-1 rounded bg-surface-highlight transition-colors"
                   onClick={(e) => {
                     e.stopPropagation();
                     props.onBringBack?.();
@@ -217,19 +219,33 @@ const ScreenShareTile: Component<{
         </span>
       </div>
 
-      {/* Pop-out button — top-right, visible on hover */}
-      <Show when={!props.poppedOut && hasTrack() && props.onPopOut}>
-        <button
-          class="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/50 hover:bg-black/70 text-text-primary rounded p-1"
-          onClick={(e) => {
-            e.stopPropagation();
-            props.onPopOut?.();
-          }}
-          title="Pop out"
-        >
-          <ExternalLink size={14} />
-        </button>
-      </Show>
+      {/* Hover overlay buttons — top-right */}
+      <div class="absolute top-1.5 right-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <Show when={props.onStopShare}>
+          <button
+            class="bg-accent-danger/80 hover:bg-accent-danger text-white rounded p-1"
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onStopShare?.();
+            }}
+            title="Stop sharing"
+          >
+            <MonitorOff size={14} />
+          </button>
+        </Show>
+        <Show when={!props.poppedOut && hasTrack() && props.onPopOut}>
+          <button
+            class="bg-black/50 hover:bg-black/70 text-text-primary rounded p-1"
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onPopOut?.();
+            }}
+            title="Pop out"
+          >
+            <ExternalLink size={14} />
+          </button>
+        </Show>
+      </div>
     </>
   );
 };
@@ -284,6 +300,7 @@ const VoiceTile: Component<VoiceTileProps> = (props) => {
             poppedOut={props.poppedOut ?? false}
             onPopOut={props.onPopOut}
             onBringBack={props.onBringBack}
+            onStopShare={props.onStopShare}
           />
         }
       >
