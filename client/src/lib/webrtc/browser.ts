@@ -736,11 +736,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         const audioElements = document.querySelectorAll(
           `audio[data-stream-id="${stream.id}"]`,
         );
-        audioElements.forEach((audio) => {
+        for (const audio of audioElements) {
           if ("setSinkId" in audio) {
-            (audio as AudioElementWithSinkId).setSinkId(deviceId);
+            try {
+              await (audio as AudioElementWithSinkId).setSinkId(deviceId);
+            } catch (err) {
+              console.warn("[BrowserVoiceAdapter] Failed to set sink on element:", err);
+            }
           }
-        });
+        }
       }
       return { ok: true, value: undefined };
     } catch (err) {
@@ -1035,6 +1039,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           message: `ICE config fetch failed: ${res.status}`,
           level: "error",
         });
+        this.eventHandlers.onWarning?.({
+          type: "turn_unavailable",
+          message: "TURN server unavailable — voice may not work on restrictive networks",
+        });
         return fallback;
       }
       const data = await res.json();
@@ -1060,6 +1068,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         message: "ICE config fetch exception",
         data: { error: err instanceof Error ? err.message : String(err) },
         level: "error",
+      });
+      this.eventHandlers.onWarning?.({
+        type: "turn_unavailable",
+        message: "TURN server unavailable — voice may not work on restrictive networks",
       });
       return fallback;
     }
@@ -1164,7 +1176,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         await this.publisherPC.setLocalDescription(offer);
 
         const { wsSend } = await import("@/lib/tauri");
-        wsSend({
+        await wsSend({
           type: "voice_publisher_offer",
           channel_id: channelId,
           sdp: offer.sdp!,

@@ -58,6 +58,7 @@ export interface RemoteTrack {
 export interface VoiceAdapterEvents {
   onStateChange: (state: VoiceConnectionState) => void;
   onError: (error: VoiceError) => void;
+  onWarning?: (warning: { type: string; message: string }) => void;
   onRemoteTrack: (track: RemoteTrack) => void;
   onRemoteTrackRemoved: (userId: string) => void;
   onLocalMuteChange: (muted: boolean) => void;
