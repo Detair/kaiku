@@ -19,10 +19,12 @@ import {
 import type { VoiceParticipant } from "@/lib/types";
 import type { ScreenShareInfo } from "@/lib/webrtc/types";
 import { authState } from "@/stores/auth";
+import { viewerState } from "@/stores/screenShareViewer";
 import VoiceTile from "./VoiceTile";
 import type { TileData } from "./VoiceTile";
 import VoiceTileStrip from "./VoiceTileStrip";
 import { calculateGrid } from "./tileLayout";
+import { popOut, bringBack, closeAll } from "./screenSharePopOut";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,26 +138,41 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
 
   // ---- Pop-out wiring (stubs until screenSharePopOut utility is created) ----
   const handlePopOut = (streamId: string) => {
+    const trackInfo = viewerState.availableTracks.get(streamId);
+    if (!trackInfo) {
+      console.warn("[VoiceTileGrid] No track for stream:", streamId);
+      return;
+    }
+
+    const label = `${trackInfo.username} — Screen Share`;
+    popOut(streamId, trackInfo.track, label, () => {
+      // onClose callback — stream brought back inline when pop-out window closes
+      setPoppedOutStreams((prev) => {
+        const next = new Set(prev);
+        next.delete(streamId);
+        return next;
+      });
+    });
+
     setPoppedOutStreams((prev) => {
       const next = new Set(prev);
       next.add(streamId);
       return next;
     });
-    // TODO: call popOut() from screenSharePopOut when Task 5 is complete
   };
 
   const handleBringBack = (streamId: string) => {
+    bringBack(streamId);
     setPoppedOutStreams((prev) => {
       const next = new Set(prev);
       next.delete(streamId);
       return next;
     });
-    // TODO: call bringBack() from screenSharePopOut when Task 5 is complete
   };
 
   // Cleanup pop-outs on unmount
   onCleanup(() => {
-    // TODO: call closeAll() from screenSharePopOut when Task 5 is complete
+    closeAll();
     setPoppedOutStreams(new Set());
   });
 
