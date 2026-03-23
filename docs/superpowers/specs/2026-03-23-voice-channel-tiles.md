@@ -60,18 +60,25 @@ Activates automatically when a screen share starts, or manually when a user clic
 
 Given `n` tiles and container dimensions `W x H`:
 
+Use a uniform 4:3 aspect ratio for all tiles in grid mode (screen share tiles show a letterboxed preview — they get 16:9 only when focused).
+
 ```
-For cols = 1 to n:
+If n = 0: show empty-state placeholder ("Waiting for others...")
+AR = 4/3  // uniform aspect ratio
+
+For cols = 1 to min(n, 5):
   rows = ceil(n / cols)
   tileW = W / cols
   tileH = H / rows
-  tileSize = min(tileW, tileH)  // maintain aspect ratio
-  coverage = (tileSize * tileSize * n) / (W * H)
+  // Constrain to aspect ratio
+  actualW = min(tileW, tileH * AR)
+  actualH = actualW / AR
+  coverage = (actualW * actualH * n) / (W * H)
 
 Pick cols that maximizes coverage
 ```
 
-Minimum tile size: 120px. Maximum columns: 5. Aspect ratio: roughly 4:3 for participant tiles, 16:9 for screen share tiles.
+Minimum tile size: 120px wide. Maximum columns: 5.
 
 ### Focus Mode — Strip Sizing
 
@@ -89,7 +96,7 @@ Minimum tile size: 120px. Maximum columns: 5. Aspect ratio: roughly 4:3 for part
 ### Modified Components
 
 - `VoiceChannelView.tsx` — replace current participant list with `VoiceTileGrid`
-- `VoiceControls.tsx` — no changes needed (stays at bottom)
+- `VoiceControls.tsx` — no changes needed (stays at bottom). Note: `VoiceControls` already renders its own `border-t border-white/10` — do NOT add a wrapping div with another `border-t` (the current `VoiceChannelView` has this double-border bug)
 
 ### Removed/Replaced
 
@@ -100,7 +107,7 @@ Minimum tile size: 120px. Maximum columns: 5. Aspect ratio: roughly 4:3 for part
 
 ### New Signals (in voice store or local component state)
 
-- `focusedTileId: string | null` — ID of the currently focused tile (`"{userId}"` for participant, `"screen:{streamId}"` for screen share)
+- `focusedTileId: string | null` — ID of the currently focused tile. Format: `"{userId}"` for participant tiles, `"screen:{stream_id}"` for screen share tiles (where `stream_id` is `ScreenShareInfo.stream_id`, a UUID)
 - `viewMode: "grid" | "focus"` — derived from `focusedTileId` and active screen shares
 
 ### Tile List Construction
@@ -110,33 +117,44 @@ Build a unified tile list from voice store state:
 ```typescript
 const tiles = createMemo(() => {
   const result: Tile[] = [];
-  // One tile per participant
+  // One tile per participant (webcam state checked via webcamViewer store)
   for (const p of participants()) {
-    result.push({ type: "participant", userId: p.user_id, ... });
+    const hasWebcamTrack = webcamViewerState.availableTracks.has(p.user_id);
+    result.push({ type: "participant", userId: p.user_id, hasWebcam: hasWebcamTrack, ... });
   }
   // One tile per active screen share
   for (const s of screenShares()) {
-    result.push({ type: "screen_share", streamId: s.stream_id, userId: s.user_id, ... });
+    const hasTrack = screenShareViewerState.availableTracks.has(s.stream_id);
+    result.push({ type: "screen_share", streamId: s.stream_id, userId: s.user_id, hasTrack, ... });
   }
   return result;
 });
 ```
 
+Note: `hasWebcam` and `hasTrack` are reactive — the memo re-runs when tracks arrive in the viewer stores. Participant tiles with `hasWebcam: true` render the webcam video instead of the avatar. Screen share tiles with `hasTrack: false` show a loading placeholder.
+
 ### Auto-Focus Logic
 
-- When `screenShares()` changes from empty to non-empty: auto-set `focusedTileId` to the new screen share
+- When `screenShares()` changes from empty to non-empty: auto-set `focusedTileId` to the new screen share — but **only for remote screen shares** (skip the local user's own screen share, matching current `VoiceChannelView` behavior that skips `startViewing` for own shares)
 - When the focused screen share stops: if other screen shares exist, focus the next one; otherwise clear focus (return to grid)
-- Manual focus (click) overrides auto-focus
+- Manual focus (click) overrides auto-focus — including clicking your own screen share tile to focus it deliberately
 
 ## Video Track Attachment
 
-Screen share and webcam video tracks arrive via the `onRemoteTrack` event from the WebRTC adapter. The tile component needs to:
+Video tracks are NOT available directly from the WebRTC adapter. They are managed by separate viewer stores:
 
-1. Get the `MediaStream` for a given track from the adapter's remote streams
-2. Attach it to a `<video>` element via `srcObject`
-3. Clean up on unmount or when the track is removed
+- **Screen share tracks:** `screenShareViewer.ts` → `viewerState.availableTracks` (a `Map<string, AvailableTrackInfo>`)
+- **Webcam tracks:** `webcamViewer.ts` → `viewerState.availableTracks` (a `Map<string, MediaStreamTrack>`)
 
-Use a `ref` on the `<video>` element and a `createEffect` to attach/detach the stream when the track changes.
+**Important timing gap:** `voiceState.screenShares` (server-signalled metadata) can arrive before the WebRTC track does. The tile should show a loading/placeholder state until the track is available in the viewer store. The existing `screenShareViewer.ts` already handles this with a retry loop — the tile component should check `availableTracks.has(streamId)` reactively and render the video only when the track exists.
+
+To attach a track to a `<video>` element:
+1. Read `MediaStreamTrack` from the viewer store
+2. Wrap in `new MediaStream([track])` (as `ScreenShareViewer.tsx` does on line 79)
+3. Set `videoElement.srcObject = stream`
+4. Clean up on unmount: `videoElement.srcObject = null`
+
+Use a `ref` on the `<video>` element and a `createEffect` to attach/detach reactively.
 
 ## Styling
 
