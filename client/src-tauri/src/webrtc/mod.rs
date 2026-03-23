@@ -399,13 +399,29 @@ impl WebRtcClient {
         pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
             let on_ice_candidate = on_ice_candidate.clone();
             Box::pin(async move {
-                if let Some(candidate) = candidate {
-                    if let Ok(json) = candidate.to_json() {
-                        if let Ok(callback) = on_ice_candidate.try_read() {
-                            if let Some(ref cb) = *callback {
-                                cb(serde_json::to_string(&json).unwrap_or_default());
-                            }
+                let Some(candidate) = candidate else { return };
+                let json = match candidate.to_json() {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to convert ICE candidate to JSON");
+                        return;
+                    }
+                };
+                let candidate_str = match serde_json::to_string(&json) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to serialize ICE candidate JSON");
+                        return;
+                    }
+                };
+                match on_ice_candidate.try_read() {
+                    Ok(callback) => {
+                        if let Some(ref cb) = *callback {
+                            cb(candidate_str);
                         }
+                    }
+                    Err(_) => {
+                        tracing::warn!("ICE candidate callback lock contended — candidate dropped");
                     }
                 }
             })

@@ -200,49 +200,19 @@ pub async fn handle_voice_publisher_answer(
 /// Called when frontend receives `ws:voice_subscriber_offer` event.
 /// Creates an answer and sends it back to the server.
 #[command]
+#[allow(unused_variables)]
 pub async fn handle_voice_subscriber_offer(
     channel_id: String,
     sdp: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    info!("Handling subscriber offer for channel: {}", channel_id);
-
-    let voice = state.voice.read().await;
-    let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
-
-    // Verify we're in this channel
-    if voice_state.channel_id.as_ref() != Some(&channel_id) {
-        return Err(format!(
-            "Received subscriber offer for wrong channel: {} (expected {:?})",
-            channel_id, voice_state.channel_id
-        ));
-    }
-
-    // Handle the subscriber offer and get answer
-    // TODO(dual-pc): The native WebRTC adapter currently uses a single PeerConnection.
-    // For now, we handle subscriber offers on the same PC. A proper dual-PC
-    // implementation would use a separate subscriber PeerConnection.
-    let answer = voice_state
-        .webrtc
-        .handle_offer(&sdp)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Send subscriber answer to server
-    let ws = state.websocket.read().await;
-    if let Some(ws_manager) = ws.as_ref() {
-        ws_manager
-            .send(ClientEvent::VoiceSubscriberAnswer {
-                channel_id: channel_id.clone(),
-                sdp: answer,
-            })
-            .await
-            .map_err(|e| format!("Failed to send VoiceSubscriberAnswer: {e}"))?;
-    } else {
-        return Err("WebSocket not connected".into());
-    }
-
-    info!("Subscriber answer sent for channel: {}", channel_id);
+    // TODO(dual-pc): Tauri client uses a single PeerConnection. Applying a
+    // subscriber offer to the publisher PC would corrupt its SDP state.
+    // Ignore subscriber offers until Tauri gets its own dual-PC implementation.
+    warn!(
+        channel_id = %channel_id,
+        "Tauri client does not support dual-PC subscriber offers yet — ignoring"
+    );
     Ok(())
 }
 
@@ -271,8 +241,12 @@ pub async fn handle_voice_ice_candidate(
         ));
     }
 
-    // TODO(dual-pc): Route to the correct PeerConnection based on pc_type.
-    // Currently both publisher and subscriber use the same single PC.
+    // TODO(dual-pc): Tauri uses a single PC — only handle publisher candidates.
+    if pc_type == "subscriber" {
+        warn!(channel_id = %channel_id, "Tauri client ignoring subscriber ICE candidate");
+        return Ok(());
+    }
+
     voice_state
         .webrtc
         .add_ice_candidate(&candidate)
