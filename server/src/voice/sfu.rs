@@ -474,18 +474,15 @@ impl SfuServer {
                 .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
         );
 
-        let peer = Arc::new(
-            Peer::new(
-                user_id,
-                username,
-                display_name,
-                channel_id,
-                publisher_pc.clone(),
-                subscriber_pc.clone(),
-                signal_tx,
-            )
-            .await,
-        );
+        let peer = Arc::new(Peer::new(
+            user_id,
+            username,
+            display_name,
+            channel_id,
+            publisher_pc.clone(),
+            subscriber_pc.clone(),
+            signal_tx,
+        ));
 
         // Set up connection state handlers for both PCs
         Self::register_pc_state_handler(&publisher_pc, &peer, user_id, channel_id, "publisher");

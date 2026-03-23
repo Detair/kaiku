@@ -68,7 +68,7 @@ pub struct Peer {
 
 impl Peer {
     /// Create a new peer with two WebRTC connections (publisher + subscriber).
-    pub async fn new(
+    pub fn new(
         user_id: Uuid,
         username: String,
         display_name: String,
