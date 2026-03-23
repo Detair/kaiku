@@ -540,22 +540,30 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     if (!this.publisherPC) return null;
 
     try {
-      const stats = await this.publisherPC.getStats();
+      // RTT comes from the publisher PC's candidate-pair stats
+      const pubStats = await this.publisherPC.getStats();
       let latency = 0;
       let jitter = 0;
       let totalLost = 0;
       let totalReceived = 0;
 
-      stats.forEach((report) => {
+      pubStats.forEach((report) => {
         if (report.type === "candidate-pair" && report.state === "succeeded") {
           latency = (report.currentRoundTripTime ?? 0) * 1000;
         }
-        if (report.type === "inbound-rtp" && report.kind === "audio") {
-          totalLost += report.packetsLost ?? 0;
-          totalReceived += report.packetsReceived ?? 0;
-          jitter = Math.max(jitter, (report.jitter ?? 0) * 1000);
-        }
       });
+
+      // Inbound audio stats come from the subscriber PC (incoming tracks)
+      if (this.subscriberPC) {
+        const subStats = await this.subscriberPC.getStats();
+        subStats.forEach((report) => {
+          if (report.type === "inbound-rtp" && report.kind === "audio") {
+            totalLost += report.packetsLost ?? 0;
+            totalReceived += report.packetsReceived ?? 0;
+            jitter = Math.max(jitter, (report.jitter ?? 0) * 1000);
+          }
+        });
+      }
 
       // Calculate delta packet loss since last sample
       let packetLoss = 0;
