@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::capture::capturer::FrameCapturer;
 use crate::capture::source::enumerate_sources;
 use crate::capture::{CaptureSource, CaptureSourceType};
-use crate::video::encoder::{VideoEncoder, Vp9Encoder};
+use crate::video::encoder::{VideoEncoder, Vp8Encoder};
 use crate::video::rtp::VideoRtpSender;
 use crate::video::{EncodedPacket, QualityParams};
 use crate::AppState;
@@ -149,10 +149,10 @@ pub async fn start_screen_share(
         let shutdown_rx = shutdown_rx2;
 
         tokio::task::spawn_blocking(move || {
-            let mut encoder = match Vp9Encoder::new(&params) {
+            let mut encoder = match Vp8Encoder::new(&params) {
                 Ok(e) => e,
                 Err(e) => {
-                    error!("Failed to create VP9 encoder: {e}");
+                    error!("Failed to create VP8 encoder: {e}");
                     return;
                 }
             };

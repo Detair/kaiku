@@ -1,6 +1,6 @@
 //! Video Encoder
 //!
-//! VP9 software encoding via `vpx-encode`.
+//! VP8 software encoding via `vpx-encode`.
 
 use tracing::{debug, warn};
 use vpx_encode::{Config, Encoder as VpxEncoder, VideoCodecId};
@@ -24,38 +24,38 @@ pub trait VideoEncoder {
     fn payload_type(&self) -> u8;
 }
 
-/// VP9 encoder using libvpx.
+/// VP8 encoder using libvpx.
 ///
 /// Note: `VpxEncoder` contains raw pointers and is not `Send`.
 /// This encoder must be created and used on a single thread
 /// (e.g. via `tokio::task::spawn_blocking`).
-pub struct Vp9Encoder {
+pub struct Vp8Encoder {
     encoder: VpxEncoder,
     frame_count: u64,
     fps: u32,
     i420_buf: Vec<u8>,
 }
 
-impl Vp9Encoder {
-    /// Create a new VP9 encoder with the given quality parameters.
+impl Vp8Encoder {
+    /// Create a new VP8 encoder with the given quality parameters.
     pub fn new(params: &QualityParams) -> Result<Self, VideoError> {
         let config = Config {
             width: params.width,
             height: params.height,
             timebase: [1, params.fps as i32],
             bitrate: params.bitrate_kbps,
-            codec: VideoCodecId::VP9,
+            codec: VideoCodecId::VP8,
         };
 
         let encoder = VpxEncoder::new(config)
-            .map_err(|e| VideoError::InitFailed(format!("VP9 encoder: {e}")))?;
+            .map_err(|e| VideoError::InitFailed(format!("VP8 encoder: {e}")))?;
 
         debug!(
             width = params.width,
             height = params.height,
             fps = params.fps,
             bitrate = params.bitrate_kbps,
-            "VP9 encoder initialized"
+            "VP8 encoder initialized"
         );
 
         let i420_buf = Vec::with_capacity((params.width * params.height * 3 / 2) as usize);
@@ -69,7 +69,7 @@ impl Vp9Encoder {
     }
 }
 
-impl VideoEncoder for Vp9Encoder {
+impl VideoEncoder for Vp8Encoder {
     fn encode(&mut self, frame: &I420Frame) -> Result<Vec<EncodedPacket>, VideoError> {
         // 90kHz clock timestamp
         let pts_90khz = self.frame_count * 90000 / u64::from(self.fps);
@@ -84,7 +84,7 @@ impl VideoEncoder for Vp9Encoder {
         let packets = self
             .encoder
             .encode(pts_90khz as i64, &self.i420_buf)
-            .map_err(|e| VideoError::EncodeFailed(format!("VP9 encode: {e}")))?;
+            .map_err(|e| VideoError::EncodeFailed(format!("VP8 encode: {e}")))?;
 
         self.frame_count += 1;
 
@@ -104,10 +104,10 @@ impl VideoEncoder for Vp9Encoder {
     }
 
     fn codec_mime(&self) -> &'static str {
-        "video/VP9"
+        "video/VP8"
     }
 
     fn payload_type(&self) -> u8 {
-        98 // Matches server sfu.rs VP9 payload type
+        96 // Matches server sfu.rs VP8 payload type
     }
 }

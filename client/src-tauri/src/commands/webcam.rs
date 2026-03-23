@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use crate::capture::webcam::{enumerate_webcam_devices, WebcamCapturer, WebcamDevice};
-use crate::video::encoder::{VideoEncoder, Vp9Encoder};
+use crate::video::encoder::{VideoEncoder, Vp8Encoder};
 use crate::video::rtp::VideoRtpSender;
 use crate::video::{EncodedPacket, QualityParams};
 use crate::AppState;
@@ -104,10 +104,10 @@ pub async fn start_webcam(
         let shutdown_rx = shutdown_rx2;
 
         tokio::task::spawn_blocking(move || {
-            let mut encoder = match Vp9Encoder::new(&params) {
+            let mut encoder = match Vp8Encoder::new(&params) {
                 Ok(e) => e,
                 Err(e) => {
-                    error!("Failed to create VP9 encoder for webcam: {e}");
+                    error!("Failed to create VP8 encoder for webcam: {e}");
                     return;
                 }
             };
