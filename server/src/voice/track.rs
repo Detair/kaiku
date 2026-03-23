@@ -182,7 +182,7 @@ impl TrackRouter {
         layer: Layer,
         rtp_packet: &RtpPacket,
     ) {
-        let key = (source_user_id, source_type.clone());
+        let key = (source_user_id, source_type);
 
         // Check if this source has multiple simulcast layers registered.
         // Non-simulcast sources (e.g., screen share via addTrack without RID)
@@ -191,7 +191,7 @@ impl TrackRouter {
         // from dropping packets when no alternative layers exist.
         let is_simulcast = self
             .simulcast_tracks
-            .contains_key(&(source_user_id, source_type.clone(), Layer::Low))
+            .contains_key(&(source_user_id, source_type, Layer::Low))
             || self
                 .simulcast_tracks
                 .contains_key(&(source_user_id, source_type, Layer::Medium));
