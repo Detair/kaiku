@@ -182,7 +182,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
   // Cleanup pop-outs on unmount
   onCleanup(() => {
     closeAll();
-    setPoppedOutStreams(new Set());
+    setPoppedOutStreams(new Set<string>());
   });
 
   // ---- Focus mode helpers ----
