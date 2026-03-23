@@ -102,6 +102,14 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
       }
     }
 
+    // Clear focus if focused participant left
+    if (focused && !focused.startsWith("screen:")) {
+      const stillHere = props.participants.some((p) => p.user_id === focused);
+      if (!stillHere) {
+        setFocusedTileId(null);
+      }
+    }
+
     setPrevShareCount(currentCount);
   });
 
@@ -319,6 +327,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
               poppedOutStreams={poppedOutStreams()}
               onPopOut={handlePopOut}
               onBringBack={handleBringBack}
+              localUserId={authState.user?.id}
               onStopShare={(streamId) => {
                 const tile = tiles().find(
                   (t) => t.type === "screen_share" && t.streamId === streamId,

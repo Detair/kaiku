@@ -19,6 +19,7 @@ interface VoiceTileStripProps {
   onPopOut: (streamId: string) => void;
   onBringBack: (streamId: string) => void;
   onStopShare?: (streamId: string) => void;
+  localUserId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +70,7 @@ const VoiceTileStrip: Component<VoiceTileStripProps> = (props) => {
                   : undefined
               }
               onStopShare={
-                tile.type === "screen_share" && props.onStopShare
+                tile.type === "screen_share" && props.onStopShare && tile.userId === props.localUserId
                   ? () => props.onStopShare!(tile.streamId)
                   : undefined
               }

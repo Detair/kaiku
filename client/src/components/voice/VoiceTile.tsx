@@ -129,7 +129,7 @@ const ParticipantTile: Component<{
 
       {/* Muted badge — bottom-right */}
       <Show when={props.tile.muted}>
-        <div class="absolute bottom-1.5 right-1.5 bg-accent-danger/25 text-accent-danger rounded p-0.5">
+        <div class="absolute bottom-1.5 right-1.5 bg-accent-danger/25 text-text-primary rounded p-0.5">
           <MicOff size={isSmall() ? 10 : 14} />
         </div>
       </Show>
@@ -283,7 +283,7 @@ const VoiceTile: Component<VoiceTileProps> = (props) => {
       role="button"
       tabindex="0"
       aria-label={ariaLabel()}
-      class="group rounded-xl overflow-hidden cursor-pointer transition-all duration-200 relative bg-surface-layer2"
+      class="group h-full rounded-xl overflow-hidden cursor-pointer transition-all duration-200 relative bg-surface-layer2"
       classList={{
         "border-2 border-accent-success shadow-[0_0_12px_rgba(67,181,129,0.3)]":
           isSpeaking(),
