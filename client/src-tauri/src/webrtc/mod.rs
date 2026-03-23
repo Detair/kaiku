@@ -154,7 +154,7 @@ impl WebRtcClient {
             )
             .map_err(|e| WebRtcError::ApiError(e.to_string()))?;
 
-        // Register VP9 video codec (preferred, matching server PT 98)
+        // Register VP8 video codec (only video codec — matches server PT 96)
         let video_rtcp_feedback = vec![
             RTCPFeedback {
                 typ: "goog-remb".to_string(),
@@ -178,51 +178,13 @@ impl WebRtcClient {
             .register_codec(
                 RTCRtpCodecParameters {
                     capability: RTCRtpCodecCapability {
-                        mime_type: "video/VP9".to_string(),
-                        clock_rate: 90000,
-                        channels: 0,
-                        sdp_fmtp_line: "profile-id=0".to_string(),
-                        rtcp_feedback: video_rtcp_feedback.clone(),
-                    },
-                    payload_type: 98,
-                    ..Default::default()
-                },
-                RTPCodecType::Video,
-            )
-            .map_err(|e| WebRtcError::ApiError(e.to_string()))?;
-
-        // Register VP8 video codec (fallback, matching server PT 96)
-        media_engine
-            .register_codec(
-                RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
                         mime_type: "video/VP8".to_string(),
                         clock_rate: 90000,
                         channels: 0,
                         sdp_fmtp_line: String::new(),
-                        rtcp_feedback: video_rtcp_feedback.clone(),
-                    },
-                    payload_type: 96,
-                    ..Default::default()
-                },
-                RTPCodecType::Video,
-            )
-            .map_err(|e| WebRtcError::ApiError(e.to_string()))?;
-
-        // Register H.264 video codec (matching server PT 102)
-        media_engine
-            .register_codec(
-                RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: "video/H264".to_string(),
-                        clock_rate: 90000,
-                        channels: 0,
-                        sdp_fmtp_line:
-                            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                                .to_string(),
                         rtcp_feedback: video_rtcp_feedback,
                     },
-                    payload_type: 102,
+                    payload_type: 96,
                     ..Default::default()
                 },
                 RTPCodecType::Video,
@@ -369,10 +331,10 @@ impl WebRtcClient {
         // streams from the capture pipeline (future work).
         let video_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
-                mime_type: "video/VP9".to_string(),
+                mime_type: "video/VP8".to_string(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "profile-id=0".to_string(),
+                sdp_fmtp_line: String::new(),
                 rtcp_feedback: vec![],
             },
             "screen-video".to_string(),
@@ -395,10 +357,10 @@ impl WebRtcClient {
         // Same simulcast RID setup as screen share — see TODO above.
         let webcam_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
-                mime_type: "video/VP9".to_string(),
+                mime_type: "video/VP8".to_string(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "profile-id=0".to_string(),
+                sdp_fmtp_line: String::new(),
                 rtcp_feedback: vec![],
             },
             "webcam-video".to_string(),
