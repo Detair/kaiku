@@ -26,7 +26,7 @@ import {
   loadMessages,
   hasMoreMessages,
 } from "@/stores/messages";
-import { markChannelAsRead, isChannelUnread } from "@/stores/channels";
+import { markChannelAsRead } from "@/stores/channels";
 import { areThreadsEnabled } from "@/stores/guilds";
 import { shouldGroupWithPrevious } from "@/lib/utils";
 
