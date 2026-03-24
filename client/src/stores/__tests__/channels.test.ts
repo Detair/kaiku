@@ -33,6 +33,9 @@ import {
   getChannel,
   getUnreadCount,
   getTotalUnreadCount,
+  isChannelUnread,
+  getChannelLastReadMessageId,
+  updateChannelLastMessageId,
   incrementUnreadCount,
   markChannelAsRead,
   markAllGuildChannelsAsRead,
@@ -57,6 +60,8 @@ function createChannelWithUnread(
     position: 0,
     created_at: "2025-01-01T00:00:00Z",
     unread_count: 0,
+    last_read_message_id: null,
+    last_message_id: null,
     ...overrides,
   };
 }
@@ -272,45 +277,138 @@ describe("channels store", () => {
     });
   });
 
-  describe("markChannelAsRead", () => {
-    it("optimistically zeros unread and calls API", async () => {
+  describe("isChannelUnread", () => {
+    it("returns true when last_message_id differs from last_read_message_id", () => {
       setChannelsState({
-        channels: [createChannelWithUnread({ id: "ch-1", unread_count: 5 })],
+        channels: [
+          createChannelWithUnread({
+            id: "ch-1",
+            last_message_id: "msg-2",
+            last_read_message_id: "msg-1",
+          }),
+        ],
+      });
+
+      expect(isChannelUnread("ch-1")).toBe(true);
+    });
+
+    it("returns false when IDs match", () => {
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({
+            id: "ch-1",
+            last_message_id: "msg-1",
+            last_read_message_id: "msg-1",
+          }),
+        ],
+      });
+
+      expect(isChannelUnread("ch-1")).toBe(false);
+    });
+
+    it("returns false when last_message_id is null", () => {
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({
+            id: "ch-1",
+            last_message_id: null,
+            last_read_message_id: null,
+          }),
+        ],
+      });
+
+      expect(isChannelUnread("ch-1")).toBe(false);
+    });
+
+    it("returns false for unknown channel", () => {
+      expect(isChannelUnread("unknown")).toBe(false);
+    });
+  });
+
+  describe("getChannelLastReadMessageId", () => {
+    it("returns last_read_message_id for a channel", () => {
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({ id: "ch-1", last_read_message_id: "msg-5" }),
+        ],
+      });
+
+      expect(getChannelLastReadMessageId("ch-1")).toBe("msg-5");
+    });
+
+    it("returns null for unknown channel", () => {
+      expect(getChannelLastReadMessageId("unknown")).toBeNull();
+    });
+
+    it("returns null when never read", () => {
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({ id: "ch-1", last_read_message_id: null }),
+        ],
+      });
+
+      expect(getChannelLastReadMessageId("ch-1")).toBeNull();
+    });
+  });
+
+  describe("updateChannelLastMessageId", () => {
+    it("updates last_message_id for a channel", () => {
+      setChannelsState({
+        channels: [createChannelWithUnread({ id: "ch-1", last_message_id: null })],
+      });
+
+      updateChannelLastMessageId("ch-1", "msg-10");
+
+      expect(channelsState.channels[0].last_message_id).toBe("msg-10");
+    });
+
+    it("does nothing for unknown channel", () => {
+      setChannelsState({
+        channels: [createChannelWithUnread({ id: "ch-1" })],
+      });
+
+      updateChannelLastMessageId("unknown", "msg-10");
+
+      expect(channelsState.channels[0].last_message_id).toBeNull();
+    });
+  });
+
+  describe("markChannelAsRead", () => {
+    it("optimistically zeros unread and sets read cursor", async () => {
+      setChannelsState({
+        channels: [createChannelWithUnread({ id: "ch-1", unread_count: 5, last_message_id: "msg-5" })],
       });
       vi.mocked(tauri.markChannelAsRead).mockResolvedValue(undefined);
 
-      await markChannelAsRead("ch-1");
+      await markChannelAsRead("ch-1", "msg-5");
 
       expect(channelsState.channels[0].unread_count).toBe(0);
-      expect(tauri.markChannelAsRead).toHaveBeenCalledWith("ch-1");
+      expect(channelsState.channels[0].last_read_message_id).toBe("msg-5");
+      expect(tauri.markChannelAsRead).toHaveBeenCalledWith("ch-1", "msg-5");
     });
 
-    it("skips if already read", async () => {
-      setChannelsState({
-        channels: [createChannelWithUnread({ id: "ch-1", unread_count: 0 })],
-      });
-
-      await markChannelAsRead("ch-1");
+    it("does nothing for unknown channel", async () => {
+      await markChannelAsRead("unknown", "msg-1");
 
       expect(tauri.markChannelAsRead).not.toHaveBeenCalled();
     });
 
-    it("shows toast on API error", async () => {
+    it("logs error on API failure", async () => {
       setChannelsState({
         channels: [createChannelWithUnread({ id: "ch-1", unread_count: 3 })],
       });
       vi.mocked(tauri.markChannelAsRead).mockRejectedValue(new Error("fail"));
 
-      await markChannelAsRead("ch-1");
+      await markChannelAsRead("ch-1", "msg-3");
 
-      expect(showToast).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "error" }),
-      );
+      // Optimistic update still applied
+      expect(channelsState.channels[0].unread_count).toBe(0);
+      expect(channelsState.channels[0].last_read_message_id).toBe("msg-3");
     });
   });
 
   describe("markAllGuildChannelsAsRead", () => {
-    it("optimistically zeros unread for guild text channels", async () => {
+    it("optimistically zeros unread and syncs read cursor for guild text channels", async () => {
       setChannelsState({
         channels: [
           createChannelWithUnread({
@@ -318,12 +416,16 @@ describe("channels store", () => {
             guild_id: "g1",
             channel_type: "text",
             unread_count: 5,
+            last_message_id: "msg-t1",
+            last_read_message_id: null,
           }),
           createChannelWithUnread({
             id: "t2",
             guild_id: "g1",
             channel_type: "text",
             unread_count: 3,
+            last_message_id: "msg-t2",
+            last_read_message_id: "msg-old",
           }),
           createChannelWithUnread({
             id: "v1",
@@ -338,20 +440,50 @@ describe("channels store", () => {
       await markAllGuildChannelsAsRead("g1");
 
       expect(channelsState.channels[0].unread_count).toBe(0);
+      expect(channelsState.channels[0].last_read_message_id).toBe("msg-t1");
       expect(channelsState.channels[1].unread_count).toBe(0);
+      expect(channelsState.channels[1].last_read_message_id).toBe("msg-t2");
       expect(channelsState.channels[2].unread_count).toBe(1); // voice untouched
     });
   });
 
   describe("handleChannelReadEvent", () => {
-    it("zeros unread count for the channel", () => {
+    it("zeros unread count and sets read cursor when lastReadMessageId provided", () => {
       setChannelsState({
         channels: [createChannelWithUnread({ id: "ch-1", unread_count: 7 })],
+      });
+
+      handleChannelReadEvent("ch-1", "msg-7");
+
+      expect(channelsState.channels[0].unread_count).toBe(0);
+      expect(channelsState.channels[0].last_read_message_id).toBe("msg-7");
+    });
+
+    it("syncs read cursor to last_message_id when no lastReadMessageId provided", () => {
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({
+            id: "ch-1",
+            unread_count: 7,
+            last_message_id: "msg-latest",
+          }),
+        ],
       });
 
       handleChannelReadEvent("ch-1");
 
       expect(channelsState.channels[0].unread_count).toBe(0);
+      expect(channelsState.channels[0].last_read_message_id).toBe("msg-latest");
+    });
+
+    it("does nothing for unknown channel", () => {
+      setChannelsState({
+        channels: [createChannelWithUnread({ id: "ch-1", unread_count: 7 })],
+      });
+
+      handleChannelReadEvent("unknown");
+
+      expect(channelsState.channels[0].unread_count).toBe(7);
     });
   });
 

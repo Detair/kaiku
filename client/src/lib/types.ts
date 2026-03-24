@@ -217,6 +217,10 @@ export interface Channel {
 export interface ChannelWithUnread extends Channel {
   /** Number of unread messages (only for text channels). */
   unread_count: number;
+  /** ID of the last message the user has read (null = never read). */
+  last_read_message_id: string | null;
+  /** ID of the most recent message in the channel (null = no messages). */
+  last_message_id: string | null;
 }
 
 export type CategoryType = "mixed" | "text" | "voice";
@@ -926,6 +930,10 @@ export interface DMListItem {
   participants: DMParticipant[];
   last_message: LastMessagePreview | null;
   unread_count: number;
+  /** ID of the last message the user has read (null = never read). */
+  last_read_message_id: string | null;
+  /** ID of the most recent message in the channel (null = no messages). */
+  last_message_id: string | null;
 }
 
 // Pages Types
