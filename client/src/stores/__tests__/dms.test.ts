@@ -33,6 +33,8 @@ import {
   handleDMNameUpdated,
   getSelectedDM,
   getTotalUnreadCount,
+  isDMUnread,
+  getDMLastReadMessageId,
 } from "../dms";
 
 function createDM(overrides: Partial<DMListItem> = {}): DMListItem {
@@ -58,6 +60,8 @@ function createDM(overrides: Partial<DMListItem> = {}): DMListItem {
     ],
     last_message: null,
     unread_count: 0,
+    last_read_message_id: null,
+    last_message_id: null,
     ...overrides,
   };
 }
@@ -170,7 +174,7 @@ describe("dms store", () => {
   });
 
   describe("updateDMLastMessage", () => {
-    it("updates last message and increments unread", () => {
+    it("updates last message, last_message_id, and increments unread", () => {
       setDmsState({ dms: [createDM({ id: "dm-1", unread_count: 0 })] });
       const msg = createMessage({ channel_id: "dm-1" });
 
@@ -183,6 +187,7 @@ describe("dms store", () => {
         username: msg.author.username,
         created_at: msg.created_at,
       });
+      expect(dmsState.dms[0].last_message_id).toBe(msg.id);
       expect(dmsState.dms[0].unread_count).toBe(1);
     });
 
@@ -196,71 +201,114 @@ describe("dms store", () => {
     });
   });
 
+  describe("isDMUnread", () => {
+    it("returns true when last_message_id differs from last_read_message_id", () => {
+      setDmsState({
+        dms: [
+          createDM({
+            id: "dm-1",
+            last_message_id: "msg-2",
+            last_read_message_id: "msg-1",
+          }),
+        ],
+      });
+
+      expect(isDMUnread("dm-1")).toBe(true);
+    });
+
+    it("returns false when IDs match", () => {
+      setDmsState({
+        dms: [
+          createDM({
+            id: "dm-1",
+            last_message_id: "msg-1",
+            last_read_message_id: "msg-1",
+          }),
+        ],
+      });
+
+      expect(isDMUnread("dm-1")).toBe(false);
+    });
+
+    it("returns false when last_message_id is null", () => {
+      setDmsState({
+        dms: [createDM({ id: "dm-1" })],
+      });
+
+      expect(isDMUnread("dm-1")).toBe(false);
+    });
+
+    it("returns false for unknown DM", () => {
+      expect(isDMUnread("unknown")).toBe(false);
+    });
+  });
+
+  describe("getDMLastReadMessageId", () => {
+    it("returns last_read_message_id for a DM", () => {
+      setDmsState({
+        dms: [createDM({ id: "dm-1", last_read_message_id: "msg-5" })],
+      });
+
+      expect(getDMLastReadMessageId("dm-1")).toBe("msg-5");
+    });
+
+    it("returns null for unknown DM", () => {
+      expect(getDMLastReadMessageId("unknown")).toBeNull();
+    });
+  });
+
   describe("markDMAsRead", () => {
-    it("marks DM as read on success", async () => {
+    it("optimistically zeros unread and sets read cursor", async () => {
       setDmsState({
         dms: [
           createDM({
             id: "dm-1",
             unread_count: 5,
-            last_message: {
-              id: "msg-1",
-              content: "hi",
-              user_id: "u1",
-              username: "alice",
-              created_at: "2025-01-01T00:00:00Z",
-            },
+            last_message_id: "msg-5",
           }),
         ],
       });
       vi.mocked(tauri.markDMAsRead).mockResolvedValue(undefined);
 
-      await markDMAsRead("dm-1");
+      await markDMAsRead("dm-1", "msg-5");
 
       expect(dmsState.dms[0].unread_count).toBe(0);
-      expect(tauri.markDMAsRead).toHaveBeenCalledWith("dm-1", "msg-1");
+      expect(dmsState.dms[0].last_read_message_id).toBe("msg-5");
+      expect(tauri.markDMAsRead).toHaveBeenCalledWith("dm-1", "msg-5");
     });
 
-    it("skips if already read", async () => {
-      setDmsState({ dms: [createDM({ id: "dm-1", unread_count: 0 })] });
-
-      await markDMAsRead("dm-1");
+    it("does nothing for unknown DM", async () => {
+      await markDMAsRead("unknown", "msg-1");
 
       expect(tauri.markDMAsRead).not.toHaveBeenCalled();
     });
 
-    it("shows toast on error", async () => {
+    it("logs error on API failure", async () => {
       setDmsState({
         dms: [
           createDM({
             id: "dm-1",
             unread_count: 3,
-            last_message: {
-              id: "msg-1",
-              content: "hi",
-              user_id: "u1",
-              username: "alice",
-              created_at: "2025-01-01T00:00:00Z",
-            },
+            last_message_id: "msg-3",
           }),
         ],
       });
       vi.mocked(tauri.markDMAsRead).mockRejectedValue(new Error("fail"));
 
-      await markDMAsRead("dm-1");
+      await markDMAsRead("dm-1", "msg-3");
 
-      expect(showToast).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "error" }),
-      );
+      // Optimistic update still applied
+      expect(dmsState.dms[0].unread_count).toBe(0);
+      expect(dmsState.dms[0].last_read_message_id).toBe("msg-3");
     });
   });
 
   describe("markAllDMsAsRead", () => {
-    it("optimistically zeros all unread counts", async () => {
+    it("optimistically zeros all unread counts and syncs read cursors", async () => {
       setDmsState({
         dms: [
-          createDM({ id: "dm-1", unread_count: 3 }),
-          createDM({ id: "dm-2", unread_count: 5 }),
+          createDM({ id: "dm-1", unread_count: 3, last_message_id: "msg-dm1" }),
+          createDM({ id: "dm-2", unread_count: 5, last_message_id: "msg-dm2" }),
         ],
       });
       vi.mocked(tauri.markAllDMsRead).mockResolvedValue(undefined);
@@ -268,17 +316,45 @@ describe("dms store", () => {
       await markAllDMsAsRead();
 
       expect(dmsState.dms[0].unread_count).toBe(0);
+      expect(dmsState.dms[0].last_read_message_id).toBe("msg-dm1");
       expect(dmsState.dms[1].unread_count).toBe(0);
+      expect(dmsState.dms[1].last_read_message_id).toBe("msg-dm2");
     });
   });
 
   describe("handleDMReadEvent", () => {
-    it("zeros unread count for the channel", () => {
+    it("zeros unread count and sets read cursor when lastReadMessageId provided", () => {
       setDmsState({ dms: [createDM({ id: "dm-1", unread_count: 7 })] });
+
+      handleDMReadEvent("dm-1", "msg-7");
+
+      expect(dmsState.dms[0].unread_count).toBe(0);
+      expect(dmsState.dms[0].last_read_message_id).toBe("msg-7");
+    });
+
+    it("syncs read cursor to last_message_id when no lastReadMessageId provided", () => {
+      setDmsState({
+        dms: [
+          createDM({
+            id: "dm-1",
+            unread_count: 7,
+            last_message_id: "msg-latest",
+          }),
+        ],
+      });
 
       handleDMReadEvent("dm-1");
 
       expect(dmsState.dms[0].unread_count).toBe(0);
+      expect(dmsState.dms[0].last_read_message_id).toBe("msg-latest");
+    });
+
+    it("does nothing for unknown DM", () => {
+      setDmsState({ dms: [createDM({ id: "dm-1", unread_count: 7 })] });
+
+      handleDMReadEvent("unknown");
+
+      expect(dmsState.dms[0].unread_count).toBe(7);
     });
   });
 
