@@ -105,6 +105,14 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<Channel>, St
     Ok(channels)
 }
 
+/// Paginated messages response from server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedMessages {
+    pub items: Vec<Message>,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+}
+
 /// Get messages for a channel.
 #[command]
 pub async fn get_messages(
@@ -112,7 +120,8 @@ pub async fn get_messages(
     channel_id: String,
     before: Option<String>,
     limit: Option<u32>,
-) -> Result<Vec<Message>, String> {
+    around: Option<String>,
+) -> Result<PaginatedMessages, String> {
     let (server_url, token) = {
         let auth = state.auth.read().await;
         (auth.server_url.clone(), auth.access_token.clone())
@@ -125,9 +134,11 @@ pub async fn get_messages(
 
     let mut url = format!("{server_url}/api/messages/channel/{channel_id}");
 
-    // Add query params
+    // Add query params — around and before are mutually exclusive
     let mut params = vec![];
-    if let Some(before_id) = before {
+    if let Some(around_id) = around {
+        params.push(format!("around={around_id}"));
+    } else if let Some(before_id) = before {
         params.push(format!("before={before_id}"));
     }
     if let Some(lim) = limit {
@@ -154,13 +165,13 @@ pub async fn get_messages(
         return Err(format!("Failed to fetch messages: {status}"));
     }
 
-    let messages: Vec<Message> = response
+    let paginated: PaginatedMessages = response
         .json()
         .await
         .map_err(|e| format!("Invalid response: {e}"))?;
 
-    debug!("Fetched {} messages", messages.len());
-    Ok(messages)
+    debug!("Fetched {} messages", paginated.items.len());
+    Ok(paginated)
 }
 
 /// Send a message to a channel.

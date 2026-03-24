@@ -1181,14 +1181,16 @@ export async function getMessages(
   channelId: string,
   before?: string,
   limit?: number,
+  around?: string,
 ): Promise<PaginatedMessages> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_messages", { channelId, before, limit });
+    return invoke("get_messages", { channelId, before, limit, around });
   }
 
   const params = new URLSearchParams();
-  if (before) params.set("before", before);
+  if (around) params.set("around", around);
+  else if (before) params.set("before", before);
   if (limit) params.set("limit", limit.toString());
   const query = params.toString();
 
