@@ -837,7 +837,7 @@ pub async fn get_dm_icon(
 /// Mark DM as read request body
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MarkAsReadRequest {
-    pub last_read_message_id: Option<Uuid>,
+    pub last_read_message_id: Uuid,
 }
 
 /// Mark DM as read response
@@ -891,17 +891,21 @@ pub async fn mark_as_read(
 
     let now = chrono::Utc::now();
 
-    // Upsert read state
-    sqlx::query!(
-        r#"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (user_id, channel_id)
-           DO UPDATE SET last_read_at = $3, last_read_message_id = $4"#,
-        auth.id,
-        channel_id,
-        now,
-        body.last_read_message_id
+    // Atomic forward-only upsert: only advances the cursor, never moves it backward
+    sqlx::query(
+        r"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (user_id, channel_id)
+          DO UPDATE SET last_read_at = EXCLUDED.last_read_at,
+                        last_read_message_id = EXCLUDED.last_read_message_id
+          WHERE dm_read_state.last_read_message_id IS NULL
+             OR (SELECT created_at FROM messages WHERE id = EXCLUDED.last_read_message_id)
+                > (SELECT created_at FROM messages WHERE id = dm_read_state.last_read_message_id)",
     )
+    .bind(auth.id)
+    .bind(channel_id)
+    .bind(now)
+    .bind(body.last_read_message_id)
     .execute(&state.db)
     .await?;
 
@@ -912,7 +916,7 @@ pub async fn mark_as_read(
         auth.id,
         &ServerEvent::DmRead {
             channel_id,
-            last_read_message_id: body.last_read_message_id,
+            last_read_message_id: Some(body.last_read_message_id),
         },
     )
     .await
@@ -928,7 +932,7 @@ pub async fn mark_as_read(
     Ok(Json(MarkAsReadResponse {
         channel_id,
         last_read_at: now,
-        last_read_message_id: body.last_read_message_id,
+        last_read_message_id: Some(body.last_read_message_id),
         unread_count: 0,
     }))
 }
@@ -952,7 +956,7 @@ pub async fn mark_all_dms_read(
     let now = chrono::Utc::now();
 
     // Batch UPSERT dm_read_state for all DM channels where user is participant
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
+    let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
         r"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           SELECT $1, dp.channel_id, $2, (
               SELECT m.id FROM messages m
@@ -964,7 +968,7 @@ pub async fn mark_all_dms_read(
           WHERE dp.user_id = $1 AND c.channel_type = 'dm'
           ON CONFLICT (user_id, channel_id)
           DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id",
+          RETURNING channel_id, last_read_message_id",
     )
     .bind(auth.id)
     .bind(now)
@@ -972,13 +976,13 @@ pub async fn mark_all_dms_read(
     .await?;
 
     // Broadcast DmRead events for each updated DM channel
-    for (channel_id,) in &rows {
+    for (channel_id, last_read_message_id) in &rows {
         if let Err(e) = broadcast_to_user(
             &state.redis,
             auth.id,
             &ServerEvent::DmRead {
                 channel_id: *channel_id,
-                last_read_message_id: None,
+                last_read_message_id: *last_read_message_id,
             },
         )
         .await

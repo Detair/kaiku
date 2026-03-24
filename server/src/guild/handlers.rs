@@ -485,8 +485,12 @@ pub(crate) async fn initialize_channel_read_state(
     user_id: Uuid,
 ) -> Result<(), GuildError> {
     sqlx::query(
-        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at)
-           SELECT $1, c.id, NOW()
+        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+           SELECT $1, c.id, NOW(), (
+               SELECT m.id FROM messages m
+               WHERE m.channel_id = c.id AND m.deleted_at IS NULL
+               ORDER BY m.created_at DESC LIMIT 1
+           )
            FROM channels c
            WHERE c.guild_id = $2 AND c.channel_type = 'text'
            ON CONFLICT (user_id, channel_id) DO NOTHING",
@@ -1160,7 +1164,7 @@ pub async fn mark_all_channels_read(
 
     // Batch UPSERT channel_read_state for all text channels in this guild
     // Uses a subquery to get the latest message ID per channel
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
+    let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
         r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           SELECT $1, c.id, $3, (
               SELECT m.id FROM messages m
@@ -1171,7 +1175,7 @@ pub async fn mark_all_channels_read(
           WHERE c.guild_id = $2 AND c.channel_type = 'text'
           ON CONFLICT (user_id, channel_id)
           DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id",
+          RETURNING channel_id, last_read_message_id",
     )
     .bind(auth.id)
     .bind(guild_id)
@@ -1180,13 +1184,13 @@ pub async fn mark_all_channels_read(
     .await?;
 
     // Broadcast ChannelRead events for each updated channel
-    for (channel_id,) in &rows {
+    for (channel_id, last_read_message_id) in &rows {
         if let Err(e) = broadcast_to_user(
             &state.redis,
             auth.id,
             &ServerEvent::ChannelRead {
                 channel_id: *channel_id,
-                last_read_message_id: None,
+                last_read_message_id: *last_read_message_id,
             },
         )
         .await
