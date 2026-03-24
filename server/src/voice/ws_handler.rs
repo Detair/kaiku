@@ -535,40 +535,8 @@ async fn subscribe_to_existing_tracks(
         }
     }
 
-    // Send PLI for all screen share tracks AFTER renegotiation.
-    // The subscriber answer will arrive asynchronously — we add a small
-    // delay so the PLI-triggered keyframe arrives after the SDP exchange
-    // completes and the subscriber is ready to decode.
-    let pli_peers: Vec<(Uuid, Arc<super::peer::Peer>, u32)> = {
-        let mut result = Vec::new();
-        for (other_id, other_peer) in &other_peers {
-            let incoming = other_peer.incoming_tracks.read().await;
-            for (source_type, track) in incoming.iter() {
-                if matches!(source_type, TrackSource::ScreenVideo(_)) {
-                    result.push((*other_id, other_peer.clone(), track.ssrc()));
-                }
-            }
-        }
-        result
-    };
-
-    if !pli_peers.is_empty() {
-        tokio::spawn(async move {
-            // Wait for subscriber answer to be processed
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            for (source_id, source_peer, ssrc) in pli_peers {
-                let pli = PictureLossIndication {
-                    sender_ssrc: 0,
-                    media_ssrc: ssrc,
-                };
-                if let Err(e) = source_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
-                    warn!("Failed to send PLI to {}: {}", source_id, e);
-                } else {
-                    debug!("Sent delayed PLI to source {} for late joiner", source_id);
-                }
-            }
-        });
-    }
+    // PLI for screen shares is sent from handle_subscriber_answer,
+    // which is the definitive moment the subscriber PC is ready to decode.
 }
 
 /// Handle a subscriber SDP answer from the client.
@@ -596,6 +564,33 @@ async fn handle_subscriber_answer(
             error!(user_id = %user_id, channel_id = %channel_id, error = %e, "failed to handle subscriber answer");
             e
         })?;
+
+    // Subscriber PC is now ready to receive RTP. Send PLI for all screen
+    // share tracks so publishers send a keyframe immediately.
+    let other_peers: Vec<Arc<super::peer::Peer>> = {
+        let peers = room.peers.read().await;
+        peers
+            .iter()
+            .filter(|(id, _)| **id != user_id)
+            .map(|(_, p)| p.clone())
+            .collect()
+    };
+    for other_peer in &other_peers {
+        let incoming = other_peer.incoming_tracks.read().await;
+        for (source_type, track) in incoming.iter() {
+            if source_type.is_video() {
+                let pli = PictureLossIndication {
+                    sender_ssrc: 0,
+                    media_ssrc: track.ssrc(),
+                };
+                if let Err(e) = other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
+                    warn!(source = %other_peer.user_id, error = %e, "Failed to send PLI");
+                } else {
+                    debug!(source = %other_peer.user_id, source_type = ?source_type, "Sent PLI after subscriber answer");
+                }
+            }
+        }
+    }
 
     Ok(())
 }
