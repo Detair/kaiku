@@ -333,6 +333,14 @@ export async function sendMessage(
       }
     }
 
+    // Mark channel as read (sending implies seeing)
+    try {
+      const { markChannelAsRead } = await import("@/stores/channels");
+      markChannelAsRead(channelId, message.id);
+    } catch {
+      // Non-critical — don't fail the send
+    }
+
     return message;
   } catch (err) {
     // Remove the optimistic message on failure
