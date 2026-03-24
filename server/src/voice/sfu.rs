@@ -649,7 +649,7 @@ impl SfuServer {
                                         if let Err(e) = peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
                                             warn!("Failed to send PLI to publisher: {}", e);
                                         } else {
-                                            debug!(source = %uid, "Sent PLI to publisher for new screen share subscribers");
+                                            info!(source = %uid, "Sent PLI to publisher for new screen share subscribers");
                                         }
                                     }
                                     // Renegotiate so subscriber receives updated SDP

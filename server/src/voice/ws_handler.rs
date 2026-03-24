@@ -558,6 +558,7 @@ async fn handle_subscriber_answer(
         .await
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
+    info!(user_id = %user_id, channel_id = %channel_id, "Processing subscriber answer");
     SfuServer::handle_subscriber_answer(&peer, sdp.to_string())
         .await
         .map_err(|e| {
@@ -584,9 +585,9 @@ async fn handle_subscriber_answer(
                     media_ssrc: track.ssrc(),
                 };
                 if let Err(e) = other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
-                    warn!(source = %other_peer.user_id, error = %e, "Failed to send PLI");
+                    warn!(source = %other_peer.user_id, error = %e, "Failed to send PLI after subscriber answer");
                 } else {
-                    debug!(source = %other_peer.user_id, source_type = ?source_type, "Sent PLI after subscriber answer");
+                    info!(source = %other_peer.user_id, source_type = ?source_type, ssrc = track.ssrc(), "Sent PLI after subscriber answer");
                 }
             }
         }
