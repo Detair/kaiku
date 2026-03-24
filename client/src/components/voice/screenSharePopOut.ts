@@ -19,35 +19,52 @@ export function popOut(
 
   popOutWindows.set(streamId, win);
 
-  // Build page via safe DOM manipulation (createElement + appendChild)
-  const doc = win.document;
-  doc.title = label;
+  // Build the pop-out page once the new window's document is ready.
+  // window.open("") gives us about:blank which may not be fully initialized.
+  const buildPage = () => {
+    const doc = win.document;
 
-  const style = doc.createElement("style");
-  style.textContent = `
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0d0d1a; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-    video { max-width: 100%; max-height: 100%; object-fit: contain; }
-    .label { position: fixed; bottom: 12px; left: 12px; color: #ccc; font-family: system-ui; font-size: 13px; background: rgba(0,0,0,0.6); padding: 4px 12px; border-radius: 6px; }
-  `;
-  doc.head.appendChild(style);
+    // Clear any default content and set up the document
+    doc.open();
+    doc.close();
+    doc.title = label;
 
-  const video = doc.createElement("video");
-  video.autoplay = true;
-  video.playsInline = true;
-  video.srcObject = new MediaStream([track]);
-  doc.body.appendChild(video);
+    const style = doc.createElement("style");
+    style.textContent = `
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #0d0d1a; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+      video { max-width: 100%; max-height: 100%; object-fit: contain; }
+      .label { position: fixed; bottom: 12px; left: 12px; color: #ccc; font-family: system-ui; font-size: 13px; background: rgba(0,0,0,0.6); padding: 4px 12px; border-radius: 6px; }
+    `;
+    doc.head.appendChild(style);
 
-  const labelEl = doc.createElement("div");
-  labelEl.className = "label";
-  labelEl.textContent = label;
-  doc.body.appendChild(labelEl);
+    const video = doc.createElement("video");
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true; // Muted allows autoplay without user gesture in pop-out window
+    video.srcObject = new MediaStream([track]);
+    doc.body.appendChild(video);
 
-  win.addEventListener("beforeunload", () => {
-    video.srcObject = null;
-    popOutWindows.delete(streamId);
-    onClose();
-  });
+    const labelEl = doc.createElement("div");
+    labelEl.className = "label";
+    labelEl.textContent = label;
+    doc.body.appendChild(labelEl);
+
+    // Try to play explicitly in case autoplay is still blocked
+    video.play().catch(() => {
+      // Autoplay blocked — user can click to play
+      video.controls = true;
+    });
+
+    win.addEventListener("beforeunload", () => {
+      video.srcObject = null;
+      popOutWindows.delete(streamId);
+      onClose();
+    });
+  };
+
+  // Use requestAnimationFrame to ensure the window's document is ready
+  win.requestAnimationFrame(buildPage);
 }
 
 /** Bring a popped-out stream back to inline. */
