@@ -26,6 +26,7 @@ import {
   loadMessages,
   hasMoreMessages,
 } from "@/stores/messages";
+import { markChannelAsRead, isChannelUnread } from "@/stores/channels";
 import { areThreadsEnabled } from "@/stores/guilds";
 import { shouldGroupWithPrevious } from "@/lib/utils";
 
@@ -140,6 +141,30 @@ const MessageList: Component<MessageListProps> = (props) => {
     return scrollHeight - scrollTop - clientHeight < 100;
   };
 
+  // --- Debounced mark-as-read on scroll-to-bottom ---
+  let markAsReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleMarkAsRead = () => {
+    if (markAsReadTimer) clearTimeout(markAsReadTimer);
+    markAsReadTimer = setTimeout(() => {
+      const msgs = messages();
+      const lastMsg = msgs[msgs.length - 1];
+      if (lastMsg && isAtBottom()) {
+        markChannelAsRead(props.channelId, lastMsg.id);
+      }
+      markAsReadTimer = null;
+    }, 3000);
+  };
+
+  const cancelMarkAsRead = () => {
+    if (markAsReadTimer) {
+      clearTimeout(markAsReadTimer);
+      markAsReadTimer = null;
+    }
+  };
+
+  onCleanup(() => cancelMarkAsRead());
+
   // --- Handle scroll ---
   const handleScroll = () => {
     // If in sticky-bottom mode (after sending), force re-scroll on any reflow
@@ -155,6 +180,9 @@ const MessageList: Component<MessageListProps> = (props) => {
     if (atBottom) {
       setHasNewMessages(false);
       setNewMessageCount(0);
+      scheduleMarkAsRead();
+    } else {
+      cancelMarkAsRead();
     }
   };
 
@@ -386,7 +414,10 @@ const MessageList: Component<MessageListProps> = (props) => {
           }
         });
       } else {
-        requestAnimationFrame(() => scrollToBottom(true));
+        requestAnimationFrame(() => {
+          scrollToBottom(true);
+          scheduleMarkAsRead();
+        });
       }
     }
 
