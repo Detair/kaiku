@@ -7,6 +7,7 @@ import {
   createMemo,
   createSignal,
   onCleanup,
+  onMount,
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import { createVirtualizer } from "@/lib/virtualizer";
@@ -352,6 +353,25 @@ const MessageList: Component<MessageListProps> = (props) => {
   onCleanup(() => {
     if (highlightTimer) clearTimeout(highlightTimer);
   });
+
+  // --- Escape key: mark channel as read ---
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      // Don't trigger if a modal, context menu, or search overlay is open
+      const hasOverlay = document.querySelector("[role='dialog'], [data-context-menu], [data-search-overlay]");
+      if (hasOverlay) return;
+
+      const msgs = messages();
+      const lastMsg = msgs[msgs.length - 1];
+      if (lastMsg && isChannelUnread(props.channelId)) {
+        markChannelAsRead(props.channelId, lastMsg.id);
+        scrollToBottom(true);
+      }
+    }
+  };
+
+  onMount(() => document.addEventListener("keydown", handleKeyDown));
+  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
   // Track message count for auto-scroll / new-message indicator
   let prevMessageCount = 0;
