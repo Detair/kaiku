@@ -63,8 +63,9 @@ export function popOut(
     });
   };
 
-  // Use requestAnimationFrame to ensure the window's document is ready
-  win.requestAnimationFrame(buildPage);
+  // Use setTimeout to ensure the window's document is ready.
+  // Unlike requestAnimationFrame, setTimeout fires even when the window is backgrounded.
+  setTimeout(buildPage, 0);
 }
 
 /** Bring a popped-out stream back to inline. */
