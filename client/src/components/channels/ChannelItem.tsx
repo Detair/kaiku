@@ -25,7 +25,7 @@ import type { ChannelWithUnread } from "@/lib/types";
 import { isInChannel, getParticipants, voiceState } from "@/stores/voice";
 import { authState } from "@/stores/auth";
 import { isChannelMuted, setChannelNotificationLevel } from "@/stores/sound";
-import { markChannelAsRead } from "@/stores/channels";
+import { markChannelAsRead, isChannelUnread } from "@/stores/channels";
 import { isFavorited, toggleFavorite } from "@/stores/favorites";
 import {
   showContextMenu,
@@ -90,12 +90,14 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
     const items: ContextMenuEntry[] = [];
 
     // Mark as Read (only for text channels with unreads)
-    if (ch.channel_type === "text" && ch.unread_count > 0) {
+    if (ch.channel_type === "text" && isChannelUnread(ch.id)) {
       items.push({
         label: "Mark as Read",
         icon: CheckCheck,
         action: () => {
-          markChannelAsRead(ch.id);
+          if (ch.last_message_id) {
+            markChannelAsRead(ch.id, ch.last_message_id);
+          }
         },
       });
     }
@@ -213,24 +215,15 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         <span
           class="truncate transition-all duration-200"
           classList={{
-            "font-semibold": isConnected(),
+            "font-semibold": isConnected() || isChannelUnread(props.channel.id),
           }}
         >
           {props.channel.name}
         </span>
 
-        {/* Unread badge for text channels */}
-        <Show
-          when={
-            props.channel.channel_type === "text" &&
-            props.channel.unread_count > 0
-          }
-        >
-          <span class="ml-auto flex-shrink-0 min-w-5 h-5 px-1.5 bg-accent-primary text-on-accent text-xs font-bold rounded-full flex items-center justify-center">
-            {props.channel.unread_count > 99
-              ? "99+"
-              : props.channel.unread_count}
-          </span>
+        {/* Unread indicator for text channels */}
+        <Show when={props.channel.channel_type === "text" && isChannelUnread(props.channel.id)}>
+          <span class="ml-auto w-2 h-2 rounded-full bg-accent-primary flex-shrink-0" />
         </Show>
 
         {/* Muted indicator */}
