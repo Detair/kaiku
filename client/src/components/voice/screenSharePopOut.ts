@@ -32,8 +32,8 @@ export function popOut(
     const style = doc.createElement("style");
     style.textContent = `
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #0d0d1a; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-      video { max-width: 100%; max-height: 100%; object-fit: contain; }
+      body { background: #0d0d1a; display: flex; align-items: center; justify-content: center; height: 100vh; width: 100vw; overflow: hidden; }
+      video { width: 100vw; height: 100vh; object-fit: contain; }
       .label { position: fixed; bottom: 12px; left: 12px; color: #ccc; font-family: system-ui; font-size: 13px; background: rgba(0,0,0,0.6); padding: 4px 12px; border-radius: 6px; }
     `;
     doc.head.appendChild(style);
