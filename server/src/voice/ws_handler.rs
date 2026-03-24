@@ -501,20 +501,9 @@ async fn subscribe_to_existing_tracks(
                                     room.channel_id,
                                 );
                             }
-                            if matches!(source_type, TrackSource::ScreenVideo(_)) {
-                                // Send PLI to request keyframe for late joiners
-                                let pli = PictureLossIndication {
-                                    sender_ssrc: 0,
-                                    media_ssrc: track.ssrc(),
-                                };
-                                if let Err(e) =
-                                    other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await
-                                {
-                                    warn!("Failed to send PLI: {}", e);
-                                } else {
-                                    debug!("Sent PLI to source {}", other_peer.user_id);
-                                }
-                            }
+                            // PLI for screen shares is sent AFTER renegotiation
+                            // (see below) so the keyframe arrives when the subscriber
+                            // is actually ready to decode.
                         }
                         Err(e) => {
                             warn!(
@@ -544,6 +533,41 @@ async fn subscribe_to_existing_tracks(
         if let Err(e) = SfuServer::renegotiate(peer).await {
             error!(user_id = %user_id, error = %e, "failed to renegotiate subscriber after join");
         }
+    }
+
+    // Send PLI for all screen share tracks AFTER renegotiation.
+    // The subscriber answer will arrive asynchronously — we add a small
+    // delay so the PLI-triggered keyframe arrives after the SDP exchange
+    // completes and the subscriber is ready to decode.
+    let pli_peers: Vec<(Uuid, Arc<super::peer::Peer>, u32)> = {
+        let mut result = Vec::new();
+        for (other_id, other_peer) in &other_peers {
+            let incoming = other_peer.incoming_tracks.read().await;
+            for (source_type, track) in incoming.iter() {
+                if matches!(source_type, TrackSource::ScreenVideo(_)) {
+                    result.push((*other_id, other_peer.clone(), track.ssrc()));
+                }
+            }
+        }
+        result
+    };
+
+    if !pli_peers.is_empty() {
+        tokio::spawn(async move {
+            // Wait for subscriber answer to be processed
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            for (source_id, source_peer, ssrc) in pli_peers {
+                let pli = PictureLossIndication {
+                    sender_ssrc: 0,
+                    media_ssrc: ssrc,
+                };
+                if let Err(e) = source_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
+                    warn!("Failed to send PLI to {}: {}", source_id, e);
+                } else {
+                    debug!("Sent delayed PLI to source {} for late joiner", source_id);
+                }
+            }
+        });
     }
 }
 
