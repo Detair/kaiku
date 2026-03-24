@@ -824,6 +824,47 @@ pub async fn list_messages(
     }
 }
 
+/// Fetch messages around a specific message ID.
+/// Returns up to `limit` messages centered on `around_id`.
+/// If `around_id` is deleted or doesn't exist, returns empty vec (caller should fallback).
+pub async fn list_messages_around(
+    pool: &PgPool,
+    channel_id: Uuid,
+    around_id: Uuid,
+    limit: i64,
+) -> sqlx::Result<Vec<Message>> {
+    let half = limit / 2;
+    // Use a CTE to resolve the anchor first — if deleted/missing, returns empty
+    sqlx::query_as::<_, Message>(
+        r"
+        WITH anchor AS (
+            SELECT created_at, id FROM messages
+            WHERE id = $2 AND deleted_at IS NULL
+        )
+        SELECT m.* FROM (
+            (SELECT m.* FROM messages m, anchor a
+             WHERE m.channel_id = $1 AND m.deleted_at IS NULL AND m.parent_id IS NULL
+               AND (m.created_at, m.id) <= (a.created_at, a.id)
+             ORDER BY m.created_at DESC, m.id DESC
+             LIMIT $3)
+            UNION ALL
+            (SELECT m.* FROM messages m, anchor a
+             WHERE m.channel_id = $1 AND m.deleted_at IS NULL AND m.parent_id IS NULL
+               AND (m.created_at, m.id) > (a.created_at, a.id)
+             ORDER BY m.created_at ASC, m.id ASC
+             LIMIT $4)
+        ) m
+        ORDER BY m.created_at ASC, m.id ASC
+        ",
+    )
+    .bind(channel_id)
+    .bind(around_id)
+    .bind(half + 1) // +1 to include anchor itself
+    .bind(half)
+    .fetch_all(pool)
+    .await
+}
+
 /// Find message by ID.
 pub async fn find_message_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<Message>> {
     sqlx::query_as::<_, Message>("SELECT * FROM messages WHERE id = $1 AND deleted_at IS NULL")

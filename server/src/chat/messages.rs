@@ -228,6 +228,7 @@ pub struct ReactionInfo {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListMessagesQuery {
     pub before: Option<Uuid>,
+    pub around: Option<Uuid>,
     #[serde(default = "default_limit")]
     pub limit: i64,
 }
@@ -410,8 +411,22 @@ pub async fn list(
     // Limit between 1 and 100
     let limit = query.limit.clamp(1, 100);
 
-    // Fetch one extra message to determine if there are more
-    let mut messages = db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
+    // Fetch messages — either around a specific message or before-based pagination
+    let (mut messages, has_more) = if let Some(around_id) = query.around {
+        let msgs =
+            db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
+        let has_more = msgs.len() as i64 >= limit;
+        (msgs, has_more)
+    } else {
+        // Fetch one extra message to determine if there are more
+        let mut msgs =
+            db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
+        let has_more = msgs.len() as i64 > limit;
+        if has_more {
+            msgs.pop();
+        }
+        (msgs, has_more)
+    };
 
     // Filter out messages from blocked users (application-layer filtering)
     if !combined_block_set.is_empty() {
@@ -419,12 +434,6 @@ pub async fn list(
             m.user_id
                 .is_none_or(|uid| !combined_block_set.contains(&uid))
         });
-    }
-
-    // Check if there are more messages beyond the requested limit
-    let has_more = messages.len() as i64 > limit;
-    if has_more {
-        messages.pop(); // Remove the extra message
     }
 
     // Build response with author info, attachments, and reactions
