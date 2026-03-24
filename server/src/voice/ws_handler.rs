@@ -779,6 +779,13 @@ async fn handle_screen_share_start(
     // Use the stream_id provided by the client.
     let stream_id = params.stream_id;
 
+    // Reject duplicate stream_id
+    if room.screen_shares.read().await.contains_key(&stream_id) {
+        return Err(VoiceError::Signaling(format!(
+            "Screen share stream already exists: {stream_id}"
+        )));
+    }
+
     // Queue pending track sources so setup_track_handler can identify them
     peer.push_pending_source(TrackSource::ScreenVideo(stream_id))
         .await;

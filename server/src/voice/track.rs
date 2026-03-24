@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use uuid::Uuid;
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
@@ -196,11 +196,13 @@ impl TrackRouter {
                 .simulcast_tracks
                 .contains_key(&(source_user_id, source_type, Layer::Medium));
 
-        // DashMap::get returns a guard that provides lock-free concurrent read access
-        if let Some(subscribers) = self.subscriptions.get(&key) {
-            crate::observability::metrics::record_rtp_packet_forwarded();
+        // DashMap::get returns a guard that provides lock-free concurrent read access.
+        // Record the metric outside the guard scope to avoid holding it during I/O.
+        let forwarded = if let Some(subscribers) = self.subscriptions.get(&key) {
+            let mut count = 0u32;
             for sub in subscribers.value() {
                 if sub.active_layer == layer || !is_simulcast {
+                    count += 1;
                     // Write RTP packet to local track (forwards to subscriber)
                     if let Err(e) = sub.local_track.write_rtp(rtp_packet).await {
                         warn!(
@@ -211,6 +213,12 @@ impl TrackRouter {
                     }
                 }
             }
+            count
+        } else {
+            0
+        };
+        if forwarded > 0 {
+            crate::observability::metrics::record_rtp_packet_forwarded();
         }
     }
 
@@ -254,12 +262,23 @@ impl TrackRouter {
         self.subscriptions
             .retain(|(uid, _), _| *uid != source_user_id);
 
+        // Clean up simulcast tracks for this source
+        self.simulcast_tracks
+            .retain(|(uid, _, _), _| *uid != source_user_id);
+        // Clean up pending secondary layers for this source
+        self.pending_secondary
+            .retain(|(uid, _), _| *uid != source_user_id);
+
         debug!(source = %source_user_id, "Removed source and all subscriptions");
     }
 
     /// Remove all subscriptions for a specific source track (e.g. when a user stops webcam).
     pub async fn remove_source_track(&self, source_user_id: Uuid, source_type: TrackSource) {
         self.subscriptions.remove(&(source_user_id, source_type));
+
+        // Clean up simulcast layers for this specific track
+        self.simulcast_tracks
+            .retain(|(uid, st, _), _| !(*uid == source_user_id && *st == source_type));
 
         debug!(
             source = %source_user_id,
@@ -443,7 +462,7 @@ pub fn spawn_rtp_forwarder(
                     packet_count += 1;
                     if packet_count == 1 || packet_count.is_multiple_of(500) {
                         let sub_count = router.subscription_count(source_user_id, source_type);
-                        info!(
+                        debug!(
                             source = %source_user_id,
                             source_type = ?source_type,
                             layer = ?layer,
@@ -470,13 +489,11 @@ pub fn spawn_rtp_forwarder(
             }
         }
 
-        // Clean up this specific track when it ends
-        // We can't use remove_source because that removes ALL tracks for the user
-        // We need a way to remove just this track from subscriptions?
-        // Actually, remove_source is fine if the user disconnects, but if they just stop screen
-        // sharing? We should probably just let the subscriptions stick around or clean them
-        // up specifically. For now, let's just log. The Peer cleanup handles the main
-        // removal.
+        // The forwarder stops naturally when track.read() returns an error
+        // (publisher removed the track or PC closed). Between the stop signal
+        // and the read failure, some packets may be forwarded to removed
+        // subscriber tracks — this causes harmless write errors that are
+        // silently ignored by webrtc-rs.
         debug!(
              source = %source_user_id,
              source_type = ?source_type,

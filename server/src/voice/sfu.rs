@@ -605,19 +605,21 @@ impl SfuServer {
                     // by default, and PeerConnection::write_rtcp() doesn't reliably
                     // deliver PLI to the remote browser.
                     if source_type.is_video() && layer == Layer::High {
-                        let publisher_pc = peer.publisher_pc.clone();
+                        let publisher_pc_weak = Arc::downgrade(&peer.publisher_pc);
                         let track_ssrc = track.ssrc();
                         tokio::spawn(async move {
                             use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
                             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
                             loop {
                                 interval.tick().await;
+                                let Some(publisher_pc) = publisher_pc_weak.upgrade() else {
+                                    break; // PC dropped — stop PLI
+                                };
                                 let pli = PictureLossIndication {
                                     sender_ssrc: 0,
                                     media_ssrc: track_ssrc,
                                 };
                                 if publisher_pc.write_rtcp(&[Box::new(pli)]).await.is_err() {
-                                    // PC closed — stop the interval
                                     break;
                                 }
                             }

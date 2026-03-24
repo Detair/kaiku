@@ -276,45 +276,38 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
           {/* Focused tile */}
           <div class="flex-1 min-h-0 min-w-0">
             <Show when={focusedTile()}>
-              {(tile) => (
-                <VoiceTile
-                  tile={tile()}
-                  onClick={() => handleTileClick(getTileId(tile()))}
-                  size="normal"
-                  poppedOut={
-                    tile().type === "screen_share"
-                      ? poppedOutStreams().has(
-                          (tile() as Extract<TileData, { type: "screen_share" }>).streamId,
-                        )
-                      : undefined
-                  }
-                  onPopOut={
-                    tile().type === "screen_share"
-                      ? () =>
-                          handlePopOut(
-                            (tile() as Extract<TileData, { type: "screen_share" }>).streamId,
-                          )
-                      : undefined
-                  }
-                  onBringBack={
-                    tile().type === "screen_share"
-                      ? () =>
-                          handleBringBack(
-                            (tile() as Extract<TileData, { type: "screen_share" }>).streamId,
-                          )
-                      : undefined
-                  }
-                  onStopShare={
-                    tile().type === "screen_share" &&
-                    (tile() as Extract<TileData, { type: "screen_share" }>).userId === authState.user?.id
-                      ? () =>
-                          stopScreenShare(
-                            (tile() as Extract<TileData, { type: "screen_share" }>).streamId,
-                          )
-                      : undefined
-                  }
-                />
-              )}
+              {(tile) => {
+                const screenTile = () =>
+                  tile() as Extract<TileData, { type: "screen_share" }>;
+                return (
+                  <VoiceTile
+                    tile={tile()}
+                    onClick={() => handleTileClick(getTileId(tile()))}
+                    size="normal"
+                    poppedOut={
+                      tile().type === "screen_share"
+                        ? poppedOutStreams().has(screenTile().streamId)
+                        : undefined
+                    }
+                    onPopOut={
+                      tile().type === "screen_share"
+                        ? () => handlePopOut(screenTile().streamId)
+                        : undefined
+                    }
+                    onBringBack={
+                      tile().type === "screen_share"
+                        ? () => handleBringBack(screenTile().streamId)
+                        : undefined
+                    }
+                    onStopShare={
+                      tile().type === "screen_share" &&
+                      screenTile().userId === authState.user?.id
+                        ? () => stopScreenShare(screenTile().streamId)
+                        : undefined
+                    }
+                  />
+                );
+              }}
             </Show>
           </div>
 
