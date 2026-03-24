@@ -1,17 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM guild_bot_installations WHERE guild_id = $1 AND application_id = $2",
+  "query": "\n        SELECT owner_id\n        FROM bot_applications\n        WHERE id = $1\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "owner_id",
         "type_info": "Uuid"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
@@ -19,5 +18,5 @@
       false
     ]
   },
-  "hash": "89d44c941251452f6acbbc36e5493979b4d61a7eb648eb3c3f342e6b693d5543"
+  "hash": "8006ac0f32f25d5fbdeb2304bedb5b787b1ea99d75fa6e0550b82264be623bdc"
 }

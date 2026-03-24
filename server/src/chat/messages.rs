@@ -228,6 +228,7 @@ pub struct ReactionInfo {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListMessagesQuery {
     pub before: Option<Uuid>,
+    #[serde(default)]
     pub around: Option<Uuid>,
     #[serde(default = "default_limit")]
     pub limit: i64,
@@ -2159,6 +2160,7 @@ mod tests {
         // Call the list handler
         let query = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 50,
         };
 
@@ -2271,6 +2273,7 @@ mod tests {
         // Call the list handler
         let query = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 50,
         };
 
@@ -2349,6 +2352,7 @@ mod tests {
         // Fetch first page (limit 3)
         let query1 = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 3,
         };
 
@@ -2380,6 +2384,7 @@ mod tests {
 
         let query2 = ListMessagesQuery {
             before: Some(oldest_from_page1),
+            around: None,
             limit: 3,
         };
 
@@ -2408,6 +2413,7 @@ mod tests {
         // Verify we can fetch all messages eventually
         let query_all = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 100,
         };
 
@@ -2465,6 +2471,7 @@ mod tests {
 
         let query = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 50,
         };
 
@@ -2563,6 +2570,7 @@ mod tests {
         // Test limit = 0 (should clamp to 1)
         let query_zero = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 0,
         };
 
@@ -2581,6 +2589,7 @@ mod tests {
         // Test limit = 200 (should clamp to 100)
         let query_large = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 200,
         };
 
