@@ -26,7 +26,12 @@ import {
   loadMessages,
   hasMoreMessages,
 } from "@/stores/messages";
-import { markChannelAsRead } from "@/stores/channels";
+import {
+  markChannelAsRead,
+  getChannelLastReadMessageId,
+  isChannelUnread,
+  getUnreadCount,
+} from "@/stores/channels";
 import { areThreadsEnabled } from "@/stores/guilds";
 import { shouldGroupWithPrevious } from "@/lib/utils";
 
@@ -70,9 +75,12 @@ const MessageList: Component<MessageListProps> = (props) => {
     return messagesState.byChannel[props.channelId] || [];
   });
 
-  // Compute messages with compact flag
+  // Compute messages with compact flag and first-unread marker
   const messagesWithCompact = createMemo(() => {
     const msgs = messages();
+    const lastReadId = getChannelLastReadMessageId(props.channelId);
+    let foundLastRead = lastReadId == null; // if null, no divider needed
+
     return msgs.map((message, idx) => {
       const prev = idx > 0 ? msgs[idx - 1] : null;
       const isCompact = prev
@@ -83,7 +91,14 @@ const MessageList: Component<MessageListProps> = (props) => {
             prev.author.id,
           )
         : false;
-      return { message, isCompact };
+
+      let isFirstUnread = false;
+      if (!foundLastRead && prev && prev.id === lastReadId) {
+        isFirstUnread = true;
+        foundLastRead = true;
+      }
+
+      return { message, isCompact, isFirstUnread };
     });
   });
 
@@ -128,6 +143,9 @@ const MessageList: Component<MessageListProps> = (props) => {
       // Reactions (~36px) and thread indicator (~28px)
       if (msg.reactions?.length) estimate += 36;
       if (msg.thread_reply_count) estimate += 28;
+
+      // "New Messages" divider (~32px)
+      if (item?.isFirstUnread) estimate += 32;
 
       return estimate + 16; // padding
     },
@@ -366,7 +384,11 @@ const MessageList: Component<MessageListProps> = (props) => {
           setNewMessageCount(0);
           setPaginationError(null);
           prevMessageCount = 0;
-          loadInitialMessages(channelId);
+
+          const lastReadId = getChannelLastReadMessageId(channelId);
+          const unread = isChannelUnread(channelId);
+          const unreadCnt = getUnreadCount(channelId);
+          loadInitialMessages(channelId, unread ? lastReadId : undefined, unreadCnt);
         }
       },
       { defer: false },
@@ -414,10 +436,29 @@ const MessageList: Component<MessageListProps> = (props) => {
           }
         });
       } else {
-        requestAnimationFrame(() => {
-          scrollToBottom(true);
-          scheduleMarkAsRead();
-        });
+        const lastReadId = getChannelLastReadMessageId(props.channelId);
+        if (lastReadId && isChannelUnread(props.channelId)) {
+          // Scroll to first unread (the message after lastReadId)
+          const msgs = messages();
+          const readIdx = msgs.findIndex((m) => m.id === lastReadId);
+          if (readIdx !== -1 && readIdx < msgs.length - 1) {
+            requestAnimationFrame(() => {
+              virtualizer.scrollToIndex(readIdx + 1, { align: "start", behavior: "auto" });
+              scheduleMarkAsRead();
+            });
+          } else {
+            // lastReadId not in loaded range — fallback to bottom
+            requestAnimationFrame(() => {
+              scrollToBottom(true);
+              scheduleMarkAsRead();
+            });
+          }
+        } else {
+          requestAnimationFrame(() => {
+            scrollToBottom(true);
+            scheduleMarkAsRead();
+          });
+        }
       }
     }
 
@@ -545,12 +586,23 @@ const MessageList: Component<MessageListProps> = (props) => {
                   {(() => {
                     const data = item();
                     return data ? (
-                      <MessageItem
-                        message={data.message}
-                        compact={data.isCompact}
-                        guildId={props.guildId}
-                        threadsEnabled={areThreadsEnabled(props.guildId)}
-                      />
+                      <>
+                        <Show when={data.isFirstUnread}>
+                          <div class="flex items-center gap-2 px-4 py-1 my-1">
+                            <div class="flex-1 h-px bg-accent-danger" />
+                            <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
+                              New Messages
+                            </span>
+                            <div class="flex-1 h-px bg-accent-danger" />
+                          </div>
+                        </Show>
+                        <MessageItem
+                          message={data.message}
+                          compact={data.isCompact}
+                          guildId={props.guildId}
+                          threadsEnabled={areThreadsEnabled(props.guildId)}
+                        />
+                      </>
                     ) : null;
                   })()}
                 </div>
