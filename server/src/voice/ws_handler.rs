@@ -8,7 +8,6 @@ use sqlx::{PgPool, Row};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
@@ -499,7 +498,6 @@ async fn subscribe_to_existing_tracks(
                                     sender,
                                     peer.signal_tx.clone(),
                                     room.channel_id,
-                                    other_peer.publisher_pc.clone(),
                                 );
                             }
                             // PLI for screen shares is sent AFTER renegotiation
@@ -559,7 +557,6 @@ async fn handle_subscriber_answer(
         .await
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
-    info!(user_id = %user_id, channel_id = %channel_id, "Processing subscriber answer");
     SfuServer::handle_subscriber_answer(&peer, sdp.to_string())
         .await
         .map_err(|e| {
@@ -567,32 +564,8 @@ async fn handle_subscriber_answer(
             e
         })?;
 
-    // Subscriber PC is now ready to receive RTP. Send PLI for all screen
-    // share tracks so publishers send a keyframe immediately.
-    let other_peers: Vec<Arc<super::peer::Peer>> = {
-        let peers = room.peers.read().await;
-        peers
-            .iter()
-            .filter(|(id, _)| **id != user_id)
-            .map(|(_, p)| p.clone())
-            .collect()
-    };
-    for other_peer in &other_peers {
-        let incoming = other_peer.incoming_tracks.read().await;
-        for (source_type, track) in incoming.iter() {
-            if source_type.is_video() {
-                let pli = PictureLossIndication {
-                    sender_ssrc: 0,
-                    media_ssrc: track.ssrc(),
-                };
-                if let Err(e) = other_peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
-                    warn!(source = %other_peer.user_id, error = %e, "Failed to send PLI after subscriber answer");
-                } else {
-                    info!(source = %other_peer.user_id, source_type = ?source_type, ssrc = track.ssrc(), "Sent PLI after subscriber answer");
-                }
-            }
-        }
-    }
+    // Keyframes are handled by the interval PLI task in setup_track_handler
+    // (sends PLI every 3s per video track). No manual PLI needed here.
 
     Ok(())
 }

@@ -599,6 +599,31 @@ impl SfuServer {
                         room.track_router.clone(),
                     );
 
+                    // For video tracks: send PLI every 3 seconds so subscribers
+                    // always get a fresh keyframe. This is the standard Pion SFU
+                    // pattern — webrtc-rs doesn't include an interval PLI interceptor
+                    // by default, and PeerConnection::write_rtcp() doesn't reliably
+                    // deliver PLI to the remote browser.
+                    if source_type.is_video() && layer == Layer::High {
+                        let publisher_pc = peer.publisher_pc.clone();
+                        let track_ssrc = track.ssrc();
+                        tokio::spawn(async move {
+                            use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+                            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+                            loop {
+                                interval.tick().await;
+                                let pli = PictureLossIndication {
+                                    sender_ssrc: 0,
+                                    media_ssrc: track_ssrc,
+                                };
+                                if publisher_pc.write_rtcp(&[Box::new(pli)]).await.is_err() {
+                                    // PC closed — stop the interval
+                                    break;
+                                }
+                            }
+                        });
+                    }
+
                     // Only create subscriber tracks for the primary layer (High)
                     // or non-simulcast tracks. Secondary simulcast layers (Medium,
                     // Low) share the same subscriber local track — they are just
@@ -638,20 +663,7 @@ impl SfuServer {
                                             sender,
                                             other_peer.signal_tx.clone(),
                                             room.channel_id,
-                                            peer.publisher_pc.clone(),
                                         );
-                                    }
-                                    // Request keyframe so new subscribers don't wait for a natural one
-                                    if matches!(source_type, TrackSource::ScreenVideo(_)) {
-                                        let pli = webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
-                                            sender_ssrc: 0,
-                                            media_ssrc: track.ssrc(),
-                                        };
-                                        if let Err(e) = peer.publisher_pc.write_rtcp(&[Box::new(pli)]).await {
-                                            warn!("Failed to send PLI to publisher: {}", e);
-                                        } else {
-                                            info!(source = %uid, "Sent PLI to publisher for new screen share subscribers");
-                                        }
                                     }
                                     // Renegotiate so subscriber receives updated SDP
                                     if let Err(e) = Self::renegotiate(&other_peer).await {

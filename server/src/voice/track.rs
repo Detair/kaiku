@@ -491,7 +491,6 @@ pub fn spawn_rtp_forwarder(
 /// When the subscriber's browser reports its available bandwidth via REMB,
 /// this updates the corresponding subscription in the track router and
 /// notifies the subscriber if the active layer changes.
-#[allow(clippy::too_many_arguments)]
 pub fn spawn_subscriber_remb_reader(
     track_router: Arc<TrackRouter>,
     subscriber_id: Uuid,
@@ -500,36 +499,12 @@ pub fn spawn_subscriber_remb_reader(
     sender: Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>,
     signal_tx: mpsc::Sender<crate::ws::OutboundMsg>,
     channel_id: Uuid,
-    source_publisher_pc: Arc<webrtc::peer_connection::RTCPeerConnection>,
 ) {
     tokio::spawn(async move {
         use webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
-        use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
-        use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
 
         while let Ok((packets, _)) = sender.read_rtcp().await {
             for pkt in &packets {
-                // Forward PLI from subscriber browser to publisher browser
-                if pkt.as_any().downcast_ref::<PictureLossIndication>().is_some()
-                    || pkt.as_any().downcast_ref::<FullIntraRequest>().is_some()
-                {
-                    if let Err(e) = source_publisher_pc.write_rtcp(std::slice::from_ref(pkt)).await {
-                        tracing::warn!(
-                            subscriber = %subscriber_id,
-                            source = %source_user_id,
-                            error = %e,
-                            "Failed to forward PLI/FIR to publisher"
-                        );
-                    } else {
-                        tracing::info!(
-                            subscriber = %subscriber_id,
-                            source = %source_user_id,
-                            "Forwarded PLI/FIR from subscriber to publisher"
-                        );
-                    }
-                    continue;
-                }
-
                 if let Some(remb) = pkt
                     .as_any()
                     .downcast_ref::<ReceiverEstimatedMaximumBitrate>()
