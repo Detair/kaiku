@@ -190,9 +190,11 @@ pub enum ServerEvent {
     // Read sync events
     ChannelRead {
         channel_id: String,
+        last_read_message_id: Option<String>,
     },
     DmRead {
         channel_id: String,
+        last_read_message_id: Option<String>,
     },
     DmNameUpdated {
         channel_id: String,

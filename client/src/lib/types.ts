@@ -599,7 +599,7 @@ export type ServerEvent =
   | { type: "admin_user_deleted"; user_id: string; username: string }
   | { type: "admin_guild_deleted"; guild_id: string; guild_name: string }
   // DM read sync event
-  | { type: "dm_read"; channel_id: string }
+  | { type: "dm_read"; channel_id: string; last_read_message_id?: string }
   // Guild channel read sync event
   | { type: "channel_read"; channel_id: string; last_read_message_id?: string }
   // Preferences events
