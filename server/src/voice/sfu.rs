@@ -638,6 +638,7 @@ impl SfuServer {
                                             sender,
                                             other_peer.signal_tx.clone(),
                                             room.channel_id,
+                                            peer.publisher_pc.clone(),
                                         );
                                     }
                                     // Request keyframe so new subscribers don't wait for a natural one

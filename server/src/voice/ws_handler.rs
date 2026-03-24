@@ -499,6 +499,7 @@ async fn subscribe_to_existing_tracks(
                                     sender,
                                     peer.signal_tx.clone(),
                                     room.channel_id,
+                                    other_peer.publisher_pc.clone(),
                                 );
                             }
                             // PLI for screen shares is sent AFTER renegotiation
