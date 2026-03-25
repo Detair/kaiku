@@ -13,6 +13,7 @@ mod voice;
 mod webrtc;
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use audio::AudioHandle;
@@ -313,6 +314,10 @@ pub struct VoiceState {
     pub webcam: Option<WebcamPipeline>,
     /// Audio mixer for combining remote subscriber tracks.
     pub audio_mixer: Option<voice::audio_mixer::AudioMixer>,
+    /// Handles for active video decode tasks (aborted on leave).
+    pub video_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    /// Number of currently active video decode streams.
+    pub active_video_count: Arc<AtomicUsize>,
 }
 
 impl VoiceState {
@@ -327,6 +332,8 @@ impl VoiceState {
             screen_shares: HashMap::new(),
             webcam: None,
             audio_mixer: None,
+            video_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            active_video_count: Arc::new(AtomicUsize::new(0)),
         })
     }
 }

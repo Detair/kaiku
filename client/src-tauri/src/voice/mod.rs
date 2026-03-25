@@ -4,3 +4,4 @@
 
 pub mod audio_mixer;
 pub mod subscriber;
+pub mod video_decoder;

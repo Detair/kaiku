@@ -2,7 +2,7 @@
 //!
 //! Tauri commands for voice chat functionality.
 
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tauri::{command, AppHandle, Emitter, State};
@@ -119,6 +119,8 @@ pub async fn join_voice(
     // Set up subscriber track callback — fires when the SFU delivers a remote track
     let app_clone = app.clone();
     let voice_arc = state.voice.clone();
+    let active_video_count = voice_state.active_video_count.clone();
+    let video_tasks = voice_state.video_tasks.clone();
     voice_state
         .webrtc
         .set_on_subscriber_track(move |track, _receiver| {
@@ -182,12 +184,58 @@ pub async fn join_voice(
                     );
                 });
             } else if voice::subscriber::is_video_track(&source_type) {
-                // Video tracks will be handled in Task 6
-                info!(
-                    user_id = %user_id,
-                    source_type = %source_type,
-                    "Video track received (not yet handled)"
+                let count = active_video_count.clone();
+
+                // Extract stream_id from source_type for screen shares
+                // Format: "screen_video:uuid" → stream_id = "uuid"
+                let extracted_stream_id =
+                    if let Some(rest) = source_type.strip_prefix("screen_video:") {
+                        rest.to_string()
+                    } else {
+                        "default".to_string()
+                    };
+
+                // Check stream cap — emit metadata only if at capacity
+                if count.load(Ordering::Relaxed)
+                    >= voice::video_decoder::MAX_VIDEO_STREAMS
+                {
+                    info!(
+                        user_id = %user_id,
+                        source_type = %source_type,
+                        "Video stream cap reached, metadata only"
+                    );
+                    let event_name = if source_type.starts_with("screen_video") {
+                        "voice:screen_share_track"
+                    } else {
+                        "voice:webcam_track"
+                    };
+                    let _ = app_clone.emit(
+                        event_name,
+                        voice::video_decoder::VideoTrackEvent {
+                            user_id,
+                            stream_id: extracted_stream_id,
+                            source_type,
+                        },
+                    );
+                    return;
+                }
+
+                count.fetch_add(1, Ordering::Relaxed);
+
+                let handle = voice::video_decoder::spawn_video_decode_task(
+                    track.clone(),
+                    user_id,
+                    source_type,
+                    extracted_stream_id,
+                    app_clone.clone(),
+                    count,
                 );
+
+                // Store handle for cleanup on leave_voice
+                let tasks = video_tasks.clone();
+                tokio::spawn(async move {
+                    tasks.lock().await.push(handle);
+                });
             } else {
                 warn!(
                     stream_id = %stream,
@@ -397,6 +445,20 @@ pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
     if let Some(pipeline) = voice_state.webcam.take() {
         info!("Auto-stopping webcam on voice leave");
         pipeline.shutdown().await;
+    }
+
+    // Stop all video decode tasks
+    {
+        let mut tasks = voice_state.video_tasks.lock().await;
+        if !tasks.is_empty() {
+            info!(count = tasks.len(), "Aborting video decode tasks on voice leave");
+            for handle in tasks.drain(..) {
+                handle.abort();
+            }
+        }
+        voice_state
+            .active_video_count
+            .store(0, Ordering::Relaxed);
     }
 
     // Stop audio and drop mixer
