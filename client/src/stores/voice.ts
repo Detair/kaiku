@@ -531,8 +531,13 @@ export async function joinVoice(channelId: string): Promise<void> {
     setVoiceState("connectedAt", Date.now());
     startMetricsLoop();
 
-    // Activate PTT/PTM if configured
+    // Activate PTT/PTM if configured (also handles VAD disable when PTT active)
     await activatePtt();
+
+    // Apply VAD config only if PTT didn't take over
+    if (!isPttActive()) {
+      syncVadConfig(adapter);
+    }
   } finally {
     isJoining = false;
   }
@@ -614,6 +619,13 @@ async function activatePtt(): Promise<void> {
     pttController = new PttController(setMute);
     pttController.activate(config);
     pttCleanup = await createTauriPttListeners(pttController, config);
+
+    // PTT takes priority over VAD — disable gating while PTT controls mute
+    const adapter = getVoiceAdapter();
+    if (adapter) {
+      const settings = appSettings();
+      adapter.setVadConfig(false, settings?.voice.vad_threshold ?? 0.5);
+    }
   } finally {
     pttActivating = false;
   }
@@ -635,12 +647,36 @@ async function deactivatePtt(): Promise<void> {
   if (wasActive) {
     await setMute(false);
   }
+
+  // Restore VAD config from settings
+  const adapter = getVoiceAdapter();
+  if (adapter) syncVadConfig(adapter);
+}
+
+/**
+ * Push current VAD settings to the adapter.
+ * Skipped when PTT/PTM is controlling the mute state.
+ */
+function syncVadConfig(adapter: import("@/lib/webrtc/types").VoiceAdapter): void {
+  const settings = appSettings();
+  if (!settings) return;
+
+  const isPtt = pttController !== null && pttController.isPttOrPtmEnabled();
+  const vadEnabled = !isPtt && settings.voice.voice_activity_detection;
+  adapter.setVadConfig(vadEnabled, settings.voice.vad_threshold);
 }
 
 /** Re-sync PTT state when settings change mid-call. */
 export async function updatePttFromSettings(): Promise<void> {
   if (voiceState.state !== "connected") return;
   await activatePtt();
+}
+
+/** Re-sync VAD config when settings change mid-call. */
+export function updateVadFromSettings(): void {
+  if (voiceState.state !== "connected") return;
+  const adapter = getVoiceAdapter();
+  if (adapter) syncVadConfig(adapter);
 }
 
 /** Whether PTT or PTM is currently controlling the mute state. */
@@ -711,8 +747,9 @@ export async function setDeafen(deafened: boolean): Promise<void> {
 }
 
 /**
- * Set speaking state (temporary for testing until VAD is implemented).
- * @phase1 - Backend needs to implement Voice Activity Detection (VAD)
+ * Manually set speaking state.
+ * Used by mic test UI (AudioDeviceSettings) to drive the speaking indicator.
+ * During live calls, speaking state is driven by the adapter's onSpeakingChange event.
  */
 export function setSpeaking(speaking: boolean): void {
   setVoiceState({ speaking });

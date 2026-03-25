@@ -59,7 +59,21 @@ export async function updateVoiceSetting<K extends keyof AppSettings["voice"]>(
   const nextVoice = { ...current.voice, [key]: value };
   await setAppSetting("voice", nextVoice);
 
-  // Re-sync PTT controller if voice is connected
-  const { updatePttFromSettings } = await import("@/stores/voice");
-  await updatePttFromSettings();
+  const { updatePttFromSettings, updateVadFromSettings } = await import("@/stores/voice");
+
+  // Re-sync only the subsystem whose keys changed
+  const pttKeys: (keyof AppSettings["voice"])[] = [
+    "push_to_talk", "push_to_talk_key", "push_to_talk_release_delay",
+    "push_to_mute", "push_to_mute_key", "push_to_mute_release_delay",
+  ];
+  const vadKeys: (keyof AppSettings["voice"])[] = [
+    "voice_activity_detection", "vad_threshold",
+  ];
+
+  if (pttKeys.includes(key)) {
+    await updatePttFromSettings();
+  }
+  if (vadKeys.includes(key)) {
+    updateVadFromSettings();
+  }
 }

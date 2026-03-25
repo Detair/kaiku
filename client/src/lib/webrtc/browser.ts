@@ -80,6 +80,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private vadAudioContext: AudioContext | null = null;
   private vadInterval: number | null = null;
 
+  // VAD gating — actually mute/unmute audio based on detected speech
+  private vadEnabled = false;
+  private vadThreshold = 0.5; // 0.0–1.0, maps to 0–100 internal level
+  private vadSpeaking = false;
+  private vadHoldTimeout: number | null = null;
+  private vadMonitorTrack: MediaStreamTrack | null = null; // cloned track for analysis
+  private static readonly VAD_HOLD_MS = 300; // hold audio open after speech stops
+
   // Event handlers
   private eventHandlers: Partial<VoiceAdapterEvents> = {};
 
@@ -254,12 +262,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     console.log(`[BrowserVoiceAdapter] Set mute: ${muted}`);
 
     this.muted = muted;
-
-    if (this.localStream) {
-      this.localStream.getAudioTracks().forEach((track) => {
-        track.enabled = !muted;
-      });
-    }
+    this.updateTrackEnabled();
 
     // Notify server
     if (this.channelId) {
@@ -324,6 +327,38 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     return { ok: true, value: undefined };
+  }
+
+  setVadConfig(enabled: boolean, threshold: number): void {
+    console.log(
+      `[BrowserVoiceAdapter] VAD config: enabled=${enabled}, threshold=${threshold}`,
+    );
+
+    // Cancel any pending hold timer from a previous VAD session so a stale
+    // callback doesn't flip vadSpeaking after the config change.
+    this.clearVadHold();
+
+    this.vadEnabled = enabled;
+    this.vadThreshold = threshold;
+
+    // Immediately apply the correct track state for the new config
+    if (this.localStream) {
+      this.vadSpeaking = false;
+      this.updateTrackEnabled();
+    }
+  }
+
+  /**
+   * Update audio track enabled state based on mute + VAD gating.
+   * Track is enabled only when: not muted AND (VAD disabled OR currently speaking).
+   */
+  private updateTrackEnabled(): void {
+    if (!this.localStream) return;
+    const enabled =
+      !this.muted && (!this.vadEnabled || this.vadSpeaking);
+    this.localStream.getAudioTracks().forEach((track) => {
+      track.enabled = enabled;
+    });
   }
 
   // Signaling — dual PeerConnection model
@@ -701,6 +736,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // If already in a call, restart the stream with the new device
     if (this.localStream && this.publisherPC) {
       try {
+        // Stop VAD before replacing the stream — the cloned monitor track
+        // references the old mic and would go stale (deliver silence).
+        const vadWasRunning = this.vadInterval !== null;
+        this.stopVAD();
+
         // Stop old tracks
         this.localStream.getTracks().forEach((track) => track.stop());
 
@@ -723,6 +763,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         if (sender) {
           const newTrack = this.localStream.getAudioTracks()[0];
           await sender.replaceTrack(newTrack);
+        }
+
+        // Restart VAD with the new stream's track
+        if (vadWasRunning) {
+          this.startVAD();
         }
 
         return { ok: true, value: undefined };
@@ -1363,19 +1408,28 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     console.log("[BrowserVoiceAdapter] Starting VAD monitoring");
 
     try {
-      // Create audio context for VAD
+      // Clone the mic track for VAD analysis. The clone is unaffected by
+      // track.enabled on the original, so we always see the real mic level
+      // even when VAD gating has disabled the original track.
+      const srcTrack = this.localStream.getAudioTracks()[0];
+      if (!srcTrack) return;
+      this.vadMonitorTrack = srcTrack.clone();
+      const vadStream = new MediaStream([this.vadMonitorTrack]);
+
       this.vadAudioContext = new AudioContext();
-      const source = this.vadAudioContext.createMediaStreamSource(
-        this.localStream,
-      );
+      const source = this.vadAudioContext.createMediaStreamSource(vadStream);
       this.vadAnalyser = this.vadAudioContext.createAnalyser();
       this.vadAnalyser.fftSize = 256;
       source.connect(this.vadAnalyser);
 
-      // Monitor audio level every 100ms
+      // Monitor audio level every 75ms (balances gating responsiveness vs CPU)
       this.vadInterval = window.setInterval(() => {
         if (!this.vadAnalyser || this.muted) {
           // Don't trigger speaking when muted
+          if (this.vadSpeaking) {
+            this.vadSpeaking = false;
+            this.clearVadHold();
+          }
           this.eventHandlers.onSpeakingChange?.(false);
           return;
         }
@@ -1390,12 +1444,44 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         // Normalize to 0-100
         const level = Math.min(100, Math.round((average / 255) * 100 * 2));
 
-        // Speaking threshold: 20%
-        const isSpeaking = level > 20;
-        this.eventHandlers.onSpeakingChange?.(isSpeaking);
-      }, 100);
+        // Threshold: user setting (0.0–1.0) mapped to 0–100 scale
+        const threshold = this.vadThreshold * 100;
+        const isSpeaking = level > threshold;
+
+        // VAD gating: actually mute/unmute the audio track
+        if (this.vadEnabled) {
+          if (isSpeaking) {
+            // Speech detected — open gate immediately
+            this.clearVadHold();
+            if (!this.vadSpeaking) {
+              this.vadSpeaking = true;
+              this.updateTrackEnabled();
+            }
+          } else if (this.vadSpeaking && !this.vadHoldTimeout) {
+            // Speech stopped — start hold timer before closing gate
+            this.vadHoldTimeout = window.setTimeout(() => {
+              this.vadHoldTimeout = null;
+              this.vadSpeaking = false;
+              this.updateTrackEnabled();
+              this.eventHandlers.onSpeakingChange?.(false);
+            }, BrowserVoiceAdapter.VAD_HOLD_MS);
+          }
+        }
+
+        // Speaking indicator: use gating state when VAD is active so the
+        // UI stays in sync with what's actually being transmitted.
+        const speaking = this.vadEnabled ? this.vadSpeaking : isSpeaking;
+        this.eventHandlers.onSpeakingChange?.(speaking);
+      }, 75);
     } catch (err) {
       console.error("[BrowserVoiceAdapter] Failed to start VAD:", err);
+    }
+  }
+
+  private clearVadHold(): void {
+    if (this.vadHoldTimeout) {
+      clearTimeout(this.vadHoldTimeout);
+      this.vadHoldTimeout = null;
     }
   }
 
@@ -1405,6 +1491,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     if (this.vadInterval) {
       clearInterval(this.vadInterval);
       this.vadInterval = null;
+    }
+
+    this.clearVadHold();
+    this.vadSpeaking = false;
+
+    if (this.vadMonitorTrack) {
+      this.vadMonitorTrack.stop();
+      this.vadMonitorTrack = null;
     }
 
     if (this.vadAudioContext) {

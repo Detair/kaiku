@@ -134,6 +134,10 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
   }
 
+  setVadConfig(_enabled: boolean, _threshold: number): void {
+    // Tauri backend handles VAD natively; config will be forwarded when implemented
+  }
+
   // Signaling — dual PeerConnection model
   // Note: Tauri backend handles WebRTC internally; these are thin wrappers
 
