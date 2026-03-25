@@ -555,7 +555,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
         this.eventHandlers.onRemoteTrack?.({
           trackId: `${event.payload.user_id}:${event.payload.source_type}`,
           userId: event.payload.user_id,
-          stream: null as unknown as MediaStream, // No MediaStream in Tauri — audio plays natively
+          stream: null, // No MediaStream in Tauri — audio plays natively via CPAL
           muted: false,
         });
       }),
@@ -575,7 +575,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
         this.eventHandlers.onScreenShareTrack?.(
           event.payload.user_id,
           event.payload.stream_id,
-          null as unknown as MediaStreamTrack,
+          null,
         );
       }),
     );
@@ -591,7 +591,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     this.unlisteners.push(
       await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track", (event) => {
         console.log(`[TauriVoiceAdapter] Webcam track: ${event.payload.user_id}`);
-        this.eventHandlers.onWebcamTrack?.(event.payload.user_id, null as unknown as MediaStreamTrack);
+        this.eventHandlers.onWebcamTrack?.(event.payload.user_id, null);
       }),
     );
 

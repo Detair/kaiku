@@ -7,12 +7,15 @@
 //! mixer task and are never placed behind `Arc`/`RwLock`.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
+use crate::audio::{CHANNELS, FRAME_SIZE};
+
 /// 20 ms stereo frame at 48 kHz = 960 samples/channel * 2 channels.
-const FRAME_SAMPLES: usize = 960 * 2;
+const FRAME_SAMPLES: usize = FRAME_SIZE * CHANNELS as usize;
 
 /// Commands sent to the mixer run loop.
 enum MixerCommand {
@@ -65,23 +68,18 @@ impl AudioMixer {
     /// Background mixing loop.
     ///
     /// Owns all track receivers — they never leave this task.
+    /// Uses a 20ms interval timer for pacing instead of busy-polling.
     async fn run(
         mut command_rx: mpsc::Receiver<MixerCommand>,
         output_tx: mpsc::Sender<Vec<f32>>,
     ) {
         let mut tracks: HashMap<String, mpsc::Receiver<Vec<f32>>> = HashMap::new();
+        let mut ticker = tokio::time::interval(Duration::from_millis(20));
 
         loop {
-            // Drain all pending commands (non-blocking).
-            loop {
-                match command_rx.try_recv() {
-                    Ok(cmd) => Self::apply_command(cmd, &mut tracks),
-                    Err(_) => break,
-                }
-            }
-
+            // When no tracks are registered, block-wait for the next command
+            // instead of spinning the interval timer.
             if tracks.is_empty() {
-                // No tracks — block-wait for the next command.
                 match command_rx.recv().await {
                     Some(cmd) => {
                         Self::apply_command(cmd, &mut tracks);
@@ -91,28 +89,51 @@ impl AudioMixer {
                 }
             }
 
-            // Mix one frame from all tracks.
+            // Wait for the next 20ms tick.
+            ticker.tick().await;
+
+            // 1. Process any pending commands (non-blocking).
+            loop {
+                match command_rx.try_recv() {
+                    Ok(cmd) => Self::apply_command(cmd, &mut tracks),
+                    Err(_) => break,
+                }
+            }
+
+            // 2. Mix one frame from all tracks.
+            //    For each track, drain all queued frames and keep only the latest
+            //    to avoid accumulating latency.
             let mut mixed = vec![0.0f32; FRAME_SAMPLES];
             let mut active = 0;
             let mut closed_tracks = Vec::new();
 
             for (id, rx) in tracks.iter_mut() {
-                match rx.try_recv() {
-                    Ok(pcm) => {
-                        for (i, sample) in pcm.iter().enumerate() {
-                            if i < mixed.len() {
-                                mixed[i] += sample;
-                            }
+                let mut latest: Option<Vec<f32>> = None;
+
+                // Drain channel — keep only the most recent frame.
+                loop {
+                    match rx.try_recv() {
+                        Ok(pcm) => {
+                            latest = Some(pcm);
                         }
-                        active += 1;
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            if latest.is_none() {
+                                // Producer dropped — mark for removal.
+                                closed_tracks.push(id.clone());
+                            }
+                            break;
+                        }
+                        Err(mpsc::error::TryRecvError::Empty) => break,
                     }
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        // Producer dropped — mark for removal.
-                        closed_tracks.push(id.clone());
+                }
+
+                if let Some(pcm) = latest {
+                    for (i, sample) in pcm.iter().enumerate() {
+                        if i < mixed.len() {
+                            mixed[i] += sample;
+                        }
                     }
-                    Err(mpsc::error::TryRecvError::Empty) => {
-                        // No data this tick — silence contribution.
-                    }
+                    active += 1;
                 }
             }
 
@@ -130,9 +151,6 @@ impl AudioMixer {
                 if output_tx.send(mixed).await.is_err() {
                     break; // playback dropped
                 }
-            } else {
-                // All tracks empty — small sleep to avoid busy-wait.
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         }
 

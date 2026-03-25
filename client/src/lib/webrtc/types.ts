@@ -48,7 +48,7 @@ export type VoiceResult<T> =
 export interface RemoteTrack {
   trackId: string; // Unique track identifier
   userId: string; // Who this track belongs to
-  stream: MediaStream; // Audio stream for playback
+  stream: MediaStream | null; // Audio stream for playback (null in Tauri — audio plays natively)
   muted: boolean; // Remote user's mute state
 }
 
@@ -67,11 +67,11 @@ export interface VoiceAdapterEvents {
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;
   onScreenShareStopped?: (userId: string, streamId: string, reason: string) => void;
-  onScreenShareTrack?: (userId: string, streamId: string, track: MediaStreamTrack) => void;
+  onScreenShareTrack?: (userId: string, streamId: string, track: MediaStreamTrack | null) => void;
   onScreenShareTrackRemoved?: (userId: string, streamId: string) => void;
 
   // Webcam events
-  onWebcamTrack?: (userId: string, track: MediaStreamTrack) => void;
+  onWebcamTrack?: (userId: string, track: MediaStreamTrack | null) => void;
   onWebcamTrackRemoved?: (userId: string) => void;
 }
 

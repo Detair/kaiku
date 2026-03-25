@@ -554,9 +554,17 @@ fn run_pcm_playback_task(
     // Spawn thread to receive PCM frames and push into the ring buffer.
     let playback_buffer_clone = playback_buffer.clone();
     std::thread::spawn(move || {
+        // ~200ms at 48 kHz stereo (48000 * 2 channels * 0.2s)
+        const MAX_BUFFER_SAMPLES: usize = 19200;
+
         while let Some(pcm_f32) = input_rx.blocking_recv() {
             if let Ok(mut buffer) = playback_buffer_clone.lock() {
                 buffer.extend(pcm_f32);
+
+                // Cap buffer to prevent unbounded growth under sustained backpressure.
+                if buffer.len() > MAX_BUFFER_SAMPLES {
+                    buffer.drain(..buffer.len() - MAX_BUFFER_SAMPLES);
+                }
             }
         }
     });

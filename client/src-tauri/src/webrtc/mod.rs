@@ -455,15 +455,9 @@ impl WebRtcClient {
                         return;
                     }
                 };
-                match on_ice_candidate.try_read() {
-                    Ok(callback) => {
-                        if let Some(ref cb) = *callback {
-                            cb(candidate_str);
-                        }
-                    }
-                    Err(_) => {
-                        tracing::warn!("ICE candidate callback lock contended — candidate dropped");
-                    }
+                let callback = on_ice_candidate.read().await;
+                if let Some(ref cb) = *callback {
+                    cb(candidate_str);
                 }
             })
         }));
@@ -486,10 +480,9 @@ impl WebRtcClient {
 
                 *state.write().await = new_state;
 
-                if let Ok(callback) = on_state_change.try_read() {
-                    if let Some(ref cb) = *callback {
-                        cb(new_state);
-                    }
+                let callback = on_state_change.read().await;
+                if let Some(ref cb) = *callback {
+                    cb(new_state);
                 }
 
                 info!("Peer connection state changed: {:?}", s);
@@ -508,10 +501,9 @@ impl WebRtcClient {
                         track.codec().capability.mime_type
                     );
 
-                    if let Ok(callback) = on_remote_track.try_read() {
-                        if let Some(ref cb) = *callback {
-                            cb(track);
-                        }
+                    let callback = on_remote_track.read().await;
+                    if let Some(ref cb) = *callback {
+                        cb(track);
                     }
                 })
             },
@@ -545,30 +537,21 @@ impl WebRtcClient {
                         return;
                     }
                 };
-                match on_ice_candidate.try_read() {
-                    Ok(callback) => {
-                        if let Some(ref cb) = *callback {
-                            cb(candidate_str);
-                        }
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "Subscriber ICE candidate callback lock contended — candidate dropped"
-                        );
-                    }
+                let callback = on_ice_candidate.read().await;
+                if let Some(ref cb) = *callback {
+                    cb(candidate_str);
                 }
             })
         }));
 
         // Connection state change handler for subscriber
-        let state = self.state.clone();
         pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            let state = state.clone();
             Box::pin(async move {
-                // Only log subscriber state changes — don't overwrite the main connection state
-                // unless the subscriber fails (which indicates a real problem)
+                // Only log subscriber state changes — publisher state is the primary indicator.
+                // Writing to shared state here would be misleading since the publisher PC
+                // may still be healthy.
                 if s == RTCPeerConnectionState::Failed {
-                    *state.write().await = ConnectionState::Failed;
+                    tracing::warn!("Subscriber PeerConnection failed — remote audio/video may be unavailable");
                 }
                 info!("Subscriber peer connection state changed: {:?}", s);
             })
@@ -586,10 +569,9 @@ impl WebRtcClient {
                         track.codec().capability.mime_type
                     );
 
-                    if let Ok(callback) = on_subscriber_track.try_read() {
-                        if let Some(ref cb) = *callback {
-                            cb(track, receiver);
-                        }
+                    let callback = on_subscriber_track.read().await;
+                    if let Some(ref cb) = *callback {
+                        cb(track, receiver);
                     }
                 })
             },

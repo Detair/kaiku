@@ -195,10 +195,22 @@ pub async fn join_voice(
                         "default".to_string()
                     };
 
-                // Check stream cap — emit metadata only if at capacity
-                if count.load(Ordering::Relaxed)
-                    >= voice::video_decoder::MAX_VIDEO_STREAMS
-                {
+                // Atomic check-and-increment to avoid TOCTOU race between
+                // load() and fetch_add() when multiple tracks arrive concurrently.
+                let was_under_cap = count.fetch_update(
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                    |c| {
+                        if c < voice::video_decoder::MAX_VIDEO_STREAMS {
+                            Some(c + 1)
+                        } else {
+                            None
+                        }
+                    },
+                );
+
+                if was_under_cap.is_err() {
+                    // Cap reached — emit metadata only so the UI knows the track exists.
                     info!(
                         user_id = %user_id,
                         source_type = %source_type,
@@ -217,11 +229,23 @@ pub async fn join_voice(
                             source_type,
                         },
                     );
+
+                    // Drain track to prevent webrtc-rs backpressure
+                    let drain_track = track.clone();
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 4096];
+                        loop {
+                            match drain_track.read(&mut buf).await {
+                                Ok(_) => {} // discard
+                                Err(_) => break,
+                            }
+                        }
+                    });
+
                     return;
                 }
 
-                count.fetch_add(1, Ordering::Relaxed);
-
+                // Count already incremented by fetch_update — proceed with decode.
                 let handle = voice::video_decoder::spawn_video_decode_task(
                     track.clone(),
                     user_id,
