@@ -78,6 +78,31 @@ pub async fn join_voice(
         })
         .await;
 
+    // Set up ICE candidate callback to send candidates to server (subscriber PC)
+    let ws = state.websocket.clone();
+    let channel_id_clone = channel_id.clone();
+    voice_state
+        .webrtc
+        .set_on_subscriber_ice_candidate(move |candidate| {
+            let ws = ws.clone();
+            let channel_id = channel_id_clone.clone();
+            tokio::spawn(async move {
+                if let Some(ws_manager) = ws.read().await.as_ref() {
+                    if let Err(e) = ws_manager
+                        .send(ClientEvent::VoiceIceCandidate {
+                            channel_id,
+                            candidate,
+                            pc_type: PcType::Subscriber,
+                        })
+                        .await
+                    {
+                        error!("Failed to send subscriber ICE candidate: {}", e);
+                    }
+                }
+            });
+        })
+        .await;
+
     // Set up state change callback
     let app_clone = app.clone();
     voice_state
@@ -200,20 +225,28 @@ pub async fn handle_voice_publisher_answer(
 /// Called when frontend receives `ws:voice_subscriber_offer` event.
 /// Creates an answer and sends it back to the server.
 #[command]
-#[allow(unused_variables)]
 pub async fn handle_voice_subscriber_offer(
     channel_id: String,
     sdp: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    // TODO(dual-pc): Tauri client uses a single PeerConnection. Applying a
-    // subscriber offer to the publisher PC would corrupt its SDP state.
-    // Ignore subscriber offers until Tauri gets its own dual-PC implementation.
-    warn!(
-        channel_id = %channel_id,
-        "Tauri client does not support dual-PC subscriber offers yet — ignoring"
-    );
-    Ok(())
+) -> Result<String, String> {
+    info!(channel_id = %channel_id, "Handling subscriber offer");
+
+    let voice_guard = state.voice.read().await;
+    let voice = voice_guard.as_ref().ok_or("Not in voice")?;
+
+    if voice.channel_id.as_deref() != Some(&channel_id) {
+        return Err("Wrong channel".to_string());
+    }
+
+    let answer_sdp = voice
+        .webrtc
+        .handle_subscriber_offer(&sdp)
+        .await
+        .map_err(|e| format!("Subscriber offer failed: {e}"))?;
+
+    info!(channel_id = %channel_id, "Subscriber offer handled, answer sent");
+    Ok(answer_sdp)
 }
 
 /// Handle ICE candidate from server.
@@ -241,9 +274,12 @@ pub async fn handle_voice_ice_candidate(
         ));
     }
 
-    // TODO(dual-pc): Tauri uses a single PC — only handle publisher candidates.
     if pc_type == "subscriber" {
-        warn!(channel_id = %channel_id, "Tauri client ignoring subscriber ICE candidate");
+        voice_state
+            .webrtc
+            .add_subscriber_ice_candidate(&candidate)
+            .await
+            .map_err(|e| format!("Subscriber ICE failed: {e}"))?;
         return Ok(());
     }
 
