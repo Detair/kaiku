@@ -442,6 +442,9 @@ export async function joinVoice(channelId: string): Promise<void> {
         setVoiceState({ error });
       },
       onRemoteTrack: (remoteTrack) => {
+        // Tauri mode — audio plays natively via CPAL, no browser Audio needed
+        if (!remoteTrack.stream) return;
+
         console.log("[Voice] Remote audio track received:", remoteTrack.userId);
         // Create an audio element to play the remote user's audio
         const audio = new Audio();
