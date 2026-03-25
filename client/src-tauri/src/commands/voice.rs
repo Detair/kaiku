@@ -2,7 +2,7 @@
 //!
 //! Tauri commands for voice chat functionality.
 
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tauri::{command, AppHandle, Emitter, State};
@@ -11,11 +11,14 @@ use tracing::{debug, error, info, warn};
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::track::track_remote::TrackRemote;
 
 use vc_common::protocol::PcType;
 
-use crate::audio::{AudioDeviceList, FRAME_SIZE_MS, SAMPLE_RATE};
+use crate::audio::{AudioDeviceList, CHANNELS, FRAME_SIZE, FRAME_SIZE_MS, SAMPLE_RATE};
 use crate::network::ClientEvent;
+use crate::voice;
+use crate::voice::audio_mixer::AudioMixer;
 use crate::webrtc::IceServerConfig;
 use crate::AppState;
 
@@ -78,6 +81,31 @@ pub async fn join_voice(
         })
         .await;
 
+    // Set up ICE candidate callback to send candidates to server (subscriber PC)
+    let ws = state.websocket.clone();
+    let channel_id_clone = channel_id.clone();
+    voice_state
+        .webrtc
+        .set_on_subscriber_ice_candidate(move |candidate| {
+            let ws = ws.clone();
+            let channel_id = channel_id_clone.clone();
+            tokio::spawn(async move {
+                if let Some(ws_manager) = ws.read().await.as_ref() {
+                    if let Err(e) = ws_manager
+                        .send(ClientEvent::VoiceIceCandidate {
+                            channel_id,
+                            candidate,
+                            pc_type: PcType::Subscriber,
+                        })
+                        .await
+                    {
+                        error!("Failed to send subscriber ICE candidate: {}", e);
+                    }
+                }
+            });
+        })
+        .await;
+
     // Set up state change callback
     let app_clone = app.clone();
     voice_state
@@ -88,13 +116,132 @@ pub async fn join_voice(
         })
         .await;
 
-    // Set up remote track callback for audio playback
+    // Set up subscriber track callback — fires when the SFU delivers a remote track
     let app_clone = app.clone();
+    let voice_arc = state.voice.clone();
+    let active_video_count = voice_state.active_video_count.clone();
+    let video_tasks = voice_state.video_tasks.clone();
     voice_state
         .webrtc
-        .set_on_remote_track(move |track| {
-            info!("Remote audio track received: {}", track.kind());
-            let _ = app_clone.emit("voice:remote_track", track.kind().to_string());
+        .set_on_subscriber_track(move |track, _receiver| {
+            let stream = track.stream_id();
+            let (user_id, source_type) = voice::subscriber::parse_stream_id(&stream);
+
+            if voice::subscriber::is_audio_track(&source_type) {
+                let track = track.clone();
+                let app = app_clone.clone();
+                let voice_arc = voice_arc.clone();
+                let track_id = format!("{}:{}", user_id, source_type);
+
+                tokio::spawn(async move {
+                    // Get the mixer from voice state
+                    let mixer = {
+                        let voice_guard = voice_arc.read().await;
+                        voice_guard
+                            .as_ref()
+                            .and_then(|v| v.audio_mixer.clone())
+                    };
+
+                    let Some(mixer) = mixer else {
+                        warn!(
+                            track_id = %track_id,
+                            "Audio mixer not ready, dropping remote audio track"
+                        );
+                        return;
+                    };
+
+                    // Add track to mixer, get PCM sender
+                    let pcm_tx = mixer.add_track(track_id.clone()).await;
+
+                    info!(
+                        track_id = %track_id,
+                        user_id = %user_id,
+                        "Remote audio track added to mixer"
+                    );
+
+                    // Emit track added event to frontend
+                    let _ = app.emit(
+                        "voice:remote_track",
+                        serde_json::json!({
+                            "user_id": user_id,
+                            "source_type": source_type,
+                        }),
+                    );
+
+                    // Decode RTP → Opus → PCM loop
+                    decode_remote_audio_track(track, pcm_tx).await;
+
+                    // Track ended — remove from mixer
+                    mixer.remove_track(track_id.clone()).await;
+                    info!(track_id = %track_id, "Remote audio track ended");
+
+                    let _ = app.emit(
+                        "voice:remote_track_removed",
+                        serde_json::json!({
+                            "user_id": user_id,
+                            "source_type": source_type,
+                        }),
+                    );
+                });
+            } else if voice::subscriber::is_video_track(&source_type) {
+                let count = active_video_count.clone();
+
+                // Extract stream_id from source_type for screen shares
+                // Format: "screen_video:uuid" → stream_id = "uuid"
+                let extracted_stream_id =
+                    if let Some(rest) = source_type.strip_prefix("screen_video:") {
+                        rest.to_string()
+                    } else {
+                        "default".to_string()
+                    };
+
+                // Check stream cap — emit metadata only if at capacity
+                if count.load(Ordering::Relaxed)
+                    >= voice::video_decoder::MAX_VIDEO_STREAMS
+                {
+                    info!(
+                        user_id = %user_id,
+                        source_type = %source_type,
+                        "Video stream cap reached, metadata only"
+                    );
+                    let event_name = if source_type.starts_with("screen_video") {
+                        "voice:screen_share_track"
+                    } else {
+                        "voice:webcam_track"
+                    };
+                    let _ = app_clone.emit(
+                        event_name,
+                        voice::video_decoder::VideoTrackEvent {
+                            user_id,
+                            stream_id: extracted_stream_id,
+                            source_type,
+                        },
+                    );
+                    return;
+                }
+
+                count.fetch_add(1, Ordering::Relaxed);
+
+                let handle = voice::video_decoder::spawn_video_decode_task(
+                    track.clone(),
+                    user_id,
+                    source_type,
+                    extracted_stream_id,
+                    app_clone.clone(),
+                    count,
+                );
+
+                // Store handle for cleanup on leave_voice
+                let tasks = video_tasks.clone();
+                tokio::spawn(async move {
+                    tasks.lock().await.push(handle);
+                });
+            } else {
+                warn!(
+                    stream_id = %stream,
+                    "Unknown track source type"
+                );
+            }
         })
         .await;
 
@@ -171,11 +318,15 @@ pub async fn handle_voice_publisher_answer(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Start audio playback
-    let (_playback_tx, playback_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+    // Create audio mixer and start PCM playback from its output.
+    // The mixer combines all decoded remote audio tracks into one stream.
+    let (pcm_output_tx, pcm_output_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(100);
+    let mixer = AudioMixer::new(pcm_output_tx);
+    voice_state.audio_mixer = Some(mixer);
+
     voice_state
         .audio
-        .start_playback(playback_rx)
+        .start_pcm_playback(pcm_output_rx)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -200,20 +351,28 @@ pub async fn handle_voice_publisher_answer(
 /// Called when frontend receives `ws:voice_subscriber_offer` event.
 /// Creates an answer and sends it back to the server.
 #[command]
-#[allow(unused_variables)]
 pub async fn handle_voice_subscriber_offer(
     channel_id: String,
     sdp: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    // TODO(dual-pc): Tauri client uses a single PeerConnection. Applying a
-    // subscriber offer to the publisher PC would corrupt its SDP state.
-    // Ignore subscriber offers until Tauri gets its own dual-PC implementation.
-    warn!(
-        channel_id = %channel_id,
-        "Tauri client does not support dual-PC subscriber offers yet — ignoring"
-    );
-    Ok(())
+) -> Result<String, String> {
+    info!(channel_id = %channel_id, "Handling subscriber offer");
+
+    let voice_guard = state.voice.read().await;
+    let voice = voice_guard.as_ref().ok_or("Not in voice")?;
+
+    if voice.channel_id.as_deref() != Some(&channel_id) {
+        return Err("Wrong channel".to_string());
+    }
+
+    let answer_sdp = voice
+        .webrtc
+        .handle_subscriber_offer(&sdp)
+        .await
+        .map_err(|e| format!("Subscriber offer failed: {e}"))?;
+
+    info!(channel_id = %channel_id, "Subscriber offer handled, answer sent");
+    Ok(answer_sdp)
 }
 
 /// Handle ICE candidate from server.
@@ -241,9 +400,12 @@ pub async fn handle_voice_ice_candidate(
         ));
     }
 
-    // TODO(dual-pc): Tauri uses a single PC — only handle publisher candidates.
     if pc_type == "subscriber" {
-        warn!(channel_id = %channel_id, "Tauri client ignoring subscriber ICE candidate");
+        voice_state
+            .webrtc
+            .add_subscriber_ice_candidate(&candidate)
+            .await
+            .map_err(|e| format!("Subscriber ICE failed: {e}"))?;
         return Ok(());
     }
 
@@ -285,9 +447,24 @@ pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
         pipeline.shutdown().await;
     }
 
-    // Stop audio
+    // Stop all video decode tasks
+    {
+        let mut tasks = voice_state.video_tasks.lock().await;
+        if !tasks.is_empty() {
+            info!(count = tasks.len(), "Aborting video decode tasks on voice leave");
+            for handle in tasks.drain(..) {
+                handle.abort();
+            }
+        }
+        voice_state
+            .active_video_count
+            .store(0, Ordering::Relaxed);
+    }
+
+    // Stop audio and drop mixer
     voice_state.audio.stop_all().await;
     voice_state.audio_tx = None;
+    voice_state.audio_mixer = None;
 
     // Disconnect WebRTC
     voice_state
@@ -529,4 +706,51 @@ async fn send_audio_to_track(
     }
 
     info!("RTP audio sender task ended");
+}
+
+/// Decode a remote audio track from RTP/Opus to PCM and send to the mixer.
+///
+/// Runs in a spawned task per remote audio track. Each task owns its own
+/// Opus decoder instance (`opus::Decoder` is `Send` but not `Sync`).
+async fn decode_remote_audio_track(track: Arc<TrackRemote>, pcm_tx: mpsc::Sender<Vec<f32>>) {
+    let mut decoder = match opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo) {
+        Ok(dec) => dec,
+        Err(e) => {
+            error!("Failed to create Opus decoder for remote track: {}", e);
+            return;
+        }
+    };
+
+    // Output buffer: one stereo frame at 48 kHz / 20 ms = 960 samples * 2 channels
+    let frame_samples = FRAME_SIZE * CHANNELS as usize;
+    let mut pcm_f32 = vec![0.0f32; frame_samples];
+
+    loop {
+        match track.read_rtp().await {
+            Ok((rtp_packet, _attributes)) => {
+                let payload = &rtp_packet.payload[..];
+                if payload.is_empty() {
+                    continue;
+                }
+
+                match decoder.decode_float(payload, &mut pcm_f32, false) {
+                    Ok(samples_per_channel) => {
+                        let total_samples = samples_per_channel * CHANNELS as usize;
+                        let frame = pcm_f32[..total_samples].to_vec();
+                        if pcm_tx.send(frame).await.is_err() {
+                            debug!("Mixer channel closed, stopping remote audio decode");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Opus decode error on remote track: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                info!("Remote audio track read ended: {}", e);
+                break;
+            }
+        }
+    }
 }

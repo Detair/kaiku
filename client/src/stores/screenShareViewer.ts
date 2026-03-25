@@ -24,7 +24,7 @@ export interface PipPosition {
 
 /** Info about an available screen share track */
 export interface AvailableTrackInfo {
-  track: MediaStreamTrack;
+  track: MediaStreamTrack | null; // null in Tauri mode — video renders via canvas frames
   userId: string;
   username: string;
   sourceLabel: string;
@@ -79,15 +79,17 @@ const [viewerState, setViewerState] = createStore<ScreenShareViewerState>({
  */
 export function addAvailableTrack(
   streamId: string,
-  track: MediaStreamTrack,
+  track: MediaStreamTrack | null,
   userId: string,
   username: string,
   sourceLabel: string,
 ): void {
-  // Auto-cleanup when track ends
-  track.onended = () => {
-    removeAvailableTrack(streamId);
-  };
+  // Auto-cleanup when track ends (only for browser MediaStreamTrack)
+  if (track) {
+    track.onended = () => {
+      removeAvailableTrack(streamId);
+    };
+  }
 
   const newTracks = new Map(viewerState.availableTracks);
   newTracks.set(streamId, { track, userId, username, sourceLabel });
@@ -154,8 +156,8 @@ export function startViewing(streamId: string, retries = 0): void {
     return;
   }
 
-  // Check if track is still active
-  if (info.track.readyState === "ended") {
+  // Check if track is still active (only for browser MediaStreamTrack)
+  if (info.track && info.track.readyState === "ended") {
     console.warn(
       "[ScreenShareViewer] Track has ended for stream:",
       streamId,
@@ -250,7 +252,7 @@ export function swapPrimary(streamId: string): void {
     return;
   }
 
-  if (info.track.readyState === "ended") {
+  if (info.track && info.track.readyState === "ended") {
     console.warn(
       "[ScreenShareViewer] Track has ended for stream:",
       streamId,

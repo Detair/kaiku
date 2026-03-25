@@ -196,7 +196,7 @@ impl AudioHandle {
         }
     }
 
-    /// Start audio playback in a background task
+    /// Start audio playback in a background task (Opus-encoded input).
     pub async fn start_playback(
         &mut self,
         input_rx: mpsc::Receiver<Vec<u8>>,
@@ -217,6 +217,33 @@ impl AudioHandle {
         });
 
         info!("Audio playback started");
+        Ok(())
+    }
+
+    /// Start PCM playback from already-decoded f32 samples (used by the audio mixer).
+    ///
+    /// Unlike `start_playback`, this skips Opus decoding — the mixer has already
+    /// decoded each track individually before mixing.
+    pub async fn start_pcm_playback(
+        &mut self,
+        input_rx: mpsc::Receiver<Vec<f32>>,
+    ) -> Result<(), AudioError> {
+        // Stop existing playback if running
+        self.stop_playback().await;
+
+        let device = self.get_device(self.output_device_name.as_deref(), false)?;
+        let deafened = self.deafened.clone();
+
+        // Create control channel
+        let (control_tx, mut control_rx) = mpsc::channel::<PlaybackControl>(1);
+        self.playback_control = Some(control_tx);
+
+        // Spawn PCM playback task that owns the Stream
+        tokio::task::spawn_blocking(move || {
+            run_pcm_playback_task(device, deafened, input_rx, &mut control_rx);
+        });
+
+        info!("PCM playback started (mixer output)");
         Ok(())
     }
 
@@ -501,6 +528,90 @@ fn run_playback_task(
 
     drop(stream);
     info!("Playback task stopped");
+}
+
+/// Run PCM playback task — receives pre-decoded f32 samples from the mixer.
+///
+/// Structurally identical to `run_playback_task` but skips Opus decoding since
+/// the audio mixer already produces mixed f32 PCM.
+fn run_pcm_playback_task(
+    device: Device,
+    deafened: Arc<AtomicBool>,
+    mut input_rx: mpsc::Receiver<Vec<f32>>,
+    control_rx: &mut mpsc::Receiver<PlaybackControl>,
+) {
+    use cpal::traits::StreamTrait;
+    use cpal::{BufferSize, StreamConfig};
+
+    let config = StreamConfig {
+        channels: CHANNELS,
+        sample_rate: SAMPLE_RATE,
+        buffer_size: BufferSize::Default,
+    };
+
+    let playback_buffer = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+
+    // Spawn thread to receive PCM frames and push into the ring buffer.
+    let playback_buffer_clone = playback_buffer.clone();
+    std::thread::spawn(move || {
+        while let Some(pcm_f32) = input_rx.blocking_recv() {
+            if let Ok(mut buffer) = playback_buffer_clone.lock() {
+                buffer.extend(pcm_f32);
+            }
+        }
+    });
+
+    let playback_buffer_clone2 = playback_buffer;
+    let deafened_clone = deafened;
+
+    let stream = match device.build_output_stream(
+        &config,
+        move |data: &mut [f32], _| {
+            if deafened_clone.load(Ordering::Relaxed) {
+                data.fill(0.0);
+                return;
+            }
+
+            if let Ok(mut buffer) = playback_buffer_clone2.lock() {
+                let available = buffer.len().min(data.len());
+                #[allow(clippy::needless_range_loop)]
+                for i in 0..available {
+                    data[i] = buffer.pop_front().unwrap();
+                }
+                #[allow(clippy::needless_range_loop)]
+                for i in available..data.len() {
+                    data[i] = 0.0;
+                }
+            } else {
+                data.fill(0.0);
+            }
+        },
+        |err| {
+            error!("PCM playback stream error: {}", err);
+        },
+        None,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to build PCM playback stream: {}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = stream.play() {
+        error!("Failed to start PCM playback stream: {}", e);
+        return;
+    }
+
+    // Block until stop signal
+    while let Some(msg) = control_rx.blocking_recv() {
+        match msg {
+            PlaybackControl::Stop => break,
+        }
+    }
+
+    drop(stream);
+    info!("PCM playback task stopped");
 }
 
 /// Run microphone test task (owns the Stream)

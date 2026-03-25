@@ -676,7 +676,7 @@ const ThumbnailStrip: Component = () => {
                     const info = viewerState.availableTracks.get(
                       sharer.streamId,
                     );
-                    if (info && el) {
+                    if (info?.track && el) {
                       const stream = new MediaStream([info.track]);
                       el.srcObject = stream;
                     }
@@ -740,7 +740,7 @@ const GridView: Component<{
           s,
         ): s is {
           streamId: string;
-          track: MediaStreamTrack;
+          track: MediaStreamTrack | null;
           userId: string;
           username: string;
           sourceLabel: string;
@@ -796,7 +796,7 @@ const GridView: Component<{
               >
                 <video
                   ref={(el) => {
-                    if (stream && el) {
+                    if (stream?.track && el) {
                       const mediaStream = new MediaStream([stream.track]);
                       el.srcObject = mediaStream;
                     }

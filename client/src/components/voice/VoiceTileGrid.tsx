@@ -153,6 +153,11 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
       return;
     }
 
+    if (!trackInfo.track) {
+      console.warn("[VoiceTileGrid] No browser track for pop-out (Tauri mode):", streamId);
+      return;
+    }
+
     const label = `${trackInfo.username} — Screen Share`;
     popOut(streamId, trackInfo.track, label, () => {
       // onClose callback — stream brought back inline when pop-out window closes

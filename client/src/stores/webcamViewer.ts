@@ -8,8 +8,8 @@ import { createStore } from "solid-js/store";
 
 /** Webcam viewer state */
 interface WebcamViewerState {
-  /** Available webcam tracks by user ID */
-  availableTracks: Map<string, MediaStreamTrack>;
+  /** Available webcam tracks by user ID (null track in Tauri mode — video renders via canvas frames) */
+  availableTracks: Map<string, MediaStreamTrack | null>;
 }
 
 const [viewerState, setViewerState] = createStore<WebcamViewerState>({
@@ -22,7 +22,7 @@ const [viewerState, setViewerState] = createStore<WebcamViewerState>({
  */
 export function addAvailableTrack(
   userId: string,
-  track: MediaStreamTrack,
+  track: MediaStreamTrack | null,
 ): void {
   console.log("[WebcamViewer] Track available:", userId);
 
@@ -47,7 +47,7 @@ export function removeAvailableTrack(userId: string): void {
 /**
  * Get the webcam track for a specific user.
  */
-export function getTrack(userId: string): MediaStreamTrack | undefined {
+export function getTrack(userId: string): MediaStreamTrack | null | undefined {
   return viewerState.availableTracks.get(userId);
 }
 

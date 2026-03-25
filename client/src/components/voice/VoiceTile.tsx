@@ -9,6 +9,9 @@ import { Component, Show, createEffect, onCleanup } from "solid-js";
 import { MicOff, Monitor, ExternalLink, Undo2, MonitorOff } from "lucide-solid";
 import { getTrack as getWebcamTrack } from "@/stores/webcamViewer";
 import { viewerState as screenShareViewerState } from "@/stores/screenShareViewer";
+import TauriVideoFrame from "./TauriVideoFrame";
+
+const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,7 +56,11 @@ const ParticipantTile: Component<{
   let videoRef: HTMLVideoElement | undefined;
 
   const track = () => getWebcamTrack(props.tile.userId);
-  const hasVideo = () => !!track();
+  /** Browser mode: real MediaStreamTrack available */
+  const hasBrowserVideo = () => !!track();
+  /** Tauri mode: webcam entry registered (track is null, video renders via canvas frames) */
+  const hasTauriVideo = () => isTauri && track() === null;
+  const hasVideo = () => hasBrowserVideo() || hasTauriVideo();
 
   createEffect(() => {
     if (!videoRef) return;
@@ -82,13 +89,22 @@ const ParticipantTile: Component<{
     <>
       {/* Webcam video (fills tile) */}
       <Show when={hasVideo()}>
-        <video
-          ref={videoRef}
-          autoplay
-          playsinline
-          muted
-          class="absolute inset-0 w-full h-full object-cover"
-        />
+        <Show
+          when={!isTauri}
+          fallback={
+            <div class="absolute inset-0">
+              <TauriVideoFrame userId={props.tile.userId} streamId="webcam" />
+            </div>
+          }
+        >
+          <video
+            ref={videoRef}
+            autoplay
+            playsinline
+            muted
+            class="absolute inset-0 w-full h-full object-cover"
+          />
+        </Show>
         {/* Name overlay at bottom with gradient */}
         <div class="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
           <span
@@ -148,11 +164,13 @@ const ScreenShareTile: Component<{
   const trackInfo = () =>
     screenShareViewerState.availableTracks.get(props.tile.streamId);
   const hasTrack = () => !!trackInfo();
+  /** Browser mode: real MediaStreamTrack available */
+  const hasBrowserTrack = () => !!trackInfo()?.track;
 
   // Attach stream when video element mounts (including after bring-back remount)
   const attachStream = (el: HTMLVideoElement) => {
     const info = trackInfo();
-    if (info) {
+    if (info?.track) {
       el.srcObject = new MediaStream([info.track]);
     }
     onCleanup(() => { el.srcObject = null; });
@@ -195,13 +213,23 @@ const ScreenShareTile: Component<{
             </div>
           }
         >
-          <video
-            ref={attachStream}
-            autoplay
-            playsinline
-            muted
-            class="absolute inset-0 w-full h-full object-contain bg-black"
-          />
+          <Show
+            when={hasBrowserTrack()}
+            fallback={
+              /* Tauri mode: render canvas-based video frame receiver */
+              <div class="absolute inset-0">
+                <TauriVideoFrame userId={trackInfo()!.userId} streamId={props.tile.streamId} />
+              </div>
+            }
+          >
+            <video
+              ref={attachStream}
+              autoplay
+              playsinline
+              muted
+              class="absolute inset-0 w-full h-full object-contain bg-black"
+            />
+          </Show>
         </Show>
       </Show>
 
