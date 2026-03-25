@@ -476,7 +476,9 @@ const MessageList: Component<MessageListProps> = (props) => {
         } else {
           requestAnimationFrame(() => {
             scrollToBottom(true);
-            scheduleMarkAsRead();
+            if (isChannelUnread(props.channelId)) {
+              scheduleMarkAsRead();
+            }
           });
         }
       }

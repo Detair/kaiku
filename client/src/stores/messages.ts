@@ -256,9 +256,8 @@ export async function loadMessagesAround(channelId: string, aroundMessageId: str
   try {
     const response = await tauri.getMessages(channelId, undefined, MESSAGE_LIMIT, aroundMessageId);
     const decryptedMessages = await decryptMessages(response.items);
-    // Around-mode returns messages in newest-first order; reverse to oldest-first
-    const reversed = [...decryptedMessages].reverse();
-    setMessagesState("byChannel", channelId, reversed);
+    // Around-mode returns messages in ASC order (oldest-first) from server
+    setMessagesState("byChannel", channelId, decryptedMessages);
     setMessagesState("hasMore", channelId, response.has_more);
     setMessagesState("loadingChannels", channelId, false);
   } catch (err) {

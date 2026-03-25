@@ -1662,11 +1662,11 @@ export async function joinDiscoverable(
 /**
  * Mark a guild channel as read.
  * @param channelId - Channel ID to mark as read
- * @param lastReadMessageId - Optional ID of the last read message
+ * @param lastReadMessageId - ID of the last read message
  */
 export async function markChannelAsRead(
   channelId: string,
-  lastReadMessageId?: string,
+  lastReadMessageId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2408,7 +2408,7 @@ export async function getDMList(): Promise<DMListItem[]> {
 
 export async function markDMAsRead(
   channelId: string,
-  lastReadMessageId?: string,
+  lastReadMessageId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
