@@ -32,6 +32,10 @@ vi.mock("@/stores/drafts", () => ({
   cleanupDrafts: vi.fn(),
 }));
 
+vi.mock("@/components/ui/Toast", () => ({
+  showToast: vi.fn(),
+}));
+
 import * as tauri from "@/lib/tauri";
 import {
   initWebSocket,
@@ -47,6 +51,7 @@ import {
 } from "@/stores/presence";
 import { initPreferences } from "@/stores/preferences";
 import { clearAllDrafts, cleanupDrafts } from "@/stores/drafts";
+import { showToast } from "@/components/ui/Toast";
 import type { User } from "@/lib/types";
 import {
   authState,
@@ -127,7 +132,7 @@ describe("auth store", () => {
   describe("initAuth", () => {
     it("restores session and inits subsystems", async () => {
       const user = createUser();
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue(user);
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user, error_reason: null });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
@@ -145,7 +150,7 @@ describe("auth store", () => {
     });
 
     it("handles no session gracefully", async () => {
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue(null);
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: null, error_reason: null });
 
       await initAuth();
 
@@ -156,7 +161,7 @@ describe("auth store", () => {
     });
 
     it("sets error on WS failure but completes", async () => {
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue(createUser());
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockRejectedValue(new Error("WS fail"));
@@ -179,7 +184,7 @@ describe("auth store", () => {
     });
 
     it("continues if preferences init fails", async () => {
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue(createUser());
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
@@ -201,6 +206,40 @@ describe("auth store", () => {
       expect(authState.user).toBeNull();
       expect(authState.isInitialized).toBe(true);
       expect(authState.error).toBeNull(); // Don't show error for session restoration
+    });
+
+    it("shows session expired toast when error_reason is session_expired", async () => {
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: null,
+        error_reason: "session_expired",
+      });
+
+      await initAuth();
+
+      expect(authState.user).toBeNull();
+      expect(authState.isInitialized).toBe(true);
+      expect(showToast).toHaveBeenCalledWith({
+        type: "warning",
+        title: "Session Expired",
+        message: "Please log in again.",
+      });
+    });
+
+    it("shows network error toast when error_reason is network_error", async () => {
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: null,
+        error_reason: "network_error",
+      });
+
+      await initAuth();
+
+      expect(authState.user).toBeNull();
+      expect(authState.isInitialized).toBe(true);
+      expect(showToast).toHaveBeenCalledWith({
+        type: "error",
+        title: "Connection Failed",
+        message: "Could not connect to server.",
+      });
     });
   });
 
@@ -297,7 +336,7 @@ describe("auth store", () => {
     it("completes OIDC login", async () => {
       const user = createUser();
       vi.mocked(tauri.oidcCompleteLogin).mockResolvedValue(undefined);
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue(user);
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user, error_reason: null });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
@@ -310,7 +349,7 @@ describe("auth store", () => {
 
     it("throws if getCurrentUser returns null", async () => {
       vi.mocked(tauri.oidcCompleteLogin).mockResolvedValue(undefined);
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue(null);
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: null, error_reason: null });
 
       await expect(
         loginWithOidc("https://server.com", "token", "refresh", 3600),
