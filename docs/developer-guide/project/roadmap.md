@@ -4,7 +4,7 @@ This roadmap outlines the development path from the current prototype to a produ
 
 **Current Phase:** Phase 6 (Competitive Differentiators & Mastery) - In Progress
 
-**Last Updated:** 2026-03-14
+**Last Updated:** 2026-03-25
 
 ## Quick Status Overview
 
@@ -16,7 +16,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
 | **Expansion** | **Phase 5** | ✅ Complete | 100% (17/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
-| **Expansion** | **Phase 6** | 🔄 In Progress | 95% (18/19) | Personal workspaces, digital library, focus engine, custom status, session management, QA polish (edit messages, emoji composer, session expiry, shortcuts, formatting, friends empty state), multi-stream screen sharing, guild bans, channel search & guild discovery prompt, PTT/PTM hotkeys, channel pins, simulcast. Remaining: mobile |
+| **Expansion** | **Phase 6** | 🔄 In Progress | 96% (19/20) | Personal workspaces, digital library, focus engine, custom status, session management, QA polish, multi-stream screen sharing, guild bans, PTT/PTM, channel pins, simulcast, desktop session persistence, dual-PC voice, unread tracking redesign, VAD noise gate. Remaining: mobile, desktop parity items (VP8 decode, VAD gating, metrics) |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing, live session toolkits |
 | **Scale and Trust** | **Phase 10** | 📋 Planned | 0% | SaaS scaling architecture |
@@ -631,6 +631,42 @@ This section is the canonical high-level roadmap view. Detailed implementation c
   - Up to 3 simultaneous screen shares per user and 6 per channel (configurable), with stream-specific start/stop, viewer UI with focus mode + thumbnail strip, 2x2 grid mode, keyboard shortcuts (G for grid, F for focus), and full Tauri + browser parity.
 - [x] **[Auth] Guild Bans** ✅ (PR #317, #272)
   - Per-guild ban enforcement via `guild_bans` table; banned users blocked from joining via discovery or invite codes, with support for temporary bans via `expires_at`.
+
+### Desktop Client Parity (Identified 2026-03-25)
+*Items identified during comprehensive audit of Tauri vs browser client feature gaps.*
+
+- [x] **[Client] Desktop Session Persistence** ✅ (PR #490)
+  - OS keyring-based session restore (refresh token + server URL). Silent restore on success, toast on expired/network error. `SessionRestoreResult` return type.
+  - **Spec:** `docs/superpowers/specs/2026-03-25-desktop-session-persistence-design.md`
+- [x] **[Voice] Dual-PeerConnection Voice** ✅ (PR #491, #492)
+  - Subscriber PC in Rust WebRTC backend. Remote audio: Opus decode per track → multi-user PCM mixer → CPAL playback. Video: decoder stub with track lifecycle events. Mixer pacing (20ms interval), buffer cap, callback safety fixes.
+  - **Spec:** `docs/superpowers/specs/2026-03-25-tauri-dual-pc-voice-design.md`
+- [ ] **[Voice] VP8 Video Decoding** `Priority: High`
+  - Current stub reads RTP packets but does not decode VP8 frames. Needs: libvpx integration, VP8 depacketization, JPEG encoding, frame emission via Tauri events. TauriVideoFrame canvas component is ready to render. `client/src-tauri/src/voice/video_decoder.rs` has documented TODO steps.
+- [ ] **[Voice] VAD Gating in Tauri** `Priority: High`
+  - Browser adapter has full VAD (AnalyserNode, 300ms hold-open, PTT priority, cloned monitor track). Tauri adapter's `setVadConfig` is a no-op — UI toggle misleads desktop users. Needs: Rust-side audio level monitoring in capture pipeline + track gating.
+- [ ] **[Voice] Local Speaking Indicator** `Priority: Medium`
+  - `onSpeakingChange` never emitted from Tauri adapter. Rust capture pipeline should emit `voice:speaking` event based on audio level monitoring. Local user's speaking ring never animates on desktop.
+- [ ] **[Voice] Connection Metrics** `Priority: Medium`
+  - `getConnectionMetrics()` always returns null on desktop. Needs Tauri command to fetch RTCStatsReport equivalent from webrtc-rs PeerConnections (latency, packet loss, jitter).
+- [ ] **[Voice] Output Device Selection** `Priority: Low`
+  - `setOutputDevice()` Tauri command exists but implementation is unclear/untested. Needs verification and potential CPAL integration.
+- [ ] **[Voice] Noise Suppression Backend** `Priority: Low`
+  - Desktop accepts setting but backend logs "Noise suppression not implemented." Needs native audio processing (e.g., RNNoise integration in CPAL pipeline).
+- [ ] **[Client] WebSocket Reconnect Channel Refresh** `Priority: Low`
+  - WebSocket reconnect doesn't re-fetch channel list metadata (`last_read_message_id`, `last_message_id`). Stale unread dots until guild switch. Add `loadChannelsForGuild` call on reconnect.
+- [ ] **[Client] System Tray** `Priority: Low`
+  - Minimize to tray, tray icon with unread badge. Uses `tauri-plugin-tray`.
+- [ ] **[Client] Auto-Update** `Priority: Low`
+  - Tauri updater plugin integration with server-side update endpoint.
+
+### Chat Improvements (Delivered 2026-03-25)
+
+- [x] **[Chat] Discord-Style Unread Message Tracking** ✅ (PR #488)
+  - Forward-only read cursor (`last_read_message_id`) with atomic SQL enforcement. CTE-based unread counts, around-based pagination, "New Messages" divider, scroll-to-bottom ack (3s debounce), dot indicator sidebar, Escape shortcut. Fixed DM unread aggregate bug (`channel_read_state` → `dm_read_state`).
+  - **Spec:** `docs/superpowers/specs/2026-03-24-unread-messages-design.md`
+- [x] **[Voice] VAD Noise Gate Fix** ✅ (PR #489)
+  - Voice activity detection now actually gates the microphone — audio only transmitted when speech detected. 300ms hold-open timer, cloned monitor track for analysis, PTT priority over VAD, mic device change restart.
 
 ---
 
