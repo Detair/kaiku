@@ -169,6 +169,11 @@ pub async fn login(state: State<'_, AppState>, request: LoginRequest) -> Result<
         // Continue anyway - user is still logged in for this session
     }
 
+    // Store server URL for session restore on next launch
+    if let Err(e) = store_server_url(server_url) {
+        error!("Failed to store server URL: {}", e);
+    }
+
     info!("User {} logged in successfully", user.username);
     Ok(user)
 }
@@ -558,6 +563,11 @@ pub async fn oidc_authorize(
         error!("Failed to store OIDC refresh token: {}", e);
     }
 
+    // Store server URL for session restore on next launch
+    if let Err(e) = store_server_url(server_url) {
+        error!("Failed to store server URL: {}", e);
+    }
+
     info!("OIDC login successful for user: {}", user.username);
     Ok(OidcLoginResult {
         access_token,
@@ -584,6 +594,29 @@ fn store_refresh_token(server_url: &str, token: &str) -> Result<(), keyring::Err
 fn clear_refresh_token(server_url: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
     entry.delete_password()
+}
+
+fn store_server_url(server_url: &str) -> Result<(), keyring::Error> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, "server_url")?;
+    entry.set_password(server_url)
+}
+
+fn get_server_url() -> Result<Option<String>, keyring::Error> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, "server_url")?;
+    match entry.get_password() {
+        Ok(url) => Ok(Some(url)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn get_refresh_token(server_url: &str) -> Result<Option<String>, keyring::Error> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
+    match entry.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 // ============================================================================
