@@ -18,6 +18,7 @@ const mockAdapter = {
   handlePublisherAnswer: vi.fn(),
   handleSubscriberOffer: vi.fn(),
   handleIceCandidate: vi.fn(),
+  setVadConfig: vi.fn(),
 };
 
 vi.mock("@/lib/webrtc", () => ({
@@ -51,6 +52,8 @@ vi.mock("@/stores/settings", () => ({
       push_to_mute: false,
       push_to_mute_key: null,
       push_to_mute_release_delay: 200,
+      voice_activity_detection: false,
+      vad_threshold: 0.5,
     },
   })),
 }));
@@ -84,6 +87,8 @@ import {
   getLocalMetrics,
   getParticipantMetrics,
   handleVoiceUserStats,
+  updateVadFromSettings,
+  isPttActive,
 } from "../voice";
 
 describe("voice store", () => {
@@ -354,6 +359,39 @@ describe("voice store", () => {
 
       expect(voiceState.deafened).toBe(false);
       // muted stays true since it was the deafen-induced mute state
+    });
+  });
+
+  describe("VAD config", () => {
+    it("calls setVadConfig on join when PTT is not active", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+
+      await joinVoice("ch-1");
+
+      expect(mockAdapter.setVadConfig).toHaveBeenCalled();
+    });
+
+    it("updateVadFromSettings is no-op when disconnected", () => {
+      mockAdapter.setVadConfig.mockClear();
+
+      updateVadFromSettings();
+
+      expect(mockAdapter.setVadConfig).not.toHaveBeenCalled();
+    });
+
+    it("updateVadFromSettings calls setVadConfig when connected", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      mockAdapter.setVadConfig.mockClear();
+
+      setVoiceState({ state: "connected" });
+      updateVadFromSettings();
+
+      expect(mockAdapter.setVadConfig).toHaveBeenCalledWith(false, 0.5);
+    });
+
+    it("isPttActive returns false when no PTT controller", () => {
+      expect(isPttActive()).toBe(false);
     });
   });
 });

@@ -42,19 +42,10 @@ const VoiceSettings: Component = () => {
                                     onChange={(v) => updateVoiceSetting("voice_activity_detection", v)}
                                 />
                                 <Show when={settings().voice.voice_activity_detection}>
-                                    <div class="mt-4 pt-4 border-t border-white/10">
-                                        <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2">
-                                            Sensitivity Threshold
-                                        </label>
-                                        <input
-                                            type="range"
-                                            min="0"
-                                            max="100"
-                                            value={Math.round(settings().voice.vad_threshold * 100)}
-                                            onInput={(e) => updateVoiceSetting("vad_threshold", parseInt(e.currentTarget.value, 10) / 100)}
-                                            class="w-full h-2 rounded-full bg-surface-highlight appearance-none cursor-pointer accent-accent-primary"
-                                        />
-                                    </div>
+                                    <ThresholdSlider
+                                        value={settings().voice.vad_threshold}
+                                        onChange={(v) => updateVoiceSetting("vad_threshold", v)}
+                                    />
                                 </Show>
                             </div>
 
@@ -286,5 +277,36 @@ const DelaySlider: Component<{
         />
     </div>
 );
+
+const ThresholdSlider: Component<{
+    value: number;
+    onChange: (v: number) => void;
+}> = (props) => {
+    let debounceTimer: number | undefined;
+    const [local, setLocal] = createSignal(Math.round(props.value * 100));
+
+    onCleanup(() => { if (debounceTimer) clearTimeout(debounceTimer); });
+
+    return (
+        <div class="mt-4 pt-4 border-t border-white/10">
+            <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2">
+                Sensitivity Threshold
+            </label>
+            <input
+                type="range"
+                min="0"
+                max="100"
+                value={local()}
+                onInput={(e) => {
+                    const v = parseInt(e.currentTarget.value, 10);
+                    setLocal(v);
+                    if (debounceTimer) clearTimeout(debounceTimer);
+                    debounceTimer = window.setTimeout(() => props.onChange(v / 100), 150);
+                }}
+                class="w-full h-2 rounded-full bg-surface-highlight appearance-none cursor-pointer accent-accent-primary"
+            />
+        </div>
+    );
+};
 
 export default VoiceSettings;

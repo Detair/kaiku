@@ -219,10 +219,13 @@ function MicTestPanel(props: MicTestPanelProps) {
 
       {/* Level Meter */}
       <div>
-        <div class="h-2 bg-surface-layer2 rounded-full overflow-hidden">
+        <div class="relative h-2 rounded-full overflow-hidden">
+          {/* Full-width gradient background */}
+          <div class="absolute inset-0 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500" />
+          {/* Cover overlay — hides the gradient beyond the current level */}
           <div
-            class="h-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 transition-all duration-100"
-            style={{ width: `${micLevel()}%` }}
+            class="absolute top-0 right-0 h-full bg-surface-layer2 transition-all duration-100"
+            style={{ width: `${100 - micLevel()}%` }}
           />
         </div>
         <div class="text-xs text-text-secondary mt-1 text-center">

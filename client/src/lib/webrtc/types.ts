@@ -201,6 +201,8 @@ export interface VoiceAdapter {
   setMute(muted: boolean): Promise<VoiceResult<void>>;
   setDeafen(deafened: boolean): Promise<VoiceResult<void>>;
   setNoiseSuppression(enabled: boolean): Promise<VoiceResult<void>>;
+  /** Configure VAD noise gate. @param threshold 0.0–1.0 sensitivity (mapped to 0–100 internally). Mute state takes precedence over VAD gating. */
+  setVadConfig(enabled: boolean, threshold: number): void;
 
   // Signaling (called by WebSocket store) — dual PeerConnection model
   handlePublisherAnswer(channelId: string, sdp: string): Promise<VoiceResult<void>>;
