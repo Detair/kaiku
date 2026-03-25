@@ -31,18 +31,16 @@ const Login: Component = () => {
   onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
-  const [serverUrl, setServerUrl] = createSignal(defaultServerUrl);
+  const [serverUrl] = createSignal(defaultServerUrl);
   const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [mfaCode, setMfaCode] = createSignal("");
   const [localError, setLocalError] = createSignal("");
   const [oidcLoading, setOidcLoading] = createSignal<string | null>(null);
 
-  // Fetch server settings when server URL is entered (debounced)
-  const [settingsUrl, setSettingsUrl] = createSignal(defaultServerUrl);
-  const [settings] = createResource(settingsUrl, async (url) => {
+  // Fetch server settings from hardcoded beta URL
+  const [settings] = createResource(() => defaultServerUrl, async (url) => {
     if (!url.trim()) return null;
     try {
       return await fetchServerSettings(url);
@@ -52,23 +50,11 @@ const Login: Component = () => {
     }
   });
 
-  // Debounce server URL changes for settings fetch
-  let urlTimer: ReturnType<typeof setTimeout> | undefined;
-  const handleServerUrlChange = (value: string) => {
-    setServerUrl(value);
-    clearTimeout(urlTimer);
-    urlTimer = setTimeout(() => setSettingsUrl(value), 500);
-  };
-
   const handleLogin = async (e: Event) => {
     e.preventDefault();
     setLocalError("");
     clearError();
 
-    if (isTauri && !serverUrl().trim()) {
-      setLocalError("Server URL is required");
-      return;
-    }
     if (!username().trim()) {
       setLocalError("Username is required");
       return;
@@ -216,27 +202,7 @@ const Login: Component = () => {
           Login to continue to Kaiku
         </p>
 
-        <Show when={isTauri}>
-          <div class="mb-4">
-            <label for="login-server-url" class="block text-sm font-medium text-text-secondary mb-1">
-              Server URL
-            </label>
-            <input
-              id="login-server-url"
-              type="url"
-              class="input-field"
-              name="url"
-              autocomplete="url"
-              placeholder="https://chat.example.com"
-              value={serverUrl()}
-              onInput={(e) => handleServerUrlChange(e.currentTarget.value)}
-              disabled={
-                authState.isLoading || !!oidcLoading() || authState.mfaRequired
-              }
-              required
-            />
-          </div>
-        </Show>
+        {/* Server URL input hidden during beta — hardcoded to kaiku.pmind.de */}
 
         {/* MFA Code Step */}
         <Show when={authState.mfaRequired}>

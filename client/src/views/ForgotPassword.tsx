@@ -7,11 +7,7 @@ const ForgotPassword: Component = () => {
   onCleanup(() => { document.title = "Kaiku"; });
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
-  const storedUrl =
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem("serverUrl") || ""
-      : "";
-  const [serverUrl, setServerUrl] = createSignal(isTauri ? (storedUrl || defaultServerUrl) : defaultServerUrl);
+  const [serverUrl] = createSignal(defaultServerUrl);
   const [email, setEmail] = createSignal("");
   const [error, setError] = createSignal("");
   const [success, setSuccess] = createSignal(false);
@@ -22,10 +18,6 @@ const ForgotPassword: Component = () => {
     setError("");
     setSuccess(false);
 
-    if (!serverUrl().trim()) {
-      setError("Server URL is required");
-      return;
-    }
     if (!email().trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email())) {
       setError("Please enter a valid email address");
       return;
@@ -75,28 +67,7 @@ const ForgotPassword: Component = () => {
 
         <Show when={!success()}>
           <form onSubmit={handleSubmit} method="post" noValidate class="space-y-4">
-            <Show when={isTauri}>
-              <div>
-                <label
-                  for="fp-server-url"
-                  class="block text-sm font-medium text-text-secondary mb-1"
-                >
-                  Server URL
-                </label>
-                <input
-                  id="fp-server-url"
-                  type="url"
-                  class="input-field"
-                  name="url"
-                  autocomplete="url"
-                  placeholder="https://chat.example.com"
-                  value={serverUrl()}
-                  onInput={(e) => setServerUrl(e.currentTarget.value)}
-                  disabled={isLoading()}
-                  required
-                />
-              </div>
-            </Show>
+            {/* Server URL input hidden during beta — hardcoded to kaiku.pmind.de */}
 
             <div>
               <label
