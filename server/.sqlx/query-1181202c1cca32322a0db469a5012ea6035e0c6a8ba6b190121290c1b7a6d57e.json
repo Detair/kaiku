@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM slash_commands\n        WHERE id = $1 AND application_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1181202c1cca32322a0db469a5012ea6035e0c6a8ba6b190121290c1b7a6d57e"
+}

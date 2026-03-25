@@ -228,6 +228,8 @@ pub struct ReactionInfo {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListMessagesQuery {
     pub before: Option<Uuid>,
+    #[serde(default)]
+    pub around: Option<Uuid>,
     #[serde(default = "default_limit")]
     pub limit: i64,
 }
@@ -410,8 +412,22 @@ pub async fn list(
     // Limit between 1 and 100
     let limit = query.limit.clamp(1, 100);
 
-    // Fetch one extra message to determine if there are more
-    let mut messages = db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
+    // Fetch messages — either around a specific message or before-based pagination
+    let (mut messages, has_more) = if let Some(around_id) = query.around {
+        let msgs =
+            db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
+        let has_more = msgs.len() as i64 >= limit;
+        (msgs, has_more)
+    } else {
+        // Fetch one extra message to determine if there are more
+        let mut msgs =
+            db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
+        let has_more = msgs.len() as i64 > limit;
+        if has_more {
+            msgs.pop();
+        }
+        (msgs, has_more)
+    };
 
     // Filter out messages from blocked users (application-layer filtering)
     if !combined_block_set.is_empty() {
@@ -419,12 +435,6 @@ pub async fn list(
             m.user_id
                 .is_none_or(|uid| !combined_block_set.contains(&uid))
         });
-    }
-
-    // Check if there are more messages beyond the requested limit
-    let has_more = messages.len() as i64 > limit;
-    if has_more {
-        messages.pop(); // Remove the extra message
     }
 
     // Build response with author info, attachments, and reactions
@@ -2150,6 +2160,7 @@ mod tests {
         // Call the list handler
         let query = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 50,
         };
 
@@ -2262,6 +2273,7 @@ mod tests {
         // Call the list handler
         let query = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 50,
         };
 
@@ -2340,6 +2352,7 @@ mod tests {
         // Fetch first page (limit 3)
         let query1 = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 3,
         };
 
@@ -2371,6 +2384,7 @@ mod tests {
 
         let query2 = ListMessagesQuery {
             before: Some(oldest_from_page1),
+            around: None,
             limit: 3,
         };
 
@@ -2399,6 +2413,7 @@ mod tests {
         // Verify we can fetch all messages eventually
         let query_all = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 100,
         };
 
@@ -2456,6 +2471,7 @@ mod tests {
 
         let query = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 50,
         };
 
@@ -2554,6 +2570,7 @@ mod tests {
         // Test limit = 0 (should clamp to 1)
         let query_zero = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 0,
         };
 
@@ -2572,6 +2589,7 @@ mod tests {
         // Test limit = 200 (should clamp to 100)
         let query_large = ListMessagesQuery {
             before: None,
+            around: None,
             limit: 200,
         };
 

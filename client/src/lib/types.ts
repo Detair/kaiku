@@ -217,6 +217,10 @@ export interface Channel {
 export interface ChannelWithUnread extends Channel {
   /** Number of unread messages (only for text channels). */
   unread_count: number;
+  /** ID of the last message the user has read (null = never read). */
+  last_read_message_id: string | null;
+  /** ID of the most recent message in the channel (null = no messages). */
+  last_message_id: string | null;
 }
 
 export type CategoryType = "mixed" | "text" | "voice";
@@ -595,7 +599,7 @@ export type ServerEvent =
   | { type: "admin_user_deleted"; user_id: string; username: string }
   | { type: "admin_guild_deleted"; guild_id: string; guild_name: string }
   // DM read sync event
-  | { type: "dm_read"; channel_id: string }
+  | { type: "dm_read"; channel_id: string; last_read_message_id?: string }
   // Guild channel read sync event
   | { type: "channel_read"; channel_id: string; last_read_message_id?: string }
   // Preferences events
@@ -926,6 +930,10 @@ export interface DMListItem {
   participants: DMParticipant[];
   last_message: LastMessagePreview | null;
   unread_count: number;
+  /** ID of the last message the user has read (null = never read). */
+  last_read_message_id: string | null;
+  /** ID of the most recent message in the channel (null = no messages). */
+  last_message_id: string | null;
 }
 
 // Pages Types

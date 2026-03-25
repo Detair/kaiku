@@ -60,6 +60,7 @@ import {
   channelsState,
   handleChannelReadEvent,
   incrementUnreadCount,
+  updateChannelLastMessageId,
 } from "./channels";
 import { currentUser } from "./auth";
 import {
@@ -269,6 +270,8 @@ export async function initWebSocket(): Promise<void> {
           // Notify unread module of new message
           window.dispatchEvent(new CustomEvent("unread-update"));
         }
+        // Always update last_message_id for the channel, even if it's the active channel
+        updateChannelLastMessageId(event.payload.channel_id, event.payload.message.id);
       }),
     );
 
@@ -568,14 +571,14 @@ export async function initWebSocket(): Promise<void> {
 
     // Read sync events (Tauri → frontend parity with browser mode)
     pending.push(
-      listen<{ channel_id: string }>("ws:channel_read", (event) => {
-        handleChannelReadEvent(event.payload.channel_id);
+      listen<{ channel_id: string; last_read_message_id?: string }>("ws:channel_read", (event) => {
+        handleChannelReadEvent(event.payload.channel_id, event.payload.last_read_message_id);
       }),
     );
 
     pending.push(
-      listen<{ channel_id: string }>("ws:dm_read", (event) => {
-        handleDMReadEvent(event.payload.channel_id);
+      listen<{ channel_id: string; last_read_message_id?: string }>("ws:dm_read", (event) => {
+        handleDMReadEvent(event.payload.channel_id, event.payload.last_read_message_id);
       }),
     );
 
@@ -996,6 +999,8 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
         // Notify unread module of new message
         window.dispatchEvent(new CustomEvent("unread-update"));
         }
+        // Always update last_message_id for the channel, even if it's the active channel
+        updateChannelLastMessageId(event.channel_id, event.message.id);
       }
       break;
 
@@ -1245,7 +1250,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     // DM read sync event
     case "dm_read":
-      handleDMReadEvent(event.channel_id);
+      handleDMReadEvent(event.channel_id, event.last_read_message_id);
       break;
 
     // DM name updated
@@ -1255,7 +1260,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     // Guild channel read sync event
     case "channel_read":
-      handleChannelReadEvent(event.channel_id);
+      handleChannelReadEvent(event.channel_id, event.last_read_message_id);
       break;
 
     // Preferences events

@@ -20,10 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Screen sharing uses standard WebRTC `addTrack` negotiation instead of `replaceTrack` workarounds
 - Voice channel view uses tile-based grid with focus mode for screen shares and webcams
 - Screen shares can be popped out to separate browser windows
+- Messages are now marked as read when you scroll to the bottom (3s debounce), not on channel open
+- Channel sidebar shows dot indicator for unread channels instead of count badge
+- "New Messages" divider shows where you left off when returning to a channel
+- Opening a channel with unreads scrolls to your last read position
 
 ### Fixed
 - Screen sharing video now flows between users — was blocked by single-PeerConnection offer model
 - Screen share video renders correctly instead of showing black (switched to VP8-only codec to fix RTP payload type mismatch between publisher/subscriber sessions)
+- Scrolling up in a channel no longer causes false unread indicators
+- Deleted messages no longer counted in unread totals
+- DM unread aggregate query now uses correct `dm_read_state` table
 
 ### Added
 - Password visibility toggle on all password fields (login, register, reset password)

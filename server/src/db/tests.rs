@@ -1090,9 +1090,13 @@ mod postgres_tests {
             .expect("create message");
         }
 
-        // Mark channel as read by inserting a channel_read_state with current timestamp
+        // Mark channel as read by inserting a channel_read_state with latest message ID
         sqlx::query(
-            "INSERT INTO channel_read_state (user_id, channel_id, last_read_at) VALUES ($1, $2, NOW())",
+            "INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+             VALUES ($1, $2, NOW(), (
+                SELECT id FROM messages WHERE channel_id = $2 AND deleted_at IS NULL
+                ORDER BY created_at DESC LIMIT 1
+             ))",
         )
         .bind(owner.id)
         .bind(channel.id)

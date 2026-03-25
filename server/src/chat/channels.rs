@@ -520,7 +520,7 @@ pub async fn remove_member(
 /// Request body for marking a guild channel as read.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MarkChannelAsReadRequest {
-    pub last_read_message_id: Option<Uuid>,
+    pub last_read_message_id: Uuid,
 }
 
 /// Mark a guild channel as read.
@@ -565,17 +565,23 @@ pub async fn mark_as_read(
 
     let now = chrono::Utc::now();
 
-    // 3. UPSERT into channel_read_state
-    sqlx::query!(
-        r#"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+    // 3. Atomic forward-only UPSERT into channel_read_state
+    // The WHERE clause ensures the read cursor only moves forward by comparing
+    // message timestamps, preventing stale requests from moving it backward.
+    sqlx::query(
+        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (user_id, channel_id)
-           DO UPDATE SET last_read_at = $3, last_read_message_id = $4"#,
-        auth.id,
-        channel_id,
-        now,
-        body.last_read_message_id
+           DO UPDATE SET last_read_at = EXCLUDED.last_read_at,
+                         last_read_message_id = EXCLUDED.last_read_message_id
+           WHERE channel_read_state.last_read_message_id IS NULL
+              OR (SELECT created_at FROM messages WHERE id = EXCLUDED.last_read_message_id)
+                 > (SELECT created_at FROM messages WHERE id = channel_read_state.last_read_message_id)",
     )
+    .bind(auth.id)
+    .bind(channel_id)
+    .bind(now)
+    .bind(body.last_read_message_id)
     .execute(&state.db)
     .await?;
 
@@ -585,7 +591,7 @@ pub async fn mark_as_read(
         auth.id,
         &ServerEvent::ChannelRead {
             channel_id,
-            last_read_message_id: body.last_read_message_id,
+            last_read_message_id: Some(body.last_read_message_id),
         },
     )
     .await

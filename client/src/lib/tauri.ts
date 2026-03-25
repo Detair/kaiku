@@ -1181,14 +1181,16 @@ export async function getMessages(
   channelId: string,
   before?: string,
   limit?: number,
+  around?: string,
 ): Promise<PaginatedMessages> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_messages", { channelId, before, limit });
+    return invoke("get_messages", { channelId, before, limit, around });
   }
 
   const params = new URLSearchParams();
-  if (before) params.set("before", before);
+  if (around) params.set("around", around);
+  else if (before) params.set("before", before);
   if (limit) params.set("limit", limit.toString());
   const query = params.toString();
 
@@ -1660,11 +1662,11 @@ export async function joinDiscoverable(
 /**
  * Mark a guild channel as read.
  * @param channelId - Channel ID to mark as read
- * @param lastReadMessageId - Optional ID of the last read message
+ * @param lastReadMessageId - ID of the last read message
  */
 export async function markChannelAsRead(
   channelId: string,
-  lastReadMessageId?: string,
+  lastReadMessageId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -2406,7 +2408,7 @@ export async function getDMList(): Promise<DMListItem[]> {
 
 export async function markDMAsRead(
   channelId: string,
-  lastReadMessageId?: string,
+  lastReadMessageId: string,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");

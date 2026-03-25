@@ -21,7 +21,6 @@ import {
   createSignal,
   createEffect,
   createMemo,
-  onCleanup,
 } from "solid-js";
 import { Plus, Mic, GripVertical } from "lucide-solid";
 import {
@@ -29,8 +28,6 @@ import {
   selectChannel,
   moveChannel,
   moveChannelToCategory,
-  markChannelAsRead,
-  getUnreadCount,
 } from "@/stores/channels";
 import {
   categoriesState,
@@ -84,17 +81,6 @@ const ChannelList: Component = () => {
     const guildId = guildsState.activeGuildId;
     if (guildId) {
       loadGuildCategories(guildId);
-    }
-  });
-
-  // Auto-mark selected channel as read after a short delay
-  createEffect(() => {
-    const channelId = channelsState.selectedChannelId;
-    if (channelId && getUnreadCount(channelId) > 0) {
-      const timer = setTimeout(() => {
-        markChannelAsRead(channelId);
-      }, 1000);
-      onCleanup(() => clearTimeout(timer));
     }
   });
 

@@ -36,6 +36,10 @@ pub struct ChannelWithUnread {
     pub channel: db::Channel,
     /// Number of unread messages (only for text channels).
     pub unread_count: i64,
+    /// User's read cursor for this channel.
+    pub last_read_message_id: Option<Uuid>,
+    /// Most recent message in this channel.
+    pub last_message_id: Option<Uuid>,
 }
 
 /// A bot installed in a guild.
@@ -481,8 +485,12 @@ pub(crate) async fn initialize_channel_read_state(
     user_id: Uuid,
 ) -> Result<(), GuildError> {
     sqlx::query(
-        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at)
-           SELECT $1, c.id, NOW()
+        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+           SELECT $1, c.id, NOW(), (
+               SELECT m.id FROM messages m
+               WHERE m.channel_id = c.id AND m.deleted_at IS NULL
+               ORDER BY m.created_at DESC LIMIT 1
+           )
            FROM channels c
            WHERE c.guild_id = $2 AND c.channel_type = 'text'
            ON CONFLICT (user_id, channel_id) DO NOTHING",
@@ -719,47 +727,68 @@ pub async fn list_channels(
         .map(|c| c.id)
         .collect();
 
-    // Batch query: get unread counts for all text channels in a single query
-    // Uses LEFT JOIN to handle both cases (with and without read state)
-    let unread_counts: std::collections::HashMap<Uuid, i64> = if text_channel_ids.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        sqlx::query!(
-            r#"
-            SELECT
-                c.id as channel_id,
-                COUNT(m.id) as "unread_count!"
-            FROM channels c
-            LEFT JOIN channel_read_state crs
-                ON crs.channel_id = c.id AND crs.user_id = $1
-            LEFT JOIN messages m
-                ON m.channel_id = c.id
-                AND (crs.last_read_at IS NULL OR m.created_at > crs.last_read_at)
-            WHERE c.id = ANY($2)
-            GROUP BY c.id
-            "#,
-            auth.id,
-            &text_channel_ids
-        )
-        .fetch_all(&state.db)
-        .await?
-        .into_iter()
-        .map(|row| (row.channel_id, row.unread_count))
-        .collect()
-    };
+    // Single CTE query: unread counts, read cursors, and last message IDs in one round trip
+    let channel_states: std::collections::HashMap<Uuid, (i64, Option<Uuid>, Option<Uuid>)> =
+        if text_channel_ids.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            sqlx::query_as::<_, (Uuid, i64, Option<Uuid>, Option<Uuid>)>(
+                r"
+                WITH cursors AS (
+                    SELECT channel_id, last_read_message_id,
+                           (SELECT created_at FROM messages WHERE id = last_read_message_id) AS cursor_at
+                    FROM channel_read_state
+                    WHERE user_id = $1 AND channel_id = ANY($2)
+                ),
+                latest_msgs AS (
+                    SELECT DISTINCT ON (channel_id) channel_id, id AS last_message_id
+                    FROM messages
+                    WHERE channel_id = ANY($2) AND deleted_at IS NULL
+                    ORDER BY channel_id, created_at DESC
+                )
+                SELECT
+                    c.id AS channel_id,
+                    COUNT(m.id)::bigint AS unread_count,
+                    crs.last_read_message_id,
+                    lm.last_message_id
+                FROM channels c
+                LEFT JOIN cursors crs ON crs.channel_id = c.id
+                LEFT JOIN latest_msgs lm ON lm.channel_id = c.id
+                LEFT JOIN messages m
+                    ON m.channel_id = c.id
+                    AND m.deleted_at IS NULL
+                    AND (crs.cursor_at IS NULL OR m.created_at > crs.cursor_at)
+                WHERE c.id = ANY($2)
+                GROUP BY c.id, crs.last_read_message_id, lm.last_message_id
+                ",
+            )
+            .bind(auth.id)
+            .bind(&text_channel_ids)
+            .fetch_all(&state.db)
+            .await?
+            .into_iter()
+            .map(|(channel_id, unread, cursor, last_msg)| (channel_id, (unread, cursor, last_msg)))
+            .collect()
+        };
 
-    // Build result with unread counts from the HashMap
+    // Build result with unread counts, read cursors, and last message IDs
     let result: Vec<ChannelWithUnread> = channels
         .into_iter()
         .map(|channel| {
-            let unread_count = if channel.channel_type == ChannelType::Text {
-                *unread_counts.get(&channel.id).unwrap_or(&0)
+            let is_text = channel.channel_type == ChannelType::Text;
+            let (unread_count, last_read_message_id, last_message_id) = if is_text {
+                channel_states
+                    .get(&channel.id)
+                    .map(|(u, r, l)| (*u, *r, *l))
+                    .unwrap_or((0, None, None))
             } else {
-                0
+                (0, None, None)
             };
             ChannelWithUnread {
                 channel,
                 unread_count,
+                last_read_message_id,
+                last_message_id,
             }
         })
         .collect();
@@ -1135,7 +1164,7 @@ pub async fn mark_all_channels_read(
 
     // Batch UPSERT channel_read_state for all text channels in this guild
     // Uses a subquery to get the latest message ID per channel
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
+    let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
         r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           SELECT $1, c.id, $3, (
               SELECT m.id FROM messages m
@@ -1146,7 +1175,7 @@ pub async fn mark_all_channels_read(
           WHERE c.guild_id = $2 AND c.channel_type = 'text'
           ON CONFLICT (user_id, channel_id)
           DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id",
+          RETURNING channel_id, last_read_message_id",
     )
     .bind(auth.id)
     .bind(guild_id)
@@ -1155,13 +1184,13 @@ pub async fn mark_all_channels_read(
     .await?;
 
     // Broadcast ChannelRead events for each updated channel
-    for (channel_id,) in &rows {
+    for (channel_id, last_read_message_id) in &rows {
         if let Err(e) = broadcast_to_user(
             &state.redis,
             auth.id,
             &ServerEvent::ChannelRead {
                 channel_id: *channel_id,
-                last_read_message_id: None,
+                last_read_message_id: *last_read_message_id,
             },
         )
         .await

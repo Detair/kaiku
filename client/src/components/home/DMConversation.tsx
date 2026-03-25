@@ -7,13 +7,11 @@
 import {
   Component,
   Show,
-  onCleanup,
-  createEffect,
   createSignal,
 } from "solid-js";
 import { Phone, Lock, Unlock, Check, X } from "lucide-solid";
 import { e2eeStatus } from "@/stores/e2ee";
-import { getSelectedDM, markDMAsRead, updateDMIconUrl } from "@/stores/dms";
+import { getSelectedDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
@@ -73,18 +71,6 @@ const DMConversation: Component = () => {
   };
 
   const selectedChannelId = () => dm()?.id;
-
-  // Mark as read when viewing
-  createEffect(() => {
-    const currentDM = dm();
-    if (currentDM && currentDM.unread_count > 0) {
-      // Debounce: wait 1 second before marking as read
-      const timer = setTimeout(() => {
-        markDMAsRead(currentDM.id);
-      }, 1000);
-      onCleanup(() => clearTimeout(timer));
-    }
-  });
 
   const otherParticipants = () => {
     const currentDM = dm();

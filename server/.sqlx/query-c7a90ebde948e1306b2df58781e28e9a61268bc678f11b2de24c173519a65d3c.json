@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE server_config\n           SET value = 'true'::jsonb, updated_by = $1, updated_at = NOW()\n           WHERE key = 'setup_complete' AND value = 'false'::jsonb\n           RETURNING key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c7a90ebde948e1306b2df58781e28e9a61268bc678f11b2de24c173519a65d3c"
+}

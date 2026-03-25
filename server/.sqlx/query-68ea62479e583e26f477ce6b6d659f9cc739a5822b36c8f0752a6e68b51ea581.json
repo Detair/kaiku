@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM slash_commands\n        WHERE application_id = $1\n          AND (($2::uuid IS NULL AND guild_id IS NULL) OR guild_id = $2)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68ea62479e583e26f477ce6b6d659f9cc739a5822b36c8f0752a6e68b51ea581"
+}

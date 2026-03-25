@@ -824,6 +824,47 @@ pub async fn list_messages(
     }
 }
 
+/// Fetch messages around a specific message ID.
+/// Returns up to `limit` messages centered on `around_id`.
+/// If `around_id` is deleted or doesn't exist, returns empty vec (caller should fallback).
+pub async fn list_messages_around(
+    pool: &PgPool,
+    channel_id: Uuid,
+    around_id: Uuid,
+    limit: i64,
+) -> sqlx::Result<Vec<Message>> {
+    let half = limit / 2;
+    // Use a CTE to resolve the anchor first — if deleted/missing, returns empty
+    sqlx::query_as::<_, Message>(
+        r"
+        WITH anchor AS (
+            SELECT created_at, id FROM messages
+            WHERE id = $2 AND deleted_at IS NULL
+        )
+        SELECT m.* FROM (
+            (SELECT m.* FROM messages m, anchor a
+             WHERE m.channel_id = $1 AND m.deleted_at IS NULL AND m.parent_id IS NULL
+               AND (m.created_at, m.id) <= (a.created_at, a.id)
+             ORDER BY m.created_at DESC, m.id DESC
+             LIMIT $3)
+            UNION ALL
+            (SELECT m.* FROM messages m, anchor a
+             WHERE m.channel_id = $1 AND m.deleted_at IS NULL AND m.parent_id IS NULL
+               AND (m.created_at, m.id) > (a.created_at, a.id)
+             ORDER BY m.created_at ASC, m.id ASC
+             LIMIT $4)
+        ) m
+        ORDER BY m.created_at ASC, m.id ASC
+        ",
+    )
+    .bind(channel_id)
+    .bind(around_id)
+    .bind(half + 1) // +1 to include anchor itself
+    .bind(half)
+    .fetch_all(pool)
+    .await
+}
+
 /// Find message by ID.
 pub async fn find_message_by_id(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<Message>> {
     sqlx::query_as::<_, Message>("SELECT * FROM messages WHERE id = $1 AND deleted_at IS NULL")
@@ -1731,13 +1772,19 @@ pub async fn count_users(pool: &PgPool) -> sqlx::Result<i64> {
 /// - Guilds: Channels with unreads, grouped by guild
 /// - DMs: Direct message conversations with unreads
 ///
-/// Unread count is calculated by comparing message `created_at` with the user's
-/// `last_read_at` from `channel_read_state`.
+/// Unread count is calculated by comparing message `created_at` with the timestamp
+/// of the user's `last_read_message_id` cursor from `channel_read_state` / `dm_read_state`.
 #[tracing::instrument(skip(pool))]
 pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<UnreadAggregate> {
-    // Get guild channel unreads
+    // Get guild channel unreads (message-ID-based comparison via CTE)
     let guild_rows = sqlx::query(
         r"
+        WITH cursors AS (
+            SELECT channel_id, last_read_message_id,
+                   (SELECT created_at FROM messages WHERE id = last_read_message_id) AS cursor_at
+            FROM channel_read_state
+            WHERE user_id = $1
+        )
         SELECT
             g.id as guild_id,
             g.name as guild_name,
@@ -1747,12 +1794,12 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
         FROM guild_members gm
         INNER JOIN guilds g ON g.id = gm.guild_id
         INNER JOIN channels c ON c.guild_id = g.id
-        LEFT JOIN channel_read_state crs ON crs.channel_id = c.id AND crs.user_id = $1
+        LEFT JOIN cursors crs ON crs.channel_id = c.id
         LEFT JOIN messages m ON m.channel_id = c.id
             AND m.deleted_at IS NULL
             AND (
-                crs.last_read_at IS NULL
-                OR m.created_at > crs.last_read_at
+                crs.cursor_at IS NULL
+                OR m.created_at > crs.cursor_at
             )
         WHERE gm.user_id = $1
         GROUP BY g.id, g.name, c.id, c.name
@@ -1765,22 +1812,28 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
     .await
     .map_err(db_error!("get_unread_aggregate:guilds", user_id = %user_id))?;
 
-    // Get DM unreads
+    // Get DM unreads (message-ID-based comparison via CTE, using dm_read_state)
     let dm_rows = sqlx::query(
         r"
+        WITH cursors AS (
+            SELECT channel_id, last_read_message_id,
+                   (SELECT created_at FROM messages WHERE id = last_read_message_id) AS cursor_at
+            FROM dm_read_state
+            WHERE user_id = $1
+        )
         SELECT
             c.id as channel_id,
             c.name as channel_name,
             COUNT(m.id)::bigint as unread_count
         FROM dm_participants dp
         INNER JOIN channels c ON c.id = dp.channel_id
-        LEFT JOIN channel_read_state crs ON crs.channel_id = c.id AND crs.user_id = $1
+        LEFT JOIN cursors crs ON crs.channel_id = c.id
         LEFT JOIN messages m ON m.channel_id = c.id
             AND m.deleted_at IS NULL
             AND m.user_id != $1
             AND (
-                crs.last_read_at IS NULL
-                OR m.created_at > crs.last_read_at
+                crs.cursor_at IS NULL
+                OR m.created_at > crs.cursor_at
             )
         WHERE dp.user_id = $1 AND c.channel_type = 'dm'
         GROUP BY c.id, c.name

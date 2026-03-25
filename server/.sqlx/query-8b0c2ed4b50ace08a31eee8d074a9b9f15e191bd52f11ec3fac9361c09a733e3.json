@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            message_id,\n            emoji,\n            COUNT(*) as \"count!\",\n            BOOL_OR(user_id = $1) as \"me!\"\n        FROM message_reactions\n        WHERE message_id = ANY($2)\n        GROUP BY message_id, emoji\n        ORDER BY MIN(created_at)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "emoji",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "me!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "8b0c2ed4b50ace08a31eee8d074a9b9f15e191bd52f11ec3fac9361c09a733e3"
+}

@@ -243,13 +243,45 @@ export async function loadMessages(channelId: string): Promise<void> {
   }
 }
 
+/**
+ * Load messages centered around a specific message ID.
+ * Used when entering a channel with unreads to center on the read cursor.
+ */
+export async function loadMessagesAround(channelId: string, aroundMessageId: string): Promise<void> {
+  if (messagesState.loadingChannels[channelId]) return;
+
+  setMessagesState("loadingChannels", channelId, true);
+  setMessagesState("error", null);
+
+  try {
+    const response = await tauri.getMessages(channelId, undefined, MESSAGE_LIMIT, aroundMessageId);
+    const decryptedMessages = await decryptMessages(response.items);
+    // Around-mode returns messages in ASC order (oldest-first) from server
+    setMessagesState("byChannel", channelId, decryptedMessages);
+    setMessagesState("hasMore", channelId, response.has_more);
+    setMessagesState("loadingChannels", channelId, false);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error("Failed to load messages around:", error);
+    setMessagesState("loadingChannels", channelId, false);
+    setMessagesState("error", error);
+  }
+}
+
 // Track ongoing initial loads to prevent duplicates
 const initialLoadInProgress: Record<string, boolean> = {};
 
 /**
  * Load initial messages for a channel (clears existing).
+ * When lastReadMessageId is provided and the channel has unreads,
+ * loads messages centered around the read cursor so the "New Messages"
+ * divider is visible.
  */
-export async function loadInitialMessages(channelId: string): Promise<void> {
+export async function loadInitialMessages(
+  channelId: string,
+  lastReadMessageId?: string | null,
+  unreadCount?: number,
+): Promise<void> {
   // Prevent duplicate initial loads
   if (initialLoadInProgress[channelId]) {
     return;
@@ -260,7 +292,18 @@ export async function loadInitialMessages(channelId: string): Promise<void> {
   try {
     setMessagesState("byChannel", channelId, []);
     setMessagesState("hasMore", channelId, true);
-    await loadMessages(channelId);
+
+    // Only use around-mode if unreads exist AND count <= 200 threshold
+    if (lastReadMessageId && (unreadCount == null || unreadCount <= 200)) {
+      await loadMessagesAround(channelId, lastReadMessageId);
+      // Fallback if around returned empty (deleted anchor or other edge case)
+      const loaded = messagesState.byChannel[channelId] || [];
+      if (loaded.length === 0) {
+        await loadMessages(channelId);
+      }
+    } else {
+      await loadMessages(channelId);
+    }
   } finally {
     initialLoadInProgress[channelId] = false;
   }
@@ -331,6 +374,14 @@ export async function sendMessage(
         // WebSocket echo already added the real message; just drop the pending one
         setMessagesState("byChannel", channelId, withoutPending);
       }
+    }
+
+    // Mark channel as read (sending implies seeing)
+    try {
+      const { markChannelAsRead } = await import("@/stores/channels");
+      markChannelAsRead(channelId, message.id);
+    } catch {
+      // Non-critical — don't fail the send
     }
 
     return message;

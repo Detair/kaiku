@@ -7,6 +7,7 @@ import {
   createMemo,
   createSignal,
   onCleanup,
+  onMount,
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import { createVirtualizer } from "@/lib/virtualizer";
@@ -26,6 +27,12 @@ import {
   loadMessages,
   hasMoreMessages,
 } from "@/stores/messages";
+import {
+  markChannelAsRead,
+  getChannelLastReadMessageId,
+  isChannelUnread,
+  getUnreadCount,
+} from "@/stores/channels";
 import { areThreadsEnabled } from "@/stores/guilds";
 import { shouldGroupWithPrevious } from "@/lib/utils";
 
@@ -69,9 +76,12 @@ const MessageList: Component<MessageListProps> = (props) => {
     return messagesState.byChannel[props.channelId] || [];
   });
 
-  // Compute messages with compact flag
+  // Compute messages with compact flag and first-unread marker
   const messagesWithCompact = createMemo(() => {
     const msgs = messages();
+    const lastReadId = getChannelLastReadMessageId(props.channelId);
+    let foundLastRead = lastReadId == null; // if null, no divider needed
+
     return msgs.map((message, idx) => {
       const prev = idx > 0 ? msgs[idx - 1] : null;
       const isCompact = prev
@@ -82,7 +92,14 @@ const MessageList: Component<MessageListProps> = (props) => {
             prev.author.id,
           )
         : false;
-      return { message, isCompact };
+
+      let isFirstUnread = false;
+      if (!foundLastRead && prev && prev.id === lastReadId) {
+        isFirstUnread = true;
+        foundLastRead = true;
+      }
+
+      return { message, isCompact, isFirstUnread };
     });
   });
 
@@ -128,6 +145,9 @@ const MessageList: Component<MessageListProps> = (props) => {
       if (msg.reactions?.length) estimate += 36;
       if (msg.thread_reply_count) estimate += 28;
 
+      // "New Messages" divider (~32px)
+      if (item?.isFirstUnread) estimate += 32;
+
       return estimate + 16; // padding
     },
     overscan: 5,
@@ -139,6 +159,30 @@ const MessageList: Component<MessageListProps> = (props) => {
     const { scrollTop, scrollHeight, clientHeight } = containerRef;
     return scrollHeight - scrollTop - clientHeight < 100;
   };
+
+  // --- Debounced mark-as-read on scroll-to-bottom ---
+  let markAsReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleMarkAsRead = () => {
+    if (markAsReadTimer) clearTimeout(markAsReadTimer);
+    markAsReadTimer = setTimeout(() => {
+      const msgs = messages();
+      const lastMsg = msgs[msgs.length - 1];
+      if (lastMsg && isAtBottom()) {
+        markChannelAsRead(props.channelId, lastMsg.id);
+      }
+      markAsReadTimer = null;
+    }, 3000);
+  };
+
+  const cancelMarkAsRead = () => {
+    if (markAsReadTimer) {
+      clearTimeout(markAsReadTimer);
+      markAsReadTimer = null;
+    }
+  };
+
+  onCleanup(() => cancelMarkAsRead());
 
   // --- Handle scroll ---
   const handleScroll = () => {
@@ -155,6 +199,9 @@ const MessageList: Component<MessageListProps> = (props) => {
     if (atBottom) {
       setHasNewMessages(false);
       setNewMessageCount(0);
+      scheduleMarkAsRead();
+    } else {
+      cancelMarkAsRead();
     }
   };
 
@@ -307,6 +354,25 @@ const MessageList: Component<MessageListProps> = (props) => {
     if (highlightTimer) clearTimeout(highlightTimer);
   });
 
+  // --- Escape key: mark channel as read ---
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      // Don't trigger if a modal, context menu, or search overlay is open
+      const hasOverlay = document.querySelector("[role='dialog'], [data-context-menu], [data-search-overlay]");
+      if (hasOverlay) return;
+
+      const msgs = messages();
+      const lastMsg = msgs[msgs.length - 1];
+      if (lastMsg && isChannelUnread(props.channelId)) {
+        markChannelAsRead(props.channelId, lastMsg.id);
+        scrollToBottom(true);
+      }
+    }
+  };
+
+  onMount(() => document.addEventListener("keydown", handleKeyDown));
+  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+
   // Track message count for auto-scroll / new-message indicator
   let prevMessageCount = 0;
 
@@ -338,7 +404,11 @@ const MessageList: Component<MessageListProps> = (props) => {
           setNewMessageCount(0);
           setPaginationError(null);
           prevMessageCount = 0;
-          loadInitialMessages(channelId);
+
+          const lastReadId = getChannelLastReadMessageId(channelId);
+          const unread = isChannelUnread(channelId);
+          const unreadCnt = getUnreadCount(channelId);
+          loadInitialMessages(channelId, unread ? lastReadId : undefined, unreadCnt);
         }
       },
       { defer: false },
@@ -386,7 +456,31 @@ const MessageList: Component<MessageListProps> = (props) => {
           }
         });
       } else {
-        requestAnimationFrame(() => scrollToBottom(true));
+        const lastReadId = getChannelLastReadMessageId(props.channelId);
+        if (lastReadId && isChannelUnread(props.channelId)) {
+          // Scroll to first unread (the message after lastReadId)
+          const msgs = messages();
+          const readIdx = msgs.findIndex((m) => m.id === lastReadId);
+          if (readIdx !== -1 && readIdx < msgs.length - 1) {
+            requestAnimationFrame(() => {
+              virtualizer.scrollToIndex(readIdx + 1, { align: "start", behavior: "auto" });
+              scheduleMarkAsRead();
+            });
+          } else {
+            // lastReadId not in loaded range — fallback to bottom
+            requestAnimationFrame(() => {
+              scrollToBottom(true);
+              scheduleMarkAsRead();
+            });
+          }
+        } else {
+          requestAnimationFrame(() => {
+            scrollToBottom(true);
+            if (isChannelUnread(props.channelId)) {
+              scheduleMarkAsRead();
+            }
+          });
+        }
       }
     }
 
@@ -514,12 +608,23 @@ const MessageList: Component<MessageListProps> = (props) => {
                   {(() => {
                     const data = item();
                     return data ? (
-                      <MessageItem
-                        message={data.message}
-                        compact={data.isCompact}
-                        guildId={props.guildId}
-                        threadsEnabled={areThreadsEnabled(props.guildId)}
-                      />
+                      <>
+                        <Show when={data.isFirstUnread}>
+                          <div class="flex items-center gap-2 px-4 py-1 my-1">
+                            <div class="flex-1 h-px bg-accent-danger" />
+                            <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
+                              New Messages
+                            </span>
+                            <div class="flex-1 h-px bg-accent-danger" />
+                          </div>
+                        </Show>
+                        <MessageItem
+                          message={data.message}
+                          compact={data.isCompact}
+                          guildId={props.guildId}
+                          threadsEnabled={areThreadsEnabled(props.guildId)}
+                        />
+                      </>
                     ) : null;
                   })()}
                 </div>

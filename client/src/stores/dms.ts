@@ -88,6 +88,24 @@ export function selectFriendsTab(): void {
 }
 
 /**
+ * Check if DM has unread messages via ID comparison.
+ */
+export function isDMUnread(channelId: string): boolean {
+  const dm = dmsState.dms.find((d) => d.id === channelId);
+  if (!dm) return false;
+  return dm.last_message_id != null &&
+    dm.last_message_id !== dm.last_read_message_id;
+}
+
+/**
+ * Get last_read_message_id for a DM.
+ */
+export function getDMLastReadMessageId(channelId: string): string | null {
+  const dm = dmsState.dms.find((d) => d.id === channelId);
+  return dm?.last_read_message_id ?? null;
+}
+
+/**
  * Update last message for a DM (from WebSocket)
  */
 export function updateDMLastMessage(channelId: string, message: Message): void {
@@ -106,6 +124,7 @@ export function updateDMLastMessage(channelId: string, message: Message): void {
       username: message.author.username,
       created_at: message.created_at,
     },
+    last_message_id: message.id,
     unread_count: shouldIncrementUnread
       ? dmsState.dms[dmIndex].unread_count + 1
       : dmsState.dms[dmIndex].unread_count,
@@ -123,25 +142,18 @@ export function updateDMLastMessage(channelId: string, message: Message): void {
 /**
  * Mark DM as read (called when viewing a DM)
  */
-export async function markDMAsRead(channelId: string): Promise<void> {
-  const dm = dmsState.dms.find((d) => d.id === channelId);
-  if (!dm || dm.unread_count === 0) return;
+export async function markDMAsRead(channelId: string, lastMessageId: string): Promise<void> {
+  const dmIndex = dmsState.dms.findIndex((d) => d.id === channelId);
+  if (dmIndex !== -1) {
+    // Optimistic update
+    setDmsState("dms", dmIndex, "unread_count", 0);
+    setDmsState("dms", dmIndex, "last_read_message_id", lastMessageId);
 
-  try {
-    await tauri.markDMAsRead(channelId, dm.last_message?.id);
-
-    const dmIndex = dmsState.dms.findIndex((d) => d.id === channelId);
-    if (dmIndex !== -1) {
-      setDmsState("dms", dmIndex, "unread_count", 0);
+    try {
+      await tauri.markDMAsRead(channelId, lastMessageId);
+    } catch (err) {
+      console.error("[DMs] Failed to mark DM as read:", err);
     }
-  } catch (err) {
-    console.error("Failed to mark DM as read:", err);
-    showToast({
-      type: "error",
-      title: "Failed to Mark DM as Read",
-      message: "Could not update read status. Will retry on next message.",
-      duration: 8000,
-    });
   }
 }
 
@@ -149,10 +161,13 @@ export async function markDMAsRead(channelId: string): Promise<void> {
  * Mark all DMs as read (optimistic update + API call).
  */
 export async function markAllDMsAsRead(): Promise<void> {
-  // Optimistic update: zero out all DM unread counts
+  // Optimistic update: zero out all DM unread counts and sync read cursors
   dmsState.dms.forEach((dm, idx) => {
     if (dm.unread_count > 0) {
       setDmsState("dms", idx, "unread_count", 0);
+      if (dm.last_message_id) {
+        setDmsState("dms", idx, "last_read_message_id", dm.last_message_id);
+      }
     }
   });
 
@@ -172,10 +187,19 @@ export async function markAllDMsAsRead(): Promise<void> {
 /**
  * Handle dm_read event from WebSocket (cross-device sync)
  */
-export function handleDMReadEvent(channelId: string): void {
+export function handleDMReadEvent(channelId: string, lastReadMessageId?: string): void {
   const dmIndex = dmsState.dms.findIndex((d) => d.id === channelId);
   if (dmIndex !== -1) {
     setDmsState("dms", dmIndex, "unread_count", 0);
+    if (lastReadMessageId) {
+      setDmsState("dms", dmIndex, "last_read_message_id", lastReadMessageId);
+    } else {
+      // None = "read to latest"
+      const lastMsgId = dmsState.dms[dmIndex].last_message_id;
+      if (lastMsgId) {
+        setDmsState("dms", dmIndex, "last_read_message_id", lastMsgId);
+      }
+    }
   }
 }
 

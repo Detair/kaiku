@@ -73,7 +73,7 @@ pub async fn mark_all_read(
     let now = chrono::Utc::now();
 
     // 1. Mark all guild text channels as read
-    let guild_rows: Vec<(Uuid,)> = sqlx::query_as(
+    let guild_rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
         r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           SELECT $1, c.id, $2, (
               SELECT m.id FROM messages m
@@ -85,7 +85,7 @@ pub async fn mark_all_read(
           WHERE c.channel_type = 'text'
           ON CONFLICT (user_id, channel_id)
           DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id",
+          RETURNING channel_id, last_read_message_id",
     )
     .bind(auth_user.id)
     .bind(now)
@@ -97,7 +97,7 @@ pub async fn mark_all_read(
     })?;
 
     // 2. Mark all DM channels as read
-    let dm_rows: Vec<(Uuid,)> = sqlx::query_as(
+    let dm_rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
         r"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           SELECT $1, dp.channel_id, $2, (
               SELECT m.id FROM messages m
@@ -109,7 +109,7 @@ pub async fn mark_all_read(
           WHERE dp.user_id = $1 AND c.channel_type = 'dm'
           ON CONFLICT (user_id, channel_id)
           DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id",
+          RETURNING channel_id, last_read_message_id",
     )
     .bind(auth_user.id)
     .bind(now)
@@ -121,25 +121,25 @@ pub async fn mark_all_read(
     })?;
 
     // 3. Broadcast events to user's other sessions
-    for (channel_id,) in &guild_rows {
+    for (channel_id, last_read_message_id) in &guild_rows {
         let _ = broadcast_to_user(
             &state.redis,
             auth_user.id,
             &ServerEvent::ChannelRead {
                 channel_id: *channel_id,
-                last_read_message_id: None,
+                last_read_message_id: *last_read_message_id,
             },
         )
         .await;
     }
 
-    for (channel_id,) in &dm_rows {
+    for (channel_id, last_read_message_id) in &dm_rows {
         let _ = broadcast_to_user(
             &state.redis,
             auth_user.id,
             &ServerEvent::DmRead {
                 channel_id: *channel_id,
-                last_read_message_id: None,
+                last_read_message_id: *last_read_message_id,
             },
         )
         .await;

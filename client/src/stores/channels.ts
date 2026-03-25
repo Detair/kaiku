@@ -57,6 +57,8 @@ export async function loadChannels(): Promise<void> {
     const channels: ChannelWithUnread[] = rawChannels.map((c) => ({
       ...c,
       unread_count: 0,
+      last_read_message_id: null,
+      last_message_id: null,
     }));
     setChannelsState({
       channels,
@@ -163,6 +165,8 @@ export async function loadDMChannels(): Promise<void> {
       position: dm.position,
       created_at: dm.created_at,
       unread_count: dm.unread_count,
+      last_read_message_id: dm.last_read_message_id,
+      last_message_id: dm.last_message_id,
     }));
 
     setChannelsState({
@@ -228,6 +232,34 @@ export function getTotalUnreadCount(): number {
 }
 
 /**
+ * Check if channel has unread messages via ID comparison.
+ */
+export function isChannelUnread(channelId: string): boolean {
+  const channel = channelsState.channels.find((c) => c.id === channelId);
+  if (!channel) return false;
+  return channel.last_message_id != null &&
+    channel.last_message_id !== channel.last_read_message_id;
+}
+
+/**
+ * Get last_read_message_id for a channel.
+ */
+export function getChannelLastReadMessageId(channelId: string): string | null {
+  const channel = channelsState.channels.find((c) => c.id === channelId);
+  return channel?.last_read_message_id ?? null;
+}
+
+/**
+ * Update last_message_id when new message arrives.
+ */
+export function updateChannelLastMessageId(channelId: string, messageId: string): void {
+  const idx = channelsState.channels.findIndex((c) => c.id === channelId);
+  if (idx !== -1) {
+    setChannelsState("channels", idx, "last_message_id", messageId);
+  }
+}
+
+/**
  * Increment unread count for a channel (called when new message arrives).
  */
 export function incrementUnreadCount(channelId: string): void {
@@ -243,25 +275,19 @@ export function incrementUnreadCount(channelId: string): void {
 }
 
 /**
- * Mark a channel as read (reset unread count to 0).
+ * Mark a channel as read (reset unread count to 0 and update read cursor).
  */
-export async function markChannelAsRead(channelId: string): Promise<void> {
+export async function markChannelAsRead(channelId: string, lastMessageId: string): Promise<void> {
   const idx = channelsState.channels.findIndex((c) => c.id === channelId);
-  if (idx !== -1 && channelsState.channels[idx].unread_count > 0) {
+  if (idx !== -1) {
     // Optimistic update
     setChannelsState("channels", idx, "unread_count", 0);
+    setChannelsState("channels", idx, "last_read_message_id", lastMessageId);
 
     try {
-      await tauri.markChannelAsRead(channelId);
+      await tauri.markChannelAsRead(channelId, lastMessageId);
     } catch (err) {
       console.error("[Channels] Failed to mark channel as read:", err);
-      showToast({
-        type: "error",
-        title: "Failed to Mark as Read",
-        message: "Could not mark channel as read. Will retry on next message.",
-        duration: 8000,
-      });
-      // Could revert here, but the server state is source of truth
     }
   }
 }
@@ -272,7 +298,7 @@ export async function markChannelAsRead(channelId: string): Promise<void> {
 export async function markAllGuildChannelsAsRead(
   guildId: string,
 ): Promise<void> {
-  // Optimistic update: zero out all unread counts for this guild's text channels
+  // Optimistic update: zero out all unread counts and sync read cursors for this guild's text channels
   const indices: number[] = [];
   channelsState.channels.forEach((c, idx) => {
     if (
@@ -285,6 +311,10 @@ export async function markAllGuildChannelsAsRead(
   });
   for (const idx of indices) {
     setChannelsState("channels", idx, "unread_count", 0);
+    const lastMsgId = channelsState.channels[idx].last_message_id;
+    if (lastMsgId) {
+      setChannelsState("channels", idx, "last_read_message_id", lastMsgId);
+    }
   }
 
   try {
@@ -303,10 +333,19 @@ export async function markAllGuildChannelsAsRead(
 /**
  * Handle channel_read event from WebSocket (cross-device sync).
  */
-export function handleChannelReadEvent(channelId: string): void {
+export function handleChannelReadEvent(channelId: string, lastReadMessageId?: string): void {
   const idx = channelsState.channels.findIndex((c) => c.id === channelId);
   if (idx !== -1) {
     setChannelsState("channels", idx, "unread_count", 0);
+    if (lastReadMessageId) {
+      setChannelsState("channels", idx, "last_read_message_id", lastReadMessageId);
+    } else {
+      // None = "read to latest"
+      const lastMsgId = channelsState.channels[idx].last_message_id;
+      if (lastMsgId) {
+        setChannelsState("channels", idx, "last_read_message_id", lastMsgId);
+      }
+    }
   }
 }
 
@@ -327,7 +366,7 @@ export async function createChannel(
     topic,
     categoryId,
   );
-  const channelWithUnread: ChannelWithUnread = { ...channel, unread_count: 0 };
+  const channelWithUnread: ChannelWithUnread = { ...channel, unread_count: 0, last_read_message_id: null, last_message_id: null };
   setChannelsState("channels", (prev) => [...prev, channelWithUnread]);
   return channelWithUnread;
 }
