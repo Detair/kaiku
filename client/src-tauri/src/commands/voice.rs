@@ -11,11 +11,14 @@ use tracing::{debug, error, info, warn};
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::track::track_remote::TrackRemote;
 
 use vc_common::protocol::PcType;
 
-use crate::audio::{AudioDeviceList, FRAME_SIZE_MS, SAMPLE_RATE};
+use crate::audio::{AudioDeviceList, CHANNELS, FRAME_SIZE, FRAME_SIZE_MS, SAMPLE_RATE};
 use crate::network::ClientEvent;
+use crate::voice;
+use crate::voice::audio_mixer::AudioMixer;
 use crate::webrtc::IceServerConfig;
 use crate::AppState;
 
@@ -113,13 +116,84 @@ pub async fn join_voice(
         })
         .await;
 
-    // Set up remote track callback for audio playback
+    // Set up subscriber track callback — fires when the SFU delivers a remote track
     let app_clone = app.clone();
+    let voice_arc = state.voice.clone();
     voice_state
         .webrtc
-        .set_on_remote_track(move |track| {
-            info!("Remote audio track received: {}", track.kind());
-            let _ = app_clone.emit("voice:remote_track", track.kind().to_string());
+        .set_on_subscriber_track(move |track, _receiver| {
+            let stream = track.stream_id();
+            let (user_id, source_type) = voice::subscriber::parse_stream_id(&stream);
+
+            if voice::subscriber::is_audio_track(&source_type) {
+                let track = track.clone();
+                let app = app_clone.clone();
+                let voice_arc = voice_arc.clone();
+                let track_id = format!("{}:{}", user_id, source_type);
+
+                tokio::spawn(async move {
+                    // Get the mixer from voice state
+                    let mixer = {
+                        let voice_guard = voice_arc.read().await;
+                        voice_guard
+                            .as_ref()
+                            .and_then(|v| v.audio_mixer.clone())
+                    };
+
+                    let Some(mixer) = mixer else {
+                        warn!(
+                            track_id = %track_id,
+                            "Audio mixer not ready, dropping remote audio track"
+                        );
+                        return;
+                    };
+
+                    // Add track to mixer, get PCM sender
+                    let pcm_tx = mixer.add_track(track_id.clone()).await;
+
+                    info!(
+                        track_id = %track_id,
+                        user_id = %user_id,
+                        "Remote audio track added to mixer"
+                    );
+
+                    // Emit track added event to frontend
+                    let _ = app.emit(
+                        "voice:remote_track",
+                        serde_json::json!({
+                            "user_id": user_id,
+                            "source_type": source_type,
+                        }),
+                    );
+
+                    // Decode RTP → Opus → PCM loop
+                    decode_remote_audio_track(track, pcm_tx).await;
+
+                    // Track ended — remove from mixer
+                    mixer.remove_track(track_id.clone()).await;
+                    info!(track_id = %track_id, "Remote audio track ended");
+
+                    let _ = app.emit(
+                        "voice:remote_track_removed",
+                        serde_json::json!({
+                            "user_id": user_id,
+                            "source_type": source_type,
+                        }),
+                    );
+                });
+            } else if voice::subscriber::is_video_track(&source_type) {
+                // Video tracks will be handled in Task 6
+                info!(
+                    user_id = %user_id,
+                    source_type = %source_type,
+                    "Video track received (not yet handled)"
+                );
+            } else {
+                warn!(
+                    stream_id = %stream,
+                    "Unknown track source type"
+                );
+            }
         })
         .await;
 
@@ -196,11 +270,15 @@ pub async fn handle_voice_publisher_answer(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Start audio playback
-    let (_playback_tx, playback_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+    // Create audio mixer and start PCM playback from its output.
+    // The mixer combines all decoded remote audio tracks into one stream.
+    let (pcm_output_tx, pcm_output_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(100);
+    let mixer = AudioMixer::new(pcm_output_tx);
+    voice_state.audio_mixer = Some(mixer);
+
     voice_state
         .audio
-        .start_playback(playback_rx)
+        .start_pcm_playback(pcm_output_rx)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -321,9 +399,10 @@ pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
         pipeline.shutdown().await;
     }
 
-    // Stop audio
+    // Stop audio and drop mixer
     voice_state.audio.stop_all().await;
     voice_state.audio_tx = None;
+    voice_state.audio_mixer = None;
 
     // Disconnect WebRTC
     voice_state
@@ -565,4 +644,51 @@ async fn send_audio_to_track(
     }
 
     info!("RTP audio sender task ended");
+}
+
+/// Decode a remote audio track from RTP/Opus to PCM and send to the mixer.
+///
+/// Runs in a spawned task per remote audio track. Each task owns its own
+/// Opus decoder instance (`opus::Decoder` is `Send` but not `Sync`).
+async fn decode_remote_audio_track(track: Arc<TrackRemote>, pcm_tx: mpsc::Sender<Vec<f32>>) {
+    let mut decoder = match opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo) {
+        Ok(dec) => dec,
+        Err(e) => {
+            error!("Failed to create Opus decoder for remote track: {}", e);
+            return;
+        }
+    };
+
+    // Output buffer: one stereo frame at 48 kHz / 20 ms = 960 samples * 2 channels
+    let frame_samples = FRAME_SIZE * CHANNELS as usize;
+    let mut pcm_f32 = vec![0.0f32; frame_samples];
+
+    loop {
+        match track.read_rtp().await {
+            Ok((rtp_packet, _attributes)) => {
+                let payload = &rtp_packet.payload[..];
+                if payload.is_empty() {
+                    continue;
+                }
+
+                match decoder.decode_float(payload, &mut pcm_f32, false) {
+                    Ok(samples_per_channel) => {
+                        let total_samples = samples_per_channel * CHANNELS as usize;
+                        let frame = pcm_f32[..total_samples].to_vec();
+                        if pcm_tx.send(frame).await.is_err() {
+                            debug!("Mixer channel closed, stopping remote audio decode");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Opus decode error on remote track: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                info!("Remote audio track read ended: {}", e);
+                break;
+            }
+        }
+    }
 }
