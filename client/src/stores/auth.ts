@@ -21,6 +21,7 @@ import {
 } from "./presence";
 import { initPreferences } from "./preferences";
 import { clearAllDrafts, cleanupDrafts } from "./drafts";
+import { showToast } from "@/components/ui/Toast";
 
 // Auth state interface
 interface AuthState {
@@ -129,15 +130,15 @@ export async function initAuth(): Promise<void> {
   setAuthState({ isLoading: true, error: null });
 
   try {
-    const user = await tauri.getCurrentUser();
-    setAuthState({
-      user,
-      isLoading: false,
-      isInitialized: true,
-    });
+    const result = await tauri.getCurrentUser();
 
-    // If user is restored, also reconnect WebSocket and init preferences
-    if (user) {
+    if (result.user) {
+      setAuthState({
+        user: result.user,
+        isLoading: false,
+        isInitialized: true,
+      });
+
       // Initialize WebSocket listeners and presence in parallel (independent)
       await Promise.all([initWebSocket(), initPresence()]);
 
@@ -164,6 +165,27 @@ export async function initAuth(): Promise<void> {
 
       // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
       initIdleDetection();
+    } else {
+      setAuthState({
+        user: null,
+        isLoading: false,
+        isInitialized: true,
+      });
+
+      // Show toast for failed restore (only when there WAS a stored session)
+      if (result.error_reason === "session_expired") {
+        showToast({
+          type: "warning",
+          title: "Session Expired",
+          message: "Please log in again.",
+        });
+      } else if (result.error_reason === "network_error") {
+        showToast({
+          type: "error",
+          title: "Connection Failed",
+          message: "Could not connect to server.",
+        });
+      }
     }
   } catch (err) {
     console.error("Failed to restore session:", err);
@@ -171,7 +193,7 @@ export async function initAuth(): Promise<void> {
       user: null,
       isLoading: false,
       isInitialized: true,
-      error: null, // Don't show error for session restoration
+      error: null,
     });
   }
 }
@@ -325,13 +347,13 @@ export async function loginWithOidc(
     );
 
     // Fetch the current user with the new token
-    const user = await tauri.getCurrentUser();
-    if (!user) {
+    const result = await tauri.getCurrentUser();
+    if (!result.user) {
       throw new Error("Failed to fetch user after OIDC login");
     }
 
     setAuthState({
-      user,
+      user: result.user,
       serverUrl,
       isLoading: false,
       isInitialized: true,

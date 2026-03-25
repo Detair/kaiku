@@ -181,6 +181,12 @@ export interface UnreadAggregate {
   total: number;
 }
 
+/** Result from get_current_user Tauri command. */
+export interface SessionRestoreResult {
+  user: User | null;
+  error_reason: string | null;
+}
+
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
@@ -857,10 +863,10 @@ export async function logout(): Promise<void> {
   }
 }
 
-export async function getCurrentUser(): Promise<User | null> {
+export async function getCurrentUser(): Promise<SessionRestoreResult> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_current_user");
+    return invoke<SessionRestoreResult>("get_current_user");
   }
 
   // Browser mode - check if we have a token
@@ -868,12 +874,13 @@ export async function getCurrentUser(): Promise<User | null> {
     // Try to refresh via HttpOnly cookie
     const refreshed = await refreshAccessToken();
     if (!refreshed) {
-      return null;
+      return { user: null, error_reason: null };
     }
   }
 
   try {
-    return await httpRequest<User>("GET", "/auth/me");
+    const user = await httpRequest<User>("GET", "/auth/me");
+    return { user, error_reason: null };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.warn(`[Auth] Failed to fetch current user: ${errorMessage}`);
@@ -896,7 +903,7 @@ export async function getCurrentUser(): Promise<User | null> {
         "[Auth] JSON parse error on HTTP response - cannot determine auth state, clearing tokens",
       );
       clearBrowserTokens();
-      return null;
+      return { user: null, error_reason: null };
     }
 
     if (isAuthError) {
@@ -904,7 +911,8 @@ export async function getCurrentUser(): Promise<User | null> {
       const refreshed = await refreshAccessToken();
       if (refreshed) {
         try {
-          return await httpRequest<User>("GET", "/auth/me");
+          const user = await httpRequest<User>("GET", "/auth/me");
+          return { user, error_reason: null };
         } catch (retryError) {
           console.error("[Auth] Retry after refresh failed:", retryError);
           // Refresh didn't help, clear everything below
@@ -920,7 +928,7 @@ export async function getCurrentUser(): Promise<User | null> {
       console.warn("[Auth] Non-auth error, keeping tokens for retry");
     }
 
-    return null;
+    return { user: null, error_reason: null };
   }
 }
 

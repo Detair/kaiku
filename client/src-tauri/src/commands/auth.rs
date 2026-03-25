@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{AppState, User, UserStatus};
 
@@ -169,6 +169,11 @@ pub async fn login(state: State<'_, AppState>, request: LoginRequest) -> Result<
         // Continue anyway - user is still logged in for this session
     }
 
+    // Store server URL for session restore on next launch
+    if let Err(e) = store_server_url(server_url) {
+        error!("Failed to store server URL: {}", e);
+    }
+
     info!("User {} logged in successfully", user.username);
     Ok(user)
 }
@@ -304,20 +309,152 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Get the current authenticated user.
+/// Result of session restoration attempt.
+#[derive(Debug, Serialize, Clone)]
+pub struct SessionRestoreResult {
+    /// The restored user, if successful.
+    pub user: Option<User>,
+    /// Error reason if restoration failed: "session_expired" or "network_error".
+    /// None means success or no stored session (clean state).
+    pub error_reason: Option<String>,
+}
+
+/// Get the current authenticated user, attempting session restore from keyring if needed.
 #[command]
-pub async fn get_current_user(state: State<'_, AppState>) -> Result<Option<User>, String> {
+pub async fn get_current_user(state: State<'_, AppState>) -> Result<SessionRestoreResult, String> {
     // Check if we have a user in memory
     {
         let auth = state.auth.read().await;
         if auth.user.is_some() {
-            return Ok(auth.user.clone());
+            return Ok(SessionRestoreResult {
+                user: auth.user.clone(),
+                error_reason: None,
+            });
         }
     }
 
-    // Try to restore session from stored credentials
-    // For now, return None - session restoration will be implemented with keyring
-    Ok(None)
+    // Try to restore session from keyring
+    let server_url = match get_server_url() {
+        Ok(Some(url)) => url,
+        Ok(None) => {
+            debug!("No server URL in keyring, no session to restore");
+            return Ok(SessionRestoreResult {
+                user: None,
+                error_reason: None,
+            });
+        }
+        Err(e) => {
+            warn!("Failed to read server URL from keyring: {}", e);
+            return Ok(SessionRestoreResult {
+                user: None,
+                error_reason: None,
+            });
+        }
+    };
+
+    let refresh_token = match get_refresh_token(&server_url) {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            debug!("No refresh token in keyring for {}", server_url);
+            return Ok(SessionRestoreResult {
+                user: None,
+                error_reason: None,
+            });
+        }
+        Err(e) => {
+            warn!("Failed to read refresh token from keyring: {}", e);
+            return Ok(SessionRestoreResult {
+                user: None,
+                error_reason: None,
+            });
+        }
+    };
+
+    info!("Attempting session restore for {}", server_url);
+
+    // Attempt token refresh with 5-second timeout
+    let client = &state.http;
+    let refresh_response = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client
+            .post(format!("{server_url}/auth/refresh"))
+            .json(&serde_json::json!({ "refresh_token": refresh_token }))
+            .send(),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(e)) => {
+            warn!("Session restore network error: {}", e);
+            return Ok(SessionRestoreResult {
+                user: None,
+                error_reason: Some("network_error".to_string()),
+            });
+        }
+        Err(_) => {
+            warn!("Session restore timed out after 5s");
+            return Ok(SessionRestoreResult {
+                user: None,
+                error_reason: Some("network_error".to_string()),
+            });
+        }
+    };
+
+    if !refresh_response.status().is_success() {
+        warn!(
+            "Session restore refresh failed: {}",
+            refresh_response.status()
+        );
+        let _ = clear_refresh_token(&server_url);
+        return Ok(SessionRestoreResult {
+            user: None,
+            error_reason: Some("session_expired".to_string()),
+        });
+    }
+
+    let tokens: TokenResponse = refresh_response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid refresh response: {e}"))?;
+
+    // Store new refresh token in keyring (rotation)
+    if let Err(e) = store_refresh_token(&server_url, &tokens.refresh_token) {
+        error!("Failed to update refresh token in keyring: {}", e);
+    }
+
+    // Fetch user profile
+    let user_response = client
+        .get(format!("{server_url}/auth/me"))
+        .header("Authorization", format!("Bearer {}", tokens.access_token))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch user info: {e}"))?;
+
+    if !user_response.status().is_success() {
+        return Err("Failed to fetch user info during session restore".to_string());
+    }
+
+    let user_data: UserResponse = user_response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid user response: {e}"))?;
+
+    let user: User = user_data.into();
+
+    // Update auth state
+    {
+        let mut auth = state.auth.write().await;
+        auth.access_token = Some(tokens.access_token);
+        auth.refresh_token = Some(tokens.refresh_token);
+        auth.server_url = Some(server_url);
+        auth.user = Some(user.clone());
+    }
+
+    info!("Session restored for user: {}", user.username);
+    Ok(SessionRestoreResult {
+        user: Some(user),
+        error_reason: None,
+    })
 }
 
 /// Get auth info for fetch-based operations (e.g., file uploads).
@@ -558,6 +695,11 @@ pub async fn oidc_authorize(
         error!("Failed to store OIDC refresh token: {}", e);
     }
 
+    // Store server URL for session restore on next launch
+    if let Err(e) = store_server_url(server_url) {
+        error!("Failed to store server URL: {}", e);
+    }
+
     info!("OIDC login successful for user: {}", user.username);
     Ok(OidcLoginResult {
         access_token,
@@ -584,6 +726,29 @@ fn store_refresh_token(server_url: &str, token: &str) -> Result<(), keyring::Err
 fn clear_refresh_token(server_url: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
     entry.delete_password()
+}
+
+fn store_server_url(server_url: &str) -> Result<(), keyring::Error> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, "server_url")?;
+    entry.set_password(server_url)
+}
+
+fn get_server_url() -> Result<Option<String>, keyring::Error> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, "server_url")?;
+    match entry.get_password() {
+        Ok(url) => Ok(Some(url)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn get_refresh_token(server_url: &str) -> Result<Option<String>, keyring::Error> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
+    match entry.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 // ============================================================================
