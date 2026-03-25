@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Fixed
+- Desktop client now restores your session on restart — no more re-login every time you open the app
 - Voice activity detection now actually gates the microphone — audio is only transmitted when speech is detected, using the configurable sensitivity threshold with 300ms hold-open
 - Mic test level meter gradient now spans the full bar width instead of compressing the full green-yellow-red range into the current level
 - Screen sharing video now flows between users — was blocked by single-PeerConnection offer model
