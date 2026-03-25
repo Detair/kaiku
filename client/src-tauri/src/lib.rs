@@ -9,6 +9,7 @@ mod crypto;
 mod network;
 mod presence;
 mod video;
+mod voice;
 mod webrtc;
 
 use std::collections::HashMap;
@@ -310,6 +311,8 @@ pub struct VoiceState {
     pub screen_shares: HashMap<Uuid, ScreenSharePipeline>,
     /// Active webcam pipeline, if any.
     pub webcam: Option<WebcamPipeline>,
+    /// Audio mixer for combining remote subscriber tracks.
+    pub audio_mixer: Option<voice::audio_mixer::AudioMixer>,
 }
 
 impl VoiceState {
@@ -323,6 +326,7 @@ impl VoiceState {
             audio_tx: None,
             screen_shares: HashMap::new(),
             webcam: None,
+            audio_mixer: None,
         })
     }
 }
