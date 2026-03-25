@@ -545,11 +545,60 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       }),
     );
 
-    // Listen for remote tracks
+    // Remote audio track events
     this.unlisteners.push(
-      await listen<string>("voice:remote_track", (event) => {
-        console.log(`[TauriVoiceAdapter] Remote track: ${event.payload}`);
-        // Remote track handling is done in Rust, just log here
+      await listen<{ user_id: string; source_type: string }>("voice:remote_track", (event) => {
+        console.log(`[TauriVoiceAdapter] Remote track: ${event.payload.user_id}:${event.payload.source_type}`);
+        // The existing onRemoteTrack callback expects a RemoteTrack object.
+        // In Tauri mode, audio plays natively via CPAL — the frontend only needs
+        // the presence info so the UI shows the participant.
+        this.eventHandlers.onRemoteTrack?.({
+          trackId: `${event.payload.user_id}:${event.payload.source_type}`,
+          userId: event.payload.user_id,
+          stream: null as unknown as MediaStream, // No MediaStream in Tauri — audio plays natively
+          muted: false,
+        });
+      }),
+    );
+
+    this.unlisteners.push(
+      await listen<{ user_id: string }>("voice:remote_track_removed", (event) => {
+        console.log(`[TauriVoiceAdapter] Remote track removed: ${event.payload.user_id}`);
+        this.eventHandlers.onRemoteTrackRemoved?.(event.payload.user_id);
+      }),
+    );
+
+    // Screen share track events
+    this.unlisteners.push(
+      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:screen_share_track", (event) => {
+        console.log(`[TauriVoiceAdapter] Screen share track: ${event.payload.user_id}:${event.payload.stream_id}`);
+        this.eventHandlers.onScreenShareTrack?.(
+          event.payload.user_id,
+          event.payload.stream_id,
+          null as unknown as MediaStreamTrack,
+        );
+      }),
+    );
+
+    this.unlisteners.push(
+      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:screen_share_track_removed", (event) => {
+        console.log(`[TauriVoiceAdapter] Screen share removed: ${event.payload.user_id}:${event.payload.stream_id}`);
+        this.eventHandlers.onScreenShareTrackRemoved?.(event.payload.user_id, event.payload.stream_id);
+      }),
+    );
+
+    // Webcam track events
+    this.unlisteners.push(
+      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track", (event) => {
+        console.log(`[TauriVoiceAdapter] Webcam track: ${event.payload.user_id}`);
+        this.eventHandlers.onWebcamTrack?.(event.payload.user_id, null as unknown as MediaStreamTrack);
+      }),
+    );
+
+    this.unlisteners.push(
+      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track_removed", (event) => {
+        console.log(`[TauriVoiceAdapter] Webcam removed: ${event.payload.user_id}`);
+        this.eventHandlers.onWebcamTrackRemoved?.(event.payload.user_id);
       }),
     );
   }
