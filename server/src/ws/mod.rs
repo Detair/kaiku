@@ -36,7 +36,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-
 use vc_common::protocol::PcType;
 
 use crate::api::AppState;
@@ -2179,7 +2178,9 @@ mod tests {
         let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:..."}"#;
         let parsed: ClientEvent = serde_json::from_str(json).unwrap();
         match parsed {
-            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, PcType::Publisher),
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => {
+                assert_eq!(pc_type, PcType::Publisher)
+            }
             _ => panic!("wrong variant"),
         }
     }
@@ -2190,7 +2191,9 @@ mod tests {
         let json = r#"{"type":"voice_ice_candidate","channel_id":"00000000-0000-0000-0000-000000000000","candidate":"candidate:...","pc_type":"subscriber"}"#;
         let parsed: ClientEvent = serde_json::from_str(json).unwrap();
         match parsed {
-            ClientEvent::VoiceIceCandidate { pc_type, .. } => assert_eq!(pc_type, PcType::Subscriber),
+            ClientEvent::VoiceIceCandidate { pc_type, .. } => {
+                assert_eq!(pc_type, PcType::Subscriber)
+            }
             _ => panic!("wrong variant"),
         }
     }

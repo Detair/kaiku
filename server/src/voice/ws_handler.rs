@@ -8,6 +8,7 @@ use sqlx::{PgPool, Row};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use vc_common::protocol::PcType;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
@@ -20,8 +21,6 @@ use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
 use super::Quality;
-use vc_common::protocol::PcType;
-
 use crate::ws::{ClientEvent, OutboundMsg, ServerEvent, VoiceParticipant};
 
 /// Map a permission error to a voice error, logging database errors instead of masking them.

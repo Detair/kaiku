@@ -1,10 +1,10 @@
 //! WebRTC Peer Connection Management
 //!
 //! Each participant has two `PeerConnection`s:
-//! - **`publisher_pc`**: receives tracks FROM the client (mic, screen, webcam).
-//!   The client creates offers for this connection.
-//! - **`subscriber_pc`**: sends tracks TO the client (other users' audio,
-//!   screen shares, webcams). The server creates offers for this connection.
+//! - **`publisher_pc`**: receives tracks FROM the client (mic, screen, webcam). The client creates
+//!   offers for this connection.
+//! - **`subscriber_pc`**: sends tracks TO the client (other users' audio, screen shares, webcams).
+//!   The server creates offers for this connection.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;

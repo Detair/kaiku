@@ -21,7 +21,6 @@ vi.mock("@/components/ui/Toast", () => ({
 
 import * as tauri from "@/lib/tauri";
 import { subscribeChannel, waitForConnection } from "@/stores/websocket";
-import { showToast } from "@/components/ui/Toast";
 import type { Channel, ChannelWithUnread } from "@/lib/types";
 import {
   channelsState,

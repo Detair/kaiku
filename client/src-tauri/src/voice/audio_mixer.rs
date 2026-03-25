@@ -69,10 +69,7 @@ impl AudioMixer {
     ///
     /// Owns all track receivers — they never leave this task.
     /// Uses a 20ms interval timer for pacing instead of busy-polling.
-    async fn run(
-        mut command_rx: mpsc::Receiver<MixerCommand>,
-        output_tx: mpsc::Sender<Vec<f32>>,
-    ) {
+    async fn run(mut command_rx: mpsc::Receiver<MixerCommand>, output_tx: mpsc::Sender<Vec<f32>>) {
         let mut tracks: HashMap<String, mpsc::Receiver<Vec<f32>>> = HashMap::new();
         let mut ticker = tokio::time::interval(Duration::from_millis(20));
 
@@ -100,9 +97,8 @@ impl AudioMixer {
                 }
             }
 
-            // 2. Mix one frame from all tracks.
-            //    For each track, drain all queued frames and keep only the latest
-            //    to avoid accumulating latency.
+            // 2. Mix one frame from all tracks. For each track, drain all queued frames and keep
+            //    only the latest to avoid accumulating latency.
             let mut mixed = vec![0.0f32; FRAME_SAMPLES];
             let mut active = 0;
             let mut closed_tracks = Vec::new();

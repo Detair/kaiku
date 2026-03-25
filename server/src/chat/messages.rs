@@ -414,14 +414,12 @@ pub async fn list(
 
     // Fetch messages — either around a specific message or before-based pagination
     let (mut messages, has_more) = if let Some(around_id) = query.around {
-        let msgs =
-            db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
+        let msgs = db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
         let has_more = msgs.len() as i64 >= limit;
         (msgs, has_more)
     } else {
         // Fetch one extra message to determine if there are more
-        let mut msgs =
-            db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
+        let mut msgs = db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
         let has_more = msgs.len() as i64 > limit;
         if has_more {
             msgs.pop();

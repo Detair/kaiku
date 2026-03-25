@@ -8,19 +8,17 @@ use std::sync::Arc;
 use tauri::{command, AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+use vc_common::protocol::PcType;
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::track::track_remote::TrackRemote;
 
-use vc_common::protocol::PcType;
-
 use crate::audio::{AudioDeviceList, CHANNELS, FRAME_SIZE, FRAME_SIZE_MS, SAMPLE_RATE};
 use crate::network::ClientEvent;
-use crate::voice;
 use crate::voice::audio_mixer::AudioMixer;
 use crate::webrtc::IceServerConfig;
-use crate::AppState;
+use crate::{voice, AppState};
 
 /// Join a voice channel.
 ///
@@ -137,9 +135,7 @@ pub async fn join_voice(
                     // Get the mixer from voice state
                     let mixer = {
                         let voice_guard = voice_arc.read().await;
-                        voice_guard
-                            .as_ref()
-                            .and_then(|v| v.audio_mixer.clone())
+                        voice_guard.as_ref().and_then(|v| v.audio_mixer.clone())
                     };
 
                     let Some(mixer) = mixer else {
@@ -197,17 +193,13 @@ pub async fn join_voice(
 
                 // Atomic check-and-increment to avoid TOCTOU race between
                 // load() and fetch_add() when multiple tracks arrive concurrently.
-                let was_under_cap = count.fetch_update(
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                    |c| {
-                        if c < voice::video_decoder::MAX_VIDEO_STREAMS {
-                            Some(c + 1)
-                        } else {
-                            None
-                        }
-                    },
-                );
+                let was_under_cap = count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |c| {
+                    if c < voice::video_decoder::MAX_VIDEO_STREAMS {
+                        Some(c + 1)
+                    } else {
+                        None
+                    }
+                });
 
                 if was_under_cap.is_err() {
                     // Cap reached — emit metadata only so the UI knows the track exists.
@@ -475,14 +467,15 @@ pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
     {
         let mut tasks = voice_state.video_tasks.lock().await;
         if !tasks.is_empty() {
-            info!(count = tasks.len(), "Aborting video decode tasks on voice leave");
+            info!(
+                count = tasks.len(),
+                "Aborting video decode tasks on voice leave"
+            );
             for handle in tasks.drain(..) {
                 handle.abort();
             }
         }
-        voice_state
-            .active_video_count
-            .store(0, Ordering::Relaxed);
+        voice_state.active_video_count.store(0, Ordering::Relaxed);
     }
 
     // Stop audio and drop mixer
