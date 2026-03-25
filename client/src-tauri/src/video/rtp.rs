@@ -25,7 +25,11 @@ const MAX_PAYLOAD_SIZE: usize = 1200;
 /// S (bit 4): Start of VP8 partition — 1 for first packet of frame.
 /// All other bits are 0 (no extensions, single partition).
 const fn build_vp8_payload_descriptor(is_first: bool) -> u8 {
-    if is_first { 0x10 } else { 0x00 }
+    if is_first {
+        0x10
+    } else {
+        0x00
+    }
 }
 
 /// Sends VP8 encoded video as RTP packets to a WebRTC track.

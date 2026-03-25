@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+use vc_common::protocol::PcType;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
@@ -31,8 +32,6 @@ use super::screen_share::ScreenShareInfo;
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
-use vc_common::protocol::PcType;
-
 use crate::config::Config;
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
 use crate::ws::{OutboundMsg, ServerEvent};
@@ -693,8 +692,18 @@ impl SfuServer {
 
     /// Set up ICE candidate handlers for both publisher and subscriber PCs.
     pub fn setup_ice_handler(&self, peer: &Arc<Peer>) {
-        Self::register_ice_callback(&peer.publisher_pc, peer.signal_tx.clone(), peer.channel_id, "publisher");
-        Self::register_ice_callback(&peer.subscriber_pc, peer.signal_tx.clone(), peer.channel_id, "subscriber");
+        Self::register_ice_callback(
+            &peer.publisher_pc,
+            peer.signal_tx.clone(),
+            peer.channel_id,
+            "publisher",
+        );
+        Self::register_ice_callback(
+            &peer.subscriber_pc,
+            peer.signal_tx.clone(),
+            peer.channel_id,
+            "subscriber",
+        );
     }
 
     /// Register an ICE candidate callback on a single `PeerConnection`.

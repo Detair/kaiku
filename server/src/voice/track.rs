@@ -189,12 +189,14 @@ impl TrackRouter {
         // only have a single layer — forward to all subscribers regardless of
         // their active_layer setting to prevent REMB-based layer selection
         // from dropping packets when no alternative layers exist.
-        let is_simulcast = self
-            .simulcast_tracks
-            .contains_key(&(source_user_id, source_type, Layer::Low))
-            || self
-                .simulcast_tracks
-                .contains_key(&(source_user_id, source_type, Layer::Medium));
+        let is_simulcast =
+            self.simulcast_tracks
+                .contains_key(&(source_user_id, source_type, Layer::Low))
+                || self.simulcast_tracks.contains_key(&(
+                    source_user_id,
+                    source_type,
+                    Layer::Medium,
+                ));
 
         // DashMap::get returns a guard that provides lock-free concurrent read access.
         // Record the metric outside the guard scope to avoid holding it during I/O.

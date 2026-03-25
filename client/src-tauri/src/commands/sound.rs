@@ -3,7 +3,7 @@
 use std::io::Cursor;
 use std::thread;
 
-use rodio::{Decoder, OutputStreamBuilder, Sink};
+use rodio::{Decoder, DeviceSinkBuilder, Player};
 use tauri::command;
 
 // ============================================================================
@@ -54,19 +54,19 @@ pub fn play_sound(sound_id: String, volume: Option<u8>) -> Result<(), String> {
 /// Blocking sound playback (runs in dedicated thread).
 fn play_sound_blocking(sound_data: &'static [u8], volume: f32) -> Result<(), String> {
     // Create audio output
-    let stream = OutputStreamBuilder::open_default_stream()
+    let stream = DeviceSinkBuilder::open_default_sink()
         .map_err(|e| format!("Failed to open audio output: {e}"))?;
 
-    // Create sink
-    let sink = Sink::connect_new(stream.mixer());
-    sink.set_volume(volume);
+    // Create player
+    let player = Player::connect_new(stream.mixer());
+    player.set_volume(volume);
 
     // Decode and play
     let cursor = Cursor::new(sound_data);
     let source = Decoder::new(cursor).map_err(|e| format!("Failed to decode sound: {e}"))?;
 
-    sink.append(source);
-    sink.sleep_until_end();
+    player.append(source);
+    player.sleep_until_end();
 
     Ok(())
 }

@@ -24,7 +24,8 @@ use crate::config::Config;
 #[derive(Clone)]
 pub struct S3Client {
     client: Client,
-    /// Client configured with the public endpoint for generating browser-accessible presigned URLs.
+    /// Client configured with the public endpoint for generating browser-accessible presigned
+    /// URLs.
     presign_client: Client,
     bucket: String,
     presign_expiry: Duration,

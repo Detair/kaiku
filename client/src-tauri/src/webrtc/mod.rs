@@ -429,7 +429,10 @@ impl WebRtcClient {
         *self.webcam_track.write().await = Some(webcam_track);
         *self.subscriber_pc.write().await = Some(sub_pc);
 
-        info!("WebRTC peer connections created for channel {} (publisher + subscriber)", channel_id);
+        info!(
+            "WebRTC peer connections created for channel {} (publisher + subscriber)",
+            channel_id
+        );
         Ok(())
     }
 
@@ -551,7 +554,9 @@ impl WebRtcClient {
                 // Writing to shared state here would be misleading since the publisher PC
                 // may still be healthy.
                 if s == RTCPeerConnectionState::Failed {
-                    tracing::warn!("Subscriber PeerConnection failed — remote audio/video may be unavailable");
+                    tracing::warn!(
+                        "Subscriber PeerConnection failed — remote audio/video may be unavailable"
+                    );
                 }
                 info!("Subscriber peer connection state changed: {:?}", s);
             })
@@ -761,9 +766,7 @@ impl WebRtcClient {
         if let Some(pc) = self.subscriber_pc.write().await.take() {
             pc.close()
                 .await
-                .map_err(|e| {
-                    WebRtcError::PeerConnectionError(format!("subscriber close: {e}"))
-                })?;
+                .map_err(|e| WebRtcError::PeerConnectionError(format!("subscriber close: {e}")))?;
         }
 
         // Clear state

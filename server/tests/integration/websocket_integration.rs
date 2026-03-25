@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use vc_server::api::{AppState, AppStateConfig};
 use vc_server::config::Config;
 use vc_server::db;
-use vc_server::ws::ServerEvent;
+use vc_server::ws::{OutboundMsg, ServerEvent};
 
 // Mock WebSocket connection logic for testing
 #[tokio::test]
@@ -410,7 +410,7 @@ async fn test_websocket_subscribe_denied_without_permission() {
         .expect("Channel should not be closed");
 
     match event {
-        ServerEvent::Error { code, message } => {
+        OutboundMsg::Event(ServerEvent::Error { code, message }) => {
             assert_eq!(code, "forbidden");
             assert!(message.contains("permission"));
         }
@@ -465,7 +465,7 @@ async fn test_websocket_subscribe_allowed_with_permission() {
         .expect("Channel should not be closed");
 
     match event {
-        ServerEvent::Subscribed { channel_id } => {
+        OutboundMsg::Event(ServerEvent::Subscribed { channel_id }) => {
             assert_eq!(channel_id, ctx.channel.id);
         }
         _ => panic!("Expected Subscribed event, got {event:?}"),
@@ -519,7 +519,7 @@ async fn test_websocket_subscribe_owner_bypass() {
         .expect("Channel should not be closed");
 
     match event {
-        ServerEvent::Subscribed { channel_id } => {
+        OutboundMsg::Event(ServerEvent::Subscribed { channel_id }) => {
             assert_eq!(channel_id, ctx.channel.id);
         }
         _ => panic!("Expected Subscribed event, got {event:?}"),

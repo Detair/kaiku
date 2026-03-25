@@ -563,7 +563,8 @@ fn run_pcm_playback_task(
 
                 // Cap buffer to prevent unbounded growth under sustained backpressure.
                 if buffer.len() > MAX_BUFFER_SAMPLES {
-                    buffer.drain(..buffer.len() - MAX_BUFFER_SAMPLES);
+                    let excess = buffer.len() - MAX_BUFFER_SAMPLES;
+                    buffer.drain(..excess);
                 }
             }
         }

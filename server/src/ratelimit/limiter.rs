@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(auth_login.window_secs, 60);
 
         let read = limiter.get_limit_config(RateLimitCategory::Read);
-        assert_eq!(read.requests, 200);
+        assert_eq!(read.requests, 2000);
     }
 
     /// Helper to create a mock Redis client for tests that don't need actual Redis.

@@ -10,8 +10,6 @@ use sqlx::QueryBuilder;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::util::format_file_size;
-
 use super::limits;
 use super::types::{
     CreateGuildRequest, Guild, GuildCommandInfo, GuildMember, GuildSettings, GuildWithMemberCount,
@@ -22,6 +20,7 @@ use crate::auth::AuthUser;
 use crate::db::{self, ChannelType};
 use crate::discovery::types::TAG_REGEX;
 use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
+use crate::util::format_file_size;
 use crate::ws::{broadcast_to_user, ServerEvent};
 
 // ============================================================================
