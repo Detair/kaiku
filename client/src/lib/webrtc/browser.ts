@@ -1408,12 +1408,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     console.log("[BrowserVoiceAdapter] Starting VAD monitoring");
 
     try {
-      // Clone the mic track for VAD analysis. The clone is unaffected by
-      // track.enabled on the original, so we always see the real mic level
-      // even when VAD gating has disabled the original track.
+      // Clone the mic track for VAD analysis. The clone must be explicitly
+      // enabled because cloned tracks inherit the original's enabled state
+      // (W3C MediaStreamTrack spec). When VAD gating has disabled the
+      // original track, the clone would otherwise produce silence too.
       const srcTrack = this.localStream.getAudioTracks()[0];
       if (!srcTrack) return;
       this.vadMonitorTrack = srcTrack.clone();
+      this.vadMonitorTrack.enabled = true;
       const vadStream = new MediaStream([this.vadMonitorTrack]);
 
       this.vadAudioContext = new AudioContext();

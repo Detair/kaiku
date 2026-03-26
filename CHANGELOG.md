@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client can now see screen share and webcam indicators from other users
 - Desktop client now restores your session on restart — no more re-login every time you open the app
 - Voice activity detection now actually gates the microphone — audio is only transmitted when speech is detected, using the configurable sensitivity threshold with 300ms hold-open
+- Fixed VAD gating silencing all audio: cloned monitor track inherited disabled state from the gated mic track, so speech was never detected and the mic stayed permanently muted (#496)
 - Mic test level meter gradient now spans the full bar width instead of compressing the full green-yellow-red range into the current level
 - Screen sharing video now flows between users — was blocked by single-PeerConnection offer model
 - Screen share video renders correctly instead of showing black (switched to VP8-only codec to fix RTP payload type mismatch between publisher/subscriber sessions)
