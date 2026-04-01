@@ -67,6 +67,7 @@ function createMessage(id: string, channelId = "ch-1"): Message {
     pinned: false,
     message_type: "user",
     reactions: [],
+    nonce: null,
   };
 }
 
@@ -250,6 +251,55 @@ describe("messages store", () => {
       await addMessage(msg);
 
       expect(messagesState.byChannel["ch-1"]).toHaveLength(1);
+    });
+  });
+
+  describe("addMessage nonce matching", () => {
+    it("replaces the correct pending message when multiple are pending", async () => {
+      const pending1: Message = {
+        ...createMessage("pending:nonce-AAA", "ch-1"),
+        author: { id: "me", username: "me", display_name: "me", avatar_url: null, status: "online" },
+        nonce: "nonce-AAA",
+      };
+      const pending2: Message = {
+        ...createMessage("pending:nonce-BBB", "ch-1"),
+        author: { id: "me", username: "me", display_name: "me", avatar_url: null, status: "online" },
+        nonce: "nonce-BBB",
+      };
+      setMessagesState("byChannel", "ch-1", [pending1, pending2]);
+
+      const real2: Message = {
+        ...createMessage("msg-002", "ch-1"),
+        author: { id: "me", username: "me", display_name: "me", avatar_url: null, status: "online" },
+        nonce: "nonce-BBB",
+      };
+      await addMessage(real2);
+
+      const msgs = messagesState.byChannel["ch-1"]!;
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).toBe("pending:nonce-AAA");
+      expect(msgs[1].id).toBe("msg-002");
+    });
+
+    it("appends message from other user without touching pending messages", async () => {
+      const pending1: Message = {
+        ...createMessage("pending:nonce-AAA", "ch-1"),
+        author: { id: "me", username: "me", display_name: "me", avatar_url: null, status: "online" },
+        nonce: "nonce-AAA",
+      };
+      setMessagesState("byChannel", "ch-1", [pending1]);
+
+      const otherMsg: Message = {
+        ...createMessage("msg-other", "ch-1"),
+        author: { id: "other", username: "other", display_name: "Other", avatar_url: null, status: "online" },
+        nonce: null,
+      };
+      await addMessage(otherMsg);
+
+      const msgs = messagesState.byChannel["ch-1"]!;
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].id).toBe("pending:nonce-AAA");
+      expect(msgs[1].id).toBe("msg-other");
     });
   });
 

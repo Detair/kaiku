@@ -326,9 +326,11 @@ export async function sendMessage(
 
   // Build an optimistic (pending) message so the UI updates instantly
   const user = currentUser();
-  const pendingId = `pending:${crypto.randomUUID()}`;
+  const nonce = crypto.randomUUID();
+  const pendingId = `pending:${nonce}`;
   const optimisticMessage: Message = {
     id: pendingId,
+    nonce,
     channel_id: channelId,
     author: user
       ? { id: user.id, username: user.username, display_name: user.display_name, avatar_url: user.avatar_url, status: user.status }
@@ -354,7 +356,8 @@ export async function sendMessage(
   try {
     const { message, status } = await tauri.sendMessageWithStatus(
       channelId,
-      trimmedContent
+      trimmedContent,
+      { nonce },
     );
 
     // Slash command invocations return 202 Accepted and are not persisted as messages.
@@ -419,10 +422,12 @@ export async function addMessage(message: Message): Promise<void> {
   if (existing.some((m) => m.id === processedMessage.id)) {
     return;
   }
-  // If this is a confirmed echo of our own message, replace the oldest pending placeholder
+  // If this is a confirmed echo of our own message, replace the matching pending placeholder by nonce
   const me = currentUser();
-  if (me && processedMessage.author.id === me.id) {
-    const pendingIdx = existing.findIndex((m) => m.id.startsWith("pending:"));
+  if (me && processedMessage.author.id === me.id && processedMessage.nonce) {
+    const pendingIdx = existing.findIndex(
+      (m) => m.id.startsWith("pending:") && m.nonce === processedMessage.nonce,
+    );
     if (pendingIdx !== -1) {
       const base = [...existing];
       base.splice(pendingIdx, 1);
