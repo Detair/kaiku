@@ -1854,6 +1854,30 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
         }
     }
 
+    macro_rules! try_forward {
+        ($tx:expr, $event:expr, $drops:ident, $user_id:expr) => {
+            match $tx.try_send(OutboundMsg::Event($event)) {
+                Ok(()) => {
+                    $drops = 0;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    $drops += 1;
+                    if $drops > 10 {
+                        warn!(
+                            "Disconnecting slow WebSocket client (user {}): {} consecutive drops",
+                            $user_id, $drops
+                        );
+                        break;
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    break;
+                }
+            }
+        };
+    }
+
+    let mut backpressure_drops: u32 = 0;
     while let Ok(message) = pubsub_stream.recv().await {
         let channel_name = message.channel.to_string();
 
@@ -1891,10 +1915,8 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                             };
                             drop(blocked);
 
-                            if !should_filter
-                                && params.tx.send(OutboundMsg::Event(event)).await.is_err()
-                            {
-                                break;
+                            if !should_filter {
+                                try_forward!(params.tx, event, backpressure_drops, params.user_id);
                             }
                         }
                     }
@@ -1920,9 +1942,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                         _ => {}
                     }
 
-                    if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
-                        break;
-                    }
+                    try_forward!(params.tx, event, backpressure_drops, params.user_id);
                 }
             }
         }
@@ -1932,9 +1952,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             if *params.admin_subscribed.read().await {
                 if let Some(payload) = message.value.as_str() {
                     if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                        if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
-                            break;
-                        }
+                        try_forward!(params.tx, event, backpressure_drops, params.user_id);
                     }
                 }
             }
@@ -1953,8 +1971,8 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                         _ => false,
                     };
 
-                    if !should_filter && params.tx.send(OutboundMsg::Event(event)).await.is_err() {
-                        break;
+                    if !should_filter {
+                        try_forward!(params.tx, event, backpressure_drops, params.user_id);
                     }
                 }
             }
@@ -1964,9 +1982,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             // Forward all user-targeted events (read sync, etc.)
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
-                        break;
-                    }
+                    try_forward!(params.tx, event, backpressure_drops, params.user_id);
                 }
             }
         }
@@ -1975,9 +1991,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    if params.tx.send(OutboundMsg::Event(event)).await.is_err() {
-                        break;
-                    }
+                    try_forward!(params.tx, event, backpressure_drops, params.user_id);
                 }
             }
         }
