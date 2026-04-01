@@ -759,6 +759,7 @@ pub async fn upload_message_with_file(
         reactions: None,
         pinned: false,
         message_type: message.message_type,
+        nonce: message.nonce,
     };
 
     // Broadcast new message via Redis pub-sub

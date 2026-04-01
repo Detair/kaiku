@@ -216,6 +216,9 @@ pub struct MessageResponse {
     pub pinned: bool,
     /// Message type: "user" for normal messages, "system" for system events.
     pub message_type: String,
+    /// Client-generated nonce for optimistic message matching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -686,6 +689,7 @@ pub async fn create(
                         thread_info: None,
                         pinned: false,
                         message_type: "user".to_string(),
+                        nonce: None,
                     };
 
                     let message_json = serde_json::to_value(&response).unwrap_or_default();
@@ -938,6 +942,7 @@ pub async fn create(
                             thread_info: None,
                             pinned: false,
                             message_type: "user".to_string(),
+                            nonce: body.nonce.clone(),
                         };
 
                         return Ok((StatusCode::ACCEPTED, Json(accepted)));
@@ -1049,6 +1054,7 @@ pub async fn create(
         thread_info: None,
         pinned: false,
         message_type: message.message_type,
+        nonce: message.nonce,
     };
 
     // Broadcast via Redis pub-sub
@@ -1265,6 +1271,7 @@ pub async fn update(
         .await
         .unwrap_or(false),
         message_type: message.message_type.clone(),
+        nonce: None,
     };
 
     // Broadcast edit via Redis pub-sub
@@ -1535,6 +1542,7 @@ pub async fn build_message_responses(
                 thread_info,
                 pinned: pinned_ids.contains(&msg.id),
                 message_type: msg.message_type.clone(),
+                nonce: None,
             }
         })
         .collect();

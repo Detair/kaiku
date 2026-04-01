@@ -64,6 +64,7 @@ pub struct Message {
     pub thread_last_reply_at: Option<String>,
     pub edited_at: Option<String>,
     pub created_at: String,
+    pub nonce: Option<String>,
 }
 
 /// Get all channels.
@@ -180,6 +181,7 @@ pub async fn send_message(
     state: State<'_, AppState>,
     channel_id: String,
     content: String,
+    nonce: Option<String>,
 ) -> Result<Message, String> {
     let (server_url, token) = {
         let auth = state.auth.read().await;
@@ -197,7 +199,8 @@ pub async fn send_message(
         .header("Authorization", format!("Bearer {token}"))
         .json(&serde_json::json!({
             "content": content,
-            "encrypted": false
+            "encrypted": false,
+            "nonce": nonce
         }))
         .send()
         .await
