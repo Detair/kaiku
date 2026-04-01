@@ -25,6 +25,7 @@ import {
   messagesState,
   setMessagesState,
   loadInitialMessages,
+  decryptMessageIfNeeded,
 } from "./messages";
 import { showToast, dismissToast } from "@/components/ui/Toast";
 import {
@@ -281,18 +282,27 @@ export async function initWebSocket(): Promise<void> {
         message_id: string;
         content: string;
         edited_at: string;
-      }>("ws:message_edit", (event) => {
+      }>("ws:message_edit", async (event) => {
         const { channel_id, message_id, content, edited_at } = event.payload;
         const messages = messagesState.byChannel[channel_id];
         if (messages) {
           const index = messages.findIndex((m) => m.id === message_id);
           if (index !== -1) {
+            const existingMsg = messages[index];
+            let newContent = content;
+
+            if (existingMsg.encrypted) {
+              const temp = { ...existingMsg, content };
+              const decrypted = await decryptMessageIfNeeded(temp);
+              newContent = decrypted.content;
+            }
+
             setMessagesState(
               "byChannel",
               channel_id,
               index,
               "content",
-              content,
+              newContent,
             );
             setMessagesState(
               "byChannel",
@@ -1015,12 +1025,21 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
           (m) => m.id === event.message_id,
         );
         if (editIndex !== -1) {
+          const existingMsg = editMessages[editIndex];
+          let newContent = event.content;
+
+          if (existingMsg.encrypted) {
+            const temp = { ...existingMsg, content: event.content };
+            const decrypted = await decryptMessageIfNeeded(temp);
+            newContent = decrypted.content;
+          }
+
           setMessagesState(
             "byChannel",
             event.channel_id,
             editIndex,
             "content",
-            event.content,
+            newContent,
           );
           setMessagesState(
             "byChannel",

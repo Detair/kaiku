@@ -55,7 +55,7 @@ export { editingMessageId, setEditingMessageId };
  * Also processes Megolm session key distribution messages automatically.
  * Returns the message with decrypted content, or a placeholder if decryption fails.
  */
-async function decryptMessageIfNeeded(message: Message): Promise<Message> {
+export async function decryptMessageIfNeeded(message: Message): Promise<Message> {
   // If not encrypted, return as-is
   if (!message.encrypted) {
     return message;
