@@ -21,7 +21,7 @@
 pub mod bot_events;
 pub mod bot_gateway;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -80,6 +80,8 @@ pub struct ClientMessageState {
     pub activity: ActivityState,
     /// Custom status rate limiting and deduplication state.
     pub custom_status: CustomStatusState,
+    /// Per-channel typing throttle (`channel_id` → last typing broadcast time).
+    pub last_typing: HashMap<Uuid, Instant>,
 }
 
 /// WebSocket protocol header name for authentication.
@@ -1547,17 +1549,20 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::Typing { channel_id } => {
-            // Check if user has VIEW_CHANNEL permission
-            let permission_result: Result<_, crate::permissions::PermissionError> =
-                crate::permissions::require_channel_access(&state.db, user_id, channel_id).await;
-
-            if permission_result.is_err() {
-                warn!(
-                    "User {} attempted to send typing indicator for channel {} without permission",
-                    user_id, channel_id
-                );
-                return Ok(()); // Silently ignore unauthorized typing indicator
+            // Only allow typing in channels the user is subscribed to
+            // (subscription is already permission-gated)
+            if !subscribed_channels.read().await.contains(&channel_id) {
+                return Ok(());
             }
+
+            // Server-side throttle: max 1 typing event per second per channel
+            let now = Instant::now();
+            if let Some(last) = msg_state.last_typing.get(&channel_id) {
+                if now.duration_since(*last) < Duration::from_secs(1) {
+                    return Ok(());
+                }
+            }
+            msg_state.last_typing.insert(channel_id, now);
 
             // Broadcast typing indicator
             broadcast_to_channel(
@@ -1572,14 +1577,12 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::StopTyping { channel_id } => {
-            // Check if user has VIEW_CHANNEL permission
-            let permission_result: Result<_, crate::permissions::PermissionError> =
-                crate::permissions::require_channel_access(&state.db, user_id, channel_id).await;
-
-            if permission_result.is_err() {
-                warn!("User {} attempted to send stop typing indicator for channel {} without permission", user_id, channel_id);
-                return Ok(()); // Silently ignore unauthorized stop typing indicator
+            // Only allow in channels the user is subscribed to
+            if !subscribed_channels.read().await.contains(&channel_id) {
+                return Ok(());
             }
+
+            // No throttle on StopTyping — throttling it causes ghost typing indicators
 
             // Broadcast stop typing
             broadcast_to_channel(
