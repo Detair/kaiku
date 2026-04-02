@@ -121,7 +121,7 @@
 
 - [x] E2EE Megolm session cache never cleared on logout — `client/src/stores/messages.ts:618`
 - [x] `returnUrl` injection risk when feature is implemented — validate relative URL — `client/src/components/auth/AuthGuard.tsx:28-30`
-- [ ] TURN credentials are static/long-lived — consider time-limited HMAC credentials — `server/src/voice/handlers.rs:47-66`
+- [x] TURN credentials are static/long-lived — consider time-limited HMAC credentials — `server/src/voice/handlers.rs:47-66`
 - [ ] No virus scanning for file uploads (MIME + magic bytes is current defense) — `server/src/chat/uploads.rs`
 
 ### UX Polish
