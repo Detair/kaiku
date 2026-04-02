@@ -1858,7 +1858,9 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
     macro_rules! try_forward {
         ($tx:expr, $event:expr, $drops:ident, $user_id:expr) => {
             match $tx.try_send(OutboundMsg::Event($event)) {
-                Ok(()) => {}
+                Ok(()) => {
+                    $drops = 0;
+                }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     $drops += 1;
                     if $drops > 10 {
@@ -1876,14 +1878,8 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
         };
     }
 
-    #[allow(unused_assignments)]
     let mut backpressure_drops: u32 = 0;
     while let Ok(message) = pubsub_stream.recv().await {
-        // Reset backpressure counter at the start of each pubsub message.
-        // Only consecutive back-to-back Full errors across sequential messages
-        // trigger disconnect.
-        backpressure_drops = 0;
-
         let channel_name = message.channel.to_string();
 
         // Handle channel events (channel:{uuid})

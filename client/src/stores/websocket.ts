@@ -205,8 +205,14 @@ async function applyMessageEdit(channelId: string, messageId: string, content: s
     newContent = decrypted.content;
   }
 
-  setMessagesState("byChannel", channelId, index, "content", newContent);
-  setMessagesState("byChannel", channelId, index, "edited_at", editedAt);
+  // Re-find index after await — concurrent loadMessages can prepend and shift indices
+  const current = messagesState.byChannel[channelId];
+  if (!current) return;
+  const freshIndex = current.findIndex((m) => m.id === messageId);
+  if (freshIndex === -1) return;
+
+  setMessagesState("byChannel", channelId, freshIndex, "content", newContent);
+  setMessagesState("byChannel", channelId, freshIndex, "edited_at", editedAt);
 }
 
 /**
