@@ -287,7 +287,7 @@ const NotFoundPage = () => (
 // Export routes as JSX Route elements
 export const AppRoutes = (): JSX.Element => (
   <>
-    <Route path="/demo" component={ThemeDemoPage} />
+    {import.meta.env.DEV && <Route path="/demo" component={ThemeDemoPage} />}
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
     <Route path="/forgot-password" component={ForgotPasswordPage} />

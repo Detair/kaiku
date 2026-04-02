@@ -63,7 +63,8 @@ const ServerRail: Component = () => {
   };
 
   return (
-    <aside
+    <nav
+      aria-label="Servers"
       class="w-[72px] flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-border-solid z-20"
       data-testid="server-rail"
     >
@@ -83,6 +84,7 @@ const ServerRail: Component = () => {
             "border-radius": getBorderRadius("home"),
             opacity: isActive("home") || isHovered("home") ? 1 : 0.85,
           }}
+          aria-current={isActive("home") ? "page" : undefined}
           onMouseEnter={() => setHoveredServerId("home")}
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => selectHome()}
@@ -124,6 +126,7 @@ const ServerRail: Component = () => {
                     opacity:
                       isActive(guild.id) || isHovered(guild.id) ? 1 : 0.85,
                   }}
+                  aria-current={isActive(guild.id) ? "page" : undefined}
                   onMouseEnter={() => setHoveredServerId(guild.id)}
                   onMouseLeave={() => setHoveredServerId(null)}
                   onClick={() => selectGuild(guild.id)}
@@ -248,7 +251,7 @@ const ServerRail: Component = () => {
           </Suspense>
         </LazyErrorBoundary>
       </Show>
-    </aside>
+    </nav>
   );
 };
 

@@ -152,14 +152,13 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
 
   return (
     <div class="relative" onContextMenu={handleContextMenu}>
-      <div
-        role="button"
+      <button
+        type="button"
         data-testid="channel-item"
         data-channel-id={props.channel.id}
         data-channel-name={props.channel.name}
         data-channel-type={props.channel.channel_type}
-        tabIndex={0}
-        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all duration-200 group cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50"
+        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all duration-200 group cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50 border-none bg-transparent text-left"
         classList={{
           // Voice connected/connecting state (green glow)
           "bg-accent-primary/20 text-text-primary border border-accent-primary/30":
@@ -174,15 +173,6 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
             !isActive() && !props.isSelected,
         }}
         onClick={props.onClick}
-        onKeyDown={(e) => {
-          if (
-            e.target === e.currentTarget &&
-            (e.key === "Enter" || e.key === " ")
-          ) {
-            e.preventDefault();
-            props.onClick();
-          }
-        }}
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
         title={
@@ -300,7 +290,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
             <Settings class="w-3.5 h-3.5" />
           </button>
         </Show>
-      </div>
+      </button>
 
       {/* Tooltip showing participants (on hover for voice channels) */}
       <Show when={isVoice() && showTooltip() && participantCount() > 0}>

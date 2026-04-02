@@ -147,7 +147,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     const validationError = validateFileSize(file, 'attachment');
     if (validationError) {
       setUploadError(validationError);
-      setTimeout(() => setUploadError(null), 5000); // Clear after 5 seconds
+      setTimeout(() => setUploadError(null), 8000); // Clear after 8 seconds (toast convention)
       return;
     }
 
