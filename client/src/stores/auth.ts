@@ -416,6 +416,7 @@ export async function logout(): Promise<void> {
     });
   } catch (err) {
     console.error("[Auth] Logout failed:", err);
+    resetE2EEState();
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({
       user: null,
