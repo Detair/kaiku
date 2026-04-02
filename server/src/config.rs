@@ -132,6 +132,13 @@ pub struct Config {
     /// WebRTC TURN credential (optional)
     pub turn_credential: Option<String>,
 
+    /// Shared secret for TURN HMAC credential generation (coturn `use-auth-secret` mode).
+    /// When set, time-limited credentials are generated per-request instead of using static ones.
+    pub turn_shared_secret: Option<String>,
+
+    /// TURN credential TTL in seconds (default: 3600 = 1 hour).
+    pub turn_credential_ttl: u64,
+
     /// Public IP for WebRTC NAT traversal.
     /// Required when the SFU runs behind NAT/Docker so ICE candidates
     /// advertise the reachable IP instead of the container-internal IP.
@@ -313,6 +320,11 @@ impl Config {
             turn_server: env::var("TURN_SERVER").ok().filter(|s| !s.is_empty()),
             turn_username: env::var("TURN_USERNAME").ok().filter(|s| !s.is_empty()),
             turn_credential: env::var("TURN_CREDENTIAL").ok().filter(|s| !s.is_empty()),
+            turn_shared_secret: env::var("TURN_SHARED_SECRET").ok().filter(|s| !s.is_empty()),
+            turn_credential_ttl: env::var("TURN_CREDENTIAL_TTL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3600),
             public_ip: env::var("PUBLIC_IP").ok(),
             mfa_encryption_key: env::var("MFA_ENCRYPTION_KEY").ok(),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
@@ -501,6 +513,8 @@ impl Config {
             turn_server: None,
             turn_username: None,
             turn_credential: None,
+            turn_shared_secret: None,
+            turn_credential_ttl: 3600,
             public_ip: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
