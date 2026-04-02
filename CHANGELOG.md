@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slow WebSocket clients are now disconnected instead of blocking the message bus
 - Typing indicators no longer trigger database permission queries on every keystroke
 
+### Security
+- E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting
+- `returnUrl` parameter is now URL-encoded to prevent query string injection
+
 ### Added
 - Password visibility toggle on all password fields (login, register, reset password)
 - Skip-to-content keyboard navigation link
