@@ -80,8 +80,9 @@ const Login: Component = () => {
       // Navigate to returnUrl if valid (relative path only), otherwise home
       const raw = searchParams.returnUrl;
       const returnUrl = Array.isArray(raw) ? raw[0] : raw;
-      const target = returnUrl && returnUrl.startsWith("/") && !returnUrl.startsWith("//")
-        ? returnUrl
+      const decoded = returnUrl ? decodeURIComponent(returnUrl) : null;
+      const target = decoded && decoded.startsWith("/") && !decoded.startsWith("//")
+        ? decoded
         : "/";
       navigate(target, { replace: true });
     } catch (err) {
