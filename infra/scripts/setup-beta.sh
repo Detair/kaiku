@@ -131,7 +131,7 @@ if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
     VALKEY_PASSWORD=$(openssl rand -base64 16)
     GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16)
-    TURN_CREDENTIAL=$(openssl rand -hex 16)
+    TURN_SHARED_SECRET=$(openssl rand -hex 32)
 
     log "Writing ${ENV_FILE}..."
     cp "${INSTALL_DIR}/infra/compose/.env.beta" "$ENV_FILE"
@@ -144,7 +144,7 @@ if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     sed -i "s|MFA_ENCRYPTION_KEY=CHANGEME|MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY}|" "$ENV_FILE"
     sed -i "s|VALKEY_PASSWORD=CHANGEME|VALKEY_PASSWORD=${VALKEY_PASSWORD}|" "$ENV_FILE"
     sed -i "s|GRAFANA_ADMIN_PASSWORD=CHANGEME|GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}|" "$ENV_FILE"
-    sed -i "s|TURN_CREDENTIAL=CHANGEME|TURN_CREDENTIAL=${TURN_CREDENTIAL}|" "$ENV_FILE"
+    sed -i "s|TURN_SHARED_SECRET=CHANGEME_TURN_SECRET|TURN_SHARED_SECRET=${TURN_SHARED_SECRET}|" "$ENV_FILE"
 
     # Detect public IP for WebRTC and TURN
     if [[ -n "$SERVER_IP" && "$SERVER_IP" != "unknown" ]]; then
