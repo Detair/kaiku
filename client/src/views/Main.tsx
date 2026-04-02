@@ -131,7 +131,7 @@ const Main: Component = () => {
     }
   };
 
-  createEffect(() => {
+  onMount(() => {
     window.addEventListener("keydown", handleGlobalKeydown);
 
     // Listen for custom event from /? slash command
@@ -237,7 +237,7 @@ const Main: Component = () => {
                     >
                       <Volume2 class="w-5 h-5 text-text-secondary mr-2" />
                     </Show>
-                    <span class="font-semibold text-text-primary">
+                    <span class="font-semibold text-text-primary truncate" title={channel()?.name}>
                       {channel()?.name}
                     </span>
                     <Show when={channel()?.topic}>
