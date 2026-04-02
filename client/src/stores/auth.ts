@@ -21,6 +21,7 @@ import {
 } from "./presence";
 import { initPreferences } from "./preferences";
 import { clearAllDrafts, cleanupDrafts } from "./drafts";
+import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 
 // Auth state interface
@@ -407,6 +408,7 @@ export async function logout(): Promise<void> {
 
   try {
     await tauri.logout();
+    resetE2EEState();
     setAuthState({
       user: null,
       isLoading: false,

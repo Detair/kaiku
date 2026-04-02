@@ -300,6 +300,9 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
         // Keep server_url for potential re-login
     }
 
+    // Clear crypto state — drops Megolm sessions, Olm account, closes SQLite
+    *state.crypto.lock().await = None;
+
     // Clear stored credentials
     if let Some(url) = server_url {
         let _ = clear_refresh_token(&url);

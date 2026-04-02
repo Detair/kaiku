@@ -240,6 +240,13 @@ async function addInboundSession(
   }
 }
 
+/** Reset all E2EE state signals to defaults. Called on logout. */
+export function resetE2EEState(): void {
+  setStatus({ initialized: false, device_id: null, has_identity_keys: false });
+  setIsInitializing(false);
+  setError(null);
+}
+
 // Export the store
 export const e2eeStore = {
   // Reactive getters
