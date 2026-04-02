@@ -390,6 +390,7 @@ export interface WebcamServerInfo {
 }
 
 export interface ScreenShareServerInfo {
+  stream_id: string;
   user_id: string;
   username: string;
   source_label: string;
@@ -519,6 +520,7 @@ export type ServerEvent =
       type: "screen_share_started";
       channel_id: string;
       user_id: string;
+      stream_id: string;
       username: string;
       source_label: string;
       has_audio: boolean;
@@ -529,12 +531,14 @@ export type ServerEvent =
       type: "screen_share_stopped";
       channel_id: string;
       user_id: string;
+      stream_id: string;
       reason: string;
     }
   | {
       type: "screen_share_quality_changed";
       channel_id: string;
       user_id: string;
+      stream_id: string;
       new_quality: "low" | "medium" | "high" | "premium";
     }
   // Webcam events
