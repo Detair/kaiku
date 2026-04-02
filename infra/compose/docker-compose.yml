@@ -40,6 +40,8 @@ services:
       - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
       - STUN_SERVER=${STUN_SERVER:-stun:stun.l.google.com:19302}
       - TURN_SERVER=${TURN_SERVER:-}
+      - TURN_SHARED_SECRET=${TURN_SHARED_SECRET:-}
+      - TURN_CREDENTIAL_TTL=${TURN_CREDENTIAL_TTL:-3600}
       - TURN_USERNAME=${TURN_USERNAME:-}
       - TURN_CREDENTIAL=${TURN_CREDENTIAL:-}
       - MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY:-}
@@ -132,8 +134,8 @@ services:
       - "-n"
       - "--realm=${DOMAIN}"
       - "--fingerprint"
-      - "--lt-cred-mech"
-      - "--user=${TURN_USERNAME:-kaiku}:${TURN_CREDENTIAL}"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SHARED_SECRET}"
       - "--external-ip=${PUBLIC_IP}"
       - "--listening-port=3478"
       - "--min-port=49152"
