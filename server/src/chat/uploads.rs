@@ -741,7 +741,7 @@ pub async fn upload_message_with_file(
 
     let mention_type = detect_mention_type(&message.content, Some(&author.username));
 
-    let response = MessageResponse {
+    let mut response = MessageResponse {
         id: message.id,
         channel_id: message.channel_id,
         author: author.clone(),
@@ -759,12 +759,14 @@ pub async fn upload_message_with_file(
         reactions: None,
         pinned: false,
         message_type: message.message_type,
-        nonce: message.nonce,
+        nonce: None,
     };
 
-    // Broadcast new message via Redis pub-sub
-    let broadcast_response = MessageResponse { nonce: None, ..response.clone() };
-    let message_json = serde_json::to_value(&broadcast_response).unwrap_or_default();
+    // Broadcast new message via Redis pub-sub (nonce excluded — it's only for the sender)
+    let message_json = serde_json::to_value(&response).unwrap_or_default();
+
+    // Set nonce for the HTTP response to the sender
+    response.nonce = message.nonce;
     if let Err(e) = broadcast_to_channel(
         &state.redis,
         channel_id,

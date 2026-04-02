@@ -191,6 +191,24 @@ function handleMessageNotification(message: Message): void {
   );
 }
 
+/** Apply an edited message's content and timestamp, decrypting if needed for E2EE channels. */
+async function applyMessageEdit(channelId: string, messageId: string, content: string, editedAt: string): Promise<void> {
+  const messages = messagesState.byChannel[channelId];
+  if (!messages) return;
+  const index = messages.findIndex((m) => m.id === messageId);
+  if (index === -1) return;
+
+  const existingMsg = messages[index];
+  let newContent = content;
+  if (existingMsg.encrypted) {
+    const decrypted = await decryptMessageIfNeeded({ ...existingMsg, content });
+    newContent = decrypted.content;
+  }
+
+  setMessagesState("byChannel", channelId, index, "content", newContent);
+  setMessagesState("byChannel", channelId, index, "edited_at", editedAt);
+}
+
 /**
  * Initialize WebSocket event listeners.
  * Call this once when the app starts (after auth).
@@ -284,35 +302,7 @@ export async function initWebSocket(): Promise<void> {
         edited_at: string;
       }>("ws:message_edit", async (event) => {
         const { channel_id, message_id, content, edited_at } = event.payload;
-        const messages = messagesState.byChannel[channel_id];
-        if (messages) {
-          const index = messages.findIndex((m) => m.id === message_id);
-          if (index !== -1) {
-            const existingMsg = messages[index];
-            let newContent = content;
-
-            if (existingMsg.encrypted) {
-              const temp = { ...existingMsg, content };
-              const decrypted = await decryptMessageIfNeeded(temp);
-              newContent = decrypted.content;
-            }
-
-            setMessagesState(
-              "byChannel",
-              channel_id,
-              index,
-              "content",
-              newContent,
-            );
-            setMessagesState(
-              "byChannel",
-              channel_id,
-              index,
-              "edited_at",
-              edited_at,
-            );
-          }
-        }
+        await applyMessageEdit(channel_id, message_id, content, edited_at);
       }),
     );
 
@@ -1018,40 +1008,9 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "unsubscribed":
       break;
 
-    case "message_edit": {
-      const editMessages = messagesState.byChannel[event.channel_id];
-      if (editMessages) {
-        const editIndex = editMessages.findIndex(
-          (m) => m.id === event.message_id,
-        );
-        if (editIndex !== -1) {
-          const existingMsg = editMessages[editIndex];
-          let newContent = event.content;
-
-          if (existingMsg.encrypted) {
-            const temp = { ...existingMsg, content: event.content };
-            const decrypted = await decryptMessageIfNeeded(temp);
-            newContent = decrypted.content;
-          }
-
-          setMessagesState(
-            "byChannel",
-            event.channel_id,
-            editIndex,
-            "content",
-            newContent,
-          );
-          setMessagesState(
-            "byChannel",
-            event.channel_id,
-            editIndex,
-            "edited_at",
-            event.edited_at,
-          );
-        }
-      }
+    case "message_edit":
+      await applyMessageEdit(event.channel_id, event.message_id, event.content, event.edited_at);
       break;
-    }
 
     case "message_delete":
       removeMessage(event.channel_id, event.message_id);
