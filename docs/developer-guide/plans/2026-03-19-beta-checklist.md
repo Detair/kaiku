@@ -45,7 +45,7 @@
 - [x] **Permission check swallows DB errors as "Unauthorized"** (#413)
   Fixed: now matches on variant, logs `DatabaseError`, only maps permission errors to `Unauthorized`.
 
-- [ ] **Permission resolution fires 3-5 queries per typing event**
+- [x] **Permission resolution fires 3-5 queries per typing event** (#497)
   Every `Typing`/`StopTyping` WS event triggers the full permission chain.
   - `server/src/permissions/helpers.rs:82-158`
   - `server/src/ws/mod.rs:1472-1493`
@@ -54,7 +54,7 @@
 - [x] **Regex compiled on every message (`detect_mention_type`)** (#413)
   Fixed: promoted to `static LazyLock<Regex>`.
 
-- [ ] **Slow WS clients block Redis pubsub task**
+- [x] **Slow WS clients block Redis pubsub task** (#497)
   `tx.send(event).await` on full buffer pauses the Redis subscriber for the connection.
   - `server/src/ws/mod.rs:1172,1811`
   - Fix: use `try_send()` and drop/disconnect on sustained backpressure
@@ -84,7 +84,7 @@
 - [x] **Voice panel shows raw UUIDs instead of usernames** (#413)
   Fixed: uses `display_name || username || user_id.slice(0, 8)`.
 
-- [ ] **Message edit doesn't decrypt in E2EE channels**
+- [x] **Message edit doesn't decrypt in E2EE channels** (#497)
   `message_edit` patches raw content without running `decryptMessageIfNeeded()`.
   - `client/src/stores/websocket.ts:985-1009` (browser), `262-290` (Tauri)
   - Fix: call `decryptMessageIfNeeded()` on edit content for E2EE channels
@@ -95,7 +95,7 @@
 - [x] **Guild load error invisible to user** (#413)
   Fixed: shows error indicator with retry button in `ServerRail`.
 
-- [ ] **Optimistic message send race condition**
+- [x] **Optimistic message send race condition** (#497)
   `findIndex(m => m.id.startsWith("pending:"))` matches the *oldest* pending, not the specific one. Rapid sends can corrupt ordering.
   - `client/src/stores/messages.ts:373-381`
   - Fix: match against a specific pending ID (e.g., store pending ID in nonce)
@@ -165,6 +165,6 @@
 | Category | Total | Done | Remaining |
 |----------|-------|------|-----------|
 | Critical | 7 | 7 | 0 |
-| Important | 19 | 15 | 4 |
+| Important | 19 | 19 | 0 |
 | Nice-to-have | 22 | 0 | 22 |
-| **Total** | **48** | **22** | **26** |
+| **Total** | **48** | **26** | **22** |

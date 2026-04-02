@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scrolling up in a channel no longer causes false unread indicators
 - Deleted messages no longer counted in unread totals
 - DM unread aggregate query now uses correct `dm_read_state` table
+- Edited messages in E2EE channels now display decrypted content instead of ciphertext
+- Sending multiple messages rapidly no longer reorders them in the chat view
+- Slow WebSocket clients are now disconnected instead of blocking the message bus
+- Typing indicators no longer trigger database permission queries on every keystroke
 
 ### Added
 - Password visibility toggle on all password fields (login, register, reset password)
