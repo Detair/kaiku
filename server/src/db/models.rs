@@ -127,7 +127,7 @@ pub struct Message {
     pub content: String,
     /// Whether the message is E2EE encrypted.
     pub encrypted: bool,
-    /// Encryption nonce (for E2EE).
+    /// Client-generated nonce for optimistic message matching (also used as E2EE encryption nonce).
     pub nonce: Option<String>,
     /// Message ID this is replying to.
     pub reply_to: Option<Uuid>,

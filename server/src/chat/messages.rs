@@ -216,6 +216,9 @@ pub struct MessageResponse {
     pub pinned: bool,
     /// Message type: "user" for normal messages, "system" for system events.
     pub message_type: String,
+    /// Client-generated nonce for optimistic message matching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -300,6 +303,7 @@ pub struct CreateMessageRequest {
     pub content: String,
     #[serde(default)]
     pub encrypted: bool,
+    #[validate(length(max = 64))]
     pub nonce: Option<String>,
     pub reply_to: Option<Uuid>,
     pub parent_id: Option<Uuid>,
@@ -686,6 +690,7 @@ pub async fn create(
                         thread_info: None,
                         pinned: false,
                         message_type: "user".to_string(),
+                        nonce: None,
                     };
 
                     let message_json = serde_json::to_value(&response).unwrap_or_default();
@@ -938,6 +943,7 @@ pub async fn create(
                             thread_info: None,
                             pinned: false,
                             message_type: "user".to_string(),
+                            nonce: body.nonce.clone(),
                         };
 
                         return Ok((StatusCode::ACCEPTED, Json(accepted)));
@@ -1031,7 +1037,7 @@ pub async fn create(
         detect_mention_type(&message.content, Some(&author.username))
     };
 
-    let response = MessageResponse {
+    let mut response = MessageResponse {
         id: message.id,
         channel_id: message.channel_id,
         author: author.clone(),
@@ -1049,10 +1055,14 @@ pub async fn create(
         thread_info: None,
         pinned: false,
         message_type: message.message_type,
+        nonce: None,
     };
 
-    // Broadcast via Redis pub-sub
+    // Broadcast via Redis pub-sub (nonce excluded — it's only for the sender)
     let message_json = serde_json::to_value(&response).unwrap_or_default();
+
+    // Set nonce for the HTTP response to the sender
+    response.nonce = message.nonce;
 
     if let Some(parent_id) = body.parent_id {
         // Thread reply: broadcast ThreadReplyNew with updated thread info
@@ -1265,6 +1275,7 @@ pub async fn update(
         .await
         .unwrap_or(false),
         message_type: message.message_type.clone(),
+        nonce: None,
     };
 
     // Broadcast edit via Redis pub-sub
@@ -1535,6 +1546,7 @@ pub async fn build_message_responses(
                 thread_info,
                 pinned: pinned_ids.contains(&msg.id),
                 message_type: msg.message_type.clone(),
+                nonce: None,
             }
         })
         .collect();

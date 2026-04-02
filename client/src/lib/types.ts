@@ -291,6 +291,7 @@ export interface Message {
   thread_info?: ThreadInfo;
   pinned: boolean;
   message_type: string; // "user" | "system"
+  nonce?: string | null;
 }
 
 export interface ChannelPin {
