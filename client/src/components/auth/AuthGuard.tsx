@@ -26,7 +26,7 @@ const AuthGuard: Component<AuthGuardProps> = (props) => {
     if (authState.isInitialized && !isAuthenticated()) {
       // Store the intended destination for redirect after login
       const returnUrl = location.pathname;
-      navigate(`/login${returnUrl !== "/" ? `?returnUrl=${returnUrl}` : ""}`, {
+      navigate(`/login${returnUrl !== "/" ? `?returnUrl=${encodeURIComponent(returnUrl)}` : ""}`, {
         replace: true,
       });
     }
