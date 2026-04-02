@@ -41,6 +41,7 @@ import {
   clearCurve25519KeyCache,
   editingMessageId,
   setEditingMessageId,
+  decryptMessageIfNeeded,
 } from "../messages";
 
 function createMessage(id: string, channelId = "ch-1"): Message {
@@ -300,6 +301,24 @@ describe("messages store", () => {
       expect(msgs).toHaveLength(2);
       expect(msgs[0].id).toBe("pending:nonce-AAA");
       expect(msgs[1].id).toBe("msg-other");
+    });
+  });
+
+  describe("decryptMessageIfNeeded", () => {
+    it("returns non-encrypted message unchanged", async () => {
+      const msg = createMessage("m1");
+      msg.encrypted = false;
+      msg.content = "hello";
+      const result = await decryptMessageIfNeeded(msg);
+      expect(result.content).toBe("hello");
+    });
+
+    it("returns placeholder for encrypted message without session", async () => {
+      const msg = createMessage("m1");
+      msg.encrypted = true;
+      msg.content = "ciphertext-blob";
+      const result = await decryptMessageIfNeeded(msg);
+      expect(result.content).toContain("[");
     });
   });
 

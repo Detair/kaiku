@@ -303,6 +303,7 @@ pub struct CreateMessageRequest {
     pub content: String,
     #[serde(default)]
     pub encrypted: bool,
+    #[validate(length(max = 64))]
     pub nonce: Option<String>,
     pub reply_to: Option<Uuid>,
     pub parent_id: Option<Uuid>,
@@ -1058,7 +1059,8 @@ pub async fn create(
     };
 
     // Broadcast via Redis pub-sub
-    let message_json = serde_json::to_value(&response).unwrap_or_default();
+    let broadcast_response = MessageResponse { nonce: None, ..response.clone() };
+    let message_json = serde_json::to_value(&broadcast_response).unwrap_or_default();
 
     if let Some(parent_id) = body.parent_id {
         // Thread reply: broadcast ThreadReplyNew with updated thread info

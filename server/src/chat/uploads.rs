@@ -763,7 +763,8 @@ pub async fn upload_message_with_file(
     };
 
     // Broadcast new message via Redis pub-sub
-    let message_json = serde_json::to_value(&response).unwrap_or_default();
+    let broadcast_response = MessageResponse { nonce: None, ..response.clone() };
+    let message_json = serde_json::to_value(&broadcast_response).unwrap_or_default();
     if let Err(e) = broadcast_to_channel(
         &state.redis,
         channel_id,
