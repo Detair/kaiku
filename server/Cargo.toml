@@ -43,6 +43,7 @@ openidconnect.workspace = true
 
 # Crypto
 rustls.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 aes-gcm.workspace = true

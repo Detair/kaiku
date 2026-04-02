@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting
 - `returnUrl` parameter is now URL-encoded to prevent query string injection
+- TURN relay credentials are now time-limited (1-hour HMAC-SHA1) instead of static when `TURN_SHARED_SECRET` is configured
 
 ### Added
 - Password visibility toggle on all password fields (login, register, reset password)

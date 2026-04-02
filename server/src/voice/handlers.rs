@@ -3,11 +3,17 @@
 //! HTTP endpoints for voice-related operations.
 //! Voice signaling (join/leave/offer/answer/ice) is handled via WebSocket.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::extract::State;
 use axum::Json;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use hmac::{Hmac, Mac};
 use serde::Serialize;
+use sha1::Sha1;
 
 use crate::api::AppState;
+use crate::auth::AuthUser;
 
 /// ICE server configuration.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -44,15 +50,37 @@ pub struct IceServersResponse {
     ),
     security(("bearer_auth" = [])),
 )]
-pub async fn get_ice_servers(State(state): State<AppState>) -> Json<IceServersResponse> {
+pub async fn get_ice_servers(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Json<IceServersResponse> {
     let mut servers = vec![IceServer {
         urls: vec![state.config.stun_server.clone()],
         username: None,
         credential: None,
     }];
 
-    // Add TURN server if configured
-    if let Some(turn) = &state.config.turn_server {
+    // Prefer HMAC time-limited credentials when shared secret is configured
+    if let (Some(turn), Some(secret)) = (&state.config.turn_server, &state.config.turn_shared_secret) {
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
+            .as_secs()
+            + state.config.turn_credential_ttl;
+        let username = format!("{}:{}", expiry, auth_user.id);
+
+        let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes())
+            .expect("HMAC-SHA1 accepts any key length");
+        mac.update(username.as_bytes());
+        let credential = BASE64_STANDARD.encode(mac.finalize().into_bytes());
+
+        servers.push(IceServer {
+            urls: vec![turn.clone()],
+            username: Some(username),
+            credential: Some(credential),
+        });
+    } else if let Some(turn) = &state.config.turn_server {
+        // Fallback: static credentials for dev environments
         servers.push(IceServer {
             urls: vec![turn.clone()],
             username: state.config.turn_username.clone(),

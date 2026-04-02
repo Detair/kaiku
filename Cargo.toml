@@ -59,6 +59,7 @@ openidconnect = "4"
 rustls = { version = "0.23", features = ["ring"] }
 aes-gcm = "0.10"
 hkdf = "0.12"
+sha1 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 vodozemac = "0.9"
