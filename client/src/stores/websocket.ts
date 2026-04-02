@@ -9,10 +9,14 @@ import * as tauri from "@/lib/tauri";
 import type {
   Activity,
   CustomStatus,
+  GuildEmoji,
   Message,
+  ScreenShareServerInfo,
   ServerEvent,
   ThreadInfo,
   UserStatus,
+  VoiceParticipant,
+  WebcamServerInfo,
 } from "@/lib/types";
 import {
   updateUserActivity,
@@ -486,8 +490,8 @@ export async function initWebSocket(): Promise<void> {
     pending.push(
       listen<{
         channel_id: string;
-        participants: any[];
-        screen_shares: any[];
+        participants: VoiceParticipant[];
+        screen_shares: ScreenShareServerInfo[];
       }>("ws:voice_room_state", async (event) => {
         await handleVoiceRoomState(
           event.payload.channel_id,
@@ -570,7 +574,7 @@ export async function initWebSocket(): Promise<void> {
 
     // Guild emoji events
     pending.push(
-      listen<{ guild_id: string; emojis: any[] }>("ws:guild_emoji_updated", (event) => {
+      listen<{ guild_id: string; emojis: GuildEmoji[] }>("ws:guild_emoji_updated", (event) => {
         handleGuildEmojiUpdated(event.payload.guild_id, event.payload.emojis);
       }),
     );
@@ -616,54 +620,44 @@ export async function initWebSocket(): Promise<void> {
 
     // Screen share events (Tauri → frontend parity with browser mode)
     pending.push(
-      listen<{
-        channel_id: string;
-        user_id: string;
-        stream_id: string;
-        username: string;
-        source_label: string;
-        has_audio: boolean;
-        quality: string;
-        started_at?: string;
-      }>("ws:screen_share_started", async (event) => {
-        await handleScreenShareStarted(event.payload);
-      }),
+      listen<Omit<Extract<ServerEvent, { type: "screen_share_started" }>, "type">>(
+        "ws:screen_share_started", async (event) => {
+          await handleScreenShareStarted(event.payload);
+        },
+      ),
     );
 
     pending.push(
-      listen<{ channel_id: string; user_id: string; stream_id: string; reason: string }>("ws:screen_share_stopped", async (event) => {
-        await handleScreenShareStopped(event.payload);
-      }),
+      listen<Omit<Extract<ServerEvent, { type: "screen_share_stopped" }>, "type">>(
+        "ws:screen_share_stopped", async (event) => {
+          await handleScreenShareStopped(event.payload);
+        },
+      ),
     );
 
     pending.push(
-      listen<{
-        channel_id: string;
-        user_id: string;
-        stream_id: string;
-        new_quality: string;
-        reason: string;
-      }>("ws:screen_share_quality_changed", async (event) => {
-        await handleScreenShareQualityChanged(event.payload);
-      }),
+      listen<Omit<Extract<ServerEvent, { type: "screen_share_quality_changed" }>, "type">>(
+        "ws:screen_share_quality_changed", async (event) => {
+          await handleScreenShareQualityChanged(event.payload);
+        },
+      ),
     );
 
     // Webcam events (Tauri → frontend parity with browser mode)
     pending.push(
-      listen<{
-        channel_id: string;
-        user_id: string;
-        username: string;
-        quality: string;
-      }>("ws:webcam_started", async (event) => {
-        await handleWebcamStarted(event.payload);
-      }),
+      listen<Omit<Extract<ServerEvent, { type: "webcam_started" }>, "type">>(
+        "ws:webcam_started", async (event) => {
+          await handleWebcamStarted(event.payload);
+        },
+      ),
     );
 
     pending.push(
-      listen<{ channel_id: string; user_id: string; reason: string }>("ws:webcam_stopped", async (event) => {
-        await handleWebcamStopped(event.payload);
-      }),
+      listen<Omit<Extract<ServerEvent, { type: "webcam_stopped" }>, "type">>(
+        "ws:webcam_stopped", async (event) => {
+          await handleWebcamStopped(event.payload);
+        },
+      ),
     );
 
     // Voice stats events
@@ -1842,9 +1836,9 @@ async function handleVoiceUserUnmuted(
 
 async function handleVoiceRoomState(
   channelId: string,
-  participants: any[],
-  screenShares?: any[],
-  webcams?: any[],
+  participants: VoiceParticipant[],
+  screenShares?: ScreenShareServerInfo[],
+  webcams?: WebcamServerInfo[],
 ): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
@@ -1865,7 +1859,7 @@ async function handleVoiceRoomState(
 
 // Screen share event handlers
 
-export async function handleScreenShareStarted(event: any): Promise<void> {
+export async function handleScreenShareStarted(event: Omit<Extract<ServerEvent, { type: "screen_share_started" }>, "type">): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1894,7 +1888,7 @@ export async function handleScreenShareStarted(event: any): Promise<void> {
   }
 }
 
-export async function handleScreenShareStopped(event: any): Promise<void> {
+export async function handleScreenShareStopped(event: Omit<Extract<ServerEvent, { type: "screen_share_stopped" }>, "type">): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1922,7 +1916,7 @@ export async function handleScreenShareStopped(event: any): Promise<void> {
 }
 
 export async function handleScreenShareQualityChanged(
-  event: any,
+  event: Omit<Extract<ServerEvent, { type: "screen_share_quality_changed" }>, "type">,
 ): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
@@ -1950,7 +1944,7 @@ export async function handleScreenShareQualityChanged(
 
 // Webcam event handlers
 
-export async function handleWebcamStarted(event: any): Promise<void> {
+export async function handleWebcamStarted(event: Omit<Extract<ServerEvent, { type: "webcam_started" }>, "type">): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -1975,7 +1969,7 @@ export async function handleWebcamStarted(event: any): Promise<void> {
   }
 }
 
-export async function handleWebcamStopped(event: any): Promise<void> {
+export async function handleWebcamStopped(event: Omit<Extract<ServerEvent, { type: "webcam_stopped" }>, "type">): Promise<void> {
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -2080,7 +2074,7 @@ async function handleAdminGuildDeleted(
 
 async function handleGuildEmojiUpdated(
   guildId: string,
-  emojis: any[],
+  emojis: GuildEmoji[],
 ): Promise<void> {
   const { setGuildEmojis } = await import("@/stores/emoji");
   setGuildEmojis(guildId, emojis);
