@@ -2188,13 +2188,13 @@ function handleReactionAdd(
   const reactionIndex = reactions.findIndex((r) => r.emoji === emoji);
 
   if (reactionIndex !== -1) {
-    // Update existing reaction
+    // Update existing reaction — increment count independently of users
+    // array because reactions loaded from the API don't include users
     const reaction = { ...reactions[reactionIndex] };
     const users = reaction.users ?? [];
     if (!users.includes(userId)) {
       reaction.users = [...users, userId];
-      reaction.count = reaction.users.length;
-      // Check if it's the current user
+      reaction.count = (reaction.count ?? 0) + 1;
       const user = currentUser();
       if (user && userId === user.id) {
         reaction.me = true;
@@ -2242,36 +2242,38 @@ function handleReactionRemove(
 
   if (reactionIndex === -1) return;
 
+  // Decrement count independently of users array because reactions
+  // loaded from the API don't include users
   const reaction = { ...reactions[reactionIndex] };
   const users = reaction.users ?? [];
-  const userIndex = users.indexOf(userId);
+  const wasTracked = users.includes(userId);
+  reaction.users = users.filter((id) => id !== userId);
 
-  if (userIndex !== -1) {
-    reaction.users = users.filter((id) => id !== userId);
-    reaction.count = reaction.users.length;
-
-    // Check if it's the current user
-    const user = currentUser();
-    if (user && userId === user.id) {
-      reaction.me = false;
-    }
-
-    if (reaction.count === 0) {
-      // Remove the reaction entirely
-      reactions.splice(reactionIndex, 1);
-    } else {
-      reactions[reactionIndex] = reaction;
-    }
-
-    // Update the message in the store
-    setMessagesState(
-      "byChannel",
-      channelId,
-      messageIndex,
-      "reactions",
-      reactions.length > 0 ? reactions : undefined,
-    );
+  // Only decrement if user was tracked in the array OR the array was
+  // never populated (API-loaded reactions). Skip if the user is absent
+  // from a populated array — that's a duplicate remove event.
+  if (wasTracked || users.length === 0) {
+    reaction.count = Math.max(0, (reaction.count ?? 1) - 1);
   }
+
+  const user = currentUser();
+  if (user && userId === user.id) {
+    reaction.me = false;
+  }
+
+  if (reaction.count === 0) {
+    reactions.splice(reactionIndex, 1);
+  } else {
+    reactions[reactionIndex] = reaction;
+  }
+
+  setMessagesState(
+    "byChannel",
+    channelId,
+    messageIndex,
+    "reactions",
+    reactions.length > 0 ? reactions : undefined,
+  );
 }
 
 // Channel pin event handler

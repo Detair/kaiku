@@ -139,7 +139,7 @@ pub async fn add_reaction(
     }
 
     // Insert reaction (ignore if already exists)
-    sqlx::query(
+    let result = sqlx::query(
         r"
         INSERT INTO message_reactions (message_id, user_id, emoji)
         VALUES ($1, $2, $3)
@@ -164,24 +164,32 @@ pub async fn add_reaction(
     .fetch_one(&state.db)
     .await?;
 
-    // Broadcast reaction_added event to channel subscribers
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::ReactionAdd {
+    // Only broadcast if a row was actually inserted
+    if result.rows_affected() > 0 {
+        if let Err(e) = broadcast_to_channel(
+            &state.redis,
             channel_id,
-            message_id,
-            user_id: auth_user.id,
-            emoji: req.emoji.clone(),
-        },
-    )
-    .await
-    {
-        tracing::warn!("Failed to broadcast reaction_add event: {}", e);
+            &ServerEvent::ReactionAdd {
+                channel_id,
+                message_id,
+                user_id: auth_user.id,
+                emoji: req.emoji.clone(),
+            },
+        )
+        .await
+        {
+            tracing::warn!("Failed to broadcast reaction_add event: {}", e);
+        }
     }
 
+    let status = if result.rows_affected() > 0 {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+
     Ok((
-        StatusCode::CREATED,
+        status,
         Json(ReactionResponse {
             emoji: req.emoji,
             count: count.0,
@@ -230,7 +238,7 @@ pub async fn remove_reaction(
         return Err(ReactionsError::MessageNotFound);
     }
 
-    sqlx::query(
+    let result = sqlx::query(
         r"
         DELETE FROM message_reactions
         WHERE message_id = $1 AND user_id = $2 AND emoji = $3
@@ -242,20 +250,22 @@ pub async fn remove_reaction(
     .execute(&state.db)
     .await?;
 
-    // Broadcast reaction_removed event to channel subscribers
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::ReactionRemove {
+    // Only broadcast if a row was actually deleted
+    if result.rows_affected() > 0 {
+        if let Err(e) = broadcast_to_channel(
+            &state.redis,
             channel_id,
-            message_id,
-            user_id: auth_user.id,
-            emoji,
-        },
-    )
-    .await
-    {
-        tracing::warn!("Failed to broadcast reaction_remove event: {}", e);
+            &ServerEvent::ReactionRemove {
+                channel_id,
+                message_id,
+                user_id: auth_user.id,
+                emoji,
+            },
+        )
+        .await
+        {
+            tracing::warn!("Failed to broadcast reaction_remove event: {}", e);
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Fixed
+- Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
 - Channel items use semantic buttons for proper keyboard and screen reader accessibility
 - Server rail uses `<nav>` landmark with `aria-current` for improved screen reader navigation
 - File upload error toast displays for 8 seconds matching toast duration convention (was 5s)
