@@ -151,17 +151,17 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
   };
 
   return (
-    <div class="relative" onContextMenu={handleContextMenu}>
+    <div class="relative group" onContextMenu={handleContextMenu}>
       <button
         type="button"
         data-testid="channel-item"
         data-channel-id={props.channel.id}
         data-channel-name={props.channel.name}
         data-channel-type={props.channel.channel_type}
-        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all duration-200 group cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50 border-none bg-transparent text-left"
+        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all duration-200 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50 border border-transparent bg-transparent text-left"
         classList={{
           // Voice connected/connecting state (green glow)
-          "bg-accent-primary/20 text-text-primary border border-accent-primary/30":
+          "bg-accent-primary/20 text-text-primary border-accent-primary/30":
             isActive(),
           // Pulsing border while connecting
           "animate-pulse": isConnecting(),
@@ -223,6 +223,27 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
           </span>
         </Show>
 
+        {/* Participant count for voice channels - always show when there are participants */}
+        <Show when={isVoice() && participantCount() > 0}>
+          <div class="ml-auto flex items-center gap-1.5">
+            <span class="text-xs text-text-secondary font-medium">
+              {participantCount()}
+            </span>
+            {/* Speaking indicator dot when connected */}
+            <Show when={isConnected()}>
+              <div
+                class="w-2 h-2 bg-accent-primary rounded-full"
+                classList={{
+                  "animate-pulse": hasSpeakingParticipants(),
+                }}
+              />
+            </Show>
+          </div>
+        </Show>
+      </button>
+
+      {/* Action buttons — siblings of <button>, not children, to avoid nested interactive elements */}
+      <div class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
         {/* Favorite star - shown on hover or when favorited */}
         <Show when={props.guildId && props.guildName}>
           <button
@@ -256,31 +277,10 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
           </button>
         </Show>
 
-        {/* Participant count for voice channels - always show when there are participants */}
-        <Show when={isVoice() && participantCount() > 0}>
-          <div class="ml-auto flex items-center gap-1.5">
-            <span class="text-xs text-text-secondary font-medium">
-              {participantCount()}
-            </span>
-            {/* Speaking indicator dot when connected */}
-            <Show when={isConnected()}>
-              <div
-                class="w-2 h-2 bg-accent-primary rounded-full"
-                classList={{
-                  "animate-pulse": hasSpeakingParticipants(),
-                }}
-              />
-            </Show>
-          </div>
-        </Show>
-
         {/* Settings button - shown on hover when onSettings provided */}
         <Show when={props.onSettings}>
           <button
             class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded opacity-0 group-hover:opacity-100 transition-all duration-200"
-            classList={{
-              "ml-auto": !isVoice() || participantCount() === 0,
-            }}
             onClick={(e) => {
               e.stopPropagation();
               props.onSettings?.();
