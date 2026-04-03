@@ -124,18 +124,15 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       this.noiseSuppression = enabled;
       return { ok: true, value: undefined };
     } catch (err) {
-      // Noise suppression might not be implemented in Tauri backend yet
-      // Fall back to just storing the state locally
-      console.warn(
-        "[TauriVoiceAdapter] Noise suppression not implemented in backend",
-      );
-      this.noiseSuppression = enabled;
-      return { ok: true, value: undefined };
+      console.error("[TauriVoiceAdapter] Failed to set noise suppression:", err);
+      return { ok: false, error: { type: "unknown", message: String(err) } };
     }
   }
 
-  setVadConfig(_enabled: boolean, _threshold: number): void {
-    // Tauri backend handles VAD natively; config will be forwarded when implemented
+  setVadConfig(enabled: boolean, threshold: number): void {
+    invoke("set_vad_config", { enabled, threshold }).catch((err) =>
+      console.error("[TauriVoiceAdapter] Failed to set VAD config:", err),
+    );
   }
 
   // Signaling — dual PeerConnection model
@@ -599,6 +596,13 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track_removed", (event) => {
         console.log(`[TauriVoiceAdapter] Webcam removed: ${event.payload.user_id}`);
         this.eventHandlers.onWebcamTrackRemoved?.(event.payload.user_id);
+      }),
+    );
+
+    // VAD speaking indicator
+    this.unlisteners.push(
+      await listen<boolean>("voice:speaking", (event) => {
+        this.eventHandlers.onSpeakingChange?.(event.payload);
       }),
     );
   }
