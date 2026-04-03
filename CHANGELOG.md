@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TURN relay credentials are now time-limited (1-hour HMAC-SHA1) instead of static when `TURN_SHARED_SECRET` is configured
 
 ### Added
+- Voice activity detection (VAD) on desktop client — microphone is gated using RNNoise ML model with configurable threshold and 300ms hold-open
+- Noise suppression on desktop client — RNNoise denoises audio in real-time when enabled in voice settings
+- Local speaking indicator on desktop client — green ring animates when you're speaking
 - Password visibility toggle on all password fields (login, register, reset password)
 - Skip-to-content keyboard navigation link
 - Open Graph and Twitter Card meta tags for link previews
@@ -75,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guild settings modal now uses vertical sidebar navigation instead of horizontal tabs — scales to any number of sections (#435)
 
 ### Changed
+- Desktop voice capture switched from stereo to mono for bandwidth efficiency and RNNoise compatibility
 - Library page now uses theme-aware colors instead of hardcoded zinc palette
 - Library now renders in the main section with sidebar visible, with a close button
 - Discover Servers page now keeps sidebar visible instead of hiding it
