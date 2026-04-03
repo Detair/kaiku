@@ -182,8 +182,14 @@ pub async fn add_reaction(
         }
     }
 
+    let status = if result.rows_affected() > 0 {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+
     Ok((
-        StatusCode::CREATED,
+        status,
         Json(ReactionResponse {
             emoji: req.emoji,
             count: count.0,

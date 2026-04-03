@@ -2246,8 +2246,15 @@ function handleReactionRemove(
   // loaded from the API don't include users
   const reaction = { ...reactions[reactionIndex] };
   const users = reaction.users ?? [];
+  const wasTracked = users.includes(userId);
   reaction.users = users.filter((id) => id !== userId);
-  reaction.count = Math.max(0, (reaction.count ?? 1) - 1);
+
+  // Only decrement if user was tracked in the array OR the array was
+  // never populated (API-loaded reactions). Skip if the user is absent
+  // from a populated array — that's a duplicate remove event.
+  if (wasTracked || users.length === 0) {
+    reaction.count = Math.max(0, (reaction.count ?? 1) - 1);
+  }
 
   const user = currentUser();
   if (user && userId === user.id) {
