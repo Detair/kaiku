@@ -107,6 +107,8 @@ pub fn run() {
             commands::voice::leave_voice,
             commands::voice::set_mute,
             commands::voice::set_deafen,
+            commands::voice::set_vad_config,
+            commands::voice::set_noise_suppression,
             commands::voice::handle_voice_publisher_answer,
             commands::voice::handle_voice_subscriber_offer,
             commands::voice::handle_voice_ice_candidate,

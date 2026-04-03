@@ -547,6 +547,39 @@ pub async fn set_deafen(deafened: bool, state: State<'_, AppState>) -> Result<()
     Ok(())
 }
 
+/// Set VAD configuration (enabled + threshold).
+#[command]
+pub async fn set_vad_config(
+    enabled: bool,
+    threshold: f32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    debug!("Setting VAD config: enabled={}, threshold={:.2}", enabled, threshold);
+
+    let voice = state.voice.read().await;
+    let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
+
+    voice_state.audio.set_vad_config(enabled, threshold);
+
+    Ok(())
+}
+
+/// Set noise suppression (uses RNNoise denoised output when enabled).
+#[command]
+pub async fn set_noise_suppression(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    debug!("Setting noise suppression: {}", enabled);
+
+    let voice = state.voice.read().await;
+    let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
+
+    voice_state.audio.set_noise_suppression(enabled);
+
+    Ok(())
+}
+
 /// Start microphone test (local only, no server connection).
 #[command]
 pub async fn start_mic_test(
