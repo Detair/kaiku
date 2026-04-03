@@ -708,6 +708,7 @@ fn handle_server_message(app: &AppHandle, text: &str) {
                 // Friend events
                 ServerEvent::FriendRequestReceived { .. } => "ws:friend_request_received",
                 ServerEvent::FriendRequestAccepted { .. } => "ws:friend_request_accepted",
+                ServerEvent::FriendRequestRejected { .. } => "ws:friend_request_rejected",
                 // Block events
                 ServerEvent::UserBlocked { .. } => "ws:user_blocked",
                 ServerEvent::UserUnblocked { .. } => "ws:user_unblocked",

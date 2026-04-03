@@ -226,6 +226,7 @@ pub struct ReactionInfo {
     pub emoji: String,
     pub count: i64,
     pub me: bool,
+    pub users: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -1444,22 +1445,33 @@ pub async fn build_message_responses(
             .push(AttachmentInfo::from_db(&attachment));
     }
 
-    // Bulk fetch reactions
-    let reactions_data = sqlx::query!(
-        r#"
+    // Bulk fetch reactions (uses query_as to avoid sqlx offline cache dependency)
+    #[allow(clippy::items_after_statements)]
+    #[derive(sqlx::FromRow)]
+    struct ReactionRow {
+        message_id: Uuid,
+        emoji: String,
+        count: i64,
+        me: bool,
+        users: Vec<Uuid>,
+    }
+
+    let reactions_data = sqlx::query_as::<_, ReactionRow>(
+        r"
         SELECT
             message_id,
             emoji,
-            COUNT(*) as "count!",
-            BOOL_OR(user_id = $1) as "me!"
+            COUNT(*)::bigint as count,
+            BOOL_OR(user_id = $1) as me,
+            array_agg(user_id) as users
         FROM message_reactions
         WHERE message_id = ANY($2)
         GROUP BY message_id, emoji
         ORDER BY MIN(created_at)
-        "#,
-        requesting_user_id,
-        &message_ids
+        ",
     )
+    .bind(requesting_user_id)
+    .bind(&message_ids)
     .fetch_all(pool)
     .await?;
 
@@ -1473,6 +1485,7 @@ pub async fn build_message_responses(
                 emoji: row.emoji,
                 count: row.count,
                 me: row.me,
+                users: row.users,
             });
     }
 

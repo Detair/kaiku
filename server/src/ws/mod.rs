@@ -743,6 +743,12 @@ pub enum ServerEvent {
         avatar_url: Option<String>,
     },
 
+    /// Friend request rejected or cancelled (sent to the other party).
+    FriendRequestRejected {
+        /// Friendship ID that was rejected/cancelled.
+        friendship_id: Uuid,
+    },
+
     // Block events (broadcast to blocker's sessions)
     /// A user was blocked (sent to blocker's sessions to update local state)
     UserBlocked {
