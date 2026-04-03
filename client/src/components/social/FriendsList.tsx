@@ -22,7 +22,6 @@ import { getUserActivity, getUserStatus, getUserPresence } from "@/stores/presen
 import type { Friend } from "@/lib/types";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { ActivityIndicator } from "@/components/ui";
-import { showToast } from "@/components/ui/Toast";
 import AddFriend from "./AddFriend";
 import flokiHappy from "@/assets/emotes/floki_emote_1.png";
 import flokiThinking from "@/assets/emotes/floki_emote_2.png";
@@ -99,12 +98,8 @@ const FriendsList: Component = () => {
         await removeFriend(friendshipId);
       }
     } catch (err) {
+      // Store already shows toast; just log here
       console.error("Failed to remove friend:", err);
-      showToast({
-        type: "error",
-        title: "Could not remove friend. Please try again.",
-        duration: 8000,
-      });
     }
   };
 
@@ -112,12 +107,8 @@ const FriendsList: Component = () => {
     try {
       await unblockUser(userId);
     } catch (err) {
+      // Store already shows toast; just log here
       console.error("Failed to unblock user:", err);
-      showToast({
-        type: "error",
-        title: "Could not unblock user. Please try again.",
-        duration: 8000,
-      });
     }
   };
 

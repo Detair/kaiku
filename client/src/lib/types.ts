@@ -656,6 +656,10 @@ export type ServerEvent =
       display_name: string;
       avatar_url: string | null;
     }
+  | {
+      type: "friend_request_rejected";
+      friendship_id: string;
+    }
   // DM metadata events
   | {
       type: "dm_name_updated";

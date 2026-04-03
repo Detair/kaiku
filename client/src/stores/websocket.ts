@@ -2199,8 +2199,8 @@ function handleReactionAdd(
   const reactionIndex = reactions.findIndex((r) => r.emoji === emoji);
 
   if (reactionIndex !== -1) {
-    // Update existing reaction — increment count independently of users
-    // array because reactions loaded from the API don't include users
+    // Update existing reaction — increment count rather than deriving
+    // from users.length to stay consistent with the server's count
     const reaction = { ...reactions[reactionIndex] };
     const users = reaction.users ?? [];
     if (!users.includes(userId)) {
@@ -2253,8 +2253,8 @@ function handleReactionRemove(
 
   if (reactionIndex === -1) return;
 
-  // Decrement count independently of users array because reactions
-  // loaded from the API don't include users
+  // Decrement count rather than deriving from users.length to stay
+  // consistent with the server's count
   const reaction = { ...reactions[reactionIndex] };
   const users = reaction.users ?? [];
   const wasTracked = users.includes(userId);
