@@ -37,6 +37,8 @@ pub struct Friend {
     pub friendship_id: Uuid,
     pub friendship_status: FriendshipStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// "incoming" or "outgoing" for pending requests, None otherwise
+    pub direction: Option<String>,
 }
 
 /// Request to send a friend request

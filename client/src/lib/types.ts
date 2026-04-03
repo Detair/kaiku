@@ -894,6 +894,7 @@ export interface Friend {
   friendship_status: FriendshipStatus;
   created_at: string;
   last_seen?: string | null;
+  direction?: "incoming" | "outgoing" | null;
 }
 
 // DM Types

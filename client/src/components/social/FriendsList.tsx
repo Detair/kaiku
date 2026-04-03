@@ -14,6 +14,7 @@ import {
   getOnlineFriends,
   acceptFriendRequest,
   rejectFriendRequest,
+  cancelFriendRequest,
   removeFriend,
   unblockUser,
 } from "@/stores/friends";
@@ -86,6 +87,19 @@ const FriendsList: Component = () => {
       showToast({
         type: "error",
         title: "Could not decline friend request. Please try again.",
+        duration: 8000,
+      });
+    }
+  };
+
+  const handleCancel = async (friendshipId: string) => {
+    try {
+      await cancelFriendRequest(friendshipId);
+    } catch (err) {
+      console.error("Failed to cancel friend request:", err);
+      showToast({
+        type: "error",
+        title: "Could not cancel friend request. Please try again.",
         duration: 8000,
       });
     }
@@ -273,6 +287,7 @@ const FriendsList: Component = () => {
                   tab={tab()}
                   onAccept={handleAccept}
                   onReject={handleReject}
+                  onCancel={handleCancel}
                   onRemove={handleRemove}
                   onUnblock={handleUnblock}
                 />
@@ -295,6 +310,7 @@ interface FriendItemProps {
   tab: FriendsTab;
   onAccept: (friendshipId: string) => void;
   onReject: (friendshipId: string) => void;
+  onCancel: (friendshipId: string) => void;
   onRemove: (friendshipId: string) => void;
   onUnblock: (userId: string) => void;
 }
@@ -367,20 +383,33 @@ const FriendItem: Component<FriendItemProps> = (props) => {
       {/* Actions */}
       <div class="flex gap-2">
         <Show when={props.tab === "pending"}>
-          <button
-            onClick={() => props.onAccept(props.friend.friendship_id)}
-            class="p-1.5 bg-white/5 rounded-lg hover:bg-status-success/20 transition-colors flex items-center justify-center w-9 h-9"
-            title="Accept Request"
+          <Show
+            when={props.friend.direction === "incoming"}
+            fallback={
+              <button
+                onClick={() => props.onCancel(props.friend.friendship_id)}
+                class="px-3 py-1.5 bg-white/10 text-text-secondary rounded-lg text-sm font-medium hover:bg-status-error/20 hover:text-text-primary transition-colors"
+                title="Cancel request"
+              >
+                Cancel
+              </button>
+            }
           >
-            <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
-          </button>
-          <button
-            onClick={() => props.onReject(props.friend.friendship_id)}
-            class="p-1.5 bg-white/5 rounded-lg hover:bg-status-error/20 transition-colors flex items-center justify-center w-9 h-9"
-            title="Decline Request"
-          >
-            <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
-          </button>
+            <button
+              onClick={() => props.onAccept(props.friend.friendship_id)}
+              class="p-1.5 bg-white/5 rounded-lg hover:bg-status-success/20 transition-colors flex items-center justify-center w-9 h-9"
+              title="Accept Request"
+            >
+              <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
+            </button>
+            <button
+              onClick={() => props.onReject(props.friend.friendship_id)}
+              class="p-1.5 bg-white/5 rounded-lg hover:bg-status-error/20 transition-colors flex items-center justify-center w-9 h-9"
+              title="Decline Request"
+            >
+              <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
+            </button>
+          </Show>
         </Show>
         <Show when={props.tab === "all" || props.tab === "online"}>
           <button

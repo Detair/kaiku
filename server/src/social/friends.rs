@@ -146,7 +146,8 @@ pub async fn list_friends(
             false as is_online,
             f.id as friendship_id,
             f.status as "friendship_status",
-            f.created_at
+            f.created_at,
+            NULL::text as direction
            FROM friendships f
            JOIN users u ON u.id = CASE
                WHEN f.requester_id = $1 THEN f.addressee_id
@@ -191,7 +192,11 @@ pub async fn list_pending_requests(
             false as is_online,
             f.id as friendship_id,
             f.status as "friendship_status",
-            f.created_at
+            f.created_at,
+            CASE
+                WHEN f.requester_id = $1 THEN 'outgoing'
+                ELSE 'incoming'
+            END as direction
            FROM friendships f
            JOIN users u ON u.id = CASE
                WHEN f.requester_id = $1 THEN f.addressee_id
@@ -233,7 +238,8 @@ pub async fn list_blocked(
             false as is_online,
             f.id as friendship_id,
             f.status as "friendship_status",
-            f.created_at
+            f.created_at,
+            NULL::text as direction
            FROM friendships f
            JOIN users u ON u.id = f.addressee_id
            WHERE f.requester_id = $1
@@ -344,12 +350,12 @@ pub async fn reject_friend_request(
         .await?
         .ok_or(SocialError::FriendshipNotFound)?;
 
-    // Only addressee can reject
-    if friendship.addressee_id != auth.id {
+    // Either party can reject/cancel a pending request
+    if friendship.requester_id != auth.id && friendship.addressee_id != auth.id {
         return Err(SocialError::Unauthorized);
     }
 
-    // Only pending requests can be rejected
+    // Only pending requests can be rejected/cancelled
     if friendship.status != FriendshipStatus::Pending {
         return Err(SocialError::Unauthorized);
     }

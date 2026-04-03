@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
+- Sent friend requests now show "Cancel" button instead of Accept/Decline buttons in the pending view (#453)
 - Channel items use semantic buttons for proper keyboard and screen reader accessibility
 - Server rail uses `<nav>` landmark with `aria-current` for improved screen reader navigation
 - File upload error toast displays for 8 seconds matching toast duration convention (was 5s)
