@@ -70,12 +70,8 @@ const FriendsList: Component = () => {
     try {
       await acceptFriendRequest(friendshipId);
     } catch (err) {
+      // Store already shows toast; just log here
       console.error("Failed to accept friend request:", err);
-      showToast({
-        type: "error",
-        title: "Could not accept friend request. Please try again.",
-        duration: 8000,
-      });
     }
   };
 
@@ -83,12 +79,8 @@ const FriendsList: Component = () => {
     try {
       await rejectFriendRequest(friendshipId);
     } catch (err) {
+      // Store already shows toast; just log here
       console.error("Failed to reject friend request:", err);
-      showToast({
-        type: "error",
-        title: "Could not decline friend request. Please try again.",
-        duration: 8000,
-      });
     }
   };
 

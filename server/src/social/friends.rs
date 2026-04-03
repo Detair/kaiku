@@ -365,6 +365,21 @@ pub async fn reject_friend_request(
         .execute(&state.db)
         .await?;
 
+    // Notify the other party so their UI updates in real time
+    let other_user_id = if friendship.requester_id == auth.id {
+        friendship.addressee_id
+    } else {
+        friendship.requester_id
+    };
+
+    let event = ServerEvent::FriendRequestRejected {
+        friendship_id,
+    };
+
+    if let Err(e) = broadcast_to_user(&state.redis, other_user_id, &event).await {
+        tracing::warn!("Failed to send friend request rejected notification: {}", e);
+    }
+
     Ok(Json(()))
 }
 

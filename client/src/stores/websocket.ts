@@ -774,6 +774,12 @@ export async function initWebSocket(): Promise<void> {
       }),
     );
 
+    pending.push(
+      listen("ws:friend_request_rejected", () => {
+        loadPendingRequests();
+      }),
+    );
+
     // Block events
     pending.push(
       listen<{ user_id: string }>("ws:user_blocked", (event) => {
@@ -1297,6 +1303,11 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "friend_request_accepted":
       // Someone accepted our friend request — refresh both lists
       Promise.all([loadFriends(), loadPendingRequests()]);
+      break;
+
+    case "friend_request_rejected":
+      // Other party rejected/cancelled — refresh pending list
+      loadPendingRequests();
       break;
 
     // Block events
