@@ -343,7 +343,7 @@ pub async fn reject_friend_request(
     auth: AuthUser,
     Path(friendship_id): Path<Uuid>,
 ) -> Result<Json<()>, SocialError> {
-    // Verify that auth.id is the addressee of this friendship
+    // Verify that auth.id is a participant in this friendship
     let friendship = sqlx::query_as::<_, Friendship>("SELECT * FROM friendships WHERE id = $1")
         .bind(friendship_id)
         .fetch_optional(&state.db)

@@ -81,30 +81,32 @@ const PendingModule: Component = () => {
                 </div>
                 <div class="flex items-center gap-1 flex-shrink-0">
                   <Show
-                    when={request.direction === "incoming"}
+                    when={request.direction === "outgoing"}
                     fallback={
-                      <button
-                        onClick={() => handleCancel(request)}
-                        class="px-2.5 py-1 rounded-lg text-xs font-medium bg-white/5 text-text-secondary hover:bg-status-error/20 hover:text-text-primary transition-colors"
-                        title="Cancel request"
-                      >
-                        Cancel
-                      </button>
+                      <>
+                        <button
+                          onClick={() => handleAccept(request)}
+                          class="p-1 rounded-full bg-white/5 hover:bg-status-success/20 transition-colors flex items-center justify-center w-8 h-8"
+                          title="Accept"
+                        >
+                          <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
+                        </button>
+                        <button
+                          onClick={() => handleDecline(request)}
+                          class="p-1 rounded-full bg-white/5 hover:bg-status-error/20 transition-colors flex items-center justify-center w-8 h-8"
+                          title="Decline"
+                        >
+                          <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
+                        </button>
+                      </>
                     }
                   >
                     <button
-                      onClick={() => handleAccept(request)}
-                      class="p-1 rounded-full bg-white/5 hover:bg-status-success/20 transition-colors flex items-center justify-center w-8 h-8"
-                      title="Accept"
+                      onClick={() => handleCancel(request)}
+                      class="px-2.5 py-1 rounded-lg text-xs font-medium bg-white/5 text-text-secondary hover:bg-status-error/20 hover:text-text-primary transition-colors"
+                      title="Cancel request"
                     >
-                      <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
-                    </button>
-                    <button
-                      onClick={() => handleDecline(request)}
-                      class="p-1 rounded-full bg-white/5 hover:bg-status-error/20 transition-colors flex items-center justify-center w-8 h-8"
-                      title="Decline"
-                    >
-                      <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
+                      Cancel
                     </button>
                   </Show>
                 </div>
