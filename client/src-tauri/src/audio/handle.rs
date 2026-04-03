@@ -12,7 +12,10 @@ use opus::{Channels as OpusChannels, Decoder, Encoder};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use super::{AudioDevice, AudioDeviceList, AudioError, CHANNELS, FRAME_SIZE, SAMPLE_RATE};
+use super::{
+    AudioDevice, AudioDeviceList, AudioError, CAPTURE_CHANNELS, CHANNELS, FRAME_SIZE,
+    RNNOISE_FRAME_SIZE, SAMPLE_RATE, VadConfig,
+};
 
 /// Audio handle that can be safely shared across threads
 pub struct AudioHandle {
@@ -42,6 +45,12 @@ pub struct AudioHandle {
 
     /// Selected output device name
     output_device_name: Option<String>,
+
+    /// VAD + noise suppression configuration
+    vad_config: VadConfig,
+
+    /// Tauri app handle for emitting events from capture thread
+    app_handle: Option<tauri::AppHandle>,
 }
 
 /// Control messages for capture task
@@ -69,6 +78,8 @@ impl AudioHandle {
             mic_test_control: None,
             input_device_name: None,
             output_device_name: None,
+            vad_config: VadConfig::new(),
+            app_handle: None,
         })
     }
 
@@ -278,6 +289,29 @@ impl AudioHandle {
     /// Get deafened state
     pub fn is_deafened(&self) -> bool {
         self.deafened.load(Ordering::Relaxed)
+    }
+
+    /// Set VAD configuration
+    pub fn set_vad_config(&self, enabled: bool, threshold: f32) {
+        self.vad_config.set_enabled(enabled);
+        self.vad_config.set_threshold(threshold);
+        debug!("VAD config: enabled={}, threshold={:.2}", enabled, threshold);
+    }
+
+    /// Set noise suppression
+    pub fn set_noise_suppression(&self, enabled: bool) {
+        self.vad_config.set_denoise(enabled);
+        debug!("Noise suppression: {}", enabled);
+    }
+
+    /// Get VAD config (for passing to capture task)
+    pub fn vad_config(&self) -> VadConfig {
+        self.vad_config.clone()
+    }
+
+    /// Set Tauri app handle (call during voice initialization before start_capture)
+    pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
+        self.app_handle = Some(handle);
     }
 
     /// Start microphone test
