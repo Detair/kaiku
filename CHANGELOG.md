@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Fixed
+- Channel items use semantic buttons for proper keyboard and screen reader accessibility
+- Server rail uses `<nav>` landmark with `aria-current` for improved screen reader navigation
+- File upload error toast displays for 8 seconds matching toast duration convention (was 5s)
+- Theme demo page no longer accessible in production builds
+- Long channel names show tooltip on hover when truncated
 - Desktop client can now hear other users in voice channels (dual PeerConnection subscriber with native Opus decode and CPAL playback)
 - Desktop client can now see screen share and webcam indicators from other users
 - Desktop client now restores your session on restart — no more re-login every time you open the app
