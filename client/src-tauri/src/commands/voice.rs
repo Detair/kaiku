@@ -39,6 +39,9 @@ pub async fn join_voice(
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
+    // Set app handle for speaking indicator events
+    voice_state.audio.set_app_handle(app.clone());
+
     // Check if already in a channel
     if voice_state.channel_id.is_some() {
         return Err("Already in a voice channel. Leave first.".into());
@@ -556,6 +559,7 @@ pub async fn set_vad_config(
 ) -> Result<(), String> {
     debug!("Setting VAD config: enabled={}, threshold={:.2}", enabled, threshold);
 
+    state.ensure_voice().await?;
     let voice = state.voice.read().await;
     let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
 
@@ -572,6 +576,7 @@ pub async fn set_noise_suppression(
 ) -> Result<(), String> {
     debug!("Setting noise suppression: {}", enabled);
 
+    state.ensure_voice().await?;
     let voice = state.voice.read().await;
     let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
 

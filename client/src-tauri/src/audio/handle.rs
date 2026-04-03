@@ -407,8 +407,9 @@ fn run_capture_task(
     let mut denoiser = nnnoiseless::DenoiseState::new();
     let mut first_frame = true;
 
-    // RNNoise accumulator (480 mono samples = 10ms)
+    // RNNoise I/O buffers (480 mono samples = 10ms) — pre-allocated to avoid RT allocation
     let mut rnnoise_input: Vec<f32> = Vec::with_capacity(RNNOISE_FRAME_SIZE);
+    let mut rnnoise_output: Vec<f32> = vec![0.0f32; RNNOISE_FRAME_SIZE];
 
     // Opus frame accumulators (960 mono samples = 20ms)
     let frame_samples = FRAME_SIZE * CAPTURE_CHANNELS as usize; // 960
@@ -447,8 +448,8 @@ fn run_capture_task(
                 original_accumulator.push(sample);
 
                 if rnnoise_input.len() == RNNOISE_FRAME_SIZE {
-                    // Run RNNoise: denoises in-place and returns VAD probability
-                    let mut rnnoise_output = vec![0.0f32; RNNOISE_FRAME_SIZE];
+                    // Run RNNoise: denoises and returns VAD probability
+                    rnnoise_output.fill(0.0);
                     let vad_prob =
                         denoiser.process_frame(&mut rnnoise_output, &rnnoise_input);
 
