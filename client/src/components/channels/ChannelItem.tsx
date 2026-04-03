@@ -290,7 +290,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
             <Settings class="w-3.5 h-3.5" />
           </button>
         </Show>
-      </div>
+      </button>
 
       {/* Tooltip showing participants (on hover for voice channels) */}
       <Show when={isVoice() && showTooltip() && participantCount() > 0}>
