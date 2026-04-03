@@ -176,6 +176,25 @@ export async function rejectFriendRequest(friendshipId: string): Promise<void> {
 }
 
 /**
+ * Cancel an outgoing friend request (uses reject endpoint)
+ */
+export async function cancelFriendRequest(friendshipId: string): Promise<void> {
+  try {
+    await tauri.rejectFriendRequest(friendshipId);
+    await loadPendingRequests();
+  } catch (err) {
+    console.error("Failed to cancel friend request:", err);
+    showToast({
+      type: "error",
+      title: "Cancel Failed",
+      message: "Could not cancel friend request. Please try again.",
+      duration: 8000,
+    });
+    throw err;
+  }
+}
+
+/**
  * Remove a friend
  */
 export async function removeFriend(friendshipId: string): Promise<void> {

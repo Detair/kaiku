@@ -12,19 +12,13 @@ import {
   friendsState,
   acceptFriendRequest,
   rejectFriendRequest,
+  cancelFriendRequest,
 } from "@/stores/friends";
 import CollapsibleModule from "./CollapsibleModule";
 import { Avatar } from "@/components/ui";
 import type { Friend } from "@/lib/types";
 
 const PendingModule: Component = () => {
-  // Split pending requests into incoming and outgoing
-  // Note: The Friend type has user_id of the OTHER person, not us
-  // We need to check against friendship metadata to determine direction
-  // For now, we show all pending requests with unified UI since the API
-  // doesn't clearly distinguish direction. The actions will work based
-  // on the friendship_id.
-
   const pendingCount = () => friendsState.pendingRequests.length;
 
   // Handle accept request
@@ -36,12 +30,19 @@ const PendingModule: Component = () => {
     }
   };
 
-  // Handle decline/cancel request
   const handleDecline = async (friend: Friend) => {
     try {
       await rejectFriendRequest(friend.friendship_id);
     } catch (err) {
       console.error("Failed to decline friend request:", err);
+    }
+  };
+
+  const handleCancel = async (friend: Friend) => {
+    try {
+      await cancelFriendRequest(friend.friendship_id);
+    } catch (err) {
+      console.error("Failed to cancel friend request:", err);
     }
   };
 
@@ -79,20 +80,35 @@ const PendingModule: Component = () => {
                   </div>
                 </div>
                 <div class="flex items-center gap-1 flex-shrink-0">
-                  <button
-                    onClick={() => handleAccept(request)}
-                    class="p-1 rounded-full bg-white/5 hover:bg-status-success/20 transition-colors flex items-center justify-center w-8 h-8"
-                    title="Accept"
+                  <Show
+                    when={request.direction === "outgoing"}
+                    fallback={
+                      <>
+                        <button
+                          onClick={() => handleAccept(request)}
+                          class="p-1 rounded-full bg-white/5 hover:bg-status-success/20 transition-colors flex items-center justify-center w-8 h-8"
+                          title="Accept"
+                        >
+                          <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
+                        </button>
+                        <button
+                          onClick={() => handleDecline(request)}
+                          class="p-1 rounded-full bg-white/5 hover:bg-status-error/20 transition-colors flex items-center justify-center w-8 h-8"
+                          title="Decline"
+                        >
+                          <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
+                        </button>
+                      </>
+                    }
                   >
-                    <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
-                  </button>
-                  <button
-                    onClick={() => handleDecline(request)}
-                    class="p-1 rounded-full bg-white/5 hover:bg-status-error/20 transition-colors flex items-center justify-center w-8 h-8"
-                    title="Decline"
-                  >
-                    <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
-                  </button>
+                    <button
+                      onClick={() => handleCancel(request)}
+                      class="px-2.5 py-1 rounded-lg text-xs font-medium bg-white/5 text-text-secondary hover:bg-status-error/20 hover:text-text-primary transition-colors"
+                      title="Cancel request"
+                    >
+                      Cancel
+                    </button>
+                  </Show>
                 </div>
               </div>
             )}
