@@ -55,6 +55,9 @@ url = "2"
 keyring = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Audio denoising + VAD
+nnnoiseless = { version = "0.5", default-features = false }
+
 # Screen capture
 scap = { git = "https://github.com/Detair/scap.git", branch = "fix/linux-frame-enum" }
 
