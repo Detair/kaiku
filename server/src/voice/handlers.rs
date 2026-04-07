@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::Json;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 use sha1::Sha1;
@@ -61,7 +62,9 @@ pub async fn get_ice_servers(
     }];
 
     // Prefer HMAC time-limited credentials when shared secret is configured
-    if let (Some(turn), Some(secret)) = (&state.config.turn_server, &state.config.turn_shared_secret) {
+    if let (Some(turn), Some(secret)) =
+        (&state.config.turn_server, &state.config.turn_shared_secret)
+    {
         let expiry = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock before UNIX epoch")
