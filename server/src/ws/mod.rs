@@ -1569,7 +1569,9 @@ pub async fn handle_client_message(
                 }
             }
             msg_state.last_typing.insert(channel_id, now);
-            msg_state.last_typing.retain(|_, last| now.duration_since(*last) < Duration::from_secs(2));
+            msg_state
+                .last_typing
+                .retain(|_, last| now.duration_since(*last) < Duration::from_secs(2));
 
             // Broadcast typing indicator
             broadcast_to_channel(

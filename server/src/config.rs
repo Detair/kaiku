@@ -320,7 +320,9 @@ impl Config {
             turn_server: env::var("TURN_SERVER").ok().filter(|s| !s.is_empty()),
             turn_username: env::var("TURN_USERNAME").ok().filter(|s| !s.is_empty()),
             turn_credential: env::var("TURN_CREDENTIAL").ok().filter(|s| !s.is_empty()),
-            turn_shared_secret: env::var("TURN_SHARED_SECRET").ok().filter(|s| !s.is_empty()),
+            turn_shared_secret: env::var("TURN_SHARED_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
             turn_credential_ttl: env::var("TURN_CREDENTIAL_TTL")
                 .ok()
                 .and_then(|s| s.parse().ok())

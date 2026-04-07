@@ -372,9 +372,7 @@ pub async fn reject_friend_request(
         friendship.requester_id
     };
 
-    let event = ServerEvent::FriendRequestRejected {
-        friendship_id,
-    };
+    let event = ServerEvent::FriendRequestRejected { friendship_id };
 
     if let Err(e) = broadcast_to_user(&state.redis, other_user_id, &event).await {
         tracing::warn!("Failed to send friend request rejected notification: {}", e);
