@@ -39,6 +39,9 @@ pub async fn join_voice(
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
+    // Set app handle for speaking indicator events
+    voice_state.audio.set_app_handle(app.clone());
+
     // Check if already in a channel
     if voice_state.channel_id.is_some() {
         return Err("Already in a voice channel. Leave first.".into());
@@ -543,6 +546,44 @@ pub async fn set_deafen(deafened: bool, state: State<'_, AppState>) -> Result<()
     let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
 
     voice_state.audio.set_deafened(deafened);
+
+    Ok(())
+}
+
+/// Set VAD configuration (enabled + threshold).
+#[command]
+pub async fn set_vad_config(
+    enabled: bool,
+    threshold: f32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    debug!(
+        "Setting VAD config: enabled={}, threshold={:.2}",
+        enabled, threshold
+    );
+
+    state.ensure_voice().await?;
+    let voice = state.voice.read().await;
+    let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
+
+    voice_state.audio.set_vad_config(enabled, threshold);
+
+    Ok(())
+}
+
+/// Set noise suppression (uses RNNoise denoised output when enabled).
+#[command]
+pub async fn set_noise_suppression(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    debug!("Setting noise suppression: {}", enabled);
+
+    state.ensure_voice().await?;
+    let voice = state.voice.read().await;
+    let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
+
+    voice_state.audio.set_noise_suppression(enabled);
 
     Ok(())
 }

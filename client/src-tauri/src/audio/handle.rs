@@ -5,14 +5,19 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, Host};
 use opus::{Channels as OpusChannels, Decoder, Encoder};
+use tauri::Emitter;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use super::{AudioDevice, AudioDeviceList, AudioError, CHANNELS, FRAME_SIZE, SAMPLE_RATE};
+use super::{
+    AudioDevice, AudioDeviceList, AudioError, VadConfig, CAPTURE_CHANNELS, CHANNELS, FRAME_SIZE,
+    RNNOISE_FRAME_SIZE, SAMPLE_RATE,
+};
 
 /// Audio handle that can be safely shared across threads
 pub struct AudioHandle {
@@ -42,6 +47,12 @@ pub struct AudioHandle {
 
     /// Selected output device name
     output_device_name: Option<String>,
+
+    /// VAD + noise suppression configuration
+    vad_config: VadConfig,
+
+    /// Tauri app handle for emitting events from capture thread
+    app_handle: Option<tauri::AppHandle>,
 }
 
 /// Control messages for capture task
@@ -69,6 +80,8 @@ impl AudioHandle {
             mic_test_control: None,
             input_device_name: None,
             output_device_name: None,
+            vad_config: VadConfig::new(),
+            app_handle: None,
         })
     }
 
@@ -174,6 +187,8 @@ impl AudioHandle {
 
         let device = self.get_device(self.input_device_name.as_deref(), true)?;
         let muted = self.muted.clone();
+        let vad_config = self.vad_config.clone();
+        let app_handle = self.app_handle.clone();
 
         // Create control channel
         let (control_tx, mut control_rx) = mpsc::channel::<CaptureControl>(1);
@@ -181,7 +196,14 @@ impl AudioHandle {
 
         // Spawn capture task that owns the Stream
         tokio::task::spawn_blocking(move || {
-            run_capture_task(device, muted, output_tx, &mut control_rx);
+            run_capture_task(
+                device,
+                muted,
+                output_tx,
+                &mut control_rx,
+                vad_config,
+                app_handle,
+            );
         });
 
         info!("Audio capture started");
@@ -280,6 +302,32 @@ impl AudioHandle {
         self.deafened.load(Ordering::Relaxed)
     }
 
+    /// Set VAD configuration
+    pub fn set_vad_config(&self, enabled: bool, threshold: f32) {
+        self.vad_config.set_enabled(enabled);
+        self.vad_config.set_threshold(threshold);
+        debug!(
+            "VAD config: enabled={}, threshold={:.2}",
+            enabled, threshold
+        );
+    }
+
+    /// Set noise suppression
+    pub fn set_noise_suppression(&self, enabled: bool) {
+        self.vad_config.set_denoise(enabled);
+        debug!("Noise suppression: {}", enabled);
+    }
+
+    /// Get VAD config (for passing to capture task)
+    pub fn vad_config(&self) -> VadConfig {
+        self.vad_config.clone()
+    }
+
+    /// Set Tauri app handle (call during voice initialization before start_capture)
+    pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
+        self.app_handle = Some(handle);
+    }
+
     /// Start microphone test
     pub async fn start_mic_test(&mut self, device_id: Option<String>) -> Result<(), AudioError> {
         // Stop existing test if running
@@ -329,71 +377,163 @@ impl AudioHandle {
     }
 }
 
+/// Speech hold-open duration: keep gate open for 300ms after last speech detection
+/// to avoid clipping word endings.
+const SPEECH_HOLD_MS: u128 = 300;
+
 /// Run capture task (owns the Stream)
+///
+/// Captures mono audio, runs each 480-sample (10ms) chunk through RNNoise for
+/// VAD probability + denoising, accumulates 960-sample (20ms) Opus frames, and
+/// gates output based on VAD state.
 fn run_capture_task(
     device: Device,
     muted: Arc<AtomicBool>,
     output_tx: mpsc::Sender<Vec<u8>>,
     control_rx: &mut mpsc::Receiver<CaptureControl>,
+    vad_config: VadConfig,
+    app_handle: Option<tauri::AppHandle>,
 ) {
     use cpal::traits::StreamTrait;
     use cpal::{BufferSize, StreamConfig};
 
     let config = StreamConfig {
-        channels: CHANNELS,
+        channels: CAPTURE_CHANNELS,
         sample_rate: SAMPLE_RATE,
         buffer_size: BufferSize::Default,
     };
 
-    let encoder = match Encoder::new(SAMPLE_RATE, OpusChannels::Stereo, opus::Application::Voip) {
-        Ok(enc) => Arc::new(std::sync::Mutex::new(enc)),
+    // Mono Opus encoder — capture is mono, playback remains stereo
+    let mut encoder = match Encoder::new(SAMPLE_RATE, OpusChannels::Mono, opus::Application::Voip) {
+        Ok(enc) => enc,
         Err(e) => {
             error!("Failed to create encoder: {}", e);
             return;
         }
     };
 
-    let sample_buffer = Arc::new(std::sync::Mutex::new(Vec::with_capacity(
-        FRAME_SIZE * CHANNELS as usize * 2,
-    )));
-    let frame_samples = FRAME_SIZE * CHANNELS as usize;
+    // RNNoise denoiser — processes 480-sample frames, returns VAD probability
+    let mut denoiser = nnnoiseless::DenoiseState::new();
+    let mut first_frame = true;
 
-    let encoder_clone = encoder;
-    let sample_buffer_clone = sample_buffer;
-    let muted_clone = muted;
-    let output_tx_clone = output_tx;
+    // RNNoise I/O buffers (480 mono samples = 10ms) — pre-allocated to avoid RT allocation
+    let mut rnnoise_input: Vec<f32> = Vec::with_capacity(RNNOISE_FRAME_SIZE);
+    let mut rnnoise_output: Vec<f32> = vec![0.0f32; RNNOISE_FRAME_SIZE];
+
+    // Opus frame accumulators (960 mono samples = 20ms)
+    let frame_samples = FRAME_SIZE * CAPTURE_CHANNELS as usize; // 960
+    let mut denoised_accumulator: Vec<f32> = Vec::with_capacity(frame_samples);
+    let mut original_accumulator: Vec<f32> = Vec::with_capacity(frame_samples);
+
+    // VAD gate state
+    let mut gate_open = false;
+    let mut indicator_speaking = false;
+    let mut last_speech_time = Instant::now();
+
+    // Opus encode buffer (reused across frames)
+    let mut encode_buf = vec![0u8; 4000];
 
     let stream = match device.build_input_stream(
         &config,
         move |data: &[f32], _| {
-            if muted_clone.load(Ordering::Relaxed) {
+            // When muted, skip all processing but emit not-speaking if needed
+            if muted.load(Ordering::Relaxed) {
+                if indicator_speaking {
+                    indicator_speaking = false;
+                    gate_open = false;
+                    if let Some(ref app) = app_handle {
+                        let _ = app.emit("voice:speaking", false);
+                    }
+                }
                 return;
             }
 
-            let mut buffer = sample_buffer_clone.lock().unwrap();
-            buffer.extend_from_slice(data);
+            // Process incoming mono samples
+            for &sample in data {
+                // Accumulate into RNNoise 480-sample input buffer (i16 range)
+                rnnoise_input.push(sample * 32767.0);
 
-            while buffer.len() >= frame_samples {
-                let frame: Vec<f32> = buffer.drain(..frame_samples).collect();
+                // Also keep the original f32 sample for non-denoised path
+                original_accumulator.push(sample);
 
-                let samples_i16: Vec<i16> = frame
-                    .iter()
-                    .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
-                    .collect();
+                if rnnoise_input.len() == RNNOISE_FRAME_SIZE {
+                    // Run RNNoise: denoises and returns VAD probability
+                    rnnoise_output.fill(0.0);
+                    let vad_prob = denoiser.process_frame(&mut rnnoise_output, &rnnoise_input);
 
-                let mut encoded = vec![0u8; 4000];
-                if let Ok(mut enc) = encoder_clone.lock() {
-                    match enc.encode(&samples_i16, &mut encoded) {
-                        Ok(len) => {
-                            encoded.truncate(len);
-                            if let Err(e) = output_tx_clone.try_send(encoded) {
-                                warn!("Failed to send encoded audio: {}", e);
+                    if first_frame {
+                        // First frame output has fade-in artifact — discard
+                        // but still use it for accumulator sizing
+                        first_frame = false;
+                        rnnoise_output.fill(0.0);
+                    }
+
+                    // Scale denoised output back to f32 [-1.0, 1.0] range
+                    for s in &mut rnnoise_output {
+                        *s /= 32768.0;
+                    }
+                    denoised_accumulator.extend_from_slice(&rnnoise_output);
+                    rnnoise_input.clear();
+
+                    // --- VAD gate logic ---
+                    let threshold = vad_config.get_threshold();
+
+                    if vad_prob > threshold {
+                        if !indicator_speaking {
+                            indicator_speaking = true;
+                            if let Some(ref app) = app_handle {
+                                let _ = app.emit("voice:speaking", true);
                             }
                         }
-                        Err(e) => {
-                            error!("Opus encode error: {}", e);
+                        last_speech_time = Instant::now();
+                    } else if indicator_speaking
+                        && last_speech_time.elapsed().as_millis() > SPEECH_HOLD_MS
+                    {
+                        indicator_speaking = false;
+                        if let Some(ref app) = app_handle {
+                            let _ = app.emit("voice:speaking", false);
                         }
                     }
+
+                    // Gate decision: if VAD disabled, always open
+                    gate_open = if vad_config.is_enabled() {
+                        indicator_speaking
+                    } else {
+                        true
+                    };
+                }
+
+                // Check if we have a full Opus frame (960 mono samples)
+                if denoised_accumulator.len() >= frame_samples {
+                    if gate_open {
+                        // Choose denoised or original audio
+                        let source = if vad_config.is_denoise_enabled() {
+                            &denoised_accumulator[..frame_samples]
+                        } else {
+                            &original_accumulator[..frame_samples]
+                        };
+
+                        let samples_i16: Vec<i16> = source
+                            .iter()
+                            .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
+                            .collect();
+
+                        match encoder.encode(&samples_i16, &mut encode_buf) {
+                            Ok(len) => {
+                                let encoded = encode_buf[..len].to_vec();
+                                if let Err(e) = output_tx.try_send(encoded) {
+                                    warn!("Failed to send encoded audio: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Opus encode error: {}", e);
+                            }
+                        }
+                    }
+
+                    // Drain consumed samples from both accumulators
+                    denoised_accumulator.drain(..frame_samples);
+                    original_accumulator.drain(..frame_samples);
                 }
             }
         },

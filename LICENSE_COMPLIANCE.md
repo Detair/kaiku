@@ -4,7 +4,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 
 **Project License:** MIT OR Apache-2.0 (Dual License)
 
-**Last Updated:** 2026-01-31
+**Last Updated:** 2026-04-07
 
 ---
 
@@ -36,6 +36,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 | cpal | 0.17 | Apache-2.0 | Cross-platform audio I/O (client) |
 | opus | 0.3 | MIT/Apache-2.0 | Opus audio codec bindings (client) |
 | rodio | 0.21 | MIT OR Apache-2.0 | Audio playback (client) |
+| nnnoiseless | 0.5 | BSD-3-Clause | Pure-Rust RNNoise port — VAD + noise suppression (client) |
 
 ### Database & Storage
 
