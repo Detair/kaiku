@@ -557,7 +557,10 @@ pub async fn set_vad_config(
     threshold: f32,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    debug!("Setting VAD config: enabled={}, threshold={:.2}", enabled, threshold);
+    debug!(
+        "Setting VAD config: enabled={}, threshold={:.2}",
+        enabled, threshold
+    );
 
     state.ensure_voice().await?;
     let voice = state.voice.read().await;

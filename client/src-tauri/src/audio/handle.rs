@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use super::{
-    AudioDevice, AudioDeviceList, AudioError, CAPTURE_CHANNELS, CHANNELS, FRAME_SIZE,
-    RNNOISE_FRAME_SIZE, SAMPLE_RATE, VadConfig,
+    AudioDevice, AudioDeviceList, AudioError, VadConfig, CAPTURE_CHANNELS, CHANNELS, FRAME_SIZE,
+    RNNOISE_FRAME_SIZE, SAMPLE_RATE,
 };
 
 /// Audio handle that can be safely shared across threads
@@ -196,7 +196,14 @@ impl AudioHandle {
 
         // Spawn capture task that owns the Stream
         tokio::task::spawn_blocking(move || {
-            run_capture_task(device, muted, output_tx, &mut control_rx, vad_config, app_handle);
+            run_capture_task(
+                device,
+                muted,
+                output_tx,
+                &mut control_rx,
+                vad_config,
+                app_handle,
+            );
         });
 
         info!("Audio capture started");
@@ -299,7 +306,10 @@ impl AudioHandle {
     pub fn set_vad_config(&self, enabled: bool, threshold: f32) {
         self.vad_config.set_enabled(enabled);
         self.vad_config.set_threshold(threshold);
-        debug!("VAD config: enabled={}, threshold={:.2}", enabled, threshold);
+        debug!(
+            "VAD config: enabled={}, threshold={:.2}",
+            enabled, threshold
+        );
     }
 
     /// Set noise suppression
@@ -394,8 +404,7 @@ fn run_capture_task(
     };
 
     // Mono Opus encoder — capture is mono, playback remains stereo
-    let mut encoder = match Encoder::new(SAMPLE_RATE, OpusChannels::Mono, opus::Application::Voip)
-    {
+    let mut encoder = match Encoder::new(SAMPLE_RATE, OpusChannels::Mono, opus::Application::Voip) {
         Ok(enc) => enc,
         Err(e) => {
             error!("Failed to create encoder: {}", e);
@@ -450,8 +459,7 @@ fn run_capture_task(
                 if rnnoise_input.len() == RNNOISE_FRAME_SIZE {
                     // Run RNNoise: denoises and returns VAD probability
                     rnnoise_output.fill(0.0);
-                    let vad_prob =
-                        denoiser.process_frame(&mut rnnoise_output, &rnnoise_input);
+                    let vad_prob = denoiser.process_frame(&mut rnnoise_output, &rnnoise_input);
 
                     if first_frame {
                         // First frame output has fade-in artifact — discard
