@@ -328,6 +328,9 @@ pub enum ServerEvent {
         display_name: String,
         avatar_url: Option<String>,
     },
+    FriendRequestRejected {
+        friendship_id: String,
+    },
     // Block events
     UserBlocked {
         user_id: String,
