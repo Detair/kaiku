@@ -8,6 +8,12 @@
 //! auth middleware, JSON deserialization, validation, compare-and-swap,
 //! and response serialization — all under concurrent load.
 //!
+//! Cross-process serialization with other tests that mutate
+//! `server_config.setup_complete` is enforced by the `setup-state`
+//! nextest test-group in `.config/nextest.toml`. The in-process
+//! `#[serial(setup)]` lock below provides defense in depth for
+//! plain `cargo test` runs (which run all tests in a single process).
+//!
 //! Run with: `cargo test --test integration setup_concurrent_http -- --nocapture`
 
 use axum::body::Body;
@@ -44,7 +50,6 @@ async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
 /// while the other gets 403 (`SETUP_ALREADY_COMPLETE`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial(setup)]
-#[ignore = "Flaky: race condition timing depends on CI load"]
 async fn test_concurrent_http_setup_completion() {
     let app = TestApp::new().await;
 
@@ -126,7 +131,6 @@ async fn test_concurrent_http_setup_completion() {
 /// Test that concurrent completion with 5 admins still results in exactly one success.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial(setup)]
-#[ignore = "Flaky: race condition timing depends on CI load"]
 async fn test_concurrent_http_setup_five_admins() {
     let app = TestApp::new().await;
 
