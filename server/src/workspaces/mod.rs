@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod handlers;
+mod queries;
 pub mod types;
 
 use axum::routing::{delete, get, patch, post};
