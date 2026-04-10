@@ -12,7 +12,7 @@ use super::types::{DmSearchAuthor, DmSearchQuery, DmSearchResponse, DmSearchResu
 use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::chat::dm;
+use crate::chat::{dm, queries};
 use crate::db;
 
 // ============================================================================
@@ -156,11 +156,7 @@ pub async fn search_dm_messages(
         users.into_iter().map(|u| (u.id, u)).collect();
 
     // Bulk fetch channel names
-    let channels: Vec<(Uuid, String)> =
-        sqlx::query_as("SELECT id, name FROM channels WHERE id = ANY($1)")
-            .bind(&channel_ids)
-            .fetch_all(&state.db)
-            .await?;
+    let channels = queries::list_channel_names_by_ids(&state.db, &channel_ids).await?;
     let channel_map: std::collections::HashMap<Uuid, String> = channels.into_iter().collect();
 
     // Build results

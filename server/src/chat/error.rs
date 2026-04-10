@@ -76,27 +76,15 @@ impl IntoResponse for ChatError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
             // Channel
-            Self::ChannelNotFound => (
-                StatusCode::NOT_FOUND,
-                "CHANNEL_NOT_FOUND",
-                self.to_string(),
-            ),
+            Self::ChannelNotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", self.to_string()),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),
 
             // Message
-            Self::MessageNotFound => (
-                StatusCode::NOT_FOUND,
-                "MESSAGE_NOT_FOUND",
-                self.to_string(),
-            ),
+            Self::MessageNotFound => (StatusCode::NOT_FOUND, "MESSAGE_NOT_FOUND", self.to_string()),
             Self::Blocked => (StatusCode::FORBIDDEN, "BLOCKED", self.to_string()),
-            Self::ContentFiltered => (
-                StatusCode::FORBIDDEN,
-                "CONTENT_FILTERED",
-                self.to_string(),
-            ),
+            Self::ContentFiltered => (StatusCode::FORBIDDEN, "CONTENT_FILTERED", self.to_string()),
 
             // Upload
             Self::StorageNotConfigured => (
@@ -128,11 +116,7 @@ impl IntoResponse for ChatError {
             ),
 
             // Override
-            Self::RoleNotFound => (
-                StatusCode::NOT_FOUND,
-                "ROLE_NOT_FOUND",
-                self.to_string(),
-            ),
+            Self::RoleNotFound => (StatusCode::NOT_FOUND, "ROLE_NOT_FOUND", self.to_string()),
             Self::NotMember => (StatusCode::FORBIDDEN, "NOT_MEMBER", self.to_string()),
             Self::Permission(e) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", e.to_string()),
 

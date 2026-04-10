@@ -9,6 +9,7 @@ pub mod error;
 pub(crate) mod media_processing;
 pub(crate) mod messages;
 pub mod overrides;
+pub mod queries;
 pub mod s3;
 pub(crate) mod screenshare;
 pub mod types;

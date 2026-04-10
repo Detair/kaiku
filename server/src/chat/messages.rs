@@ -5,12 +5,13 @@ use std::collections::HashSet;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use fred::interfaces::{KeysInterface, PubsubInterface};
 use tracing::warn;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::queries;
 use super::types::{
     detect_mention_type, AttachmentInfo, AuthorProfile, CreateMessageRequest,
     CursorPaginatedResponse, ListMessagesQuery, ListThreadRepliesQuery, MessageResponse,
@@ -162,13 +163,7 @@ pub async fn create(
 
     // For DM channels, check if any participant has blocked the other
     if channel.channel_type == db::ChannelType::Dm {
-        let participants: Vec<Uuid> = sqlx::query_scalar!(
-            "SELECT user_id FROM dm_participants WHERE channel_id = $1",
-            channel_id
-        )
-        .fetch_all(&state.db)
-        .await
-        .map_err(ChatError::Database)?;
+        let participants = queries::list_dm_participant_ids(&state.db, channel_id).await?;
 
         for &participant_id in &participants {
             if participant_id != auth_user.id {
@@ -321,19 +316,9 @@ pub async fn create(
                     let latency_ms = start.elapsed().as_millis();
                     let content = format!("Pong! (latency: {latency_ms}ms)");
 
-                    let msg: (Uuid, DateTime<Utc>) = sqlx::query_as(
-                        r"
-                        INSERT INTO messages (channel_id, user_id, content)
-                        VALUES ($1, $2, $3)
-                        RETURNING id, created_at
-                        ",
-                    )
-                    .bind(channel_id)
-                    .bind(auth_user.id)
-                    .bind(&content)
-                    .fetch_one(&state.db)
-                    .await
-                    .map_err(ChatError::Database)?;
+                    let msg =
+                        queries::insert_ping_message(&state.db, channel_id, auth_user.id, &content)
+                            .await?;
 
                     let response = MessageResponse {
                         id: msg.0,
@@ -373,34 +358,13 @@ pub async fn create(
                     return Ok((StatusCode::OK, Json(response)));
                 }
 
-                #[allow(clippy::items_after_statements)]
-                #[derive(sqlx::FromRow)]
-                struct SlashCommandRow {
-                    bot_user_id: Option<Uuid>,
-                    application_id: Uuid,
-                    options: Option<serde_json::Value>,
-                    guild_scoped: bool,
-                }
-                let commands: Vec<SlashCommandRow> = sqlx::query_as(
-                    r"
-                    SELECT ba.bot_user_id, sc.application_id, sc.options, (sc.guild_id IS NOT NULL) AS guild_scoped
-                    FROM slash_commands sc
-                    JOIN bot_applications ba ON ba.id = sc.application_id
-                    JOIN guild_bot_installations gbi ON gbi.application_id = sc.application_id
-                    WHERE gbi.guild_id = $1
-                      AND sc.name = $2
-                      AND (sc.guild_id = $1 OR sc.guild_id IS NULL)
-                    ORDER BY (sc.guild_id IS NOT NULL) DESC, sc.created_at ASC, sc.id ASC
-                    ",
-                )
-                .bind(guild_id)
-                .bind(&command_name)
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| {
-                    tracing::error!("Failed to resolve slash command: {}", e);
-                    ChatError::Database(e)
-                })?;
+                let commands =
+                    queries::list_slash_command_candidates(&state.db, guild_id, &command_name)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Failed to resolve slash command: {}", e);
+                            e
+                        })?;
 
                 if let Some(command) = commands.first() {
                     let same_priority: Vec<_> = commands
@@ -411,16 +375,9 @@ pub async fn create(
                     if same_priority.len() > 1 {
                         let bot_ids: Vec<Uuid> =
                             same_priority.iter().filter_map(|c| c.bot_user_id).collect();
-                        let bot_names: Vec<String> = sqlx::query_scalar::<_, Option<String>>(
-                            "SELECT COALESCE(display_name, username) FROM users WHERE id = ANY($1)",
-                        )
-                        .bind(&bot_ids)
-                        .fetch_all(&state.db)
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .flatten()
-                        .collect();
+                        let bot_names = queries::list_bot_display_names(&state.db, &bot_ids)
+                            .await
+                            .unwrap_or_default();
 
                         let names = if bot_names.is_empty() {
                             "multiple bots".to_string()
@@ -611,14 +568,8 @@ pub async fn create(
     // Check threads_enabled for guild channels when creating a thread reply
     if body.parent_id.is_some() {
         if let Some(guild_id) = channel.guild_id {
-            let threads_enabled: (bool,) =
-                sqlx::query_as("SELECT threads_enabled FROM guilds WHERE id = $1")
-                    .bind(guild_id)
-                    .fetch_one(&state.db)
-                    .await
-                    .map_err(ChatError::Database)?;
-
-            if !threads_enabled.0 {
+            let threads_enabled = queries::is_guild_threads_enabled(&state.db, guild_id).await?;
+            if !threads_enabled {
                 return Err(ChatError::Forbidden);
             }
         }
@@ -921,14 +872,9 @@ pub async fn update(
         mention_type: None, // Edits don't trigger new notifications
         reactions: None,
         thread_info: None,
-        pinned: sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM channel_pins WHERE channel_id = $1 AND message_id = $2)",
-        )
-        .bind(message.channel_id)
-        .bind(message.id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(false),
+        pinned: queries::is_message_pinned(&state.db, message.channel_id, message.id)
+            .await
+            .unwrap_or(false),
         message_type: message.message_type.clone(),
         nonce: None,
     };
@@ -996,27 +942,21 @@ pub async fn delete(
 
     if deleted {
         // Clean up channel pin if message was pinned
-        let pin_deleted =
-            sqlx::query("DELETE FROM channel_pins WHERE channel_id = $1 AND message_id = $2")
-                .bind(channel_id)
-                .bind(id)
-                .execute(&state.db)
-                .await;
-
-        if let Ok(result) = pin_deleted {
-            if result.rows_affected() > 0 {
-                if let Err(e) = broadcast_to_channel(
-                    &state.redis,
+        if matches!(
+            queries::delete_channel_pin(&state.db, channel_id, id).await,
+            Ok(true)
+        ) {
+            if let Err(e) = broadcast_to_channel(
+                &state.redis,
+                channel_id,
+                &ServerEvent::ChannelPinRemoved {
                     channel_id,
-                    &ServerEvent::ChannelPinRemoved {
-                        channel_id,
-                        message_id: id,
-                    },
-                )
-                .await
-                {
-                    warn!(channel_id = %channel_id, message_id = %id, error = %e, "Failed to broadcast channel_pin_removed on delete");
-                }
+                    message_id: id,
+                },
+            )
+            .await
+            {
+                warn!(channel_id = %channel_id, message_id = %id, error = %e, "Failed to broadcast channel_pin_removed on delete");
             }
         }
 
@@ -1099,35 +1039,9 @@ pub async fn build_message_responses(
             .push(AttachmentInfo::from_db(&attachment));
     }
 
-    // Bulk fetch reactions (uses query_as to avoid sqlx offline cache dependency)
-    #[allow(clippy::items_after_statements)]
-    #[derive(sqlx::FromRow)]
-    struct ReactionRow {
-        message_id: Uuid,
-        emoji: String,
-        count: i64,
-        me: bool,
-        users: Vec<Uuid>,
-    }
-
-    let reactions_data = sqlx::query_as::<_, ReactionRow>(
-        r"
-        SELECT
-            message_id,
-            emoji,
-            COUNT(*)::bigint as count,
-            BOOL_OR(user_id = $1) as me,
-            array_agg(user_id) as users
-        FROM message_reactions
-        WHERE message_id = ANY($2)
-        GROUP BY message_id, emoji
-        ORDER BY MIN(created_at)
-        ",
-    )
-    .bind(requesting_user_id)
-    .bind(&message_ids)
-    .fetch_all(pool)
-    .await?;
+    // Bulk fetch reactions
+    let reactions_data =
+        queries::list_reactions_for_messages(pool, requesting_user_id, &message_ids).await?;
 
     let mut reactions_map: std::collections::HashMap<Uuid, Vec<ReactionInfo>> =
         std::collections::HashMap::new();
@@ -1144,15 +1058,9 @@ pub async fn build_message_responses(
     }
 
     // Bulk fetch pin status
-    let pinned_ids: std::collections::HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
-        "SELECT message_id FROM channel_pins WHERE message_id = ANY($1)",
-    )
-    .bind(&message_ids)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .collect();
+    let pinned_ids = queries::list_pinned_message_ids(pool, &message_ids)
+        .await
+        .unwrap_or_default();
 
     // Batch-fetch thread info for parent messages with replies
     let parent_ids_with_threads: Vec<Uuid> = messages
@@ -1498,13 +1406,7 @@ pub async fn mark_thread_read(
         .map_err(|_| ChatError::Forbidden)?;
 
     // Get the latest reply to use as last_read_message_id
-    let last_reply_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM messages WHERE parent_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(parent_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(ChatError::Database)?;
+    let last_reply_id = queries::latest_thread_reply_id(&state.db, parent_id).await?;
 
     db::update_thread_read_state(&state.db, auth_user.id, parent_id, last_reply_id).await?;
 

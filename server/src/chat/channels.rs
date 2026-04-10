@@ -6,6 +6,7 @@ use axum::Json;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::queries;
 use super::types::{
     AddMemberRequest, ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest,
     MemberResponse, UpdateChannelRequest,
@@ -74,16 +75,9 @@ pub async fn create(
         let mut tx = state.db.begin().await?;
 
         // Advisory lock seed 55 = channel_create (see db/mod.rs registry)
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 55))")
-            .bind(guild_id)
-            .execute(&mut *tx)
-            .await?;
+        queries::lock_channel_create(&mut tx, guild_id).await?;
 
-        let channel_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM channels WHERE guild_id = $1")
-                .bind(guild_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let channel_count = queries::count_channels_in_guild(&mut tx, guild_id).await?;
 
         if channel_count >= state.config.max_channels_per_guild {
             return Err(ChatError::LimitExceeded(format!(
@@ -94,13 +88,7 @@ pub async fn create(
 
         // Validate channel type against category type restriction
         if let Some(cat_id) = body.category_id {
-            let cat_type: Option<(String,)> =
-                sqlx::query_as("SELECT category_type::TEXT FROM channel_categories WHERE id = $1")
-                    .bind(cat_id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-
-            if let Some((cat_type,)) = cat_type {
+            if let Some(cat_type) = queries::find_channel_category_type(&mut tx, cat_id).await? {
                 let channel_type_str = match &channel_type {
                     db::ChannelType::Text => "text",
                     db::ChannelType::Voice => "voice",
@@ -116,27 +104,21 @@ pub async fn create(
             }
         }
 
-        let position: i32 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(position), 0) + 1 FROM channels WHERE category_id IS NOT DISTINCT FROM $1",
-        )
-        .bind(body.category_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let position = queries::next_channel_position(&mut tx, body.category_id).await?;
 
-        let channel = sqlx::query_as::<_, db::Channel>(
-            r"INSERT INTO channels (name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-              RETURNING id, name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position, max_screen_shares, created_at, updated_at",
+        let channel = queries::insert_channel(
+            &mut tx,
+            queries::InsertChannelParams {
+                name: &body.name,
+                channel_type: &channel_type,
+                category_id: body.category_id,
+                guild_id: body.guild_id,
+                topic: body.topic.as_deref(),
+                icon_url: None,
+                user_limit: body.user_limit,
+                position,
+            },
         )
-        .bind(&body.name)
-        .bind(&channel_type)
-        .bind(body.category_id)
-        .bind(body.guild_id)
-        .bind(body.topic.as_deref())
-        .bind(None::<&str>) // icon_url
-        .bind(body.user_limit)
-        .bind(position)
-        .fetch_one(&mut *tx)
         .await?;
 
         tx.commit().await?;
@@ -421,38 +403,23 @@ pub async fn mark_as_read(
     let guild_id = channel.guild_id.ok_or(ChatError::ChannelNotFound)?;
 
     // 2. Verify user is a guild member
-    let is_member = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2) as "exists!""#,
-        guild_id,
-        auth.id
-    )
-    .fetch_one(&state.db)
-    .await?;
-
-    if !is_member {
+    if !queries::is_guild_member(&state.db, guild_id, auth.id).await? {
         return Err(ChatError::Forbidden);
     }
 
     let now = chrono::Utc::now();
 
-    // 3. Atomic forward-only UPSERT into channel_read_state
-    // The WHERE clause ensures the read cursor only moves forward by comparing
-    // message timestamps, preventing stale requests from moving it backward.
-    sqlx::query(
-        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (user_id, channel_id)
-           DO UPDATE SET last_read_at = EXCLUDED.last_read_at,
-                         last_read_message_id = EXCLUDED.last_read_message_id
-           WHERE channel_read_state.last_read_message_id IS NULL
-              OR (SELECT created_at FROM messages WHERE id = EXCLUDED.last_read_message_id)
-                 > (SELECT created_at FROM messages WHERE id = channel_read_state.last_read_message_id)",
+    // 3. Atomic forward-only UPSERT into channel_read_state.
+    // The WHERE clause inside the query ensures the read cursor only moves
+    // forward by comparing message timestamps, preventing stale requests
+    // from moving it backward.
+    queries::upsert_channel_read_state(
+        &state.db,
+        auth.id,
+        channel_id,
+        now,
+        body.last_read_message_id,
     )
-    .bind(auth.id)
-    .bind(channel_id)
-    .bind(now)
-    .bind(body.last_read_message_id)
-    .execute(&state.db)
     .await?;
 
     // 4. Broadcast ChannelRead event to all user's other sessions

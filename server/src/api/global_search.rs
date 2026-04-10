@@ -55,6 +55,18 @@ impl From<sqlx::Error> for GlobalSearchError {
     }
 }
 
+impl From<crate::chat::ChatError> for GlobalSearchError {
+    fn from(err: crate::chat::ChatError) -> Self {
+        match err {
+            crate::chat::ChatError::Database(e) => Self::from(e),
+            other => {
+                tracing::error!(error = %other, "Global search chat error");
+                Self::Database(sqlx::Error::Protocol(other.to_string()))
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Request/Response Types
 // ============================================================================
