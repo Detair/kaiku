@@ -7,7 +7,7 @@ use chrono::{Duration, Utc};
 use rand::Rng;
 use uuid::Uuid;
 
-use super::handlers::GuildError;
+use super::error::GuildError;
 use super::types::{CreateInviteRequest, GuildInvite, InviteResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;

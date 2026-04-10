@@ -2,7 +2,6 @@
 
 use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -10,6 +9,7 @@ use sqlx::QueryBuilder;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::error::GuildError;
 use super::limits;
 use super::types::{
     CreateGuildRequest, Guild, GuildCommandInfo, GuildMember, GuildSettings, GuildWithMemberCount,
@@ -69,67 +69,6 @@ pub struct ChannelPosition {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReorderChannelsRequest {
     pub channels: Vec<ChannelPosition>,
-}
-
-// ============================================================================
-// Error Types
-// ============================================================================
-
-#[derive(Debug)]
-pub enum GuildError {
-    NotFound,
-    Forbidden,
-    ForbiddenMsg(String),
-    Permission(PermissionError),
-    Validation(String),
-    LimitExceeded(String),
-    Database(sqlx::Error),
-    Internal(String),
-}
-
-impl IntoResponse for GuildError {
-    fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            Self::NotFound => (
-                StatusCode::NOT_FOUND,
-                "GUILD_NOT_FOUND",
-                "Guild not found".to_string(),
-            ),
-            Self::Forbidden => (
-                StatusCode::FORBIDDEN,
-                "FORBIDDEN",
-                "Access denied".to_string(),
-            ),
-            Self::ForbiddenMsg(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
-            Self::Permission(e) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", e.to_string()),
-            Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),
-            Self::Database(err) => {
-                tracing::error!(%err, "Guild endpoint database error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    "Database error".to_string(),
-                )
-            }
-            Self::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                msg.clone(),
-            ),
-        };
-        (
-            status,
-            Json(serde_json::json!({ "error": code, "message": message })),
-        )
-            .into_response()
-    }
-}
-
-impl From<sqlx::Error> for GuildError {
-    fn from(err: sqlx::Error) -> Self {
-        Self::Database(err)
-    }
 }
 
 // ============================================================================

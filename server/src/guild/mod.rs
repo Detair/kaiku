@@ -4,12 +4,15 @@
 
 pub mod categories;
 pub mod emojis;
+pub mod error;
 pub mod handlers;
 pub mod invites;
 pub mod limits;
 pub mod roles;
 pub mod search;
 pub mod types;
+
+pub use error::GuildError;
 
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
