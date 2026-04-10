@@ -300,9 +300,9 @@ use utoipa::{Modify, OpenApi};
         crate::api::preferences::get_preferences,
         crate::api::preferences::update_preferences,
         // Connectivity
-        crate::connectivity::handlers::get_summary,
-        crate::connectivity::handlers::get_sessions,
-        crate::connectivity::handlers::get_session_detail,
+        crate::connectivity::get_summary,
+        crate::connectivity::get_sessions,
+        crate::connectivity::get_session_detail,
         // Pages
         crate::pages::handlers::list_platform_pages,
         crate::pages::handlers::get_platform_page,
