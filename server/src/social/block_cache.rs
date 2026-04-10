@@ -9,6 +9,8 @@ use fred::prelude::*;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::queries;
+
 /// Redis key for a user's blocked list.
 fn blocked_key(user_id: Uuid) -> String {
     format!("blocks:{user_id}")
@@ -20,18 +22,14 @@ pub async fn load_blocked_users(
     redis: &Client,
     user_id: Uuid,
 ) -> Result<HashSet<Uuid>, anyhow::Error> {
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT addressee_id FROM friendships WHERE requester_id = $1 AND status = 'blocked'",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await?;
+    let ids: HashSet<Uuid> = queries::list_blocked_addressee_ids(db, user_id)
+        .await?
+        .into_iter()
+        .collect();
 
     let key = blocked_key(user_id);
     // Clear existing set and repopulate
     let _: () = redis.del(&key).await?;
-
-    let ids: HashSet<Uuid> = rows.into_iter().map(|(id,)| id).collect();
 
     if !ids.is_empty() {
         let members: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
@@ -49,17 +47,13 @@ pub async fn load_blocked_by(
     redis: &Client,
     user_id: Uuid,
 ) -> Result<HashSet<Uuid>, anyhow::Error> {
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT requester_id FROM friendships WHERE addressee_id = $1 AND status = 'blocked'",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await?;
+    let ids: HashSet<Uuid> = queries::list_requester_ids_blocking(db, user_id)
+        .await?
+        .into_iter()
+        .collect();
 
     let key = format!("blocked_by:{user_id}");
     let _: () = redis.del(&key).await?;
-
-    let ids: HashSet<Uuid> = rows.into_iter().map(|(id,)| id).collect();
 
     if !ids.is_empty() {
         let members: Vec<String> = ids.iter().map(|id| id.to_string()).collect();

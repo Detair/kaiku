@@ -1,6 +1,7 @@
 pub mod block_cache;
 pub mod error;
 pub mod friends;
+mod queries;
 pub mod types;
 
 pub use error::SocialError;
