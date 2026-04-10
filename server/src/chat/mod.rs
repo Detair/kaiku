@@ -5,12 +5,15 @@
 pub(crate) mod channels;
 pub mod dm;
 pub mod dm_search;
+pub mod error;
 pub(crate) mod media_processing;
 pub(crate) mod messages;
 pub mod overrides;
 pub mod s3;
 pub(crate) mod screenshare;
 pub(crate) mod uploads;
+
+pub use error::ChatError;
 
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;

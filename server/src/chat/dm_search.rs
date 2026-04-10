@@ -5,50 +5,16 @@
 use std::time::Instant;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::chat::dm;
 use crate::db;
-
-// ============================================================================
-// Error Types
-// ============================================================================
-
-#[derive(Debug)]
-pub enum DmSearchError {
-    InvalidQuery(String),
-    Database(sqlx::Error),
-}
-
-impl IntoResponse for DmSearchError {
-    fn into_response(self) -> Response {
-        let (status, body) = match &self {
-            Self::InvalidQuery(msg) => (
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "INVALID_QUERY", "message": msg}),
-            ),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
-            ),
-        };
-        (status, Json(body)).into_response()
-    }
-}
-
-impl From<sqlx::Error> for DmSearchError {
-    fn from(err: sqlx::Error) -> Self {
-        tracing::error!(error = %err, "DM search database error");
-        Self::Database(err)
-    }
-}
 
 // ============================================================================
 // Request/Response Types
@@ -133,21 +99,21 @@ pub async fn search_dm_messages(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(query): Query<DmSearchQuery>,
-) -> Result<Json<DmSearchResponse>, DmSearchError> {
+) -> Result<Json<DmSearchResponse>, ChatError> {
     // Validate query
     let search_term = query.q.trim();
     if search_term.is_empty() {
-        return Err(DmSearchError::InvalidQuery(
+        return Err(ChatError::InvalidQuery(
             "Search query cannot be empty".to_string(),
         ));
     }
     if search_term.len() < 2 {
-        return Err(DmSearchError::InvalidQuery(
+        return Err(ChatError::InvalidQuery(
             "Search query must be at least 2 characters".to_string(),
         ));
     }
     if search_term.len() > 1000 {
-        return Err(DmSearchError::InvalidQuery(
+        return Err(ChatError::InvalidQuery(
             "Search query must not exceed 1000 characters".to_string(),
         ));
     }
@@ -155,7 +121,7 @@ pub async fn search_dm_messages(
     // Validate date range
     if let (Some(from), Some(to)) = (query.date_from, query.date_to) {
         if from > to {
-            return Err(DmSearchError::InvalidQuery(
+            return Err(ChatError::InvalidQuery(
                 "date_from must be before date_to".to_string(),
             ));
         }
@@ -164,7 +130,7 @@ pub async fn search_dm_messages(
     // Validate has filter
     if let Some(ref has) = query.has {
         if has != "link" && has != "file" {
-            return Err(DmSearchError::InvalidQuery(
+            return Err(ChatError::InvalidQuery(
                 "has must be \"link\" or \"file\"".to_string(),
             ));
         }
@@ -175,7 +141,7 @@ pub async fn search_dm_messages(
         None | Some("relevance") => db::SearchSort::Relevance,
         Some("date") => db::SearchSort::Date,
         Some(_) => {
-            return Err(DmSearchError::InvalidQuery(
+            return Err(ChatError::InvalidQuery(
                 "sort must be \"relevance\" or \"date\"".to_string(),
             ));
         }

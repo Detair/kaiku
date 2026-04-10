@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::channels::{ChannelError, ChannelResponse};
+use super::channels::ChannelResponse;
+use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::chat::uploads::UploadError;
 use crate::db::{self, Channel, ChannelType};
 use crate::social::block_cache;
 use crate::ws::{broadcast_to_user, ServerEvent};
@@ -279,23 +279,23 @@ pub async fn create_dm(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<CreateDMRequest>,
-) -> Result<(StatusCode, Json<DMResponse>), ChannelError> {
+) -> Result<(StatusCode, Json<DMResponse>), ChatError> {
     body.validate()
-        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check for duplicate participant IDs
     let mut unique_ids = body.participant_ids.clone();
     unique_ids.sort();
     unique_ids.dedup();
     if unique_ids.len() != body.participant_ids.len() {
-        return Err(ChannelError::Validation(
+        return Err(ChatError::Validation(
             "Duplicate participant IDs".to_string(),
         ));
     }
 
     // Check that auth user is not in participant list
     if body.participant_ids.contains(&auth.id) {
-        return Err(ChannelError::Validation(
+        return Err(ChatError::Validation(
             "Cannot include yourself in participant list".to_string(),
         ));
     }
@@ -305,7 +305,7 @@ pub async fn create_dm(
         db::find_user_by_id(&state.db, *participant_id)
             .await?
             .ok_or_else(|| {
-                ChannelError::Validation("One or more participants not found".to_string())
+                ChatError::Validation("One or more participants not found".to_string())
             })?;
     }
 
@@ -319,7 +319,7 @@ pub async fn create_dm(
         .await
         {
             Ok(true) => {
-                return Err(ChannelError::Validation(
+                return Err(ChatError::Validation(
                     "Cannot create DM with this user".to_string(),
                 ));
             }
@@ -333,7 +333,7 @@ pub async fn create_dm(
                     "Redis block check failed, using failsafe policy"
                 );
                 if !state.config.block_check_fail_open {
-                    return Err(ChannelError::Validation(
+                    return Err(ChatError::Validation(
                         "Cannot create DM with this user".to_string(),
                     ));
                 }
@@ -380,7 +380,7 @@ pub async fn create_dm(
 pub async fn list_dms(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<DMListResponse>>, ChannelError> {
+) -> Result<Json<Vec<DMListResponse>>, ChatError> {
     let channels = list_user_dms(&state.db, auth.id).await?;
 
     let mut responses = Vec::new();
@@ -463,14 +463,14 @@ pub async fn get_dm(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<Json<DMResponse>, ChannelError> {
+) -> Result<Json<DMResponse>, ChatError> {
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     // Verify it's a DM channel
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Verify auth user is a participant
@@ -483,7 +483,7 @@ pub async fn get_dm(
     .await?;
 
     if !is_participant {
-        return Err(ChannelError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let participants = get_dm_participants(&state.db, channel.id).await?;
@@ -510,14 +510,14 @@ pub async fn leave_dm(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<StatusCode, ChannelError> {
+) -> Result<StatusCode, ChatError> {
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     // Verify it's a DM channel
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Remove user from participants
@@ -532,7 +532,7 @@ pub async fn leave_dm(
     let removed = result.rows_affected();
 
     if removed == 0 {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Check if channel is now empty
@@ -579,17 +579,17 @@ pub async fn update_dm_name(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
     Json(body): Json<UpdateDMNameRequest>,
-) -> Result<Json<DMResponse>, ChannelError> {
+) -> Result<Json<DMResponse>, ChatError> {
     body.validate()
-        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Verify channel exists and is a DM
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Verify auth user is a participant
@@ -602,7 +602,7 @@ pub async fn update_dm_name(
     .await?;
 
     if !is_participant {
-        return Err(ChannelError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // Verify it's a group DM (more than 2 participants)
@@ -614,7 +614,7 @@ pub async fn update_dm_name(
     .await?;
 
     if participant_count <= 2 {
-        return Err(ChannelError::Validation(
+        return Err(ChatError::Validation(
             "Cannot rename 1:1 DM channels".to_string(),
         ));
     }
@@ -686,14 +686,14 @@ pub async fn upload_dm_icon(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
     mut multipart: Multipart,
-) -> Result<Json<DMIconResponse>, UploadError> {
+) -> Result<Json<DMIconResponse>, ChatError> {
     // Verify channel exists and is a DM
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(UploadError::Validation("Channel not found".to_string()))?;
+        .ok_or(ChatError::Validation("Channel not found".to_string()))?;
 
     if channel.channel_type != ChannelType::Dm {
-        return Err(UploadError::Validation("Not a DM channel".to_string()));
+        return Err(ChatError::Validation("Not a DM channel".to_string()));
     }
 
     // Verify auth user is a participant
@@ -706,11 +706,11 @@ pub async fn upload_dm_icon(
     .await?;
 
     if !is_participant {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // Process file upload (similar to uploads.rs)
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     let mut file_data: Option<Vec<u8>> = None;
 
@@ -721,10 +721,10 @@ pub async fn upload_dm_icon(
             let data = field
                 .bytes()
                 .await
-                .map_err(|e| UploadError::Validation(e.to_string()))?;
+                .map_err(|e| ChatError::Validation(e.to_string()))?;
 
             if data.len() > state.config.max_avatar_size {
-                return Err(UploadError::TooLarge {
+                return Err(ChatError::FileTooLarge {
                     max_size: state.config.max_avatar_size,
                 });
             }
@@ -734,11 +734,11 @@ pub async fn upload_dm_icon(
         }
     }
 
-    let file_data = file_data.ok_or(UploadError::NoFile)?;
+    let file_data = file_data.ok_or(ChatError::NoFile)?;
 
     // Validate actual file content using magic bytes (don't trust client-provided MIME type)
     let format = image::guess_format(&file_data)
-        .map_err(|_| UploadError::Validation("Unable to detect image format".to_string()))?;
+        .map_err(|_| ChatError::Validation("Unable to detect image format".to_string()))?;
 
     let (content_type, extension) = match format {
         image::ImageFormat::Png => ("image/png", "png"),
@@ -746,7 +746,7 @@ pub async fn upload_dm_icon(
         image::ImageFormat::Gif => ("image/gif", "gif"),
         image::ImageFormat::WebP => ("image/webp", "webp"),
         _ => {
-            return Err(UploadError::Validation(
+            return Err(ChatError::Validation(
                 "Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string(),
             ))
         }
@@ -758,7 +758,7 @@ pub async fn upload_dm_icon(
     // Upload to S3
     s3.upload(&s3_key, file_data, content_type)
         .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?; // S3Error to string
+        .map_err(|e| ChatError::Storage(e.to_string()))?; // S3Error to string
 
     // Store S3 Key in DB
     sqlx::query!(
@@ -790,15 +790,15 @@ pub async fn get_dm_icon(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<impl IntoResponse, UploadError> {
+) -> Result<impl IntoResponse, ChatError> {
     // Check channel exists
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(UploadError::Validation("Channel not found".to_string()))?;
+        .ok_or(ChatError::Validation("Channel not found".to_string()))?;
 
     // Check if DM
     if channel.channel_type != ChannelType::Dm {
-        return Err(UploadError::Validation("Not a DM channel".to_string()));
+        return Err(ChatError::Validation("Not a DM channel".to_string()));
     }
 
     // Check participation
@@ -811,20 +811,20 @@ pub async fn get_dm_icon(
     .await?;
 
     if !is_participant {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // Get S3 key from DB
     let s3_key = channel
         .icon_url
-        .ok_or(UploadError::Validation("No icon set".to_string()))?;
+        .ok_or(ChatError::Validation("No icon set".to_string()))?;
 
     // Generate presigned URL
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
     let presigned_url = s3
         .presign_get(&s3_key)
         .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?;
+        .map_err(|e| ChatError::Storage(e.to_string()))?;
 
     // Redirect
     Ok(axum::response::Redirect::temporary(&presigned_url))
@@ -867,14 +867,14 @@ pub async fn mark_as_read(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
     Json(body): Json<MarkAsReadRequest>,
-) -> Result<Json<MarkAsReadResponse>, ChannelError> {
+) -> Result<Json<MarkAsReadResponse>, ChatError> {
     // Verify channel exists and user is a participant
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     let is_participant = sqlx::query_scalar!(
@@ -886,7 +886,7 @@ pub async fn mark_as_read(
     .await?;
 
     if !is_participant {
-        return Err(ChannelError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let now = chrono::Utc::now();
@@ -952,7 +952,7 @@ pub async fn mark_as_read(
 pub async fn mark_all_dms_read(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<StatusCode, ChannelError> {
+) -> Result<StatusCode, ChatError> {
     let now = chrono::Utc::now();
 
     // Batch UPSERT dm_read_state for all DM channels where user is participant
