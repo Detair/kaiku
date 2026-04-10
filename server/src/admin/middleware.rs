@@ -4,7 +4,8 @@ use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 
-use super::types::{AdminError, ElevatedAdmin, SystemAdminUser};
+use super::error::AdminError;
+use super::types::{ElevatedAdmin, SystemAdminUser};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::queries::get_system_admin;

@@ -4,6 +4,7 @@
 //! - Non-elevated: list users, list guilds, audit log, elevate/de-elevate session
 //! - Elevated: ban users, suspend guilds, manage announcements
 
+pub mod error;
 pub mod handlers;
 pub mod middleware;
 pub mod observability;
@@ -15,7 +16,8 @@ use axum::Router;
 use fred::prelude::*;
 pub use middleware::{require_elevated, require_system_admin};
 use sqlx::PgPool;
-pub use types::{AdminError, ElevatedAdmin, SystemAdminUser};
+pub use error::AdminError;
+pub use types::{ElevatedAdmin, SystemAdminUser};
 use uuid::Uuid;
 
 use crate::api::AppState;

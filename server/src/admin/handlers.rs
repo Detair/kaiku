@@ -23,11 +23,11 @@ use tracing::warn;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::error::AdminError;
 use super::types::{
-    AdminError, AdminStatsResponse, AdminStatusResponse, BulkActionFailure, BulkBanRequest,
-    BulkBanResponse, BulkSuspendRequest, BulkSuspendResponse, CreateAnnouncementRequest,
-    ElevateRequest, ElevateResponse, ElevatedAdmin, GlobalBanRequest, SuspendGuildRequest,
-    SystemAdminUser,
+    AdminStatsResponse, AdminStatusResponse, BulkActionFailure, BulkBanRequest, BulkBanResponse,
+    BulkSuspendRequest, BulkSuspendResponse, CreateAnnouncementRequest, ElevateRequest,
+    ElevateResponse, ElevatedAdmin, GlobalBanRequest, SuspendGuildRequest, SystemAdminUser,
 };
 use crate::api::AppState;
 use crate::permissions::models::AuditLogEntry;

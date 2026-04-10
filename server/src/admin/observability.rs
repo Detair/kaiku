@@ -14,7 +14,8 @@ use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::types::{AdminError, SystemAdminUser};
+use super::error::AdminError;
+use super::types::SystemAdminUser;
 use crate::api::AppState;
 use crate::observability::storage;
 
