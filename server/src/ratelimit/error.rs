@@ -9,26 +9,17 @@ use serde::Serialize;
 use crate::ratelimit::RateLimitResult;
 
 /// Errors that can occur during rate limit checks.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RateLimitError {
     /// Redis is unavailable (fail-open, but should be logged).
+    #[error("Redis service unavailable")]
     RedisUnavailable,
     /// Request exceeded the rate limit.
+    #[error("Rate limit exceeded")]
     LimitExceeded(RateLimitResult),
     /// IP is temporarily blocked due to repeated failures.
+    #[error("IP blocked. Retry after {retry_after}s")]
     IpBlocked { retry_after: u64 },
-}
-
-impl std::fmt::Display for RateLimitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RedisUnavailable => write!(f, "Redis service unavailable"),
-            Self::LimitExceeded(res) => {
-                write!(f, "Rate limit exceeded. Retry after {}s", res.retry_after)
-            }
-            Self::IpBlocked { retry_after } => write!(f, "IP blocked. Retry after {retry_after}s"),
-        }
-    }
 }
 
 /// JSON response body for rate limit errors.

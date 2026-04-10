@@ -7,7 +7,7 @@ use axum::Json;
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 
-use super::error::GovError;
+use super::error::GovernanceError;
 use super::types::{
     CancelDeletionResponse, DeleteAccountRequest, DeleteAccountResponse, ExportJobResponse,
 };
@@ -42,7 +42,7 @@ const STALE_EXPORT_JOB_THRESHOLD: Duration = Duration::hours(1);
 pub async fn request_export(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<impl IntoResponse, GovError> {
+) -> Result<impl IntoResponse, GovernanceError> {
     // Recover stale jobs that may have been left behind by crash/restart so
     // users are not blocked forever by the active-job uniqueness constraint.
     // NOTE: Uses `created_at` for stale detection because `data_export_jobs` has no `updated_at`
@@ -74,11 +74,11 @@ pub async fn request_export(
     .await?;
 
     if existing.is_some() {
-        return Err(GovError::ExportAlreadyPending);
+        return Err(GovernanceError::ExportAlreadyPending);
     }
 
     // Require S3 for export storage
-    let s3 = state.s3.as_ref().ok_or(GovError::StorageNotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(GovernanceError::StorageNotConfigured)?;
 
     // Create export job (unique partial index prevents duplicates at DB level)
     let job = sqlx::query_as::<_, db::DataExportJob>(
@@ -90,10 +90,10 @@ pub async fn request_export(
     .map_err(|e| {
         if let sqlx::Error::Database(ref db_err) = e {
             if db_err.is_unique_violation() {
-                return GovError::ExportAlreadyPending;
+                return GovernanceError::ExportAlreadyPending;
             }
         }
-        GovError::Database(e)
+        GovernanceError::Database(e)
     })?;
 
     // Spawn background export worker
@@ -142,7 +142,7 @@ pub async fn request_export(
 pub async fn get_export_status(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<ExportJobResponse>, GovError> {
+) -> Result<Json<ExportJobResponse>, GovernanceError> {
     let job = sqlx::query_as::<_, db::DataExportJob>(
         "SELECT * FROM data_export_jobs
          WHERE user_id = $1
@@ -152,7 +152,7 @@ pub async fn get_export_status(
     .bind(auth.id)
     .fetch_optional(&state.db)
     .await?
-    .ok_or(GovError::ExportNotFound)?;
+    .ok_or(GovernanceError::ExportNotFound)?;
 
     Ok(Json(ExportJobResponse {
         id: job.id,
@@ -179,8 +179,8 @@ pub async fn get_export_status(
 pub async fn download_export(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<impl IntoResponse, GovError> {
-    let s3 = state.s3.as_ref().ok_or(GovError::StorageNotConfigured)?;
+) -> Result<impl IntoResponse, GovernanceError> {
+    let s3 = state.s3.as_ref().ok_or(GovernanceError::StorageNotConfigured)?;
 
     let job = sqlx::query_as::<_, db::DataExportJob>(
         "SELECT * FROM data_export_jobs
@@ -191,22 +191,22 @@ pub async fn download_export(
     .bind(auth.id)
     .fetch_optional(&state.db)
     .await?
-    .ok_or(GovError::ExportNotFound)?;
+    .ok_or(GovernanceError::ExportNotFound)?;
 
     // Check expiry — if expired, return 410 GONE without changing DB state.
     // cleanup_expired_exports will handle S3 deletion and status update.
     if let Some(expires_at) = job.expires_at {
         if expires_at < Utc::now() {
-            return Err(GovError::ExportExpired);
+            return Err(GovernanceError::ExportExpired);
         }
     }
 
-    let s3_key = job.s3_key.ok_or(GovError::ExportNotFound)?;
+    let s3_key = job.s3_key.ok_or(GovernanceError::ExportNotFound)?;
 
     // Stream the file from S3
     let stream = s3.get_object_stream(&s3_key).await.map_err(|e| {
         tracing::error!(error = %e, s3_key = %s3_key, "Failed to download export from S3");
-        GovError::ExportNotFound
+        GovernanceError::ExportNotFound
     })?;
 
     let body = axum::body::Body::new(stream.into_inner());
@@ -249,10 +249,10 @@ pub async fn request_deletion(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<DeleteAccountRequest>,
-) -> Result<Json<DeleteAccountResponse>, GovError> {
+) -> Result<Json<DeleteAccountResponse>, GovernanceError> {
     // Verify confirmation
     if body.confirm != "DELETE" {
-        return Err(GovError::Validation(
+        return Err(GovernanceError::Validation(
             "Confirmation must be the string \"DELETE\"".to_string(),
         ));
     }
@@ -260,11 +260,11 @@ pub async fn request_deletion(
     // Fetch user for password verification
     let user = db::find_user_by_id(&state.db, auth.id)
         .await?
-        .ok_or(GovError::Validation("User not found".to_string()))?;
+        .ok_or(GovernanceError::Validation("User not found".to_string()))?;
 
     // Check if already scheduled
     if user.deletion_scheduled_at.is_some() {
-        return Err(GovError::DeletionAlreadyScheduled);
+        return Err(GovernanceError::DeletionAlreadyScheduled);
     }
 
     // Verify password (local auth) or confirmation (OIDC)
@@ -273,15 +273,15 @@ pub async fn request_deletion(
             let password = body
                 .password
                 .as_deref()
-                .ok_or(GovError::Validation("Password is required".to_string()))?;
+                .ok_or(GovernanceError::Validation("Password is required".to_string()))?;
             let password_hash = user
                 .password_hash
                 .as_deref()
-                .ok_or(GovError::PasswordInvalid)?;
+                .ok_or(GovernanceError::PasswordInvalid)?;
             let valid =
-                verify_password(password, password_hash).map_err(|_| GovError::PasswordInvalid)?;
+                verify_password(password, password_hash).map_err(|_| GovernanceError::PasswordInvalid)?;
             if !valid {
-                return Err(GovError::PasswordInvalid);
+                return Err(GovernanceError::PasswordInvalid);
             }
         }
         db::AuthMethod::Oidc => {
@@ -298,7 +298,7 @@ pub async fn request_deletion(
 
     if !owned_guilds.is_empty() {
         let guild_names: Vec<String> = owned_guilds.into_iter().map(|(_, name)| name).collect();
-        return Err(GovError::OwnsGuilds(guild_names.join(", ")));
+        return Err(GovernanceError::OwnsGuilds(guild_names.join(", ")));
     }
 
     // Schedule deletion (30 days from now)
@@ -348,7 +348,7 @@ pub async fn request_deletion(
 pub async fn cancel_deletion(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<CancelDeletionResponse>, GovError> {
+) -> Result<Json<CancelDeletionResponse>, GovernanceError> {
     let result = sqlx::query(
         "UPDATE users
          SET deletion_requested_at = NULL, deletion_scheduled_at = NULL
@@ -359,7 +359,7 @@ pub async fn cancel_deletion(
     .await?;
 
     if result.rows_affected() == 0 {
-        return Err(GovError::NoDeletionPending);
+        return Err(GovernanceError::NoDeletionPending);
     }
 
     tracing::info!(user_id = %auth.id, "Account deletion cancelled");
