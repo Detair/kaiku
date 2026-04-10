@@ -59,6 +59,10 @@ pub enum VoiceError {
     /// Internal error.
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// Database error.
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 impl IntoResponse for VoiceError {
@@ -98,6 +102,14 @@ impl IntoResponse for VoiceError {
                 "INTERNAL_ERROR",
                 "Internal server error".to_string(),
             ),
+            Self::Database(err) => {
+                tracing::error!(%err, "Voice endpoint database error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DATABASE_ERROR",
+                    "Database error".to_string(),
+                )
+            }
         };
 
         let body = Json(serde_json::json!({

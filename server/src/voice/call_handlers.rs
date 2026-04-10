@@ -16,6 +16,7 @@ use crate::db::{self, ChannelType};
 use crate::social::block_cache;
 use crate::voice::call::CallState;
 use crate::voice::call_service::{CallError, CallService};
+use crate::voice::queries;
 use crate::ws::{broadcast_to_channel, ServerEvent};
 
 /// Response for call state
@@ -132,12 +133,7 @@ async fn verify_dm_participant(
     }
 
     // Get all participants
-    let participants: Vec<Uuid> = sqlx::query_scalar!(
-        "SELECT user_id FROM dm_participants WHERE channel_id = $1",
-        channel_id
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let participants = queries::list_dm_participant_ids(&state.db, channel_id).await?;
 
     // Verify user is a participant
     if !participants.contains(&user_id) {

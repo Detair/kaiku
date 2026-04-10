@@ -17,6 +17,7 @@ pub(crate) mod handlers;
 mod metrics;
 mod peer;
 mod quality;
+mod queries;
 mod rate_limit;
 pub mod screen_share;
 pub mod sfu;

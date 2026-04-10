@@ -1,12 +1,15 @@
 //! Voice metrics storage.
 //!
 //! This module provides functions for storing voice connection metrics
-//! in `TimescaleDB` for historical analysis.
+//! in `TimescaleDB` for historical analysis. The actual SQL lives in
+//! [`super::queries`]; this file holds the small amount of orchestration
+//! and logging that wraps the raw queries.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::queries;
 use super::stats::VoiceStats;
 
 /// Store connection metrics in `TimescaleDB` (fire-and-forget).
@@ -21,26 +24,9 @@ pub async fn store_metrics(
     channel_id: Uuid,
     guild_id: Option<Uuid>,
 ) {
-    let result = sqlx::query(
-        r"
-        INSERT INTO connection_metrics
-        (time, user_id, session_id, channel_id, guild_id, latency_ms, packet_loss, jitter_ms, quality)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ",
-    )
-    .bind(Utc::now())
-    .bind(user_id)
-    .bind(stats.session_id)
-    .bind(channel_id)
-    .bind(guild_id)
-    .bind(stats.latency)
-    .bind(stats.packet_loss)
-    .bind(stats.jitter)
-    .bind(i16::from(stats.quality))
-    .execute(&pool)
-    .await;
-
-    if let Err(e) = result {
+    if let Err(e) =
+        queries::insert_connection_metric(&pool, &stats, user_id, channel_id, guild_id).await
+    {
         tracing::warn!(
             user_id = %user_id,
             session_id = %stats.session_id,
@@ -54,12 +40,7 @@ pub async fn store_metrics(
 ///
 /// Returns `None` if the channel doesn't exist or doesn't belong to a guild.
 pub async fn get_guild_id(pool: &PgPool, channel_id: Uuid) -> Option<Uuid> {
-    sqlx::query_scalar("SELECT guild_id FROM channels WHERE id = $1")
-        .bind(channel_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
+    queries::find_channel_guild_id(pool, channel_id).await
 }
 
 /// Finalize session with aggregated metrics on disconnect.
@@ -75,55 +56,25 @@ pub async fn finalize_session(
     guild_id: Option<Uuid>,
     started_at: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    // Check if any metrics exist for this session
-    let has_metrics: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connection_metrics WHERE session_id = $1)")
-            .bind(session_id)
-            .fetch_one(pool)
-            .await?;
-
-    if has_metrics {
-        // Insert session with aggregated metrics
-        sqlx::query(
-            r"
-            INSERT INTO connection_sessions
-            (id, user_id, channel_id, guild_id, started_at, ended_at,
-             avg_latency, avg_loss, avg_jitter, worst_quality)
-            SELECT
-                $1, $2, $3, $4, $5, NOW(),
-                AVG(latency_ms)::SMALLINT,
-                AVG(packet_loss)::REAL,
-                AVG(jitter_ms)::SMALLINT,
-                MIN(quality)::SMALLINT
-            FROM connection_metrics
-            WHERE session_id = $1
-            ",
+    if queries::session_has_connection_metrics(pool, session_id).await? {
+        queries::insert_session_with_aggregated_metrics(
+            pool,
+            session_id,
+            user_id,
+            channel_id,
+            guild_id,
+            started_at,
         )
-        .bind(session_id)
-        .bind(user_id)
-        .bind(channel_id)
-        .bind(guild_id)
-        .bind(started_at)
-        .execute(pool)
-        .await?;
+        .await
     } else {
-        // Insert session with NULL aggregates (very short call)
-        sqlx::query(
-            r"
-            INSERT INTO connection_sessions
-            (id, user_id, channel_id, guild_id, started_at, ended_at,
-             avg_latency, avg_loss, avg_jitter, worst_quality)
-            VALUES ($1, $2, $3, $4, $5, NOW(), NULL, NULL, NULL, NULL)
-            ",
+        queries::insert_session_without_metrics(
+            pool,
+            session_id,
+            user_id,
+            channel_id,
+            guild_id,
+            started_at,
         )
-        .bind(session_id)
-        .bind(user_id)
-        .bind(channel_id)
-        .bind(guild_id)
-        .bind(started_at)
-        .execute(pool)
-        .await?;
+        .await
     }
-
-    Ok(())
 }
