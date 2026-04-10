@@ -5,7 +5,8 @@ use axum::Json;
 use fred::prelude::*;
 use validator::Validate;
 
-use super::types::{CreateReportRequest, Report, ReportError, ReportResponse};
+use super::error::ModerationError;
+use super::types::{CreateReportRequest, Report, ReportResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::ws::{broadcast_admin_event, ServerEvent};
@@ -29,13 +30,13 @@ pub async fn create_report(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<CreateReportRequest>,
-) -> Result<Json<ReportResponse>, ReportError> {
+) -> Result<Json<ReportResponse>, ModerationError> {
     body.validate()
-        .map_err(|e| ReportError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ModerationError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Cannot report yourself
     if body.target_user_id == auth.id {
-        return Err(ReportError::Validation(
+        return Err(ModerationError::Validation(
             "Cannot report yourself".to_string(),
         ));
     }
@@ -48,7 +49,7 @@ pub async fn create_report(
             .is_some();
 
     if !target_exists {
-        return Err(ReportError::Validation("Target user not found".to_string()));
+        return Err(ModerationError::Validation("Target user not found".to_string()));
     }
 
     // If reporting a message, verify it exists and belongs to the target user
@@ -59,12 +60,12 @@ pub async fn create_report(
 
         match msg {
             Some(m) if m.user_id != Some(body.target_user_id) => {
-                return Err(ReportError::Validation(
+                return Err(ModerationError::Validation(
                     "Message does not belong to the target user".to_string(),
                 ));
             }
             None => {
-                return Err(ReportError::Validation(
+                return Err(ModerationError::Validation(
                     "Target message not found".to_string(),
                 ));
             }
@@ -81,7 +82,7 @@ pub async fn create_report(
         let _: Result<(), _> = state.redis.expire(&rate_key, 3600, None).await;
     }
     if count > 5 {
-        return Err(ReportError::RateLimited);
+        return Err(ModerationError::RateLimited);
     }
 
     // Insert report (unique index will catch duplicates)
@@ -101,10 +102,10 @@ pub async fn create_report(
     .map_err(|e| {
         if let sqlx::Error::Database(ref db_err) = e {
             if db_err.constraint() == Some("idx_reports_no_duplicate_active") {
-                return ReportError::Duplicate;
+                return ModerationError::Duplicate;
             }
         }
-        ReportError::Database(e)
+        ModerationError::Database(e)
     })?;
 
     // Broadcast to admin events channel
