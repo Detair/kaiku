@@ -1,6 +1,9 @@
 pub mod block_cache;
+pub mod error;
 pub mod friends;
 pub mod types;
+
+pub use error::SocialError;
 
 use axum::routing::{delete, get, post};
 use axum::Router;

@@ -4,7 +4,8 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::block_cache;
-use super::types::{Friend, Friendship, FriendshipStatus, SendFriendRequestBody, SocialError};
+use super::error::SocialError;
+use super::types::{Friend, Friendship, FriendshipStatus, SendFriendRequestBody};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::ws::{broadcast_to_user, ServerEvent};
