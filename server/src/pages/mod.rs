@@ -13,6 +13,7 @@
 //! - Audit logging
 
 pub mod constants;
+pub mod error;
 pub mod handlers;
 pub mod queries;
 pub mod router;

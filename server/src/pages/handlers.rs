@@ -18,8 +18,7 @@ use crate::permissions::{
     is_system_admin, require_guild_permission, GuildPermissions, PermissionError,
 };
 
-/// Error response type for page handlers.
-type PageResult<T> = Result<T, (StatusCode, String)>;
+use super::error::PagesError;
 
 // ============================================================================
 // Platform Pages (system admin only)
@@ -41,13 +40,10 @@ type PageResult<T> = Result<T, (StatusCode, String)>;
 )]
 pub async fn list_platform_pages(
     State(state): State<AppState>,
-) -> PageResult<Json<Vec<PageListItem>>> {
+) -> Result<Json<Vec<PageListItem>>, PagesError> {
     let pages = queries::list_pages(&state.db, None).await.map_err(|e| {
         error!("Failed to list platform pages: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
     Ok(Json(pages))
 }
@@ -70,18 +66,15 @@ pub async fn list_platform_pages(
 pub async fn get_platform_page(
     State(state): State<AppState>,
     Path(slug): Path<String>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     queries::get_page_by_slug(&state.db, None, &slug)
         .await
         .map_err(|e| {
             error!("Failed to get platform page '{}': {}", slug, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))
+        .ok_or(PagesError::NotFound)
 }
 
 /// Create a new platform page (system admin only).
@@ -99,17 +92,14 @@ pub async fn create_platform_page(
     State(state): State<AppState>,
     user: AuthUser,
     Json(req): Json<CreatePageRequest>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Permission check failed".to_string(),
-        )
+        PagesError::Internal("Permission check failed".to_string())
     })?;
     if !is_admin {
-        return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
+        return Err(PagesError::AdminRequired);
     }
 
     // Validate request
@@ -130,7 +120,7 @@ pub async fn create_platform_page(
             true
         });
     if slug_exists {
-        return Err((StatusCode::CONFLICT, "Slug already exists".to_string()));
+        return Err(PagesError::SlugConflict("Slug already exists".to_string()));
     }
 
     let recently_deleted = queries::slug_recently_deleted(&state.db, None, &slug)
@@ -140,26 +130,21 @@ pub async fn create_platform_page(
             true
         });
     if recently_deleted {
-        return Err((
-            StatusCode::CONFLICT,
+        return Err(PagesError::SlugConflict(
             "Slug was recently deleted. Try a different slug.".to_string(),
         ));
     }
 
     // Reject category_id for platform pages
     if req.category_id.is_some() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(PagesError::Validation(
             "Categories are not supported for platform pages".to_string(),
         ));
     }
 
     let mut tx = state.db.begin().await.map_err(|e| {
         error!("Failed to begin transaction: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Advisory lock: serialize platform page creation to enforce strict limits under concurrency.
@@ -170,10 +155,7 @@ pub async fn create_platform_page(
         .await
         .map_err(|e| {
             error!("Failed to acquire advisory lock: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     // Check page limit inside lock for atomicity
@@ -185,17 +167,13 @@ pub async fn create_platform_page(
     .await
     .map_err(|e| {
         error!("Page limit check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     if at_limit >= max_limit {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Maximum {max_limit} pages reached"),
-        ));
+        return Err(PagesError::LimitExceeded(format!(
+            "Maximum {max_limit} pages reached"
+        )));
     }
 
     // Create page inside transaction
@@ -214,18 +192,12 @@ pub async fn create_platform_page(
     .await
     .map_err(|e| {
         error!("Failed to create platform page: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     tx.commit().await.map_err(|e| {
         error!("Failed to commit transaction: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Log audit (non-blocking, log errors instead of failing)
@@ -255,17 +227,14 @@ pub async fn update_platform_page(
     user: AuthUser,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdatePageRequest>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Permission check failed".to_string(),
-        )
+        PagesError::Internal("Permission check failed".to_string())
     })?;
     if !is_admin {
-        return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
+        return Err(PagesError::AdminRequired);
     }
 
     // Get existing page
@@ -273,16 +242,13 @@ pub async fn update_platform_page(
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     // Verify it's a platform page
     if old_page.guild_id.is_some() {
-        return Err((StatusCode::BAD_REQUEST, "Not a platform page".to_string()));
+        return Err(PagesError::NotPlatformPage);
     }
 
     // Validate request
@@ -290,8 +256,7 @@ pub async fn update_platform_page(
 
     // Reject category_id for platform pages (consistent with create_platform_page)
     if req.category_id.is_some() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(PagesError::Validation(
             "Categories are not supported for platform pages".to_string(),
         ));
     }
@@ -306,7 +271,7 @@ pub async fn update_platform_page(
                 true
             })
         {
-            return Err((StatusCode::CONFLICT, "Slug already exists".to_string()));
+            return Err(PagesError::SlugConflict("Slug already exists".to_string()));
         }
     }
 
@@ -326,10 +291,7 @@ pub async fn update_platform_page(
     .await
     .map_err(|e| {
         error!("Failed to update platform page {}: {}", id, e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Log audit
@@ -391,17 +353,14 @@ pub async fn delete_platform_page(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Permission check failed".to_string(),
-        )
+        PagesError::Internal("Permission check failed".to_string())
     })?;
     if !is_admin {
-        return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
+        return Err(PagesError::AdminRequired);
     }
 
     // Get existing page
@@ -409,16 +368,13 @@ pub async fn delete_platform_page(
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     // Verify it's a platform page
     if page.guild_id.is_some() {
-        return Err((StatusCode::BAD_REQUEST, "Not a platform page".to_string()));
+        return Err(PagesError::NotPlatformPage);
     }
 
     // Soft delete
@@ -426,10 +382,7 @@ pub async fn delete_platform_page(
         .await
         .map_err(|e| {
             error!("Failed to delete platform page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     // Log audit
@@ -465,21 +418,18 @@ pub async fn reorder_platform_pages(
     State(state): State<AppState>,
     user: AuthUser,
     Json(req): Json<ReorderRequest>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     if req.page_ids.len() > 1000 {
-        return Err((StatusCode::BAD_REQUEST, "Too many page IDs".to_string()));
+        return Err(PagesError::Validation("Too many page IDs".to_string()));
     }
 
     // Verify system admin (fail-fast on DB error for security)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Permission check failed".to_string(),
-        )
+        PagesError::Internal("Permission check failed".to_string())
     })?;
     if !is_admin {
-        return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
+        return Err(PagesError::AdminRequired);
     }
 
     queries::reorder_pages(&state.db, None, &req.page_ids)
@@ -488,13 +438,10 @@ pub async fn reorder_platform_pages(
             // Map Protocol errors (invalid input) to 400, others to 500
             if let sqlx::Error::Protocol(msg) = &e {
                 error!("Invalid reorder request: {}", msg);
-                (StatusCode::BAD_REQUEST, msg.clone())
+                PagesError::InvalidReorder(msg.clone())
             } else {
                 error!("Failed to reorder platform pages: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
+                PagesError::Database(e)
             }
         })?;
 
@@ -505,24 +452,15 @@ pub async fn reorder_platform_pages(
 // Guild Pages
 // ============================================================================
 
-/// Convert `PermissionError` to HTTP response.
-fn permission_error_to_response(err: PermissionError) -> (StatusCode, String) {
+/// Convert `PermissionError` to `PagesError`.
+fn map_permission_error(err: PermissionError) -> PagesError {
     match err {
-        PermissionError::NotGuildMember => (
-            StatusCode::FORBIDDEN,
-            "Not a member of this guild".to_string(),
-        ),
-        PermissionError::MissingPermission(p) => {
-            (StatusCode::FORBIDDEN, format!("Missing permission: {p:?}"))
-        }
+        PermissionError::NotGuildMember => PagesError::Forbidden,
         PermissionError::DatabaseError(msg) => {
             error!("Permission database error: {}", msg);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Internal("Internal server error".to_string())
         }
-        _ => (StatusCode::FORBIDDEN, err.to_string()),
+        other => PagesError::Permission(other),
     }
 }
 
@@ -531,11 +469,11 @@ async fn check_manage_pages_permission(
     state: &AppState,
     guild_id: Uuid,
     user_id: Uuid,
-) -> PageResult<()> {
+) -> Result<(), PagesError> {
     require_guild_permission(&state.db, guild_id, user_id, GuildPermissions::MANAGE_PAGES)
         .await
         .map(|_| ())
-        .map_err(permission_error_to_response)
+        .map_err(map_permission_error)
 }
 
 /// List all pages for a guild.
@@ -554,15 +492,12 @@ async fn check_manage_pages_permission(
 pub async fn list_guild_pages(
     State(state): State<AppState>,
     Path(guild_id): Path<Uuid>,
-) -> PageResult<Json<Vec<PageListItem>>> {
+) -> Result<Json<Vec<PageListItem>>, PagesError> {
     let pages = queries::list_pages(&state.db, Some(guild_id))
         .await
         .map_err(|e| {
             error!("Failed to list guild pages for {}: {}", guild_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
     Ok(Json(pages))
 }
@@ -582,18 +517,15 @@ pub async fn list_guild_pages(
 pub async fn get_guild_page(
     State(state): State<AppState>,
     Path((guild_id, slug)): Path<(Uuid, String)>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     queries::get_page_by_slug(&state.db, Some(guild_id), &slug)
         .await
         .map_err(|e| {
             error!("Failed to get guild page '{}' in {}: {}", slug, guild_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))
+        .ok_or(PagesError::NotFound)
 }
 
 /// Create a new guild page.
@@ -611,7 +543,7 @@ pub async fn create_guild_page(
     user: AuthUser,
     Path(guild_id): Path<Uuid>,
     Json(req): Json<CreatePageRequest>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     // Check permission
     check_manage_pages_permission(&state, guild_id, user.id).await?;
 
@@ -633,7 +565,7 @@ pub async fn create_guild_page(
             true
         })
     {
-        return Err((StatusCode::CONFLICT, "Slug already exists".to_string()));
+        return Err(PagesError::SlugConflict("Slug already exists".to_string()));
     }
 
     if queries::slug_recently_deleted(&state.db, Some(guild_id), &slug)
@@ -643,18 +575,14 @@ pub async fn create_guild_page(
             true
         })
     {
-        return Err((
-            StatusCode::CONFLICT,
+        return Err(PagesError::SlugConflict(
             "Slug was recently deleted. Try a different slug.".to_string(),
         ));
     }
 
     let mut tx = state.db.begin().await.map_err(|e| {
         error!("Failed to begin transaction: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Advisory lock: serialize guild page creation to enforce strict limits under concurrency.
@@ -665,10 +593,7 @@ pub async fn create_guild_page(
         .await
         .map_err(|e| {
             error!("Failed to acquire advisory lock: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     // Check page limit using per-guild override or instance default, inside lock for atomicity
@@ -691,17 +616,13 @@ pub async fn create_guild_page(
     .await
     .map_err(|e| {
         error!("Page limit check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     if at_limit >= max_limit {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Maximum {max_limit} pages reached"),
-        ));
+        return Err(PagesError::LimitExceeded(format!(
+            "Maximum {max_limit} pages reached"
+        )));
     }
 
     // Validate category belongs to this guild
@@ -710,15 +631,11 @@ pub async fn create_guild_page(
             .await
             .map_err(|e| {
                 error!("Failed to validate category: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
+                PagesError::Database(e)
             })?
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "Category not found".to_string()))?;
+            .ok_or(PagesError::CategoryNotFound)?;
         if cat.guild_id != guild_id {
-            return Err((
-                StatusCode::BAD_REQUEST,
+            return Err(PagesError::Validation(
                 "Category does not belong to this guild".to_string(),
             ));
         }
@@ -740,18 +657,12 @@ pub async fn create_guild_page(
     .await
     .map_err(|e| {
         error!("Failed to create guild page in {}: {}", guild_id, e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     tx.commit().await.map_err(|e| {
         error!("Failed to commit transaction: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Log audit (non-blocking, log errors instead of failing)
@@ -782,7 +693,7 @@ pub async fn update_guild_page(
     user: AuthUser,
     Path((guild_id, id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdatePageRequest>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     // Check permission
     check_manage_pages_permission(&state, guild_id, user.id).await?;
 
@@ -791,16 +702,13 @@ pub async fn update_guild_page(
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     // Verify page belongs to this guild
     if old_page.guild_id != Some(guild_id) {
-        return Err((StatusCode::NOT_FOUND, "Page not found".to_string()));
+        return Err(PagesError::NotFound);
     }
 
     // Validate request
@@ -816,7 +724,7 @@ pub async fn update_guild_page(
                 true
             })
         {
-            return Err((StatusCode::CONFLICT, "Slug already exists".to_string()));
+            return Err(PagesError::SlugConflict("Slug already exists".to_string()));
         }
     }
 
@@ -826,15 +734,11 @@ pub async fn update_guild_page(
             .await
             .map_err(|e| {
                 error!("Failed to validate category: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
+                PagesError::Database(e)
             })?
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "Category not found".to_string()))?;
+            .ok_or(PagesError::CategoryNotFound)?;
         if cat.guild_id != guild_id {
-            return Err((
-                StatusCode::BAD_REQUEST,
+            return Err(PagesError::Validation(
                 "Category does not belong to this guild".to_string(),
             ));
         }
@@ -856,10 +760,7 @@ pub async fn update_guild_page(
     .await
     .map_err(|e| {
         error!("Failed to update guild page {}: {}", id, e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Log audit
@@ -934,7 +835,7 @@ pub async fn delete_guild_page(
     State(state): State<AppState>,
     user: AuthUser,
     Path((guild_id, id)): Path<(Uuid, Uuid)>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     // Check permission
     check_manage_pages_permission(&state, guild_id, user.id).await?;
 
@@ -943,16 +844,13 @@ pub async fn delete_guild_page(
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     // Verify page belongs to this guild
     if page.guild_id != Some(guild_id) {
-        return Err((StatusCode::NOT_FOUND, "Page not found".to_string()));
+        return Err(PagesError::NotFound);
     }
 
     // Soft delete
@@ -960,10 +858,7 @@ pub async fn delete_guild_page(
         .await
         .map_err(|e| {
             error!("Failed to delete guild page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     // Log audit
@@ -999,9 +894,9 @@ pub async fn reorder_guild_pages(
     user: AuthUser,
     Path(guild_id): Path<Uuid>,
     Json(req): Json<ReorderRequest>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     if req.page_ids.len() > 1000 {
-        return Err((StatusCode::BAD_REQUEST, "Too many page IDs".to_string()));
+        return Err(PagesError::Validation("Too many page IDs".to_string()));
     }
 
     // Check permission
@@ -1013,13 +908,10 @@ pub async fn reorder_guild_pages(
             // Map Protocol errors (invalid input) to 400, others to 500
             if let sqlx::Error::Protocol(msg) = &e {
                 error!("Invalid reorder request for guild {}: {}", guild_id, msg);
-                (StatusCode::BAD_REQUEST, msg.clone())
+                PagesError::InvalidReorder(msg.clone())
             } else {
                 error!("Failed to reorder guild pages in {}: {}", guild_id, e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
+                PagesError::Database(e)
             }
         })?;
 
@@ -1045,26 +937,22 @@ pub async fn accept_page(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     let page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| {
             error!("Failed to get page {} for acceptance: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     // Verify it's a platform page (guild pages use the guild-scoped endpoint)
     if page.guild_id.is_some() {
-        return Err((StatusCode::BAD_REQUEST, "Not a platform page".to_string()));
+        return Err(PagesError::NotPlatformPage);
     }
 
     if !page.requires_acceptance {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(PagesError::Validation(
             "This page does not require acceptance".to_string(),
         ));
     }
@@ -1073,10 +961,7 @@ pub async fn accept_page(
         .await
         .map_err(|e| {
             error!("Failed to record page acceptance for page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -1098,26 +983,22 @@ pub async fn accept_guild_page(
     State(state): State<AppState>,
     user: AuthUser,
     Path((guild_id, id)): Path<(Uuid, Uuid)>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     let page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| {
             error!("Failed to get page {} for acceptance: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     // Verify page belongs to this guild
     if page.guild_id != Some(guild_id) {
-        return Err((StatusCode::NOT_FOUND, "Page not found".to_string()));
+        return Err(PagesError::NotFound);
     }
 
     if !page.requires_acceptance {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(PagesError::Validation(
             "This page does not require acceptance".to_string(),
         ));
     }
@@ -1126,10 +1007,7 @@ pub async fn accept_guild_page(
         .await
         .map_err(|e| {
             error!("Failed to record page acceptance for page {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -1148,15 +1026,12 @@ pub async fn accept_guild_page(
 pub async fn get_pending_acceptance(
     State(state): State<AppState>,
     user: AuthUser,
-) -> PageResult<Json<Vec<PageListItem>>> {
+) -> Result<Json<Vec<PageListItem>>, PagesError> {
     let pages = queries::get_pending_acceptance(&state.db, user.id)
         .await
         .map_err(|e| {
             error!("Failed to get pending acceptance: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
     Ok(Json(pages))
 }
@@ -1184,30 +1059,24 @@ pub async fn get_pending_acceptance(
 pub async fn list_guild_page_revisions(
     State(state): State<AppState>,
     Path((guild_id, page_id)): Path<(Uuid, Uuid)>,
-) -> PageResult<Json<Vec<RevisionListItem>>> {
+) -> Result<Json<Vec<RevisionListItem>>, PagesError> {
     let page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     if page.guild_id != Some(guild_id) {
-        return Err((StatusCode::NOT_FOUND, "Page not found".to_string()));
+        return Err(PagesError::NotFound);
     }
 
     let revisions = queries::list_revisions(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to list revisions for page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     Ok(Json(revisions))
@@ -1233,33 +1102,27 @@ pub async fn list_guild_page_revisions(
 pub async fn get_guild_page_revision(
     State(state): State<AppState>,
     Path((guild_id, page_id, n)): Path<(Uuid, Uuid, i32)>,
-) -> PageResult<Json<PageRevision>> {
+) -> Result<Json<PageRevision>, PagesError> {
     let page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     if page.guild_id != Some(guild_id) {
-        return Err((StatusCode::NOT_FOUND, "Page not found".to_string()));
+        return Err(PagesError::NotFound);
     }
 
     queries::get_revision(&state.db, page_id, n)
         .await
         .map_err(|e| {
             error!("Failed to get revision {} for page {}: {}", n, page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Revision not found".to_string()))
+        .ok_or(PagesError::RevisionNotFound)
 }
 
 /// Restore a guild page to a previous revision.
@@ -1279,44 +1142,35 @@ pub async fn restore_guild_page_revision(
     State(state): State<AppState>,
     user: AuthUser,
     Path((guild_id, page_id, n)): Path<(Uuid, Uuid, i32)>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     check_manage_pages_permission(&state, guild_id, user.id).await?;
 
     let old_page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     if old_page.guild_id != Some(guild_id) {
-        return Err((StatusCode::NOT_FOUND, "Page not found".to_string()));
+        return Err(PagesError::NotFound);
     }
 
     let revision = queries::get_revision(&state.db, page_id, n)
         .await
         .map_err(|e| {
             error!("Failed to get revision {} for page {}: {}", n, page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Revision not found".to_string()))?;
+        .ok_or(PagesError::RevisionNotFound)?;
 
     let content = revision.content.as_deref().ok_or_else(|| {
         error!(
             "Revision {} for page {} has NULL content",
             n, revision.page_id
         );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Revision data is corrupted (missing content)".to_string(),
-        )
+        PagesError::CorruptRevision("Revision data is corrupted (missing content)".to_string())
     })?;
     let title = revision.title.as_deref().unwrap_or(&old_page.title);
 
@@ -1339,10 +1193,7 @@ pub async fn restore_guild_page_revision(
             "Failed to restore page {} to revision {}: {}",
             page_id, n, e
         );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Create a new revision for the restore (best-effort — concurrent operations
@@ -1413,42 +1264,33 @@ pub async fn list_platform_page_revisions(
     State(state): State<AppState>,
     user: AuthUser,
     Path(page_id): Path<Uuid>,
-) -> PageResult<Json<Vec<RevisionListItem>>> {
+) -> Result<Json<Vec<RevisionListItem>>, PagesError> {
     // Revision history is admin-only (may contain redacted content)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Permission check failed".to_string(),
-        )
+        PagesError::Internal("Permission check failed".to_string())
     })?;
     if !is_admin {
-        return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
+        return Err(PagesError::AdminRequired);
     }
 
     let page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     if page.guild_id.is_some() {
-        return Err((StatusCode::BAD_REQUEST, "Not a platform page".to_string()));
+        return Err(PagesError::NotPlatformPage);
     }
 
     let revisions = queries::list_revisions(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to list revisions for page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     Ok(Json(revisions))
@@ -1470,45 +1312,36 @@ pub async fn get_platform_page_revision(
     State(state): State<AppState>,
     user: AuthUser,
     Path((page_id, n)): Path<(Uuid, i32)>,
-) -> PageResult<Json<PageRevision>> {
+) -> Result<Json<PageRevision>, PagesError> {
     // Revision history is admin-only (may contain redacted content)
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Permission check failed".to_string(),
-        )
+        PagesError::Internal("Permission check failed".to_string())
     })?;
     if !is_admin {
-        return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
+        return Err(PagesError::AdminRequired);
     }
 
     let page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     if page.guild_id.is_some() {
-        return Err((StatusCode::BAD_REQUEST, "Not a platform page".to_string()));
+        return Err(PagesError::NotPlatformPage);
     }
 
     queries::get_revision(&state.db, page_id, n)
         .await
         .map_err(|e| {
             error!("Failed to get revision {} for page {}: {}", n, page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Revision not found".to_string()))
+        .ok_or(PagesError::RevisionNotFound)
 }
 
 /// Restore a platform page to a previous revision (system admin only).
@@ -1527,53 +1360,41 @@ pub async fn restore_platform_page_revision(
     State(state): State<AppState>,
     user: AuthUser,
     Path((page_id, n)): Path<(Uuid, i32)>,
-) -> PageResult<Json<Page>> {
+) -> Result<Json<Page>, PagesError> {
     let is_admin = is_system_admin(&state.db, user.id).await.map_err(|e| {
         error!("Permission check failed: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Permission check failed".to_string(),
-        )
+        PagesError::Internal("Permission check failed".to_string())
     })?;
     if !is_admin {
-        return Err((StatusCode::FORBIDDEN, "System admin required".to_string()));
+        return Err(PagesError::AdminRequired);
     }
 
     let old_page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {
             error!("Failed to get page {}: {}", page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Page not found".to_string()))?;
+        .ok_or(PagesError::NotFound)?;
 
     if old_page.guild_id.is_some() {
-        return Err((StatusCode::BAD_REQUEST, "Not a platform page".to_string()));
+        return Err(PagesError::NotPlatformPage);
     }
 
     let revision = queries::get_revision(&state.db, page_id, n)
         .await
         .map_err(|e| {
             error!("Failed to get revision {} for page {}: {}", n, page_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Revision not found".to_string()))?;
+        .ok_or(PagesError::RevisionNotFound)?;
 
     let content = revision.content.as_deref().ok_or_else(|| {
         error!(
             "Revision {} for page {} has NULL content",
             n, revision.page_id
         );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Revision data is corrupted (missing content)".to_string(),
-        )
+        PagesError::CorruptRevision("Revision data is corrupted (missing content)".to_string())
     })?;
     let title = revision.title.as_deref().unwrap_or(&old_page.title);
 
@@ -1595,10 +1416,7 @@ pub async fn restore_platform_page_revision(
             "Failed to restore page {} to revision {}: {}",
             page_id, n, e
         );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        PagesError::Database(e)
     })?;
 
     // Best-effort — concurrent operations may collide on the unique constraint;
@@ -1663,15 +1481,12 @@ pub async fn restore_platform_page_revision(
 pub async fn list_guild_categories(
     State(state): State<AppState>,
     Path(guild_id): Path<Uuid>,
-) -> PageResult<Json<Vec<PageCategory>>> {
+) -> Result<Json<Vec<PageCategory>>, PagesError> {
     let categories = queries::list_categories(&state.db, guild_id)
         .await
         .map_err(|e| {
             error!("Failed to list categories for guild {}: {}", guild_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
     Ok(Json(categories))
 }
@@ -1691,21 +1506,19 @@ pub async fn create_guild_category(
     user: AuthUser,
     Path(guild_id): Path<Uuid>,
     Json(req): Json<CreateCategoryRequest>,
-) -> PageResult<Json<PageCategory>> {
+) -> Result<Json<PageCategory>, PagesError> {
     check_manage_pages_permission(&state, guild_id, user.id).await?;
 
     let name = req.name.trim();
     if name.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(PagesError::Validation(
             "Category name is required".to_string(),
         ));
     }
     if name.chars().count() > MAX_CATEGORY_NAME_LENGTH {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Category name exceeds {MAX_CATEGORY_NAME_LENGTH} characters"),
-        ));
+        return Err(PagesError::Validation(format!(
+            "Category name exceeds {MAX_CATEGORY_NAME_LENGTH} characters"
+        )));
     }
 
     let count = queries::count_categories(&state.db, guild_id)
@@ -1715,10 +1528,9 @@ pub async fn create_guild_category(
             MAX_CATEGORIES_PER_GUILD
         });
     if count >= MAX_CATEGORIES_PER_GUILD {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Maximum {MAX_CATEGORIES_PER_GUILD} categories reached"),
-        ));
+        return Err(PagesError::LimitExceeded(format!(
+            "Maximum {MAX_CATEGORIES_PER_GUILD} categories reached"
+        )));
     }
 
     let category = queries::create_category(&state.db, guild_id, name)
@@ -1726,16 +1538,10 @@ pub async fn create_guild_category(
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("idx_page_categories_guild_name") {
-                (
-                    StatusCode::CONFLICT,
-                    "Category name already exists".to_string(),
-                )
+                PagesError::CategoryConflict("Category name already exists".to_string())
             } else {
                 error!("Failed to create category in guild {}: {}", guild_id, e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
+                PagesError::Database(e)
             }
         })?;
 
@@ -1760,7 +1566,7 @@ pub async fn update_guild_category(
     user: AuthUser,
     Path((guild_id, cat_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateCategoryRequest>,
-) -> PageResult<Json<PageCategory>> {
+) -> Result<Json<PageCategory>, PagesError> {
     check_manage_pages_permission(&state, guild_id, user.id).await?;
 
     // Verify category belongs to guild
@@ -1768,29 +1574,24 @@ pub async fn update_guild_category(
         .await
         .map_err(|e| {
             error!("Failed to get category {}: {}", cat_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Category not found".to_string()))?;
+        .ok_or(PagesError::CategoryNotFound)?;
 
     if existing.guild_id != guild_id {
-        return Err((StatusCode::NOT_FOUND, "Category not found".to_string()));
+        return Err(PagesError::CategoryNotFound);
     }
 
     let name = req.name.trim();
     if name.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(PagesError::Validation(
             "Category name is required".to_string(),
         ));
     }
     if name.chars().count() > MAX_CATEGORY_NAME_LENGTH {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Category name exceeds {MAX_CATEGORY_NAME_LENGTH} characters"),
-        ));
+        return Err(PagesError::Validation(format!(
+            "Category name exceeds {MAX_CATEGORY_NAME_LENGTH} characters"
+        )));
     }
 
     let category = queries::update_category(&state.db, cat_id, name)
@@ -1798,16 +1599,10 @@ pub async fn update_guild_category(
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("idx_page_categories_guild_name") {
-                (
-                    StatusCode::CONFLICT,
-                    "Category name already exists".to_string(),
-                )
+                PagesError::CategoryConflict("Category name already exists".to_string())
             } else {
                 error!("Failed to update category {}: {}", cat_id, e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
+                PagesError::Database(e)
             }
         })?;
 
@@ -1830,32 +1625,26 @@ pub async fn delete_guild_category(
     State(state): State<AppState>,
     user: AuthUser,
     Path((guild_id, cat_id)): Path<(Uuid, Uuid)>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     check_manage_pages_permission(&state, guild_id, user.id).await?;
 
     let existing = queries::get_category(&state.db, cat_id)
         .await
         .map_err(|e| {
             error!("Failed to get category {}: {}", cat_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Category not found".to_string()))?;
+        .ok_or(PagesError::CategoryNotFound)?;
 
     if existing.guild_id != guild_id {
-        return Err((StatusCode::NOT_FOUND, "Category not found".to_string()));
+        return Err(PagesError::CategoryNotFound);
     }
 
     queries::delete_category(&state.db, cat_id)
         .await
         .map_err(|e| {
             error!("Failed to delete category {}: {}", cat_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+            PagesError::Database(e)
         })?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -1876,9 +1665,9 @@ pub async fn reorder_guild_categories(
     user: AuthUser,
     Path(guild_id): Path<Uuid>,
     Json(req): Json<ReorderCategoriesRequest>,
-) -> PageResult<StatusCode> {
+) -> Result<StatusCode, PagesError> {
     if req.category_ids.len() > MAX_CATEGORIES_PER_GUILD as usize {
-        return Err((StatusCode::BAD_REQUEST, "Too many category IDs".to_string()));
+        return Err(PagesError::Validation("Too many category IDs".to_string()));
     }
 
     check_manage_pages_permission(&state, guild_id, user.id).await?;
@@ -1889,13 +1678,10 @@ pub async fn reorder_guild_categories(
             // Map Protocol errors (invalid input) to 400, others to 500
             if let sqlx::Error::Protocol(msg) = &e {
                 error!("Invalid reorder request for guild {}: {}", guild_id, msg);
-                (StatusCode::BAD_REQUEST, msg.clone())
+                PagesError::InvalidReorder(msg.clone())
             } else {
                 error!("Failed to reorder categories in guild {}: {}", guild_id, e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
+                PagesError::Database(e)
             }
         })?;
 
@@ -1906,72 +1692,67 @@ pub async fn reorder_guild_categories(
 // Validation Helpers
 // ============================================================================
 
-fn validate_create_request(req: &CreatePageRequest) -> PageResult<()> {
+fn validate_create_request(req: &CreatePageRequest) -> Result<(), PagesError> {
     if req.title.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "Title is required".to_string()));
+        return Err(PagesError::Validation("Title is required".to_string()));
     }
     if req.title.chars().count() > MAX_TITLE_LENGTH {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Title exceeds {MAX_TITLE_LENGTH} characters"),
-        ));
+        return Err(PagesError::Validation(format!(
+            "Title exceeds {MAX_TITLE_LENGTH} characters"
+        )));
     }
     if req.content.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "Content is required".to_string()));
+        return Err(PagesError::Validation("Content is required".to_string()));
     }
     if req.content.len() > MAX_CONTENT_SIZE {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Content exceeds {MAX_CONTENT_SIZE} bytes"),
-        ));
+        return Err(PagesError::Validation(format!(
+            "Content exceeds {MAX_CONTENT_SIZE} bytes"
+        )));
     }
     Ok(())
 }
 
-fn validate_update_request(req: &UpdatePageRequest) -> PageResult<()> {
+fn validate_update_request(req: &UpdatePageRequest) -> Result<(), PagesError> {
     if let Some(ref title) = req.title {
         if title.is_empty() {
-            return Err((StatusCode::BAD_REQUEST, "Title cannot be empty".to_string()));
+            return Err(PagesError::Validation(
+                "Title cannot be empty".to_string(),
+            ));
         }
         if title.chars().count() > MAX_TITLE_LENGTH {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("Title exceeds {MAX_TITLE_LENGTH} characters"),
-            ));
+            return Err(PagesError::Validation(format!(
+                "Title exceeds {MAX_TITLE_LENGTH} characters"
+            )));
         }
     }
     if let Some(ref content) = req.content {
         if content.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
+            return Err(PagesError::Validation(
                 "Content cannot be empty".to_string(),
             ));
         }
         if content.len() > MAX_CONTENT_SIZE {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("Content exceeds {MAX_CONTENT_SIZE} bytes"),
-            ));
+            return Err(PagesError::Validation(format!(
+                "Content exceeds {MAX_CONTENT_SIZE} bytes"
+            )));
         }
     }
     Ok(())
 }
 
-fn validate_slug(slug: &str) -> PageResult<()> {
+fn validate_slug(slug: &str) -> Result<(), PagesError> {
     if slug.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "Slug cannot be empty".to_string()));
+        return Err(PagesError::Validation("Slug cannot be empty".to_string()));
     }
     if slug.len() > MAX_SLUG_LENGTH {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Slug exceeds {MAX_SLUG_LENGTH} characters"),
-        ));
+        return Err(PagesError::Validation(format!(
+            "Slug exceeds {MAX_SLUG_LENGTH} characters"
+        )));
     }
     if queries::is_reserved_slug(slug) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("'{slug}' is a reserved slug"),
-        ));
+        return Err(PagesError::Validation(format!(
+            "'{slug}' is a reserved slug"
+        )));
     }
     // Validate slug format (lowercase alphanumeric with dashes)
     let valid = slug
@@ -1982,8 +1763,7 @@ fn validate_slug(slug: &str) -> PageResult<()> {
         && !slug.contains("--");
 
     if !valid {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(PagesError::Validation(
             "Invalid slug format. Use lowercase letters, numbers, and single dashes (e.g., 'terms-of-service', 'faq-page')".to_string(),
         ));
     }
