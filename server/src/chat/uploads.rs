@@ -176,9 +176,8 @@ pub async fn upload_file(
     // Validate required fields
     let file_data = file_data.ok_or(ChatError::NoFile)?;
     let filename = filename.ok_or(ChatError::InvalidFilename)?;
-    let message_id = message_id.ok_or(ChatError::Validation(
-        "message_id is required".to_string(),
-    ))?;
+    let message_id =
+        message_id.ok_or(ChatError::Validation("message_id is required".to_string()))?;
 
     // Sanitize filename
     let safe_filename = sanitize_filename(&filename);
@@ -428,8 +427,7 @@ pub async fn upload_message_with_file(
 
     // Validate message content length if provided
     if !content.is_empty() {
-        validate_message_content(&content)
-            .map_err(|e| ChatError::Validation(e.to_string()))?;
+        validate_message_content(&content).map_err(|e| ChatError::Validation(e.to_string()))?;
     }
     // Content filtering on message text (if non-empty, guild channels only)
     if !content.is_empty() {
@@ -438,9 +436,9 @@ pub async fn upload_message_with_file(
                 let result = engine.check(&content);
                 if result.blocked {
                     for m in &result.matches {
-                        crate::moderation::filter_queries::log_moderation_action(
+                        crate::moderation::queries::log_moderation_action(
                             &state.db,
-                            &crate::moderation::filter_queries::LogActionParams {
+                            &crate::moderation::queries::LogActionParams {
                                 guild_id,
                                 user_id: auth_user.id,
                                 channel_id,
@@ -463,9 +461,9 @@ pub async fn upload_message_with_file(
                     m.action == crate::moderation::filter_types::FilterAction::Log
                         || m.action == crate::moderation::filter_types::FilterAction::Warn
                 }) {
-                    crate::moderation::filter_queries::log_moderation_action(
+                    crate::moderation::queries::log_moderation_action(
                         &state.db,
-                        &crate::moderation::filter_queries::LogActionParams {
+                        &crate::moderation::queries::LogActionParams {
                             guild_id,
                             user_id: auth_user.id,
                             channel_id,

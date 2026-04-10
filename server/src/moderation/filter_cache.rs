@@ -16,7 +16,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::filter_engine::FilterEngine;
-use super::filter_queries;
+use super::queries;
 
 /// Cached engine paired with the generation it was built at.
 struct CachedEngine {
@@ -72,11 +72,11 @@ impl FilterCache {
         let gen_before = gen.load(Ordering::Acquire);
 
         // Slow path: build from database
-        let configs = filter_queries::list_filter_configs(pool, guild_id)
+        let configs = queries::list_filter_configs(pool, guild_id)
             .await
             .map_err(|e| format!("Failed to load filter configs: {e}"))?;
 
-        let patterns = filter_queries::list_custom_patterns(pool, guild_id)
+        let patterns = queries::list_custom_patterns(pool, guild_id)
             .await
             .map_err(|e| format!("Failed to load custom patterns: {e}"))?;
 
@@ -106,11 +106,11 @@ impl FilterCache {
         pool: &PgPool,
         guild_id: Uuid,
     ) -> Result<Arc<FilterEngine>, String> {
-        let configs = filter_queries::list_filter_configs(pool, guild_id)
+        let configs = queries::list_filter_configs(pool, guild_id)
             .await
             .map_err(|e| format!("Failed to load filter configs: {e}"))?;
 
-        let patterns = filter_queries::list_custom_patterns(pool, guild_id)
+        let patterns = queries::list_custom_patterns(pool, guild_id)
             .await
             .map_err(|e| format!("Failed to load custom patterns: {e}"))?;
 

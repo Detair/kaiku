@@ -5,9 +5,9 @@ use axum::{Extension, Json};
 use uuid::Uuid;
 
 use super::error::ModerationError;
+use super::queries;
 use super::types::{
-    ListReportsQuery, PaginatedReports, Report, ReportResponse, ReportStatsResponse,
-    ResolveReportRequest,
+    ListReportsQuery, PaginatedReports, ReportResponse, ReportStatsResponse, ResolveReportRequest,
 };
 use crate::admin::ElevatedAdmin;
 use crate::api::AppState;
@@ -30,30 +30,9 @@ pub async fn list_reports(
     let limit = query.limit.clamp(1, 100);
     let offset = query.offset.max(0);
 
-    let reports = sqlx::query_as::<_, Report>(
-        r"SELECT * FROM user_reports
-           WHERE ($1::report_status IS NULL OR status = $1)
-             AND ($2::report_category IS NULL OR category = $2)
-           ORDER BY created_at DESC
-           LIMIT $3 OFFSET $4",
-    )
-    .bind(query.status)
-    .bind(query.category)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await?;
-
-    let total: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        r"SELECT COUNT(*) FROM user_reports
-           WHERE ($1::report_status IS NULL OR status = $1)
-             AND ($2::report_category IS NULL OR category = $2)",
-    )
-    .bind(query.status)
-    .bind(query.category)
-    .fetch_one(&state.db)
-    .await?
-    .unwrap_or(0);
+    let reports =
+        queries::list_reports(&state.db, query.status, query.category, limit, offset).await?;
+    let total = queries::count_reports(&state.db, query.status, query.category).await?;
 
     Ok(Json(PaginatedReports {
         items: reports.into_iter().map(ReportResponse::from).collect(),
@@ -77,12 +56,7 @@ pub async fn get_report(
     State(state): State<AppState>,
     Path(report_id): Path<Uuid>,
 ) -> Result<Json<ReportResponse>, ModerationError> {
-    let report = sqlx::query_as::<_, Report>("SELECT * FROM user_reports WHERE id = $1")
-        .bind(report_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(ModerationError::NotFound)?;
-
+    let report = queries::get_report(&state.db, report_id).await?;
     Ok(Json(report.into()))
 }
 
@@ -101,18 +75,7 @@ pub async fn claim_report(
     Extension(elevated): Extension<ElevatedAdmin>,
     Path(report_id): Path<Uuid>,
 ) -> Result<Json<ReportResponse>, ModerationError> {
-    let report = sqlx::query_as::<_, Report>(
-        r"UPDATE user_reports
-           SET status = 'reviewing', assigned_admin_id = $2, updated_at = NOW()
-           WHERE id = $1 AND status = 'pending'
-           RETURNING *",
-    )
-    .bind(report_id)
-    .bind(elevated.user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(ModerationError::NotFound)?;
-
+    let report = queries::claim_report(&state.db, report_id, elevated.user_id).await?;
     Ok(Json(report.into()))
 }
 
@@ -141,22 +104,13 @@ pub async fn resolve_report(
         )));
     }
 
-    let report = sqlx::query_as::<_, Report>(
-        r"UPDATE user_reports
-           SET status = CASE WHEN $2 = 'dismissed' THEN 'dismissed'::report_status ELSE 'resolved'::report_status END,
-               resolution_action = $2,
-               resolution_note = $3,
-               resolved_at = NOW(),
-               updated_at = NOW()
-           WHERE id = $1 AND status IN ('pending', 'reviewing')
-           RETURNING *",
+    let report = queries::resolve_report(
+        &state.db,
+        report_id,
+        &body.resolution_action,
+        body.resolution_note.as_deref(),
     )
-    .bind(report_id)
-    .bind(&body.resolution_action)
-    .bind(&body.resolution_note)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(ModerationError::NotFound)?;
+    .await?;
 
     // Broadcast resolution to admin events
     let event = ServerEvent::AdminReportResolved {
@@ -181,38 +135,11 @@ pub async fn resolve_report(
 pub async fn report_stats(
     State(state): State<AppState>,
 ) -> Result<Json<ReportStatsResponse>, ModerationError> {
-    let pending: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT COUNT(*) FROM user_reports WHERE status ='pending'",
-    )
-    .fetch_one(&state.db)
-    .await?
-    .unwrap_or(0);
-
-    let reviewing: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT COUNT(*) FROM user_reports WHERE status ='reviewing'",
-    )
-    .fetch_one(&state.db)
-    .await?
-    .unwrap_or(0);
-
-    let resolved: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT COUNT(*) FROM user_reports WHERE status ='resolved'",
-    )
-    .fetch_one(&state.db)
-    .await?
-    .unwrap_or(0);
-
-    let dismissed: i64 = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT COUNT(*) FROM user_reports WHERE status ='dismissed'",
-    )
-    .fetch_one(&state.db)
-    .await?
-    .unwrap_or(0);
-
+    let counts = queries::count_reports_by_status(&state.db).await?;
     Ok(Json(ReportStatsResponse {
-        pending,
-        reviewing,
-        resolved,
-        dismissed,
+        pending: counts.pending,
+        reviewing: counts.reviewing,
+        resolved: counts.resolved,
+        dismissed: counts.dismissed,
     }))
 }

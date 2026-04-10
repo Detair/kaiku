@@ -20,8 +20,8 @@ use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
-use crate::moderation::filter_queries;
 use crate::moderation::filter_types::FilterAction;
+use crate::moderation::queries as filter_queries;
 use crate::permissions::{get_member_permission_context, GuildPermissions};
 use crate::social::block_cache;
 use crate::ws::{broadcast_admin_event, broadcast_to_channel, broadcast_to_user, ServerEvent};
@@ -294,9 +294,7 @@ pub async fn create(
     if let Some(reply_id) = body.reply_to {
         let reply_msg = db::find_message_by_id(&state.db, reply_id).await?;
         if reply_msg.is_none() {
-            return Err(ChatError::Validation(
-                "Reply target not found".to_string(),
-            ));
+            return Err(ChatError::Validation("Reply target not found".to_string()));
         }
     }
 
@@ -476,9 +474,7 @@ pub async fn create(
                                     error = %e,
                                     "Failed to create Redis client for slash command routing"
                                 );
-                                ChatError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         routing_redis
@@ -492,9 +488,7 @@ pub async fn create(
                             .await
                             .map_err(|e| {
                                 warn!(error = %e, "Failed to store command interaction owner");
-                                ChatError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         // Store interaction context for response delivery
@@ -516,9 +510,7 @@ pub async fn create(
                             .await
                             .map_err(|e| {
                                 warn!(error = %e, "Failed to store interaction context");
-                                ChatError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         routing_redis
@@ -526,9 +518,7 @@ pub async fn create(
                             .await
                             .map_err(|e| {
                                 warn!(error = %e, "Failed to publish slash command invocation");
-                                ChatError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         // Dispatch command.invoked to webhooks (non-blocking)
