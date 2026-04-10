@@ -22,6 +22,7 @@ use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{append_collision_suffix, generate_username_from_claims, OidcFlowState};
 use super::password::{hash_password, verify_password};
+use super::queries::{self, InsertSessionParams};
 use super::types::{
     AuthResponse, ForgotPasswordRequest, LoginRequest, LogoutRequest, MfaBackupCodeCountResponse,
     MfaBackupCodesResponse, MfaSetupResponse, MfaVerifyRequest, OidcAuthorizeQuery,
@@ -38,7 +39,7 @@ use crate::db::{
     find_user_by_username, find_valid_reset_token, get_auth_methods_allowed,
     get_unused_mfa_backup_codes, invalidate_user_reset_tokens, is_setup_complete,
     mark_mfa_backup_code_used, set_mfa_secret, store_mfa_backup_codes, update_user_avatar,
-    update_user_profile, username_exists, Session,
+    update_user_profile, username_exists,
 };
 use crate::ratelimit::NormalizedIp;
 use crate::util::format_file_size;
@@ -254,14 +255,9 @@ pub async fn register(
     // block at this SELECT FOR UPDATE until the first transaction COMMITS or ROLLS BACK.
     // The lock is held for the entire transaction duration, preventing the race condition
     // where two concurrent registrations both see user_count=0 and both grant admin.
-    let _lock = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| {
+    queries::lock_setup_complete(&mut tx).await.map_err(|e| {
         tracing::error!(
-            error = %e,
+            error = ?e,
             username = %body.username,
             "Failed to lock setup_complete config during registration"
         );
@@ -269,34 +265,28 @@ pub async fn register(
     })?;
 
     // Now safely count users (serialized by the lock above)
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                error = %e,
-                username = %body.username,
-                "Failed to count users during registration"
-            );
-            e
-        })?;
+    let user_count = queries::count_users(&mut tx).await.map_err(|e| {
+        tracing::error!(
+            error = ?e,
+            username = %body.username,
+            "Failed to count users during registration"
+        );
+        e
+    })?;
     let is_first_user = user_count == 0;
 
     // Create user (inline to use transaction)
-    let user = sqlx::query_as::<_, crate::db::User>(
-        "INSERT INTO users (username, display_name, email, password_hash, auth_method)
-         VALUES ($1, $2, $3, $4, 'local')
-         RETURNING *",
+    let user = queries::insert_local_user(
+        &mut tx,
+        &body.username,
+        display_name,
+        body.email.as_deref(),
+        &password_hash,
     )
-    .bind(&body.username)
-    .bind(display_name)
-    .bind(&body.email)
-    .bind(password_hash)
-    .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
         tracing::error!(
-            error = %e,
+            error = ?e,
             username = %body.username,
             "Failed to create user during registration - transaction will rollback"
         );
@@ -305,21 +295,17 @@ pub async fn register(
 
     // Grant system admin to first user
     if is_first_user {
-        sqlx::query!(
-            "INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $1)",
-            user.id
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                error = %e,
-                user_id = %user.id,
-                username = %user.username,
-                "Failed to grant system admin to first user - transaction will rollback"
-            );
-            e
-        })?;
+        queries::grant_first_user_admin(&mut tx, user.id)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    error = ?e,
+                    user_id = %user.id,
+                    username = %user.username,
+                    "Failed to grant system admin to first user - transaction will rollback"
+                );
+                e
+            })?;
 
         tracing::info!(
             user_id = %user.id,
@@ -351,22 +337,22 @@ pub async fn register(
     let country = geo.as_ref().and_then(|g| g.country.as_deref());
 
     let ip_str = Some(addr.ip().to_string());
-    sqlx::query(
-        r"INSERT INTO sessions (user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-          VALUES ($1, $2, $3, $4::inet, $5, $6, $7)",
+    queries::insert_session_tx(
+        &mut tx,
+        &InsertSessionParams {
+            user_id: user.id,
+            token_hash: &token_hash,
+            expires_at,
+            ip_address: ip_str.as_deref(),
+            user_agent: user_agent.as_deref(),
+            city,
+            country,
+        },
     )
-    .bind(user.id)
-    .bind(&token_hash)
-    .bind(expires_at)
-    .bind(ip_str.as_deref())
-    .bind(user_agent.as_deref())
-    .bind(city)
-    .bind(country)
-    .execute(&mut *tx)
     .await
     .map_err(|e| {
         tracing::error!(
-            error = %e,
+            error = ?e,
             user_id = %user.id,
             "Failed to create session - transaction will rollback"
         );
@@ -659,17 +645,7 @@ pub async fn refresh_token(
     let mut tx = state.db.begin().await?;
 
     // Lock the session row to prevent concurrent refresh
-    let session: Option<Session> = sqlx::query_as(
-        r"
-        SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, city, country, created_at
-        FROM sessions
-        WHERE token_hash = $1 AND expires_at > NOW()
-        FOR UPDATE
-        ",
-    )
-    .bind(&token_hash)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let session = queries::lock_session_by_token_hash_tx(&mut tx, &token_hash).await?;
 
     let Some(session) = session else {
         crate::observability::metrics::record_token_refresh(false);
@@ -688,10 +664,7 @@ pub async fn refresh_token(
         .ok_or(AuthError::UserNotFound)?;
 
     // Delete old session within the transaction
-    sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
-        .bind(&token_hash)
-        .execute(&mut *tx)
-        .await?;
+    queries::delete_session_by_token_hash_tx(&mut tx, &token_hash).await?;
 
     // Generate new token pair
     let new_tokens = generate_token_pair(
@@ -707,20 +680,19 @@ pub async fn refresh_token(
     let city = geo.as_ref().and_then(|g| g.city.as_deref());
     let country = geo.as_ref().and_then(|g| g.country.as_deref());
 
-    sqlx::query(
-        r"
-        INSERT INTO sessions (user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-        VALUES ($1, $2, $3, $4::inet, $5, $6, $7)
-        ",
+    let ip_str = addr.ip().to_string();
+    queries::insert_session_tx(
+        &mut tx,
+        &InsertSessionParams {
+            user_id,
+            token_hash: &new_token_hash,
+            expires_at,
+            ip_address: Some(&ip_str),
+            user_agent: user_agent.as_deref(),
+            city,
+            country,
+        },
     )
-    .bind(user_id)
-    .bind(&new_token_hash)
-    .bind(expires_at)
-    .bind(addr.ip().to_string())
-    .bind(user_agent.as_deref())
-    .bind(city)
-    .bind(country)
-    .execute(&mut *tx)
     .await?;
 
     // Commit the transaction — this is the atomic point
@@ -815,16 +787,7 @@ pub async fn list_sessions(
     // Best-effort: if neither is available, all sessions will have is_current = false.
     let current_hash = extract_current_token_hash(&headers, &jar);
 
-    let sessions: Vec<Session> = sqlx::query_as(
-        r"SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address,
-                 user_agent, city, country, created_at
-          FROM sessions
-          WHERE user_id = $1 AND expires_at > NOW()
-          ORDER BY created_at DESC",
-    )
-    .bind(auth_user.id)
-    .fetch_all(&state.db)
-    .await?;
+    let sessions = queries::list_user_sessions(&state.db, auth_user.id).await?;
 
     let session_infos: Vec<SessionInfo> = sessions
         .iter()
@@ -877,15 +840,9 @@ pub async fn revoke_session(
     jar: CookieJar,
 ) -> AuthResult<StatusCode> {
     // Find the session
-    let session: Option<Session> = sqlx::query_as(
-        "SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, city, country, created_at
-         FROM sessions WHERE id = $1",
-    )
-    .bind(session_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let session = session.ok_or_else(|| AuthError::NotFound("Session not found".to_string()))?;
+    let session = queries::find_session_by_id(&state.db, session_id)
+        .await?
+        .ok_or_else(|| AuthError::NotFound("Session not found".to_string()))?;
 
     // Must belong to the authenticated user
     if session.user_id != auth_user.id {
@@ -898,10 +855,7 @@ pub async fn revoke_session(
         return Err(AuthError::Forbidden);
     }
 
-    sqlx::query("DELETE FROM sessions WHERE id = $1")
-        .bind(session_id)
-        .execute(&state.db)
-        .await?;
+    queries::delete_session_by_id(&state.db, session_id).await?;
 
     tracing::info!(user_id = %auth_user.id, session_id = %session_id, "Session revoked");
 
@@ -938,13 +892,8 @@ pub async fn revoke_all_other_sessions(
         )
     })?;
 
-    let result = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND token_hash != $2")
-        .bind(auth_user.id)
-        .bind(&current_hash)
-        .execute(&state.db)
-        .await?;
-
-    let revoked_count = result.rows_affected() as i64;
+    let revoked_count =
+        queries::delete_other_user_sessions(&state.db, auth_user.id, &current_hash).await? as i64;
     tracing::info!(user_id = %auth_user.id, revoked_count, "All other sessions revoked");
 
     Ok(Json(RevokeAllResponse { revoked_count }))
@@ -1266,23 +1215,12 @@ pub async fn update_password(
     // Transaction: update password + optionally revoke other sessions
     let mut tx = state.db.begin().await.map_err(AuthError::Database)?;
 
-    sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
-        .bind(&new_hash)
-        .bind(auth_user.id)
-        .execute(&mut *tx)
-        .await
-        .map_err(AuthError::Database)?;
+    queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;
 
     let revoked_count = if body.revoke_others {
         let current_token_hash = extract_current_token_hash(&headers, &jar);
         if let Some(ref hash) = current_token_hash {
-            sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND token_hash != $2")
-                .bind(auth_user.id)
-                .bind(hash)
-                .execute(&mut *tx)
-                .await
-                .map_err(AuthError::Database)?
-                .rows_affected()
+            queries::delete_other_user_sessions_tx(&mut tx, auth_user.id, hash).await?
         } else {
             // Cannot identify current session — skip revocation rather than
             // accidentally deleting all sessions (including the caller's own).
@@ -1961,49 +1899,33 @@ pub async fn oidc_callback(
 
             // Lock setup_complete to serialize first-user detection (same pattern as local
             // register)
-            let _ = sqlx::query_scalar::<_, serde_json::Value>(
-                "SELECT value FROM server_config WHERE key = 'setup_complete' FOR UPDATE"
-            )
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "Failed to lock setup_complete during OIDC registration");
-                AuthError::Database(e)
+            queries::lock_setup_complete(&mut tx).await.map_err(|e| {
+                tracing::error!(error = ?e, "Failed to lock setup_complete during OIDC registration");
+                e
             })?;
 
-            let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(AuthError::Database)?;
+            let user_count = queries::count_users(&mut tx).await?;
             let is_first_user = user_count == 0;
 
-            let insert_result = sqlx::query_as::<_, crate::db::User>(
-                "INSERT INTO users (username, display_name, email, auth_method, external_id, avatar_url)
-                 VALUES ($1, $2, $3, 'oidc', $4, $5)
-                 RETURNING *",
+            match queries::insert_oidc_user(
+                &mut tx,
+                &username,
+                &display_name,
+                user_info.email.as_deref(),
+                &external_id,
+                user_info.avatar_url.as_deref(),
             )
-            .bind(&username)
-            .bind(&display_name)
-            .bind(&user_info.email)
-            .bind(&external_id)
-            .bind(&user_info.avatar_url)
-            .fetch_one(&mut *tx)
-            .await;
-
-            match insert_result {
-                Ok(user) => {
+            .await?
+            {
+                Some(user) => {
                     // Grant admin to first user
                     if is_first_user {
-                        sqlx::query!(
-                            "INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $1)",
-                            user.id
-                        )
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| {
-                            tracing::error!(error = %e, user_id = %user.id, "Failed to grant admin to first OIDC user");
-                            AuthError::Database(e)
-                        })?;
+                        queries::grant_first_user_admin(&mut tx, user.id)
+                            .await
+                            .map_err(|e| {
+                                tracing::error!(error = ?e, user_id = %user.id, "Failed to grant admin to first OIDC user");
+                                e
+                            })?;
                         tracing::info!(user_id = %user.id, "First user registered via OIDC and granted system admin");
                     }
 
@@ -2018,13 +1940,9 @@ pub async fn oidc_callback(
                     new_user = Some(user);
                     break;
                 }
-                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                None => {
                     // Username collision — tx dropped (implicit rollback), retry with suffix
                     tracing::debug!(username = %username, "Username collision during OIDC registration, retrying");
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, external_id = %external_id, "Failed to create OIDC user");
-                    return Err(AuthError::Database(e));
                 }
             }
         }
@@ -2275,34 +2193,27 @@ pub async fn reset_password(
     })?;
 
     // Mark token as used
-    sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
-        .bind(reset_token.id)
-        .execute(&mut *tx)
+    queries::mark_reset_token_used_tx(&mut tx, reset_token.id)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, token_id = %reset_token.id, "Failed to mark reset token used");
-            AuthError::Database(e)
+            tracing::error!(error = ?e, token_id = %reset_token.id, "Failed to mark reset token used");
+            e
         })?;
 
     // Update password
-    sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
-        .bind(&password_hash)
-        .bind(reset_token.user_id)
-        .execute(&mut *tx)
+    queries::update_password_hash_tx(&mut tx, reset_token.user_id, &password_hash)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, user_id = %reset_token.user_id, "Failed to update password");
-            AuthError::Database(e)
+            tracing::error!(error = ?e, user_id = %reset_token.user_id, "Failed to update password");
+            e
         })?;
 
     // Delete all user sessions (force re-login everywhere)
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-        .bind(reset_token.user_id)
-        .execute(&mut *tx)
+    queries::delete_all_user_sessions_tx(&mut tx, reset_token.user_id)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, user_id = %reset_token.user_id, "Failed to delete sessions");
-            AuthError::Database(e)
+            tracing::error!(error = ?e, user_id = %reset_token.user_id, "Failed to delete sessions");
+            e
         })?;
 
     tx.commit().await.map_err(|e| {
