@@ -3,91 +3,18 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use super::types::{
+    AddMemberRequest, ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest,
+    MemberResponse, UpdateChannelRequest,
+};
 use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db::{self, ChannelType};
 use crate::ws::{broadcast_to_user, ServerEvent};
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct ChannelResponse {
-    pub id: Uuid,
-    pub name: String,
-    pub channel_type: String,
-    pub category_id: Option<Uuid>,
-    pub guild_id: Option<Uuid>,
-    pub topic: Option<String>,
-    pub user_limit: Option<i32>,
-    pub position: i32,
-    /// Maximum concurrent screen shares (voice channels only).
-    pub max_screen_shares: i32,
-    pub icon_url: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl From<db::Channel> for ChannelResponse {
-    fn from(ch: db::Channel) -> Self {
-        Self {
-            id: ch.id,
-            name: ch.name,
-            channel_type: match ch.channel_type {
-                ChannelType::Text => "text".to_string(),
-                ChannelType::Voice => "voice".to_string(),
-                ChannelType::Dm => "dm".to_string(),
-            },
-            category_id: ch.category_id,
-            guild_id: ch.guild_id,
-            topic: ch.topic,
-            icon_url: ch.icon_url.map(|_| format!("/api/dm/{}/icon", ch.id)),
-            user_limit: ch.user_limit,
-            position: ch.position,
-            max_screen_shares: ch.max_screen_shares,
-            created_at: ch.created_at,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct CreateChannelRequest {
-    #[validate(length(min = 1, max = 64, message = "Name must be 1-64 characters"))]
-    pub name: String,
-    pub channel_type: String,
-    pub category_id: Option<Uuid>,
-    pub guild_id: Option<Uuid>,
-    pub topic: Option<String>,
-    pub user_limit: Option<i32>,
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct UpdateChannelRequest {
-    #[validate(length(min = 1, max = 64, message = "Name must be 1-64 characters"))]
-    pub name: Option<String>,
-    pub topic: Option<String>,
-    pub user_limit: Option<i32>,
-    pub position: Option<i32>,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct AddMemberRequest {
-    pub user_id: Uuid,
-    pub role_id: Option<Uuid>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MemberResponse {
-    pub user_id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-}
 
 // ============================================================================
 // Handlers
@@ -465,12 +392,6 @@ pub async fn remove_member(
 // ============================================================================
 // Mark as Read (Guild Channels)
 // ============================================================================
-
-/// Request body for marking a guild channel as read.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct MarkChannelAsReadRequest {
-    pub last_read_message_id: Uuid,
-}
 
 /// Mark a guild channel as read.
 /// POST /api/channels/:id/read

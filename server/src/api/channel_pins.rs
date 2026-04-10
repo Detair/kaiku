@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::chat::messages::MessageResponse;
+use crate::chat::types::MessageResponse;
 use crate::db;
 use crate::permissions::GuildPermissions;
 use crate::ws::{broadcast_to_channel, ServerEvent};

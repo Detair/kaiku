@@ -5,11 +5,13 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::channels::ChannelResponse;
+use super::types::{
+    CreateDMRequest, DMIconResponse, DMListResponse, DMParticipant, DMResponse, LastMessagePreview,
+    MarkAsReadRequest, MarkAsReadResponse, UpdateDMNameRequest,
+};
 use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -19,58 +21,6 @@ use crate::ws::{broadcast_to_user, ServerEvent};
 
 struct UsernameRecord {
     username: String,
-}
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct CreateDMRequest {
-    /// User ID(s) to create DM with (1 for 1:1, multiple for group DM)
-    #[validate(length(min = 1, max = 9, message = "Must have 1-9 other participants"))]
-    pub participant_ids: Vec<Uuid>,
-    /// Optional name for group DMs
-    #[validate(length(max = 100))]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMResponse {
-    #[serde(flatten)]
-    #[schema(inline)]
-    pub channel: ChannelResponse,
-    pub participants: Vec<DMParticipant>,
-}
-
-/// Last message info for DM list preview
-#[derive(Debug, sqlx::FromRow, Serialize, utoipa::ToSchema)]
-pub struct LastMessagePreview {
-    pub id: Uuid,
-    pub content: String,
-    pub user_id: Option<Uuid>,
-    pub username: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// Enhanced DM response with unread count and last message
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMListResponse {
-    #[serde(flatten)]
-    #[schema(inline)]
-    pub channel: ChannelResponse,
-    pub participants: Vec<DMParticipant>,
-    pub last_message: Option<LastMessagePreview>,
-    pub unread_count: i64,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMParticipant {
-    pub user_id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-    pub joined_at: chrono::DateTime<chrono::Utc>,
 }
 
 // ============================================================================
@@ -555,12 +505,6 @@ pub async fn leave_dm(
 // Update Group DM Name
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct UpdateDMNameRequest {
-    #[validate(length(min = 1, max = 100, message = "Name must be 1-100 characters"))]
-    pub name: String,
-}
-
 /// Update a group DM's display name
 /// PATCH /api/dm/:id/name
 #[utoipa::path(
@@ -661,12 +605,6 @@ pub async fn update_dm_name(
 // ============================================================================
 // Icon Upload
 // ============================================================================
-
-/// Response for DM icon upload
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMIconResponse {
-    pub icon_url: String,
-}
 
 /// Upload a custom icon for a DM channel
 /// POST /api/dm/:id/icon
@@ -833,21 +771,6 @@ pub async fn get_dm_icon(
 // ============================================================================
 // Mark as Read
 // ============================================================================
-
-/// Mark DM as read request body
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct MarkAsReadRequest {
-    pub last_read_message_id: Uuid,
-}
-
-/// Mark DM as read response
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MarkAsReadResponse {
-    pub channel_id: Uuid,
-    pub last_read_at: chrono::DateTime<chrono::Utc>,
-    pub last_read_message_id: Option<Uuid>,
-    pub unread_count: i64,
-}
 
 /// Mark a DM channel as read
 /// POST /api/dm/:id/read

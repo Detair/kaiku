@@ -11,6 +11,7 @@ pub(crate) mod messages;
 pub mod overrides;
 pub mod s3;
 pub(crate) mod screenshare;
+pub mod types;
 pub(crate) mod uploads;
 
 pub use error::ChatError;

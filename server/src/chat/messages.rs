@@ -1,19 +1,21 @@
 //! Message Handlers
 
 use std::collections::HashSet;
-use std::sync::LazyLock;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use chrono::{DateTime, Utc};
 use fred::interfaces::{KeysInterface, PubsubInterface};
-use serde::{Deserialize, Serialize};
 use tracing::warn;
-use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::types::{
+    detect_mention_type, AttachmentInfo, AuthorProfile, CreateMessageRequest,
+    CursorPaginatedResponse, ListMessagesQuery, ListThreadRepliesQuery, MessageResponse,
+    ReactionInfo, ThreadInfoResponse, UpdateMessageRequest,
+};
 use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -23,280 +25,6 @@ use crate::moderation::filter_types::FilterAction;
 use crate::permissions::{get_member_permission_context, GuildPermissions};
 use crate::social::block_cache;
 use crate::ws::{broadcast_admin_event, broadcast_to_channel, broadcast_to_user, ServerEvent};
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-/// Author profile for message responses.
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct AuthorProfile {
-    pub id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-    pub status: String,
-}
-
-impl From<db::User> for AuthorProfile {
-    fn from(user: db::User) -> Self {
-        Self {
-            id: user.id,
-            username: user.username,
-            display_name: user.display_name,
-            avatar_url: crate::api::files::maybe_file_url(user.avatar_url),
-            status: format!("{:?}", user.status).to_lowercase(),
-        }
-    }
-}
-
-/// Attachment info for message responses (matches client Attachment type).
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct AttachmentInfo {
-    pub id: Uuid,
-    pub filename: String,
-    pub mime_type: String,
-    pub size: i64,
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub width: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub height: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blurhash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thumbnail_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub medium_url: Option<String>,
-}
-
-impl AttachmentInfo {
-    /// Create from a `FileAttachment` database model.
-    pub fn from_db(attachment: &db::FileAttachment) -> Self {
-        let base_url = format!("/api/messages/attachments/{}/download", attachment.id);
-        let thumbnail_url = attachment
-            .thumbnail_s3_key
-            .as_ref()
-            .map(|_| format!("{base_url}?variant=thumbnail"));
-        let medium_url = attachment
-            .medium_s3_key
-            .as_ref()
-            .map(|_| format!("{base_url}?variant=medium"));
-        Self {
-            id: attachment.id,
-            filename: attachment.filename.clone(),
-            mime_type: attachment.mime_type.clone(),
-            size: attachment.size_bytes,
-            url: base_url,
-            width: attachment.width,
-            height: attachment.height,
-            blurhash: attachment.blurhash.clone(),
-            thumbnail_url,
-            medium_url,
-        }
-    }
-}
-
-/// Mention type for notification sounds.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MentionType {
-    /// Direct @username mention
-    Direct,
-    /// @everyone mention
-    Everyone,
-    /// @here mention (online users only)
-    Here,
-}
-
-/// Thread info for parent messages (returned alongside message responses).
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct ThreadInfoResponse {
-    pub reply_count: i32,
-    pub last_reply_at: Option<DateTime<Utc>>,
-    pub participant_ids: Vec<Uuid>,
-    pub participant_avatars: Vec<Option<String>>,
-    /// Whether the thread has unread replies for the requesting user.
-    /// Only populated for authenticated message list requests.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub has_unread: Option<bool>,
-}
-
-/// Full message response with author info (matches client Message type).
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct MessageResponse {
-    pub id: Uuid,
-    pub channel_id: Uuid,
-    pub author: AuthorProfile,
-    pub content: String,
-    pub encrypted: bool,
-    pub attachments: Vec<AttachmentInfo>,
-    pub reply_to: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
-    #[serde(default)]
-    pub thread_reply_count: i32,
-    pub thread_last_reply_at: Option<DateTime<Utc>>,
-    pub edited_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    /// Type of mention in this message (for notification sounds).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mention_type: Option<MentionType>,
-    /// Reactions on this message.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reactions: Option<Vec<ReactionInfo>>,
-    /// Thread info (only present for messages with thread replies).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread_info: Option<ThreadInfoResponse>,
-    /// Whether this message is pinned in its channel.
-    #[serde(default)]
-    pub pinned: bool,
-    /// Message type: "user" for normal messages, "system" for system events.
-    pub message_type: String,
-    /// Client-generated nonce for optimistic message matching.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nonce: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ReactionInfo {
-    pub emoji: String,
-    pub count: i64,
-    pub me: bool,
-    pub users: Vec<Uuid>,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ListMessagesQuery {
-    pub before: Option<Uuid>,
-    #[serde(default)]
-    pub around: Option<Uuid>,
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-}
-
-const fn default_limit() -> i64 {
-    50
-}
-
-/// Cursor-based paginated response wrapper.
-///
-/// Used for endpoints with infinite scroll patterns (e.g., message history).
-/// Unlike offset-based pagination (which uses `total`, `limit`, `offset`),
-/// cursor-based pagination uses a reference point (`next_cursor`) and
-/// indicates whether more items exist (`has_more`).
-///
-/// This is more efficient for large datasets where counting total items
-/// is expensive and unnecessary (e.g., chat messages).
-#[derive(Debug, Serialize, ToSchema)]
-pub struct CursorPaginatedResponse<T> {
-    /// The items for this page.
-    pub items: Vec<T>,
-    /// Whether more items exist beyond this page.
-    pub has_more: bool,
-    /// Cursor for fetching the next page (ID of the oldest item).
-    /// Pass this as `before` parameter to get the next page.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Uuid>,
-}
-
-/// Detect mention type in message content.
-/// Returns the highest priority mention type found.
-pub fn detect_mention_type(content: &str, author_username: Option<&str>) -> Option<MentionType> {
-    static MENTION_RE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"@(\w+)").unwrap());
-
-    // Check for @everyone first (highest priority for notifications)
-    if content.contains("@everyone") {
-        return Some(MentionType::Everyone);
-    }
-
-    // Check for @here
-    if content.contains("@here") {
-        return Some(MentionType::Here);
-    }
-
-    // Check for direct @username mentions (excluding self-mentions)
-    let mention_pattern = &*MENTION_RE;
-    for cap in mention_pattern.captures_iter(content) {
-        let mentioned = &cap[1];
-        // Skip if mentioning self
-        if let Some(author) = author_username {
-            if mentioned.eq_ignore_ascii_case(author) {
-                continue;
-            }
-        }
-        // Any other @mention is a direct mention
-        if mentioned != "everyone" && mentioned != "here" {
-            return Some(MentionType::Direct);
-        }
-    }
-
-    None
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct CreateMessageRequest {
-    #[validate(custom(function = "validate_message_content"))]
-    pub content: String,
-    #[serde(default)]
-    pub encrypted: bool,
-    #[validate(length(max = 64))]
-    pub nonce: Option<String>,
-    pub reply_to: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ListThreadRepliesQuery {
-    pub after: Option<Uuid>,
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct UpdateMessageRequest {
-    #[validate(custom(function = "validate_message_content"))]
-    pub content: String,
-}
-
-static CODE_BLOCK_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(?s)```.*?```").unwrap());
-
-// NOTE: This regex handles standard triple-backtick fences (```...```).
-// Known limitations: fences with >3 backticks (e.g., ````) and triple backticks
-// inside fenced blocks may be miscounted. A full CommonMark parser would handle
-// these edge cases but is not warranted for validation purposes.
-/// Custom validation for message content length
-/// Standard messages: 1-4000 characters
-/// Messages with code blocks: 1-10000 characters
-pub fn validate_message_content(content: &str) -> Result<(), validator::ValidationError> {
-    if content.is_empty() {
-        return Err(validator::ValidationError::new("content_empty")
-            .with_message("Content cannot be empty".into()));
-    }
-
-    let total_len = content.chars().count();
-
-    // Overall hard limit of 10,000 characters
-    if total_len > 10000 {
-        return Err(validator::ValidationError::new("length").with_message(
-            std::borrow::Cow::Borrowed("Content cannot exceed 10000 characters in total"),
-        ));
-    }
-
-    // Strip code blocks to check the regular text limit (4,000 chars)
-    let text_without_blocks = CODE_BLOCK_RE.replace_all(content, "");
-
-    let regular_text_len = text_without_blocks.chars().count();
-
-    if regular_text_len > 4000 {
-        return Err(validator::ValidationError::new("length").with_message(
-            std::borrow::Cow::Borrowed("Regular text content cannot exceed 4000 characters"),
-        ));
-    }
-
-    Ok(())
-}
 
 // ============================================================================
 // Handlers
@@ -1818,6 +1546,7 @@ mod tests {
     use super::*;
     use crate::api::{AppState, AppStateConfig};
     use crate::auth::AuthUser;
+    use crate::chat::types::validate_message_content;
     use crate::config::Config;
 
     #[test]

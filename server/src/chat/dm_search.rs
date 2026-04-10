@@ -6,78 +6,14 @@ use std::time::Instant;
 
 use axum::extract::{Query, State};
 use axum::Json;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::types::{DmSearchAuthor, DmSearchQuery, DmSearchResponse, DmSearchResult};
 use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::chat::dm;
 use crate::db;
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct DmSearchQuery {
-    /// Search query string (supports websearch syntax: AND, OR, quotes)
-    pub q: String,
-    /// Maximum results to return (default 25, max 100)
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    /// Offset for pagination (default 0)
-    #[serde(default)]
-    pub offset: i64,
-    /// Filter: only messages after this date (ISO 8601)
-    pub date_from: Option<DateTime<Utc>>,
-    /// Filter: only messages before this date (ISO 8601)
-    pub date_to: Option<DateTime<Utc>>,
-    /// Filter: only messages in this DM channel
-    pub channel_id: Option<Uuid>,
-    /// Filter: only messages by this author
-    pub author_id: Option<Uuid>,
-    /// Filter: "link" or "file"
-    pub has: Option<String>,
-    /// Sort order: "relevance" (default) or "date"
-    pub sort: Option<String>,
-}
-
-const fn default_limit() -> i64 {
-    25
-}
-
-/// Author info for search results.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DmSearchAuthor {
-    pub id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-}
-
-/// DM search result item.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DmSearchResult {
-    pub id: Uuid,
-    pub channel_id: Uuid,
-    pub channel_name: String,
-    pub author: DmSearchAuthor,
-    pub content: String,
-    pub created_at: DateTime<Utc>,
-    pub headline: String,
-    pub rank: f32,
-}
-
-/// DM search response with results and pagination.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DmSearchResponse {
-    pub results: Vec<DmSearchResult>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
 
 // ============================================================================
 // Handler

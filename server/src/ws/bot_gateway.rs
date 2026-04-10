@@ -395,7 +395,7 @@ async fn handle_bot_event(
             content,
         } => {
             // Validate content length
-            if let Err(e) = crate::chat::messages::validate_message_content(&content) {
+            if let Err(e) = crate::chat::types::validate_message_content(&content) {
                 return Err(e
                     .message
                     .as_ref()
@@ -485,7 +485,7 @@ async fn handle_bot_event(
             ephemeral,
         } => {
             // Validate content length
-            if let Err(e) = crate::chat::messages::validate_message_content(&content) {
+            if let Err(e) = crate::chat::types::validate_message_content(&content) {
                 return Err(e
                     .message
                     .as_ref()

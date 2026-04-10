@@ -2,32 +2,13 @@
 
 use axum::extract::{Path, State};
 use axum::Json;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::types::{OverrideResponse, SetOverrideRequest};
 use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::{GuildPermissions, PermissionError};
-
-// ============================================================================
-// Types
-// ============================================================================
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct OverrideResponse {
-    pub id: Uuid,
-    pub channel_id: Uuid,
-    pub role_id: Uuid,
-    pub allow_permissions: u64,
-    pub deny_permissions: u64,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct SetOverrideRequest {
-    pub allow: Option<u64>,
-    pub deny: Option<u64>,
-}
 
 // ============================================================================
 // Handlers

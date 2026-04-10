@@ -6,66 +6,19 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::messages::{detect_mention_type, AttachmentInfo, AuthorProfile, MessageResponse};
 use super::s3::S3Client;
+use super::types::{
+    detect_mention_type, validate_message_content, AttachmentInfo, AttachmentResponse,
+    AuthorProfile, DownloadQuery, MessageResponse, SignedUrlQuery, SignedUrlResponse, UploadedFile,
+};
 use super::ChatError;
 use crate::api::AppState;
 use crate::auth::jwt::validate_access_token;
 use crate::auth::AuthUser;
 use crate::db;
 use crate::ws::{broadcast_to_channel, ServerEvent};
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-/// Response for successful file upload.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct UploadedFile {
-    /// Attachment ID.
-    pub id: Uuid,
-    /// Original filename.
-    pub filename: String,
-    /// MIME type.
-    pub mime_type: String,
-    /// File size in bytes.
-    pub size: i64,
-    /// URL to access the file.
-    pub url: String,
-}
-
-/// Response for attachment metadata.
-#[derive(Debug, Serialize)]
-pub struct AttachmentResponse {
-    /// Attachment ID.
-    pub id: Uuid,
-    /// Message ID this attachment belongs to.
-    pub message_id: Uuid,
-    /// Original filename.
-    pub filename: String,
-    /// MIME type.
-    pub mime_type: String,
-    /// File size in bytes.
-    pub size_bytes: i64,
-    /// When the attachment was created.
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl From<db::FileAttachment> for AttachmentResponse {
-    fn from(a: db::FileAttachment) -> Self {
-        Self {
-            id: a.id,
-            message_id: a.message_id,
-            filename: a.filename,
-            mime_type: a.mime_type,
-            size_bytes: a.size_bytes,
-            created_at: a.created_at,
-        }
-    }
-}
 
 // ============================================================================
 // Constants
@@ -475,7 +428,7 @@ pub async fn upload_message_with_file(
 
     // Validate message content length if provided
     if !content.is_empty() {
-        super::messages::validate_message_content(&content)
+        validate_message_content(&content)
             .map_err(|e| ChatError::Validation(e.to_string()))?;
     }
     // Content filtering on message text (if non-empty, guild channels only)
@@ -716,33 +669,6 @@ pub async fn get_attachment(
         .ok_or(ChatError::FileNotFound)?;
 
     Ok(Json(attachment.into()))
-}
-
-/// Query parameters for signed URL endpoint.
-#[derive(Debug, Deserialize)]
-pub struct SignedUrlQuery {
-    /// Optional variant: "thumbnail" (256px) or "medium" (1024px).
-    pub variant: Option<String>,
-}
-
-/// Response containing a presigned S3 download URL.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct SignedUrlResponse {
-    /// Presigned S3 URL for direct download.
-    pub url: String,
-    /// Duration in seconds from generation until the URL expires.
-    pub expires_in: i64,
-}
-
-/// Query parameters for download endpoint.
-#[derive(Debug, Deserialize)]
-pub struct DownloadQuery {
-    /// **Deprecated:** Use `GET /api/messages/attachments/<id>/url` with Authorization header
-    /// instead. When present, authenticates via this JWT token instead of the Authorization
-    /// header.
-    pub token: Option<String>,
-    /// Optional variant to download: "thumbnail" (256px) or "medium" (1024px).
-    pub variant: Option<String>,
 }
 
 /// Download a file (stream from S3).
