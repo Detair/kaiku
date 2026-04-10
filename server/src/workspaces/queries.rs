@@ -188,10 +188,11 @@ pub async fn find_channel_guild_id(
     pool: &PgPool,
     channel_id: Uuid,
 ) -> Result<Option<Option<Uuid>>, WorkspaceError> {
-    let row: Option<(Option<Uuid>,)> = sqlx::query_as("SELECT guild_id FROM channels WHERE id = $1")
-        .bind(channel_id)
-        .fetch_optional(pool)
-        .await?;
+    let row: Option<(Option<Uuid>,)> =
+        sqlx::query_as("SELECT guild_id FROM channels WHERE id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.map(|(gid,)| gid))
 }
 

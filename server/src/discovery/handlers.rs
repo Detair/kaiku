@@ -126,10 +126,9 @@ pub async fn join_discoverable(
     }
 
     // Verify guild is discoverable and not suspended
-    let guild_name =
-        queries::find_discoverable_guild_name(&state.db, guild_id)
-            .await?
-            .ok_or(DiscoveryError::NotFound)?;
+    let guild_name = queries::find_discoverable_guild_name(&state.db, guild_id)
+        .await?
+        .ok_or(DiscoveryError::NotFound)?;
 
     if queries::is_user_globally_banned(&state.db, auth.id).await? {
         return Err(DiscoveryError::Forbidden(

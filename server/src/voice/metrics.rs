@@ -58,22 +58,12 @@ pub async fn finalize_session(
 ) -> Result<(), sqlx::Error> {
     if queries::session_has_connection_metrics(pool, session_id).await? {
         queries::insert_session_with_aggregated_metrics(
-            pool,
-            session_id,
-            user_id,
-            channel_id,
-            guild_id,
-            started_at,
+            pool, session_id, user_id, channel_id, guild_id, started_at,
         )
         .await
     } else {
         queries::insert_session_without_metrics(
-            pool,
-            session_id,
-            user_id,
-            channel_id,
-            guild_id,
-            started_at,
+            pool, session_id, user_id, channel_id, guild_id, started_at,
         )
         .await
     }

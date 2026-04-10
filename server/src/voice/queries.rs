@@ -111,12 +111,10 @@ pub async fn session_has_connection_metrics(
     pool: &PgPool,
     session_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM connection_metrics WHERE session_id = $1)",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connection_metrics WHERE session_id = $1)")
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
 }
 
 /// Insert a `connection_sessions` row aggregating metrics from

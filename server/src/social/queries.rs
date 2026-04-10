@@ -131,10 +131,7 @@ pub async fn accept_friendship(
 }
 
 /// Delete a friendship by id.
-pub async fn delete_friendship(
-    pool: &PgPool,
-    friendship_id: Uuid,
-) -> Result<(), SocialError> {
+pub async fn delete_friendship(pool: &PgPool, friendship_id: Uuid) -> Result<(), SocialError> {
     sqlx::query!("DELETE FROM friendships WHERE id = $1", friendship_id)
         .execute(pool)
         .await?;
@@ -276,10 +273,7 @@ pub async fn list_pending_friend_requests(
 
 /// List users blocked by `user_id` (where the user is the requester of a
 /// `blocked` friendship row).
-pub async fn list_blocked_users(
-    pool: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<Friend>, SocialError> {
+pub async fn list_blocked_users(pool: &PgPool, user_id: Uuid) -> Result<Vec<Friend>, SocialError> {
     let blocked = sqlx::query_as::<_, Friend>(
         r#"SELECT
             f.addressee_id as user_id,

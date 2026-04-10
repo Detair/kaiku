@@ -44,11 +44,7 @@ pub async fn browse_discoverable_guilds(
     }
 
     if has_tags {
-        let lower_tags: Vec<String> = tags
-            .unwrap()
-            .iter()
-            .map(|t| t.to_lowercase())
-            .collect();
+        let lower_tags: Vec<String> = tags.unwrap().iter().map(|t| t.to_lowercase()).collect();
         builder.push(" AND g.tags && ");
         builder.push_bind(lower_tags);
     }
@@ -82,7 +78,17 @@ pub async fn browse_discoverable_guilds(
     Ok(rows
         .into_iter()
         .map(
-            |(id, name, icon_url, banner_url, description, tags, created_at, member_count, total_count)| {
+            |(
+                id,
+                name,
+                icon_url,
+                banner_url,
+                description,
+                tags,
+                created_at,
+                member_count,
+                total_count,
+            )| {
                 DiscoverableGuildRow {
                     guild: DiscoverableGuild {
                         id,
@@ -122,11 +128,7 @@ pub async fn count_discoverable_guilds(
         builder.push(")");
     }
     if has_tags {
-        let lower_tags: Vec<String> = tags
-            .unwrap()
-            .iter()
-            .map(|t| t.to_lowercase())
-            .collect();
+        let lower_tags: Vec<String> = tags.unwrap().iter().map(|t| t.to_lowercase()).collect();
         builder.push(" AND g.tags && ");
         builder.push_bind(lower_tags);
     }
@@ -149,10 +151,7 @@ pub async fn find_discoverable_guild_name(
 }
 
 /// Check whether a user has an active global ban.
-pub async fn is_user_globally_banned(
-    pool: &PgPool,
-    user_id: Uuid,
-) -> Result<bool, DiscoveryError> {
+pub async fn is_user_globally_banned(pool: &PgPool, user_id: Uuid) -> Result<bool, DiscoveryError> {
     let banned: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
     )

@@ -60,7 +60,8 @@ pub async fn send_friend_request(
     }
 
     // Check if friendship already exists (in either direction)
-    if let Some(friendship) = queries::find_friendship_between(&state.db, auth.id, target_id).await?
+    if let Some(friendship) =
+        queries::find_friendship_between(&state.db, auth.id, target_id).await?
     {
         // Check if blocked
         if friendship.status == FriendshipStatus::Blocked {

@@ -375,13 +375,8 @@ pub async fn remove_entry(
     auth_user: AuthUser,
     Path((workspace_id, entry_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, WorkspaceError> {
-    if !queries::delete_workspace_entry_for_owner(
-        &state.db,
-        workspace_id,
-        entry_id,
-        auth_user.id,
-    )
-    .await?
+    if !queries::delete_workspace_entry_for_owner(&state.db, workspace_id, entry_id, auth_user.id)
+        .await?
     {
         return Err(WorkspaceError::EntryNotFound);
     }
@@ -444,12 +439,9 @@ pub async fn reorder_entries(
     let mut tx = state.db.begin().await?;
 
     // Verify all entry IDs belong to this workspace AND cover the full set
-    let (matched_count, total_count) = queries::count_workspace_entries_for_reorder(
-        &mut tx,
-        workspace_id,
-        &request.entry_ids,
-    )
-    .await?;
+    let (matched_count, total_count) =
+        queries::count_workspace_entries_for_reorder(&mut tx, workspace_id, &request.entry_ids)
+            .await?;
 
     if matched_count != request.entry_ids.len() as i64 || total_count != matched_count {
         return Err(WorkspaceError::InvalidEntries);
@@ -457,13 +449,8 @@ pub async fn reorder_entries(
 
     // Update positions (trigger handles updated_at)
     for (position, entry_id) in request.entry_ids.iter().enumerate() {
-        queries::update_workspace_entry_position(
-            &mut tx,
-            workspace_id,
-            *entry_id,
-            position as i32,
-        )
-        .await?;
+        queries::update_workspace_entry_position(&mut tx, workspace_id, *entry_id, position as i32)
+            .await?;
     }
 
     tx.commit().await?;
@@ -521,12 +508,9 @@ pub async fn reorder_workspaces(
     let mut tx = state.db.begin().await?;
 
     // Verify all workspace IDs belong to this user AND cover the full set
-    let (matched_count, total_count) = queries::count_user_workspaces_for_reorder(
-        &mut tx,
-        auth_user.id,
-        &request.workspace_ids,
-    )
-    .await?;
+    let (matched_count, total_count) =
+        queries::count_user_workspaces_for_reorder(&mut tx, auth_user.id, &request.workspace_ids)
+            .await?;
 
     if matched_count != request.workspace_ids.len() as i64 || total_count != matched_count {
         return Err(WorkspaceError::InvalidWorkspaces);
