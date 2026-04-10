@@ -12,6 +12,7 @@ pub mod mfa_crypto;
 mod middleware;
 pub mod oidc;
 mod password;
+pub mod types;
 pub mod ua_parser;
 
 use axum::extract::DefaultBodyLimit;
