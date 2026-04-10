@@ -2,6 +2,7 @@
 //!
 //! Provides public browsing of discoverable guilds and join-via-discovery.
 
+pub mod error;
 pub mod handlers;
 pub mod types;
 
