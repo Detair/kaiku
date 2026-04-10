@@ -47,21 +47,25 @@ impl IntoResponse for GovernanceError {
             Self::ExportNotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", self.to_string()),
             Self::ExportAlreadyPending => (StatusCode::CONFLICT, "CONFLICT", self.to_string()),
             Self::ExportExpired => (StatusCode::GONE, "EXPORT_EXPIRED", self.to_string()),
-            Self::DeletionAlreadyScheduled => {
-                (StatusCode::CONFLICT, "CONFLICT", self.to_string())
-            }
+            Self::DeletionAlreadyScheduled => (StatusCode::CONFLICT, "CONFLICT", self.to_string()),
             Self::NoDeletionPending => (StatusCode::NOT_FOUND, "NOT_FOUND", self.to_string()),
             Self::PasswordInvalid => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", self.to_string()),
             Self::OwnsGuilds(_) => (StatusCode::CONFLICT, "OWNS_GUILDS", self.to_string()),
-            Self::OidcPasswordNotSupported => {
-                (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", self.to_string())
-            }
+            Self::OidcPasswordNotSupported => (
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                self.to_string(),
+            ),
             Self::StorageNotConfigured => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "STORAGE_NOT_CONFIGURED",
                 self.to_string(),
             ),
-            Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", self.to_string()),
+            Self::Validation(_) => (
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                self.to_string(),
+            ),
             Self::Database(e) => {
                 tracing::error!(error = %e, "Governance database error");
                 (

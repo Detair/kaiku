@@ -7,6 +7,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::queries;
 use crate::chat::S3Client;
 
 /// S3 keys that belong to a user and must be cleaned up before deletion.
@@ -22,32 +23,15 @@ struct UserS3Objects {
 /// Collect all S3 keys associated with a user.
 async fn collect_user_s3_keys(pool: &PgPool, user_id: Uuid) -> anyhow::Result<UserS3Objects> {
     // Avatar — avatar_url stores a full URL, extract the S3 key portion
-    let avatar_key: Option<String> =
-        sqlx::query_scalar("SELECT avatar_url FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await?
-            .flatten()
-            .and_then(|url: String| url.find("avatars/").map(|pos| url[pos..].to_string()));
+    let avatar_key = queries::get_user_avatar_url(pool, user_id)
+        .await?
+        .and_then(|url| url.find("avatars/").map(|pos| url[pos..].to_string()));
 
     // File attachments on the user's messages
-    let attachment_keys: Vec<String> = sqlx::query_scalar(
-        "SELECT fa.s3_key FROM file_attachments fa
-         JOIN messages m ON m.id = fa.message_id
-         WHERE m.user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
+    let attachment_keys = queries::list_user_attachment_s3_keys(pool, user_id).await?;
 
     // Data export archives
-    let export_keys: Vec<String> = sqlx::query_scalar(
-        "SELECT s3_key FROM data_export_jobs
-         WHERE user_id = $1 AND s3_key IS NOT NULL",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
+    let export_keys = queries::list_user_export_s3_keys(pool, user_id).await?;
 
     Ok(UserS3Objects {
         avatar_key,
@@ -83,12 +67,7 @@ async fn delete_s3_objects(s3: &S3Client, objects: &UserS3Objects, user_id: Uuid
 /// 2. Delete the user row (cascades handle DB cleanup, SET NULL anonymizes messages)
 /// 3. Clean up S3 objects
 pub async fn process_pending_deletions(pool: &PgPool, s3: &Option<S3Client>) -> anyhow::Result<()> {
-    let due_users: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, username FROM users
-         WHERE deletion_scheduled_at IS NOT NULL AND deletion_scheduled_at <= NOW()",
-    )
-    .fetch_all(pool)
-    .await?;
+    let due_users = queries::list_due_deletions(pool).await?;
 
     if due_users.is_empty() {
         return Ok(());
@@ -110,12 +89,9 @@ pub async fn process_pending_deletions(pool: &PgPool, s3: &Option<S3Client>) -> 
         //            mfa_backup_codes, password_reset_tokens, device_transfers,
         //            prekeys, user_blocks, user_reports, bot_installations, etc.
         //   SET NULL: messages.user_id, content filters, audit logs, etc.
-        let result = sqlx::query("DELETE FROM users WHERE id = $1")
-            .bind(user_id)
-            .execute(pool)
-            .await?;
+        let rows_affected = queries::delete_user(pool, *user_id).await?;
 
-        if result.rows_affected() == 0 {
+        if rows_affected == 0 {
             tracing::warn!(user_id = %user_id, "User already deleted, skipping");
             continue;
         }
