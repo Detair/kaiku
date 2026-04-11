@@ -37,6 +37,7 @@ async fn update_intents_persists() {
     assert!(intents.iter().any(|v| v == "messages"));
     assert!(intents.iter().any(|v| v == "members"));
     assert!(intents.iter().any(|v| v == "commands"));
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -73,6 +74,7 @@ async fn update_intents_reflects_in_get() {
     assert_eq!(intents.len(), 2);
     assert!(intents.iter().any(|v| v == "messages"));
     assert!(intents.iter().any(|v| v == "members"));
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -100,6 +102,7 @@ async fn invalid_intent_name_rejected() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -125,6 +128,7 @@ async fn empty_intents_allowed() {
     let json = body_to_json(resp).await;
     let intents = json["gateway_intents"].as_array().unwrap();
     assert!(intents.is_empty());
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -152,6 +156,7 @@ async fn non_owner_cannot_update_intents() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -185,6 +190,7 @@ async fn new_application_has_default_intents() {
     // New applications should have empty gateway_intents by default (from DB default)
     let intents = json["gateway_intents"].as_array().unwrap();
     assert!(intents.is_empty());
+    guard.cleanup().await;
 }
 
 // ============================================================================
