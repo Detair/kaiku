@@ -247,13 +247,13 @@ use utoipa::{Modify, OpenApi};
         crate::crypto::get_user_keys,
         crate::crypto::claim_prekey,
         // Bots
-        crate::bots::list_applications,
-        crate::bots::create_application,
-        crate::bots::get_application,
-        crate::bots::delete_application,
-        crate::bots::create_bot,
-        crate::bots::reset_bot_token,
-        crate::bots::update_gateway_intents,
+        crate::bots::handlers::list_applications,
+        crate::bots::handlers::create_application,
+        crate::bots::handlers::get_application,
+        crate::bots::handlers::delete_application,
+        crate::bots::handlers::create_bot,
+        crate::bots::handlers::reset_bot_token,
+        crate::bots::handlers::update_gateway_intents,
         // Commands
         crate::bots::commands::list_commands,
         crate::bots::commands::register_commands,
@@ -278,11 +278,11 @@ use utoipa::{Modify, OpenApi};
         crate::chat::pins::update_pin,
         crate::chat::pins::delete_pin,
         // Favorites
-        crate::favorites::list_favorites,
-        crate::favorites::reorder_channels,
-        crate::favorites::reorder_guilds,
-        crate::favorites::add_favorite,
-        crate::favorites::remove_favorite,
+        crate::favorites::handlers::list_favorites,
+        crate::favorites::handlers::reorder_channels,
+        crate::favorites::handlers::reorder_guilds,
+        crate::favorites::handlers::add_favorite,
+        crate::favorites::handlers::remove_favorite,
         // Workspaces
         crate::workspaces::handlers::create_workspace,
         crate::workspaces::handlers::list_workspaces,
@@ -297,8 +297,8 @@ use utoipa::{Modify, OpenApi};
         crate::chat::unread::get_unread_aggregate,
         crate::chat::unread::mark_all_read,
         // Preferences
-        crate::preferences::get_preferences,
-        crate::preferences::update_preferences,
+        crate::preferences::handlers::get_preferences,
+        crate::preferences::handlers::update_preferences,
         // Connectivity
         crate::connectivity::get_summary,
         crate::connectivity::get_sessions,
@@ -317,11 +317,11 @@ use utoipa::{Modify, OpenApi};
         crate::settings::get_upload_limits,
         crate::settings::get_instance_limits,
         // Setup
-        crate::setup::status,
-        crate::setup::get_config,
-        crate::setup::complete,
+        crate::setup::handlers::status,
+        crate::setup::handlers::get_config,
+        crate::setup::handlers::complete,
         // Global Search
-        crate::search::search_all,
+        crate::search::handlers::search_all,
         // Data Governance
         crate::governance::handlers::request_export,
         crate::governance::handlers::get_export_status,
@@ -510,9 +510,9 @@ use utoipa::{Modify, OpenApi};
         crate::voice::call_handlers::CallApiError,
         crate::voice::call::CallState,
         // Bots
-        crate::bots::CreateApplicationRequest,
-        crate::bots::ApplicationResponse,
-        crate::bots::BotTokenResponse,
+        crate::bots::types::CreateApplicationRequest,
+        crate::bots::types::ApplicationResponse,
+        crate::bots::types::BotTokenResponse,
         // Workspaces
         crate::workspaces::types::WorkspaceResponse,
         crate::workspaces::types::WorkspaceListItem,

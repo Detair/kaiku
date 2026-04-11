@@ -46,3 +46,63 @@ pub(super) fn escape_csv(s: &str) -> String {
         s.to_string()
     }
 }
+
+// ============================================================================
+// Redis cache helpers
+// ============================================================================
+
+use fred::prelude::*;
+use sqlx::PgPool;
+use uuid::Uuid as AdminUuid;
+
+/// Check if a user is an elevated admin (for WebSocket subscription check).
+///
+/// Checks Redis cache first; falls back to the database on a cache miss.
+/// Security: always falls back to database on cache miss to ensure fail-secure behavior.
+pub async fn is_elevated_admin(redis: &Client, db: &PgPool, user_id: AdminUuid) -> bool {
+    // Check cache first (fast path)
+    let cache_key = format!("admin:elevated:{user_id}");
+    let cached: Option<String> = redis.get(&cache_key).await.ok().flatten();
+
+    if let Some(value) = cached {
+        return value == "1";
+    }
+
+    // Cache miss - fallback to database (fail-secure)
+    let is_elevated = check_elevated_in_db(db, user_id).await;
+
+    // Cache the result (60s TTL to balance freshness and load)
+    if is_elevated {
+        cache_elevated_status(redis, user_id, true, 60).await;
+    }
+
+    is_elevated
+}
+
+/// Check elevated session status directly in the database.
+async fn check_elevated_in_db(db: &PgPool, user_id: AdminUuid) -> bool {
+    super::queries::has_active_elevated_session(db, user_id)
+        .await
+        .unwrap_or(false)
+}
+
+/// Cache elevated admin status in Redis (called after elevation).
+pub async fn cache_elevated_status(
+    redis: &Client,
+    user_id: AdminUuid,
+    is_elevated: bool,
+    ttl_secs: i64,
+) {
+    let cache_key = format!("admin:elevated:{user_id}");
+    let value = if is_elevated { "1" } else { "0" };
+
+    let _: Result<(), _> = redis
+        .set(
+            &cache_key,
+            value,
+            Some(Expiration::EX(ttl_secs)),
+            None,
+            false,
+        )
+        .await;
+}

@@ -6,7 +6,17 @@ use axum_extra::extract::CookieJar;
 
 use super::cookies;
 use super::error::{AuthError, AuthResult};
-use super::hash_token;
+
+/// Hash a token for secure storage using SHA256.
+///
+/// Used for storing refresh tokens — raw tokens are never stored.
+#[must_use]
+pub fn hash_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 /// Extract a refresh token from either the JSON body or `HttpOnly` cookie.
 pub(super) fn extract_refresh_token(
