@@ -18,19 +18,18 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
-use sqlx::{PgPool, QueryBuilder};
 use tracing::warn;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::error::AdminError;
+use super::queries::{self, AuditLogFilter};
 use super::types::{
     AdminStatsResponse, AdminStatusResponse, BulkActionFailure, BulkBanRequest, BulkBanResponse,
     BulkSuspendRequest, BulkSuspendResponse, CreateAnnouncementRequest, ElevateRequest,
     ElevateResponse, ElevatedAdmin, GlobalBanRequest, SuspendGuildRequest, SystemAdminUser,
 };
 use crate::api::AppState;
-use crate::permissions::models::AuditLogEntry;
 use crate::permissions::queries::{create_elevated_session, write_audit_log};
 use crate::ws::{broadcast_admin_event, ServerEvent};
 
@@ -218,17 +217,7 @@ pub async fn get_admin_status(
 
     // Check for active elevated session
     let elevated = if is_admin {
-        sqlx::query_as!(
-            ElevatedSessionRecord,
-            r#"SELECT expires_at
-               FROM elevated_sessions
-               WHERE user_id = $1 AND expires_at > NOW()
-               ORDER BY elevated_at DESC
-               LIMIT 1"#,
-            auth.id
-        )
-        .fetch_optional(&state.db)
-        .await?
+        queries::find_latest_elevated_session_expiry(&state.db, auth.id).await?
     } else {
         None
     };
@@ -238,11 +227,6 @@ pub async fn get_admin_status(
         is_elevated: elevated.is_some(),
         elevation_expires_at: elevated.map(|e| e.expires_at),
     }))
-}
-
-/// Elevated session record for querying (only the fields we actually use).
-struct ElevatedSessionRecord {
-    expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Get admin statistics.
@@ -260,27 +244,14 @@ pub async fn get_admin_stats(
     State(state): State<AppState>,
     Extension(_admin): Extension<SystemAdminUser>,
 ) -> Result<Json<super::types::AdminStatsResponse>, AdminError> {
-    // Get user count
-    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.db)
-        .await?;
-
-    // Get guild count
-    let guild_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM guilds")
-        .fetch_one(&state.db)
-        .await?;
-
-    // Get banned count
-    let banned_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM global_bans WHERE expires_at IS NULL OR expires_at > NOW()",
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let user_count = queries::count_users(&state.db).await?;
+    let guild_count = queries::count_guilds(&state.db).await?;
+    let banned_count = queries::count_active_bans(&state.db).await?;
 
     Ok(Json(super::types::AdminStatsResponse {
-        user_count: user_count.0,
-        guild_count: guild_count.0,
-        banned_count: banned_count.0,
+        user_count,
+        guild_count,
+        banned_count,
     }))
 }
 
@@ -311,69 +282,9 @@ pub async fn list_users(
         .as_ref()
         .map(|s| format!("%{}%", s.to_lowercase()));
 
-    // Get total count (with or without search filter)
-    let total: (i64,) = if let Some(ref pattern) = search_pattern {
-        sqlx::query_as(
-            r"SELECT COUNT(*) FROM users u
-              WHERE LOWER(u.username) LIKE $1
-                 OR LOWER(u.display_name) LIKE $1
-                 OR LOWER(COALESCE(u.email, '')) LIKE $1",
-        )
-        .bind(pattern)
-        .fetch_one(&state.db)
-        .await?
-    } else {
-        sqlx::query_as("SELECT COUNT(*) FROM users")
-            .fetch_one(&state.db)
-            .await?
-    };
-
-    // Get users with ban status (with or without search filter)
-    let users = if let Some(ref pattern) = search_pattern {
-        sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>, DateTime<Utc>, bool)>(
-            r"
-            SELECT
-                u.id,
-                u.username,
-                u.display_name,
-                u.email,
-                u.avatar_url,
-                u.created_at,
-                EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as is_banned
-            FROM users u
-            WHERE LOWER(u.username) LIKE $3
-               OR LOWER(u.display_name) LIKE $3
-               OR LOWER(COALESCE(u.email, '')) LIKE $3
-            ORDER BY u.created_at DESC
-            LIMIT $1 OFFSET $2
-            ",
-        )
-        .bind(limit)
-        .bind(offset)
-        .bind(pattern)
-        .fetch_all(&state.db)
-        .await?
-    } else {
-        sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>, DateTime<Utc>, bool)>(
-            r"
-            SELECT
-                u.id,
-                u.username,
-                u.display_name,
-                u.email,
-                u.avatar_url,
-                u.created_at,
-                EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as is_banned
-            FROM users u
-            ORDER BY u.created_at DESC
-            LIMIT $1 OFFSET $2
-            ",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await?
-    };
+    let total = queries::count_users_filtered(&state.db, search_pattern.as_deref()).await?;
+    let users =
+        queries::list_users_filtered(&state.db, limit, offset, search_pattern.as_deref()).await?;
 
     let items: Vec<UserSummary> = users
         .into_iter()
@@ -392,7 +303,7 @@ pub async fn list_users(
 
     Ok(Json(PaginatedResponse {
         items,
-        total: total.0,
+        total,
         limit,
         offset,
     }))
@@ -425,62 +336,9 @@ pub async fn list_guilds(
         .as_ref()
         .map(|s| format!("%{}%", s.to_lowercase()));
 
-    // Get total count (with or without search filter)
-    let total: (i64,) = if let Some(ref pattern) = search_pattern {
-        sqlx::query_as("SELECT COUNT(*) FROM guilds g WHERE LOWER(g.name) LIKE $1")
-            .bind(pattern)
-            .fetch_one(&state.db)
-            .await?
-    } else {
-        sqlx::query_as("SELECT COUNT(*) FROM guilds")
-            .fetch_one(&state.db)
-            .await?
-    };
-
-    // Get guilds with member count (with or without search filter)
-    let guilds = if let Some(ref pattern) = search_pattern {
-        sqlx::query_as::<_, (Uuid, String, Uuid, Option<String>, i64, DateTime<Utc>, Option<DateTime<Utc>>)>(
-            r"
-            SELECT
-                g.id,
-                g.name,
-                g.owner_id,
-                g.icon_url,
-                COALESCE((SELECT COUNT(*) FROM guild_members gm WHERE gm.guild_id = g.id), 0) as member_count,
-                g.created_at,
-                g.suspended_at
-            FROM guilds g
-            WHERE LOWER(g.name) LIKE $3
-            ORDER BY g.created_at DESC
-            LIMIT $1 OFFSET $2
-            ",
-        )
-        .bind(limit)
-        .bind(offset)
-        .bind(pattern)
-        .fetch_all(&state.db)
-        .await?
-    } else {
-        sqlx::query_as::<_, (Uuid, String, Uuid, Option<String>, i64, DateTime<Utc>, Option<DateTime<Utc>>)>(
-            r"
-            SELECT
-                g.id,
-                g.name,
-                g.owner_id,
-                g.icon_url,
-                COALESCE((SELECT COUNT(*) FROM guild_members gm WHERE gm.guild_id = g.id), 0) as member_count,
-                g.created_at,
-                g.suspended_at
-            FROM guilds g
-            ORDER BY g.created_at DESC
-            LIMIT $1 OFFSET $2
-            ",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await?
-    };
+    let total = queries::count_guilds_filtered(&state.db, search_pattern.as_deref()).await?;
+    let guilds =
+        queries::list_guilds_filtered(&state.db, limit, offset, search_pattern.as_deref()).await?;
 
     let items: Vec<GuildSummary> = guilds
         .into_iter()
@@ -499,82 +357,10 @@ pub async fn list_guilds(
 
     Ok(Json(PaginatedResponse {
         items,
-        total: total.0,
+        total,
         limit,
         offset,
     }))
-}
-
-/// Helper function to query audit log with dynamic filters.
-async fn get_audit_log_filtered(
-    pool: &PgPool,
-    limit: i64,
-    offset: i64,
-    action_filter: Option<&str>,
-    exact_action_match: bool,
-    from_date: Option<DateTime<Utc>>,
-    to_date: Option<DateTime<Utc>>,
-) -> Result<(Vec<AuditLogEntry>, (i64,)), AdminError> {
-    let action_pattern = action_filter.map(|a| {
-        if exact_action_match {
-            a.to_string()
-        } else {
-            format!("{a}%")
-        }
-    });
-
-    // Shared filter logic for both count and main queries
-    macro_rules! push_audit_filters {
-        ($builder:expr) => {{
-            let mut has_condition = false;
-            if let Some(ref pattern) = action_pattern {
-                $builder.push(" WHERE ");
-                has_condition = true;
-                if exact_action_match {
-                    $builder.push("action = ").push_bind(pattern.clone());
-                } else {
-                    $builder.push("action LIKE ").push_bind(pattern.clone());
-                }
-            }
-            if let Some(from) = from_date {
-                $builder.push(if has_condition { " AND " } else { " WHERE " });
-                has_condition = true;
-                $builder.push("created_at >= ").push_bind(from);
-            }
-            if let Some(to) = to_date {
-                $builder.push(if has_condition { " AND " } else { " WHERE " });
-                let _ = has_condition;
-                $builder.push("created_at <= ").push_bind(to);
-            }
-        }};
-    }
-
-    // Count query
-    let mut count_builder = QueryBuilder::new("SELECT COUNT(*) FROM system_audit_log");
-    push_audit_filters!(count_builder);
-    let total: (i64,) = count_builder
-        .build_query_as::<(i64,)>()
-        .fetch_one(pool)
-        .await?;
-
-    // Main query
-    let mut builder = QueryBuilder::new(
-        "SELECT id, actor_id, action, target_type, target_id, details, \
-         host(ip_address) as ip_address, created_at \
-         FROM system_audit_log",
-    );
-    push_audit_filters!(builder);
-    builder
-        .push(" ORDER BY created_at DESC LIMIT ")
-        .push_bind(limit)
-        .push(" OFFSET ")
-        .push_bind(offset);
-    let entries: Vec<AuditLogEntry> = builder
-        .build_query_as::<AuditLogEntry>()
-        .fetch_all(pool)
-        .await?;
-
-    Ok((entries, total))
 }
 
 /// Get system audit log with pagination and optional filters.
@@ -610,16 +396,13 @@ pub async fn get_audit_log(
     let action_filter = params.action_type.as_deref().or(params.action.as_deref());
 
     // Build dynamic query based on filters
-    let (entries, total) = get_audit_log_filtered(
-        &state.db,
-        limit,
-        offset,
+    let filter = AuditLogFilter {
         action_filter,
-        params.action_type.is_some(), // exact match if action_type is provided
-        params.from_date,
-        params.to_date,
-    )
-    .await?;
+        exact_action_match: params.action_type.is_some(),
+        from_date: params.from_date,
+        to_date: params.to_date,
+    };
+    let (entries, total) = queries::list_audit_log(&state.db, limit, offset, &filter).await?;
 
     // Collect unique actor IDs for username lookup (deduplicated)
     let actor_ids: Vec<Uuid> = entries
@@ -630,16 +413,11 @@ pub async fn get_audit_log(
         .collect();
 
     // Fetch usernames for actors
-    let usernames: std::collections::HashMap<Uuid, String> = if actor_ids.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        sqlx::query_as::<_, (Uuid, String)>("SELECT id, username FROM users WHERE id = ANY($1)")
-            .bind(&actor_ids)
-            .fetch_all(&state.db)
+    let usernames: std::collections::HashMap<Uuid, String> =
+        queries::lookup_usernames(&state.db, &actor_ids)
             .await?
             .into_iter()
-            .collect()
-    };
+            .collect();
 
     let items: Vec<AuditLogEntryResponse> = entries
         .into_iter()
@@ -658,7 +436,7 @@ pub async fn get_audit_log(
 
     Ok(Json(PaginatedResponse {
         items,
-        total: total.0,
+        total,
         limit,
         offset,
     }))
@@ -688,30 +466,11 @@ pub async fn elevate_session(
     // NOTE: MFA verification for admin elevation is deferred — elevation
     // currently relies on password-only re-authentication.
 
-    // Find or create a session for this user
-    // We need a valid session_id that references sessions table
-    let session = sqlx::query_as::<_, (Uuid,)>(
-        r"
-        SELECT id FROM sessions
-        WHERE user_id = $1 AND expires_at > NOW()
-        ORDER BY created_at DESC
-        LIMIT 1
-        ",
-    )
-    .bind(admin.user_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let session_id = match session {
-        Some((id,)) => id,
-        None => {
-            // No active session found - this shouldn't happen if user is authenticated
-            // but we handle it gracefully by returning an error
-            return Err(AdminError::Validation(
-                "No active session found".to_string(),
-            ));
-        }
-    };
+    // Find an existing login session id — elevated_sessions.session_id
+    // references sessions.id, so this must resolve for the user.
+    let session_id = queries::find_latest_active_session_id(&state.db, admin.user_id)
+        .await?
+        .ok_or_else(|| AdminError::Validation("No active session found".to_string()))?;
 
     // Create elevated session (15 minutes)
     let ip_address = addr.ip().to_string();
@@ -769,16 +528,13 @@ pub async fn de_elevate_session(
     let ip_address = addr.ip().to_string();
 
     // Delete all elevated sessions for this user
-    let result = sqlx::query("DELETE FROM elevated_sessions WHERE user_id = $1")
-        .bind(admin.user_id)
-        .execute(&state.db)
-        .await?;
+    let removed = queries::delete_elevated_sessions(&state.db, admin.user_id).await?;
 
     // Clear elevated status cache
     super::cache_elevated_status(&state.redis, admin.user_id, false, 1).await;
 
     // Log the de-elevation if any sessions were deleted
-    if result.rows_affected() > 0 {
+    if removed > 0 {
         write_audit_log(
             &state.db,
             admin.user_id,
@@ -786,7 +542,7 @@ pub async fn de_elevate_session(
             Some("user"),
             Some(admin.user_id),
             Some(serde_json::json!({
-                "sessions_removed": result.rows_affected(),
+                "sessions_removed": removed,
             })),
             Some(&ip_address),
         )
@@ -851,15 +607,10 @@ pub async fn ban_user(
     Json(body): Json<GlobalBanRequest>,
 ) -> Result<Json<BanResponse>, AdminError> {
     // Check user exists and get username
-    let user = sqlx::query_as::<_, (Uuid, String)>("SELECT id, username FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-    let username = match user {
-        Some((_, name)) => name,
-        None => return Err(AdminError::NotFound("User".to_string())),
-    };
+    let username = queries::find_user(&state.db, user_id)
+        .await?
+        .map(|(_, name)| name)
+        .ok_or_else(|| AdminError::NotFound("User".to_string()))?;
 
     // Cannot ban yourself
     if user_id == admin.user_id {
@@ -867,22 +618,13 @@ pub async fn ban_user(
     }
 
     // Create or update ban
-    sqlx::query(
-        r"
-        INSERT INTO global_bans (user_id, banned_by, reason, expires_at)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (user_id) DO UPDATE SET
-            banned_by = $2,
-            reason = $3,
-            expires_at = $4,
-            created_at = NOW()
-        ",
+    queries::upsert_global_ban(
+        &state.db,
+        user_id,
+        admin.user_id,
+        &body.reason,
+        body.expires_at,
     )
-    .bind(user_id)
-    .bind(admin.user_id)
-    .bind(&body.reason)
-    .bind(body.expires_at)
-    .execute(&state.db)
     .await?;
 
     // Log the action
@@ -940,18 +682,13 @@ pub async fn unban_user(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<BanResponse>, AdminError> {
     // Get username for the event
-    let username = sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.db)
+    let username = queries::get_username(&state.db, user_id)
         .await?
         .unwrap_or_else(|| "Unknown".to_string());
 
-    let result = sqlx::query("DELETE FROM global_bans WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
+    let deleted = queries::delete_global_ban(&state.db, user_id).await?;
 
-    if result.rows_affected() == 0 {
+    if deleted == 0 {
         return Err(AdminError::NotFound("Ban".to_string()));
     }
 
@@ -1009,32 +746,14 @@ pub async fn suspend_guild(
     Json(body): Json<SuspendGuildRequest>,
 ) -> Result<Json<SuspendResponse>, AdminError> {
     // Get guild name for the event
-    let guild = sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?;
+    let guild_name = queries::find_guild(&state.db, guild_id)
+        .await?
+        .map(|(_, name)| name)
+        .ok_or_else(|| AdminError::NotFound("Guild".to_string()))?;
 
-    let guild_name = match guild {
-        Some((_, name)) => name,
-        None => return Err(AdminError::NotFound("Guild".to_string())),
-    };
+    let affected = queries::suspend_guild(&state.db, guild_id, admin.user_id, &body.reason).await?;
 
-    let result = sqlx::query(
-        r"
-        UPDATE guilds SET
-            suspended_at = NOW(),
-            suspended_by = $2,
-            suspension_reason = $3
-        WHERE id = $1 AND suspended_at IS NULL
-        ",
-    )
-    .bind(guild_id)
-    .bind(admin.user_id)
-    .bind(&body.reason)
-    .execute(&state.db)
-    .await?;
-
-    if result.rows_affected() == 0 {
+    if affected == 0 {
         return Err(AdminError::Validation(
             "Guild is already suspended".to_string(),
         ));
@@ -1095,26 +814,13 @@ pub async fn unsuspend_guild(
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<SuspendResponse>, AdminError> {
     // Get guild name for the event
-    let guild_name = sqlx::query_scalar::<_, String>("SELECT name FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(&state.db)
+    let guild_name = queries::get_guild_name(&state.db, guild_id)
         .await?
         .unwrap_or_else(|| "Unknown".to_string());
 
-    let result = sqlx::query(
-        r"
-        UPDATE guilds SET
-            suspended_at = NULL,
-            suspended_by = NULL,
-            suspension_reason = NULL
-        WHERE id = $1 AND suspended_at IS NOT NULL
-        ",
-    )
-    .bind(guild_id)
-    .execute(&state.db)
-    .await?;
+    let affected = queries::unsuspend_guild(&state.db, guild_id).await?;
 
-    if result.rows_affected() == 0 {
+    if affected == 0 {
         return Err(AdminError::NotFound("Suspended guild".to_string()));
     }
 
@@ -1181,20 +887,16 @@ pub async fn create_announcement(
     let announcement_id = Uuid::now_v7();
     let starts_at = body.starts_at.unwrap_or_else(Utc::now);
 
-    sqlx::query(
-        r"
-        INSERT INTO system_announcements (id, author_id, title, content, severity, starts_at, ends_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ",
+    queries::insert_announcement(
+        &state.db,
+        announcement_id,
+        admin.user_id,
+        &body.title,
+        &body.content,
+        &body.severity,
+        starts_at,
+        body.ends_at,
     )
-    .bind(announcement_id)
-    .bind(admin.user_id)
-    .bind(&body.title)
-    .bind(&body.content)
-    .bind(&body.severity)
-    .bind(starts_at)
-    .bind(body.ends_at)
-    .execute(&state.db)
     .await?;
 
     // Log the action
@@ -1239,45 +941,15 @@ pub async fn get_user_details(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<UserDetailsResponse>, AdminError> {
     // Get basic user info
-    let user = sqlx::query!(
-        r#"
-        SELECT id, username, display_name, email, avatar_url, created_at,
-               EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = users.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as "is_banned!"
-        FROM users
-        WHERE id = $1
-        "#,
-        user_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AdminError::NotFound("User not found".to_string()))?;
+    let user = queries::get_user_details(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AdminError::NotFound("User not found".to_string()))?;
 
     // Get last login from sessions table
-    let last_login: Option<DateTime<Utc>> = sqlx::query_scalar!(
-        r#"
-        SELECT MAX(created_at) as "last_login"
-        FROM sessions
-        WHERE user_id = $1
-        "#,
-        user_id
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let last_login = queries::get_user_last_login(&state.db, user_id).await?;
 
     // Get guild memberships
-    let guild_memberships = sqlx::query!(
-        r#"
-        SELECT g.id as guild_id, g.name as guild_name, g.icon_url as guild_icon_url,
-               gm.joined_at, g.owner_id = $1 as "is_owner!"
-        FROM guild_members gm
-        JOIN guilds g ON gm.guild_id = g.id
-        WHERE gm.user_id = $1
-        ORDER BY gm.joined_at DESC
-        "#,
-        user_id
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let guild_memberships = queries::list_user_guild_memberships(&state.db, user_id).await?;
 
     let guilds: Vec<UserGuildMembership> = guild_memberships
         .into_iter()
@@ -1322,46 +994,16 @@ pub async fn get_guild_details(
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<GuildDetailsResponse>, AdminError> {
     // Get basic guild info with member count
-    let guild = sqlx::query!(
-        r#"
-        SELECT g.id, g.name, g.icon_url, g.owner_id, g.created_at, g.suspended_at,
-               (SELECT COUNT(*) FROM guild_members WHERE guild_id = g.id) as "member_count!"
-        FROM guilds g
-        WHERE g.id = $1
-        "#,
-        guild_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AdminError::NotFound("Guild not found".to_string()))?;
+    let guild = queries::get_guild_details(&state.db, guild_id)
+        .await?
+        .ok_or_else(|| AdminError::NotFound("Guild not found".to_string()))?;
 
     // Get owner info
-    let owner = sqlx::query!(
-        r#"
-        SELECT id, username, display_name, avatar_url
-        FROM users
-        WHERE id = $1
-        "#,
-        guild.owner_id
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let owner = queries::get_guild_owner(&state.db, guild.owner_id).await?;
 
     // Get top 5 members (excluding owner, most recent first)
-    let top_members_rows = sqlx::query!(
-        r#"
-        SELECT u.id as user_id, u.username, u.display_name, u.avatar_url, gm.joined_at
-        FROM guild_members gm
-        JOIN users u ON gm.user_id = u.id
-        WHERE gm.guild_id = $1 AND gm.user_id != $2
-        ORDER BY gm.joined_at DESC
-        LIMIT 5
-        "#,
-        guild_id,
-        guild.owner_id
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let top_members_rows =
+        queries::list_top_guild_members(&state.db, guild_id, guild.owner_id).await?;
 
     let top_members: Vec<GuildMemberInfo> = top_members_rows
         .into_iter()
@@ -1418,23 +1060,7 @@ pub async fn export_users_csv(
         .map(|s| format!("%{}%", s.to_lowercase()));
 
     // Query all matching users (no pagination for export)
-    // Uses a single query with optional search filter
-    let users = sqlx::query!(
-        r#"
-        SELECT u.id, u.username, u.display_name, u.email, u.avatar_url, u.created_at,
-               EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as "is_banned!"
-        FROM users u
-        WHERE $1::text IS NULL
-           OR LOWER(u.username) LIKE $1
-           OR LOWER(u.display_name) LIKE $1
-           OR LOWER(COALESCE(u.email, '')) LIKE $1
-        ORDER BY u.created_at DESC
-        LIMIT 10000
-        "#,
-        search_pattern
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let users = queries::export_users(&state.db, search_pattern.as_deref()).await?;
 
     // Build CSV content
     let mut csv = String::from("id,username,display_name,email,created_at,is_banned\n");
@@ -1487,20 +1113,7 @@ pub async fn export_guilds_csv(
         .map(|s| format!("%{}%", s.to_lowercase()));
 
     // Query all matching guilds (no pagination for export)
-    // Uses a single query with optional search filter
-    let guilds = sqlx::query!(
-        r#"
-        SELECT g.id, g.name, g.owner_id, g.icon_url, g.created_at, g.suspended_at,
-               (SELECT COUNT(*) FROM guild_members WHERE guild_id = g.id) as "member_count!"
-        FROM guilds g
-        WHERE $1::text IS NULL OR LOWER(g.name) LIKE $1
-        ORDER BY g.created_at DESC
-        LIMIT 10000
-        "#,
-        search_pattern
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let guilds = queries::export_guilds(&state.db, search_pattern.as_deref()).await?;
 
     // Build CSV content
     let mut csv =
@@ -1587,13 +1200,7 @@ pub async fn bulk_ban_users(
 
     for user_id in &body.user_ids {
         // Check if user exists
-        let user_exists =
-            sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", user_id)
-                .fetch_one(&state.db)
-                .await?
-                .unwrap_or(false);
-
-        if !user_exists {
+        if !queries::user_exists(&state.db, *user_id).await? {
             failed.push(BulkActionFailure {
                 id: *user_id,
                 reason: "User not found".to_string(),
@@ -1602,35 +1209,22 @@ pub async fn bulk_ban_users(
         }
 
         // Check if already banned
-        let is_banned = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
-            user_id
-        )
-        .fetch_one(&state.db)
-        .await?
-        .unwrap_or(false);
-
-        if is_banned {
+        if queries::is_user_banned(&state.db, *user_id).await? {
             already_banned += 1;
             continue;
         }
 
         // Ban the user
-        let ban_result = sqlx::query(
-            r"
-            INSERT INTO global_bans (user_id, banned_by, reason, expires_at)
-            VALUES ($1, $2, $3, $4)
-            ",
+        match queries::insert_global_ban(
+            &state.db,
+            *user_id,
+            admin.user_id,
+            &body.reason,
+            body.expires_at,
         )
-        .bind(user_id)
-        .bind(admin.user_id)
-        .bind(&body.reason)
-        .bind(body.expires_at)
-        .execute(&state.db)
-        .await;
-
-        match ban_result {
-            Ok(_) => {
+        .await
+        {
+            Ok(()) => {
                 banned_count += 1;
             }
             Err(e) => {
@@ -1705,34 +1299,21 @@ pub async fn bulk_suspend_guilds(
 
     for guild_id in &body.guild_ids {
         // Check if guild exists and get current status
-        let guild = sqlx::query!(
-            "SELECT id, suspended_at FROM guilds WHERE id = $1",
-            guild_id
-        )
-        .fetch_optional(&state.db)
-        .await?;
+        let status = queries::get_guild_suspension_status(&state.db, *guild_id).await?;
 
-        match guild {
+        match status {
             None => {
                 failed.push(BulkActionFailure {
                     id: *guild_id,
                     reason: "Guild not found".to_string(),
                 });
             }
-            Some(g) if g.suspended_at.is_some() => {
+            Some(Some(_)) => {
                 already_suspended += 1;
             }
-            Some(_) => {
+            Some(None) => {
                 // Suspend the guild
-                let suspend_result = sqlx::query(
-                    "UPDATE guilds SET suspended_at = NOW(), suspension_reason = $1 WHERE id = $2",
-                )
-                .bind(&body.reason)
-                .bind(guild_id)
-                .execute(&state.db)
-                .await;
-
-                match suspend_result {
+                match queries::bulk_suspend_guild(&state.db, *guild_id, &body.reason).await {
                     Ok(_) => {
                         suspended_count += 1;
                     }
@@ -2161,15 +1742,10 @@ pub async fn delete_user(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<DeleteResponse>, AdminError> {
     // Check user exists and get username
-    let user = sqlx::query_as::<_, (Uuid, String)>("SELECT id, username FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-    let username = match user {
-        Some((_, name)) => name,
-        None => return Err(AdminError::NotFound("User".to_string())),
-    };
+    let username = queries::find_user(&state.db, user_id)
+        .await?
+        .map(|(_, name)| name)
+        .ok_or_else(|| AdminError::NotFound("User".to_string()))?;
 
     // Cannot delete yourself
     if user_id == admin.user_id {
@@ -2177,12 +1753,9 @@ pub async fn delete_user(
     }
 
     // Delete user (cascades to guild_members, messages, sessions, global_bans, etc.)
-    let result = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
+    let deleted = queries::delete_user(&state.db, user_id).await?;
 
-    if result.rows_affected() == 0 {
+    if deleted == 0 {
         return Err(AdminError::NotFound("User".to_string()));
     }
 
@@ -2238,23 +1811,15 @@ pub async fn delete_guild(
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<DeleteResponse>, AdminError> {
     // Check guild exists and get name
-    let guild = sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-    let guild_name = match guild {
-        Some((_, name)) => name,
-        None => return Err(AdminError::NotFound("Guild".to_string())),
-    };
+    let guild_name = queries::find_guild(&state.db, guild_id)
+        .await?
+        .map(|(_, name)| name)
+        .ok_or_else(|| AdminError::NotFound("Guild".to_string()))?;
 
     // Delete guild (cascades to channels, messages, roles, members, invites, etc.)
-    let result = sqlx::query("DELETE FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .execute(&state.db)
-        .await?;
+    let deleted = queries::delete_guild(&state.db, guild_id).await?;
 
-    if result.rows_affected() == 0 {
+    if deleted == 0 {
         return Err(AdminError::NotFound("Guild".to_string()));
     }
 
@@ -2342,11 +1907,7 @@ pub async fn get_guild_page_limits(
     Extension(_elevated): Extension<ElevatedAdmin>,
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<GuildPageLimitsResponse>, AdminError> {
-    let row: Option<(Option<i32>, Option<i32>)> =
-        sqlx::query_as("SELECT max_pages, max_revisions FROM guilds WHERE id = $1")
-            .bind(guild_id)
-            .fetch_optional(&state.db)
-            .await?;
+    let row = queries::get_guild_page_limits(&state.db, guild_id).await?;
 
     let (max_pages, max_revisions) = row.ok_or(AdminError::NotFound("Guild not found".into()))?;
 
@@ -2403,19 +1964,14 @@ pub async fn set_guild_page_limits(
     let max_revisions_present = body.max_revisions.is_some();
     let max_revisions_value = body.max_revisions.flatten();
 
-    let row: Option<(Option<i32>, Option<i32>)> = sqlx::query_as(
-        r"UPDATE guilds
-           SET max_pages = CASE WHEN $2 THEN $3 ELSE max_pages END,
-               max_revisions = CASE WHEN $4 THEN $5 ELSE max_revisions END
-           WHERE id = $1
-           RETURNING max_pages, max_revisions",
+    let row = queries::set_guild_page_limits(
+        &state.db,
+        guild_id,
+        max_pages_present,
+        max_pages_value,
+        max_revisions_present,
+        max_revisions_value,
     )
-    .bind(guild_id)
-    .bind(max_pages_present)
-    .bind(max_pages_value)
-    .bind(max_revisions_present)
-    .bind(max_revisions_value)
-    .fetch_optional(&state.db)
     .await?;
 
     let (max_pages, max_revisions) = row.ok_or(AdminError::NotFound("Guild not found".into()))?;

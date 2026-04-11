@@ -8,15 +8,16 @@ pub mod error;
 pub mod handlers;
 pub mod middleware;
 pub mod observability;
+pub mod queries;
 pub mod types;
 
 use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
+pub use error::AdminError;
 use fred::prelude::*;
 pub use middleware::{require_elevated, require_system_admin};
 use sqlx::PgPool;
-pub use error::AdminError;
 pub use types::{ElevatedAdmin, SystemAdminUser};
 use uuid::Uuid;
 
@@ -48,16 +49,9 @@ pub async fn is_elevated_admin(redis: &Client, db: &PgPool, user_id: Uuid) -> bo
 
 /// Check elevated session status directly in the database.
 async fn check_elevated_in_db(db: &PgPool, user_id: Uuid) -> bool {
-    sqlx::query_scalar!(
-        r#"SELECT EXISTS(
-            SELECT 1 FROM elevated_sessions
-            WHERE user_id = $1 AND expires_at > NOW()
-        ) as "exists!""#,
-        user_id
-    )
-    .fetch_one(db)
-    .await
-    .unwrap_or(false)
+    queries::has_active_elevated_session(db, user_id)
+        .await
+        .unwrap_or(false)
 }
 
 /// Cache elevated admin status in Redis (called after elevation).

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n            SELECT 1 FROM global_bans\n            WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())\n        ) as \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8dcfc0548122830abb75618cf39ea24b4bbe24fde4d2ce1bcd50a80ad3e3dffe"
+}

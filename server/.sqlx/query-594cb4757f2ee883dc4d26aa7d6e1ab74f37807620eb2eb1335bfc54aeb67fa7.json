@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT g.id, g.name, g.icon_url, g.owner_id, g.created_at, g.suspended_at,\n               (SELECT COUNT(*) FROM guild_members WHERE guild_id = g.id) as \"member_count!\"\n        FROM guilds g\n        WHERE g.id = $1\n        ",
+  "query": "SELECT g.id, g.name, g.icon_url, g.owner_id, g.created_at, g.suspended_at,\n                  (SELECT COUNT(*) FROM guild_members WHERE guild_id = g.id) as \"member_count!\"\n           FROM guilds g\n           WHERE g.id = $1",
   "describe": {
     "columns": [
       {
@@ -54,5 +54,5 @@
       null
     ]
   },
-  "hash": "afa7d781212a3faad88dce030db0d9a4498b589d7ab4e4536ab5d7be2991259d"
+  "hash": "594cb4757f2ee883dc4d26aa7d6e1ab74f37807620eb2eb1335bfc54aeb67fa7"
 }

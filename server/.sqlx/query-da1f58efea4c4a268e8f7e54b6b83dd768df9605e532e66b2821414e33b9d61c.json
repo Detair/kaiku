@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, username, display_name, avatar_url\n        FROM users\n        WHERE id = $1\n        ",
+  "query": "SELECT u.id as user_id, u.username, u.display_name, u.avatar_url, gm.joined_at\n           FROM guild_members gm\n           JOIN users u ON gm.user_id = u.id\n           WHERE gm.guild_id = $1 AND gm.user_id != $2\n           ORDER BY gm.joined_at DESC\n           LIMIT 5",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "user_id",
         "type_info": "Uuid"
       },
       {
@@ -22,10 +22,16 @@
         "ordinal": 3,
         "name": "avatar_url",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "joined_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -33,8 +39,9 @@
       false,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "655ba8904a1854ffc463fa2a66c1def62a1f61b6138560bf72ff5b8a002c511b"
+  "hash": "da1f58efea4c4a268e8f7e54b6b83dd768df9605e532e66b2821414e33b9d61c"
 }

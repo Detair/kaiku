@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::AdminError;
+use super::queries;
 use super::types::SystemAdminUser;
 use crate::api::AppState;
 use crate::observability::storage;
@@ -266,82 +267,13 @@ pub async fn summary(
         guild_count,
         active_alert_count,
     ) = tokio::try_join!(
-        // Latency p95 (last 5 minutes)
-        async {
-            sqlx::query_scalar::<_, Option<f64>>(
-                "SELECT AVG(value_p95) FROM telemetry_metric_samples \
-                 WHERE metric_name = 'kaiku_http_request_duration_ms' \
-                 AND ts >= $1 AND ts <= $2",
-            )
-            .bind(five_min_ago)
-            .bind(now)
-            .fetch_optional(db)
-            .await
-            .map(|r| r.flatten())
-        },
-        // Error rate (last 5 minutes)
-        async {
-            sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
-                "SELECT \
-                     SUM(CASE WHEN metric_name = 'kaiku_http_errors_total' THEN value_count ELSE 0 END), \
-                     SUM(CASE WHEN metric_name = 'kaiku_http_requests_total' THEN value_count ELSE 0 END) \
-                 FROM telemetry_metric_samples \
-                 WHERE metric_name IN ('kaiku_http_errors_total', 'kaiku_http_requests_total') \
-                 AND ts >= $1 AND ts <= $2",
-            )
-            .bind(five_min_ago)
-            .bind(now)
-            .fetch_optional(db)
-            .await
-        },
-        // Active WebSocket connections (most recent gauge)
-        async {
-            sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT value_count FROM telemetry_metric_samples \
-                 WHERE metric_name = 'kaiku_ws_connections_active' \
-                 AND ts >= $1 \
-                 ORDER BY ts DESC LIMIT 1",
-            )
-            .bind(five_min_ago)
-            .fetch_optional(db)
-            .await
-            .map(|r| r.flatten())
-        },
-        // Active voice sessions (most recent gauge)
-        async {
-            sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT value_count FROM telemetry_metric_samples \
-                 WHERE metric_name = 'kaiku_voice_sessions_active' \
-                 AND ts >= $1 \
-                 ORDER BY ts DESC LIMIT 1",
-            )
-            .bind(five_min_ago)
-            .fetch_optional(db)
-            .await
-            .map(|r| r.flatten())
-        },
-        // User count
-        async {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
-                .fetch_one(db)
-                .await
-        },
-        // Guild count
-        async {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM guilds")
-                .fetch_one(db)
-                .await
-        },
-        // Recent error count (last 5 minutes)
-        async {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM telemetry_log_events \
-                 WHERE level = 'ERROR' AND ts >= $1",
-            )
-            .bind(five_min_ago)
-            .fetch_one(db)
-            .await
-        },
+        queries::summary_latency_p95(db, five_min_ago, now),
+        queries::summary_error_and_request_counts(db, five_min_ago, now),
+        queries::summary_active_ws_connections(db, five_min_ago),
+        queries::summary_active_voice_sessions(db, five_min_ago),
+        queries::summary_user_count(db),
+        queries::summary_guild_count(db),
+        queries::summary_recent_error_count(db, five_min_ago),
     )?;
 
     let error_rate_percent = error_metrics.and_then(|(errors, total)| {
