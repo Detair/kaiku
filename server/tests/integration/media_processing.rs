@@ -105,6 +105,7 @@ async fn test_variant_download_not_found() {
         "Variant download for non-existent attachment should return 403, 404, or 503 (no S3), got {}",
         resp.status()
     );
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -172,6 +173,7 @@ async fn test_image_upload_generates_metadata() {
         attachment["medium_url"].is_null(),
         "Should not have medium_url for 500px image"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -225,6 +227,7 @@ async fn test_non_image_upload_no_metadata() {
         attachment["thumbnail_url"].is_null(),
         "Text file should not have thumbnail_url"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -291,6 +294,7 @@ async fn test_variant_download_returns_webp() {
         !thumb_bytes.is_empty(),
         "Thumbnail data should not be empty"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -356,6 +360,7 @@ async fn test_variant_fallback_to_original() {
         "image/png",
         "Fallback should serve original PNG content type"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -422,4 +427,5 @@ async fn test_invalid_variant_returns_validation_error() {
         "Unexpected validation message: {}",
         error
     );
+    guard.cleanup().await;
 }
