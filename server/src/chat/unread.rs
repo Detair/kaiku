@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use uuid::Uuid;
 
-use super::AppState;
+use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
 use crate::ws::{broadcast_to_user, ServerEvent};

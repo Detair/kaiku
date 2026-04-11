@@ -1,19 +1,7 @@
 //! API Router and Application State
 //!
-//! Central routing configuration and shared state.
-
-pub mod bots;
-pub mod channel_pins;
-pub mod commands;
-pub mod favorites;
-pub mod files;
-pub mod global_search;
-pub mod pins;
-pub mod preferences;
-pub mod reactions;
-pub(crate) mod settings;
-pub(crate) mod setup;
-pub mod unread;
+//! Central routing configuration and shared state. Feature-specific handlers
+//! live in their own top-level modules; this file wires them together.
 
 use std::sync::Arc;
 
@@ -44,8 +32,9 @@ use crate::ratelimit::{
 };
 use crate::voice::{ScreenShareLimiter, SfuServer};
 use crate::{
-    admin, auth, chat, connectivity, crypto, discovery, governance, guild, moderation, pages,
-    social, voice, webhooks, workspaces, ws,
+    admin, auth, bots, chat, connectivity, crypto, discovery, favorites, governance, guild,
+    moderation, pages, preferences, search, settings, setup, social, voice, webhooks, workspaces,
+    ws,
 };
 
 /// Shared application state.
@@ -225,55 +214,23 @@ pub fn create_router(state: AppState) -> Router {
         )
         .nest("/api/me/connection", connectivity::router())
         .nest("/api/me/preferences", preferences::router())
-        .route("/api/me/pins", get(pins::list_pins).post(pins::create_pin))
-        .route("/api/me/pins/reorder", put(pins::reorder_pins))
+        .route(
+            "/api/me/pins",
+            get(chat::pins::list_pins).post(chat::pins::create_pin),
+        )
+        .route("/api/me/pins/reorder", put(chat::pins::reorder_pins))
         .route(
             "/api/me/pins/{id}",
-            put(pins::update_pin).delete(pins::delete_pin),
+            put(chat::pins::update_pin).delete(chat::pins::delete_pin),
         )
-        .route("/api/me/favorites", get(favorites::list_favorites))
-        .route(
-            "/api/me/favorites/reorder",
-            put(favorites::reorder_channels),
-        )
-        .route(
-            "/api/me/favorites/reorder-guilds",
-            put(favorites::reorder_guilds),
-        )
-        .route(
-            "/api/me/favorites/{channel_id}",
-            post(favorites::add_favorite).delete(favorites::remove_favorite),
-        )
+        .nest("/api/me/favorites", favorites::router())
         .nest("/api/me/workspaces", workspaces::router())
-        .route("/api/me/unread", get(unread::get_unread_aggregate))
-        .route("/api/me/read-all", post(unread::mark_all_read))
+        .route("/api/me/unread", get(chat::unread::get_unread_aggregate))
+        .route("/api/me/read-all", post(chat::unread::mark_all_read))
         .nest("/api/keys", crypto::router())
         .nest("/api/users/{user_id}/keys", crypto::user_keys_router())
-        // Bot management routes
-        .route(
-            "/api/applications",
-            get(bots::list_applications).post(bots::create_application),
-        )
-        .route(
-            "/api/applications/{id}",
-            get(bots::get_application).delete(bots::delete_application),
-        )
-        .route("/api/applications/{id}/bot", post(bots::create_bot))
-        .route(
-            "/api/applications/{id}/reset-token",
-            post(bots::reset_bot_token),
-        )
-        // Slash commands
-        .route(
-            "/api/applications/{id}/commands",
-            get(commands::list_commands)
-                .put(commands::register_commands)
-                .delete(commands::delete_all_commands),
-        )
-        .route(
-            "/api/applications/{id}/commands/{command_id}",
-            delete(commands::delete_command),
-        )
+        // Bot management routes (bots + slash commands + gateway intents)
+        .nest("/api/applications", bots::router())
         // Webhooks
         .route(
             "/api/applications/{app_id}/webhooks",
@@ -293,28 +250,23 @@ pub fn create_router(state: AppState) -> Router {
             "/api/applications/{app_id}/webhooks/{wh_id}/deliveries",
             get(webhooks::handlers::list_deliveries),
         )
-        // Gateway intents
-        .route(
-            "/api/applications/{id}/intents",
-            put(bots::update_gateway_intents),
-        )
         // Message reactions
         .route(
             "/api/channels/{channel_id}/messages/{message_id}/reactions",
-            get(reactions::get_reactions).put(reactions::add_reaction),
+            get(chat::reactions::get_reactions).put(chat::reactions::add_reaction),
         )
         .route(
             "/api/channels/{channel_id}/messages/{message_id}/reactions/{emoji}",
-            delete(reactions::remove_reaction),
+            delete(chat::reactions::remove_reaction),
         )
         // Channel pins
         .route(
             "/api/channels/{channel_id}/pins",
-            get(channel_pins::list_channel_pins),
+            get(chat::channel_pins::list_channel_pins),
         )
         .route(
             "/api/channels/{channel_id}/messages/{message_id}/pin",
-            put(channel_pins::pin_message).delete(channel_pins::unpin_message),
+            put(chat::channel_pins::pin_message).delete(chat::channel_pins::unpin_message),
         )
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Write)));
@@ -326,7 +278,7 @@ pub fn create_router(state: AppState) -> Router {
             get(guild::search::search_messages),
         )
         .route("/api/dm/search", get(chat::dm_search::search_dm_messages))
-        .route("/api/search", get(global_search::search_all))
+        .nest("/api/search", search::router())
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::Search)));
 
@@ -374,19 +326,13 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/api/config/limits", get(settings::get_instance_limits))
         // Setup routes (status and config are public, complete requires auth)
-        .route("/api/setup/status", get(setup::status))
-        .route("/api/setup/config", get(setup::get_config))
-        .route(
-            "/api/setup/complete",
-            post(setup::complete)
-                .route_layer(from_fn_with_state(state.clone(), auth::require_auth)),
-        )
+        .nest("/api/setup", setup::router(state.clone()))
         // Auth routes (pass state for middleware)
         .nest("/auth", auth::router(state.clone()))
         // Protected chat and voice routes
         .merge(protected_routes)
         // Public file redirect (presigned S3 URLs)
-        .route("/api/files/{*key}", get(files::serve))
+        .route("/api/files/{*key}", get(chat::files::serve))
         // Public message routes (download handles its own auth via query param)
         .nest("/api/messages", chat::messages_public_router())
         // WebSocket

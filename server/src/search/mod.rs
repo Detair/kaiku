@@ -7,7 +7,8 @@ use std::time::Instant;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::routing::get;
+use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -16,6 +17,11 @@ use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::chat::dm;
 use crate::{db, permissions};
+
+/// Create the global search router, mounted at `/api/search`.
+pub fn router() -> Router<AppState> {
+    Router::new().route("/", get(search_all))
+}
 
 // ============================================================================
 // Error Types

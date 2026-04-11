@@ -4,8 +4,10 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use validator::Validate;
@@ -13,6 +15,19 @@ use validator::Validate;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
+
+/// Create the setup router, mounted at `/api/setup`.
+///
+/// `status` and `config` are public; `complete` requires authentication.
+pub fn router(state: AppState) -> Router<AppState> {
+    Router::new()
+        .route("/status", get(status))
+        .route("/config", get(get_config))
+        .route(
+            "/complete",
+            post(complete).route_layer(from_fn_with_state(state, crate::auth::require_auth)),
+        )
+}
 
 // ============================================================================
 // Error Types

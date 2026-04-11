@@ -2,17 +2,22 @@
 //!
 //! Handles channels, messages, and file uploads.
 
+pub(crate) mod channel_pins;
 pub(crate) mod channels;
 pub mod dm;
 pub mod dm_search;
 pub mod error;
+pub mod files;
 pub(crate) mod media_processing;
 pub(crate) mod messages;
 pub mod overrides;
+pub mod pins;
 pub mod queries;
+pub mod reactions;
 pub mod s3;
 pub(crate) mod screenshare;
 pub mod types;
+pub mod unread;
 pub(crate) mod uploads;
 
 pub use error::ChatError;

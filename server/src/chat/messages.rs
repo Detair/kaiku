@@ -1154,7 +1154,7 @@ async fn build_thread_info(pool: &sqlx::PgPool, parent_id: Uuid) -> ThreadInfoRe
             participants
                 .iter()
                 .find(|u| u.id == *uid)
-                .and_then(|u| crate::api::files::maybe_file_url(u.avatar_url.clone()))
+                .and_then(|u| super::files::maybe_file_url(u.avatar_url.clone()))
         })
         .collect();
 
@@ -1268,7 +1268,7 @@ async fn build_batch_thread_infos(
             .map(|uid| {
                 user_map
                     .get(uid)
-                    .and_then(|u| crate::api::files::maybe_file_url(u.avatar_url.clone()))
+                    .and_then(|u| super::files::maybe_file_url(u.avatar_url.clone()))
             })
             .collect();
 

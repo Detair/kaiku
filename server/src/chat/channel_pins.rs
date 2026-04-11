@@ -11,9 +11,10 @@ use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use super::messages;
+use super::types::MessageResponse;
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::chat::types::MessageResponse;
 use crate::db;
 use crate::permissions::GuildPermissions;
 use crate::ws::{broadcast_to_channel, ServerEvent};
@@ -154,10 +155,9 @@ pub async fn list_channel_pins(
     .await?;
 
     // Build full message responses with author info, attachments, reactions
-    let message_responses =
-        crate::chat::messages::build_message_responses(&state.db, auth_user.id, messages)
-            .await
-            .map_err(|_| ChannelPinsError::Database(sqlx::Error::RowNotFound))?;
+    let message_responses = messages::build_message_responses(&state.db, auth_user.id, messages)
+        .await
+        .map_err(|_| ChannelPinsError::Database(sqlx::Error::RowNotFound))?;
 
     // Index by message ID for fast lookup
     let msg_map: std::collections::HashMap<Uuid, MessageResponse> =
@@ -260,7 +260,7 @@ pub async fn pin_message(
 
         // Broadcast system message as MessageNew
         let sys_responses =
-            crate::chat::messages::build_message_responses(&state.db, auth_user.id, vec![sys_msg])
+            messages::build_message_responses(&state.db, auth_user.id, vec![sys_msg])
                 .await
                 .unwrap_or_default();
         if let Some(sys_response) = sys_responses.into_iter().next() {

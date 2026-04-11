@@ -117,7 +117,7 @@ impl From<db::User> for AuthorProfile {
             id: user.id,
             username: user.username,
             display_name: user.display_name,
-            avatar_url: crate::api::files::maybe_file_url(user.avatar_url),
+            avatar_url: super::files::maybe_file_url(user.avatar_url),
             status: format!("{:?}", user.status).to_lowercase(),
         }
     }

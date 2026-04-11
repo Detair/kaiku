@@ -39,7 +39,7 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
         username: auth_user.username,
         display_name: auth_user.display_name,
         email: auth_user.email,
-        avatar_url: crate::api::files::maybe_file_url(auth_user.avatar_url),
+        avatar_url: crate::chat::files::maybe_file_url(auth_user.avatar_url),
         status: "online".to_string(),
         mfa_enabled: auth_user.mfa_enabled,
         deletion_scheduled_at: auth_user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
@@ -155,7 +155,7 @@ pub async fn upload_avatar(
         .map_err(|e| AuthError::Internal(format!("S3 upload failed: {e}")))?;
 
     // Store redirect URL — /api/files/ endpoint generates presigned URLs on-the-fly
-    let url = crate::api::files::file_url(&key);
+    let url = crate::chat::files::file_url(&key);
 
     // Update user in DB
     let user = update_user_avatar(&state.db, auth_user.id, Some(&url))
@@ -175,7 +175,7 @@ pub async fn upload_avatar(
         username: user.username,
         display_name: user.display_name,
         email: user.email,
-        avatar_url: crate::api::files::maybe_file_url(user.avatar_url),
+        avatar_url: crate::chat::files::maybe_file_url(user.avatar_url),
         status: status_str.to_string(),
         mfa_enabled: user.mfa_secret.is_some(),
         deletion_scheduled_at: user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),

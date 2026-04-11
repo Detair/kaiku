@@ -1,13 +1,16 @@
 //! Bot Management API
 //!
-//! Handlers for creating and managing bot applications.
+//! Handlers for creating and managing bot applications and their slash commands.
+
+pub mod commands;
 
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHasher, SaltString};
 use argon2::Argon2;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
+use axum::routing::{delete, get, post, put};
+use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -15,7 +18,30 @@ use thiserror::Error;
 use tracing::instrument;
 use uuid::Uuid;
 
+use crate::api::AppState;
 use crate::auth::AuthUser;
+
+/// Create the bots router, mounted at `/api/applications`.
+///
+/// Combines both bot application handlers and slash command handlers.
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_applications).post(create_application))
+        .route("/{id}", get(get_application).delete(delete_application))
+        .route("/{id}/bot", post(create_bot))
+        .route("/{id}/reset-token", post(reset_bot_token))
+        .route("/{id}/intents", put(update_gateway_intents))
+        .route(
+            "/{id}/commands",
+            get(commands::list_commands)
+                .put(commands::register_commands)
+                .delete(commands::delete_all_commands),
+        )
+        .route(
+            "/{id}/commands/{command_id}",
+            delete(commands::delete_command),
+        )
+}
 
 /// Database row for bot application queries (used with `sqlx::query_as`).
 #[derive(sqlx::FromRow)]

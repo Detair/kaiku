@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
-use super::AppState;
+use crate::api::AppState;
 
 /// Convert an S3 key to an API file URL.
 pub fn file_url(s3_key: &str) -> String {

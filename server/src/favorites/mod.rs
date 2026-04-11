@@ -5,13 +5,23 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
+use axum::routing::{get, post, put};
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::AuthUser;
+
+/// Create the favorites router, mounted at `/api/me/favorites`.
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_favorites))
+        .route("/reorder", put(reorder_channels))
+        .route("/reorder-guilds", put(reorder_guilds))
+        .route("/{channel_id}", post(add_favorite).delete(remove_favorite))
+}
 
 // ============================================================================
 // Types

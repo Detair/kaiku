@@ -636,7 +636,7 @@ pub async fn upload_guild_banner(
         .map_err(|e| GuildError::Internal(format!("S3 upload failed: {e}")))?;
 
     // Store redirect URL — /api/files/ endpoint generates presigned URLs on-the-fly
-    let url = crate::api::files::file_url(&key);
+    let url = crate::chat::files::file_url(&key);
 
     // Update guild
     let updated_guild = core_q::update_guild_banner(&state.db, guild_id, &url).await?;
