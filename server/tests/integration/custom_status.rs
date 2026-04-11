@@ -222,6 +222,7 @@ async fn test_custom_status_set_in_database() {
     assert_eq!(deserialized.text, "Testing custom status");
     assert_eq!(deserialized.emoji, Some("\u{1F9EA}".to_string()));
     assert!(deserialized.expires_at.is_none());
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -273,8 +274,7 @@ async fn test_custom_status_clear_in_database() {
         row.0.is_none(),
         "custom_status should be NULL after clearing"
     );
-
-    // guard drops here, runs cleanup even on panic
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -320,8 +320,7 @@ async fn test_custom_status_with_expiry_persists() {
         diff <= 1,
         "Expiry time should be within 1 second of set value, diff was {diff}s"
     );
-
-    // guard drops here, runs cleanup even on panic
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -389,8 +388,7 @@ async fn test_expiry_sweep_finds_expired_status() {
         row.0.is_none(),
         "custom_status should be NULL after sweep clears expired status"
     );
-
-    // guard drops here, runs cleanup even on panic
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -446,8 +444,7 @@ async fn test_expiry_sweep_ignores_non_expired_status() {
         row.0.is_some(),
         "Non-expired custom_status should still be present"
     );
-
-    // guard drops here, runs cleanup even on panic
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -490,6 +487,5 @@ async fn test_expiry_sweep_ignores_status_without_expiry() {
         !expired_ids.contains(&user_id),
         "Status without expiry should NOT be found by sweep query"
     );
-
-    // guard drops here, runs cleanup even on panic
+    guard.cleanup().await;
 }

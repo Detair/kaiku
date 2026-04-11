@@ -98,6 +98,7 @@ async fn test_config_returns_values_when_setup_incomplete() {
         json["privacy_url"].is_null() || json["privacy_url"].is_string(),
         "Expected privacy_url to be null or string"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -118,6 +119,7 @@ async fn test_config_returns_403_when_setup_complete() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "SETUP_ALREADY_COMPLETE");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -173,6 +175,7 @@ async fn test_complete_requires_admin() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "FORBIDDEN");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -218,6 +221,7 @@ async fn test_complete_succeeds_for_admin() {
         Some(true),
         "setup_complete should be true after completion"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -251,6 +255,7 @@ async fn test_complete_rejects_invalid_body() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -286,4 +291,5 @@ async fn test_complete_already_done() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "SETUP_ALREADY_COMPLETE");
+    guard.cleanup().await;
 }

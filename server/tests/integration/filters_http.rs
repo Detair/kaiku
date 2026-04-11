@@ -165,6 +165,7 @@ async fn test_list_filter_configs_empty() {
     assert_eq!(resp.status(), 200);
     let json = body_to_json(resp).await;
     assert!(json.as_array().unwrap().is_empty());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -191,6 +192,7 @@ async fn test_enable_and_list_filter_category() {
     assert_eq!(configs[0]["category"], "spam");
     assert_eq!(configs[0]["enabled"], true);
     assert_eq!(configs[0]["action"], "block");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -218,6 +220,7 @@ async fn test_disable_filter_category() {
     assert_eq!(resp.status(), 200);
     let json = body_to_json(resp).await;
     assert_eq!(json[0]["enabled"], false);
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -237,6 +240,7 @@ async fn test_create_custom_keyword_pattern() {
     assert_eq!(pattern["pattern"], "badword");
     assert_eq!(pattern["is_regex"], false);
     assert_eq!(pattern["enabled"], true);
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -250,6 +254,7 @@ async fn test_create_custom_regex_pattern() {
 
     let pattern = create_pattern(&app, guild_id, &token, r"(?i)bad\s+word", true).await;
     assert_eq!(pattern["is_regex"], true);
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -276,6 +281,7 @@ async fn test_invalid_regex_rejected() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Invalid regex should be rejected");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -300,6 +306,7 @@ async fn test_delete_custom_pattern() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 204, "Expected 204 No Content for delete");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -323,6 +330,7 @@ async fn test_message_blocked_by_custom_keyword() {
         send_message_raw(&app, channel_id, &token, "this is forbidden content").await;
     assert_eq!(status, 403, "Blocked message should return 403");
     assert_eq!(json["error"], "CONTENT_FILTERED");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -340,6 +348,7 @@ async fn test_clean_message_allowed() {
     // Send clean message
     let (status, _) = send_message_raw(&app, channel_id, &token, "this is perfectly fine").await;
     assert_eq!(status, 201, "Clean message should be allowed");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -366,6 +375,7 @@ async fn test_edit_blocked_by_filter() {
         "Edited message with blocked word should return 403"
     );
     assert_eq!(json["error"], "CONTENT_FILTERED");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -390,6 +400,7 @@ async fn test_encrypted_message_not_filtered() {
         status, 201,
         "Encrypted message should bypass content filter"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -409,6 +420,7 @@ async fn test_dm_message_not_filtered() {
     // DMs have no guild_id, so filters don't apply
     let (status, _) = send_message_raw(&app, dm_channel, &token_a, "anything goes in DMs").await;
     assert_eq!(status, 201, "DM messages should not be filtered");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -450,6 +462,7 @@ async fn test_log_action_allows_message_but_creates_log() {
         json["total"].as_i64().unwrap() > 0,
         "Moderation log should have entries from log action"
     );
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -484,6 +497,7 @@ async fn test_moderation_log_pagination() {
     let json = body_to_json(resp).await;
     assert_eq!(json["items"].as_array().unwrap().len(), 2);
     assert!(json["total"].as_i64().unwrap() >= 3);
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -514,6 +528,7 @@ async fn test_non_admin_cannot_modify_filters() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 403, "Non-admin should get 403");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -565,6 +580,7 @@ async fn test_filter_dry_run() {
     let json = body_to_json(resp).await;
     assert_eq!(json["blocked"], false);
     assert!(json["matches"].as_array().unwrap().is_empty());
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -594,4 +610,5 @@ async fn test_cache_invalidation_on_config_change() {
         "After adding filter, message should be blocked"
     );
     assert_eq!(json["error"], "CONTENT_FILTERED");
+    guard.cleanup().await;
 }

@@ -41,6 +41,7 @@ async fn test_create_workspace() {
     assert_eq!(json["name"], "Gaming Setup");
     assert_eq!(json["icon"], "🎮");
     assert!(json["id"].is_string());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -63,6 +64,7 @@ async fn test_create_workspace_name_too_long() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Should reject name > 100 chars");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -92,6 +94,7 @@ async fn test_create_workspace_icon_too_long() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -131,6 +134,7 @@ async fn test_create_workspace_unicode_name_length() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "101 Unicode chars should be rejected");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -152,6 +156,7 @@ async fn test_create_workspace_empty_name() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Should reject empty/whitespace name");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -189,6 +194,7 @@ async fn test_create_workspace_limit_exceeded() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -226,6 +232,7 @@ async fn test_list_workspaces() {
     let arr = json.as_array().expect("Should be an array");
     assert_eq!(arr.len(), 3, "Should have 3 workspaces");
     assert!(arr[0]["entry_count"].is_number());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -248,6 +255,7 @@ async fn test_list_workspaces_empty() {
     let json = body_to_json(resp).await;
     let arr = json.as_array().expect("Should be an array");
     assert!(arr.is_empty(), "Should be empty");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -302,6 +310,7 @@ async fn test_get_workspace_with_entries() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["channel_name"], "general");
     assert!(entries[0]["guild_name"].is_string());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -321,6 +330,7 @@ async fn test_get_workspace_not_found() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404);
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -355,6 +365,7 @@ async fn test_get_workspace_not_owner() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Other user should get 404");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -394,6 +405,7 @@ async fn test_update_workspace() {
     let json = body_to_json(resp).await;
     assert_eq!(json["name"], "New Name");
     assert_eq!(json["icon"], "🎯");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -459,6 +471,7 @@ async fn test_update_workspace_clear_icon() {
     let json = body_to_json(resp).await;
     assert_eq!(json["name"], "Renamed");
     assert_eq!(json["icon"], "🔧", "Icon should be unchanged when omitted");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -495,6 +508,7 @@ async fn test_update_workspace_icon_too_long() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -533,6 +547,7 @@ async fn test_delete_workspace() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Should be gone");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -580,6 +595,7 @@ async fn test_add_entry() {
     let json = body_to_json(resp).await;
     assert_eq!(json["channel_name"], "raids");
     assert!(json["guild_name"].is_string());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -628,6 +644,7 @@ async fn test_add_entry_duplicate() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 409, "Should reject duplicate entry");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -671,6 +688,7 @@ async fn test_add_entry_no_guild_membership() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Should reject non-member");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -729,6 +747,7 @@ async fn test_add_entry_limit_exceeded() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -790,6 +809,7 @@ async fn test_remove_entry() {
     let json = body_to_json(resp).await;
     let entries = json["entries"].as_array().unwrap();
     assert!(entries.is_empty(), "Should have no entries after removal");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -865,6 +885,7 @@ async fn test_reorder_entries() {
     let entries = json["entries"].as_array().unwrap();
     assert_eq!(entries[0]["channel_name"], "ch-two");
     assert_eq!(entries[1]["channel_name"], "ch-one");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -914,6 +935,7 @@ async fn test_reorder_workspaces() {
     assert_eq!(arr[0]["name"], "Third");
     assert_eq!(arr[1]["name"], "Second");
     assert_eq!(arr[2]["name"], "First");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -945,6 +967,7 @@ async fn test_reorder_entries_rejects_oversized_payload() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -973,4 +996,5 @@ async fn test_reorder_workspaces_rejects_oversized_payload() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
+    guard.cleanup().await;
 }

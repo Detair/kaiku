@@ -99,6 +99,7 @@ async fn test_summary_empty() {
     assert_eq!(json["total_sessions"], 0);
     assert_eq!(json["total_duration_secs"], 0);
     assert!(json["daily_stats"].as_array().unwrap().is_empty());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -144,6 +145,7 @@ async fn test_summary_with_data() {
     assert!(json["total_duration_secs"].as_i64().unwrap() > 0);
     assert!(json["avg_latency"].is_number());
     assert!(!json["daily_stats"].as_array().unwrap().is_empty());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -182,6 +184,7 @@ async fn test_sessions_empty() {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 0);
     assert!(json["sessions"].as_array().unwrap().is_empty());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -219,6 +222,7 @@ async fn test_sessions_with_data() {
     assert_eq!(sessions[0]["id"], session_id.to_string());
     assert_eq!(sessions[0]["channel_name"], "voice-sess");
     assert!(sessions[0]["guild_name"].is_string());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -262,6 +266,7 @@ async fn test_sessions_pagination() {
         1,
         "Should return exactly 1 session"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -322,6 +327,7 @@ async fn test_session_detail() {
     assert!(metrics[0]["packet_loss"].is_number());
     assert!(metrics[0]["jitter_ms"].is_number());
     assert!(metrics[0]["quality"].is_number());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -342,6 +348,7 @@ async fn test_session_detail_not_found() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Non-existent session should return 404");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -386,4 +393,5 @@ async fn test_session_rls_isolation() {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 0, "User B should not see User A's sessions");
     assert!(json["sessions"].as_array().unwrap().is_empty());
+    guard.cleanup().await;
 }

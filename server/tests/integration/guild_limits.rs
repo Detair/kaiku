@@ -70,6 +70,7 @@ async fn test_guild_creation_limit() {
         let uuid = uuid::Uuid::parse_str(gid).unwrap();
         delete_guild(&app.pool, uuid).await;
     }
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -122,6 +123,7 @@ async fn test_member_limit_on_invite_join() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -186,6 +188,7 @@ async fn test_channel_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -255,6 +258,7 @@ async fn test_role_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -324,6 +328,7 @@ async fn test_bot_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -371,6 +376,7 @@ async fn test_emoji_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -420,6 +426,7 @@ async fn test_member_limit_on_discovery_join() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -466,6 +473,7 @@ async fn test_globally_banned_user_cannot_join_via_discovery() {
     assert_eq!(banned_resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(banned_resp).await;
     assert_eq!(body["error"], "FORBIDDEN");
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -505,6 +513,7 @@ async fn test_usage_endpoint() {
     assert_eq!(body["channels"]["current"], 2);
     assert!(body["members"]["limit"].as_i64().unwrap() > 0);
     assert!(body["channels"]["limit"].as_i64().unwrap() > 0);
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -530,6 +539,7 @@ async fn test_usage_requires_membership() {
         )
         .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    guard.cleanup().await;
 }
 
 // ============================================================================

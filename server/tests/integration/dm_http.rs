@@ -84,6 +84,7 @@ async fn test_create_and_get_dm() {
     let fetched = body_to_json(resp).await;
     assert_eq!(fetched["id"].as_str().unwrap(), dm_id);
     assert_eq!(fetched["channel_type"], "dm");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -114,6 +115,7 @@ async fn test_create_dm_returns_existing() {
         dm_id1, dm_id2,
         "Creating DM twice with same participants should return same channel"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -151,6 +153,7 @@ async fn test_list_dms() {
     let dms_b = list_dms(&app, &token_b).await;
     let arr_b = dms_b.as_array().expect("DM list should be an array");
     assert_eq!(arr_b.len(), 1, "User B should see 1 DM");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -184,6 +187,7 @@ async fn test_dm_non_participant_forbidden() {
         403,
         "Non-participant should get 403 when accessing DM"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -222,4 +226,5 @@ async fn test_leave_dm() {
         "After leaving, GET DM should return 403 or 404, got {}",
         resp.status()
     );
+    guard.cleanup().await;
 }

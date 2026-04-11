@@ -55,6 +55,7 @@ async fn test_request_data_export_no_s3() {
         503,
         "Should return 503 when S3 is not configured"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -77,6 +78,7 @@ async fn test_get_export_status_none() {
         404,
         "Should return 404 when no export job exists"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -118,6 +120,7 @@ async fn test_request_export_recovers_stale_pending_job() {
             .await
             .unwrap();
     assert_eq!(status.as_deref(), Some("failed"));
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -152,6 +155,7 @@ async fn test_request_deletion_requires_confirm() {
         400,
         "Should reject wrong confirmation string"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -177,6 +181,7 @@ async fn test_request_deletion_requires_password() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Should require password for local auth");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -202,6 +207,7 @@ async fn test_request_deletion_wrong_password() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 401, "Should reject wrong password");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -237,6 +243,7 @@ async fn test_request_deletion_success() {
         json["message"].as_str().unwrap().contains("scheduled"),
         "Response should contain scheduling message"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -281,6 +288,7 @@ async fn test_deletion_blocked_by_guild_ownership() {
         json["message"].as_str().unwrap().contains("guilds"),
         "Message should mention guilds"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -325,6 +333,7 @@ async fn test_cancel_deletion() {
         json["message"].as_str().unwrap().contains("cancelled"),
         "Response should confirm cancellation"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -347,6 +356,7 @@ async fn test_cancel_deletion_when_not_pending() {
         404,
         "Should return 404 when no deletion is pending"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -388,6 +398,7 @@ async fn test_duplicate_deletion_request() {
         409,
         "Should reject duplicate deletion request"
     );
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -434,4 +445,5 @@ async fn test_profile_shows_deletion_scheduled() {
         json["deletion_scheduled_at"].is_string(),
         "Profile should include deletion_scheduled_at after deletion request"
     );
+    guard.cleanup().await;
 }

@@ -85,6 +85,7 @@ async fn test_create_message_success() {
         msg["created_at"].is_string(),
         "Response should have created_at"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -135,6 +136,7 @@ async fn test_create_message_validation_errors() {
         400,
         "Encrypted message without nonce should return 400"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -191,6 +193,7 @@ async fn test_list_messages_pagination() {
             "Page 2 should not contain items from page 1"
         );
     }
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -244,6 +247,7 @@ async fn test_edit_message_owner_only() {
         edited["edited_at"].is_string(),
         "edited_at should be set after edit"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -289,6 +293,7 @@ async fn test_delete_message_owner_only() {
     let items = msgs["items"].as_array().unwrap();
     let found = items.iter().any(|m| m["id"].as_str() == Some(msg_id));
     assert!(!found, "Deleted message should not appear in listing");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -320,4 +325,5 @@ async fn test_create_message_nonexistent_channel() {
         404,
         "Posting to nonexistent channel should return 404"
     );
+    guard.cleanup().await;
 }

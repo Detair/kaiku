@@ -119,6 +119,7 @@ async fn test_pin_message_success() {
         pins_arr[0]["pinned_at"].is_string(),
         "Should include pinned_at"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -147,6 +148,7 @@ async fn test_unpin_message_success() {
     let pins = list_pins(&app, channel_id, &token).await;
     let pins_arr = pins.as_array().expect("pins should be an array");
     assert!(pins_arr.is_empty(), "Pins list should be empty after unpin");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -178,6 +180,7 @@ async fn test_pin_idempotent() {
         1,
         "Should have exactly one pin despite pinning twice"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -214,6 +217,7 @@ async fn test_pin_limit_50() {
         "PIN_LIMIT_REACHED",
         "Error code should be PIN_LIMIT_REACHED"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -252,6 +256,7 @@ async fn test_pin_forbidden_without_permission() {
         200,
         "Owner should succeed regardless of @everyone role permissions"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -277,6 +282,7 @@ async fn test_pin_message_not_in_channel() {
         404,
         "Pinning a message in the wrong channel should return 404"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -301,6 +307,7 @@ async fn test_pin_deleted_message() {
         404,
         "Pinning a deleted message should return 404"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -339,6 +346,7 @@ async fn test_system_message_on_pin() {
         content.contains("pinned a message"),
         "System message should contain 'pinned a message', got: {content}"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -381,6 +389,7 @@ async fn test_pinned_field_in_message_list() {
             assert!(!pinned, "Non-pinned message should have pinned=false");
         }
     }
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -421,4 +430,5 @@ async fn test_cascade_on_message_delete() {
         pins_arr.is_empty(),
         "Pins list should be empty after message deletion"
     );
+    guard.cleanup().await;
 }

@@ -48,6 +48,7 @@ async fn create_webhook_returns_signing_secret() {
     assert_eq!(json["signing_secret"].as_str().unwrap().len(), 64);
     assert_eq!(json["url"], "https://example.com/webhook");
     assert_eq!(json["active"], true);
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -80,6 +81,7 @@ async fn list_webhooks_does_not_return_secret() {
     let list = json.as_array().unwrap();
     assert_eq!(list.len(), 1);
     assert!(list[0].get("signing_secret").is_none());
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -113,6 +115,7 @@ async fn get_webhook_returns_details() {
     let json = body_to_json(resp).await;
     assert_eq!(json["url"], "https://example.com/wh");
     assert_eq!(json["active"], true);
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -153,6 +156,7 @@ async fn update_webhook_url_and_events() {
     let json = body_to_json(resp).await;
     assert_eq!(json["url"], "https://example.com/new-url");
     assert_eq!(json["active"], false);
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -182,6 +186,7 @@ async fn delete_webhook_succeeds() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -215,6 +220,7 @@ async fn non_owner_cannot_manage_webhooks() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -246,6 +252,7 @@ async fn invalid_url_rejected() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -273,6 +280,7 @@ async fn empty_events_rejected() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    guard.cleanup().await;
 }
 
 #[tokio::test]
@@ -312,6 +320,7 @@ async fn max_5_webhooks_enforced() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
+    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -348,4 +357,5 @@ async fn delivery_log_initially_empty() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json.as_array().unwrap().len(), 0);
+    guard.cleanup().await;
 }
