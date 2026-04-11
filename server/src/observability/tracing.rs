@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn instrument_skip_list_contract_is_present() {
-        let auth = include_str!("../auth/handlers.rs");
+        let auth = include_str!("../auth/login.rs");
         assert_contains(auth, "#[tracing::instrument(skip(state, body)");
 
         let chat = include_str!("../chat/messages.rs");
