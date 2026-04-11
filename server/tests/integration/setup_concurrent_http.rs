@@ -126,6 +126,7 @@ async fn test_concurrent_http_setup_completion() {
         Some(true),
         "setup_complete should be true after concurrent completion"
     );
+    guard.cleanup().await;
 }
 
 /// Test that concurrent completion with 5 admins still results in exactly one success.
@@ -200,4 +201,5 @@ async fn test_concurrent_http_setup_five_admins() {
         num_admins - 1,
         "All other admins should get 403"
     );
+    guard.cleanup().await;
 }
