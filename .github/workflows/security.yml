@@ -141,3 +141,48 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"
+
+  # ===========================================================================
+  # OSV Scanner — independent advisory source (OSV database)
+  # ===========================================================================
+  osv-scan:
+    name: OSV Scanner
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # for SARIF upload to Code Scanning
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run osv-scanner
+        # Exit code is the gate. Do NOT set continue-on-error.
+        # SARIF upload below uses if: always() to publish results
+        # to Code Scanning even on scanner failure.
+        #
+        # Pinned to v2.3.5 specifically because:
+        # 1. Upstream has no `v2` floating tag — only patch tags exist.
+        # 2. Upstream warns: "the scanner action behavior might change in
+        #    a minor patch update." Pin precisely.
+        #
+        # Before merging this PR, check
+        # https://github.com/google/osv-scanner-action/releases for any
+        # newer patch tag and update if appropriate.
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.5
+        with:
+          # --severity=HIGH gates only on HIGH+ findings, matching the
+          # spec's recommended threshold. MEDIUM/LOW still appear in the
+          # SARIF upload (and the Security tab) but don't fail the job.
+          scan-args: |-
+            --recursive
+            --skip-git
+            --severity=HIGH
+            --format=sarif
+            --output=osv-results.sarif
+            ./
+
+      - name: Upload SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv-results.sarif
+          category: osv-scanner
