@@ -53,6 +53,7 @@ async fn test_upload_returns_503_without_s3() {
         503,
         "Upload without S3 should return 503 Service Unavailable"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -103,6 +104,7 @@ async fn test_get_attachment_not_found() {
     );
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "FORBIDDEN");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -178,4 +180,5 @@ async fn test_get_attachment_anti_enumeration_parity() {
     );
     let missing_body = body_to_json(missing_resp).await;
     assert_eq!(missing_body["error"], "FORBIDDEN");
+    guard.cleanup().await;
 }
