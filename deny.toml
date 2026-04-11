@@ -14,6 +14,16 @@ unmaintained = "workspace"
 ignore = [
     # rsa crate Marvin Attack - no safe upgrade available, used by openidconnect
     "RUSTSEC-2023-0071",
+    # rand 0.8.5 unsoundness with custom `log` logger - not exploitable in Kaiku
+    # because we use `tracing`/`tracing-subscriber`, not the `log` facade.
+    # The exploitable configuration requires a `log::Log` implementation that
+    # calls `rand::thread_rng()` during logging, which does not exist in this
+    # codebase. Transitive deps (fred, jsonwebtoken, openidconnect, webrtc,
+    # sqlx-postgres, vodozemac, etc.) pin rand 0.8, so the crate will stay in
+    # the tree until upstreams migrate to 0.9. Bumping our direct deps to 0.9
+    # would not remove the transitive 0.8.5 and would require breaking API
+    # changes (thread_rng → rng, gen_range → random_range).
+    "RUSTSEC-2026-0097",
 ]
 
 # =============================================================================
