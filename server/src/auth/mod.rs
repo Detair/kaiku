@@ -6,13 +6,18 @@ mod backup_codes;
 pub(crate) mod cookies;
 pub(crate) mod error;
 pub mod geoip;
-pub(crate) mod handlers;
+mod helpers;
 pub mod jwt;
+pub(crate) mod login;
+pub(crate) mod mfa;
 pub mod mfa_crypto;
 mod middleware;
 pub mod oidc;
 mod password;
+pub(crate) mod profile;
 mod queries;
+pub(crate) mod register;
+pub(crate) mod sessions;
 pub mod types;
 pub mod ua_parser;
 
@@ -68,7 +73,7 @@ pub fn hash_token(token: &str) -> String {
 pub fn router(state: AppState) -> Router<AppState> {
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
-        .route("/login", post(handlers::login))
+        .route("/login", post(login::login))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -83,7 +88,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // Register route with rate limiting
     let register_route = Router::new()
-        .route("/register", post(handlers::register))
+        .route("/register", post(register::register))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -94,7 +99,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // Refresh route with rate limiting
     let refresh_route = Router::new()
-        .route("/refresh", post(handlers::refresh_token))
+        .route("/refresh", post(login::refresh_token))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -105,7 +110,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // OIDC routes - authorize gets rate limiting to prevent abuse
     let oidc_authorize_route = Router::new()
-        .route("/oidc/authorize/{provider}", get(handlers::oidc_authorize))
+        .route("/oidc/authorize/{provider}", get(login::oidc_authorize))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -116,7 +121,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // OIDC callback with rate limiting (same as authorize)
     let oidc_callback_route = Router::new()
-        .route("/oidc/callback", get(handlers::oidc_callback))
+        .route("/oidc/callback", get(login::oidc_callback))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -126,8 +131,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )));
 
     // OIDC providers list (no rate limiting needed)
-    let oidc_providers_route =
-        Router::new().route("/oidc/providers", get(handlers::oidc_providers));
+    let oidc_providers_route = Router::new().route("/oidc/providers", get(login::oidc_providers));
 
     let oidc_routes = oidc_authorize_route
         .merge(oidc_callback_route)
@@ -135,7 +139,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // Password reset routes with rate limiting
     let forgot_password_route = Router::new()
-        .route("/forgot-password", post(handlers::forgot_password))
+        .route("/forgot-password", post(login::forgot_password))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -145,7 +149,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )));
 
     let reset_password_route = Router::new()
-        .route("/reset-password", post(handlers::reset_password))
+        .route("/reset-password", post(login::reset_password))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -157,7 +161,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     // QR login redeem route with rate limiting (public — mobile isn't authenticated yet).
     // Uses AuthLogin category: like /login, this exchanges a credential for a full session.
     let qr_redeem_route = Router::new()
-        .route("/qr/redeem", post(handlers::qr_redeem))
+        .route("/qr/redeem", post(mfa::qr_redeem))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -177,32 +181,25 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // Protected routes (auth required)
     let protected_routes = Router::new()
-        .route("/logout", post(handlers::logout))
+        .route("/logout", post(login::logout))
         .route(
             "/sessions",
-            get(handlers::list_sessions).delete(handlers::revoke_all_other_sessions),
+            get(sessions::list_sessions).delete(sessions::revoke_all_other_sessions),
         )
-        .route("/sessions/{id}", delete(handlers::revoke_session))
-        .route("/me", get(handlers::get_profile))
-        .route("/me", post(handlers::update_profile))
-        .route("/me/password", post(handlers::update_password))
+        .route("/sessions/{id}", delete(sessions::revoke_session))
+        .route("/me", get(profile::get_profile))
+        .route("/me", post(profile::update_profile))
+        .route("/me/password", post(profile::update_password))
         .route(
             "/me/avatar",
-            post(handlers::upload_avatar)
-                .layer(DefaultBodyLimit::max(state.config.max_avatar_size)),
+            post(profile::upload_avatar).layer(DefaultBodyLimit::max(state.config.max_avatar_size)),
         )
-        .route("/mfa/setup", post(handlers::mfa_setup))
-        .route("/mfa/verify", post(handlers::mfa_verify))
-        .route("/mfa/disable", post(handlers::mfa_disable))
-        .route(
-            "/mfa/backup-codes",
-            post(handlers::mfa_generate_backup_codes),
-        )
-        .route(
-            "/mfa/backup-codes/count",
-            get(handlers::mfa_backup_code_count),
-        )
-        .route("/qr/create", post(handlers::qr_create))
+        .route("/mfa/setup", post(mfa::mfa_setup))
+        .route("/mfa/verify", post(mfa::mfa_verify))
+        .route("/mfa/disable", post(mfa::mfa_disable))
+        .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
+        .route("/mfa/backup-codes/count", get(mfa::mfa_backup_code_count))
+        .route("/qr/create", post(mfa::qr_create))
         .layer(axum_middleware::from_fn_with_state(state, require_auth));
 
     public_routes.merge(protected_routes)
