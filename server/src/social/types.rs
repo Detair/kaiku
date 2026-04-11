@@ -48,4 +48,3 @@ pub struct SendFriendRequestBody {
     #[validate(length(min = 1))]
     pub username: String,
 }
-

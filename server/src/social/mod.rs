@@ -1,3 +1,7 @@
+//! Social features — friends and blocking
+//!
+//! Friend requests, friend lists, blocking, and the block-list cache.
+
 pub mod block_cache;
 pub mod error;
 pub mod friends;

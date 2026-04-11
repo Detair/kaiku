@@ -104,4 +104,3 @@ pub struct WebhookDeliveryItem {
     pub attempt: u32,
     pub event_time: DateTime<Utc>,
 }
-

@@ -155,4 +155,3 @@ pub struct PaginatedReports {
     pub limit: i64,
     pub offset: i64,
 }
-
