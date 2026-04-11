@@ -168,7 +168,7 @@ impl Drop for CleanupGuard {
         }
 
         let pool = self.pool.clone();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -178,9 +178,29 @@ impl Drop for CleanupGuard {
                     action(pool.clone()).await;
                 }
             });
-        })
-        .join()
-        .expect("Cleanup thread panicked");
+        });
+
+        // Bounded join: poll for up to 30s, then detach if still running.
+        // Prevents flaky cleanup hangs from triggering nextest's 120s slow-timeout.
+        // Tradeoff: panics in the detached thread (timeout path) are silently
+        // discarded. Happy-path joins still propagate panics via .expect().
+        // Removed once the explicit-cleanup migration completes (Task 14+).
+        let timeout = std::time::Duration::from_secs(30);
+        let start = std::time::Instant::now();
+        loop {
+            if handle.is_finished() {
+                handle.join().expect("cleanup thread panicked");
+                return;
+            }
+            if start.elapsed() > timeout {
+                eprintln!(
+                    "warning: CleanupGuard did not complete within {timeout:?}, \
+                     detaching thread to allow test to finish"
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
 
