@@ -1,0 +1,149 @@
+# osv-scanner ignore list
+#
+# This file is NOT authoritative — cargo-deny and cargo-audit remain the
+# primary advisory gates for Rust, and `bun audit` is the primary gate for
+# npm. This config just tells osv-scanner to match their tolerance so the
+# third-source check doesn't permanently block CI.
+#
+# When a new advisory appears in this file's gate, osv-scanner will fail
+# the build. Investigate, then either fix the dep or add a new entry here
+# with justification.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+# rsa crate Marvin Attack. No safe upgrade; used by openidconnect. Already
+# ignored in deny.toml.
+reason = "Accepted via deny.toml; pulled through openidconnect, no fix available."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0097"
+# rand 0.8.5 unsoundness with custom log logger. Not exploitable in Kaiku
+# because we use tracing, not the log facade. Already ignored in deny.toml.
+reason = "Accepted via deny.toml; not exploitable in our configuration (we use tracing, not log facade)."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0002"
+# lru 0.12.5 unmaintained. Pulled by a transitive dep; upgrade path blocked
+# upstream. Already ignored in deny.toml.
+reason = "Accepted via deny.toml; unmaintained, no runtime vuln."
+
+# ---------------------------------------------------------------------------
+# Tauri gtk-rs 0.18 family — Linux-only deps, all marked unmaintained by
+# RustSec because gtk-rs moved to 0.20+. Tauri pins 0.18. Not runtime-critical
+# because gtk is Linux window integration, and we don't expose user-controlled
+# input to gtk APIs. Upgrade blocked on Tauri.
+# ---------------------------------------------------------------------------
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0411"
+reason = "gdkwayland-sys unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0412"
+reason = "gdk unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0413"
+reason = "atk unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0414"
+reason = "gdkx11-sys unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0415"
+reason = "gtk unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0416"
+reason = "atk-sys unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0417"
+reason = "gdkx11 unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0418"
+reason = "gdk-sys unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0419"
+reason = "gtk3-macros unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0420"
+reason = "gtk-sys unmaintained; Linux-only Tauri dep."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429"
+# glib 0.18.5 has a fix (0.20.0) but the upgrade is blocked by Tauri's
+# pin on the gtk-rs 0.18 stack. Track upstream.
+reason = "glib 0.18.5 Iterator soundness issue; fix in 0.20.0, blocked by Tauri's gtk-rs 0.18 pin."
+
+# ---------------------------------------------------------------------------
+# Misc unmaintained crate bindings
+# ---------------------------------------------------------------------------
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+reason = "proc-macro-error unmaintained; transitive, no runtime impact."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0384"
+reason = "instant unmaintained; transitive, no runtime impact."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "derivative unmaintained; transitive, no runtime impact."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "paste unmaintained; transitive, no runtime impact."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0057"
+reason = "fxhash unmaintained; transitive, no runtime impact."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0075"
+reason = "unic-char-range unmaintained; transitive."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0080"
+reason = "unic-common unmaintained; transitive."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0081"
+reason = "unic-char-property unmaintained; transitive."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0098"
+reason = "unic-ucd-version unmaintained; transitive."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0100"
+reason = "unic-ucd-ident unmaintained; transitive."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+reason = "bincode unmaintained; transitive."
+
+# ---------------------------------------------------------------------------
+# vite 7.3.1 / 8.0.0 — nested via vitest > @vitest/mocker
+# ---------------------------------------------------------------------------
+# These three CVEs are already documented in PR #517 as accepted dev-only
+# exceptions. vite 8.0.5 (the fix version) breaks vite-plugin-solid's JSX
+# parsing because @vitest/mocker's internal API is incompatible with vite
+# 8.x as the nested instance. See PR #517 for full analysis.
+
+[[IgnoredVulns]]
+id = "GHSA-4w7w-66w2-5vf9"
+reason = "Accepted in PR #517; vite dev-server only, nested via vitest. Fix requires unblocking the @vitest/mocker/vite 8.x compat issue."
+
+[[IgnoredVulns]]
+id = "GHSA-p9ff-h696-f583"
+reason = "Accepted in PR #517; vite dev-server only, nested via vitest."
+
+[[IgnoredVulns]]
+id = "GHSA-v2wj-q39q-566r"
+reason = "Accepted in PR #517; vite dev-server only, nested via vitest."

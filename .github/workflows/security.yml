@@ -169,13 +169,14 @@ jobs:
         # newer patch tag and update if appropriate.
         uses: google/osv-scanner-action/osv-scanner-action@v2.3.5
         with:
-          # --severity=HIGH gates only on HIGH+ findings, matching the
-          # spec's recommended threshold. MEDIUM/LOW still appear in the
-          # SARIF upload (and the Security tab) but don't fail the job.
+          # Gates on ANY unignored vulnerability via exit code.
+          # .osv-scanner.toml at the repo root contains the ignore list
+          # (cargo-deny/rust-audit ignores + PR #517 vite exceptions).
+          # osv-scanner v2.3.5 does NOT support --skip-git or
+          # --severity — both were invalid flags in the first attempt.
           scan-args: |-
             --recursive
-            --skip-git
-            --severity=HIGH
+            --config=/github/workspace/.osv-scanner.toml
             --format=sarif
             --output=osv-results.sarif
             ./
