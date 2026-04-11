@@ -59,6 +59,15 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 nnnoiseless = { version = "0.5", default-features = false }
 
 # Screen capture
+# Pinned to Detair/scap fork because upstream scap 0.1.0-beta.1 introduced a
+# Frame enum restructure (Frame::Video(VideoFrame::*)) without updating the
+# Linux pipewire backend, breaking the Linux build. Our fork (commit 4d1304e9)
+# adapts the Linux backend to the new enum structure plus a Windows typo fix.
+#
+# Upstream PR that would fix this: https://github.com/CapSoftware/scap/pull/178
+# (open since 2025-10-26, broader scope: adds sequence numbers + SystemTime +
+# latest-buffer grab). Once merged and released, drop this git dep and pin to
+# the next scap release. Track in #TODO (or file an issue).
 scap = { git = "https://github.com/Detair/scap.git", branch = "fix/linux-frame-enum" }
 
 # Webcam capture
