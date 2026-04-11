@@ -16,33 +16,20 @@ import type {
   ThreadInfo,
   UserStatus,
   VoiceParticipant,
-  WebcamServerInfo,
 } from "@/lib/types";
 import {
   updateUserActivity,
   updateUserCustomStatus,
   updateUserPresence,
-} from "./presence";
+} from "../presence";
 import {
   addMessage,
   removeMessage,
   messagesState,
-  setMessagesState,
   loadInitialMessages,
-  decryptMessageIfNeeded,
-} from "./messages";
+} from "../messages";
 import { showToast, dismissToast } from "@/components/ui/Toast";
-import {
-  addThreadReply,
-  removeThreadReply,
-  setThreadReadState,
-  updateThreadInfo,
-  updateParentThreadIndicator,
-  markThreadUnread,
-  clearThreadUnread,
-  threadsState,
-} from "./threads";
-import { handlePreferencesUpdated } from "./preferences";
+import { handlePreferencesUpdated } from "../preferences";
 import {
   receiveIncomingCall,
   callConnected,
@@ -51,36 +38,89 @@ import {
   participantLeft,
   callState,
   type EndReason,
-} from "./call";
+} from "../call";
 import {
   loadFriends,
   loadPendingRequests,
   handleUserBlocked,
   handleUserUnblocked,
-} from "./friends";
-import { playNotification } from "@/lib/sound";
-import type { NotificationContext } from "@/lib/notifications";
+} from "../friends";
 import {
   getChannel,
   channelsState,
   handleChannelReadEvent,
   incrementUnreadCount,
   updateChannelLastMessageId,
-} from "./channels";
-import { currentUser } from "./auth";
+} from "../channels";
+import { currentUser } from "../auth";
 import {
   guildsState,
   getGuildIdForChannel,
   incrementGuildUnread,
-} from "./guilds";
-import type { MentionType, SoundEventType } from "@/lib/sound/types";
+} from "../guilds";
 import {
   dmsState,
   handleDMReadEvent,
   handleDMNameUpdated,
   updateDMLastMessage,
-} from "./dms";
-import { handlePinAdded, handlePinRemoved } from "./channelPins";
+} from "../dms";
+import { handlePinAdded, handlePinRemoved } from "../channelPins";
+
+import {
+  applyMessageEdit,
+  handleMessageNotification,
+  handleThreadRead,
+  handleThreadReplyDelete,
+  handleThreadReplyNew,
+} from "./messageEvents";
+import {
+  handleVoiceIceCandidate,
+  handleVoiceLayerChanged,
+  handleVoicePublisherAnswer,
+  handleVoiceRoomState,
+  handleVoiceSubscriberOffer,
+  handleVoiceUserJoined,
+  handleVoiceUserLeft,
+  handleVoiceUserMuted,
+  handleVoiceUserStatsEvent,
+  handleVoiceUserUnmuted,
+} from "./voiceEvents";
+import {
+  handleScreenShareQualityChanged,
+  handleScreenShareStarted,
+  handleScreenShareStopped,
+  handleWebcamStarted,
+  handleWebcamStopped,
+} from "./mediaEvents";
+import {
+  handleAdminGuildDeleted,
+  handleAdminGuildSuspended,
+  handleAdminGuildUnsuspended,
+  handleAdminReportCreated,
+  handleAdminReportResolved,
+  handleAdminUserBanned,
+  handleAdminUserDeleted,
+  handleAdminUserUnbanned,
+} from "./adminEvents";
+import {
+  handleGuildEmojiUpdated,
+  handlePatchEvent,
+} from "./guildEvents";
+import {
+  handleReactionAdd,
+  handleReactionRemove,
+  updateMessagePinStatus,
+} from "./reactionEvents";
+
+// Re-export media handlers so existing test imports
+// (`import { handleScreenShareStarted } from "@/stores/websocket"`) keep working.
+export {
+  handleScreenShareStarted,
+  handleScreenShareStopped,
+  handleScreenShareQualityChanged,
+  handleWebcamStarted,
+  handleWebcamStopped,
+};
 
 import * as Sentry from "@sentry/browser";
 // Detect if running in Tauri
@@ -130,94 +170,6 @@ const TYPING_TIMEOUT = 5000; // 5 seconds
 
 // Track connection start time for WS connect duration
 let connectStartTime = 0;
-
-/**
- * Handle notification sound for incoming message.
- */
-function handleMessageNotification(message: Message): void {
-  const user = currentUser();
-
-  // Don't notify for own messages
-  if (user && message.author.id === user.id) {
-    return;
-  }
-
-  // Don't notify for currently focused channel when the window is visible
-  if (channelsState.selectedChannelId === message.channel_id && !document.hidden) {
-    return;
-  }
-
-  if (dmsState.selectedDMId === message.channel_id && !dmsState.isShowingFriends && !document.hidden) {
-    return;
-  }
-
-  // Determine if this is a DM
-  const channel = getChannel(message.channel_id);
-  const isDm =
-    dmsState.dms.some((dm) => dm.id === message.channel_id) ||
-    channel?.channel_type === "dm" ||
-    channel?.guild_id === null;
-
-  // Determine event type based on channel and mention
-  let eventType: SoundEventType;
-  if (isDm) {
-    eventType = "message_dm";
-  } else if (
-    message.mention_type === "direct" ||
-    message.mention_type === "everyone" ||
-    message.mention_type === "here"
-  ) {
-    eventType = "message_mention";
-  } else {
-    eventType = "message_channel";
-  }
-
-  // Build notification context for OS notifications
-  const guild = isDm ? null : guildsState.guilds.find((g) => g.id === channel?.guild_id);
-  const notifCtx: NotificationContext = {
-    username: message.author.display_name || message.author.username,
-    content: message.encrypted ? null : message.content,
-    guildName: guild?.name ?? null,
-    channelName: channel?.name ?? null,
-  };
-
-  // Play notification with OS notification context
-  playNotification(
-    {
-      type: eventType,
-      channelId: message.channel_id,
-      isDm,
-      mentionType: message.mention_type as MentionType,
-      authorId: message.author.id,
-      content: message.content,
-    },
-    notifCtx,
-  );
-}
-
-/** Apply an edited message's content and timestamp, decrypting if needed for E2EE channels. */
-async function applyMessageEdit(channelId: string, messageId: string, content: string, editedAt: string): Promise<void> {
-  const messages = messagesState.byChannel[channelId];
-  if (!messages) return;
-  const index = messages.findIndex((m) => m.id === messageId);
-  if (index === -1) return;
-
-  const existingMsg = messages[index];
-  let newContent = content;
-  if (existingMsg.encrypted) {
-    const decrypted = await decryptMessageIfNeeded({ ...existingMsg, content });
-    newContent = decrypted.content;
-  }
-
-  // Re-find index after await — concurrent loadMessages can prepend and shift indices
-  const current = messagesState.byChannel[channelId];
-  if (!current) return;
-  const freshIndex = current.findIndex((m) => m.id === messageId);
-  if (freshIndex === -1) return;
-
-  setMessagesState("byChannel", channelId, freshIndex, "content", newContent);
-  setMessagesState("byChannel", channelId, freshIndex, "edited_at", editedAt);
-}
 
 /**
  * Initialize WebSocket event listeners.
@@ -1685,683 +1637,6 @@ export function getTypingUsers(channelId: string): string[] {
  */
 export function isConnected(): boolean {
   return wsState.status === "connected";
-}
-
-// Voice event handlers — dual PeerConnection model
-
-async function handleVoicePublisherAnswer(channelId: string, sdp: string): Promise<void> {
-  try {
-    const { getVoiceAdapter } = await import("@/lib/webrtc");
-    const adapter = getVoiceAdapter();
-
-    if (!adapter) {
-      console.error("[WebSocket] No voice adapter available for publisher answer");
-      return;
-    }
-
-    const result = await adapter.handlePublisherAnswer(channelId, sdp);
-    if (!result.ok) {
-      console.error("[WS] handlePublisherAnswer failed:", result.error);
-    }
-  } catch (err) {
-    console.error("Error handling publisher answer:", err);
-  }
-}
-
-async function handleVoiceSubscriberOffer(channelId: string, sdp: string): Promise<void> {
-  try {
-    const { getVoiceAdapter } = await import("@/lib/webrtc");
-    const adapter = getVoiceAdapter();
-
-    if (!adapter) {
-      console.error("[WebSocket] No voice adapter available for subscriber offer");
-      return;
-    }
-
-    const result = await adapter.handleSubscriberOffer(channelId, sdp);
-    if (!result.ok) {
-      console.error("[WS] handleSubscriberOffer failed:", result.error);
-      return;
-    }
-
-    // Send subscriber answer back to server
-    await tauri.wsSend({
-      type: "voice_subscriber_answer",
-      channel_id: channelId,
-      sdp: result.value,
-    });
-    console.log("[WebSocket] Subscriber answer sent successfully");
-  } catch (err) {
-    console.error("Error handling subscriber offer:", err);
-  }
-}
-
-async function handleVoiceIceCandidate(
-  channelId: string,
-  candidate: string,
-  pcType: string = "publisher",
-): Promise<void> {
-  const startTime = performance.now();
-
-  try {
-    // Use getVoiceAdapter() to avoid dynamic import overhead (critical for ICE timing)
-    const { getVoiceAdapter } = await import("@/lib/webrtc");
-    const adapter = getVoiceAdapter();
-
-    if (!adapter) {
-      console.warn("[WebSocket] No voice adapter available for ICE candidate");
-      return;
-    }
-
-    const result = await adapter.handleIceCandidate(channelId, candidate, pcType);
-
-    const elapsed = performance.now() - startTime;
-    console.log(
-      `[WebSocket] ICE candidate (${pcType}) processed in ${elapsed.toFixed(2)}ms`,
-    );
-
-    if (!result.ok) {
-      console.error(`Failed to handle ICE candidate (${pcType}):`, result.error);
-    }
-  } catch (err) {
-    console.error("Error handling ICE candidate:", err);
-  }
-}
-
-async function handleVoiceUserJoined(
-  channelId: string,
-  userId: string,
-  username: string,
-  displayName: string,
-): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  if (voiceState.channelId === channelId) {
-    setVoiceState(
-      produce((state) => {
-        state.participants[userId] = {
-          user_id: userId,
-          username: username,
-          display_name: displayName,
-          muted: false,
-          speaking: false,
-          screen_sharing: false,
-        };
-      }),
-    );
-  }
-}
-
-async function handleVoiceUserLeft(
-  channelId: string,
-  userId: string,
-): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  if (voiceState.channelId === channelId) {
-    setVoiceState(
-      produce((state) => {
-        delete state.participants[userId];
-      }),
-    );
-  }
-}
-
-async function handleVoiceUserMuted(
-  channelId: string,
-  userId: string,
-): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  if (voiceState.channelId === channelId) {
-    setVoiceState(
-      produce((state) => {
-        if (state.participants[userId]) {
-          state.participants[userId].muted = true;
-        }
-      }),
-    );
-  }
-}
-
-async function handleVoiceUserUnmuted(
-  channelId: string,
-  userId: string,
-): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  if (voiceState.channelId === channelId) {
-    setVoiceState(
-      produce((state) => {
-        if (state.participants[userId]) {
-          state.participants[userId].muted = false;
-        }
-      }),
-    );
-  }
-}
-
-async function handleVoiceRoomState(
-  channelId: string,
-  participants: VoiceParticipant[],
-  screenShares?: ScreenShareServerInfo[],
-  webcams?: WebcamServerInfo[],
-): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  if (voiceState.channelId === channelId) {
-    setVoiceState(
-      produce((state) => {
-        state.participants = {};
-        for (const p of participants) {
-          state.participants[p.user_id] = p;
-        }
-        state.screenShares = screenShares ?? [];
-        state.webcams = webcams ?? [];
-      }),
-    );
-  }
-}
-
-// Screen share event handlers
-
-export async function handleScreenShareStarted(event: Omit<Extract<ServerEvent, { type: "screen_share_started" }>, "type">): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  console.log("[WebSocket] Screen share started:", event.user_id, event.stream_id);
-
-  if (voiceState.channelId === event.channel_id) {
-    setVoiceState(
-      produce((state) => {
-        // Add to screen shares list
-        state.screenShares.push({
-          stream_id: event.stream_id,
-          user_id: event.user_id,
-          username: event.username,
-          source_label: event.source_label,
-          has_audio: event.has_audio,
-          quality: event.quality,
-          started_at: event.started_at ?? new Date().toISOString(),
-        });
-
-        // Update participant's screen_sharing flag
-        if (state.participants[event.user_id]) {
-          state.participants[event.user_id].screen_sharing = true;
-        }
-      }),
-    );
-  }
-}
-
-export async function handleScreenShareStopped(event: Omit<Extract<ServerEvent, { type: "screen_share_stopped" }>, "type">): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  console.log("[WebSocket] Screen share stopped:", event.user_id, event.stream_id, event.reason);
-
-  if (voiceState.channelId === event.channel_id) {
-    setVoiceState(
-      produce((state) => {
-        // Remove the specific stream from screen shares list
-        state.screenShares = state.screenShares.filter(
-          (s) => s.stream_id !== event.stream_id,
-        );
-
-        // Update participant's screen_sharing flag only if they have no more shares
-        const hasOtherShares = state.screenShares.some(
-          (s) => s.user_id === event.user_id,
-        );
-        if (!hasOtherShares && state.participants[event.user_id]) {
-          state.participants[event.user_id].screen_sharing = false;
-        }
-
-      }),
-    );
-  }
-}
-
-export async function handleScreenShareQualityChanged(
-  event: Omit<Extract<ServerEvent, { type: "screen_share_quality_changed" }>, "type">,
-): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  console.log(
-    "[WebSocket] Screen share quality changed:",
-    event.user_id,
-    event.stream_id,
-    event.new_quality,
-  );
-
-  if (voiceState.channelId === event.channel_id) {
-    setVoiceState(
-      produce((state) => {
-        const share = state.screenShares.find(
-          (s) => s.stream_id === event.stream_id,
-        );
-        if (share) {
-          share.quality = event.new_quality;
-        }
-      }),
-    );
-  }
-}
-
-// Webcam event handlers
-
-export async function handleWebcamStarted(event: Omit<Extract<ServerEvent, { type: "webcam_started" }>, "type">): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  console.log("[WebSocket] Webcam started:", event.user_id);
-
-  if (voiceState.channelId === event.channel_id) {
-    setVoiceState(
-      produce((state) => {
-        // Add to webcams list
-        state.webcams.push({
-          user_id: event.user_id,
-          username: event.username,
-          quality: event.quality,
-        });
-
-        // Update participant's webcam_active flag
-        if (state.participants[event.user_id]) {
-          state.participants[event.user_id].webcam_active = true;
-        }
-      }),
-    );
-  }
-}
-
-export async function handleWebcamStopped(event: Omit<Extract<ServerEvent, { type: "webcam_stopped" }>, "type">): Promise<void> {
-  const { voiceState, setVoiceState } = await import("@/stores/voice");
-  const { produce } = await import("solid-js/store");
-
-  console.log("[WebSocket] Webcam stopped:", event.user_id, event.reason);
-
-  if (voiceState.channelId === event.channel_id) {
-    setVoiceState(
-      produce((state) => {
-        // Remove from webcams list
-        state.webcams = state.webcams.filter(
-          (w) => w.user_id !== event.user_id,
-        );
-
-        // Update participant's webcam_active flag
-        if (state.participants[event.user_id]) {
-          state.participants[event.user_id].webcam_active = false;
-        }
-
-        // If it was us, clear local state
-        // (authState comparison not available here, so the voice store handles it via WS event)
-      }),
-    );
-  }
-}
-
-async function handleVoiceUserStatsEvent(event: {
-  channel_id: string;
-  user_id: string;
-  latency: number;
-  packet_loss: number;
-  jitter: number;
-  quality: number;
-}): Promise<void> {
-  const { handleVoiceUserStats } = await import("@/stores/voice");
-  handleVoiceUserStats(event);
-}
-
-async function handleVoiceLayerChanged(event: {
-  source_user_id: string;
-  track_source: string;
-  active_layer: "high" | "medium" | "low";
-}): Promise<void> {
-  const { handleLayerChanged } = await import("@/stores/simulcastLayers");
-  handleLayerChanged(
-    event.source_user_id,
-    event.track_source,
-    event.active_layer,
-  );
-}
-
-// Admin event handlers
-
-async function handleAdminUserBanned(
-  userId: string,
-  username: string,
-): Promise<void> {
-  const { handleUserBannedEvent } = await import("@/stores/admin");
-  handleUserBannedEvent(userId, username);
-}
-
-async function handleAdminUserUnbanned(
-  userId: string,
-  username: string,
-): Promise<void> {
-  const { handleUserUnbannedEvent } = await import("@/stores/admin");
-  handleUserUnbannedEvent(userId, username);
-}
-
-async function handleAdminGuildSuspended(
-  guildId: string,
-  guildName: string,
-): Promise<void> {
-  const { handleGuildSuspendedEvent } = await import("@/stores/admin");
-  handleGuildSuspendedEvent(guildId, guildName);
-}
-
-async function handleAdminGuildUnsuspended(
-  guildId: string,
-  guildName: string,
-): Promise<void> {
-  const { handleGuildUnsuspendedEvent } = await import("@/stores/admin");
-  handleGuildUnsuspendedEvent(guildId, guildName);
-}
-
-async function handleAdminUserDeleted(
-  userId: string,
-  username: string,
-): Promise<void> {
-  const { handleUserDeletedEvent } = await import("@/stores/admin");
-  handleUserDeletedEvent(userId, username);
-}
-
-async function handleAdminGuildDeleted(
-  guildId: string,
-  guildName: string,
-): Promise<void> {
-  const { handleGuildDeletedEvent } = await import("@/stores/admin");
-  handleGuildDeletedEvent(guildId, guildName);
-}
-
-// Guild emoji event handler
-
-async function handleGuildEmojiUpdated(
-  guildId: string,
-  emojis: GuildEmoji[],
-): Promise<void> {
-  const { setGuildEmojis } = await import("@/stores/emoji");
-  setGuildEmojis(guildId, emojis);
-}
-
-// Thread event handlers
-
-function handleThreadReplyNew(
-  channelId: string,
-  parentId: string,
-  message: Message,
-  threadInfo: ThreadInfo,
-): void {
-  // Add reply to thread store
-  addThreadReply(parentId, message);
-
-  // Update thread info cache
-  updateThreadInfo(parentId, threadInfo);
-
-  // Mark thread as unread if not currently open and reply is from another user
-  const user = currentUser();
-  if (
-    threadsState.activeThreadId !== parentId &&
-    (!user || message.author.id !== user.id)
-  ) {
-    markThreadUnread(parentId);
-  }
-
-  // Update parent message's thread indicator in main messages store
-  updateParentThreadIndicator(channelId, parentId, threadInfo);
-
-  // Play notification for thread reply
-  handleThreadNotification(message);
-}
-
-function handleThreadReplyDelete(
-  channelId: string,
-  parentId: string,
-  messageId: string,
-  threadInfo: ThreadInfo,
-): void {
-  // Remove reply from thread store
-  removeThreadReply(parentId, messageId);
-
-  // Update thread info cache (updateThreadInfo preserves existing has_unread)
-  updateThreadInfo(parentId, threadInfo);
-
-  // Update parent message's thread indicator in main messages store
-  updateParentThreadIndicator(channelId, parentId, threadInfo);
-
-  // If the deleted message was the one that made the thread "read",
-  // and there are still newer unread replies, the unread state is preserved
-  // by updateThreadInfo's has_unread preservation logic.
-}
-
-function handleThreadRead(
-  parentId: string,
-  lastReadMessageId: string | null,
-): void {
-  setThreadReadState(parentId, lastReadMessageId);
-  clearThreadUnread(parentId);
-}
-
-function handleThreadNotification(message: Message): void {
-  const user = currentUser();
-  if (user && message.author.id === user.id) return;
-
-  const channel = getChannel(message.channel_id);
-  const isDm = channel?.channel_type === "dm" || channel?.guild_id === null;
-
-  // Build notification context for OS notifications
-  const guild = isDm ? null : guildsState.guilds.find((g) => g.id === channel?.guild_id);
-  const notifCtx: NotificationContext = {
-    username: message.author.display_name || message.author.username,
-    content: message.encrypted ? null : message.content,
-    guildName: guild?.name ?? null,
-    channelName: channel?.name ?? null,
-  };
-
-  playNotification(
-    {
-      type: "message_thread",
-      channelId: message.channel_id,
-      isDm,
-      mentionType: message.mention_type as MentionType,
-      authorId: message.author.id,
-      content: message.content,
-    },
-    notifCtx,
-  );
-}
-
-// Reaction event handlers
-
-function handleReactionAdd(
-  channelId: string,
-  messageId: string,
-  userId: string,
-  emoji: string,
-): void {
-  const messages = messagesState.byChannel[channelId];
-  if (!messages) return;
-
-  const messageIndex = messages.findIndex((m) => m.id === messageId);
-  if (messageIndex === -1) return;
-
-  const message = messages[messageIndex];
-  const reactions = message.reactions ? [...message.reactions] : [];
-
-  // Find existing reaction for this emoji
-  const reactionIndex = reactions.findIndex((r) => r.emoji === emoji);
-
-  if (reactionIndex !== -1) {
-    // Update existing reaction — increment count rather than deriving
-    // from users.length to stay consistent with the server's count
-    const reaction = { ...reactions[reactionIndex] };
-    const users = reaction.users ?? [];
-    if (!users.includes(userId)) {
-      reaction.users = [...users, userId];
-      reaction.count = (reaction.count ?? 0) + 1;
-      const user = currentUser();
-      if (user && userId === user.id) {
-        reaction.me = true;
-      }
-      reactions[reactionIndex] = reaction;
-    }
-  } else {
-    // Add new reaction
-    const user = currentUser();
-    reactions.push({
-      emoji,
-      count: 1,
-      users: [userId],
-      me: user ? userId === user.id : false,
-    });
-  }
-
-  // Update the message in the store
-  setMessagesState(
-    "byChannel",
-    channelId,
-    messageIndex,
-    "reactions",
-    reactions,
-  );
-}
-
-function handleReactionRemove(
-  channelId: string,
-  messageId: string,
-  userId: string,
-  emoji: string,
-): void {
-  const messages = messagesState.byChannel[channelId];
-  if (!messages) return;
-
-  const messageIndex = messages.findIndex((m) => m.id === messageId);
-  if (messageIndex === -1) return;
-
-  const message = messages[messageIndex];
-  if (!message.reactions) return;
-
-  const reactions = [...message.reactions];
-  const reactionIndex = reactions.findIndex((r) => r.emoji === emoji);
-
-  if (reactionIndex === -1) return;
-
-  // Decrement count rather than deriving from users.length to stay
-  // consistent with the server's count
-  const reaction = { ...reactions[reactionIndex] };
-  const users = reaction.users ?? [];
-  const wasTracked = users.includes(userId);
-  reaction.users = users.filter((id) => id !== userId);
-
-  // Only decrement if user was tracked in the array OR the array was
-  // never populated (API-loaded reactions). Skip if the user is absent
-  // from a populated array — that's a duplicate remove event.
-  if (wasTracked || users.length === 0) {
-    reaction.count = Math.max(0, (reaction.count ?? 1) - 1);
-  }
-
-  const user = currentUser();
-  if (user && userId === user.id) {
-    reaction.me = false;
-  }
-
-  if (reaction.count === 0) {
-    reactions.splice(reactionIndex, 1);
-  } else {
-    reactions[reactionIndex] = reaction;
-  }
-
-  setMessagesState(
-    "byChannel",
-    channelId,
-    messageIndex,
-    "reactions",
-    reactions.length > 0 ? reactions : undefined,
-  );
-}
-
-// Channel pin event handler
-
-function updateMessagePinStatus(channelId: string, messageId: string, pinned: boolean): void {
-  const messages = messagesState.byChannel[channelId];
-  if (!messages) return;
-
-  const messageIndex = messages.findIndex((m) => m.id === messageId);
-  if (messageIndex === -1) return;
-
-  setMessagesState(
-    "byChannel",
-    channelId,
-    messageIndex,
-    "pinned",
-    pinned,
-  );
-}
-
-// State sync event handler
-
-async function handlePatchEvent(
-  entityType: string,
-  entityId: string,
-  diff: Record<string, unknown>,
-): Promise<void> {
-  console.log(`[WebSocket] Patch event: ${entityType}/${entityId}`, diff);
-
-  switch (entityType) {
-    case "user":
-      {
-        const { patchUser } = await import("@/stores/presence");
-        patchUser(entityId, diff);
-      }
-      break;
-
-    case "guild":
-      {
-        const { patchGuild } = await import("@/stores/guilds");
-        patchGuild(entityId, diff);
-      }
-      break;
-
-    case "member":
-      {
-        const { patchMember } = await import("@/stores/members");
-        patchMember(entityId, diff);
-      }
-      break;
-
-    case "channel":
-      {
-        const { patchChannel } = await import("@/stores/channels");
-        patchChannel(entityId, diff);
-      }
-      break;
-
-    default:
-      console.warn(`[WebSocket] Unknown patch entity type: ${entityType}`);
-  }
-}
-
-// Admin report event handlers
-
-async function handleAdminReportCreated(
-  reportId: string,
-  category: string,
-  targetType: string,
-): Promise<void> {
-  const { handleReportCreatedEvent } = await import("@/stores/admin");
-  handleReportCreatedEvent(reportId, category, targetType);
-}
-
-async function handleAdminReportResolved(reportId: string): Promise<void> {
-  const { handleReportResolvedEvent } = await import("@/stores/admin");
-  handleReportResolvedEvent(reportId);
 }
 
 // Export stores for reading
