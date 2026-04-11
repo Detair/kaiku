@@ -7,10 +7,14 @@ pub mod emojis;
 pub mod error;
 pub mod handlers;
 pub mod invites;
-pub mod limits;
+pub mod queries;
 pub mod roles;
 pub mod search;
 pub mod types;
+
+// Re-export `limits` from `queries::limits` so existing call sites
+// (`guild::limits::*`) keep working without churn.
+pub use queries::limits;
 
 pub use error::GuildError;
 

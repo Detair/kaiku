@@ -11,6 +11,7 @@ use sqlx::FromRow;
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::queries::categories as queries;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
@@ -174,17 +175,7 @@ pub async fn list_categories(
             other => CategoryError::Permission(other),
         })?;
 
-    let categories = sqlx::query_as::<_, Category>(
-        r"
-        SELECT id, guild_id, name, position, parent_id, category_type, created_at
-        FROM channel_categories
-        WHERE guild_id = $1
-        ORDER BY position
-        ",
-    )
-    .bind(guild_id)
-    .fetch_all(&state.db)
-    .await?;
+    let categories = queries::list_categories(&state.db, guild_id).await?;
 
     Ok(Json(categories))
 }
@@ -230,48 +221,31 @@ pub async fn create_category(
 
     // If parent_id specified, verify it's a top-level category (not a subcategory)
     if let Some(parent_id) = body.parent_id {
-        let parent_check: Option<(Option<Uuid>,)> = sqlx::query_as(
-            "SELECT parent_id FROM channel_categories WHERE id = $1 AND guild_id = $2",
-        )
-        .bind(parent_id)
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-        match parent_check {
+        match queries::fetch_category_parent(&state.db, parent_id, guild_id).await? {
             None => {
                 return Err(CategoryError::Validation(
                     "Parent category not found".to_string(),
                 ))
             }
-            Some((Some(_),)) => {
+            Some(Some(_)) => {
                 return Err(CategoryError::Validation(
                     "Cannot nest more than 2 levels".to_string(),
                 ))
             }
-            Some((None,)) => {} // OK - parent is top-level
+            Some(None) => {} // OK - parent is top-level
         }
     }
 
     // Insert with auto-position
     let category_id = Uuid::now_v7();
-    let category = sqlx::query_as::<_, Category>(
-        r"
-        INSERT INTO channel_categories (id, guild_id, name, parent_id, category_type, position)
-        VALUES ($1, $2, $3, $4, $5, (
-            SELECT COALESCE(MAX(position) + 1, 0)
-            FROM channel_categories
-            WHERE guild_id = $2 AND parent_id IS NOT DISTINCT FROM $4
-        ))
-        RETURNING id, guild_id, name, position, parent_id, category_type, created_at
-        ",
+    let category = queries::insert_category(
+        &state.db,
+        category_id,
+        guild_id,
+        &body.name,
+        body.parent_id,
+        body.category_type,
     )
-    .bind(category_id)
-    .bind(guild_id)
-    .bind(&body.name)
-    .bind(body.parent_id)
-    .bind(body.category_type)
-    .fetch_one(&state.db)
     .await?;
 
     Ok((StatusCode::CREATED, Json(category)))
@@ -324,38 +298,23 @@ pub async fn update_category(
     // If changing parent_id, validate nesting constraint
     if let Some(Some(parent_id)) = &body.parent_id {
         // Check that the new parent exists and is top-level
-        let parent_check: Option<(Option<Uuid>,)> = sqlx::query_as(
-            "SELECT parent_id FROM channel_categories WHERE id = $1 AND guild_id = $2",
-        )
-        .bind(parent_id)
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-        match parent_check {
+        match queries::fetch_category_parent(&state.db, *parent_id, guild_id).await? {
             None => {
                 return Err(CategoryError::Validation(
                     "Parent category not found".to_string(),
                 ))
             }
-            Some((Some(_),)) => {
+            Some(Some(_)) => {
                 return Err(CategoryError::Validation(
                     "Cannot nest more than 2 levels".to_string(),
                 ))
             }
-            Some((None,)) => {} // OK
+            Some(None) => {} // OK
         }
 
         // Check that the category being updated doesn't have children
         // (can't make a parent category into a subcategory)
-        let has_children = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM channel_categories WHERE parent_id = $1)",
-        )
-        .bind(category_id)
-        .fetch_one(&state.db)
-        .await?;
-
-        if has_children {
+        if queries::has_subcategories(&state.db, category_id).await? {
             return Err(CategoryError::Validation(
                 "Cannot make a category with subcategories into a subcategory".to_string(),
             ));
@@ -370,15 +329,7 @@ pub async fn update_category(
                 CategoryType::Voice => "text",
                 CategoryType::Mixed => unreachable!(),
             };
-            let has_conflicts = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM channels WHERE category_id = $1 AND channel_type::TEXT = $2)",
-            )
-            .bind(category_id)
-            .bind(conflicting_type)
-            .fetch_one(&state.db)
-            .await?;
-
-            if has_conflicts {
+            if queries::category_has_channel_type(&state.db, category_id, conflicting_type).await? {
                 return Err(CategoryError::Validation(format!(
                     "Cannot change to {new_type:?} — category contains {conflicting_type} channels"
                 )));
@@ -387,28 +338,17 @@ pub async fn update_category(
     }
 
     // Build and execute update query
-    let category = sqlx::query_as::<_, Category>(
-        r"
-        UPDATE channel_categories
-        SET
-            name = COALESCE($3, name),
-            position = COALESCE($4, position),
-            parent_id = CASE WHEN $5 THEN $6 ELSE parent_id END,
-            category_type = COALESCE($7, category_type)
-        WHERE id = $1 AND guild_id = $2
-        RETURNING id, guild_id, name, position, parent_id, category_type, created_at
-        ",
+    let category = queries::update_category(
+        &state.db,
+        category_id,
+        guild_id,
+        body.name.as_deref(),
+        body.position,
+        body.parent_id.is_some(),
+        body.parent_id.flatten(),
+        body.category_type,
     )
-    .bind(category_id)
-    .bind(guild_id)
-    .bind(&body.name)
-    .bind(body.position)
-    .bind(body.parent_id.is_some())
-    .bind(body.parent_id.flatten())
-    .bind(body.category_type)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(CategoryError::NotFound)?;
+    .await?;
 
     Ok(Json(category))
 }
@@ -448,13 +388,9 @@ pub async fn delete_category(
 
     // Delete category (channels become uncategorized due to ON DELETE SET NULL)
     // Subcategories are deleted due to ON DELETE CASCADE on parent_id
-    let result = sqlx::query("DELETE FROM channel_categories WHERE id = $1 AND guild_id = $2")
-        .bind(category_id)
-        .bind(guild_id)
-        .execute(&state.db)
-        .await?;
+    let rows_affected = queries::delete_category(&state.db, category_id, guild_id).await?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err(CategoryError::NotFound);
     }
 
@@ -503,42 +439,23 @@ pub async fn reorder_categories(
     for cat in &body.categories {
         // Validate nesting constraint if parent_id is set
         if let Some(parent_id) = cat.parent_id {
-            let parent_check: Option<(Option<Uuid>,)> = sqlx::query_as(
-                "SELECT parent_id FROM channel_categories WHERE id = $1 AND guild_id = $2",
-            )
-            .bind(parent_id)
-            .bind(guild_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-
-            match parent_check {
+            match queries::fetch_category_parent_tx(&mut tx, parent_id, guild_id).await? {
                 None => {
                     return Err(CategoryError::Validation(format!(
                         "Parent category {parent_id} not found"
                     )))
                 }
-                Some((Some(_),)) => {
+                Some(Some(_)) => {
                     return Err(CategoryError::Validation(
                         "Cannot nest more than 2 levels".to_string(),
                     ))
                 }
-                Some((None,)) => {} // OK
+                Some(None) => {} // OK
             }
         }
 
-        sqlx::query(
-            r"
-            UPDATE channel_categories
-            SET position = $3, parent_id = $4
-            WHERE id = $1 AND guild_id = $2
-            ",
-        )
-        .bind(cat.id)
-        .bind(guild_id)
-        .bind(cat.position)
-        .bind(cat.parent_id)
-        .execute(&mut *tx)
-        .await?;
+        queries::update_category_position(&mut tx, cat.id, guild_id, cat.position, cat.parent_id)
+            .await?;
     }
 
     tx.commit().await?;

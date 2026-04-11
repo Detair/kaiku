@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::queries::search as queries;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
@@ -191,11 +192,7 @@ pub async fn search_messages(
     };
 
     // Check guild exists
-    let guild_exists: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
-        .bind(guild_id)
-        .fetch_one(&state.db)
-        .await?;
-    if !guild_exists.0 {
+    if !queries::guild_exists(&state.db, guild_id).await? {
         return Err(SearchError::GuildNotFound);
     }
 
@@ -286,11 +283,7 @@ pub async fn search_messages(
         users.into_iter().map(|u| (u.id, u)).collect();
 
     // Bulk fetch channel names
-    let channels: Vec<(Uuid, String)> =
-        sqlx::query_as("SELECT id, name FROM channels WHERE id = ANY($1)")
-            .bind(&channel_ids)
-            .fetch_all(&state.db)
-            .await?;
+    let channels = queries::fetch_channel_names(&state.db, &channel_ids).await?;
     let channel_map: std::collections::HashMap<Uuid, String> = channels.into_iter().collect();
 
     // Build results

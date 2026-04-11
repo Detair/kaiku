@@ -1,6 +1,8 @@
-//! Guild Resource Limit Helpers
+//! Guild resource limit queries.
 //!
 //! Reusable count queries used by enforcement checks and the usage stats endpoint.
+//! Functions take `&PgPool` and return `Result<i64, sqlx::Error>` so callers can
+//! map the error into module-specific variants.
 
 use sqlx::PgPool;
 use uuid::Uuid;

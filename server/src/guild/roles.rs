@@ -8,6 +8,7 @@ use thiserror::Error;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::queries::roles as queries;
 use super::types::{CreateRoleRequest, RoleResponse, UpdateRoleRequest};
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -132,29 +133,7 @@ pub async fn list_roles(
             other => RoleError::Permission(other),
         })?;
 
-    let roles = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            Uuid,
-            String,
-            Option<String>,
-            i64,
-            i32,
-            bool,
-            chrono::DateTime<chrono::Utc>,
-        ),
-    >(
-        r"
-        SELECT id, guild_id, name, color, permissions, position, is_default, created_at
-        FROM guild_roles
-        WHERE guild_id = $1
-        ORDER BY position ASC
-        ",
-    )
-    .bind(guild_id)
-    .fetch_all(&state.db)
-    .await?;
+    let roles = queries::list_roles(&state.db, guild_id).await?;
 
     let response: Vec<RoleResponse> = roles
         .into_iter()
@@ -224,17 +203,10 @@ pub async fn create_role(
     let mut tx = state.db.begin().await?;
 
     // Advisory lock seed 57 = role_create (see db/mod.rs registry)
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 57))")
-        .bind(guild_id)
-        .execute(&mut *tx)
-        .await?;
+    queries::lock_role_create(&mut tx, guild_id).await?;
 
     // Atomic count check inside lock
-    let role_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM guild_roles WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let role_count = queries::count_roles_tx(&mut tx, guild_id).await?;
 
     if role_count >= state.config.max_roles_per_guild {
         return Err(RoleError::LimitExceeded(format!(
@@ -244,42 +216,20 @@ pub async fn create_role(
     }
 
     // Get next position (higher number = lower rank)
-    let max_position: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(position), 0) FROM guild_roles WHERE guild_id = $1",
-    )
-    .bind(guild_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let max_position = queries::next_role_position(&mut tx, guild_id).await?;
 
     let role_id = Uuid::now_v7();
     let position = max_position + 1;
 
-    let role = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            Uuid,
-            String,
-            Option<String>,
-            i64,
-            i32,
-            bool,
-            chrono::DateTime<chrono::Utc>,
-        ),
-    >(
-        r"
-        INSERT INTO guild_roles (id, guild_id, name, color, permissions, position)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, guild_id, name, color, permissions, position, is_default, created_at
-        ",
+    let role = queries::insert_role(
+        &mut tx,
+        role_id,
+        guild_id,
+        &body.name,
+        &body.color,
+        new_perms.bits() as i64,
+        position,
     )
-    .bind(role_id)
-    .bind(guild_id)
-    .bind(&body.name)
-    .bind(&body.color)
-    .bind(new_perms.bits() as i64)
-    .bind(position)
-    .fetch_one(&mut *tx)
     .await?;
 
     tx.commit().await?;
@@ -327,15 +277,9 @@ pub async fn update_role(
             })?;
 
     // Get current role
-    let current_role: Option<(i32, i64, bool)> = sqlx::query_as(
-        "SELECT position, permissions, is_default FROM guild_roles WHERE id = $1 AND guild_id = $2",
-    )
-    .bind(role_id)
-    .bind(guild_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let current_role = current_role.ok_or(RoleError::NotFound)?;
+    let current_role = queries::fetch_role_state(&state.db, role_id, guild_id)
+        .await?
+        .ok_or(RoleError::NotFound)?;
 
     // Check hierarchy - cannot edit roles at or above our position
     let new_perms = body.permissions.map(GuildPermissions::from_bits_truncate);
@@ -386,36 +330,15 @@ pub async fn update_role(
         }
     }
 
-    let role = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            Uuid,
-            String,
-            Option<String>,
-            i64,
-            i32,
-            bool,
-            chrono::DateTime<chrono::Utc>,
-        ),
-    >(
-        r"
-        UPDATE guild_roles SET
-            name = COALESCE($3, name),
-            color = COALESCE($4, color),
-            permissions = COALESCE($5, permissions),
-            position = COALESCE($6, position)
-        WHERE id = $1 AND guild_id = $2
-        RETURNING id, guild_id, name, color, permissions, position, is_default, created_at
-        ",
+    let role = queries::update_role(
+        &state.db,
+        role_id,
+        guild_id,
+        &body.name,
+        &body.color,
+        body.permissions.map(|p| p as i64),
+        body.position,
     )
-    .bind(role_id)
-    .bind(guild_id)
-    .bind(&body.name)
-    .bind(&body.color)
-    .bind(body.permissions.map(|p| p as i64))
-    .bind(body.position)
-    .fetch_one(&state.db)
     .await?;
 
     Ok(Json(RoleResponse {
@@ -459,15 +382,9 @@ pub async fn delete_role(
             })?;
 
     // Get role to check position and if it's default
-    let role: Option<(i32, bool)> = sqlx::query_as(
-        "SELECT position, is_default FROM guild_roles WHERE id = $1 AND guild_id = $2",
-    )
-    .bind(role_id)
-    .bind(guild_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let role = role.ok_or(RoleError::NotFound)?;
+    let role = queries::fetch_role_position_and_default(&state.db, role_id, guild_id)
+        .await?
+        .ok_or(RoleError::NotFound)?;
 
     if role.1 {
         return Err(RoleError::Validation(
@@ -483,10 +400,7 @@ pub async fn delete_role(
     };
     can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
-    sqlx::query("DELETE FROM guild_roles WHERE id = $1")
-        .bind(role_id)
-        .execute(&state.db)
-        .await?;
+    queries::delete_role(&state.db, role_id).await?;
 
     Ok(Json(
         serde_json::json!({"deleted": true, "role_id": role_id}),
@@ -523,15 +437,9 @@ pub async fn assign_role(
             })?;
 
     // Get role to check position
-    let role: Option<(i32, bool)> = sqlx::query_as(
-        "SELECT position, is_default FROM guild_roles WHERE id = $1 AND guild_id = $2",
-    )
-    .bind(role_id)
-    .bind(guild_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let role = role.ok_or(RoleError::NotFound)?;
+    let role = queries::fetch_role_position_and_default(&state.db, role_id, guild_id)
+        .await?
+        .ok_or(RoleError::NotFound)?;
 
     if role.1 {
         return Err(RoleError::Validation(
@@ -548,33 +456,14 @@ pub async fn assign_role(
     can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
     // Check target is a member
-    let is_member: Option<(i32,)> =
-        sqlx::query_as("SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2")
-            .bind(guild_id)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?;
-
-    if is_member.is_none() {
+    if !queries::is_guild_member(&state.db, guild_id, user_id).await? {
         return Err(RoleError::Validation(
             "User is not a member of this guild".to_string(),
         ));
     }
 
     // Assign role (ignore if already assigned)
-    sqlx::query(
-        r"
-        INSERT INTO guild_member_roles (guild_id, user_id, role_id, assigned_by)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (guild_id, user_id, role_id) DO NOTHING
-        ",
-    )
-    .bind(guild_id)
-    .bind(user_id)
-    .bind(role_id)
-    .bind(auth.id)
-    .execute(&state.db)
-    .await?;
+    queries::assign_role_to_member(&state.db, guild_id, user_id, role_id, auth.id).await?;
 
     Ok(Json(
         serde_json::json!({"assigned": true, "user_id": user_id, "role_id": role_id}),
@@ -611,14 +500,9 @@ pub async fn remove_role(
             })?;
 
     // Get role to check position
-    let role: Option<(i32,)> =
-        sqlx::query_as("SELECT position FROM guild_roles WHERE id = $1 AND guild_id = $2")
-            .bind(role_id)
-            .bind(guild_id)
-            .fetch_optional(&state.db)
-            .await?;
-
-    let role = role.ok_or(RoleError::NotFound)?;
+    let position = queries::fetch_role_position(&state.db, role_id, guild_id)
+        .await?
+        .ok_or(RoleError::NotFound)?;
 
     // Check hierarchy
     let actor_position = if ctx.is_owner {
@@ -626,18 +510,12 @@ pub async fn remove_role(
     } else {
         ctx.highest_role_position.unwrap_or(i32::MAX)
     };
-    can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
+    can_manage_role(ctx.computed_permissions, actor_position, position, None)?;
 
-    let result = sqlx::query(
-        "DELETE FROM guild_member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3",
-    )
-    .bind(guild_id)
-    .bind(user_id)
-    .bind(role_id)
-    .execute(&state.db)
-    .await?;
+    let rows_affected =
+        queries::remove_role_from_member(&state.db, guild_id, user_id, role_id).await?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err(RoleError::NotFound);
     }
 
