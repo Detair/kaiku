@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting
 - `returnUrl` parameter is now URL-encoded to prevent query string injection
 - TURN relay credentials are now time-limited (1-hour HMAC-SHA1) instead of static when `TURN_SHARED_SECRET` is configured
+- Client build dependencies pinned via `overrides` to clear devtime advisories in `picomatch`, `rollup`, `flatted`, `brace-expansion`, `lodash-es`, and `defu` (3 remaining vite dev-server advisories accepted as dev-only exceptions — not applicable to production builds)
 
 ### Added
 - Voice activity detection (VAD) on desktop client — microphone is gated using RNNoise ML model with configurable threshold and 300ms hold-open

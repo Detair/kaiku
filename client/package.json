@@ -57,5 +57,13 @@
     "vite": "^8.0.0",
     "vite-plugin-solid": "^2.11.11",
     "vitest": "^4.1.0"
+  },
+  "overrides": {
+    "picomatch": "^4.0.4",
+    "rollup": "^4.60.1",
+    "flatted": "^3.4.2",
+    "brace-expansion": "^1.1.13",
+    "lodash-es": "^4.17.24",
+    "defu": "^6.1.5"
   }
 }
