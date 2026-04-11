@@ -19,10 +19,10 @@ use super::{
 /// Convert `PermissionError` to `PagesError`.
 pub(super) fn map_permission_error(err: PermissionError) -> PagesError {
     match err {
-        PermissionError::NotGuildMember => PagesError::Forbidden,
+        PermissionError::NotGuildMember => PagesError::NotGuildMember,
         PermissionError::DatabaseError(msg) => {
             error!("Permission database error: {}", msg);
-            PagesError::Internal("Internal server error".to_string())
+            PagesError::Internal(msg)
         }
         other => PagesError::Permission(other),
     }

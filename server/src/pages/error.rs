@@ -20,6 +20,9 @@ pub enum PagesError {
     #[error("Access denied")]
     Forbidden,
 
+    #[error("Not a member of this guild")]
+    NotGuildMember,
+
     #[error("System admin required")]
     AdminRequired,
 
@@ -72,6 +75,7 @@ impl IntoResponse for PagesError {
                 self.to_string(),
             ),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string()),
+            Self::NotGuildMember => (StatusCode::FORBIDDEN, "NOT_GUILD_MEMBER", self.to_string()),
             Self::AdminRequired => (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string()),
             Self::Permission(e) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", e.to_string()),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
