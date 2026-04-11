@@ -16,7 +16,12 @@
 ## Key Files
 
 - `mod.rs` — Router setup with rate limiting per category
-- `handlers.rs` — HTTP endpoint implementations (register, login, logout, profile, MFA)
+- `register.rs` — Registration handler (first-user admin grant, transactional)
+- `login.rs` — Login, logout, refresh, password reset, OIDC handlers
+- `mfa.rs` — MFA setup/verify/disable, backup codes, QR login handlers
+- `sessions.rs` — Session listing and revocation handlers
+- `profile.rs` — Profile read/update, avatar upload, password change handlers
+- `helpers.rs` — Shared helpers (token extraction, user-agent parsing)
 - `jwt.rs` — JWT token creation, validation, and claims parsing
 - `middleware.rs` — `require_auth` middleware extracting AuthUser from JWT
 - `password.rs` — Argon2id password hashing and verification
