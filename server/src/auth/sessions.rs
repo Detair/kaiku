@@ -9,9 +9,8 @@ use uuid::Uuid;
 use super::error::{AuthError, AuthResult};
 use super::helpers::extract_current_token_hash;
 use super::middleware::AuthUser;
-use super::queries;
 use super::types::{RevokeAllResponse, SessionInfo, SessionListResponse};
-use super::ua_parser;
+use super::{queries, ua_parser};
 use crate::api::AppState;
 
 /// List all active sessions for the authenticated user.

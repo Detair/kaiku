@@ -8,10 +8,9 @@ pub mod friends;
 mod queries;
 pub mod types;
 
-pub use error::SocialError;
-
 use axum::routing::{delete, get, post};
 use axum::Router;
+pub use error::SocialError;
 
 use crate::api::AppState;
 

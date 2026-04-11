@@ -20,10 +20,9 @@ pub mod types;
 pub mod unread;
 pub(crate) mod uploads;
 
-pub use error::ChatError;
-
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
+pub use error::ChatError;
 pub use s3::S3Client;
 
 use crate::api::AppState;

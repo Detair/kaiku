@@ -5,14 +5,13 @@ use axum::http::StatusCode;
 use axum::Json;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::auth::AuthUser;
-
 use super::error::FavoritesError;
 use super::types::{
     Favorite, FavoriteChannel, FavoriteChannelRow, FavoriteRow, FavoritesResponse,
     ReorderChannelsRequest, ReorderGuildsRequest, MAX_FAVORITES_PER_USER,
 };
+use crate::api::AppState;
+use crate::auth::AuthUser;
 
 /// GET /api/me/favorites - List user's favorite channels
 #[utoipa::path(

@@ -11,13 +11,12 @@ use sqlx::PgPool;
 use tracing::instrument;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
-
 use super::error::BotError;
 use super::types::{
     ApplicationResponse, ApplicationRow, BotTokenResponse, CreateApplicationRequest,
     UpdateIntentsRequest,
 };
+use crate::auth::AuthUser;
 
 /// Create a new bot application.
 #[utoipa::path(

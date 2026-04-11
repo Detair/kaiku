@@ -6,16 +6,15 @@ use axum::extract::{Query, State};
 use axum::Json;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::auth::AuthUser;
-use crate::chat::dm;
-use crate::{db, permissions};
-
 use super::error::GlobalSearchError;
 use super::types::{
     GlobalSearchAuthor, GlobalSearchQuery, GlobalSearchResponse, GlobalSearchResult,
     GlobalSearchSource,
 };
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::chat::dm;
+use crate::{db, permissions};
 
 /// Search messages across all guilds and DMs.
 /// GET `/api/search?q=...`

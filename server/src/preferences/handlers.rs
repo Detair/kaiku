@@ -4,13 +4,12 @@ use axum::extract::State;
 use axum::Json;
 use chrono::Utc;
 
-use crate::api::AppState;
-use crate::auth::AuthUser;
-use crate::ws::{broadcast_to_user, ServerEvent};
-
 use super::error::PreferencesError;
 use super::types::{PreferencesResponse, UpdatePreferencesRequest, UserPreferencesRow};
 use super::validation::validate_preferences;
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::ws::{broadcast_to_user, ServerEvent};
 
 /// GET /api/me/preferences
 /// Returns the current user's preferences.

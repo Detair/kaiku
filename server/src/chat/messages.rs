@@ -11,13 +11,12 @@ use tracing::warn;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::queries;
 use super::types::{
     detect_mention_type, AttachmentInfo, AuthorProfile, CreateMessageRequest,
     CursorPaginatedResponse, ListMessagesQuery, ListThreadRepliesQuery, MessageResponse,
     ReactionInfo, ThreadInfoResponse, UpdateMessageRequest,
 };
-use super::ChatError;
+use super::{queries, ChatError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;

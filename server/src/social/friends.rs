@@ -3,10 +3,9 @@ use axum::Json;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::block_cache;
 use super::error::SocialError;
-use super::queries;
 use super::types::{Friend, Friendship, FriendshipStatus, SendFriendRequestBody};
+use super::{block_cache, queries};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::ws::{broadcast_to_user, ServerEvent};

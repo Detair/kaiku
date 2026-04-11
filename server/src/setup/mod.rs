@@ -6,12 +6,11 @@ pub mod error;
 pub mod handlers;
 pub mod types;
 
-pub use error::SetupError;
-pub use types::{CompleteSetupRequest, SetupConfigResponse, SetupStatusResponse};
-
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
 use axum::Router;
+pub use error::SetupError;
+pub use types::{CompleteSetupRequest, SetupConfigResponse, SetupStatusResponse};
 
 use crate::api::AppState;
 

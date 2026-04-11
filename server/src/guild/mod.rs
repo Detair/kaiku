@@ -17,12 +17,10 @@ pub mod types;
 
 // Re-export `limits` from `queries::limits` so existing call sites
 // (`guild::limits::*`) keep working without churn.
-pub use queries::limits;
-
-pub use error::GuildError;
-
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
+pub use error::GuildError;
+pub use queries::limits;
 
 use crate::api::AppState;
 use crate::pages;

@@ -20,11 +20,11 @@
 //!
 //! ## Module layout
 //!
-//! - [`events`] — `ClientEvent` and `ServerEvent` types, broadcast helpers, Redis
-//!   pub/sub channel names. Callers from other modules depend on these for
-//!   publishing events (`broadcast_to_channel`, `broadcast_to_user`, ...).
-//! - [`handlers`] — HTTP upgrade entry point, per-connection socket loop,
-//!   `handle_client_message` dispatch, and the `handle_pubsub` forwarder.
+//! - [`events`] — `ClientEvent` and `ServerEvent` types, broadcast helpers, Redis pub/sub channel
+//!   names. Callers from other modules depend on these for publishing events
+//!   (`broadcast_to_channel`, `broadcast_to_user`, ...).
+//! - [`handlers`] — HTTP upgrade entry point, per-connection socket loop, `handle_client_message`
+//!   dispatch, and the `handle_pubsub` forwarder.
 //! - [`bot_events`] / [`bot_gateway`] — Separate WebSocket gateway for bots.
 
 pub mod bot_events;

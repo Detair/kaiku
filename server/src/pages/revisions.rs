@@ -5,13 +5,12 @@ use axum::Json;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::auth::AuthUser;
-use crate::permissions::is_system_admin;
-
 use super::error::PagesError;
 use super::shared::check_manage_pages_permission;
 use super::{queries, Page, PageRevision, RevisionListItem};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::permissions::is_system_admin;
 
 /// List revisions for a guild page.
 ///

@@ -7,11 +7,10 @@ pub mod handlers;
 pub mod types;
 pub mod validation;
 
-pub use error::PreferencesError;
-pub use types::{PreferencesResponse, UpdatePreferencesRequest, UserPreferencesRow};
-
 use axum::routing::get;
 use axum::Router;
+pub use error::PreferencesError;
+pub use types::{PreferencesResponse, UpdatePreferencesRequest, UserPreferencesRow};
 
 use crate::api::AppState;
 

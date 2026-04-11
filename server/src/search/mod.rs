@@ -6,11 +6,10 @@ pub mod error;
 pub mod handlers;
 pub mod types;
 
-pub use error::GlobalSearchError;
-pub use types::{GlobalSearchQuery, GlobalSearchResponse, GlobalSearchResult};
-
 use axum::routing::get;
 use axum::Router;
+pub use error::GlobalSearchError;
+pub use types::{GlobalSearchQuery, GlobalSearchResponse, GlobalSearchResult};
 
 use crate::api::AppState;
 

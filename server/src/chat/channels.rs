@@ -6,12 +6,11 @@ use axum::Json;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::queries;
 use super::types::{
     AddMemberRequest, ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest,
     MemberResponse, UpdateChannelRequest,
 };
-use super::ChatError;
+use super::{queries, ChatError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db::{self, ChannelType};

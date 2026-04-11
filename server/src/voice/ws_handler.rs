@@ -12,7 +12,6 @@ use vc_common::protocol::PcType;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
-use super::queries;
 use super::screen_share::{
     validate_source_label, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
 };
@@ -21,7 +20,7 @@ use super::stats::VoiceStats;
 use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
-use super::Quality;
+use super::{queries, Quality};
 use crate::ws::{ClientEvent, OutboundMsg, ServerEvent, VoiceParticipant};
 
 /// Map a permission error to a voice error, logging database errors instead of masking them.

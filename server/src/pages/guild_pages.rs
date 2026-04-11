@@ -6,14 +6,13 @@ use axum::Json;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::auth::AuthUser;
-
 use super::error::PagesError;
 use super::shared::{
     check_manage_pages_permission, validate_create_request, validate_slug, validate_update_request,
 };
 use super::{queries, CreatePageRequest, Page, PageListItem, ReorderRequest, UpdatePageRequest};
+use crate::api::AppState;
+use crate::auth::AuthUser;
 
 /// List all pages for a guild.
 ///

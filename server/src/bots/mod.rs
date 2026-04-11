@@ -7,13 +7,12 @@ pub mod error;
 pub mod handlers;
 pub mod types;
 
+use axum::routing::{delete, get, post, put};
+use axum::Router;
 pub use error::BotError;
 pub use types::{
     ApplicationResponse, BotTokenResponse, CreateApplicationRequest, UpdateIntentsRequest,
 };
-
-use axum::routing::{delete, get, post, put};
-use axum::Router;
 
 use crate::api::AppState;
 

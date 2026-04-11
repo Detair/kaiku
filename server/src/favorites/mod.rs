@@ -6,13 +6,12 @@ pub mod error;
 pub mod handlers;
 pub mod types;
 
+use axum::routing::{get, post, put};
+use axum::Router;
 pub use error::FavoritesError;
 pub use types::{
     Favorite, FavoriteChannel, FavoritesResponse, ReorderChannelsRequest, ReorderGuildsRequest,
 };
-
-use axum::routing::{get, post, put};
-use axum::Router;
 
 use crate::api::AppState;
 
@@ -30,9 +29,10 @@ pub fn router() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
-    use super::types::*;
     use axum::http::StatusCode;
     use uuid::Uuid;
+
+    use super::types::*;
 
     #[test]
     fn test_favorite_channel_from_row() {
@@ -86,8 +86,9 @@ mod tests {
 
     #[test]
     fn test_favorites_error_status_codes() {
-        use super::error::FavoritesError;
         use axum::response::IntoResponse;
+
+        use super::error::FavoritesError;
 
         let test_cases = vec![
             (FavoritesError::ChannelNotFound, StatusCode::NOT_FOUND),

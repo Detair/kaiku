@@ -6,13 +6,12 @@ use axum::Json;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::auth::AuthUser;
-use crate::permissions::is_system_admin;
-
 use super::error::PagesError;
 use super::shared::{validate_create_request, validate_slug, validate_update_request};
 use super::{queries, CreatePageRequest, Page, PageListItem, ReorderRequest, UpdatePageRequest};
+use crate::api::AppState;
+use crate::auth::AuthUser;
+use crate::permissions::is_system_admin;
 
 /// List all platform pages.
 ///

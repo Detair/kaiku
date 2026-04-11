@@ -24,12 +24,11 @@ pub mod types;
 
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
-
-use crate::api::AppState;
-
 pub use constants::*;
 pub use queries::*;
 pub use types::*;
+
+use crate::api::AppState;
 
 /// Router for platform pages (mounted at /api/pages).
 pub fn platform_pages_router() -> Router<AppState> {

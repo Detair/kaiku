@@ -4,9 +4,8 @@ use axum::extract::{Path, State};
 use axum::Json;
 use uuid::Uuid;
 
-use super::queries;
 use super::types::{OverrideResponse, SetOverrideRequest};
-use super::ChatError;
+use super::{queries, ChatError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::{GuildPermissions, PermissionError};

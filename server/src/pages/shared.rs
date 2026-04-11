@@ -7,14 +7,13 @@
 use tracing::error;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
-
 use super::error::PagesError;
 use super::{
     queries, CreatePageRequest, UpdatePageRequest, MAX_CONTENT_SIZE, MAX_SLUG_LENGTH,
     MAX_TITLE_LENGTH,
 };
+use crate::api::AppState;
+use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
 
 /// Convert `PermissionError` to `PagesError`.
 pub(super) fn map_permission_error(err: PermissionError) -> PagesError {

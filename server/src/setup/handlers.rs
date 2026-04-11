@@ -5,12 +5,11 @@ use axum::http::StatusCode;
 use axum::Json;
 use validator::Validate;
 
+use super::error::SetupError;
+use super::types::{CompleteSetupRequest, SetupConfigResponse, SetupStatusResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
-
-use super::error::SetupError;
-use super::types::{CompleteSetupRequest, SetupConfigResponse, SetupStatusResponse};
 
 /// Check if server setup is complete.
 /// GET /api/setup/status
