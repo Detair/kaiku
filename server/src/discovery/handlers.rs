@@ -174,7 +174,7 @@ pub async fn join_discoverable(
 
     // Initialize read state for all text channels
     if let Err(err) =
-        crate::guild::handlers::initialize_channel_read_state(&state.db, guild_id, auth.id).await
+        crate::guild::members::initialize_channel_read_state(&state.db, guild_id, auth.id).await
     {
         tracing::error!(
             ?err,

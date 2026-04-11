@@ -243,7 +243,7 @@ pub async fn join_via_invite(
 
     // Initialize read state for all text channels (best-effort, non-critical)
     if let Err(err) =
-        super::handlers::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await
+        super::members::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await
     {
         tracing::error!(
             ?err,

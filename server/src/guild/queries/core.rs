@@ -1,4 +1,4 @@
-//! Core guild CRUD queries (used by `handlers.rs`).
+//! Core guild CRUD queries.
 //!
 //! Covers guild create/read/update/delete plus the handful of helper queries
 //! related to guild ownership, membership listings, banner uploads, settings,
@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, QueryBuilder, Transaction};
 use uuid::Uuid;
 
+use super::super::bots::InstalledBot;
 use super::super::error::GuildError;
-use super::super::handlers::InstalledBot;
 use super::super::types::{Guild, GuildMember, GuildSettings};
 
 // ============================================================================

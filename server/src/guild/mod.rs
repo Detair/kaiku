@@ -2,14 +2,17 @@
 //!
 //! Handles guild creation, membership, invites, roles, categories, search, and management.
 
+pub mod bots;
 pub mod categories;
+pub mod core;
 pub mod emojis;
 pub mod error;
-pub mod handlers;
 pub mod invites;
+pub mod members;
 pub mod queries;
 pub mod roles;
 pub mod search;
+pub mod settings;
 pub mod types;
 
 // Re-export `limits` from `queries::limits` so existing call sites
@@ -27,38 +30,35 @@ use crate::pages;
 /// Create the guild router with all endpoints
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/", get(handlers::list_guilds).post(handlers::create_guild))
+        .route("/", get(core::list_guilds).post(core::create_guild))
         .route(
             "/{id}",
-            get(handlers::get_guild)
-                .patch(handlers::update_guild)
-                .delete(handlers::delete_guild),
+            get(core::get_guild)
+                .patch(core::update_guild)
+                .delete(core::delete_guild),
         )
-        .route("/{id}/leave", post(handlers::leave_guild))
-        .route("/{id}/members", get(handlers::list_members))
-        .route("/{id}/members/{user_id}", delete(handlers::kick_member))
-        .route("/{id}/bots", get(handlers::list_guild_bots))
-        .route("/{id}/bots/{bot_id}/add", post(handlers::add_bot_to_guild))
-        .route(
-            "/{id}/bots/{bot_id}",
-            delete(handlers::remove_bot_from_guild),
-        )
-        .route("/{id}/usage", get(handlers::get_guild_usage))
-        .route("/{id}/channels", get(handlers::list_channels))
-        .route("/{id}/channels/reorder", post(handlers::reorder_channels))
-        .route("/{id}/read-all", post(handlers::mark_all_channels_read))
-        .route("/{id}/commands", get(handlers::list_guild_commands))
+        .route("/{id}/leave", post(members::leave_guild))
+        .route("/{id}/members", get(members::list_members))
+        .route("/{id}/members/{user_id}", delete(members::kick_member))
+        .route("/{id}/bots", get(bots::list_guild_bots))
+        .route("/{id}/bots/{bot_id}/add", post(bots::add_bot_to_guild))
+        .route("/{id}/bots/{bot_id}", delete(bots::remove_bot_from_guild))
+        .route("/{id}/usage", get(settings::get_guild_usage))
+        .route("/{id}/channels", get(settings::list_channels))
+        .route("/{id}/channels/reorder", post(settings::reorder_channels))
+        .route("/{id}/read-all", post(settings::mark_all_channels_read))
+        .route("/{id}/commands", get(bots::list_guild_commands))
         // Guild settings
         .route(
             "/{id}/settings",
-            get(handlers::get_guild_settings).patch(handlers::update_guild_settings),
+            get(settings::get_guild_settings).patch(settings::update_guild_settings),
         )
         .route(
             "/{id}/dismiss-discovery-prompt",
-            post(handlers::dismiss_discovery_prompt),
+            post(settings::dismiss_discovery_prompt),
         )
         // Banner upload
-        .route("/{id}/banner", post(handlers::upload_guild_banner))
+        .route("/{id}/banner", post(settings::upload_guild_banner))
         // Role routes
         .route(
             "/{id}/roles",
