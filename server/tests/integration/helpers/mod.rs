@@ -158,6 +158,26 @@ impl CleanupGuard {
             }
         });
     }
+
+    /// Run all registered cleanup actions on the caller's tokio runtime
+    /// and consume the guard.
+    ///
+    /// Tests MUST call this at the end of the test body. Forgetting it
+    /// triggers a runtime warning from the Drop fallback. The fallback
+    /// still runs the cleanup actions (so DB rows are not leaked), but
+    /// it does so on a fresh thread with a new tokio runtime — which
+    /// is the source of the original CI flake. After the migration
+    /// completes, the warning will be replaced with panic!() and any
+    /// forgotten cleanup will fail the test loudly.
+    pub async fn cleanup(mut self) {
+        let actions = std::mem::take(&mut self.actions);
+        let pool = self.pool.clone();
+        for action in actions {
+            action(pool.clone()).await;
+        }
+        // Drop runs after this returns, but `actions` is now empty so
+        // Drop is a no-op.
+    }
 }
 
 impl Drop for CleanupGuard {
@@ -166,6 +186,16 @@ impl Drop for CleanupGuard {
         if actions.is_empty() {
             return;
         }
+
+        // Migration signal: test forgot to call .cleanup().await. We still
+        // run cleanup so we don't leak DB rows, but the warning makes the
+        // unmigrated test visible. Replaced with panic!() in a follow-up
+        // commit after migration completes.
+        eprintln!(
+            "warning: CleanupGuard dropped with {} pending actions — \
+             test forgot to call .cleanup().await",
+            actions.len()
+        );
 
         let pool = self.pool.clone();
         let handle = std::thread::spawn(move || {
