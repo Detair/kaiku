@@ -169,13 +169,14 @@ jobs:
         # newer patch tag and update if appropriate.
         uses: google/osv-scanner-action/osv-scanner-action@v2.3.5
         with:
-          # --severity=HIGH gates only on HIGH+ findings, matching the
-          # spec's recommended threshold. MEDIUM/LOW still appear in the
-          # SARIF upload (and the Security tab) but don't fail the job.
+          # Minimal flag set. osv-scanner v2.3.5 does not support
+          # --skip-git or --severity; the first-run attempt with those
+          # flags failed with "flag provided but not defined".
+          # Severity filtering can be done post-scan via the SARIF
+          # category if needed. For now, gate on ANY vulnerability
+          # exit code.
           scan-args: |-
             --recursive
-            --skip-git
-            --severity=HIGH
             --format=sarif
             --output=osv-results.sarif
             ./
