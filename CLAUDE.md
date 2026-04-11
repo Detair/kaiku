@@ -147,6 +147,7 @@ GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, SSPL, Proprietary
 - `docs/developer-guide/project/specification.md` — Anforderungen und Entscheidungslog
 - `docs/developer-guide/architecture/overview.md` — Technische Architektur und Diagramme
 - `docs/developer-guide/development/standards.md` — Verwendete Protokolle und Libraries
+- `docs/superpowers/specs/2026-04-10-codebase-consistency-standards-design.md` — Canonical module structure and code organization patterns (Tier 1/Tier 2 layout, error/types/queries conventions, handler splitting rules)
 - `LICENSE_COMPLIANCE.md` — Lizenzprüfung aller Dependencies
 - `CHANGELOG.md` — Änderungsprotokoll
 - `docs/developer-guide/development/code-review.md` — Review-System, Concern Areas, Characters, Workflows

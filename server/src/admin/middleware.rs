@@ -4,17 +4,12 @@ use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 
-use super::types::{AdminError, ElevatedAdmin, SystemAdminUser};
+use super::error::AdminError;
+use super::queries;
+use super::types::{ElevatedAdmin, SystemAdminUser};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::queries::get_system_admin;
-
-struct ElevatedSessionRecord {
-    user_id: uuid::Uuid,
-    elevated_at: chrono::DateTime<chrono::Utc>,
-    expires_at: chrono::DateTime<chrono::Utc>,
-    reason: Option<String>,
-}
 
 /// Middleware that requires the user to be a system admin.
 #[tracing::instrument(skip(state, request, next))]
@@ -56,18 +51,9 @@ pub async fn require_elevated(
         .cloned()
         .ok_or(AdminError::NotAdmin)?;
 
-    let elevated = sqlx::query_as!(
-        ElevatedSessionRecord,
-        r#"SELECT user_id, elevated_at, expires_at, reason
-           FROM elevated_sessions
-           WHERE user_id = $1 AND expires_at > NOW()
-           ORDER BY elevated_at DESC
-           LIMIT 1"#,
-        admin.user_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AdminError::ElevationRequired)?;
+    let elevated = queries::find_latest_elevated_session(&state.db, admin.user_id)
+        .await?
+        .ok_or(AdminError::ElevationRequired)?;
 
     let elevated_admin = ElevatedAdmin {
         user_id: elevated.user_id,

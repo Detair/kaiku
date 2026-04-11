@@ -5,9 +5,12 @@
 
 pub mod delivery;
 pub mod dispatch;
+pub mod error;
 pub mod events;
 pub mod handlers;
 pub mod queries;
 pub mod signing;
 pub mod ssrf;
 pub mod types;
+
+pub use error::WebhookError;

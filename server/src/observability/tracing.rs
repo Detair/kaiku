@@ -306,13 +306,13 @@ mod tests {
 
     #[test]
     fn instrument_skip_list_contract_is_present() {
-        let auth = include_str!("../auth/handlers.rs");
+        let auth = include_str!("../auth/login.rs");
         assert_contains(auth, "#[tracing::instrument(skip(state, body)");
 
         let chat = include_str!("../chat/messages.rs");
         assert_contains(chat, "#[tracing::instrument(skip(state, body)");
 
-        let ws = include_str!("../ws/mod.rs");
+        let ws = include_str!("../ws/handlers.rs");
         // The attribute may be formatted across multiple lines by rustfmt; check
         // for the skip list fragment which must always be present.
         assert_contains(

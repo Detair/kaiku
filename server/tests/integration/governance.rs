@@ -272,9 +272,14 @@ async fn test_deletion_blocked_by_guild_ownership() {
     );
 
     let json = body_to_json(resp).await;
+    assert_eq!(
+        json["error"].as_str().unwrap(),
+        "OWNS_GUILDS",
+        "Error code should be OWNS_GUILDS"
+    );
     assert!(
-        json["error"].as_str().unwrap().contains("guilds"),
-        "Error should mention guilds"
+        json["message"].as_str().unwrap().contains("guilds"),
+        "Message should mention guilds"
     );
 }
 

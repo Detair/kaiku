@@ -5,156 +5,65 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::channels::{ChannelError, ChannelResponse};
+use super::types::{
+    CreateDMRequest, DMIconResponse, DMListResponse, DMParticipant, DMResponse, MarkAsReadRequest,
+    MarkAsReadResponse, UpdateDMNameRequest,
+};
+use super::{queries, ChatError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::chat::uploads::UploadError;
 use crate::db::{self, Channel, ChannelType};
 use crate::social::block_cache;
 use crate::ws::{broadcast_to_user, ServerEvent};
-
-struct UsernameRecord {
-    username: String,
-}
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct CreateDMRequest {
-    /// User ID(s) to create DM with (1 for 1:1, multiple for group DM)
-    #[validate(length(min = 1, max = 9, message = "Must have 1-9 other participants"))]
-    pub participant_ids: Vec<Uuid>,
-    /// Optional name for group DMs
-    #[validate(length(max = 100))]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMResponse {
-    #[serde(flatten)]
-    #[schema(inline)]
-    pub channel: ChannelResponse,
-    pub participants: Vec<DMParticipant>,
-}
-
-/// Last message info for DM list preview
-#[derive(Debug, sqlx::FromRow, Serialize, utoipa::ToSchema)]
-pub struct LastMessagePreview {
-    pub id: Uuid,
-    pub content: String,
-    pub user_id: Option<Uuid>,
-    pub username: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// Enhanced DM response with unread count and last message
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMListResponse {
-    #[serde(flatten)]
-    #[schema(inline)]
-    pub channel: ChannelResponse,
-    pub participants: Vec<DMParticipant>,
-    pub last_message: Option<LastMessagePreview>,
-    pub unread_count: i64,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMParticipant {
-    pub user_id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-    pub joined_at: chrono::DateTime<chrono::Utc>,
-}
 
 // ============================================================================
 // Database Functions
 // ============================================================================
 
-/// Get or create a 1:1 DM channel between two users
+/// Get or create a 1:1 DM channel between two users.
+///
+/// Wraps the lower-level query functions in `queries` so that the
+/// channel-creation flow remains a single high-level entry point.
 pub async fn get_or_create_dm(
     pool: &sqlx::PgPool,
     user1_id: Uuid,
     user2_id: Uuid,
-) -> sqlx::Result<Channel> {
-    // Check for existing DM between these two users
-    let existing = sqlx::query_as::<_, Channel>(
-        r"SELECT c.id, c.name, c.channel_type, c.category_id, c.guild_id,
-                  c.topic, c.icon_url, c.user_limit, c.position, c.max_screen_shares, c.created_at, c.updated_at
-           FROM channels c
-           JOIN dm_participants p1 ON c.id = p1.channel_id AND p1.user_id = $1
-           JOIN dm_participants p2 ON c.id = p2.channel_id AND p2.user_id = $2
-           WHERE c.channel_type = 'dm' AND c.guild_id IS NULL
-           AND (SELECT COUNT(*) FROM dm_participants WHERE channel_id = c.id) = 2",
-    )
-    .bind(user1_id)
-    .bind(user2_id)
-    .fetch_optional(pool)
-    .await?;
-
-    if let Some(dm) = existing {
-        return Ok(dm);
+) -> Result<Channel, ChatError> {
+    if let Some(existing) = queries::find_direct_dm_channel(pool, user1_id, user2_id).await? {
+        return Ok(existing);
     }
 
     // Create new DM channel
     let channel_id = Uuid::now_v7();
 
     // Generate name from usernames
-    let names: Vec<UsernameRecord> = sqlx::query_as!(
-        UsernameRecord,
-        "SELECT username FROM users WHERE id = $1 OR id = $2 ORDER BY username",
-        user1_id,
-        user2_id
-    )
-    .fetch_all(pool)
-    .await?;
-
+    let names = queries::list_usernames_for_pair(pool, user1_id, user2_id).await?;
     let dm_name = names
         .iter()
         .map(|r| r.username.as_str())
         .collect::<Vec<_>>()
         .join(", ");
 
-    let channel = sqlx::query_as::<_, Channel>(
-        r"INSERT INTO channels (id, name, channel_type, guild_id, position)
-           VALUES ($1, $2, 'dm', NULL, 0)
-           RETURNING id, name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position, max_screen_shares, created_at, updated_at",
-    )
-    .bind(channel_id)
-    .bind(&dm_name)
-    .fetch_one(pool)
-    .await?;
-
-    // Add both users as participants
-    sqlx::query!(
-        "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2), ($1, $3)",
-        channel_id,
-        user1_id,
-        user2_id
-    )
-    .execute(pool)
-    .await?;
+    let channel = queries::insert_dm_channel(pool, channel_id, &dm_name).await?;
+    queries::insert_dm_participants_pair(pool, channel_id, user1_id, user2_id).await?;
 
     Ok(channel)
 }
 
-/// Create a group DM channel with multiple participants
+/// Create a group DM channel with multiple participants.
 pub async fn create_group_dm(
     pool: &sqlx::PgPool,
     creator_id: Uuid,
     participant_ids: &[Uuid],
     name: Option<&str>,
-) -> sqlx::Result<Channel> {
+) -> Result<Channel, ChatError> {
     // Validate participant count (1-9 others + creator = 2-10 total)
     if participant_ids.is_empty() || participant_ids.len() > 9 {
-        return Err(sqlx::Error::Protocol(
-            "Group DMs must have 2-10 participants total".into(),
+        return Err(ChatError::Validation(
+            "Group DMs must have 2-10 participants total".to_string(),
         ));
     }
 
@@ -164,18 +73,10 @@ pub async fn create_group_dm(
     let channel_name = if let Some(name) = name {
         name.to_string()
     } else {
-        // Get usernames for auto-generated name
         let mut all_ids = vec![creator_id];
         all_ids.extend_from_slice(participant_ids);
 
-        let names: Vec<UsernameRecord> = sqlx::query_as!(
-            UsernameRecord,
-            "SELECT username FROM users WHERE id = ANY($1) ORDER BY username",
-            &all_ids[..]
-        )
-        .fetch_all(pool)
-        .await?;
-
+        let names = queries::list_usernames_for_ids(pool, &all_ids).await?;
         names
             .iter()
             .map(|r| r.username.as_str())
@@ -184,79 +85,28 @@ pub async fn create_group_dm(
     };
 
     // Create channel
-    let channel = sqlx::query_as::<_, Channel>(
-        r"INSERT INTO channels (id, name, channel_type, guild_id, position)
-           VALUES ($1, $2, 'dm', NULL, 0)
-           RETURNING id, name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position, max_screen_shares, created_at, updated_at",
-    )
-    .bind(channel_id)
-    .bind(&channel_name)
-    .fetch_one(pool)
-    .await?;
+    let channel = queries::insert_dm_channel(pool, channel_id, &channel_name).await?;
 
-    // Add creator as participant
-    sqlx::query!(
-        "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2)",
-        channel_id,
-        creator_id
-    )
-    .execute(pool)
-    .await?;
-
-    // Add other participants
+    // Add creator and remaining participants
+    queries::insert_dm_participant(pool, channel_id, creator_id).await?;
     for participant_id in participant_ids {
-        sqlx::query!(
-            "INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2)",
-            channel_id,
-            participant_id
-        )
-        .execute(pool)
-        .await?;
+        queries::insert_dm_participant(pool, channel_id, *participant_id).await?;
     }
 
     Ok(channel)
 }
 
-/// Get DM participants for a channel
+/// Get DM participants for a channel.
 pub async fn get_dm_participants(
     pool: &sqlx::PgPool,
     channel_id: Uuid,
-) -> sqlx::Result<Vec<DMParticipant>> {
-    let participants = sqlx::query_as!(
-        DMParticipant,
-        r#"SELECT
-            u.id as user_id,
-            u.username,
-            u.display_name,
-            u.avatar_url,
-            dp.joined_at
-           FROM dm_participants dp
-           JOIN users u ON u.id = dp.user_id
-           WHERE dp.channel_id = $1
-           ORDER BY dp.joined_at ASC"#,
-        channel_id
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(participants)
+) -> Result<Vec<DMParticipant>, ChatError> {
+    queries::list_dm_participants(pool, channel_id).await
 }
 
-/// List all DM channels for a user
-pub async fn list_user_dms(pool: &sqlx::PgPool, user_id: Uuid) -> sqlx::Result<Vec<Channel>> {
-    let channels = sqlx::query_as::<_, Channel>(
-        r"SELECT c.id, c.name, c.channel_type, c.category_id, c.guild_id,
-                  c.topic, c.icon_url, c.user_limit, c.position, c.max_screen_shares, c.created_at, c.updated_at
-           FROM channels c
-           JOIN dm_participants dp ON c.id = dp.channel_id
-           WHERE dp.user_id = $1 AND c.channel_type = 'dm'
-           ORDER BY c.updated_at DESC",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(channels)
+/// List all DM channels for a user.
+pub async fn list_user_dms(pool: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Channel>, ChatError> {
+    queries::list_user_dm_channels(pool, user_id).await
 }
 
 // ============================================================================
@@ -279,23 +129,23 @@ pub async fn create_dm(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<CreateDMRequest>,
-) -> Result<(StatusCode, Json<DMResponse>), ChannelError> {
+) -> Result<(StatusCode, Json<DMResponse>), ChatError> {
     body.validate()
-        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check for duplicate participant IDs
     let mut unique_ids = body.participant_ids.clone();
     unique_ids.sort();
     unique_ids.dedup();
     if unique_ids.len() != body.participant_ids.len() {
-        return Err(ChannelError::Validation(
+        return Err(ChatError::Validation(
             "Duplicate participant IDs".to_string(),
         ));
     }
 
     // Check that auth user is not in participant list
     if body.participant_ids.contains(&auth.id) {
-        return Err(ChannelError::Validation(
+        return Err(ChatError::Validation(
             "Cannot include yourself in participant list".to_string(),
         ));
     }
@@ -305,7 +155,7 @@ pub async fn create_dm(
         db::find_user_by_id(&state.db, *participant_id)
             .await?
             .ok_or_else(|| {
-                ChannelError::Validation("One or more participants not found".to_string())
+                ChatError::Validation("One or more participants not found".to_string())
             })?;
     }
 
@@ -319,7 +169,7 @@ pub async fn create_dm(
         .await
         {
             Ok(true) => {
-                return Err(ChannelError::Validation(
+                return Err(ChatError::Validation(
                     "Cannot create DM with this user".to_string(),
                 ));
             }
@@ -333,7 +183,7 @@ pub async fn create_dm(
                     "Redis block check failed, using failsafe policy"
                 );
                 if !state.config.block_check_fail_open {
-                    return Err(ChannelError::Validation(
+                    return Err(ChatError::Validation(
                         "Cannot create DM with this user".to_string(),
                     ));
                 }
@@ -380,7 +230,7 @@ pub async fn create_dm(
 pub async fn list_dms(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<DMListResponse>>, ChannelError> {
+) -> Result<Json<Vec<DMListResponse>>, ChatError> {
     let channels = list_user_dms(&state.db, auth.id).await?;
 
     let mut responses = Vec::new();
@@ -388,46 +238,10 @@ pub async fn list_dms(
         let participants = get_dm_participants(&state.db, channel.id).await?;
 
         // Get last message
-        let last_message = sqlx::query_as::<_, LastMessagePreview>(
-            "SELECT m.id, m.content, m.user_id, u.username, m.created_at
-             FROM messages m
-             LEFT JOIN users u ON u.id = m.user_id
-             WHERE m.channel_id = $1
-             ORDER BY m.created_at DESC
-             LIMIT 1",
-        )
-        .bind(channel.id)
-        .fetch_optional(&state.db)
-        .await?;
+        let last_message = queries::fetch_last_message_preview(&state.db, channel.id).await?;
 
         // Get unread count
-        let read_state_row = sqlx::query!(
-            r#"SELECT last_read_at FROM dm_read_state
-               WHERE user_id = $1 AND channel_id = $2"#,
-            auth.id,
-            channel.id
-        )
-        .fetch_optional(&state.db)
-        .await?;
-
-        let unread_count = if let Some(read_state) = read_state_row {
-            sqlx::query_scalar!(
-                r#"SELECT COUNT(*) as "count!" FROM messages
-                   WHERE channel_id = $1 AND created_at > $2"#,
-                channel.id,
-                read_state.last_read_at
-            )
-            .fetch_one(&state.db)
-            .await?
-        } else {
-            // No read state = all messages are unread
-            sqlx::query_scalar!(
-                r#"SELECT COUNT(*) as "count!" FROM messages WHERE channel_id = $1"#,
-                channel.id
-            )
-            .fetch_one(&state.db)
-            .await?
-        };
+        let unread_count = queries::dm_unread_count(&state.db, auth.id, channel.id).await?;
 
         responses.push(DMListResponse {
             channel: channel.into(),
@@ -463,27 +277,19 @@ pub async fn get_dm(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<Json<DMResponse>, ChannelError> {
+) -> Result<Json<DMResponse>, ChatError> {
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     // Verify it's a DM channel
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Verify auth user is a participant
-    let is_participant = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM dm_participants WHERE channel_id = $1 AND user_id = $2) as "exists!""#,
-        channel_id,
-        auth.id
-    )
-    .fetch_one(&state.db)
-    .await?;
-
-    if !is_participant {
-        return Err(ChannelError::Forbidden);
+    if !queries::is_dm_participant(&state.db, channel_id, auth.id).await? {
+        return Err(ChatError::Forbidden);
     }
 
     let participants = get_dm_participants(&state.db, channel.id).await?;
@@ -510,38 +316,25 @@ pub async fn leave_dm(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<StatusCode, ChannelError> {
+) -> Result<StatusCode, ChatError> {
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     // Verify it's a DM channel
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Remove user from participants
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!(
-        "DELETE FROM dm_participants WHERE channel_id = $1 AND user_id = $2",
-        channel_id,
-        auth.id
-    )
-    .execute(&state.db)
-    .await?;
+    let removed = queries::remove_dm_participant(&state.db, channel_id, auth.id).await?;
 
-    let removed = result.rows_affected();
-
-    if removed == 0 {
-        return Err(ChannelError::NotFound);
+    if !removed {
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Check if channel is now empty
-    let participant_count = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) as "count!" FROM dm_participants WHERE channel_id = $1"#,
-        channel_id
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let participant_count = queries::count_dm_participants(&state.db, channel_id).await?;
 
     // If channel is empty, delete it
     if participant_count == 0 {
@@ -554,12 +347,6 @@ pub async fn leave_dm(
 // ============================================================================
 // Update Group DM Name
 // ============================================================================
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct UpdateDMNameRequest {
-    #[validate(length(min = 1, max = 100, message = "Name must be 1-100 characters"))]
-    pub name: String,
-}
 
 /// Update a group DM's display name
 /// PATCH /api/dm/:id/name
@@ -579,56 +366,36 @@ pub async fn update_dm_name(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
     Json(body): Json<UpdateDMNameRequest>,
-) -> Result<Json<DMResponse>, ChannelError> {
+) -> Result<Json<DMResponse>, ChatError> {
     body.validate()
-        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Verify channel exists and is a DM
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
     // Verify auth user is a participant
-    let is_participant = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM dm_participants WHERE channel_id = $1 AND user_id = $2) as "exists!""#,
-        channel_id,
-        auth.id
-    )
-    .fetch_one(&state.db)
-    .await?;
-
-    if !is_participant {
-        return Err(ChannelError::Forbidden);
+    if !queries::is_dm_participant(&state.db, channel_id, auth.id).await? {
+        return Err(ChatError::Forbidden);
     }
 
     // Verify it's a group DM (more than 2 participants)
-    let participant_count = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) as "count!" FROM dm_participants WHERE channel_id = $1"#,
-        channel_id
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let participant_count = queries::count_dm_participants(&state.db, channel_id).await?;
 
     if participant_count <= 2 {
-        return Err(ChannelError::Validation(
+        return Err(ChatError::Validation(
             "Cannot rename 1:1 DM channels".to_string(),
         ));
     }
 
     // Update the channel name
-    let updated_channel = sqlx::query_as::<_, crate::db::Channel>(
-        r"UPDATE channels SET name = $1, updated_at = NOW()
-          WHERE id = $2
-          RETURNING id, name, channel_type, category_id, guild_id, topic, user_limit, position, max_screen_shares, created_at, updated_at",
-    )
-    .bind(&body.name)
-    .bind(channel_id)
-    .fetch_one(&state.db)
-    .await?;
+    let updated_channel =
+        queries::update_dm_channel_name(&state.db, channel_id, &body.name).await?;
 
     // Get participants
     let participants = get_dm_participants(&state.db, channel_id).await?;
@@ -662,12 +429,6 @@ pub async fn update_dm_name(
 // Icon Upload
 // ============================================================================
 
-/// Response for DM icon upload
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DMIconResponse {
-    pub icon_url: String,
-}
-
 /// Upload a custom icon for a DM channel
 /// POST /api/dm/:id/icon
 #[utoipa::path(
@@ -686,31 +447,23 @@ pub async fn upload_dm_icon(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
     mut multipart: Multipart,
-) -> Result<Json<DMIconResponse>, UploadError> {
+) -> Result<Json<DMIconResponse>, ChatError> {
     // Verify channel exists and is a DM
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(UploadError::Validation("Channel not found".to_string()))?;
+        .ok_or(ChatError::Validation("Channel not found".to_string()))?;
 
     if channel.channel_type != ChannelType::Dm {
-        return Err(UploadError::Validation("Not a DM channel".to_string()));
+        return Err(ChatError::Validation("Not a DM channel".to_string()));
     }
 
     // Verify auth user is a participant
-    let is_participant = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM dm_participants WHERE channel_id = $1 AND user_id = $2) as "exists!""#,
-        channel_id,
-        auth.id
-    )
-    .fetch_one(&state.db)
-    .await?;
-
-    if !is_participant {
-        return Err(UploadError::Forbidden);
+    if !queries::is_dm_participant(&state.db, channel_id, auth.id).await? {
+        return Err(ChatError::Forbidden);
     }
 
     // Process file upload (similar to uploads.rs)
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     let mut file_data: Option<Vec<u8>> = None;
 
@@ -721,10 +474,10 @@ pub async fn upload_dm_icon(
             let data = field
                 .bytes()
                 .await
-                .map_err(|e| UploadError::Validation(e.to_string()))?;
+                .map_err(|e| ChatError::Validation(e.to_string()))?;
 
             if data.len() > state.config.max_avatar_size {
-                return Err(UploadError::TooLarge {
+                return Err(ChatError::FileTooLarge {
                     max_size: state.config.max_avatar_size,
                 });
             }
@@ -734,11 +487,11 @@ pub async fn upload_dm_icon(
         }
     }
 
-    let file_data = file_data.ok_or(UploadError::NoFile)?;
+    let file_data = file_data.ok_or(ChatError::NoFile)?;
 
     // Validate actual file content using magic bytes (don't trust client-provided MIME type)
     let format = image::guess_format(&file_data)
-        .map_err(|_| UploadError::Validation("Unable to detect image format".to_string()))?;
+        .map_err(|_| ChatError::Validation("Unable to detect image format".to_string()))?;
 
     let (content_type, extension) = match format {
         image::ImageFormat::Png => ("image/png", "png"),
@@ -746,7 +499,7 @@ pub async fn upload_dm_icon(
         image::ImageFormat::Gif => ("image/gif", "gif"),
         image::ImageFormat::WebP => ("image/webp", "webp"),
         _ => {
-            return Err(UploadError::Validation(
+            return Err(ChatError::Validation(
                 "Unsupported image format. Only PNG, JPEG, GIF, and WebP are allowed.".to_string(),
             ))
         }
@@ -758,16 +511,10 @@ pub async fn upload_dm_icon(
     // Upload to S3
     s3.upload(&s3_key, file_data, content_type)
         .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?; // S3Error to string
+        .map_err(|e| ChatError::Storage(e.to_string()))?; // S3Error to string
 
     // Store S3 Key in DB
-    sqlx::query!(
-        "UPDATE channels SET icon_url = $1, updated_at = NOW() WHERE id = $2",
-        s3_key,
-        channel_id
-    )
-    .execute(&state.db)
-    .await?;
+    queries::set_channel_icon(&state.db, channel_id, &s3_key).await?;
 
     // Return API URL
     let icon_url = format!("/api/dm/{channel_id}/icon");
@@ -790,41 +537,33 @@ pub async fn get_dm_icon(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<impl IntoResponse, UploadError> {
+) -> Result<impl IntoResponse, ChatError> {
     // Check channel exists
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(UploadError::Validation("Channel not found".to_string()))?;
+        .ok_or(ChatError::Validation("Channel not found".to_string()))?;
 
     // Check if DM
     if channel.channel_type != ChannelType::Dm {
-        return Err(UploadError::Validation("Not a DM channel".to_string()));
+        return Err(ChatError::Validation("Not a DM channel".to_string()));
     }
 
     // Check participation
-    let is_participant = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM dm_participants WHERE channel_id = $1 AND user_id = $2) as "exists!""#,
-        channel_id,
-        auth.id
-    )
-    .fetch_one(&state.db)
-    .await?;
-
-    if !is_participant {
-        return Err(UploadError::Forbidden);
+    if !queries::is_dm_participant(&state.db, channel_id, auth.id).await? {
+        return Err(ChatError::Forbidden);
     }
 
     // Get S3 key from DB
     let s3_key = channel
         .icon_url
-        .ok_or(UploadError::Validation("No icon set".to_string()))?;
+        .ok_or(ChatError::Validation("No icon set".to_string()))?;
 
     // Generate presigned URL
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
     let presigned_url = s3
         .presign_get(&s3_key)
         .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?;
+        .map_err(|e| ChatError::Storage(e.to_string()))?;
 
     // Redirect
     Ok(axum::response::Redirect::temporary(&presigned_url))
@@ -833,21 +572,6 @@ pub async fn get_dm_icon(
 // ============================================================================
 // Mark as Read
 // ============================================================================
-
-/// Mark DM as read request body
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct MarkAsReadRequest {
-    pub last_read_message_id: Uuid,
-}
-
-/// Mark DM as read response
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MarkAsReadResponse {
-    pub channel_id: Uuid,
-    pub last_read_at: chrono::DateTime<chrono::Utc>,
-    pub last_read_message_id: Option<Uuid>,
-    pub unread_count: i64,
-}
 
 /// Mark a DM channel as read
 /// POST /api/dm/:id/read
@@ -867,46 +591,30 @@ pub async fn mark_as_read(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
     Json(body): Json<MarkAsReadRequest>,
-) -> Result<Json<MarkAsReadResponse>, ChannelError> {
+) -> Result<Json<MarkAsReadResponse>, ChatError> {
     // Verify channel exists and user is a participant
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     if channel.channel_type != ChannelType::Dm {
-        return Err(ChannelError::NotFound);
+        return Err(ChatError::ChannelNotFound);
     }
 
-    let is_participant = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM dm_participants WHERE channel_id = $1 AND user_id = $2) as "exists!""#,
-        channel_id,
-        auth.id
-    )
-    .fetch_one(&state.db)
-    .await?;
-
-    if !is_participant {
-        return Err(ChannelError::Forbidden);
+    if !queries::is_dm_participant(&state.db, channel_id, auth.id).await? {
+        return Err(ChatError::Forbidden);
     }
 
     let now = chrono::Utc::now();
 
     // Atomic forward-only upsert: only advances the cursor, never moves it backward
-    sqlx::query(
-        r"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT (user_id, channel_id)
-          DO UPDATE SET last_read_at = EXCLUDED.last_read_at,
-                        last_read_message_id = EXCLUDED.last_read_message_id
-          WHERE dm_read_state.last_read_message_id IS NULL
-             OR (SELECT created_at FROM messages WHERE id = EXCLUDED.last_read_message_id)
-                > (SELECT created_at FROM messages WHERE id = dm_read_state.last_read_message_id)",
+    queries::upsert_dm_read_state(
+        &state.db,
+        auth.id,
+        channel_id,
+        now,
+        body.last_read_message_id,
     )
-    .bind(auth.id)
-    .bind(channel_id)
-    .bind(now)
-    .bind(body.last_read_message_id)
-    .execute(&state.db)
     .await?;
 
     // Broadcast dm_read event to all user's other WebSocket sessions
@@ -952,28 +660,11 @@ pub async fn mark_as_read(
 pub async fn mark_all_dms_read(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<StatusCode, ChannelError> {
+) -> Result<StatusCode, ChatError> {
     let now = chrono::Utc::now();
 
     // Batch UPSERT dm_read_state for all DM channels where user is participant
-    let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
-        r"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
-          SELECT $1, dp.channel_id, $2, (
-              SELECT m.id FROM messages m
-              WHERE m.channel_id = dp.channel_id AND m.deleted_at IS NULL
-              ORDER BY m.created_at DESC LIMIT 1
-          )
-          FROM dm_participants dp
-          INNER JOIN channels c ON c.id = dp.channel_id
-          WHERE dp.user_id = $1 AND c.channel_type = 'dm'
-          ON CONFLICT (user_id, channel_id)
-          DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id, last_read_message_id",
-    )
-    .bind(auth.id)
-    .bind(now)
-    .fetch_all(&state.db)
-    .await?;
+    let rows = queries::mark_all_dms_read(&state.db, auth.id, now).await?;
 
     // Broadcast DmRead events for each updated DM channel
     for (channel_id, last_read_message_id) in &rows {

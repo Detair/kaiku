@@ -5,113 +5,15 @@
 use std::time::Instant;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::types::{DmSearchAuthor, DmSearchQuery, DmSearchResponse, DmSearchResult};
+use super::ChatError;
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::chat::dm;
+use crate::chat::{dm, queries};
 use crate::db;
-
-// ============================================================================
-// Error Types
-// ============================================================================
-
-#[derive(Debug)]
-pub enum DmSearchError {
-    InvalidQuery(String),
-    Database(sqlx::Error),
-}
-
-impl IntoResponse for DmSearchError {
-    fn into_response(self) -> Response {
-        let (status, body) = match &self {
-            Self::InvalidQuery(msg) => (
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "INVALID_QUERY", "message": msg}),
-            ),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "INTERNAL_ERROR", "message": "Database error"}),
-            ),
-        };
-        (status, Json(body)).into_response()
-    }
-}
-
-impl From<sqlx::Error> for DmSearchError {
-    fn from(err: sqlx::Error) -> Self {
-        tracing::error!(error = %err, "DM search database error");
-        Self::Database(err)
-    }
-}
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct DmSearchQuery {
-    /// Search query string (supports websearch syntax: AND, OR, quotes)
-    pub q: String,
-    /// Maximum results to return (default 25, max 100)
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    /// Offset for pagination (default 0)
-    #[serde(default)]
-    pub offset: i64,
-    /// Filter: only messages after this date (ISO 8601)
-    pub date_from: Option<DateTime<Utc>>,
-    /// Filter: only messages before this date (ISO 8601)
-    pub date_to: Option<DateTime<Utc>>,
-    /// Filter: only messages in this DM channel
-    pub channel_id: Option<Uuid>,
-    /// Filter: only messages by this author
-    pub author_id: Option<Uuid>,
-    /// Filter: "link" or "file"
-    pub has: Option<String>,
-    /// Sort order: "relevance" (default) or "date"
-    pub sort: Option<String>,
-}
-
-const fn default_limit() -> i64 {
-    25
-}
-
-/// Author info for search results.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DmSearchAuthor {
-    pub id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-}
-
-/// DM search result item.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DmSearchResult {
-    pub id: Uuid,
-    pub channel_id: Uuid,
-    pub channel_name: String,
-    pub author: DmSearchAuthor,
-    pub content: String,
-    pub created_at: DateTime<Utc>,
-    pub headline: String,
-    pub rank: f32,
-}
-
-/// DM search response with results and pagination.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DmSearchResponse {
-    pub results: Vec<DmSearchResult>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
 
 // ============================================================================
 // Handler
@@ -133,21 +35,21 @@ pub async fn search_dm_messages(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(query): Query<DmSearchQuery>,
-) -> Result<Json<DmSearchResponse>, DmSearchError> {
+) -> Result<Json<DmSearchResponse>, ChatError> {
     // Validate query
     let search_term = query.q.trim();
     if search_term.is_empty() {
-        return Err(DmSearchError::InvalidQuery(
+        return Err(ChatError::InvalidQuery(
             "Search query cannot be empty".to_string(),
         ));
     }
     if search_term.len() < 2 {
-        return Err(DmSearchError::InvalidQuery(
+        return Err(ChatError::InvalidQuery(
             "Search query must be at least 2 characters".to_string(),
         ));
     }
     if search_term.len() > 1000 {
-        return Err(DmSearchError::InvalidQuery(
+        return Err(ChatError::InvalidQuery(
             "Search query must not exceed 1000 characters".to_string(),
         ));
     }
@@ -155,7 +57,7 @@ pub async fn search_dm_messages(
     // Validate date range
     if let (Some(from), Some(to)) = (query.date_from, query.date_to) {
         if from > to {
-            return Err(DmSearchError::InvalidQuery(
+            return Err(ChatError::InvalidQuery(
                 "date_from must be before date_to".to_string(),
             ));
         }
@@ -164,7 +66,7 @@ pub async fn search_dm_messages(
     // Validate has filter
     if let Some(ref has) = query.has {
         if has != "link" && has != "file" {
-            return Err(DmSearchError::InvalidQuery(
+            return Err(ChatError::InvalidQuery(
                 "has must be \"link\" or \"file\"".to_string(),
             ));
         }
@@ -175,7 +77,7 @@ pub async fn search_dm_messages(
         None | Some("relevance") => db::SearchSort::Relevance,
         Some("date") => db::SearchSort::Date,
         Some(_) => {
-            return Err(DmSearchError::InvalidQuery(
+            return Err(ChatError::InvalidQuery(
                 "sort must be \"relevance\" or \"date\"".to_string(),
             ));
         }
@@ -254,11 +156,7 @@ pub async fn search_dm_messages(
         users.into_iter().map(|u| (u.id, u)).collect();
 
     // Bulk fetch channel names
-    let channels: Vec<(Uuid, String)> =
-        sqlx::query_as("SELECT id, name FROM channels WHERE id = ANY($1)")
-            .bind(&channel_ids)
-            .fetch_all(&state.db)
-            .await?;
+    let channels = queries::list_channel_names_by_ids(&state.db, &channel_ids).await?;
     let channel_map: std::collections::HashMap<Uuid, String> = channels.into_iter().collect();
 
     // Build results

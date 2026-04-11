@@ -6,4 +6,5 @@ pub mod deletion;
 pub mod error;
 pub mod export;
 pub mod handlers;
+pub mod queries;
 pub mod types;

@@ -6,7 +6,7 @@ use axum::Json;
 use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
-pub enum GovError {
+pub enum GovernanceError {
     #[error("Export job not found")]
     ExportNotFound,
 
@@ -41,28 +41,41 @@ pub enum GovError {
     Database(#[from] sqlx::Error),
 }
 
-impl IntoResponse for GovError {
+impl IntoResponse for GovernanceError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            Self::ExportNotFound => (StatusCode::NOT_FOUND, self.to_string()),
-            Self::ExportAlreadyPending => (StatusCode::CONFLICT, self.to_string()),
-            Self::ExportExpired => (StatusCode::GONE, self.to_string()),
-            Self::DeletionAlreadyScheduled => (StatusCode::CONFLICT, self.to_string()),
-            Self::NoDeletionPending => (StatusCode::NOT_FOUND, self.to_string()),
-            Self::PasswordInvalid => (StatusCode::UNAUTHORIZED, self.to_string()),
-            Self::OwnsGuilds(_) => (StatusCode::CONFLICT, self.to_string()),
-            Self::OidcPasswordNotSupported => (StatusCode::BAD_REQUEST, self.to_string()),
-            Self::StorageNotConfigured => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
-            Self::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+        let (status, code, message) = match &self {
+            Self::ExportNotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", self.to_string()),
+            Self::ExportAlreadyPending => (StatusCode::CONFLICT, "CONFLICT", self.to_string()),
+            Self::ExportExpired => (StatusCode::GONE, "EXPORT_EXPIRED", self.to_string()),
+            Self::DeletionAlreadyScheduled => (StatusCode::CONFLICT, "CONFLICT", self.to_string()),
+            Self::NoDeletionPending => (StatusCode::NOT_FOUND, "NOT_FOUND", self.to_string()),
+            Self::PasswordInvalid => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", self.to_string()),
+            Self::OwnsGuilds(_) => (StatusCode::CONFLICT, "OWNS_GUILDS", self.to_string()),
+            Self::OidcPasswordNotSupported => (
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                self.to_string(),
+            ),
+            Self::StorageNotConfigured => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "STORAGE_NOT_CONFIGURED",
+                self.to_string(),
+            ),
+            Self::Validation(_) => (
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                self.to_string(),
+            ),
             Self::Database(e) => {
                 tracing::error!(error = %e, "Governance database error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
                     "Internal server error".to_string(),
                 )
             }
         };
 
-        (status, Json(json!({ "error": message }))).into_response()
+        (status, Json(json!({ "error": code, "message": message }))).into_response()
     }
 }

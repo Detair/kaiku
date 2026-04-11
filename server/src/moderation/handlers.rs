@@ -5,7 +5,9 @@ use axum::Json;
 use fred::prelude::*;
 use validator::Validate;
 
-use super::types::{CreateReportRequest, Report, ReportError, ReportResponse};
+use super::error::ModerationError;
+use super::queries::{self, InsertReportOutcome};
+use super::types::{CreateReportRequest, ReportResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::ws::{broadcast_admin_event, ServerEvent};
@@ -29,42 +31,35 @@ pub async fn create_report(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<CreateReportRequest>,
-) -> Result<Json<ReportResponse>, ReportError> {
-    body.validate()
-        .map_err(|e| ReportError::Validation(crate::validation::format_validation_errors(&e)))?;
+) -> Result<Json<ReportResponse>, ModerationError> {
+    body.validate().map_err(|e| {
+        ModerationError::Validation(crate::validation::format_validation_errors(&e))
+    })?;
 
     // Cannot report yourself
     if body.target_user_id == auth.id {
-        return Err(ReportError::Validation(
+        return Err(ModerationError::Validation(
             "Cannot report yourself".to_string(),
         ));
     }
 
     // Check target user exists
-    let target_exists: bool =
-        sqlx::query_scalar!("SELECT id FROM users WHERE id = $1", body.target_user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .is_some();
-
-    if !target_exists {
-        return Err(ReportError::Validation("Target user not found".to_string()));
+    if !queries::user_exists(&state.db, body.target_user_id).await? {
+        return Err(ModerationError::Validation(
+            "Target user not found".to_string(),
+        ));
     }
 
     // If reporting a message, verify it exists and belongs to the target user
     if let Some(message_id) = body.target_message_id {
-        let msg = sqlx::query!("SELECT user_id FROM messages WHERE id = $1", message_id)
-            .fetch_optional(&state.db)
-            .await?;
-
-        match msg {
-            Some(m) if m.user_id != Some(body.target_user_id) => {
-                return Err(ReportError::Validation(
+        match queries::get_message_author(&state.db, message_id).await? {
+            Some(author_id) if author_id != Some(body.target_user_id) => {
+                return Err(ModerationError::Validation(
                     "Message does not belong to the target user".to_string(),
                 ));
             }
             None => {
-                return Err(ReportError::Validation(
+                return Err(ModerationError::Validation(
                     "Target message not found".to_string(),
                 ));
             }
@@ -81,31 +76,24 @@ pub async fn create_report(
         let _: Result<(), _> = state.redis.expire(&rate_key, 3600, None).await;
     }
     if count > 5 {
-        return Err(ReportError::RateLimited);
+        return Err(ModerationError::RateLimited);
     }
 
     // Insert report (unique index will catch duplicates)
-    let report = sqlx::query_as::<_, Report>(
-        r"INSERT INTO user_reports (reporter_id, target_type, target_user_id, target_message_id, category, description)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING *",
+    let report = match queries::insert_report(
+        &state.db,
+        auth.id,
+        body.target_type,
+        body.target_user_id,
+        body.target_message_id,
+        body.category,
+        body.description,
     )
-    .bind(auth.id)
-    .bind(body.target_type)
-    .bind(body.target_user_id)
-    .bind(body.target_message_id)
-    .bind(body.category)
-    .bind(body.description)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.constraint() == Some("idx_reports_no_duplicate_active") {
-                return ReportError::Duplicate;
-            }
-        }
-        ReportError::Database(e)
-    })?;
+    .await?
+    {
+        InsertReportOutcome::Inserted(r) => r,
+        InsertReportOutcome::Duplicate => return Err(ModerationError::Duplicate),
+    };
 
     // Broadcast to admin events channel
     let event = ServerEvent::AdminReportCreated {

@@ -7,7 +7,8 @@ use chrono::{Duration, Utc};
 use rand::Rng;
 use uuid::Uuid;
 
-use super::handlers::GuildError;
+use super::error::GuildError;
+use super::queries::{core as core_q, invites as queries};
 use super::types::{CreateInviteRequest, GuildInvite, InviteResponse};
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -52,26 +53,13 @@ pub async fn list_invites(
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<Vec<GuildInvite>>, GuildError> {
     // Verify ownership
-    let guild = sqlx::query_as::<_, (Uuid,)>("SELECT owner_id FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(GuildError::NotFound)?;
-
-    if guild.0 != auth.id {
+    let owner_id = core_q::fetch_guild_owner(&state.db, guild_id).await?;
+    if owner_id != auth.id {
         return Err(GuildError::Forbidden);
     }
 
     // Get active invites (not expired)
-    let invites = sqlx::query_as::<_, GuildInvite>(
-        r"SELECT id, guild_id, code, created_by, expires_at, use_count, created_at
-           FROM guild_invites
-           WHERE guild_id = $1 AND (expires_at IS NULL OR expires_at > NOW())
-           ORDER BY created_at DESC",
-    )
-    .bind(guild_id)
-    .fetch_all(&state.db)
-    .await?;
+    let invites = queries::list_active_invites(&state.db, guild_id).await?;
 
     Ok(Json(invites))
 }
@@ -94,26 +82,15 @@ pub async fn create_invite(
     Json(body): Json<CreateInviteRequest>,
 ) -> Result<Json<GuildInvite>, GuildError> {
     // Verify ownership
-    let guild = sqlx::query_as::<_, (Uuid,)>("SELECT owner_id FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(GuildError::NotFound)?;
-
-    if guild.0 != auth.id {
+    let owner_id = core_q::fetch_guild_owner(&state.db, guild_id).await?;
+    if owner_id != auth.id {
         return Err(GuildError::Forbidden);
     }
 
     // Check rate limit (max 10 active invites per guild)
-    let active_count: (i64,) = sqlx::query_as(
-        r"SELECT COUNT(*) FROM guild_invites
-           WHERE guild_id = $1 AND (expires_at IS NULL OR expires_at > NOW())",
-    )
-    .bind(guild_id)
-    .fetch_one(&state.db)
-    .await?;
+    let active_count = queries::count_active_invites(&state.db, guild_id).await?;
 
-    if active_count.0 >= 10 {
+    if active_count >= 10 {
         return Err(GuildError::Validation(
             "Maximum 10 active invites per guild".to_string(),
         ));
@@ -123,12 +100,7 @@ pub async fn create_invite(
     let mut code = generate_invite_code();
     let mut attempts = 0;
     while attempts < 5 {
-        let exists: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM guild_invites WHERE code = $1")
-                .bind(&code)
-                .fetch_optional(&state.db)
-                .await?;
-        if exists.is_none() {
+        if !queries::invite_code_exists(&state.db, &code).await? {
             break;
         }
         code = generate_invite_code();
@@ -139,17 +111,7 @@ pub async fn create_invite(
     let expires_at = parse_expiry(&body.expires_in).map(|d| Utc::now() + d);
 
     // Insert invite
-    let invite = sqlx::query_as::<_, GuildInvite>(
-        r"INSERT INTO guild_invites (guild_id, code, created_by, expires_at)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, guild_id, code, created_by, expires_at, use_count, created_at",
-    )
-    .bind(guild_id)
-    .bind(&code)
-    .bind(auth.id)
-    .bind(expires_at)
-    .fetch_one(&state.db)
-    .await?;
+    let invite = queries::insert_invite(&state.db, guild_id, &code, auth.id, expires_at).await?;
 
     Ok(Json(invite))
 }
@@ -173,24 +135,15 @@ pub async fn delete_invite(
     Path((guild_id, code)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, GuildError> {
     // Verify ownership
-    let guild = sqlx::query_as::<_, (Uuid,)>("SELECT owner_id FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(GuildError::NotFound)?;
-
-    if guild.0 != auth.id {
+    let owner_id = core_q::fetch_guild_owner(&state.db, guild_id).await?;
+    if owner_id != auth.id {
         return Err(GuildError::Forbidden);
     }
 
     // Delete the invite
-    let result = sqlx::query("DELETE FROM guild_invites WHERE guild_id = $1 AND code = $2")
-        .bind(guild_id)
-        .bind(&code)
-        .execute(&state.db)
-        .await?;
+    let rows_affected = queries::delete_invite(&state.db, guild_id, &code).await?;
 
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         return Err(GuildError::NotFound);
     }
 
@@ -213,74 +166,40 @@ pub async fn join_via_invite(
     Path(code): Path<String>,
 ) -> Result<Json<InviteResponse>, GuildError> {
     // Find the invite
-    let invite = sqlx::query_as::<_, GuildInvite>(
-        r"SELECT id, guild_id, code, created_by, expires_at, use_count, created_at
-           FROM guild_invites
-           WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())",
-    )
-    .bind(&code)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(GuildError::Validation(
-        "Invalid or expired invite code".to_string(),
-    ))?;
+    let invite = queries::fetch_active_invite_by_code(&state.db, &code)
+        .await?
+        .ok_or(GuildError::Validation(
+            "Invalid or expired invite code".to_string(),
+        ))?;
 
-    let globally_banned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
-    )
-    .bind(auth.id)
-    .fetch_one(&state.db)
-    .await?;
-
-    if globally_banned {
+    if queries::is_user_globally_banned(&state.db, auth.id).await? {
         return Err(GuildError::Forbidden);
     }
 
     let mut tx = state.db.begin().await?;
 
     // Serialize member joins per guild so limit checks are strict under concurrency.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 53))")
-        .bind(invite.guild_id)
-        .execute(&mut *tx)
-        .await?;
+    queries::lock_member_join(&mut tx, invite.guild_id).await?;
 
     // Check guild-specific ban
-    let guild_banned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM guild_bans WHERE guild_id = $1 AND user_id = $2 AND (expires_at IS NULL OR expires_at > NOW()))",
-    )
-    .bind(invite.guild_id)
-    .bind(auth.id)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    if guild_banned {
+    if queries::is_user_banned_from_guild(&mut tx, invite.guild_id, auth.id).await? {
         return Err(GuildError::ForbiddenMsg(
             "You are banned from this guild".to_string(),
         ));
     }
 
     // Check if already a member
-    let is_member: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2)",
-    )
-    .bind(invite.guild_id)
-    .bind(auth.id)
-    .fetch_one(&mut *tx)
-    .await?;
-    if is_member {
+    if queries::is_guild_member_tx(&mut tx, invite.guild_id, auth.id).await? {
         tx.commit().await?;
 
         // Already a member, just return guild info
-        let guild_name: (String,) = sqlx::query_as("SELECT name FROM guilds WHERE id = $1")
-            .bind(invite.guild_id)
-            .fetch_one(&state.db)
-            .await?;
+        let guild_name = queries::fetch_guild_name(&state.db, invite.guild_id).await?;
 
         return Ok(Json(InviteResponse {
             id: invite.id,
             code: invite.code,
             guild_id: invite.guild_id,
-            guild_name: guild_name.0,
+            guild_name,
             expires_at: invite.expires_at,
             use_count: invite.use_count,
             created_at: invite.created_at,
@@ -288,11 +207,7 @@ pub async fn join_via_invite(
     }
 
     // Live count inside advisory lock (seed 53) for strict limit enforcement.
-    let member_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM guild_members WHERE guild_id = $1")
-            .bind(invite.guild_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let member_count = queries::count_guild_members_tx(&mut tx, invite.guild_id).await?;
     if member_count >= state.config.max_members_per_guild {
         return Err(GuildError::LimitExceeded(format!(
             "Guild has reached the maximum number of members ({})",
@@ -301,28 +216,20 @@ pub async fn join_via_invite(
     }
 
     // Add as member (ON CONFLICT DO NOTHING to handle duplicate join attempts)
-    let result = sqlx::query(
-        "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-    )
-    .bind(invite.guild_id)
-    .bind(auth.id)
-    .execute(&mut *tx)
-    .await?;
+    let rows_affected =
+        queries::insert_member_idempotent(&mut tx, invite.guild_id, auth.id).await?;
 
     // If no rows affected, user was already a member (race with the earlier check)
-    if result.rows_affected() == 0 {
+    if rows_affected == 0 {
         tx.commit().await?;
 
-        let guild_name: (String,) = sqlx::query_as("SELECT name FROM guilds WHERE id = $1")
-            .bind(invite.guild_id)
-            .fetch_one(&state.db)
-            .await?;
+        let guild_name = queries::fetch_guild_name(&state.db, invite.guild_id).await?;
 
         return Ok(Json(InviteResponse {
             id: invite.id,
             code: invite.code,
             guild_id: invite.guild_id,
-            guild_name: guild_name.0,
+            guild_name,
             expires_at: invite.expires_at,
             use_count: invite.use_count,
             created_at: invite.created_at,
@@ -330,16 +237,13 @@ pub async fn join_via_invite(
     }
 
     // Increment use count
-    sqlx::query("UPDATE guild_invites SET use_count = use_count + 1 WHERE id = $1")
-        .bind(invite.id)
-        .execute(&mut *tx)
-        .await?;
+    queries::increment_invite_use_count(&mut tx, invite.id).await?;
 
     tx.commit().await?;
 
     // Initialize read state for all text channels (best-effort, non-critical)
     if let Err(err) =
-        super::handlers::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await
+        super::members::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await
     {
         tracing::error!(
             ?err,
@@ -351,16 +255,13 @@ pub async fn join_via_invite(
     }
 
     // Get guild name for response
-    let guild_name: (String,) = sqlx::query_as("SELECT name FROM guilds WHERE id = $1")
-        .bind(invite.guild_id)
-        .fetch_one(&state.db)
-        .await?;
+    let guild_name = queries::fetch_guild_name(&state.db, invite.guild_id).await?;
 
     Ok(Json(InviteResponse {
         id: invite.id,
         code: invite.code,
         guild_id: invite.guild_id,
-        guild_name: guild_name.0,
+        guild_name,
         expires_at: invite.expires_at,
         use_count: invite.use_count + 1,
         created_at: invite.created_at,

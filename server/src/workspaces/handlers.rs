@@ -9,11 +9,11 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::error::WorkspaceError;
+use super::queries::{self, InsertEntryOutcome};
 use super::types::{
     AddEntryRequest, CreateWorkspaceRequest, ReorderEntriesRequest, ReorderWorkspacesRequest,
-    UpdateWorkspaceRequest, WorkspaceDetailResponse, WorkspaceEntryResponse, WorkspaceEntryRow,
-    WorkspaceListItem, WorkspaceListRow, WorkspaceResponse, WorkspaceRow,
-    MAX_WORKSPACE_ICON_LENGTH,
+    UpdateWorkspaceRequest, WorkspaceDetailResponse, WorkspaceEntryResponse, WorkspaceListItem,
+    WorkspaceResponse, MAX_WORKSPACE_ICON_LENGTH,
 };
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -62,28 +62,15 @@ pub async fn create_workspace(
 
     let mut tx = state.db.begin().await?;
 
-    // Advisory lock: serialize workspace creation per user to enforce strict limits under
-    // concurrency. Seed 41 prevents collision with other lock sites (see seed registry in
-    // server/src/db/mod.rs).
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 41))")
-        .bind(auth_user.id)
-        .execute(&mut *tx)
-        .await?;
+    queries::acquire_user_workspace_lock(&mut tx, auth_user.id).await?;
 
-    // Atomic count check + insert inside lock.
-    let row = sqlx::query_as::<_, WorkspaceRow>(
-        r"
-        INSERT INTO workspaces (owner_user_id, name, icon, sort_order)
-        SELECT $1, $2, $3, COALESCE((SELECT MAX(sort_order) + 1 FROM workspaces WHERE owner_user_id = $1), 0)
-        WHERE (SELECT COUNT(*) FROM workspaces WHERE owner_user_id = $1) < $4
-        RETURNING id, owner_user_id, name, icon, sort_order, created_at, updated_at
-        ",
+    let row = queries::insert_workspace_if_under_limit(
+        &mut tx,
+        auth_user.id,
+        &request.name,
+        request.icon.as_deref(),
+        state.config.max_workspaces_per_user,
     )
-    .bind(auth_user.id)
-    .bind(&request.name)
-    .bind(&request.icon)
-    .bind(state.config.max_workspaces_per_user)
-    .fetch_optional(&mut *tx)
     .await?
     .ok_or(WorkspaceError::WorkspaceLimitExceeded)?;
 
@@ -123,22 +110,7 @@ pub async fn list_workspaces(
     State(state): State<AppState>,
     auth_user: AuthUser,
 ) -> Result<Json<Vec<WorkspaceListItem>>, WorkspaceError> {
-    let rows = sqlx::query_as::<_, WorkspaceListRow>(
-        r"
-        SELECT w.id, w.name, w.icon, w.sort_order,
-               COUNT(we.id) AS entry_count,
-               w.created_at, w.updated_at
-        FROM workspaces w
-        LEFT JOIN workspace_entries we ON we.workspace_id = w.id
-        WHERE w.owner_user_id = $1
-        GROUP BY w.id
-        ORDER BY w.sort_order, w.created_at
-        ",
-    )
-    .bind(auth_user.id)
-    .fetch_all(&state.db)
-    .await?;
-
+    let rows = queries::list_user_workspaces(&state.db, auth_user.id).await?;
     Ok(Json(
         rows.into_iter().map(WorkspaceListItem::from).collect(),
     ))
@@ -164,31 +136,11 @@ pub async fn get_workspace(
     auth_user: AuthUser,
     Path(workspace_id): Path<Uuid>,
 ) -> Result<Json<WorkspaceDetailResponse>, WorkspaceError> {
-    let workspace = sqlx::query_as::<_, WorkspaceRow>(
-        "SELECT id, owner_user_id, name, icon, sort_order, created_at, updated_at FROM workspaces WHERE id = $1 AND owner_user_id = $2",
-    )
-    .bind(workspace_id)
-    .bind(auth_user.id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(WorkspaceError::NotFound)?;
+    let workspace = queries::find_workspace_for_owner(&state.db, workspace_id, auth_user.id)
+        .await?
+        .ok_or(WorkspaceError::NotFound)?;
 
-    let entries = sqlx::query_as::<_, WorkspaceEntryRow>(
-        r"
-        SELECT we.id, we.workspace_id, we.guild_id, we.channel_id, we.position,
-               g.name AS guild_name, g.icon_url AS guild_icon,
-               c.name AS channel_name, c.channel_type AS channel_type,
-               we.created_at
-        FROM workspace_entries we
-        JOIN guilds g ON g.id = we.guild_id
-        JOIN channels c ON c.id = we.channel_id
-        WHERE we.workspace_id = $1
-        ORDER BY we.position, we.created_at
-        ",
-    )
-    .bind(workspace_id)
-    .fetch_all(&state.db)
-    .await?;
+    let entries = queries::list_workspace_entries(&state.db, workspace_id).await?;
 
     Ok(Json(WorkspaceDetailResponse {
         workspace: WorkspaceResponse::from(workspace),
@@ -243,21 +195,14 @@ pub async fn update_workspace(
     let should_update_icon = request.icon.is_some();
     let new_icon_value: Option<&str> = request.icon.as_ref().and_then(|v| v.as_deref());
 
-    let row = sqlx::query_as::<_, WorkspaceRow>(
-        r"
-        UPDATE workspaces
-        SET name = COALESCE($3, name),
-            icon = CASE WHEN $4 THEN $5 ELSE icon END
-        WHERE id = $1 AND owner_user_id = $2
-        RETURNING id, owner_user_id, name, icon, sort_order, created_at, updated_at
-        ",
+    let row = queries::update_workspace_for_owner(
+        &state.db,
+        workspace_id,
+        auth_user.id,
+        request.name.as_deref(),
+        should_update_icon,
+        new_icon_value,
     )
-    .bind(workspace_id)
-    .bind(auth_user.id)
-    .bind(&request.name)
-    .bind(should_update_icon)
-    .bind(new_icon_value)
-    .fetch_optional(&state.db)
     .await?
     .ok_or(WorkspaceError::NotFound)?;
 
@@ -298,13 +243,7 @@ pub async fn delete_workspace(
     auth_user: AuthUser,
     Path(workspace_id): Path<Uuid>,
 ) -> Result<StatusCode, WorkspaceError> {
-    let result = sqlx::query("DELETE FROM workspaces WHERE id = $1 AND owner_user_id = $2")
-        .bind(workspace_id)
-        .bind(auth_user.id)
-        .execute(&state.db)
-        .await?;
-
-    if result.rows_affected() == 0 {
+    if !queries::delete_workspace_for_owner(&state.db, workspace_id, auth_user.id).await? {
         return Err(WorkspaceError::NotFound);
     }
 
@@ -350,39 +289,18 @@ pub async fn add_entry(
     Json(request): Json<AddEntryRequest>,
 ) -> Result<(StatusCode, Json<WorkspaceEntryResponse>), WorkspaceError> {
     // 1. Verify workspace ownership
-    let workspace_exists =
-        sqlx::query("SELECT 1 FROM workspaces WHERE id = $1 AND owner_user_id = $2")
-            .bind(workspace_id)
-            .bind(auth_user.id)
-            .fetch_optional(&state.db)
-            .await?
-            .is_some();
-
-    if !workspace_exists {
+    if !queries::workspace_owned_by(&state.db, workspace_id, auth_user.id).await? {
         return Err(WorkspaceError::NotFound);
     }
 
     // 2. Verify channel belongs to the claimed guild
-    let channel_guild: Option<(Option<Uuid>,)> =
-        sqlx::query_as("SELECT guild_id FROM channels WHERE id = $1")
-            .bind(request.channel_id)
-            .fetch_optional(&state.db)
-            .await?;
-
-    match channel_guild {
-        Some((Some(gid),)) if gid == request.guild_id => {}
+    match queries::find_channel_guild_id(&state.db, request.channel_id).await? {
+        Some(Some(gid)) if gid == request.guild_id => {}
         _ => return Err(WorkspaceError::ChannelNotFound),
     }
 
     // 3. Verify guild membership
-    let is_member = sqlx::query("SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2")
-        .bind(request.guild_id)
-        .bind(auth_user.id)
-        .fetch_optional(&state.db)
-        .await?
-        .is_some();
-
-    if !is_member {
+    if !queries::is_guild_member(&state.db, request.guild_id, auth_user.id).await? {
         return Err(WorkspaceError::ChannelNotFound);
     }
 
@@ -393,59 +311,29 @@ pub async fn add_entry(
 
     let mut tx = state.db.begin().await?;
 
-    // Advisory lock: serialize entry creation per workspace to enforce strict limits under
-    // concurrency. Seed 43 prevents collision with other lock sites (see seed registry in
-    // server/src/db/mod.rs).
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 43))")
-        .bind(workspace_id)
-        .execute(&mut *tx)
-        .await?;
+    queries::acquire_workspace_entry_lock(&mut tx, workspace_id).await?;
 
     // 5. Atomic insert with entry limit check inside lock.
-    let result = sqlx::query_as::<_, (Uuid,)>(
-        r"
-        INSERT INTO workspace_entries (workspace_id, guild_id, channel_id, position)
-        SELECT $1, $2, $3, COALESCE((SELECT MAX(position) + 1 FROM workspace_entries WHERE workspace_id = $1), 0)
-        WHERE (SELECT COUNT(*) FROM workspace_entries WHERE workspace_id = $1) < $4
-        RETURNING id
-        ",
+    let outcome = queries::insert_workspace_entry_if_under_limit(
+        &mut tx,
+        workspace_id,
+        request.guild_id,
+        request.channel_id,
+        state.config.max_entries_per_workspace,
     )
-    .bind(workspace_id)
-    .bind(request.guild_id)
-    .bind(request.channel_id)
-    .bind(state.config.max_entries_per_workspace)
-    .fetch_optional(&mut *tx)
-    .await;
+    .await?;
 
-    let entry_id = match result {
-        Ok(Some((id,))) => {
+    let entry_id = match outcome {
+        InsertEntryOutcome::Inserted(id) => {
             tx.commit().await?;
             id
         }
-        Ok(None) => return Err(WorkspaceError::EntryLimitExceeded),
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            return Err(WorkspaceError::DuplicateEntry);
-        }
-        Err(e) => return Err(WorkspaceError::Database(e)),
+        InsertEntryOutcome::LimitExceeded => return Err(WorkspaceError::EntryLimitExceeded),
+        InsertEntryOutcome::DuplicateEntry => return Err(WorkspaceError::DuplicateEntry),
     };
 
     // 6. Fetch guild/channel names for the response
-    let entry_row = sqlx::query_as::<_, WorkspaceEntryRow>(
-        r"
-        SELECT we.id, we.workspace_id, we.guild_id, we.channel_id, we.position,
-               g.name AS guild_name, g.icon_url AS guild_icon,
-               c.name AS channel_name, c.channel_type AS channel_type,
-               we.created_at
-        FROM workspace_entries we
-        JOIN guilds g ON g.id = we.guild_id
-        JOIN channels c ON c.id = we.channel_id
-        WHERE we.id = $1
-        ",
-    )
-    .bind(entry_id)
-    .fetch_one(&state.db)
-    .await?;
-
+    let entry_row = queries::find_workspace_entry_with_metadata(&state.db, entry_id).await?;
     let response = WorkspaceEntryResponse::from(entry_row);
 
     if let Err(e) = broadcast_to_user(
@@ -487,24 +375,9 @@ pub async fn remove_entry(
     auth_user: AuthUser,
     Path((workspace_id, entry_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, WorkspaceError> {
-    // Delete entry only if workspace is owned by user
-    let result = sqlx::query(
-        r"
-        DELETE FROM workspace_entries we
-        USING workspaces w
-        WHERE we.id = $1
-          AND we.workspace_id = $2
-          AND w.id = we.workspace_id
-          AND w.owner_user_id = $3
-        ",
-    )
-    .bind(entry_id)
-    .bind(workspace_id)
-    .bind(auth_user.id)
-    .execute(&state.db)
-    .await?;
-
-    if result.rows_affected() == 0 {
+    if !queries::delete_workspace_entry_for_owner(&state.db, workspace_id, entry_id, auth_user.id)
+        .await?
+    {
         return Err(WorkspaceError::EntryNotFound);
     }
 
@@ -559,33 +432,16 @@ pub async fn reorder_entries(
     }
 
     // Verify workspace ownership
-    let workspace_exists =
-        sqlx::query("SELECT 1 FROM workspaces WHERE id = $1 AND owner_user_id = $2")
-            .bind(workspace_id)
-            .bind(auth_user.id)
-            .fetch_optional(&state.db)
-            .await?
-            .is_some();
-
-    if !workspace_exists {
+    if !queries::workspace_owned_by(&state.db, workspace_id, auth_user.id).await? {
         return Err(WorkspaceError::NotFound);
     }
 
     let mut tx = state.db.begin().await?;
 
     // Verify all entry IDs belong to this workspace AND cover the full set
-    let (matched_count, total_count): (i64, i64) = sqlx::query_as(
-        r"
-        SELECT
-            COUNT(*) FILTER (WHERE id = ANY($2)),
-            COUNT(*)
-        FROM workspace_entries WHERE workspace_id = $1
-        ",
-    )
-    .bind(workspace_id)
-    .bind(&request.entry_ids)
-    .fetch_one(&mut *tx)
-    .await?;
+    let (matched_count, total_count) =
+        queries::count_workspace_entries_for_reorder(&mut tx, workspace_id, &request.entry_ids)
+            .await?;
 
     if matched_count != request.entry_ids.len() as i64 || total_count != matched_count {
         return Err(WorkspaceError::InvalidEntries);
@@ -593,14 +449,8 @@ pub async fn reorder_entries(
 
     // Update positions (trigger handles updated_at)
     for (position, entry_id) in request.entry_ids.iter().enumerate() {
-        sqlx::query(
-            "UPDATE workspace_entries SET position = $1 WHERE id = $2 AND workspace_id = $3",
-        )
-        .bind(position as i32)
-        .bind(entry_id)
-        .bind(workspace_id)
-        .execute(&mut *tx)
-        .await?;
+        queries::update_workspace_entry_position(&mut tx, workspace_id, *entry_id, position as i32)
+            .await?;
     }
 
     tx.commit().await?;
@@ -658,18 +508,9 @@ pub async fn reorder_workspaces(
     let mut tx = state.db.begin().await?;
 
     // Verify all workspace IDs belong to this user AND cover the full set
-    let (matched_count, total_count): (i64, i64) = sqlx::query_as(
-        r"
-        SELECT
-            COUNT(*) FILTER (WHERE id = ANY($2)),
-            COUNT(*)
-        FROM workspaces WHERE owner_user_id = $1
-        ",
-    )
-    .bind(auth_user.id)
-    .bind(&request.workspace_ids)
-    .fetch_one(&mut *tx)
-    .await?;
+    let (matched_count, total_count) =
+        queries::count_user_workspaces_for_reorder(&mut tx, auth_user.id, &request.workspace_ids)
+            .await?;
 
     if matched_count != request.workspace_ids.len() as i64 || total_count != matched_count {
         return Err(WorkspaceError::InvalidWorkspaces);
@@ -677,12 +518,13 @@ pub async fn reorder_workspaces(
 
     // Update sort_order (trigger handles updated_at)
     for (sort_order, workspace_id) in request.workspace_ids.iter().enumerate() {
-        sqlx::query("UPDATE workspaces SET sort_order = $1 WHERE id = $2 AND owner_user_id = $3")
-            .bind(sort_order as i32)
-            .bind(workspace_id)
-            .bind(auth_user.id)
-            .execute(&mut *tx)
-            .await?;
+        queries::update_workspace_sort_order(
+            &mut tx,
+            *workspace_id,
+            auth_user.id,
+            sort_order as i32,
+        )
+        .await?;
     }
 
     tx.commit().await?;

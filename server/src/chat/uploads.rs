@@ -6,177 +6,19 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use uuid::Uuid;
 
-use super::messages::{detect_mention_type, AttachmentInfo, AuthorProfile, MessageResponse};
 use super::s3::S3Client;
+use super::types::{
+    detect_mention_type, validate_message_content, AttachmentInfo, AttachmentResponse,
+    AuthorProfile, DownloadQuery, MessageResponse, SignedUrlQuery, SignedUrlResponse, UploadedFile,
+};
+use super::ChatError;
 use crate::api::AppState;
 use crate::auth::jwt::validate_access_token;
 use crate::auth::AuthUser;
 use crate::db;
 use crate::ws::{broadcast_to_channel, ServerEvent};
-
-// ============================================================================
-// Error Types
-// ============================================================================
-
-/// Errors that can occur during file upload operations.
-#[derive(Debug, Error)]
-pub enum UploadError {
-    /// File uploads are not configured.
-    #[error("File uploads are not configured")]
-    NotConfigured,
-
-    /// File not found.
-    #[error("File not found")]
-    NotFound,
-
-    /// File too large.
-    #[error("File too large (max: {max_size} bytes)")]
-    TooLarge {
-        /// Maximum allowed size in bytes.
-        max_size: usize,
-    },
-
-    /// Invalid MIME type.
-    #[error("Invalid file type: {mime_type}")]
-    InvalidMimeType {
-        /// The rejected MIME type.
-        mime_type: String,
-    },
-
-    /// No file provided.
-    #[error("No file provided")]
-    NoFile,
-
-    /// Invalid filename.
-    #[error("Invalid filename")]
-    InvalidFilename,
-
-    /// Message not found.
-    #[error("Message not found")]
-    MessageNotFound,
-
-    /// Access denied.
-    #[error("Access denied")]
-    Forbidden,
-
-    /// Storage error.
-    #[error("Storage error: {0}")]
-    Storage(String),
-
-    /// Database error.
-    #[error("Database error")]
-    Database(#[from] sqlx::Error),
-
-    /// Validation error.
-    #[error("Validation error: {0}")]
-    Validation(String),
-}
-
-impl IntoResponse for UploadError {
-    fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            Self::NotConfigured => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "STORAGE_NOT_CONFIGURED",
-                self.to_string(),
-            ),
-            Self::NotFound => (StatusCode::NOT_FOUND, "FILE_NOT_FOUND", self.to_string()),
-            Self::TooLarge { .. } => (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "FILE_TOO_LARGE",
-                self.to_string(),
-            ),
-            Self::InvalidMimeType { .. } => (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "INVALID_MIME_TYPE",
-                self.to_string(),
-            ),
-            Self::NoFile => (StatusCode::BAD_REQUEST, "NO_FILE", self.to_string()),
-            Self::InvalidFilename => (
-                StatusCode::BAD_REQUEST,
-                "INVALID_FILENAME",
-                self.to_string(),
-            ),
-            Self::MessageNotFound => (StatusCode::NOT_FOUND, "MESSAGE_NOT_FOUND", self.to_string()),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string()),
-            Self::Storage(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "STORAGE_ERROR",
-                "Storage operation failed".to_string(),
-            ),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "DATABASE_ERROR",
-                "Database operation failed".to_string(),
-            ),
-            Self::Validation(_) => (
-                StatusCode::BAD_REQUEST,
-                "VALIDATION_ERROR",
-                self.to_string(),
-            ),
-        };
-
-        let body = Json(serde_json::json!({
-            "error": code,
-            "message": message,
-        }));
-
-        (status, body).into_response()
-    }
-}
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-/// Response for successful file upload.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct UploadedFile {
-    /// Attachment ID.
-    pub id: Uuid,
-    /// Original filename.
-    pub filename: String,
-    /// MIME type.
-    pub mime_type: String,
-    /// File size in bytes.
-    pub size: i64,
-    /// URL to access the file.
-    pub url: String,
-}
-
-/// Response for attachment metadata.
-#[derive(Debug, Serialize)]
-pub struct AttachmentResponse {
-    /// Attachment ID.
-    pub id: Uuid,
-    /// Message ID this attachment belongs to.
-    pub message_id: Uuid,
-    /// Original filename.
-    pub filename: String,
-    /// MIME type.
-    pub mime_type: String,
-    /// File size in bytes.
-    pub size_bytes: i64,
-    /// When the attachment was created.
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl From<db::FileAttachment> for AttachmentResponse {
-    fn from(a: db::FileAttachment) -> Self {
-        Self {
-            id: a.id,
-            message_id: a.message_id,
-            filename: a.filename,
-            mime_type: a.mime_type,
-            size_bytes: a.size_bytes,
-            created_at: a.created_at,
-        }
-    }
-}
 
 // ============================================================================
 // Constants
@@ -205,14 +47,14 @@ const DEFAULT_ALLOWED_TYPES: &[&str] = &[
 ///
 /// Returns the verified MIME type (detected from content, or the claimed type for
 /// formats where magic byte detection isn't possible like plain text).
-fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, UploadError> {
+fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, ChatError> {
     // For text/plain: infer can't detect plain text via magic bytes.
     // Accept if the content is valid UTF-8 and contains no null bytes (binary indicator).
     if claimed_mime == "text/plain" {
         if std::str::from_utf8(data).is_ok() && !data.contains(&0) {
             return Ok(claimed_mime.to_string());
         }
-        return Err(UploadError::InvalidMimeType {
+        return Err(ChatError::InvalidMimeType {
             mime_type: "binary data claimed as text/plain".to_string(),
         });
     }
@@ -227,7 +69,7 @@ fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, Uplo
             size = data.len(),
             "File content does not match any known magic byte signature"
         );
-        return Err(UploadError::InvalidMimeType {
+        return Err(ChatError::InvalidMimeType {
             mime_type: format!("{claimed_mime} (content unrecognizable)"),
         });
     };
@@ -252,7 +94,7 @@ fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, Uplo
         detected_mime = %detected,
         "File content type mismatch"
     );
-    Err(UploadError::InvalidMimeType {
+    Err(ChatError::InvalidMimeType {
         mime_type: format!("{claimed_mime} (detected: {detected})"),
     })
 }
@@ -283,9 +125,9 @@ pub async fn upload_file(
     State(state): State<AppState>,
     auth_user: AuthUser,
     mut multipart: Multipart,
-) -> Result<(StatusCode, Json<UploadedFile>), UploadError> {
+) -> Result<(StatusCode, Json<UploadedFile>), ChatError> {
     // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     let mut file_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
@@ -304,11 +146,11 @@ pub async fn upload_file(
                 let data = field
                     .bytes()
                     .await
-                    .map_err(|e| UploadError::Validation(e.to_string()))?;
+                    .map_err(|e| ChatError::Validation(e.to_string()))?;
 
                 // Check file size
                 if data.len() > state.config.max_upload_size {
-                    return Err(UploadError::TooLarge {
+                    return Err(ChatError::FileTooLarge {
                         max_size: state.config.max_upload_size,
                     });
                 }
@@ -319,10 +161,10 @@ pub async fn upload_file(
                 let text = field
                     .text()
                     .await
-                    .map_err(|e| UploadError::Validation(e.to_string()))?;
+                    .map_err(|e| ChatError::Validation(e.to_string()))?;
                 message_id = Some(
                     text.parse()
-                        .map_err(|_| UploadError::Validation("Invalid message_id".to_string()))?,
+                        .map_err(|_| ChatError::Validation("Invalid message_id".to_string()))?,
                 );
             }
             _ => {
@@ -332,16 +174,15 @@ pub async fn upload_file(
     }
 
     // Validate required fields
-    let file_data = file_data.ok_or(UploadError::NoFile)?;
-    let filename = filename.ok_or(UploadError::InvalidFilename)?;
-    let message_id = message_id.ok_or(UploadError::Validation(
-        "message_id is required".to_string(),
-    ))?;
+    let file_data = file_data.ok_or(ChatError::NoFile)?;
+    let filename = filename.ok_or(ChatError::InvalidFilename)?;
+    let message_id =
+        message_id.ok_or(ChatError::Validation("message_id is required".to_string()))?;
 
     // Sanitize filename
     let safe_filename = sanitize_filename(&filename);
     if safe_filename.is_empty() {
-        return Err(UploadError::InvalidFilename);
+        return Err(ChatError::InvalidFilename);
     }
 
     // Determine content type
@@ -360,7 +201,7 @@ pub async fn upload_file(
     );
 
     if !allowed_types.contains(&content_type.as_str()) {
-        return Err(UploadError::InvalidMimeType {
+        return Err(ChatError::InvalidMimeType {
             mime_type: content_type,
         });
     }
@@ -371,11 +212,11 @@ pub async fn upload_file(
     // Verify message exists and user has access
     let message = db::find_message_by_id(&state.db, message_id)
         .await?
-        .ok_or(UploadError::MessageNotFound)?;
+        .ok_or(ChatError::MessageNotFound)?;
 
     // Only message author can attach files (anonymized messages cannot have files added)
     if message.user_id != Some(auth_user.id) {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // Generate S3 key
@@ -406,7 +247,7 @@ pub async fn upload_file(
         if !keys.is_empty() {
             cleanup_s3_objects(s3.clone(), keys);
         }
-        return Err(UploadError::Storage(e.to_string()));
+        return Err(ChatError::Storage(e.to_string()));
     }
 
     // Save metadata to database
@@ -489,25 +330,25 @@ pub async fn upload_message_with_file(
     auth_user: AuthUser,
     Path(channel_id): Path<Uuid>,
     mut multipart: Multipart,
-) -> Result<(StatusCode, Json<MessageResponse>), UploadError> {
+) -> Result<(StatusCode, Json<MessageResponse>), ChatError> {
     // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     // Check channel exists
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(UploadError::Validation("Channel not found".to_string()))?;
+        .ok_or(ChatError::Validation("Channel not found".to_string()))?;
 
     // Check channel access (VIEW_CHANNEL permission or DM participant)
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
         .await
-        .map_err(|_| UploadError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     // For guild channels, also check SEND_MESSAGES permission
     if channel.guild_id.is_some()
         && !ctx.has_permission(crate::permissions::GuildPermissions::SEND_MESSAGES)
     {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let mut file_data: Option<Vec<u8>> = None;
@@ -527,11 +368,11 @@ pub async fn upload_message_with_file(
                 let data = field
                     .bytes()
                     .await
-                    .map_err(|e| UploadError::Validation(e.to_string()))?;
+                    .map_err(|e| ChatError::Validation(e.to_string()))?;
 
                 // Check file size
                 if data.len() > state.config.max_upload_size {
-                    return Err(UploadError::TooLarge {
+                    return Err(ChatError::FileTooLarge {
                         max_size: state.config.max_upload_size,
                     });
                 }
@@ -542,7 +383,7 @@ pub async fn upload_message_with_file(
                 content = field
                     .text()
                     .await
-                    .map_err(|e| UploadError::Validation(e.to_string()))?;
+                    .map_err(|e| ChatError::Validation(e.to_string()))?;
             }
             _ => {
                 // Ignore unknown fields
@@ -551,13 +392,13 @@ pub async fn upload_message_with_file(
     }
 
     // Validate required fields
-    let file_data = file_data.ok_or(UploadError::NoFile)?;
-    let filename = filename.ok_or(UploadError::InvalidFilename)?;
+    let file_data = file_data.ok_or(ChatError::NoFile)?;
+    let filename = filename.ok_or(ChatError::InvalidFilename)?;
 
     // Sanitize filename
     let safe_filename = sanitize_filename(&filename);
     if safe_filename.is_empty() {
-        return Err(UploadError::InvalidFilename);
+        return Err(ChatError::InvalidFilename);
     }
 
     // Determine content type
@@ -576,7 +417,7 @@ pub async fn upload_message_with_file(
     );
 
     if !allowed_types.contains(&file_content_type.as_str()) {
-        return Err(UploadError::InvalidMimeType {
+        return Err(ChatError::InvalidMimeType {
             mime_type: file_content_type,
         });
     }
@@ -586,8 +427,7 @@ pub async fn upload_message_with_file(
 
     // Validate message content length if provided
     if !content.is_empty() {
-        super::messages::validate_message_content(&content)
-            .map_err(|e| UploadError::Validation(e.to_string()))?;
+        validate_message_content(&content).map_err(|e| ChatError::Validation(e.to_string()))?;
     }
     // Content filtering on message text (if non-empty, guild channels only)
     if !content.is_empty() {
@@ -596,9 +436,9 @@ pub async fn upload_message_with_file(
                 let result = engine.check(&content);
                 if result.blocked {
                     for m in &result.matches {
-                        crate::moderation::filter_queries::log_moderation_action(
+                        crate::moderation::queries::log_moderation_action(
                             &state.db,
-                            &crate::moderation::filter_queries::LogActionParams {
+                            &crate::moderation::queries::LogActionParams {
                                 guild_id,
                                 user_id: auth_user.id,
                                 channel_id,
@@ -612,7 +452,7 @@ pub async fn upload_message_with_file(
                         .await
                         .ok();
                     }
-                    return Err(UploadError::Validation(
+                    return Err(ChatError::Validation(
                         "Your message was blocked by the server's content filter.".to_string(),
                     ));
                 }
@@ -621,9 +461,9 @@ pub async fn upload_message_with_file(
                     m.action == crate::moderation::filter_types::FilterAction::Log
                         || m.action == crate::moderation::filter_types::FilterAction::Warn
                 }) {
-                    crate::moderation::filter_queries::log_moderation_action(
+                    crate::moderation::queries::log_moderation_action(
                         &state.db,
-                        &crate::moderation::filter_queries::LogActionParams {
+                        &crate::moderation::queries::LogActionParams {
                             guild_id,
                             user_id: auth_user.id,
                             channel_id,
@@ -690,7 +530,7 @@ pub async fn upload_message_with_file(
             message.id,
             e
         );
-        return Err(UploadError::Storage(e.to_string()));
+        return Err(ChatError::Storage(e.to_string()));
     }
 
     // Save attachment metadata to database
@@ -813,47 +653,20 @@ pub async fn get_attachment(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<AttachmentResponse>, UploadError> {
+) -> Result<Json<AttachmentResponse>, ChatError> {
     let has_access = db::check_attachment_access(&state.db, id, auth_user.id)
         .await
-        .map_err(UploadError::Database)?;
+        .map_err(ChatError::Database)?;
 
     if !has_access {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let attachment = db::find_file_attachment_by_id(&state.db, id)
         .await?
-        .ok_or(UploadError::NotFound)?;
+        .ok_or(ChatError::FileNotFound)?;
 
     Ok(Json(attachment.into()))
-}
-
-/// Query parameters for signed URL endpoint.
-#[derive(Debug, Deserialize)]
-pub struct SignedUrlQuery {
-    /// Optional variant: "thumbnail" (256px) or "medium" (1024px).
-    pub variant: Option<String>,
-}
-
-/// Response containing a presigned S3 download URL.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct SignedUrlResponse {
-    /// Presigned S3 URL for direct download.
-    pub url: String,
-    /// Duration in seconds from generation until the URL expires.
-    pub expires_in: i64,
-}
-
-/// Query parameters for download endpoint.
-#[derive(Debug, Deserialize)]
-pub struct DownloadQuery {
-    /// **Deprecated:** Use `GET /api/messages/attachments/<id>/url` with Authorization header
-    /// instead. When present, authenticates via this JWT token instead of the Authorization
-    /// header.
-    pub token: Option<String>,
-    /// Optional variant to download: "thumbnail" (256px) or "medium" (1024px).
-    pub variant: Option<String>,
 }
 
 /// Download a file (stream from S3).
@@ -878,9 +691,9 @@ pub async fn download(
     auth_user: Option<AuthUser>,
     Path(id): Path<Uuid>,
     Query(query): Query<DownloadQuery>,
-) -> Result<Response, UploadError> {
+) -> Result<Response, ChatError> {
     // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     // Get user ID from either AuthUser (header) or token query parameter
     let user_id = if let Some(user) = auth_user {
@@ -893,28 +706,28 @@ pub async fn download(
         );
         // Validate token from query parameter
         let claims = validate_access_token(&token, &state.config.jwt_public_key)
-            .map_err(|_| UploadError::Forbidden)?;
+            .map_err(|_| ChatError::Forbidden)?;
         claims
             .sub
             .parse::<Uuid>()
-            .map_err(|_| UploadError::Forbidden)?
+            .map_err(|_| ChatError::Forbidden)?
     } else {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     };
 
     // Check permissions
     let has_access = db::check_attachment_access(&state.db, id, user_id)
         .await
-        .map_err(UploadError::Database)?;
+        .map_err(ChatError::Database)?;
 
     if !has_access {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // Get attachment metadata
     let attachment = db::find_file_attachment_by_id(&state.db, id)
         .await?
-        .ok_or(UploadError::NotFound)?;
+        .ok_or(ChatError::FileNotFound)?;
 
     // Determine S3 key and content type based on requested variant
     let (s3_key, content_type) = match query.variant.as_deref() {
@@ -943,7 +756,7 @@ pub async fn download(
             (key.to_string(), ct)
         }
         Some(invalid) => {
-            return Err(UploadError::Validation(format!(
+            return Err(ChatError::Validation(format!(
                 "Invalid variant '{invalid}'. Supported values are 'thumbnail' and 'medium'"
             )));
         }
@@ -954,7 +767,7 @@ pub async fn download(
     let stream = s3
         .get_object_stream(&s3_key)
         .await
-        .map_err(|e| UploadError::Storage(e.to_string()))?;
+        .map_err(|e| ChatError::Storage(e.to_string()))?;
 
     // Create stream body
     // ByteStream can be converted directly to Axum Body via into_inner()
@@ -1027,22 +840,22 @@ pub async fn get_signed_url(
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
     Query(query): Query<SignedUrlQuery>,
-) -> Result<Json<SignedUrlResponse>, UploadError> {
-    let s3 = state.s3.as_ref().ok_or(UploadError::NotConfigured)?;
+) -> Result<Json<SignedUrlResponse>, ChatError> {
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     // Check permissions
     let has_access = db::check_attachment_access(&state.db, id, auth_user.id)
         .await
-        .map_err(UploadError::Database)?;
+        .map_err(ChatError::Database)?;
 
     if !has_access {
-        return Err(UploadError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // Get attachment metadata
     let attachment = db::find_file_attachment_by_id(&state.db, id)
         .await?
-        .ok_or(UploadError::NotFound)?;
+        .ok_or(ChatError::FileNotFound)?;
 
     // Resolve S3 key based on requested variant
     let s3_key = match query.variant.as_deref() {
@@ -1055,7 +868,7 @@ pub async fn get_signed_url(
             .as_deref()
             .unwrap_or(&attachment.s3_key),
         Some(invalid) => {
-            return Err(UploadError::Validation(format!(
+            return Err(ChatError::Validation(format!(
                 "Invalid variant '{invalid}'. Supported values are 'thumbnail' and 'medium'"
             )));
         }
@@ -1069,7 +882,7 @@ pub async fn get_signed_url(
             s3_key = %s3_key,
             "Failed to generate presigned URL: {e}"
         );
-        UploadError::Storage(e.to_string())
+        ChatError::Storage(e.to_string())
     })?;
 
     Ok(Json(SignedUrlResponse {

@@ -1,366 +1,30 @@
 //! Message Handlers
 
 use std::collections::HashSet;
-use std::sync::LazyLock;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use fred::interfaces::{KeysInterface, PubsubInterface};
-use serde::{Deserialize, Serialize};
 use tracing::warn;
-use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::types::{
+    detect_mention_type, AttachmentInfo, AuthorProfile, CreateMessageRequest,
+    CursorPaginatedResponse, ListMessagesQuery, ListThreadRepliesQuery, MessageResponse,
+    ReactionInfo, ThreadInfoResponse, UpdateMessageRequest,
+};
+use super::{queries, ChatError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db;
-use crate::moderation::filter_queries;
 use crate::moderation::filter_types::FilterAction;
+use crate::moderation::queries as filter_queries;
 use crate::permissions::{get_member_permission_context, GuildPermissions};
 use crate::social::block_cache;
 use crate::ws::{broadcast_admin_event, broadcast_to_channel, broadcast_to_user, ServerEvent};
-
-// ============================================================================
-// Error Types
-// ============================================================================
-
-#[derive(Debug)]
-pub enum MessageError {
-    NotFound,
-    ChannelNotFound,
-    Forbidden,
-    Blocked,
-    ContentFiltered,
-    Validation(String),
-    Database(#[allow(dead_code)] sqlx::Error),
-}
-
-impl IntoResponse for MessageError {
-    fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            Self::NotFound => (
-                StatusCode::NOT_FOUND,
-                "MESSAGE_NOT_FOUND",
-                "Message not found".to_string(),
-            ),
-            Self::ChannelNotFound => (
-                StatusCode::NOT_FOUND,
-                "CHANNEL_NOT_FOUND",
-                "Channel not found".to_string(),
-            ),
-            Self::Forbidden => (
-                StatusCode::FORBIDDEN,
-                "FORBIDDEN",
-                "Access denied".to_string(),
-            ),
-            Self::Blocked => (
-                StatusCode::FORBIDDEN,
-                "BLOCKED",
-                "Cannot send messages to this user".to_string(),
-            ),
-            Self::ContentFiltered => (
-                StatusCode::FORBIDDEN,
-                "CONTENT_FILTERED",
-                "Your message was blocked by the server's content filter.".to_string(),
-            ),
-            Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            Self::Database(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "Database error".to_string(),
-            ),
-        };
-        (
-            status,
-            Json(serde_json::json!({ "error": code, "message": message })),
-        )
-            .into_response()
-    }
-}
-
-impl From<sqlx::Error> for MessageError {
-    fn from(err: sqlx::Error) -> Self {
-        Self::Database(err)
-    }
-}
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-/// Author profile for message responses.
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct AuthorProfile {
-    pub id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-    pub status: String,
-}
-
-impl From<db::User> for AuthorProfile {
-    fn from(user: db::User) -> Self {
-        Self {
-            id: user.id,
-            username: user.username,
-            display_name: user.display_name,
-            avatar_url: crate::api::files::maybe_file_url(user.avatar_url),
-            status: format!("{:?}", user.status).to_lowercase(),
-        }
-    }
-}
-
-/// Attachment info for message responses (matches client Attachment type).
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct AttachmentInfo {
-    pub id: Uuid,
-    pub filename: String,
-    pub mime_type: String,
-    pub size: i64,
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub width: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub height: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blurhash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thumbnail_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub medium_url: Option<String>,
-}
-
-impl AttachmentInfo {
-    /// Create from a `FileAttachment` database model.
-    pub fn from_db(attachment: &db::FileAttachment) -> Self {
-        let base_url = format!("/api/messages/attachments/{}/download", attachment.id);
-        let thumbnail_url = attachment
-            .thumbnail_s3_key
-            .as_ref()
-            .map(|_| format!("{base_url}?variant=thumbnail"));
-        let medium_url = attachment
-            .medium_s3_key
-            .as_ref()
-            .map(|_| format!("{base_url}?variant=medium"));
-        Self {
-            id: attachment.id,
-            filename: attachment.filename.clone(),
-            mime_type: attachment.mime_type.clone(),
-            size: attachment.size_bytes,
-            url: base_url,
-            width: attachment.width,
-            height: attachment.height,
-            blurhash: attachment.blurhash.clone(),
-            thumbnail_url,
-            medium_url,
-        }
-    }
-}
-
-/// Mention type for notification sounds.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MentionType {
-    /// Direct @username mention
-    Direct,
-    /// @everyone mention
-    Everyone,
-    /// @here mention (online users only)
-    Here,
-}
-
-/// Thread info for parent messages (returned alongside message responses).
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct ThreadInfoResponse {
-    pub reply_count: i32,
-    pub last_reply_at: Option<DateTime<Utc>>,
-    pub participant_ids: Vec<Uuid>,
-    pub participant_avatars: Vec<Option<String>>,
-    /// Whether the thread has unread replies for the requesting user.
-    /// Only populated for authenticated message list requests.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub has_unread: Option<bool>,
-}
-
-/// Full message response with author info (matches client Message type).
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-pub struct MessageResponse {
-    pub id: Uuid,
-    pub channel_id: Uuid,
-    pub author: AuthorProfile,
-    pub content: String,
-    pub encrypted: bool,
-    pub attachments: Vec<AttachmentInfo>,
-    pub reply_to: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
-    #[serde(default)]
-    pub thread_reply_count: i32,
-    pub thread_last_reply_at: Option<DateTime<Utc>>,
-    pub edited_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    /// Type of mention in this message (for notification sounds).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mention_type: Option<MentionType>,
-    /// Reactions on this message.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reactions: Option<Vec<ReactionInfo>>,
-    /// Thread info (only present for messages with thread replies).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread_info: Option<ThreadInfoResponse>,
-    /// Whether this message is pinned in its channel.
-    #[serde(default)]
-    pub pinned: bool,
-    /// Message type: "user" for normal messages, "system" for system events.
-    pub message_type: String,
-    /// Client-generated nonce for optimistic message matching.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nonce: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ReactionInfo {
-    pub emoji: String,
-    pub count: i64,
-    pub me: bool,
-    pub users: Vec<Uuid>,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ListMessagesQuery {
-    pub before: Option<Uuid>,
-    #[serde(default)]
-    pub around: Option<Uuid>,
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-}
-
-const fn default_limit() -> i64 {
-    50
-}
-
-/// Cursor-based paginated response wrapper.
-///
-/// Used for endpoints with infinite scroll patterns (e.g., message history).
-/// Unlike offset-based pagination (which uses `total`, `limit`, `offset`),
-/// cursor-based pagination uses a reference point (`next_cursor`) and
-/// indicates whether more items exist (`has_more`).
-///
-/// This is more efficient for large datasets where counting total items
-/// is expensive and unnecessary (e.g., chat messages).
-#[derive(Debug, Serialize, ToSchema)]
-pub struct CursorPaginatedResponse<T> {
-    /// The items for this page.
-    pub items: Vec<T>,
-    /// Whether more items exist beyond this page.
-    pub has_more: bool,
-    /// Cursor for fetching the next page (ID of the oldest item).
-    /// Pass this as `before` parameter to get the next page.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Uuid>,
-}
-
-/// Detect mention type in message content.
-/// Returns the highest priority mention type found.
-pub fn detect_mention_type(content: &str, author_username: Option<&str>) -> Option<MentionType> {
-    static MENTION_RE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"@(\w+)").unwrap());
-
-    // Check for @everyone first (highest priority for notifications)
-    if content.contains("@everyone") {
-        return Some(MentionType::Everyone);
-    }
-
-    // Check for @here
-    if content.contains("@here") {
-        return Some(MentionType::Here);
-    }
-
-    // Check for direct @username mentions (excluding self-mentions)
-    let mention_pattern = &*MENTION_RE;
-    for cap in mention_pattern.captures_iter(content) {
-        let mentioned = &cap[1];
-        // Skip if mentioning self
-        if let Some(author) = author_username {
-            if mentioned.eq_ignore_ascii_case(author) {
-                continue;
-            }
-        }
-        // Any other @mention is a direct mention
-        if mentioned != "everyone" && mentioned != "here" {
-            return Some(MentionType::Direct);
-        }
-    }
-
-    None
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct CreateMessageRequest {
-    #[validate(custom(function = "validate_message_content"))]
-    pub content: String,
-    #[serde(default)]
-    pub encrypted: bool,
-    #[validate(length(max = 64))]
-    pub nonce: Option<String>,
-    pub reply_to: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ListThreadRepliesQuery {
-    pub after: Option<Uuid>,
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct UpdateMessageRequest {
-    #[validate(custom(function = "validate_message_content"))]
-    pub content: String,
-}
-
-static CODE_BLOCK_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(?s)```.*?```").unwrap());
-
-// NOTE: This regex handles standard triple-backtick fences (```...```).
-// Known limitations: fences with >3 backticks (e.g., ````) and triple backticks
-// inside fenced blocks may be miscounted. A full CommonMark parser would handle
-// these edge cases but is not warranted for validation purposes.
-/// Custom validation for message content length
-/// Standard messages: 1-4000 characters
-/// Messages with code blocks: 1-10000 characters
-pub fn validate_message_content(content: &str) -> Result<(), validator::ValidationError> {
-    if content.is_empty() {
-        return Err(validator::ValidationError::new("content_empty")
-            .with_message("Content cannot be empty".into()));
-    }
-
-    let total_len = content.chars().count();
-
-    // Overall hard limit of 10,000 characters
-    if total_len > 10000 {
-        return Err(validator::ValidationError::new("length").with_message(
-            std::borrow::Cow::Borrowed("Content cannot exceed 10000 characters in total"),
-        ));
-    }
-
-    // Strip code blocks to check the regular text limit (4,000 chars)
-    let text_without_blocks = CODE_BLOCK_RE.replace_all(content, "");
-
-    let regular_text_len = text_without_blocks.chars().count();
-
-    if regular_text_len > 4000 {
-        return Err(validator::ValidationError::new("length").with_message(
-            std::borrow::Cow::Borrowed("Regular text content cannot exceed 4000 characters"),
-        ));
-    }
-
-    Ok(())
-}
 
 // ============================================================================
 // Handlers
@@ -387,16 +51,16 @@ pub async fn list(
     auth_user: AuthUser,
     Path(channel_id): Path<Uuid>,
     Query(query): Query<ListMessagesQuery>,
-) -> Result<Json<CursorPaginatedResponse<MessageResponse>>, MessageError> {
+) -> Result<Json<CursorPaginatedResponse<MessageResponse>>, ChatError> {
     // Check channel exists and user has VIEW_CHANNEL permission
     let _ = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(MessageError::ChannelNotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
         .await
-        .map_err(|_| MessageError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     // Load combined block set for filtering
     let blocked_ids = block_cache::load_blocked_users(&state.db, &state.redis, auth_user.id)
@@ -476,35 +140,29 @@ pub async fn create(
     auth_user: AuthUser,
     Path(channel_id): Path<Uuid>,
     Json(body): Json<CreateMessageRequest>,
-) -> Result<(StatusCode, Json<MessageResponse>), MessageError> {
+) -> Result<(StatusCode, Json<MessageResponse>), ChatError> {
     // Validate input
     body.validate()
-        .map_err(|e| MessageError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check channel exists
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(MessageError::ChannelNotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     // Check if user has VIEW_CHANNEL permission
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
         .await
-        .map_err(|_| MessageError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     // For guild channels, also check SEND_MESSAGES permission
     if channel.guild_id.is_some() && !ctx.has_permission(GuildPermissions::SEND_MESSAGES) {
-        return Err(MessageError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // For DM channels, check if any participant has blocked the other
     if channel.channel_type == db::ChannelType::Dm {
-        let participants: Vec<Uuid> = sqlx::query_scalar!(
-            "SELECT user_id FROM dm_participants WHERE channel_id = $1",
-            channel_id
-        )
-        .fetch_all(&state.db)
-        .await
-        .map_err(MessageError::Database)?;
+        let participants = queries::list_dm_participant_ids(&state.db, channel_id).await?;
 
         for &participant_id in &participants {
             if participant_id != auth_user.id {
@@ -515,7 +173,7 @@ pub async fn create(
                 )
                 .await
                 {
-                    Ok(true) => return Err(MessageError::Blocked),
+                    Ok(true) => return Err(ChatError::Blocked),
                     Ok(false) => {}
                     Err(e) => {
                         warn!(
@@ -526,7 +184,7 @@ pub async fn create(
                             "Redis block check failed, using failsafe policy"
                         );
                         if !state.config.block_check_fail_open {
-                            return Err(MessageError::Blocked);
+                            return Err(ChatError::Blocked);
                         }
                     }
                 }
@@ -542,20 +200,20 @@ pub async fn create(
                 get_member_permission_context(&state.db, guild_id, auth_user.id).await
             {
                 if !ctx.has_permission(GuildPermissions::MENTION_EVERYONE) {
-                    return Err(MessageError::Validation(
+                    return Err(ChatError::Validation(
                         "You do not have permission to mention @everyone or @here".to_string(),
                     ));
                 }
             } else {
                 // User is not a guild member, should not happen if channel access is correct
-                return Err(MessageError::Forbidden);
+                return Err(ChatError::Forbidden);
             }
         }
     }
 
     // Validate encrypted messages have nonce
     if body.encrypted && body.nonce.is_none() {
-        return Err(MessageError::Validation(
+        return Err(ChatError::Validation(
             "Encrypted messages require a nonce".to_string(),
         ));
     }
@@ -598,7 +256,7 @@ pub async fn create(
                         .await
                         .ok();
                     }
-                    return Err(MessageError::ContentFiltered);
+                    return Err(ChatError::ContentFiltered);
                 }
                 // For "log" and "warn" actions, still log but allow the message
                 for m in result
@@ -630,9 +288,7 @@ pub async fn create(
     if let Some(reply_id) = body.reply_to {
         let reply_msg = db::find_message_by_id(&state.db, reply_id).await?;
         if reply_msg.is_none() {
-            return Err(MessageError::Validation(
-                "Reply target not found".to_string(),
-            ));
+            return Err(ChatError::Validation("Reply target not found".to_string()));
         }
     }
 
@@ -659,19 +315,9 @@ pub async fn create(
                     let latency_ms = start.elapsed().as_millis();
                     let content = format!("Pong! (latency: {latency_ms}ms)");
 
-                    let msg: (Uuid, DateTime<Utc>) = sqlx::query_as(
-                        r"
-                        INSERT INTO messages (channel_id, user_id, content)
-                        VALUES ($1, $2, $3)
-                        RETURNING id, created_at
-                        ",
-                    )
-                    .bind(channel_id)
-                    .bind(auth_user.id)
-                    .bind(&content)
-                    .fetch_one(&state.db)
-                    .await
-                    .map_err(MessageError::Database)?;
+                    let msg =
+                        queries::insert_ping_message(&state.db, channel_id, auth_user.id, &content)
+                            .await?;
 
                     let response = MessageResponse {
                         id: msg.0,
@@ -711,34 +357,13 @@ pub async fn create(
                     return Ok((StatusCode::OK, Json(response)));
                 }
 
-                #[allow(clippy::items_after_statements)]
-                #[derive(sqlx::FromRow)]
-                struct SlashCommandRow {
-                    bot_user_id: Option<Uuid>,
-                    application_id: Uuid,
-                    options: Option<serde_json::Value>,
-                    guild_scoped: bool,
-                }
-                let commands: Vec<SlashCommandRow> = sqlx::query_as(
-                    r"
-                    SELECT ba.bot_user_id, sc.application_id, sc.options, (sc.guild_id IS NOT NULL) AS guild_scoped
-                    FROM slash_commands sc
-                    JOIN bot_applications ba ON ba.id = sc.application_id
-                    JOIN guild_bot_installations gbi ON gbi.application_id = sc.application_id
-                    WHERE gbi.guild_id = $1
-                      AND sc.name = $2
-                      AND (sc.guild_id = $1 OR sc.guild_id IS NULL)
-                    ORDER BY (sc.guild_id IS NOT NULL) DESC, sc.created_at ASC, sc.id ASC
-                    ",
-                )
-                .bind(guild_id)
-                .bind(&command_name)
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| {
-                    tracing::error!("Failed to resolve slash command: {}", e);
-                    MessageError::Database(e)
-                })?;
+                let commands =
+                    queries::list_slash_command_candidates(&state.db, guild_id, &command_name)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Failed to resolve slash command: {}", e);
+                            e
+                        })?;
 
                 if let Some(command) = commands.first() {
                     let same_priority: Vec<_> = commands
@@ -749,23 +374,16 @@ pub async fn create(
                     if same_priority.len() > 1 {
                         let bot_ids: Vec<Uuid> =
                             same_priority.iter().filter_map(|c| c.bot_user_id).collect();
-                        let bot_names: Vec<String> = sqlx::query_scalar::<_, Option<String>>(
-                            "SELECT COALESCE(display_name, username) FROM users WHERE id = ANY($1)",
-                        )
-                        .bind(&bot_ids)
-                        .fetch_all(&state.db)
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .flatten()
-                        .collect();
+                        let bot_names = queries::list_bot_display_names(&state.db, &bot_ids)
+                            .await
+                            .unwrap_or_default();
 
                         let names = if bot_names.is_empty() {
                             "multiple bots".to_string()
                         } else {
                             bot_names.join(", ")
                         };
-                        return Err(MessageError::Validation(format!(
+                        return Err(ChatError::Validation(format!(
                             "Command '/{command_name}' is ambiguous: provided by {names}"
                         )));
                     }
@@ -800,7 +418,7 @@ pub async fn create(
 
                         let payload = serde_json::to_string(&event).map_err(|e| {
                             warn!(error = %e, "Failed to serialize slash command payload");
-                            MessageError::Validation("Invalid slash command payload".to_string())
+                            ChatError::Validation("Invalid slash command payload".to_string())
                         })?;
 
                         let owner_key = format!("interaction:{interaction_id}:owner");
@@ -812,9 +430,7 @@ pub async fn create(
                                     error = %e,
                                     "Failed to create Redis client for slash command routing"
                                 );
-                                MessageError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         routing_redis
@@ -828,9 +444,7 @@ pub async fn create(
                             .await
                             .map_err(|e| {
                                 warn!(error = %e, "Failed to store command interaction owner");
-                                MessageError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         // Store interaction context for response delivery
@@ -852,9 +466,7 @@ pub async fn create(
                             .await
                             .map_err(|e| {
                                 warn!(error = %e, "Failed to store interaction context");
-                                MessageError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         routing_redis
@@ -862,9 +474,7 @@ pub async fn create(
                             .await
                             .map_err(|e| {
                                 warn!(error = %e, "Failed to publish slash command invocation");
-                                MessageError::Validation(
-                                    "Bot command routing unavailable".to_string(),
-                                )
+                                ChatError::Validation("Bot command routing unavailable".to_string())
                             })?;
 
                         // Dispatch command.invoked to webhooks (non-blocking)
@@ -957,15 +567,9 @@ pub async fn create(
     // Check threads_enabled for guild channels when creating a thread reply
     if body.parent_id.is_some() {
         if let Some(guild_id) = channel.guild_id {
-            let threads_enabled: (bool,) =
-                sqlx::query_as("SELECT threads_enabled FROM guilds WHERE id = $1")
-                    .bind(guild_id)
-                    .fetch_one(&state.db)
-                    .await
-                    .map_err(MessageError::Database)?;
-
-            if !threads_enabled.0 {
-                return Err(MessageError::Forbidden);
+            let threads_enabled = queries::is_guild_threads_enabled(&state.db, guild_id).await?;
+            if !threads_enabled {
+                return Err(ChatError::Forbidden);
             }
         }
     }
@@ -974,18 +578,18 @@ pub async fn create(
     if let Some(parent_id) = body.parent_id {
         let parent_msg = db::find_message_by_id(&state.db, parent_id)
             .await?
-            .ok_or_else(|| MessageError::Validation("Thread parent not found".to_string()))?;
+            .ok_or_else(|| ChatError::Validation("Thread parent not found".to_string()))?;
 
         // Ensure parent is a top-level message (no nested threads)
         if parent_msg.parent_id.is_some() {
-            return Err(MessageError::Validation(
+            return Err(ChatError::Validation(
                 "Cannot reply to a thread reply (no nested threads)".to_string(),
             ));
         }
 
         // Ensure parent is in the same channel
         if parent_msg.channel_id != channel_id {
-            return Err(MessageError::Validation(
+            return Err(ChatError::Validation(
                 "Thread parent must be in the same channel".to_string(),
             ));
         }
@@ -1154,15 +758,15 @@ pub async fn update(
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateMessageRequest>,
-) -> Result<Json<MessageResponse>, MessageError> {
+) -> Result<Json<MessageResponse>, ChatError> {
     // Validate input
     body.validate()
-        .map_err(|e| MessageError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Load message to check permissions
     let existing_message = db::find_message_by_id(&state.db, id)
         .await?
-        .ok_or(MessageError::NotFound)?;
+        .ok_or(ChatError::MessageNotFound)?;
 
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(
@@ -1171,13 +775,13 @@ pub async fn update(
         existing_message.channel_id,
     )
     .await
-    .map_err(|_| MessageError::Forbidden)?;
+    .map_err(|_| ChatError::Forbidden)?;
 
     // Content filtering on edited content: skip encrypted messages and DMs
     if !existing_message.encrypted {
         let channel = db::find_channel_by_id(&state.db, existing_message.channel_id)
             .await?
-            .ok_or(MessageError::ChannelNotFound)?;
+            .ok_or(ChatError::ChannelNotFound)?;
         if let Some(guild_id) = channel.guild_id {
             if let Ok(engine) = state.filter_cache.get_or_build(&state.db, guild_id).await {
                 let result = engine.check(&body.content);
@@ -1199,7 +803,7 @@ pub async fn update(
                         .await
                         .ok();
                     }
-                    return Err(MessageError::ContentFiltered);
+                    return Err(ChatError::ContentFiltered);
                 }
                 // For "log" and "warn" actions, still log but allow the edit
                 for m in result
@@ -1230,7 +834,7 @@ pub async fn update(
     // Update message (only owner can edit)
     let message = db::update_message(&state.db, id, auth_user.id, &body.content)
         .await?
-        .ok_or(MessageError::NotFound)?;
+        .ok_or(ChatError::MessageNotFound)?;
 
     // Get author profile for response
     let author = db::find_user_by_id(&state.db, auth_user.id)
@@ -1267,14 +871,9 @@ pub async fn update(
         mention_type: None, // Edits don't trigger new notifications
         reactions: None,
         thread_info: None,
-        pinned: sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM channel_pins WHERE channel_id = $1 AND message_id = $2)",
-        )
-        .bind(message.channel_id)
-        .bind(message.id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(false),
+        pinned: queries::is_message_pinned(&state.db, message.channel_id, message.id)
+            .await
+            .unwrap_or(false),
         message_type: message.message_type.clone(),
         nonce: None,
     };
@@ -1318,20 +917,20 @@ pub async fn delete(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, MessageError> {
+) -> Result<StatusCode, ChatError> {
     // Get message to find channel_id before deleting
     let message = db::find_message_by_id(&state.db, id)
         .await?
-        .ok_or(MessageError::NotFound)?;
+        .ok_or(ChatError::MessageNotFound)?;
 
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(&state.db, auth_user.id, message.channel_id)
         .await
-        .map_err(|_| MessageError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     // Check ownership (deleted/anonymized messages cannot be modified)
     if message.user_id != Some(auth_user.id) {
-        return Err(MessageError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let channel_id = message.channel_id;
@@ -1342,27 +941,21 @@ pub async fn delete(
 
     if deleted {
         // Clean up channel pin if message was pinned
-        let pin_deleted =
-            sqlx::query("DELETE FROM channel_pins WHERE channel_id = $1 AND message_id = $2")
-                .bind(channel_id)
-                .bind(id)
-                .execute(&state.db)
-                .await;
-
-        if let Ok(result) = pin_deleted {
-            if result.rows_affected() > 0 {
-                if let Err(e) = broadcast_to_channel(
-                    &state.redis,
+        if matches!(
+            queries::delete_channel_pin(&state.db, channel_id, id).await,
+            Ok(true)
+        ) {
+            if let Err(e) = broadcast_to_channel(
+                &state.redis,
+                channel_id,
+                &ServerEvent::ChannelPinRemoved {
                     channel_id,
-                    &ServerEvent::ChannelPinRemoved {
-                        channel_id,
-                        message_id: id,
-                    },
-                )
-                .await
-                {
-                    warn!(channel_id = %channel_id, message_id = %id, error = %e, "Failed to broadcast channel_pin_removed on delete");
-                }
+                    message_id: id,
+                },
+            )
+            .await
+            {
+                warn!(channel_id = %channel_id, message_id = %id, error = %e, "Failed to broadcast channel_pin_removed on delete");
             }
         }
 
@@ -1407,7 +1000,7 @@ pub async fn delete(
 
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(MessageError::NotFound)
+        Err(ChatError::MessageNotFound)
     }
 }
 
@@ -1422,7 +1015,7 @@ pub async fn build_message_responses(
     pool: &sqlx::PgPool,
     requesting_user_id: Uuid,
     messages: Vec<db::Message>,
-) -> Result<Vec<MessageResponse>, MessageError> {
+) -> Result<Vec<MessageResponse>, ChatError> {
     if messages.is_empty() {
         return Ok(vec![]);
     }
@@ -1445,35 +1038,9 @@ pub async fn build_message_responses(
             .push(AttachmentInfo::from_db(&attachment));
     }
 
-    // Bulk fetch reactions (uses query_as to avoid sqlx offline cache dependency)
-    #[allow(clippy::items_after_statements)]
-    #[derive(sqlx::FromRow)]
-    struct ReactionRow {
-        message_id: Uuid,
-        emoji: String,
-        count: i64,
-        me: bool,
-        users: Vec<Uuid>,
-    }
-
-    let reactions_data = sqlx::query_as::<_, ReactionRow>(
-        r"
-        SELECT
-            message_id,
-            emoji,
-            COUNT(*)::bigint as count,
-            BOOL_OR(user_id = $1) as me,
-            array_agg(user_id) as users
-        FROM message_reactions
-        WHERE message_id = ANY($2)
-        GROUP BY message_id, emoji
-        ORDER BY MIN(created_at)
-        ",
-    )
-    .bind(requesting_user_id)
-    .bind(&message_ids)
-    .fetch_all(pool)
-    .await?;
+    // Bulk fetch reactions
+    let reactions_data =
+        queries::list_reactions_for_messages(pool, requesting_user_id, &message_ids).await?;
 
     let mut reactions_map: std::collections::HashMap<Uuid, Vec<ReactionInfo>> =
         std::collections::HashMap::new();
@@ -1490,15 +1057,9 @@ pub async fn build_message_responses(
     }
 
     // Bulk fetch pin status
-    let pinned_ids: std::collections::HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
-        "SELECT message_id FROM channel_pins WHERE message_id = ANY($1)",
-    )
-    .bind(&message_ids)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .collect();
+    let pinned_ids = queries::list_pinned_message_ids(pool, &message_ids)
+        .await
+        .unwrap_or_default();
 
     // Batch-fetch thread info for parent messages with replies
     let parent_ids_with_threads: Vec<Uuid> = messages
@@ -1592,7 +1153,7 @@ async fn build_thread_info(pool: &sqlx::PgPool, parent_id: Uuid) -> ThreadInfoRe
             participants
                 .iter()
                 .find(|u| u.id == *uid)
-                .and_then(|u| crate::api::files::maybe_file_url(u.avatar_url.clone()))
+                .and_then(|u| super::files::maybe_file_url(u.avatar_url.clone()))
         })
         .collect();
 
@@ -1706,7 +1267,7 @@ async fn build_batch_thread_infos(
             .map(|uid| {
                 user_map
                     .get(uid)
-                    .and_then(|u| crate::api::files::maybe_file_url(u.avatar_url.clone()))
+                    .and_then(|u| super::files::maybe_file_url(u.avatar_url.clone()))
             })
             .collect();
 
@@ -1756,16 +1317,16 @@ pub async fn list_thread_replies(
     auth_user: AuthUser,
     Path(parent_id): Path<Uuid>,
     Query(query): Query<ListThreadRepliesQuery>,
-) -> Result<Json<CursorPaginatedResponse<MessageResponse>>, MessageError> {
+) -> Result<Json<CursorPaginatedResponse<MessageResponse>>, ChatError> {
     // Verify parent message exists
     let parent = db::find_message_by_id(&state.db, parent_id)
         .await?
-        .ok_or(MessageError::NotFound)?;
+        .ok_or(ChatError::MessageNotFound)?;
 
     // Check channel access
     crate::permissions::require_channel_access(&state.db, auth_user.id, parent.channel_id)
         .await
-        .map_err(|_| MessageError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     // Load block set for filtering
     let blocked_ids = block_cache::load_blocked_users(&state.db, &state.redis, auth_user.id)
@@ -1832,25 +1393,19 @@ pub async fn mark_thread_read(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(parent_id): Path<Uuid>,
-) -> Result<StatusCode, MessageError> {
+) -> Result<StatusCode, ChatError> {
     // Verify parent exists
     let parent = db::find_message_by_id(&state.db, parent_id)
         .await?
-        .ok_or(MessageError::NotFound)?;
+        .ok_or(ChatError::MessageNotFound)?;
 
     // Check channel access
     crate::permissions::require_channel_access(&state.db, auth_user.id, parent.channel_id)
         .await
-        .map_err(|_| MessageError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     // Get the latest reply to use as last_read_message_id
-    let last_reply_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM messages WHERE parent_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(parent_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(MessageError::Database)?;
+    let last_reply_id = queries::latest_thread_reply_id(&state.db, parent_id).await?;
 
     db::update_thread_read_state(&state.db, auth_user.id, parent_id, last_reply_id).await?;
 
@@ -1882,6 +1437,7 @@ mod tests {
     use super::*;
     use crate::api::{AppState, AppStateConfig};
     use crate::auth::AuthUser;
+    use crate::chat::types::validate_message_content;
     use crate::config::Config;
 
     #[test]
@@ -2315,7 +1871,7 @@ mod tests {
         // So the handler should return ChannelNotFound error
         assert!(result.is_err(), "Should fail with ChannelNotFound");
         match result.unwrap_err() {
-            MessageError::ChannelNotFound => {
+            ChatError::ChannelNotFound => {
                 // Expected - channel was CASCADE deleted
             }
             other => panic!("Expected ChannelNotFound, got: {other:?}"),

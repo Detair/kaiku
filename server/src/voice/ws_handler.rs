@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -20,7 +20,7 @@ use super::stats::VoiceStats;
 use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
-use super::Quality;
+use super::{queries, Quality};
 use crate::ws::{ClientEvent, OutboundMsg, ServerEvent, VoiceParticipant};
 
 /// Map a permission error to a voice error, logging database errors instead of masking them.
@@ -164,18 +164,9 @@ async fn handle_join(
 
     sfu.check_rate_limit(user_id).await?;
 
-    let user = sqlx::query("SELECT username, display_name FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(pool)
+    let (username, display_name) = queries::find_user_username_display_name(pool, user_id)
         .await
         .map_err(|e| VoiceError::Signaling(format!("Failed to fetch user info: {e}")))?;
-
-    let username: String = user
-        .try_get("username")
-        .map_err(|e| VoiceError::Signaling(format!("Failed to get username: {e}")))?;
-    let display_name: String = user
-        .try_get("display_name")
-        .map_err(|e| VoiceError::Signaling(format!("Failed to get display_name: {e}")))?;
 
     let room = sfu.get_or_create_room(channel_id).await;
 
@@ -750,17 +741,14 @@ async fn handle_screen_share_start(
     }
 
     // Fetch max_screen_shares from channel settings
-    let max_screen_shares: i32 =
-        sqlx::query_scalar("SELECT max_screen_shares FROM channels WHERE id = $1")
-            .bind(params.channel_id)
-            .fetch_optional(pool)
-            .await
-            .inspect_err(|e| {
-                warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, using default");
-            })
-            .ok()
-            .flatten()
-            .unwrap_or(6);
+    let max_screen_shares: i32 = queries::find_channel_max_screen_shares(pool, params.channel_id)
+        .await
+        .inspect_err(|e| {
+            warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, using default");
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(6);
     let max_shares: u32 = max_screen_shares.try_into().unwrap_or(6);
 
     // Try to reserve a slot via limiter

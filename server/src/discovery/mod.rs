@@ -2,7 +2,9 @@
 //!
 //! Provides public browsing of discoverable guilds and join-via-discovery.
 
+pub mod error;
 pub mod handlers;
+mod queries;
 pub mod types;
 
 use axum::routing::{get, post};

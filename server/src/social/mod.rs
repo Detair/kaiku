@@ -1,9 +1,16 @@
+//! Social features — friends and blocking
+//!
+//! Friend requests, friend lists, blocking, and the block-list cache.
+
 pub mod block_cache;
+pub mod error;
 pub mod friends;
+mod queries;
 pub mod types;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
+pub use error::SocialError;
 
 use crate::api::AppState;
 

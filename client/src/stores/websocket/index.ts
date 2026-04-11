@@ -1,0 +1,1643 @@
+/**
+ * WebSocket Store
+ *
+ * Manages WebSocket connection and routes events to appropriate stores.
+ */
+
+import { createStore } from "solid-js/store";
+import * as tauri from "@/lib/tauri";
+import type {
+  Activity,
+  CustomStatus,
+  GuildEmoji,
+  Message,
+  ScreenShareServerInfo,
+  ServerEvent,
+  ThreadInfo,
+  UserStatus,
+  VoiceParticipant,
+} from "@/lib/types";
+import {
+  updateUserActivity,
+  updateUserCustomStatus,
+  updateUserPresence,
+} from "../presence";
+import {
+  addMessage,
+  removeMessage,
+  messagesState,
+  loadInitialMessages,
+} from "../messages";
+import { showToast, dismissToast } from "@/components/ui/Toast";
+import { handlePreferencesUpdated } from "../preferences";
+import {
+  receiveIncomingCall,
+  callConnected,
+  callEndedExternally,
+  participantJoined,
+  participantLeft,
+  callState,
+  type EndReason,
+} from "../call";
+import {
+  loadFriends,
+  loadPendingRequests,
+  handleUserBlocked,
+  handleUserUnblocked,
+} from "../friends";
+import {
+  getChannel,
+  channelsState,
+  handleChannelReadEvent,
+  incrementUnreadCount,
+  updateChannelLastMessageId,
+} from "../channels";
+import { currentUser } from "../auth";
+import {
+  guildsState,
+  getGuildIdForChannel,
+  incrementGuildUnread,
+} from "../guilds";
+import {
+  dmsState,
+  handleDMReadEvent,
+  handleDMNameUpdated,
+  updateDMLastMessage,
+} from "../dms";
+import { handlePinAdded, handlePinRemoved } from "../channelPins";
+
+import {
+  applyMessageEdit,
+  handleMessageNotification,
+  handleThreadRead,
+  handleThreadReplyDelete,
+  handleThreadReplyNew,
+} from "./messageEvents";
+import {
+  handleVoiceIceCandidate,
+  handleVoiceLayerChanged,
+  handleVoicePublisherAnswer,
+  handleVoiceRoomState,
+  handleVoiceSubscriberOffer,
+  handleVoiceUserJoined,
+  handleVoiceUserLeft,
+  handleVoiceUserMuted,
+  handleVoiceUserStatsEvent,
+  handleVoiceUserUnmuted,
+} from "./voiceEvents";
+import {
+  handleScreenShareQualityChanged,
+  handleScreenShareStarted,
+  handleScreenShareStopped,
+  handleWebcamStarted,
+  handleWebcamStopped,
+} from "./mediaEvents";
+import {
+  handleAdminGuildDeleted,
+  handleAdminGuildSuspended,
+  handleAdminGuildUnsuspended,
+  handleAdminReportCreated,
+  handleAdminReportResolved,
+  handleAdminUserBanned,
+  handleAdminUserDeleted,
+  handleAdminUserUnbanned,
+} from "./adminEvents";
+import {
+  handleGuildEmojiUpdated,
+  handlePatchEvent,
+} from "./guildEvents";
+import {
+  handleReactionAdd,
+  handleReactionRemove,
+  updateMessagePinStatus,
+} from "./reactionEvents";
+
+// Re-export media handlers so existing test imports
+// (`import { handleScreenShareStarted } from "@/stores/websocket"`) keep working.
+export {
+  handleScreenShareStarted,
+  handleScreenShareStopped,
+  handleScreenShareQualityChanged,
+  handleWebcamStarted,
+  handleWebcamStopped,
+};
+
+import * as Sentry from "@sentry/browser";
+// Detect if running in Tauri
+const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+
+// Type for unlisten function
+type UnlistenFn = () => void;
+
+// Connection state
+type ConnectionState =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "reconnecting";
+
+interface WebSocketState {
+  status: ConnectionState;
+  reconnectAttempt: number;
+  subscribedChannels: Set<string>;
+  error: string | null;
+}
+
+// Typing state per channel
+interface TypingState {
+  // Map of channel_id -> Set of user_ids currently typing
+  byChannel: Record<string, Set<string>>;
+}
+
+// Create stores
+const [wsState, setWsState] = createStore<WebSocketState>({
+  status: "disconnected",
+  reconnectAttempt: 0,
+  subscribedChannels: new Set(),
+  error: null,
+});
+
+const [typingState, setTypingState] = createStore<TypingState>({
+  byChannel: {},
+});
+
+// Event listeners
+let unlisteners: UnlistenFn[] = [];
+
+// Typing debounce timers
+const typingTimers: Record<string, NodeJS.Timeout> = {};
+const TYPING_TIMEOUT = 5000; // 5 seconds
+
+// Track connection start time for WS connect duration
+let connectStartTime = 0;
+
+/**
+ * Initialize WebSocket event listeners.
+ * Call this once when the app starts (after auth).
+ */
+export async function initWebSocket(): Promise<void> {
+  // Clean up existing listeners
+  await cleanupWebSocket();
+
+  if (isTauri) {
+    // Tauri mode - use Tauri event system
+    const { listen } = await import("@tauri-apps/api/event");
+    const pending: Promise<UnlistenFn>[] = [];
+
+    // Connection status events
+    pending.push(
+      listen("ws:connecting", () => {
+        setWsState({ status: "connecting", error: null });
+      }),
+    );
+
+    pending.push(
+      listen("ws:connected", () => {
+        const connectDuration = Date.now() - connectStartTime;
+        Sentry.addBreadcrumb({ category: "ws", message: "connected", data: { duration_ms: connectDuration }, level: "info" });
+        if (wsState.reconnectAttempt > 0) {
+          handleReconnect();
+        } else {
+          setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+          window.dispatchEvent(new Event("ws-connected"));
+        }
+      }),
+    );
+
+    pending.push(
+      listen("ws:disconnected", () => {
+        setWsState({ status: "disconnected" });
+        dismissToast("ws-reconnect");
+      }),
+    );
+
+    pending.push(
+      listen<number>("ws:reconnecting", (event) => {
+        setWsState({ status: "reconnecting", reconnectAttempt: event.payload });
+        showToast({
+          type: "warning",
+          title: "Reconnecting...",
+          message: `Attempt ${event.payload}`,
+          id: "ws-reconnect",
+          duration: 0,
+        });
+      }),
+    );
+
+    // Message events
+    pending.push(
+      listen<{ channel_id: string; message: Message }>("ws:message_new", async (event) => {
+        await addMessage(event.payload.message);
+        updateDMLastMessage(event.payload.channel_id, event.payload.message);
+        handleMessageNotification(event.payload.message);
+        // Increment unread count if message is not in the selected channel
+        const isActiveGuildChannel = event.payload.channel_id === channelsState.selectedChannelId;
+        const isActiveDM =
+          event.payload.channel_id === dmsState.selectedDMId && !dmsState.isShowingFriends;
+
+        if (!isActiveGuildChannel && !isActiveDM) {
+          const channel = getChannel(event.payload.channel_id);
+          if (
+            channel &&
+            channel.guild_id &&
+            channel.channel_type === "text"
+          ) {
+            incrementUnreadCount(event.payload.channel_id);
+          }
+          const guildId = getGuildIdForChannel(event.payload.channel_id);
+          if (guildId && guildId !== guildsState.activeGuildId) {
+            incrementGuildUnread(guildId);
+          }
+          // Notify unread module of new message
+          window.dispatchEvent(new CustomEvent("unread-update"));
+        }
+        // Always update last_message_id for the channel, even if it's the active channel
+        updateChannelLastMessageId(event.payload.channel_id, event.payload.message.id);
+      }),
+    );
+
+    pending.push(
+      listen<{
+        channel_id: string;
+        message_id: string;
+        content: string;
+        edited_at: string;
+      }>("ws:message_edit", async (event) => {
+        const { channel_id, message_id, content, edited_at } = event.payload;
+        await applyMessageEdit(channel_id, message_id, content, edited_at);
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; message_id: string }>("ws:message_delete", (event) => {
+        removeMessage(event.payload.channel_id, event.payload.message_id);
+      }),
+    );
+
+    // Typing events
+    pending.push(
+      listen<{ channel_id: string; user_id: string }>("ws:typing_start", (event) => {
+        const { channel_id, user_id } = event.payload;
+        addTypingUser(channel_id, user_id);
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; user_id: string }>("ws:typing_stop", (event) => {
+        const { channel_id, user_id } = event.payload;
+        removeTypingUser(channel_id, user_id);
+      }),
+    );
+
+    // Presence events
+    pending.push(
+      listen<{ user_id: string; status: UserStatus }>("ws:presence_update", (event) => {
+        updateUserPresence(event.payload.user_id, event.payload.status);
+      }),
+    );
+
+    // Rich presence events
+    pending.push(
+      listen<{ user_id: string; activity: Activity | null }>("ws:rich_presence_update", (event) => {
+        console.log(
+          "Rich presence update:",
+          event.payload.user_id,
+          event.payload.activity,
+        );
+        updateUserActivity(event.payload.user_id, event.payload.activity);
+      }),
+    );
+
+    // Custom status events
+    pending.push(
+      listen<{ user_id: string; custom_status: CustomStatus | null }>("ws:custom_status_update", (event) => {
+        updateUserCustomStatus(event.payload.user_id, event.payload.custom_status);
+      }),
+    );
+
+    // Error events
+    pending.push(
+      listen<{ code: string; message: string }>("ws:error", (event) => {
+        console.error("WebSocket error:", event.payload);
+        setWsState({ error: event.payload.message });
+      }),
+    );
+
+    // Call events
+    pending.push(
+      listen<{
+        channel_id: string;
+        initiator: string;
+        initiator_name: string;
+      }>("ws:incoming_call", (event) => {
+        const me = currentUser();
+        if (me && event.payload.initiator === me.id) {
+          return;
+        }
+        receiveIncomingCall(
+          event.payload.channel_id,
+          event.payload.initiator,
+          event.payload.initiator_name,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{
+        channel_id: string;
+        reason: string;
+        duration_secs: number | null;
+      }>("ws:call_ended", (event) => {
+        callEndedExternally(
+          event.payload.channel_id,
+          event.payload.reason as EndReason,
+          event.payload.duration_secs ?? undefined,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; user_id: string; username: string }>("ws:call_participant_joined", (event) => {
+        participantJoined(event.payload.channel_id, event.payload.user_id);
+        // Only transition to connected on the first join (not on subsequent participants)
+        const status = callState.currentCall.status;
+        if (status === "outgoing_ringing" || status === "connecting") {
+          callConnected(event.payload.channel_id, [event.payload.user_id]);
+        }
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; user_id: string }>("ws:call_participant_left", (event) => {
+        participantLeft(event.payload.channel_id, event.payload.user_id);
+      }),
+    );
+
+    // Voice events (Tauri → frontend parity with browser mode) — dual PeerConnection
+    pending.push(
+      listen<{ channel_id: string; sdp: string }>("ws:voice_publisher_answer", async (event) => {
+        await handleVoicePublisherAnswer(event.payload.channel_id, event.payload.sdp);
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; sdp: string }>("ws:voice_subscriber_offer", async (event) => {
+        await handleVoiceSubscriberOffer(event.payload.channel_id, event.payload.sdp);
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; candidate: string; pc_type?: string }>("ws:voice_ice_candidate", async (event) => {
+        await handleVoiceIceCandidate(
+          event.payload.channel_id,
+          event.payload.candidate,
+          event.payload.pc_type || "publisher",
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{
+        channel_id: string;
+        user_id: string;
+        username: string;
+        display_name: string;
+      }>("ws:voice_user_joined", async (event) => {
+        await handleVoiceUserJoined(
+          event.payload.channel_id,
+          event.payload.user_id,
+          event.payload.username,
+          event.payload.display_name,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; user_id: string }>("ws:voice_user_left", async (event) => {
+        await handleVoiceUserLeft(
+          event.payload.channel_id,
+          event.payload.user_id,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; user_id: string }>("ws:voice_user_muted", async (event) => {
+        await handleVoiceUserMuted(
+          event.payload.channel_id,
+          event.payload.user_id,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; user_id: string }>("ws:voice_user_unmuted", async (event) => {
+        await handleVoiceUserUnmuted(
+          event.payload.channel_id,
+          event.payload.user_id,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{
+        channel_id: string;
+        participants: VoiceParticipant[];
+        screen_shares: ScreenShareServerInfo[];
+      }>("ws:voice_room_state", async (event) => {
+        await handleVoiceRoomState(
+          event.payload.channel_id,
+          event.payload.participants,
+          event.payload.screen_shares,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ code: string; message: string }>("ws:voice_error", (event) => {
+        console.error(
+          "Voice error:",
+          event.payload.code,
+          event.payload.message,
+        );
+      }),
+    );
+
+    // Reaction events (Tauri → frontend parity with browser mode)
+    pending.push(
+      listen<{
+        channel_id: string;
+        message_id: string;
+        user_id: string;
+        emoji: string;
+      }>("ws:reaction_add", (event) => {
+        handleReactionAdd(
+          event.payload.channel_id,
+          event.payload.message_id,
+          event.payload.user_id,
+          event.payload.emoji,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{
+        channel_id: string;
+        message_id: string;
+        user_id: string;
+        emoji: string;
+      }>("ws:reaction_remove", (event) => {
+        handleReactionRemove(
+          event.payload.channel_id,
+          event.payload.message_id,
+          event.payload.user_id,
+          event.payload.emoji,
+        );
+      }),
+    );
+
+    // Channel pin events (Tauri → frontend parity with browser mode)
+    pending.push(
+      listen<{
+        channel_id: string;
+        message_id: string;
+        pinned_by: string;
+        pinned_at: string;
+      }>("ws:channel_pin_added", (event) => {
+        handlePinAdded(
+          event.payload.channel_id,
+          event.payload.message_id,
+          event.payload.pinned_by,
+          event.payload.pinned_at,
+        );
+        updateMessagePinStatus(event.payload.channel_id, event.payload.message_id, true);
+      }),
+    );
+
+    pending.push(
+      listen<{
+        channel_id: string;
+        message_id: string;
+      }>("ws:channel_pin_removed", (event) => {
+        handlePinRemoved(event.payload.channel_id, event.payload.message_id);
+        updateMessagePinStatus(event.payload.channel_id, event.payload.message_id, false);
+      }),
+    );
+
+    // Guild emoji events
+    pending.push(
+      listen<{ guild_id: string; emojis: GuildEmoji[] }>("ws:guild_emoji_updated", (event) => {
+        handleGuildEmojiUpdated(event.payload.guild_id, event.payload.emojis);
+      }),
+    );
+
+    // Read sync events (Tauri → frontend parity with browser mode)
+    pending.push(
+      listen<{ channel_id: string; last_read_message_id?: string }>("ws:channel_read", (event) => {
+        handleChannelReadEvent(event.payload.channel_id, event.payload.last_read_message_id);
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; last_read_message_id?: string }>("ws:dm_read", (event) => {
+        handleDMReadEvent(event.payload.channel_id, event.payload.last_read_message_id);
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; name: string }>("ws:dm_name_updated", (event) => {
+        handleDMNameUpdated(event.payload.channel_id, event.payload.name);
+      }),
+    );
+
+    // Call events (Tauri → complete call support)
+    // Note: These were partially implemented in earlier commits
+    // This completes the full call event coverage
+    pending.push(
+      listen<{ channel_id: string }>("ws:call_started", (event) => {
+        console.log(
+          "[WebSocket] Call started in channel:",
+          event.payload.channel_id,
+        );
+        // Call started means the initiator is now connected
+      }),
+    );
+
+    pending.push(
+      listen<{ channel_id: string; user_id: string }>("ws:call_declined", (event) => {
+        console.log("[WebSocket] Call declined by:", event.payload.user_id);
+        // The call store will handle this through the API response
+      }),
+    );
+
+    // Screen share events (Tauri → frontend parity with browser mode)
+    pending.push(
+      listen<Omit<Extract<ServerEvent, { type: "screen_share_started" }>, "type">>(
+        "ws:screen_share_started", async (event) => {
+          await handleScreenShareStarted(event.payload);
+        },
+      ),
+    );
+
+    pending.push(
+      listen<Omit<Extract<ServerEvent, { type: "screen_share_stopped" }>, "type">>(
+        "ws:screen_share_stopped", async (event) => {
+          await handleScreenShareStopped(event.payload);
+        },
+      ),
+    );
+
+    pending.push(
+      listen<Omit<Extract<ServerEvent, { type: "screen_share_quality_changed" }>, "type">>(
+        "ws:screen_share_quality_changed", async (event) => {
+          await handleScreenShareQualityChanged(event.payload);
+        },
+      ),
+    );
+
+    // Webcam events (Tauri → frontend parity with browser mode)
+    pending.push(
+      listen<Omit<Extract<ServerEvent, { type: "webcam_started" }>, "type">>(
+        "ws:webcam_started", async (event) => {
+          await handleWebcamStarted(event.payload);
+        },
+      ),
+    );
+
+    pending.push(
+      listen<Omit<Extract<ServerEvent, { type: "webcam_stopped" }>, "type">>(
+        "ws:webcam_stopped", async (event) => {
+          await handleWebcamStopped(event.payload);
+        },
+      ),
+    );
+
+    // Voice stats events
+    pending.push(
+      listen<{
+        channel_id: string;
+        user_id: string;
+        latency: number;
+        packet_loss: number;
+        jitter: number;
+        quality: number;
+      }>("ws:voice_user_stats", async (event) => {
+        await handleVoiceUserStatsEvent(event.payload);
+      }),
+    );
+
+    // Simulcast layer events
+    pending.push(
+      listen<{
+        channel_id: string;
+        source_user_id: string;
+        track_source: string;
+        active_layer: "high" | "medium" | "low";
+      }>("ws:voice_layer_changed", async (event) => {
+        await handleVoiceLayerChanged(event.payload);
+      }),
+    );
+
+    // Admin events
+    pending.push(
+      listen<{ user_id: string; username: string }>("ws:admin_user_banned", async (event) => {
+        await handleAdminUserBanned(
+          event.payload.user_id,
+          event.payload.username,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ user_id: string; username: string }>("ws:admin_user_unbanned", async (event) => {
+        await handleAdminUserUnbanned(
+          event.payload.user_id,
+          event.payload.username,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_suspended", async (event) => {
+        await handleAdminGuildSuspended(
+          event.payload.guild_id,
+          event.payload.guild_name,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_unsuspended", async (event) => {
+        await handleAdminGuildUnsuspended(
+          event.payload.guild_id,
+          event.payload.guild_name,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{
+        report_id: string;
+        category: string;
+        target_type: string;
+      }>("ws:admin_report_created", async (event) => {
+        await handleAdminReportCreated(
+          event.payload.report_id,
+          event.payload.category,
+          event.payload.target_type,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ report_id: string }>("ws:admin_report_resolved", async (event) => {
+        await handleAdminReportResolved(event.payload.report_id);
+      }),
+    );
+
+    pending.push(
+      listen<{ user_id: string; username: string }>("ws:admin_user_deleted", async (event) => {
+        await handleAdminUserDeleted(
+          event.payload.user_id,
+          event.payload.username,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_deleted", async (event) => {
+        await handleAdminGuildDeleted(
+          event.payload.guild_id,
+          event.payload.guild_name,
+        );
+      }),
+    );
+
+    // Friend events
+    pending.push(
+      listen("ws:friend_request_received", () => {
+        loadPendingRequests();
+      }),
+    );
+
+    pending.push(
+      listen("ws:friend_request_accepted", () => {
+        Promise.all([loadFriends(), loadPendingRequests()]);
+      }),
+    );
+
+    pending.push(
+      listen("ws:friend_request_rejected", () => {
+        loadPendingRequests();
+      }),
+    );
+
+    // Block events
+    pending.push(
+      listen<{ user_id: string }>("ws:user_blocked", (event) => {
+        handleUserBlocked(event.payload.user_id);
+      }),
+    );
+
+    pending.push(
+      listen<{ user_id: string }>("ws:user_unblocked", (event) => {
+        handleUserUnblocked(event.payload.user_id);
+      }),
+    );
+
+    // Thread events
+    pending.push(
+      listen<{
+        channel_id: string;
+        parent_id: string;
+        message: Message;
+        thread_info: ThreadInfo;
+      }>("ws:thread_reply_new", (event) => {
+        handleThreadReplyNew(
+          event.payload.channel_id,
+          event.payload.parent_id,
+          event.payload.message,
+          event.payload.thread_info,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{
+        channel_id: string;
+        parent_id: string;
+        message_id: string;
+        thread_info: ThreadInfo;
+      }>("ws:thread_reply_delete", (event) => {
+        handleThreadReplyDelete(
+          event.payload.channel_id,
+          event.payload.parent_id,
+          event.payload.message_id,
+          event.payload.thread_info,
+        );
+      }),
+    );
+
+    pending.push(
+      listen<{
+        thread_parent_id: string;
+        last_read_message_id: string | null;
+      }>("ws:thread_read", (event) => {
+        handleThreadRead(
+          event.payload.thread_parent_id,
+          event.payload.last_read_message_id,
+        );
+      }),
+    );
+
+    // Preferences sync
+    pending.push(
+      listen<any>("ws:preferences_updated", (event) => {
+        handlePreferencesUpdated(event.payload);
+      }),
+    );
+
+    // State sync (patch)
+    pending.push(
+      listen<{
+        entity_type: string;
+        entity_id: string;
+        diff: Record<string, unknown>;
+      }>("ws:patch", async (event) => {
+        await handlePatchEvent(
+          event.payload.entity_type,
+          event.payload.entity_id,
+          event.payload.diff,
+        );
+      }),
+    );
+
+    // Bot command response events
+    pending.push(
+      listen<{
+        interaction_id: string;
+        content: string;
+        command_name: string;
+        bot_name: string;
+        channel_id: string;
+        ephemeral: boolean;
+      }>("ws:command_response", async (event) => {
+        if (event.payload.ephemeral) {
+          console.log(
+            "[WebSocket] Ephemeral command response:",
+            event.payload.command_name,
+            event.payload.content,
+          );
+          const syntheticMessage: Message = {
+            id: crypto.randomUUID(),
+            channel_id: event.payload.channel_id,
+            author: {
+              id: "system",
+              username: event.payload.bot_name,
+              display_name: event.payload.bot_name,
+              avatar_url: null,
+              status: "online",
+            },
+            content: event.payload.content,
+            encrypted: false,
+            attachments: [],
+            reply_to: null,
+            parent_id: null,
+            thread_reply_count: 0,
+            thread_last_reply_at: null,
+            edited_at: null,
+            created_at: new Date().toISOString(),
+            mention_type: null,
+            pinned: false,
+            message_type: "user",
+          };
+          await addMessage(syntheticMessage);
+        } else {
+          console.log(
+            "[WebSocket] Non-ephemeral command response (handled via message_new):",
+            event.payload.command_name,
+          );
+        }
+      }),
+    );
+
+    pending.push(
+      listen<{
+        interaction_id: string;
+        command_name: string;
+        channel_id: string;
+      }>("ws:command_response_timeout", async (event) => {
+        console.warn(
+          "[WebSocket] Command response timeout:",
+          event.payload.command_name,
+        );
+        const { showToast } = await import("@/components/ui/Toast");
+        showToast({
+          type: "warning",
+          title: "Command Timeout",
+          message: `Command /${event.payload.command_name} did not respond within 30 seconds.`,
+          duration: 5000,
+          id: `cmd-timeout-${event.payload.command_name}`,
+        });
+      }),
+    );
+
+    unlisteners.push(...await Promise.all(pending));
+  } else {
+    // Browser mode - use browser WebSocket events
+    const attachMessageHandler = () => {
+      const ws = tauri.getBrowserWebSocket();
+      if (ws) {
+        console.log("[WebSocket] Attaching message handler to WebSocket");
+        const messageHandler = async (event: MessageEvent) => {
+          try {
+            const data = JSON.parse(event.data) as ServerEvent;
+            await handleServerEvent(data);
+          } catch (err) {
+            console.error("Failed to parse WebSocket message:", err);
+          }
+        };
+        ws.addEventListener("message", messageHandler);
+        unlisteners.push(() =>
+          ws.removeEventListener("message", messageHandler),
+        );
+      } else {
+        console.warn("[WebSocket] No WebSocket instance found");
+      }
+    };
+
+    // Attach initially
+    attachMessageHandler();
+
+    // Re-attach on reconnection
+    const reconnectHandler = () => {
+      console.log(
+        "[WebSocket] Received ws-reconnected event, re-attaching message handler",
+      );
+      // Use setTimeout to ensure WebSocket is fully ready
+      setTimeout(() => {
+        attachMessageHandler();
+      }, 100);
+    };
+    window.addEventListener("ws-reconnected", reconnectHandler);
+    unlisteners.push(() =>
+      window.removeEventListener("ws-reconnected", reconnectHandler),
+    );
+  }
+}
+
+/**
+ * Handle server events in browser mode.
+ * IMPORTANT: Voice events are handled asynchronously to ensure proper ICE candidate processing.
+ */
+async function handleServerEvent(event: ServerEvent): Promise<void> {
+  console.log("[WebSocket] Received event:", event.type);
+
+  switch (event.type) {
+    case "message_new":
+      await addMessage(event.message);
+      updateDMLastMessage(event.channel_id, event.message);
+      handleMessageNotification(event.message);
+      // Increment unread count if message is not in the selected channel
+      {
+        const isActiveGuildChannel = event.channel_id === channelsState.selectedChannelId;
+        const isActiveDM =
+          event.channel_id === dmsState.selectedDMId && !dmsState.isShowingFriends;
+
+        if (!isActiveGuildChannel && !isActiveDM) {
+          const channel = getChannel(event.channel_id);
+          if (channel && channel.guild_id && channel.channel_type === "text") {
+            incrementUnreadCount(event.channel_id);
+          }
+        // Increment guild-level unread for non-active guilds
+        const guildId = getGuildIdForChannel(event.channel_id);
+        if (guildId && guildId !== guildsState.activeGuildId) {
+          incrementGuildUnread(guildId);
+        }
+        // Notify unread module of new message
+        window.dispatchEvent(new CustomEvent("unread-update"));
+        }
+        // Always update last_message_id for the channel, even if it's the active channel
+        updateChannelLastMessageId(event.channel_id, event.message.id);
+      }
+      break;
+
+    case "subscribed":
+    case "unsubscribed":
+      break;
+
+    case "message_edit":
+      await applyMessageEdit(event.channel_id, event.message_id, event.content, event.edited_at);
+      break;
+
+    case "message_delete":
+      removeMessage(event.channel_id, event.message_id);
+      break;
+
+    case "typing_start":
+      addTypingUser(event.channel_id, event.user_id);
+      break;
+
+    case "typing_stop":
+      removeTypingUser(event.channel_id, event.user_id);
+      break;
+
+    case "presence_update":
+      updateUserPresence(event.user_id, event.status);
+      break;
+
+    case "rich_presence_update":
+      console.log("Rich presence update:", event.user_id, event.activity);
+      updateUserActivity(event.user_id, event.activity);
+      break;
+
+    case "custom_status_update":
+      updateUserCustomStatus(event.user_id, event.custom_status);
+      break;
+
+    case "voice_publisher_answer":
+      console.log(
+        "[WebSocket] Handling voice_publisher_answer for channel:",
+        event.channel_id,
+      );
+      await handleVoicePublisherAnswer(event.channel_id, event.sdp);
+      break;
+
+    case "voice_subscriber_offer":
+      console.log(
+        "[WebSocket] Handling voice_subscriber_offer for channel:",
+        event.channel_id,
+      );
+      await handleVoiceSubscriberOffer(event.channel_id, event.sdp);
+      break;
+
+    case "voice_ice_candidate":
+      // ICE candidates must be processed immediately for NAT traversal
+      await handleVoiceIceCandidate(event.channel_id, event.candidate, event.pc_type || "publisher");
+      break;
+
+    case "voice_user_joined":
+      await handleVoiceUserJoined(
+        event.channel_id,
+        event.user_id,
+        event.username,
+        event.display_name,
+      );
+      break;
+
+    case "voice_user_left":
+      await handleVoiceUserLeft(event.channel_id, event.user_id);
+      break;
+
+    case "voice_user_muted":
+      await handleVoiceUserMuted(event.channel_id, event.user_id);
+      break;
+
+    case "voice_user_unmuted":
+      await handleVoiceUserUnmuted(event.channel_id, event.user_id);
+      break;
+
+    case "voice_room_state":
+      await handleVoiceRoomState(
+        event.channel_id,
+        event.participants,
+        event.screen_shares,
+        event.webcams,
+      );
+      break;
+
+    case "screen_share_started":
+      await handleScreenShareStarted(event);
+      break;
+
+    case "screen_share_stopped":
+      await handleScreenShareStopped(event);
+      break;
+
+    case "screen_share_quality_changed":
+      await handleScreenShareQualityChanged(event);
+      break;
+
+    case "webcam_started":
+      await handleWebcamStarted(event);
+      break;
+
+    case "webcam_stopped":
+      await handleWebcamStopped(event);
+      break;
+
+    case "voice_error":
+      console.error("Voice error:", event.code, event.message);
+
+      // Auto-retry for "Already in voice channel" error
+      if (event.message === "Already in voice channel") {
+        const { voiceState } = await import("@/stores/voice");
+        const channelId = voiceState.channelId;
+
+        if (channelId) {
+          console.log(
+            "[WebSocket] Auto-retry: leaving and rejoining channel",
+            channelId,
+          );
+
+          // Send leave message
+          await tauri.wsSend({
+            type: "voice_leave",
+            channel_id: channelId,
+          });
+
+          // Wait a bit for server to process leave
+          await new Promise((resolve) => setTimeout(resolve, 150));
+
+          // Retry join
+          await tauri.wsSend({
+            type: "voice_join",
+            channel_id: channelId,
+          });
+        }
+      }
+      break;
+
+    // Call events
+    case "incoming_call": {
+      const me = currentUser();
+      if (me && event.initiator === me.id) {
+        break;
+      }
+      console.log("[WebSocket] Incoming call from:", event.initiator_name);
+      receiveIncomingCall(
+        event.channel_id,
+        event.initiator,
+        event.initiator_name,
+      );
+      break;
+    }
+
+    case "call_started":
+      console.log("[WebSocket] Call started in channel:", event.channel_id);
+      // Call started means the initiator is now connected
+      // Other participants will receive incoming_call
+      break;
+
+    case "call_ended":
+      console.log("[WebSocket] Call ended:", event.reason);
+      callEndedExternally(
+        event.channel_id,
+        event.reason as EndReason,
+        event.duration_secs ?? undefined,
+      );
+      break;
+
+    case "call_participant_joined":
+      console.log("[WebSocket] Participant joined call:", event.username);
+      participantJoined(event.channel_id, event.user_id);
+      // Only transition to connected on the first join (not on subsequent participants)
+      {
+        const status = callState.currentCall.status;
+        if (status === "outgoing_ringing" || status === "connecting") {
+          callConnected(event.channel_id, [event.user_id]);
+        }
+      }
+      break;
+
+    case "call_participant_left":
+      console.log("[WebSocket] Participant left call:", event.user_id);
+      participantLeft(event.channel_id, event.user_id);
+      break;
+
+    case "call_declined":
+      console.log("[WebSocket] Call declined by:", event.user_id);
+      // The call store will handle this through the API response
+      // This event is informational for other participants
+      break;
+
+    case "voice_user_stats":
+      await handleVoiceUserStatsEvent(event);
+      break;
+
+    case "voice_layer_changed":
+      await handleVoiceLayerChanged(event);
+      break;
+
+    // Admin events
+    case "admin_user_banned":
+      await handleAdminUserBanned(event.user_id, event.username);
+      break;
+
+    case "admin_user_unbanned":
+      await handleAdminUserUnbanned(event.user_id, event.username);
+      break;
+
+    case "admin_guild_suspended":
+      await handleAdminGuildSuspended(event.guild_id, event.guild_name);
+      break;
+
+    case "admin_guild_unsuspended":
+      await handleAdminGuildUnsuspended(event.guild_id, event.guild_name);
+      break;
+
+    case "admin_user_deleted":
+      await handleAdminUserDeleted(event.user_id, event.username);
+      break;
+
+    case "admin_guild_deleted":
+      await handleAdminGuildDeleted(event.guild_id, event.guild_name);
+      break;
+
+    // DM read sync event
+    case "dm_read":
+      handleDMReadEvent(event.channel_id, event.last_read_message_id);
+      break;
+
+    // DM name updated
+    case "dm_name_updated":
+      handleDMNameUpdated(event.channel_id, event.name);
+      break;
+
+    // Guild channel read sync event
+    case "channel_read":
+      handleChannelReadEvent(event.channel_id, event.last_read_message_id);
+      break;
+
+    // Preferences events
+    case "preferences_updated":
+      handlePreferencesUpdated(event);
+      break;
+
+    // Reaction events
+    case "reaction_add":
+      handleReactionAdd(
+        event.channel_id,
+        event.message_id,
+        event.user_id,
+        event.emoji,
+      );
+      break;
+
+    case "reaction_remove":
+      handleReactionRemove(
+        event.channel_id,
+        event.message_id,
+        event.user_id,
+        event.emoji,
+      );
+      break;
+
+    // Channel pin events
+    case "channel_pin_added":
+      handlePinAdded(
+        event.channel_id,
+        event.message_id,
+        event.pinned_by,
+        event.pinned_at,
+      );
+      // Update message pinned status in messages store
+      updateMessagePinStatus(event.channel_id, event.message_id, true);
+      break;
+
+    case "channel_pin_removed":
+      handlePinRemoved(event.channel_id, event.message_id);
+      // Update message pinned status in messages store
+      updateMessagePinStatus(event.channel_id, event.message_id, false);
+      break;
+
+    // Guild emoji events
+    case "guild_emoji_updated":
+      handleGuildEmojiUpdated(event.guild_id, event.emojis);
+      break;
+
+    // Friend events
+    case "friend_request_received":
+      // New incoming friend request — refresh pending list
+      loadPendingRequests();
+      break;
+
+    case "friend_request_accepted":
+      // Someone accepted our friend request — refresh both lists
+      Promise.all([loadFriends(), loadPendingRequests()]);
+      break;
+
+    case "friend_request_rejected":
+      // Other party rejected/cancelled — refresh pending list
+      loadPendingRequests();
+      break;
+
+    // Block events
+    case "user_blocked":
+      handleUserBlocked(event.user_id);
+      break;
+
+    case "user_unblocked":
+      handleUserUnblocked(event.user_id);
+      break;
+
+    // Admin report events
+    case "admin_report_created":
+      await handleAdminReportCreated(
+        event.report_id,
+        event.category,
+        event.target_type,
+      );
+      break;
+
+    case "admin_report_resolved":
+      await handleAdminReportResolved(event.report_id);
+      break;
+
+    // Thread events
+    case "thread_reply_new":
+      handleThreadReplyNew(
+        event.channel_id,
+        event.parent_id,
+        event.message,
+        event.thread_info,
+      );
+      break;
+
+    case "thread_reply_delete":
+      handleThreadReplyDelete(
+        event.channel_id,
+        event.parent_id,
+        event.message_id,
+        event.thread_info,
+      );
+      break;
+
+    case "thread_read":
+      handleThreadRead(event.thread_parent_id, event.last_read_message_id);
+      break;
+
+    // State sync events
+    case "patch":
+      await handlePatchEvent(event.entity_type, event.entity_id, event.diff);
+      break;
+
+    // Bot command response events
+    case "command_response":
+      if (event.ephemeral) {
+        // For ephemeral responses, create a local system message
+        console.log(
+          "[WebSocket] Ephemeral command response:",
+          event.command_name,
+          event.content,
+        );
+        const syntheticMessage: Message = {
+          id: crypto.randomUUID(),
+          channel_id: event.channel_id,
+          author: {
+            id: "system",
+            username: event.bot_name,
+            display_name: event.bot_name,
+            avatar_url: null,
+            status: "online",
+          },
+          content: event.content,
+          encrypted: false,
+          attachments: [],
+          reply_to: null,
+          parent_id: null,
+          thread_reply_count: 0,
+          thread_last_reply_at: null,
+          edited_at: null,
+          created_at: new Date().toISOString(),
+          mention_type: null,
+          pinned: false,
+          message_type: "user",
+        };
+        await addMessage(syntheticMessage);
+      } else {
+        // Non-ephemeral responses arrive as regular message_new events
+        console.log(
+          "[WebSocket] Non-ephemeral command response (handled via message_new):",
+          event.command_name,
+        );
+      }
+      break;
+
+    case "command_response_timeout":
+      console.warn("[WebSocket] Command response timeout:", event.command_name);
+      const { showToast } = await import("@/components/ui/Toast");
+      showToast({
+        type: "warning",
+        title: "Command Timeout",
+        message: `Command /${event.command_name} did not respond within 30 seconds.`,
+        duration: 5000,
+        id: `cmd-timeout-${event.command_name}`,
+      });
+      break;
+
+    default:
+      console.log("Unhandled server event:", event.type);
+  }
+}
+
+/**
+ * Cleanup WebSocket listeners.
+ */
+export async function cleanupWebSocket(): Promise<void> {
+  for (const unlisten of unlisteners) {
+    unlisten();
+  }
+  unlisteners = [];
+
+  // Clear typing timers
+  for (const timer of Object.values(typingTimers)) {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Re-initialize WebSocket listeners after reconnection (browser mode only).
+ */
+export async function reinitWebSocketListeners(): Promise<void> {
+  if (isTauri) return;
+
+  console.log("[WebSocket] Reinitializing WebSocket listeners");
+
+  const ws = tauri.getBrowserWebSocket();
+  if (!ws) {
+    console.warn(
+      "[WebSocket] No WebSocket instance available for reinitialization",
+    );
+    return;
+  }
+
+  // Remove old listener if it exists (prevent duplicates)
+  const oldListeners = unlisteners.filter((ul) =>
+    ul.toString().includes("message"),
+  );
+  oldListeners.forEach((ul) => ul());
+
+  // Attach new message handler
+  const messageHandler = (event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as ServerEvent;
+      handleServerEvent(data);
+    } catch (err) {
+      console.error("Failed to parse WebSocket message:", err);
+    }
+  };
+
+  ws.addEventListener("message", messageHandler);
+  unlisteners.push(() => ws.removeEventListener("message", messageHandler));
+
+  console.log("[WebSocket] Message handler attached to WebSocket instance");
+}
+
+/**
+ * Handle post-reconnect recovery: re-subscribe channels, reload messages, dismiss toast.
+ * Snapshots current subscribed channels before resetting state, then re-subscribes and reloads.
+ */
+async function handleReconnect(): Promise<void> {
+  const channelsToResubscribe = [...wsState.subscribedChannels];
+  const channelsToReload = Object.keys(messagesState.byChannel).filter(
+    (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,
+  );
+
+  // Clear subscribed set so subscribeChannel() early-return guard allows re-subscription
+  setWsState("subscribedChannels", new Set());
+  setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+
+  // Re-subscribe and reload in parallel
+  await Promise.all([
+    Promise.all(
+      channelsToResubscribe.map((id) =>
+        subscribeChannel(id).catch((err) =>
+          console.error("[WS] Failed to re-subscribe channel", id, err),
+        ),
+      ),
+    ),
+    Promise.all(
+      channelsToReload.map((id) =>
+        loadInitialMessages(id).catch((err) =>
+          console.error("[WS] Failed to reload messages for channel", id, err),
+        ),
+      ),
+    ),
+  ]);
+
+  console.info(
+    `[WS] Reconnect recovery complete: ${channelsToResubscribe.length} channels re-subscribed, ${channelsToReload.length} channels reloaded`,
+  );
+
+  // Signal connection ready after subscriptions are restored
+  window.dispatchEvent(new Event("ws-connected"));
+  dismissToast("ws-reconnect");
+}
+
+/**
+ * Connect to the WebSocket server.
+ */
+export async function connect(): Promise<void> {
+  try {
+    setWsState({ status: "connecting", error: null });
+    connectStartTime = Date.now();
+    await tauri.wsConnect();
+    // In browser mode, wsConnect resolves after onopen; update store state here
+    // (Tauri mode updates via the ws:connected event listener instead)
+    if (!isTauri) {
+      if (wsState.subscribedChannels.size > 0) {
+        await handleReconnect();
+      } else {
+        setWsState({ status: "connected", reconnectAttempt: 0, error: null });
+      }
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    setWsState({ status: "disconnected", error });
+    throw err;
+  }
+}
+
+/**
+ * Wait for WebSocket to reach "connected" status.
+ * Returns true if connected within timeout, false otherwise.
+ * Uses event-driven notification instead of polling.
+ */
+export function waitForConnection(timeoutMs = 5000): Promise<boolean> {
+  if (wsState.status === "connected") return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      window.removeEventListener("ws-connected", handler);
+      resolve(false);
+    }, timeoutMs);
+    const handler = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    window.addEventListener("ws-connected", handler, { once: true });
+  });
+}
+
+/**
+ * Disconnect from the WebSocket server.
+ */
+export async function disconnect(): Promise<void> {
+  try {
+    await tauri.wsDisconnect();
+    setWsState({ status: "disconnected", subscribedChannels: new Set() });
+  } catch (err) {
+    console.error("Failed to disconnect:", err);
+  }
+}
+
+/**
+ * Subscribe to a channel.
+ */
+export async function subscribeChannel(channelId: string): Promise<void> {
+  if (wsState.subscribedChannels.has(channelId)) return;
+
+  try {
+    await tauri.wsSubscribe(channelId);
+    setWsState("subscribedChannels", (prev) => {
+      const next = new Set(prev);
+      next.add(channelId);
+      return next;
+    });
+  } catch (err) {
+    console.error("Failed to subscribe to channel:", err);
+  }
+}
+
+/**
+ * Unsubscribe from a channel.
+ */
+export async function unsubscribeChannel(channelId: string): Promise<void> {
+  if (!wsState.subscribedChannels.has(channelId)) return;
+
+  try {
+    await tauri.wsUnsubscribe(channelId);
+    setWsState("subscribedChannels", (prev) => {
+      const next = new Set(prev);
+      next.delete(channelId);
+      return next;
+    });
+  } catch (err) {
+    console.error("Failed to unsubscribe from channel:", err);
+  }
+}
+
+/**
+ * Send typing indicator (debounced).
+ */
+let lastTypingSent = 0;
+export async function sendTyping(channelId: string): Promise<void> {
+  const now = Date.now();
+  // Only send typing every 3 seconds
+  if (now - lastTypingSent < 3000) return;
+
+  try {
+    await tauri.wsTyping(channelId);
+    lastTypingSent = now;
+  } catch (err) {
+    console.error("Failed to send typing:", err);
+  }
+}
+
+/**
+ * Stop typing indicator.
+ */
+export async function stopTyping(channelId: string): Promise<void> {
+  try {
+    await tauri.wsStopTyping(channelId);
+  } catch (err) {
+    console.error("Failed to stop typing:", err);
+  }
+}
+
+/**
+ * Add a user to the typing list for a channel.
+ */
+function addTypingUser(channelId: string, userId: string): void {
+  // Don't show own typing indicator
+  if (userId === currentUser()?.id) return;
+
+  // Clear existing timer for this user
+  const timerKey = `${channelId}:${userId}`;
+  if (typingTimers[timerKey]) {
+    clearTimeout(typingTimers[timerKey]);
+  }
+
+  // Add user to typing set
+  setTypingState("byChannel", channelId, (prev) => {
+    const next = new Set(prev || []);
+    next.add(userId);
+    return next;
+  });
+
+  // Set timeout to remove user
+  typingTimers[timerKey] = setTimeout(() => {
+    removeTypingUser(channelId, userId);
+    delete typingTimers[timerKey];
+  }, TYPING_TIMEOUT);
+}
+
+/**
+ * Remove a user from the typing list for a channel.
+ */
+function removeTypingUser(channelId: string, userId: string): void {
+  setTypingState("byChannel", channelId, (prev) => {
+    if (!prev) return prev;
+    const next = new Set(prev);
+    next.delete(userId);
+    return next;
+  });
+}
+
+/**
+ * Get users currently typing in a channel.
+ */
+export function getTypingUsers(channelId: string): string[] {
+  const users = typingState.byChannel[channelId];
+  return users ? Array.from(users) : [];
+}
+
+/**
+ * Check if connected.
+ */
+export function isConnected(): boolean {
+  return wsState.status === "connected";
+}
+
+// Export stores for reading
+export { wsState, setWsState, typingState, setTypingState };

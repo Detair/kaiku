@@ -13,7 +13,11 @@ All operations are logged to the system audit log for compliance and security tr
 ## Key Files
 
 - `mod.rs` - Router setup with middleware layers, public exports
-- `handlers.rs` - HTTP handlers for all admin endpoints
+- `users.rs` - User listing, details, ban/unban, delete, bulk ban, CSV export
+- `guilds.rs` - Guild listing, details, suspend/unsuspend, delete, bulk suspend, CSV export, page limits
+- `audit.rs` - Audit log query handler with filters
+- `system.rs` - Status, stats, elevation, announcements, auth settings, OIDC providers
+- `shared.rs` - Cross-cutting DTOs (`PaginationParams`, `PaginatedResponse`, `DeleteResponse`)
 - `middleware.rs` - Authorization middleware (`require_system_admin`, `require_elevated`)
 - `types.rs` - Request/response types and error definitions
 
@@ -58,7 +62,7 @@ User → JWT Auth → SystemAdminUser → MFA Verification → ElevatedAdmin
 
 - `middleware.rs:require_system_admin` - Verifies admin status from database
 - `middleware.rs:require_elevated` - Checks for active elevated session
-- `handlers.rs:elevate_session` - MFA verification flow (decrypt secret, validate TOTP)
+- `system.rs:elevate_session` - MFA verification flow (decrypt secret, validate TOTP)
 
 ### Audit Logging
 

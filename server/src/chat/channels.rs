@@ -2,143 +2,19 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use super::types::{
+    AddMemberRequest, ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest,
+    MemberResponse, UpdateChannelRequest,
+};
+use super::{queries, ChatError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db::{self, ChannelType};
 use crate::ws::{broadcast_to_user, ServerEvent};
-
-// ============================================================================
-// Error Types
-// ============================================================================
-
-#[derive(Debug)]
-pub enum ChannelError {
-    NotFound,
-    Forbidden,
-    Validation(String),
-    LimitExceeded(String),
-    Database(sqlx::Error),
-}
-
-impl IntoResponse for ChannelError {
-    fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            Self::NotFound => (
-                StatusCode::NOT_FOUND,
-                "CHANNEL_NOT_FOUND",
-                "Channel not found".to_string(),
-            ),
-            Self::Forbidden => (
-                StatusCode::FORBIDDEN,
-                "FORBIDDEN",
-                "Access denied".to_string(),
-            ),
-            Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),
-            Self::Database(err) => {
-                tracing::error!(%err, "Channel endpoint database error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    "Database error".to_string(),
-                )
-            }
-        };
-        (
-            status,
-            Json(serde_json::json!({ "error": code, "message": message })),
-        )
-            .into_response()
-    }
-}
-
-impl From<sqlx::Error> for ChannelError {
-    fn from(err: sqlx::Error) -> Self {
-        Self::Database(err)
-    }
-}
-
-// ============================================================================
-// Request/Response Types
-// ============================================================================
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct ChannelResponse {
-    pub id: Uuid,
-    pub name: String,
-    pub channel_type: String,
-    pub category_id: Option<Uuid>,
-    pub guild_id: Option<Uuid>,
-    pub topic: Option<String>,
-    pub user_limit: Option<i32>,
-    pub position: i32,
-    /// Maximum concurrent screen shares (voice channels only).
-    pub max_screen_shares: i32,
-    pub icon_url: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl From<db::Channel> for ChannelResponse {
-    fn from(ch: db::Channel) -> Self {
-        Self {
-            id: ch.id,
-            name: ch.name,
-            channel_type: match ch.channel_type {
-                ChannelType::Text => "text".to_string(),
-                ChannelType::Voice => "voice".to_string(),
-                ChannelType::Dm => "dm".to_string(),
-            },
-            category_id: ch.category_id,
-            guild_id: ch.guild_id,
-            topic: ch.topic,
-            icon_url: ch.icon_url.map(|_| format!("/api/dm/{}/icon", ch.id)),
-            user_limit: ch.user_limit,
-            position: ch.position,
-            max_screen_shares: ch.max_screen_shares,
-            created_at: ch.created_at,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct CreateChannelRequest {
-    #[validate(length(min = 1, max = 64, message = "Name must be 1-64 characters"))]
-    pub name: String,
-    pub channel_type: String,
-    pub category_id: Option<Uuid>,
-    pub guild_id: Option<Uuid>,
-    pub topic: Option<String>,
-    pub user_limit: Option<i32>,
-}
-
-#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
-pub struct UpdateChannelRequest {
-    #[validate(length(min = 1, max = 64, message = "Name must be 1-64 characters"))]
-    pub name: Option<String>,
-    pub topic: Option<String>,
-    pub user_limit: Option<i32>,
-    pub position: Option<i32>,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct AddMemberRequest {
-    pub user_id: Uuid,
-    pub role_id: Option<Uuid>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MemberResponse {
-    pub user_id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-}
 
 // ============================================================================
 // Handlers
@@ -160,24 +36,24 @@ pub async fn create(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Json(body): Json<CreateChannelRequest>,
-) -> Result<(StatusCode, Json<ChannelResponse>), ChannelError> {
+) -> Result<(StatusCode, Json<ChannelResponse>), ChatError> {
     // Validate input
     body.validate()
-        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Parse channel type
     let channel_type = match body.channel_type.to_lowercase().as_str() {
         "text" => ChannelType::Text,
         "voice" => ChannelType::Voice,
         "dm" => ChannelType::Dm,
-        _ => return Err(ChannelError::Validation("Invalid channel type".to_string())),
+        _ => return Err(ChatError::Validation("Invalid channel type".to_string())),
     };
 
     // Validate voice channel user limit
     if channel_type == ChannelType::Voice {
         if let Some(limit) = body.user_limit {
             if !(1..=99).contains(&limit) {
-                return Err(ChannelError::Validation(
+                return Err(ChatError::Validation(
                     "User limit must be between 1 and 99".to_string(),
                 ));
             }
@@ -193,24 +69,17 @@ pub async fn create(
             crate::permissions::GuildPermissions::MANAGE_CHANNELS,
         )
         .await
-        .map_err(|_| ChannelError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
         let mut tx = state.db.begin().await?;
 
         // Advisory lock seed 55 = channel_create (see db/mod.rs registry)
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 55))")
-            .bind(guild_id)
-            .execute(&mut *tx)
-            .await?;
+        queries::lock_channel_create(&mut tx, guild_id).await?;
 
-        let channel_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM channels WHERE guild_id = $1")
-                .bind(guild_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let channel_count = queries::count_channels_in_guild(&mut tx, guild_id).await?;
 
         if channel_count >= state.config.max_channels_per_guild {
-            return Err(ChannelError::LimitExceeded(format!(
+            return Err(ChatError::LimitExceeded(format!(
                 "Maximum number of channels per guild reached ({})",
                 state.config.max_channels_per_guild
             )));
@@ -218,13 +87,7 @@ pub async fn create(
 
         // Validate channel type against category type restriction
         if let Some(cat_id) = body.category_id {
-            let cat_type: Option<(String,)> =
-                sqlx::query_as("SELECT category_type::TEXT FROM channel_categories WHERE id = $1")
-                    .bind(cat_id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-
-            if let Some((cat_type,)) = cat_type {
+            if let Some(cat_type) = queries::find_channel_category_type(&mut tx, cat_id).await? {
                 let channel_type_str = match &channel_type {
                     db::ChannelType::Text => "text",
                     db::ChannelType::Voice => "voice",
@@ -233,34 +96,28 @@ pub async fn create(
                 if (cat_type == "text" && channel_type_str != "text")
                     || (cat_type == "voice" && channel_type_str != "voice")
                 {
-                    return Err(ChannelError::Validation(format!(
+                    return Err(ChatError::Validation(format!(
                         "This category only allows {cat_type} channels"
                     )));
                 }
             }
         }
 
-        let position: i32 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(position), 0) + 1 FROM channels WHERE category_id IS NOT DISTINCT FROM $1",
-        )
-        .bind(body.category_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let position = queries::next_channel_position(&mut tx, body.category_id).await?;
 
-        let channel = sqlx::query_as::<_, db::Channel>(
-            r"INSERT INTO channels (name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-              RETURNING id, name, channel_type, category_id, guild_id, topic, icon_url, user_limit, position, max_screen_shares, created_at, updated_at",
+        let channel = queries::insert_channel(
+            &mut tx,
+            queries::InsertChannelParams {
+                name: &body.name,
+                channel_type: &channel_type,
+                category_id: body.category_id,
+                guild_id: body.guild_id,
+                topic: body.topic.as_deref(),
+                icon_url: None,
+                user_limit: body.user_limit,
+                position,
+            },
         )
-        .bind(&body.name)
-        .bind(&channel_type)
-        .bind(body.category_id)
-        .bind(body.guild_id)
-        .bind(body.topic.as_deref())
-        .bind(None::<&str>) // icon_url
-        .bind(body.user_limit)
-        .bind(position)
-        .fetch_one(&mut *tx)
         .await?;
 
         tx.commit().await?;
@@ -300,15 +157,15 @@ pub async fn get(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<ChannelResponse>, ChannelError> {
+) -> Result<Json<ChannelResponse>, ChatError> {
     // Check if user has VIEW_CHANNEL permission
     crate::permissions::require_channel_access(&state.db, auth.id, id)
         .await
-        .map_err(|_| ChannelError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     let channel = db::find_channel_by_id(&state.db, id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     Ok(Json(channel.into()))
 }
@@ -331,23 +188,23 @@ pub async fn update(
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateChannelRequest>,
-) -> Result<Json<ChannelResponse>, ChannelError> {
+) -> Result<Json<ChannelResponse>, ChatError> {
     // Validate input
     body.validate()
-        .map_err(|e| ChannelError::Validation(crate::validation::format_validation_errors(&e)))?;
+        .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // Check channel exists
     let _ = db::find_channel_by_id(&state.db, id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
     // Check if user has VIEW_CHANNEL and MANAGE_CHANNELS permissions
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
         .await
-        .map_err(|_| ChannelError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
-        return Err(ChannelError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let channel = db::update_channel(
@@ -360,7 +217,7 @@ pub async fn update(
         body.position,
     )
     .await?
-    .ok_or(ChannelError::NotFound)?;
+    .ok_or(ChatError::ChannelNotFound)?;
 
     Ok(Json(channel.into()))
 }
@@ -381,14 +238,14 @@ pub async fn delete(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, ChannelError> {
+) -> Result<StatusCode, ChatError> {
     // Check if user has VIEW_CHANNEL and MANAGE_CHANNELS permissions
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
         .await
-        .map_err(|_| ChannelError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
-        return Err(ChannelError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let deleted = db::delete_channel(&state.db, id).await?;
@@ -396,7 +253,7 @@ pub async fn delete(
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ChannelError::NotFound)
+        Err(ChatError::ChannelNotFound)
     }
 }
 
@@ -416,11 +273,11 @@ pub async fn list_members(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<MemberResponse>>, ChannelError> {
+) -> Result<Json<Vec<MemberResponse>>, ChatError> {
     // Check channel access (VIEW_CHANNEL permission or DM participant)
     crate::permissions::require_channel_access(&state.db, auth_user.id, id)
         .await
-        .map_err(|_| ChannelError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     let users = db::list_channel_members_with_users(&state.db, id).await?;
 
@@ -455,20 +312,20 @@ pub async fn add_member(
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<AddMemberRequest>,
-) -> Result<StatusCode, ChannelError> {
+) -> Result<StatusCode, ChatError> {
     // Check channel access and MANAGE_CHANNELS permission
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
         .await
-        .map_err(|_| ChannelError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
-        return Err(ChannelError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     // Check user exists
     let _ = db::find_user_by_id(&state.db, body.user_id)
         .await?
-        .ok_or(ChannelError::Validation("User not found".to_string()))?;
+        .ok_or(ChatError::Validation("User not found".to_string()))?;
 
     db::add_channel_member(&state.db, id, body.user_id, body.role_id).await?;
 
@@ -494,14 +351,14 @@ pub async fn remove_member(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path((channel_id, user_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, ChannelError> {
+) -> Result<StatusCode, ChatError> {
     // Check channel access and MANAGE_CHANNELS permission
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
         .await
-        .map_err(|_| ChannelError::Forbidden)?;
+        .map_err(|_| ChatError::Forbidden)?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
-        return Err(ChannelError::Forbidden);
+        return Err(ChatError::Forbidden);
     }
 
     let removed = db::remove_channel_member(&state.db, channel_id, user_id).await?;
@@ -509,19 +366,13 @@ pub async fn remove_member(
     if removed {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ChannelError::NotFound)
+        Err(ChatError::ChannelNotFound)
     }
 }
 
 // ============================================================================
 // Mark as Read (Guild Channels)
 // ============================================================================
-
-/// Request body for marking a guild channel as read.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct MarkChannelAsReadRequest {
-    pub last_read_message_id: Uuid,
-}
 
 /// Mark a guild channel as read.
 /// POST /api/channels/:id/read
@@ -542,47 +393,32 @@ pub async fn mark_as_read(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
     Json(body): Json<MarkChannelAsReadRequest>,
-) -> Result<Json<()>, ChannelError> {
+) -> Result<Json<()>, ChatError> {
     // 1. Verify channel exists and is a guild channel (not a DM)
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
-        .ok_or(ChannelError::NotFound)?;
+        .ok_or(ChatError::ChannelNotFound)?;
 
-    let guild_id = channel.guild_id.ok_or(ChannelError::NotFound)?;
+    let guild_id = channel.guild_id.ok_or(ChatError::ChannelNotFound)?;
 
     // 2. Verify user is a guild member
-    let is_member = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2) as "exists!""#,
-        guild_id,
-        auth.id
-    )
-    .fetch_one(&state.db)
-    .await?;
-
-    if !is_member {
-        return Err(ChannelError::Forbidden);
+    if !queries::is_guild_member(&state.db, guild_id, auth.id).await? {
+        return Err(ChatError::Forbidden);
     }
 
     let now = chrono::Utc::now();
 
-    // 3. Atomic forward-only UPSERT into channel_read_state
-    // The WHERE clause ensures the read cursor only moves forward by comparing
-    // message timestamps, preventing stale requests from moving it backward.
-    sqlx::query(
-        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (user_id, channel_id)
-           DO UPDATE SET last_read_at = EXCLUDED.last_read_at,
-                         last_read_message_id = EXCLUDED.last_read_message_id
-           WHERE channel_read_state.last_read_message_id IS NULL
-              OR (SELECT created_at FROM messages WHERE id = EXCLUDED.last_read_message_id)
-                 > (SELECT created_at FROM messages WHERE id = channel_read_state.last_read_message_id)",
+    // 3. Atomic forward-only UPSERT into channel_read_state.
+    // The WHERE clause inside the query ensures the read cursor only moves
+    // forward by comparing message timestamps, preventing stale requests
+    // from moving it backward.
+    queries::upsert_channel_read_state(
+        &state.db,
+        auth.id,
+        channel_id,
+        now,
+        body.last_read_message_id,
     )
-    .bind(auth.id)
-    .bind(channel_id)
-    .bind(now)
-    .bind(body.last_read_message_id)
-    .execute(&state.db)
     .await?;
 
     // 4. Broadcast ChannelRead event to all user's other sessions

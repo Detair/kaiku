@@ -8,9 +8,10 @@ use axum::Json;
 use tracing::{info, instrument, warn};
 use uuid::Uuid;
 
+use super::error::WebhookError;
 use super::types::{
     CreateWebhookRequest, DeliveryLogEntry, TestDeliveryResult, UpdateWebhookRequest,
-    WebhookCreatedResponse, WebhookError, WebhookResponse,
+    WebhookCreatedResponse, WebhookResponse,
 };
 use super::{queries, signing};
 use crate::api::AppState;

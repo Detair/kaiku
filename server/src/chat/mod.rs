@@ -2,18 +2,27 @@
 //!
 //! Handles channels, messages, and file uploads.
 
+pub(crate) mod channel_pins;
 pub(crate) mod channels;
 pub mod dm;
 pub mod dm_search;
+pub mod error;
+pub mod files;
 pub(crate) mod media_processing;
 pub(crate) mod messages;
 pub mod overrides;
+pub mod pins;
+pub mod queries;
+pub mod reactions;
 pub mod s3;
 pub(crate) mod screenshare;
+pub mod types;
+pub mod unread;
 pub(crate) mod uploads;
 
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
+pub use error::ChatError;
 pub use s3::S3Client;
 
 use crate::api::AppState;

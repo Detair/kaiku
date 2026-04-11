@@ -12,6 +12,7 @@ use serde_json::json;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::queries::emojis as queries;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::guild::types::{CreateEmojiRequest, GuildEmoji, UpdateEmojiRequest};
@@ -120,15 +121,7 @@ async fn check_guild_membership(
     guild_id: Uuid,
     user_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
-    let result: (bool,) = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2)",
-    )
-    .bind(guild_id)
-    .bind(user_id)
-    .fetch_one(db)
-    .await?;
-
-    Ok(result.0)
+    queries::is_guild_member(db, guild_id, user_id).await
 }
 
 // ============================================================================
@@ -169,16 +162,7 @@ pub async fn list_emojis(
         return Err(EmojiError::GuildNotFound);
     }
 
-    let emojis = sqlx::query_as::<_, GuildEmoji>(
-        r"
-        SELECT * FROM guild_emojis
-        WHERE guild_id = $1
-        ORDER BY created_at DESC
-        ",
-    )
-    .bind(guild_id)
-    .fetch_all(&state.db)
-    .await?;
+    let emojis = queries::list_guild_emojis(&state.db, guild_id).await?;
 
     Ok(Json(emojis))
 }
@@ -207,17 +191,7 @@ pub async fn get_emoji(
         return Err(EmojiError::GuildNotFound);
     }
 
-    let emoji = sqlx::query_as::<_, GuildEmoji>(
-        r"
-        SELECT * FROM guild_emojis
-        WHERE id = $1 AND guild_id = $2
-        ",
-    )
-    .bind(emoji_id)
-    .bind(guild_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(EmojiError::EmojiNotFound)?;
+    let emoji = queries::fetch_guild_emoji(&state.db, guild_id, emoji_id).await?;
 
     Ok(Json(emoji))
 }
@@ -250,11 +224,7 @@ pub async fn create_emoji(
     // The definitive check (under advisory lock) happens again inside the transaction
     // to prevent races, but this early check avoids wasting bandwidth and avoids
     // returning a confusing Storage error when S3 is absent.
-    let emoji_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM guild_emojis WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_one(&state.db)
-            .await?;
+    let emoji_count = queries::count_guild_emojis(&state.db, guild_id).await?;
     if emoji_count >= state.config.max_emojis_per_guild {
         return Err(EmojiError::LimitExceeded(format!(
             "Maximum number of emojis per guild reached ({})",
@@ -337,16 +307,9 @@ pub async fn create_emoji(
     // Lock is held only for COUNT + INSERT, not during S3 upload.
     let mut tx = state.db.begin().await?;
 
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 59))")
-        .bind(guild_id)
-        .execute(&mut *tx)
-        .await?;
+    queries::lock_emoji_create(&mut tx, guild_id).await?;
 
-    let emoji_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM guild_emojis WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let emoji_count = queries::count_guild_emojis_tx(&mut tx, guild_id).await?;
 
     if emoji_count >= state.config.max_emojis_per_guild {
         return Err(EmojiError::LimitExceeded(format!(
@@ -355,18 +318,15 @@ pub async fn create_emoji(
         )));
     }
 
-    let emoji = sqlx::query_as::<_, GuildEmoji>(
-        r"INSERT INTO guild_emojis (id, guild_id, name, image_url, animated, uploaded_by)
-          VALUES ($1, $2, $3, $4, $5, $6)
-          RETURNING *",
+    let emoji = queries::insert_guild_emoji(
+        &mut tx,
+        emoji_id,
+        guild_id,
+        &req.name,
+        &image_url,
+        animated,
+        auth_user.id,
     )
-    .bind(emoji_id)
-    .bind(guild_id)
-    .bind(&req.name)
-    .bind(&image_url)
-    .bind(animated)
-    .bind(auth_user.id)
-    .fetch_one(&mut *tx)
     .await?;
 
     tx.commit().await?;
@@ -381,10 +341,7 @@ pub async fn create_emoji(
             "S3 upload failed after DB insert, compensating by deleting emoji row"
         );
 
-        if let Err(delete_err) = sqlx::query("DELETE FROM guild_emojis WHERE id = $1")
-            .bind(emoji_id)
-            .execute(&state.db)
-            .await
+        if let Err(delete_err) = queries::delete_guild_emoji_compensation(&state.db, emoji_id).await
         {
             tracing::error!(
                 emoji_id = %emoji_id,
@@ -398,12 +355,7 @@ pub async fn create_emoji(
     }
 
     // Re-query full list for broadcast
-    let all_emojis = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC",
-    )
-    .bind(guild_id)
-    .fetch_all(&state.db)
-    .await?;
+    let all_emojis = queries::list_guild_emojis(&state.db, guild_id).await?;
 
     let event = ServerEvent::GuildEmojiUpdated {
         guild_id,
@@ -463,14 +415,7 @@ pub async fn update_emoji(
     }
 
     // Check ownership or MANAGE_GUILD permission
-    let emoji = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE id = $1 AND guild_id = $2",
-    )
-    .bind(emoji_id)
-    .bind(guild_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(EmojiError::EmojiNotFound)?;
+    let emoji = queries::fetch_guild_emoji(&state.db, guild_id, emoji_id).await?;
 
     if emoji.uploaded_by != auth_user.id {
         // Fallback: allow guild admins with MANAGE_GUILD permission
@@ -484,27 +429,10 @@ pub async fn update_emoji(
         .map_err(|_| EmojiError::Forbidden)?;
     }
 
-    let updated = sqlx::query_as::<_, GuildEmoji>(
-        r"
-        UPDATE guild_emojis
-        SET name = $1
-        WHERE id = $2 AND guild_id = $3
-        RETURNING *
-        ",
-    )
-    .bind(&req.name)
-    .bind(emoji_id)
-    .bind(guild_id)
-    .fetch_one(&state.db)
-    .await?;
+    let updated = queries::update_guild_emoji(&state.db, &req.name, emoji_id, guild_id).await?;
 
     // Broadcast update (full list)
-    let all_emojis = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC",
-    )
-    .bind(guild_id)
-    .fetch_all(&state.db)
-    .await?;
+    let all_emojis = queries::list_guild_emojis(&state.db, guild_id).await?;
 
     let event = ServerEvent::GuildEmojiUpdated {
         guild_id,
@@ -555,14 +483,7 @@ pub async fn delete_emoji(
     auth_user: AuthUser,
 ) -> Result<StatusCode, EmojiError> {
     // Check existence and ownership or MANAGE_GUILD permission
-    let emoji = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE id = $1 AND guild_id = $2",
-    )
-    .bind(emoji_id)
-    .bind(guild_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(EmojiError::EmojiNotFound)?;
+    let emoji = queries::fetch_guild_emoji(&state.db, guild_id, emoji_id).await?;
 
     if emoji.uploaded_by != auth_user.id {
         crate::permissions::require_guild_permission(
@@ -576,10 +497,7 @@ pub async fn delete_emoji(
     }
 
     // Delete from DB
-    sqlx::query("DELETE FROM guild_emojis WHERE id = $1")
-        .bind(emoji_id)
-        .execute(&state.db)
-        .await?;
+    queries::delete_guild_emoji(&state.db, emoji_id).await?;
 
     // Delete from S3 (best effort)
     if let Some(s3) = &state.s3 {
@@ -599,12 +517,7 @@ pub async fn delete_emoji(
     }
 
     // Broadcast update (full list)
-    let all_emojis = sqlx::query_as::<_, GuildEmoji>(
-        "SELECT * FROM guild_emojis WHERE guild_id = $1 ORDER BY created_at DESC",
-    )
-    .bind(guild_id)
-    .fetch_all(&state.db)
-    .await?;
+    let all_emojis = queries::list_guild_emojis(&state.db, guild_id).await?;
 
     let event = ServerEvent::GuildEmojiUpdated {
         guild_id,

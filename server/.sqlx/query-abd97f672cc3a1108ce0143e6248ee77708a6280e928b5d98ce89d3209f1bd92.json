@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT expires_at\n           FROM elevated_sessions\n           WHERE user_id = $1 AND expires_at > NOW()\n           ORDER BY elevated_at DESC\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "abd97f672cc3a1108ce0143e6248ee77708a6280e928b5d98ce89d3209f1bd92"
+}

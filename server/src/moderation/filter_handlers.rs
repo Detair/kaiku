@@ -10,12 +10,12 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use uuid::Uuid;
 
-use super::filter_queries;
 use super::filter_types::{
     CreatePatternRequest, FilterError, FilterMatchResponse, GuildFilterConfig, GuildFilterPattern,
     PaginatedModerationLog, PaginationQuery, TestFilterRequest, TestFilterResponse,
     UpdateFilterConfigsRequest, UpdatePatternRequest,
 };
+use super::queries;
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::{require_guild_permission, GuildPermissions};
@@ -82,7 +82,7 @@ pub(crate) async fn list_filter_configs(
     .await
     .map_err(|_| FilterError::Forbidden)?;
 
-    let configs = filter_queries::list_filter_configs(&state.db, guild_id).await?;
+    let configs = queries::list_filter_configs(&state.db, guild_id).await?;
     Ok(Json(configs))
 }
 
@@ -124,7 +124,7 @@ async fn update_filter_configs(
         ));
     }
 
-    let configs = filter_queries::upsert_filter_configs(&state.db, guild_id, &body.configs).await?;
+    let configs = queries::upsert_filter_configs(&state.db, guild_id, &body.configs).await?;
 
     // Invalidate cached engine so next message uses new config
     state.filter_cache.invalidate(guild_id);
@@ -176,7 +176,7 @@ async fn list_custom_patterns(
     .await
     .map_err(|_| FilterError::Forbidden)?;
 
-    let patterns = filter_queries::list_custom_patterns(&state.db, guild_id).await?;
+    let patterns = queries::list_custom_patterns(&state.db, guild_id).await?;
     Ok(Json(patterns))
 }
 
@@ -220,7 +220,7 @@ pub(crate) async fn create_custom_pattern(
     }
 
     // Check max patterns limit
-    let count = filter_queries::count_custom_patterns(&state.db, guild_id).await?;
+    let count = queries::count_custom_patterns(&state.db, guild_id).await?;
     if count >= MAX_CUSTOM_PATTERNS {
         return Err(FilterError::Validation(format!(
             "Maximum of {MAX_CUSTOM_PATTERNS} custom patterns per guild"
@@ -232,7 +232,7 @@ pub(crate) async fn create_custom_pattern(
         validate_regex(&body.pattern)?;
     }
 
-    let pattern = filter_queries::create_custom_pattern(
+    let pattern = queries::create_custom_pattern(
         &state.db,
         guild_id,
         &body.pattern,
@@ -318,7 +318,7 @@ pub(crate) async fn update_custom_pattern(
                 validate_regex(pattern)?;
             } else {
                 // Changing is_regex to true without new pattern: validate existing text
-                let existing = filter_queries::get_custom_pattern(&state.db, pattern_id, guild_id)
+                let existing = queries::get_custom_pattern(&state.db, pattern_id, guild_id)
                     .await?
                     .ok_or(FilterError::NotFound)?;
                 if !existing.is_regex {
@@ -332,7 +332,7 @@ pub(crate) async fn update_custom_pattern(
         None => {
             // is_regex not changing — validate new pattern text if the existing row is regex
             if let Some(ref pattern) = body.pattern {
-                let existing = filter_queries::get_custom_pattern(&state.db, pattern_id, guild_id)
+                let existing = queries::get_custom_pattern(&state.db, pattern_id, guild_id)
                     .await?
                     .ok_or(FilterError::NotFound)?;
                 if existing.is_regex {
@@ -347,7 +347,7 @@ pub(crate) async fn update_custom_pattern(
     //   None → don't change, Some(None) → clear to null, Some(Some(s)) → set to s
     let description = body.description.as_ref().map(|inner| inner.as_deref());
 
-    let pattern = filter_queries::update_custom_pattern(
+    let pattern = queries::update_custom_pattern(
         &state.db,
         pattern_id,
         guild_id,
@@ -398,7 +398,7 @@ pub(crate) async fn delete_custom_pattern(
     .await
     .map_err(|_| FilterError::Forbidden)?;
 
-    let deleted = filter_queries::delete_custom_pattern(&state.db, pattern_id, guild_id).await?;
+    let deleted = queries::delete_custom_pattern(&state.db, pattern_id, guild_id).await?;
     if !deleted {
         return Err(FilterError::NotFound);
     }
@@ -459,8 +459,7 @@ async fn list_moderation_log(
     let limit = query.limit.clamp(1, 100);
     let offset = query.offset.max(0);
 
-    let (items, total) =
-        filter_queries::list_moderation_log(&state.db, guild_id, limit, offset).await?;
+    let (items, total) = queries::list_moderation_log(&state.db, guild_id, limit, offset).await?;
 
     Ok(Json(PaginatedModerationLog {
         items,
