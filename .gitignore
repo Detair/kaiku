@@ -52,6 +52,9 @@ yarn-error.log*
 *.dll
 *.so
 *.dylib
+*.tgz
+*.tar.gz
+client/os
 
 # =============================================================================
 # Test & Coverage
