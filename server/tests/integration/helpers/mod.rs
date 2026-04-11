@@ -214,7 +214,9 @@ impl Drop for CleanupGuard {
         // Prevents flaky cleanup hangs from triggering nextest's 120s slow-timeout.
         // Tradeoff: panics in the detached thread (timeout path) are silently
         // discarded. Happy-path joins still propagate panics via .expect().
-        // Removed once the explicit-cleanup migration completes (Task 14+).
+        // Kept as a safety net for tests that panic before reaching
+        // .cleanup().await (RAII semantics). Removed only when the Drop
+        // fallback itself becomes panic!() (Layer 3 follow-up).
         let timeout = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
         loop {
