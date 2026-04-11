@@ -47,6 +47,7 @@ async fn test_create_channel_success() {
     assert_eq!(json["name"], "new-channel");
     assert_eq!(json["channel_type"], "text");
     assert_eq!(json["guild_id"], guild_id.to_string());
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -107,6 +108,7 @@ async fn test_create_channel_validation_errors() {
         400,
         "Voice channel with user_limit=100 should return 400"
     );
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -155,6 +157,7 @@ async fn test_update_channel_requires_manage_channels() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["name"], "renamed-by-owner");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -195,6 +198,7 @@ async fn test_delete_channel_requires_manage_channels() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 204, "Owner should be able to delete");
+    guard.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -220,4 +224,5 @@ async fn test_get_channel_not_found() {
         "Non-existent channel should return 403 or 404, got {}",
         resp.status()
     );
+    guard.cleanup().await;
 }
