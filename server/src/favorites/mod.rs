@@ -7,7 +7,9 @@ pub mod handlers;
 pub mod types;
 
 pub use error::FavoritesError;
-pub use types::{Favorite, FavoriteChannel, FavoritesResponse, ReorderChannelsRequest, ReorderGuildsRequest};
+pub use types::{
+    Favorite, FavoriteChannel, FavoritesResponse, ReorderChannelsRequest, ReorderGuildsRequest,
+};
 
 use axum::routing::{get, post, put};
 use axum::Router;
@@ -20,7 +22,10 @@ pub fn router() -> Router<AppState> {
         .route("/", get(handlers::list_favorites))
         .route("/reorder", put(handlers::reorder_channels))
         .route("/reorder-guilds", put(handlers::reorder_guilds))
-        .route("/{channel_id}", post(handlers::add_favorite).delete(handlers::remove_favorite))
+        .route(
+            "/{channel_id}",
+            post(handlers::add_favorite).delete(handlers::remove_favorite),
+        )
 }
 
 #[cfg(test)]
@@ -81,8 +86,8 @@ mod tests {
 
     #[test]
     fn test_favorites_error_status_codes() {
-        use axum::response::IntoResponse;
         use super::error::FavoritesError;
+        use axum::response::IntoResponse;
 
         let test_cases = vec![
             (FavoritesError::ChannelNotFound, StatusCode::NOT_FOUND),

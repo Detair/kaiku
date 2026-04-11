@@ -21,5 +21,8 @@ use crate::api::AppState;
 /// - GET / - Get current user's preferences
 /// - PUT / - Update current user's preferences (full replacement)
 pub fn router() -> Router<AppState> {
-    Router::new().route("/", get(handlers::get_preferences).put(handlers::update_preferences))
+    Router::new().route(
+        "/",
+        get(handlers::get_preferences).put(handlers::update_preferences),
+    )
 }

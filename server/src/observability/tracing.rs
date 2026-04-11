@@ -312,7 +312,7 @@ mod tests {
         let chat = include_str!("../chat/messages.rs");
         assert_contains(chat, "#[tracing::instrument(skip(state, body)");
 
-        let ws = include_str!("../ws/mod.rs");
+        let ws = include_str!("../ws/handlers.rs");
         // The attribute may be formatted across multiple lines by rustfmt; check
         // for the skip list fragment which must always be present.
         assert_contains(
