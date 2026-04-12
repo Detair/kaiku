@@ -7843,7 +7843,7 @@ dependencies = [
 [[package]]
 name = "scap"
 version = "0.1.0-beta.1"
-source = "git+https://github.com/Detair/scap.git?branch=fix%2Flinux-frame-enum#4d1304e920564d56e042b9048050b98fcaff427f"
+source = "git+https://github.com/CapSoftware/scap.git?rev=c03f15a4631f40cd8d2e36807befb83b314cfeb7#c03f15a4631f40cd8d2e36807befb83b314cfeb7"
 dependencies = [
  "cidre",
  "cocoa 0.25.0",
