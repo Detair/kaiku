@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Fixed
+- Admin dashboard status badges, elevation buttons, and warning banners now have readable text instead of invisible same-hue text on colored backgrounds (#524)
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
 - Sent friend requests now show "Cancel" button instead of Accept/Decline buttons in the pending view (#453)
 - Rejecting or cancelling a friend request now updates the other user's UI in real time via WebSocket

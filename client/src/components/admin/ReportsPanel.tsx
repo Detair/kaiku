@@ -209,7 +209,7 @@ const ReportsPanel: Component = () => {
                 <span class="px-2 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-text-primary border border-status-warning/30">
                   {stats()!.pending} pending
                 </span>
-                <span class="px-2 py-1 rounded-full text-xs font-medium bg-blue-400/10 text-blue-400 border border-blue-400/30">
+                <span class="px-2 py-1 rounded-full text-xs font-medium bg-blue-400/10 text-text-primary border border-blue-400/30">
                   {stats()!.reviewing} reviewing
                 </span>
               </div>
