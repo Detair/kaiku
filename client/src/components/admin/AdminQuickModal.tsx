@@ -156,7 +156,7 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
                 {/* Elevated State */}
                 <div class="p-4 rounded-lg bg-status-warning/15 border border-status-warning/50 space-y-3">
                   <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-2 text-status-warning">
+                    <div class="flex items-center gap-2 text-text-primary">
                       <ShieldAlert class="w-4 h-4" />
                       <span class="text-sm font-semibold">Session Elevated</span>
                     </div>
@@ -212,7 +212,7 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
 
             {/* Error Display */}
             <Show when={adminState.error}>
-              <div class="p-3 rounded-lg bg-status-error/15 border border-status-error/50 text-status-error text-sm font-medium">
+              <div class="p-3 rounded-lg bg-status-error/15 border border-status-error/50 text-text-primary text-sm font-medium">
                 {adminState.error}
               </div>
             </Show>

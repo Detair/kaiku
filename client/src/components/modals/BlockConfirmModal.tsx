@@ -87,7 +87,7 @@ const BlockConfirmModal: Component<BlockConfirmModalProps> = (props) => {
             </p>
 
             {error() && (
-              <div class="p-3 rounded-lg bg-status-error/10 border border-status-error/30 text-status-error text-sm">
+              <div class="p-3 rounded-lg bg-status-error/10 border border-status-error/30 text-text-primary text-sm">
                 {error()}
               </div>
             )}

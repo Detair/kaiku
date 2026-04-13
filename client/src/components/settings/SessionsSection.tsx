@@ -117,7 +117,7 @@ const SessionsSection: Component = () => {
                         {session.device}
                       </span>
                       <Show when={session.is_current}>
-                        <span class="px-1.5 py-0.5 text-[10px] rounded-md bg-status-success/20 text-status-success font-medium">
+                        <span class="px-1.5 py-0.5 text-[10px] rounded-md bg-status-success/20 text-text-primary font-medium">
                           Current
                         </span>
                       </Show>

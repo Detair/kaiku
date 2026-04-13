@@ -136,14 +136,14 @@ const AdminDashboard: Component = () => {
             fallback={
               <button
                 onClick={() => setShowElevateModal(true)}
-                class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-status-warning/20 text-status-warning text-sm font-medium hover:bg-status-warning/30 transition-colors cursor-pointer"
+                class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-status-warning/20 text-text-primary text-sm font-medium hover:bg-status-warning/30 transition-colors cursor-pointer"
               >
                 <ShieldAlert class="w-4 h-4" />
                 Not Elevated
               </button>
             }
           >
-            <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-status-success/25 text-status-success text-sm font-medium">
+            <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-status-success/25 text-text-primary text-sm font-medium">
               <Shield class="w-4 h-4" />
               Elevated ({timeRemaining()})
             </div>
@@ -279,7 +279,7 @@ const AdminDashboard: Component = () => {
                         <div class="flex items-start gap-3">
                           <ShieldAlert class="w-5 h-5 text-status-warning flex-shrink-0 mt-0.5" />
                           <div>
-                            <h3 class="text-sm font-semibold text-status-warning">
+                            <h3 class="text-sm font-semibold text-text-primary">
                               Session Not Elevated
                             </h3>
                             <p class="text-sm text-text-primary mt-1">
