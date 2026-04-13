@@ -41,8 +41,10 @@ import {
 } from "@/lib/tauri";
 import {
   showContextMenu,
+  showContextMenuAt,
   type ContextMenuEntry,
 } from "@/components/ui/ContextMenu";
+import { createLongPress } from "@/lib/createLongPress";
 import { currentUser } from "@/stores/auth";
 import { showUserContextMenu, triggerReport } from "@/lib/contextMenuBuilders";
 import { spoilerExtension } from "@/lib/markdown/spoilerExtension";
@@ -462,7 +464,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     }
   });
 
-  const handleContextMenu = (e: MouseEvent) => {
+  const buildContextMenuItems = (): ContextMenuEntry[] => {
     const msg = props.message;
 
     const items: ContextMenuEntry[] = [
@@ -573,8 +575,16 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       );
     }
 
-    showContextMenu(e, items);
+    return items;
   };
+
+  const handleContextMenu = (e: MouseEvent) => {
+    showContextMenu(e, buildContextMenuItems());
+  };
+
+  const longPress = createLongPress((x, y) => {
+    showContextMenuAt(x, y, buildContextMenuItems());
+  });
 
   return (
     <Show
@@ -592,6 +602,10 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     <div
       data-testid="message-item"
       onContextMenu={handleContextMenu}
+      onPointerDown={longPress.onPointerDown}
+      onPointerUp={longPress.onPointerUp}
+      onPointerCancel={longPress.onPointerCancel}
+      onPointerMove={longPress.onPointerMove}
       onMouseEnter={() => {
         reactionShortcutHandler = handleAddReaction;
       }}

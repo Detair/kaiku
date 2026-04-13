@@ -30,7 +30,11 @@ import { authState } from "@/stores/auth";
 import MemberRoleDropdown from "./MemberRoleDropdown";
 import { ActivityIndicator } from "../ui";
 import type { GuildMember } from "@/lib/types";
-import { showUserContextMenu } from "@/lib/contextMenuBuilders";
+import {
+  showUserContextMenu,
+  showUserContextMenuAt,
+} from "@/lib/contextMenuBuilders";
+import { createLongPress } from "@/lib/createLongPress";
 
 interface MembersTabProps {
   guildId: string;
@@ -194,6 +198,14 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                         const memberRoles = () =>
                           getMemberRoles(props.guildId, m().user_id);
 
+                        const memberLongPress = createLongPress((x, y) => {
+                          showUserContextMenuAt(x, y, {
+                            id: m().user_id,
+                            username: m().username,
+                            display_name: m().display_name,
+                          });
+                        });
+
                         return (
                           <div
                             data-testid={`members-tab-row-${m().username}`}
@@ -205,6 +217,10 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                                 display_name: m().display_name,
                               })
                             }
+                            onPointerDown={memberLongPress.onPointerDown}
+                            onPointerUp={memberLongPress.onPointerUp}
+                            onPointerCancel={memberLongPress.onPointerCancel}
+                            onPointerMove={memberLongPress.onPointerMove}
                           >
                             {/* Avatar with status indicator */}
                             <div class="relative flex-shrink-0">

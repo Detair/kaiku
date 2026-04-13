@@ -95,6 +95,37 @@ export function showContextMenu(
 }
 
 /**
+ * Show a context menu at specific coordinates (for touch/long-press).
+ * Automatically flips position if near the viewport edge.
+ */
+export function showContextMenuAt(
+  x: number,
+  y: number,
+  items: ContextMenuEntry[],
+): void {
+  // Estimate menu dimensions for viewport edge flipping
+  const menuWidth = 200;
+  const menuHeight = items.length * 36;
+
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+
+  if (x + menuWidth > viewportW) {
+    x = viewportW - menuWidth - 8;
+  }
+  if (y + menuHeight > viewportH) {
+    y = viewportH - menuHeight - 8;
+  }
+
+  // Ensure we don't go negative
+  x = Math.max(4, x);
+  y = Math.max(4, y);
+
+  setFocusedIndex(-1);
+  setMenuState({ visible: true, x, y, items });
+}
+
+/**
  * Hide the context menu.
  */
 export function hideContextMenu(): void {
@@ -154,7 +185,7 @@ const ContextMenuItemButton: Component<{
     <button
       type="button"
       class={`
-        w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-left rounded
+        w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-left rounded
         transition-colors cursor-default
         ${
           props.item.disabled
