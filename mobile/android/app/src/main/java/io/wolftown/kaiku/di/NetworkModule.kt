@@ -10,6 +10,8 @@ import io.wolftown.kaiku.data.api.KaikuHttpClient
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import kotlinx.serialization.json.Json
+import okhttp3.ConnectionSpec
+import okhttp3.TlsVersion
 import javax.inject.Singleton
 
 @Module
@@ -18,11 +20,20 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun provideTls13Spec(): ConnectionSpec {
+        return ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+            .tlsVersions(TlsVersion.TLS_1_3)
+            .build()
+    }
+
+    @Provides
+    @Singleton
     fun provideKaikuHttpClient(
         tokenStorage: TokenStorage,
-        authState: AuthState
+        authState: AuthState,
+        tls13Spec: ConnectionSpec
     ): KaikuHttpClient {
-        return KaikuHttpClient(tokenStorage, authState)
+        return KaikuHttpClient(tokenStorage, authState, tls13Spec)
     }
 
     @Provides

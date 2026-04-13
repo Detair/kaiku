@@ -9,6 +9,7 @@ import io.wolftown.kaiku.data.ws.ConnectivityMonitor
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.WsJson
 import kotlinx.serialization.json.Json
+import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import javax.inject.Qualifier
@@ -25,8 +26,9 @@ object WebSocketModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient {
+    fun provideOkHttpClient(tls13Spec: ConnectionSpec): OkHttpClient {
         return OkHttpClient.Builder()
+            .connectionSpecs(listOf(tls13Spec))
             .pingInterval(0, TimeUnit.SECONDS) // We handle ping/pong at the application level
             .readTimeout(0, TimeUnit.SECONDS)   // No timeout for WebSocket reads
             .build()

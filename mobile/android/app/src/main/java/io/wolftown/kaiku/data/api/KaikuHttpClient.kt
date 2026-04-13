@@ -19,6 +19,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
+import okhttp3.ConnectionSpec
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -39,7 +40,8 @@ internal data class RefreshRequest(val refreshToken: String)
  */
 class KaikuHttpClient @Inject constructor(
     private val tokenStorage: TokenStorage,
-    private val authState: AuthState
+    private val authState: AuthState,
+    private val tls13Spec: ConnectionSpec
 ) {
     private enum class RefreshResult { SUCCESS, AUTH_REJECTED, NETWORK_ERROR }
 
@@ -57,7 +59,8 @@ class KaikuHttpClient @Inject constructor(
             authState: AuthState,
             engine: HttpClientEngine
         ): KaikuHttpClient {
-            return KaikuHttpClient(tokenStorage, authState).apply {
+            // ConnectionSpec is unused for MockEngine; provide MODERN_TLS as placeholder.
+            return KaikuHttpClient(tokenStorage, authState, ConnectionSpec.MODERN_TLS).apply {
                 testClient = createConfiguredClient(engine)
             }
         }
@@ -65,7 +68,11 @@ class KaikuHttpClient @Inject constructor(
 
     private val refreshMutex = Mutex()
 
-    val httpClient: HttpClient = createConfiguredClient(OkHttp.create())
+    val httpClient: HttpClient = createConfiguredClient(OkHttp.create {
+        config {
+            connectionSpecs(listOf(tls13Spec))
+        }
+    })
 
     @Volatile
     private var testClient: HttpClient? = null

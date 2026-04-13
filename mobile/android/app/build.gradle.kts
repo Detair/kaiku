@@ -119,6 +119,7 @@ dependencies {
 
     // Security
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("com.google.android.gms:play-services-base:18.5.0")
 
     // WebRTC
     implementation("io.getstream:stream-webrtc-android:1.3.0")
