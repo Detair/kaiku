@@ -19,10 +19,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.Closeable
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -45,12 +49,13 @@ class VoiceRepository @Inject constructor(
     private val audioRouteManager: AudioRouteManager,
     private val voiceServiceEvents: VoiceServiceEvents,
     @ApplicationContext private val context: Context
-) {
+) : Closeable {
     companion object {
         private val logger = Logger.getLogger("VoiceRepository")
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val leaveMutex = Mutex()
 
     private val _currentChannelId = MutableStateFlow<String?>(null)
     /** The channel ID currently connected to, or null if not in a voice channel. */
@@ -166,17 +171,19 @@ class VoiceRepository @Inject constructor(
      * 5. Clear state
      */
     suspend fun leaveChannel() {
-        val channelId = _currentChannelId.value ?: return
+        leaveMutex.withLock {
+            val channelId = _currentChannelId.value ?: return@withLock
 
-        try {
-            // 1. Send VoiceLeave
-            webSocket.send(ClientEvent.VoiceLeave(channelId))
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+            try {
+                // 1. Send VoiceLeave
+                webSocket.send(ClientEvent.VoiceLeave(channelId))
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+            }
+
+            cleanUp()
+            logger.info("Left voice channel: $channelId")
         }
-
-        cleanUp()
-        logger.info("Left voice channel: $channelId")
     }
 
     /**
@@ -194,6 +201,10 @@ class VoiceRepository @Inject constructor(
         } else {
             webSocket.send(ClientEvent.VoiceUnmute(channelId))
         }
+    }
+
+    override fun close() {
+        scope.cancel()
     }
 
     /**
