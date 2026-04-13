@@ -71,66 +71,146 @@ fn error_response(status: u16, body: &'static str) -> Response {
 
 /// WebSocket upgrade handler.
 ///
-/// Authentication is performed via the `Sec-WebSocket-Protocol` header to avoid
-/// token exposure in server logs and browser history (OWASP recommendation).
+/// Supports two authentication methods (dual-auth for transition period):
 ///
-/// # Protocol
+/// 1. **Header-based** (legacy): Client sends
+///    `Sec-WebSocket-Protocol: access_token.<jwt_token>`.
+///    Token is validated before upgrade; server responds with
+///    `Sec-WebSocket-Protocol: access_token`.
 ///
-/// Client sends: `Sec-WebSocket-Protocol: access_token.<jwt_token>`
-/// Server responds: `Sec-WebSocket-Protocol: access_token`
+/// 2. **Post-connect** (new): Client connects without a token header.
+///    After upgrade the server waits up to 5 seconds for an `Authenticate`
+///    frame carrying the JWT.  On success the normal socket loop starts.
 #[tracing::instrument(skip(ws, state, headers))]
 pub async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Response {
-    // Extract token from Sec-WebSocket-Protocol header
-    let token = match extract_token_from_protocol(&headers) {
-        Some(t) => t,
-        None => {
-            return error_response(
-                401,
-                "Missing or invalid Sec-WebSocket-Protocol header. Expected: access_token.<jwt>",
-            );
-        }
-    };
+    // Try header-based auth first (backwards compatible)
+    if let Some(token) = extract_token_from_protocol(&headers) {
+        let claims = match jwt::validate_access_token(&token, &state.config.jwt_public_key) {
+            Ok(claims) => claims,
+            Err(_) => {
+                return error_response(401, "Invalid token");
+            }
+        };
 
-    // Validate token before upgrade
-    let claims = match jwt::validate_access_token(&token, &state.config.jwt_public_key) {
-        Ok(claims) => claims,
-        Err(_) => {
-            return error_response(401, "Invalid token");
-        }
-    };
+        let user_id = match Uuid::parse_str(&claims.sub) {
+            Ok(id) => id,
+            Err(_) => {
+                return error_response(401, "Invalid user ID in token");
+            }
+        };
 
-    let user_id = match Uuid::parse_str(&claims.sub) {
-        Ok(id) => id,
-        Err(_) => {
-            return error_response(401, "Invalid user ID in token");
+        // Verify user still exists (lightweight existence check, not full row fetch)
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return error_response(401, "User not found");
+            }
+            Err(e) => {
+                warn!("Database error during WS auth: {}", e);
+                return error_response(503, "Service temporarily unavailable");
+            }
         }
-    };
 
-    // Verify user still exists (lightweight existence check, not full row fetch)
-    match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-        .bind(user_id)
-        .fetch_one(&state.db)
-        .await
-    {
-        Ok(true) => {}
-        Ok(false) => {
-            return error_response(401, "User not found");
-        }
-        Err(e) => {
-            warn!("Database error during WS auth: {}", e);
-            return error_response(503, "Service temporarily unavailable");
-        }
+        // Respond with the protocol to confirm (required for WebSocket handshake)
+        return ws
+            .protocols(["access_token"])
+            .max_message_size(256 * 1024)
+            .max_frame_size(64 * 1024)
+            .on_upgrade(move |socket| handle_socket(socket, state, user_id));
     }
 
-    // Respond with the protocol to confirm (required for WebSocket handshake)
-    ws.protocols(["access_token"])
-        .max_message_size(256 * 1024)
+    // No header token — accept upgrade, authenticate via first frame
+    ws.max_message_size(256 * 1024)
         .max_frame_size(64 * 1024)
-        .on_upgrade(move |socket| handle_socket(socket, state, user_id))
+        .on_upgrade(move |socket| handle_post_connect_auth(socket, state))
+}
+
+/// Handle post-connect authentication: wait for an `Authenticate` frame,
+/// then hand off to the normal socket loop on success.
+async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
+    let (ws_sender, mut ws_receiver) = socket.split();
+
+    // Wait up to 5 seconds for the Authenticate frame
+    let user_id = match tokio::time::timeout(
+        Duration::from_secs(5),
+        wait_for_auth_frame(&mut ws_receiver, &state),
+    )
+    .await
+    {
+        Ok(Ok(uid)) => uid,
+        Ok(Err(reason)) => {
+            warn!("Post-connect auth failed: {}", reason);
+            let mut ws_sender = ws_sender;
+            let _ = ws_sender.close().await;
+            return;
+        }
+        Err(_) => {
+            warn!("Post-connect auth timeout");
+            let mut ws_sender = ws_sender;
+            let _ = ws_sender.close().await;
+            return;
+        }
+    };
+
+    // Reassemble the socket and continue with normal handler
+    let socket = ws_sender
+        .reunite(ws_receiver)
+        .expect("reunite should never fail for same socket");
+    handle_socket(socket, state, user_id).await;
+}
+
+/// Read frames until an `Authenticate` event arrives and validate its token.
+async fn wait_for_auth_frame(
+    receiver: &mut futures::stream::SplitStream<WebSocket>,
+    state: &AppState,
+) -> Result<Uuid, String> {
+    while let Some(msg) = receiver.next().await {
+        match msg {
+            Ok(Message::Text(text)) => match serde_json::from_str::<ClientEvent>(&text) {
+                Ok(ClientEvent::Authenticate { token }) => {
+                    let claims = jwt::validate_access_token(&token, &state.config.jwt_public_key)
+                        .map_err(|e| format!("Invalid token: {e}"))?;
+                    let user_id = Uuid::parse_str(&claims.sub)
+                        .map_err(|_| "Invalid user ID in token".to_string())?;
+
+                    // Verify user exists
+                    match sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
+                    )
+                    .bind(user_id)
+                    .fetch_one(&state.db)
+                    .await
+                    {
+                        Ok(true) => return Ok(user_id),
+                        Ok(false) => return Err("User not found".to_string()),
+                        Err(e) => return Err(format!("Database error: {e}")),
+                    }
+                }
+                Ok(_) => {
+                    // Ignore non-Authenticate events during pre-auth
+                }
+                Err(e) => {
+                    return Err(format!("Invalid event: {e}"));
+                }
+            },
+            Ok(Message::Close(_)) => {
+                return Err("Connection closed before authentication".to_string());
+            }
+            Ok(_) => {} // Ignore binary, ping, pong
+            Err(e) => {
+                return Err(format!("WebSocket error: {e}"));
+            }
+        }
+    }
+    Err("Connection closed before authentication".to_string())
 }
 
 /// Handle WebSocket connection.
@@ -696,6 +776,10 @@ pub async fn handle_client_message(
         ClientEvent::AdminUnsubscribe => {
             *admin_subscribed.write().await = false;
             debug!("Admin {} unsubscribed from admin events", user_id);
+        }
+
+        ClientEvent::Authenticate { .. } => {
+            // Already authenticated — ignore duplicate
         }
     }
 
