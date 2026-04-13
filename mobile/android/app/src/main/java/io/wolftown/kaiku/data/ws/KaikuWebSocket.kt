@@ -28,7 +28,8 @@ import javax.inject.Singleton
 enum class ConnectionState {
     Connected,
     Connecting,
-    Disconnected
+    Disconnected,
+    TokenExpired
 }
 
 /**
@@ -55,6 +56,7 @@ class KaikuWebSocket @Inject constructor(
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var connectivityJob: Job? = null
 
     private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<ServerEvent> = _events.asSharedFlow()
@@ -73,8 +75,9 @@ class KaikuWebSocket @Inject constructor(
     private var connectivityMonitor: ConnectivityMonitor? = null
 
     fun setConnectivityMonitor(monitor: ConnectivityMonitor) {
+        connectivityJob?.cancel()
         connectivityMonitor = monitor
-        scope.launch {
+        connectivityJob = scope.launch {
             monitor.isConnected.collect { connected ->
                 if (connected && shouldReconnect && _connectionState.value == ConnectionState.Disconnected) {
                     reconnectDelay = INITIAL_RECONNECT_DELAY_MS
@@ -104,6 +107,8 @@ class KaikuWebSocket @Inject constructor(
         reconnectJob = null
         pingJob?.cancel()
         pingJob = null
+        connectivityJob?.cancel()
+        connectivityJob = null
         webSocket?.close(1000, "Client disconnect")
         webSocket = null
         _connectionState.value = ConnectionState.Disconnected
@@ -130,6 +135,13 @@ class KaikuWebSocket @Inject constructor(
             logger.warning("No access token available, stopping reconnect")
             shouldReconnect = false
             _connectionState.value = ConnectionState.Disconnected
+            return
+        }
+
+        if (tokenStorage.isAccessTokenExpired()) {
+            logger.info("Access token expired, emitting TokenExpired state")
+            _connectionState.value = ConnectionState.TokenExpired
+            shouldReconnect = false
             return
         }
 
