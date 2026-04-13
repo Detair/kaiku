@@ -63,7 +63,12 @@ import {
   type DraggableType,
 } from "./ChannelDragContext";
 
-const ChannelList: Component = () => {
+interface ChannelListProps {
+  /** Called after a navigation action (e.g. channel selected). Used to close the mobile drawer. */
+  onNavigate?: () => void;
+}
+
+const ChannelList: Component<ChannelListProps> = (props) => {
   const [showMicTest, setShowMicTest] = createSignal(false);
   const [showCreateModal, setShowCreateModal] = createSignal(false);
   const [createModalType, setCreateModalType] = createSignal<"text" | "voice">(
@@ -419,7 +424,7 @@ const ChannelList: Component = () => {
                 onClick={
                   isVoice
                     ? () => handleVoiceChannelClick(channel.id)
-                    : () => selectChannel(channel.id)
+                    : () => { selectChannel(channel.id); props.onNavigate?.(); }
                 }
                 onSettings={
                   canManageChannels()

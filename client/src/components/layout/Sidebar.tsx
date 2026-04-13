@@ -41,7 +41,12 @@ const GuildSettingsModal = lazy(
   () => import("@/components/guilds/GuildSettingsModal"),
 );
 
-const Sidebar: Component = () => {
+interface SidebarProps {
+  /** Called after a navigation action (e.g. channel selected). Used by AppShell to close the mobile drawer. */
+  onNavigate?: () => void;
+}
+
+const Sidebar: Component<SidebarProps> = (props) => {
   const navigate = useNavigate();
   const [showGuildSettings, setShowGuildSettings] = createSignal(false);
   const [selectedPageId, setSelectedPageId] = createSignal<string | null>(null);
@@ -87,6 +92,7 @@ const Sidebar: Component = () => {
     const guild = activeGuild();
     if (guild) {
       navigate(`/guilds/${guild.id}/pages/${page.slug}`);
+      props.onNavigate?.();
     }
   };
 
@@ -167,7 +173,7 @@ const Sidebar: Component = () => {
       </Show>
 
       {/* Channel List */}
-      <ChannelList />
+      <ChannelList onNavigate={props.onNavigate} />
 
       {/* Voice Panel (Bottom, above User Panel) */}
       <VoicePanel />
