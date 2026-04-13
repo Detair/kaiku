@@ -86,8 +86,11 @@ fun MessageItem(
 
                     Spacer(modifier = Modifier.width(8.dp))
 
+                    val formattedTime = remember(message.createdAt) {
+                        formatTimestamp(message.createdAt)
+                    }
                     Text(
-                        text = formatTimestamp(message.createdAt),
+                        text = formattedTime,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
