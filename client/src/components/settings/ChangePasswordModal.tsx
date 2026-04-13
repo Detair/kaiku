@@ -160,7 +160,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                     </div>
                 }>
                     <div class="p-6 space-y-4">
-                        <div class="flex items-center gap-3 p-4 bg-status-success/10 border border-status-success/20 rounded-xl text-status-success">
+                        <div class="flex items-center gap-3 p-4 bg-status-success/10 border border-status-success/20 rounded-xl text-text-primary">
                             <CheckCircle2 class="w-5 h-5 shrink-0" />
                             <p class="text-sm font-medium">Password changed successfully!</p>
                         </div>

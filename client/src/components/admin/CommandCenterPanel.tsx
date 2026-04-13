@@ -281,9 +281,9 @@ const LevelBadge: Component<{ level: string }> = (props) => {
   const colors = () => {
     switch (props.level) {
       case "ERROR":
-        return "bg-status-error/20 text-status-error";
+        return "bg-status-error/20 text-text-primary";
       case "WARN":
-        return "bg-status-warning/20 text-status-warning";
+        return "bg-status-warning/20 text-text-primary";
       case "INFO":
         return "bg-accent-primary/20 text-text-primary";
       case "DEBUG":
@@ -307,12 +307,12 @@ const LevelBadge: Component<{ level: string }> = (props) => {
 const StatusBadge: Component<{ statusCode: string | null; isError: boolean }> =
   (props) => {
     const color = () => {
-      if (props.isError) return "bg-status-error/20 text-status-error";
+      if (props.isError) return "bg-status-error/20 text-text-primary";
       const code = parseInt(props.statusCode ?? "", 10);
       if (isNaN(code)) return "bg-surface-highlight text-text-secondary";
-      if (code >= 500) return "bg-status-error/20 text-status-error";
-      if (code >= 400) return "bg-status-warning/20 text-status-warning";
-      return "bg-status-success/20 text-status-success";
+      if (code >= 500) return "bg-status-error/20 text-text-primary";
+      if (code >= 400) return "bg-status-warning/20 text-text-primary";
+      return "bg-status-success/20 text-text-primary";
     };
 
     return (
@@ -459,7 +459,7 @@ const CommandCenterPanel: Component = () => {
           </div>
           <div class="flex items-center gap-3">
             <Show when={isStale()}>
-              <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-status-warning/15 text-status-warning text-xs font-medium">
+              <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-status-warning/15 text-text-primary text-xs font-medium">
                 <AlertTriangle class="w-3 h-3" />
                 Stale data
               </div>

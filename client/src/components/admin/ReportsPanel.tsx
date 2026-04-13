@@ -30,9 +30,9 @@ import Skeleton from "@/components/ui/Skeleton";
 const PAGE_SIZE = 20;
 
 const STATUS_COLORS: Record<string, string> = {
-  pending: "text-status-warning bg-status-warning/10 border-status-warning/30",
-  reviewing: "text-blue-400 bg-blue-400/10 border-blue-400/30",
-  resolved: "text-status-success bg-status-success/10 border-status-success/30",
+  pending: "text-text-primary bg-status-warning/10 border-status-warning/30",
+  reviewing: "text-text-primary bg-blue-400/10 border-blue-400/30",
+  resolved: "text-text-primary bg-status-success/10 border-status-success/30",
   dismissed: "text-text-secondary bg-white/5 border-white/10",
 };
 
@@ -206,10 +206,10 @@ const ReportsPanel: Component = () => {
           >
             <Show when={stats()}>
               <div class="flex items-center gap-2">
-                <span class="px-2 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
+                <span class="px-2 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-text-primary border border-status-warning/30">
                   {stats()!.pending} pending
                 </span>
-                <span class="px-2 py-1 rounded-full text-xs font-medium bg-blue-400/10 text-blue-400 border border-blue-400/30">
+                <span class="px-2 py-1 rounded-full text-xs font-medium bg-blue-400/10 text-text-primary border border-blue-400/30">
                   {stats()!.reviewing} reviewing
                 </span>
               </div>

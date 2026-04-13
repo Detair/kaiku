@@ -303,7 +303,7 @@ const AdminSettings: Component = () => {
           </div>
         </Show>
         <Show when={state.success}>
-          <div class="p-3 rounded-lg text-sm bg-status-success/10 border border-status-success/30 text-status-success">
+          <div class="p-3 rounded-lg text-sm bg-status-success/10 border border-status-success/30 text-text-primary">
             {state.success}
           </div>
         </Show>
@@ -472,7 +472,7 @@ const AdminSettings: Component = () => {
                           <span
                             class="text-xs px-2 py-0.5 rounded-full"
                             classList={{
-                              "bg-status-success/20 text-status-success":
+                              "bg-status-success/20 text-text-primary":
                                 provider.enabled,
                               "bg-white/10 text-text-secondary": !provider.enabled,
                             }}

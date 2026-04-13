@@ -470,13 +470,13 @@ const GuildsPanel: Component = () => {
                     <Show
                       when={guild.suspended_at}
                       fallback={
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-status-success">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-text-primary">
                           <CheckCircle class="w-3 h-3" />
                           Active
                         </span>
                       }
                     >
-                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-status-error">
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-text-primary">
                         <Ban class="w-3 h-3" />
                         Suspended
                       </span>
@@ -620,13 +620,13 @@ const GuildsPanel: Component = () => {
                     <Show
                       when={guild().suspended_at}
                       fallback={
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-status-success">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-text-primary">
                           <CheckCircle class="w-3 h-3" />
                           Active
                         </span>
                       }
                     >
-                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-status-error">
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-text-primary">
                         <Ban class="w-3 h-3" />
                         Suspended
                       </span>

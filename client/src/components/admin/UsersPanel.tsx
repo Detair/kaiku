@@ -481,13 +481,13 @@ const UsersPanel: Component = () => {
                     <Show
                       when={user.is_banned}
                       fallback={
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-status-success">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-text-primary">
                           <CheckCircle class="w-3 h-3" />
                           Active
                         </span>
                       }
                     >
-                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-status-error">
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-text-primary">
                         <Ban class="w-3 h-3" />
                         Banned
                       </span>
@@ -590,13 +590,13 @@ const UsersPanel: Component = () => {
                     <Show
                       when={user().is_banned}
                       fallback={
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-status-success">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-text-primary">
                           <CheckCircle class="w-3 h-3" />
                           Active
                         </span>
                       }
                     >
-                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-status-error">
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-text-primary">
                         <Ban class="w-3 h-3" />
                         Banned
                       </span>
@@ -682,7 +682,7 @@ const UsersPanel: Component = () => {
                 </div>
 
                 <Show when={!adminState.isElevated}>
-                  <div class="p-3 rounded-lg bg-status-warning/10 border border-status-warning/30 text-status-warning text-xs">
+                  <div class="p-3 rounded-lg bg-status-warning/10 border border-status-warning/30 text-text-primary text-xs">
                     Requires elevation to perform actions
                   </div>
                 </Show>
