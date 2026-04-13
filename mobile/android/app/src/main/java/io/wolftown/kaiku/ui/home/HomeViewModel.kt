@@ -10,6 +10,7 @@ import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.logging.Logger
@@ -47,8 +48,8 @@ class HomeViewModel @Inject constructor(
     val error: StateFlow<String?> = _error.asStateFlow()
 
     /** One-shot navigation event for channel selection. */
-    private val _navigateToChannel = MutableSharedFlow<ChannelNavEvent>(extraBufferCapacity = 1)
-    val navigateToChannel: SharedFlow<ChannelNavEvent> = _navigateToChannel.asSharedFlow()
+    private val _navigateToChannel = Channel<ChannelNavEvent>(Channel.BUFFERED)
+    val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {
         connectWebSocket()
@@ -69,7 +70,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun onChannelSelected(channelId: String, channelType: ChannelType) {
-        _navigateToChannel.tryEmit(ChannelNavEvent(channelId, channelType))
+        _navigateToChannel.trySend(ChannelNavEvent(channelId, channelType))
     }
 
     fun refresh() {
