@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: screen share video track lookup no longer falls back to wrong track in multi-peer scenarios (#23)
 - Android: ICE candidate buffer is bounded to prevent unbounded memory growth on buggy SDP flows
 - Android: concurrent voice connection cleanup is now race-free, preventing rare crashes on rapid reconnect
+- Android: channel names now display correctly instead of raw UUIDs in text and voice channel headers (#7)
+- Android: rapid channel taps no longer silently drop navigation events (#8)
+- Android: scrolling up to read history no longer snaps back to the bottom when new messages arrive (#9)
+- Android: guild icons are properly announced as interactive buttons by screen readers (#24)
 - Admin dashboard status badges, elevation buttons, and warning banners now have readable text instead of invisible same-hue text on colored backgrounds (#524)
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
 - Sent friend requests now show "Cancel" button instead of Accept/Decline buttons in the pending view (#453)
