@@ -159,10 +159,10 @@ class AuthRepository @Inject constructor(
      *
      * This is a fallback path if the server does not redirect with tokens directly.
      */
-    suspend fun exchangeOidcCode(code: String, state: String): Result<User> {
+    suspend fun exchangeOidcCode(code: String, state: String, codeVerifier: String? = null): Result<User> {
         return try {
             val redirectUri = "kaiku://auth/callback"
-            val authResponse = authApi.exchangeOidcCode(code, state, redirectUri)
+            val authResponse = authApi.exchangeOidcCode(code, state, redirectUri, codeVerifier)
 
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
