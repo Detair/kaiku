@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "New Messages" divider shows where you left off when returning to a channel
 - Opening a channel with unreads scrolls to your last read position
 
+### Security
+- Android: enforce TLS 1.3 on all network connections (HTTP and WebSocket)
+- Android: WebSocket authentication moved from header to post-connect frame, preventing token exposure in proxy logs
+- Android: OIDC login now uses PKCE and state nonce to prevent authorization code interception and CSRF
+- Android: OIDC callback supports Android App Links (`https://`) in addition to custom scheme (`kaiku://`)
+- Android: tokens are no longer persisted until user identity is verified, preventing orphaned credentials on process death
+- Android: WebSocket reconnect checks token expiry before attempting handshake, preventing 401 loops
+- Android: network connectivity detection uses `NET_CAPABILITY_VALIDATED` to avoid false positives on captive portals
+
 ### Fixed
 - Admin dashboard status badges, elevation buttons, and warning banners now have readable text instead of invisible same-hue text on colored backgrounds (#524)
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
