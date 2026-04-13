@@ -32,7 +32,11 @@ const CreateGuildModal = lazy(
 );
 const JoinGuildModal = lazy(() => import("@/components/guilds/JoinGuildModal"));
 
-const ServerRail: Component = () => {
+interface ServerRailProps {
+  compact?: boolean;
+}
+
+const ServerRail: Component<ServerRailProps> = (props) => {
   // Hover state (still local to component)
   const [hoveredServerId, setHoveredServerId] = createSignal<string | null>(
     null,
@@ -62,10 +66,19 @@ const ServerRail: Component = () => {
     return isActive(id) ? "40px" : "8px";
   };
 
+  /** Icon button size classes based on compact prop */
+  const iconSize = () => (props.compact ? "w-9 h-9" : "w-12 h-12");
+
+  /** Separator width based on compact prop */
+  const separatorClass = () =>
+    props.compact
+      ? "w-6 h-0.5 bg-white/10 rounded-full my-1"
+      : "w-8 h-0.5 bg-white/10 rounded-full my-1";
+
   return (
     <nav
       aria-label="Servers"
-      class="w-[72px] flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-border-solid z-20"
+      class={`${props.compact ? 'w-[56px]' : 'w-[72px]'} flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-border-solid z-20`}
       data-testid="server-rail"
     >
       {/* Home Icon - Kaiku Logo */}
@@ -78,7 +91,7 @@ const ServerRail: Component = () => {
 
         {/* Icon Container */}
         <button
-          class="w-12 h-12 flex items-center justify-center bg-surface-layer2 transition-all duration-200 cursor-pointer"
+          class={`${iconSize()} flex items-center justify-center bg-surface-layer2 transition-all duration-200 cursor-pointer`}
           data-testid="home-button"
           style={{
             "border-radius": getBorderRadius("home"),
@@ -95,7 +108,7 @@ const ServerRail: Component = () => {
       </div>
 
       {/* Separator */}
-      <div class="w-8 h-0.5 bg-white/10 rounded-full my-1" />
+      <div class={separatorClass()} />
 
       {/* Server Icons - Scrollable List */}
       <div class="flex-1 flex flex-col items-center gap-2 overflow-y-auto scrollbar-none">
@@ -119,7 +132,7 @@ const ServerRail: Component = () => {
 
                 {/* Server Icon */}
                 <button
-                  class="w-12 h-12 flex items-center justify-center bg-surface-layer2 transition-all duration-200 cursor-pointer overflow-hidden"
+                  class={`${iconSize()} flex items-center justify-center bg-surface-layer2 transition-all duration-200 cursor-pointer overflow-hidden`}
                   data-testid="guild-button"
                   style={{
                     "border-radius": getBorderRadius(guild.id),
@@ -161,7 +174,7 @@ const ServerRail: Component = () => {
         {/* Guild load error */}
         <Show when={guildsState.error}>
           <button
-            class="w-12 h-12 flex items-center justify-center bg-error-bg/20 rounded-full cursor-pointer text-error-text hover:bg-error-bg/30 transition-colors"
+            class={`${iconSize()} flex items-center justify-center bg-error-bg/20 rounded-full cursor-pointer text-error-text hover:bg-error-bg/30 transition-colors`}
             title={`Failed to load servers: ${guildsState.error}. Click to retry.`}
             onClick={() => loadGuilds()}
           >
@@ -171,7 +184,7 @@ const ServerRail: Component = () => {
       </div>
 
       {/* Separator before action buttons */}
-      <div class="w-8 h-0.5 bg-white/10 rounded-full my-1" />
+      <div class={separatorClass()} />
 
       {/* Explore / Discover Servers Button */}
       <div class="relative">
@@ -183,7 +196,7 @@ const ServerRail: Component = () => {
           />
         </Show>
         <button
-          class="w-12 h-12 flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group"
+          class={`${iconSize()} flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group`}
           style={{
             "border-radius":
               isDiscoveryActive() || isHovered("discover") ? "16px" : "50%",
@@ -202,7 +215,7 @@ const ServerRail: Component = () => {
       {/* Add Server Button */}
       <div class="relative">
         <button
-          class="w-12 h-12 flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group"
+          class={`${iconSize()} flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group`}
           data-testid="create-server-button"
           style={{
             "border-radius": isHovered("add") ? "16px" : "50%",
@@ -220,7 +233,7 @@ const ServerRail: Component = () => {
       {/* Join Server Button */}
       <div class="relative">
         <button
-          class="w-12 h-12 flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group"
+          class={`${iconSize()} flex items-center justify-center bg-surface-layer2 hover:bg-accent-primary/20 transition-all duration-200 cursor-pointer group`}
           style={{
             "border-radius": isHovered("join") ? "16px" : "50%",
             opacity: isHovered("join") ? 1 : 0.8,
