@@ -28,16 +28,8 @@ class AuthRepository @Inject constructor(
         return try {
             val authResponse = authApi.login(username, password, mfaCode)
 
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = "" // Will be populated after getMe
-            )
+            val user = authApi.authenticatedGetMe(authResponse.accessToken)
 
-            val user = authApi.getMe()
-
-            // Re-save tokens with correct userId
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -66,14 +58,7 @@ class AuthRepository @Inject constructor(
         return try {
             val authResponse = authApi.register(username, password, email, displayName)
 
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = "" // Will be populated after getMe
-            )
-
-            val user = authApi.getMe()
+            val user = authApi.authenticatedGetMe(authResponse.accessToken)
 
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
@@ -128,14 +113,7 @@ class AuthRepository @Inject constructor(
         expiresIn: Int
     ): Result<User> {
         return try {
-            tokenStorage.saveTokens(
-                accessToken = accessToken,
-                refreshToken = refreshToken,
-                expiresIn = expiresIn,
-                userId = "" // Will be populated after getMe
-            )
-
-            val user = authApi.getMe()
+            val user = authApi.authenticatedGetMe(accessToken)
 
             tokenStorage.saveTokens(
                 accessToken = accessToken,
@@ -164,14 +142,7 @@ class AuthRepository @Inject constructor(
             val redirectUri = "kaiku://auth/callback"
             val authResponse = authApi.exchangeOidcCode(code, state, redirectUri, codeVerifier)
 
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = ""
-            )
-
-            val user = authApi.getMe()
+            val user = authApi.authenticatedGetMe(authResponse.accessToken)
 
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
@@ -194,9 +165,8 @@ class AuthRepository @Inject constructor(
      * Redeems a QR login token scanned from the desktop client.
      *
      * Exchanges the token for auth credentials via an absolute URL, then
-     * saves the server URL after the redeem succeeds (before getMe, which
-     * needs it to construct the request URL). A failed getMe leaves the
-     * server URL set, which is acceptable since the redeem already succeeded.
+     * saves the server URL (needed by KaikuHttpClient for base URL) before
+     * calling getMe. Tokens are only persisted after getMe succeeds.
      */
     suspend fun redeemQrToken(serverUrl: String, token: String): Result<User> {
         return try {
@@ -204,16 +174,9 @@ class AuthRepository @Inject constructor(
 
             // Save server URL before getMe — KaikuHttpClient needs it for the base URL
             tokenStorage.saveServerUrl(serverUrl)
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = "" // Will be populated after getMe
-            )
 
-            val user = authApi.getMe()
+            val user = authApi.authenticatedGetMe(authResponse.accessToken)
 
-            // Re-save tokens with correct userId
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,

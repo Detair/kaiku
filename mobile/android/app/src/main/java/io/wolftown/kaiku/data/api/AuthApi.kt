@@ -29,6 +29,8 @@ interface AuthApi {
     suspend fun refresh(refreshToken: String): AuthResponse
     suspend fun logout()
     suspend fun getMe(): User
+    /** Calls /auth/me with an explicit bearer token, bypassing the interceptor chain. */
+    suspend fun authenticatedGetMe(accessToken: String): User
     suspend fun getOidcProviders(): List<OidcProvider>
     suspend fun exchangeOidcCode(code: String, state: String, redirectUri: String, codeVerifier: String? = null): AuthResponse
     suspend fun redeemQrToken(serverUrl: String, token: String): AuthResponse
@@ -138,6 +140,21 @@ class AuthApiImpl @Inject constructor(
 
     override suspend fun getMe(): User {
         val response = httpClient.get("/auth/me")
+
+        if (!response.status.isSuccess()) {
+            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
+            throw ApiException(response.status, errorBody?.message ?: "Failed to get user")
+        }
+
+        return response.body()
+    }
+
+    override suspend fun authenticatedGetMe(accessToken: String): User {
+        val response = httpClient.get("/auth/me") {
+            headers {
+                set(HttpHeaders.Authorization, "Bearer $accessToken")
+            }
+        }
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
