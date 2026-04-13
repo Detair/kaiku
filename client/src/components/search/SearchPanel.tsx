@@ -361,7 +361,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                 setAuthorFilter(e.currentTarget.value);
                 triggerSearch();
               }}
-              class="w-full px-2 py-1 rounded text-xs text-text-primary placeholder:text-text-secondary/50 bg-surface-layer1 border border-white/10 outline-none"
+              class="w-full px-2 py-1 rounded text-xs text-text-primary placeholder:text-text-muted bg-surface-layer1 border border-white/10 outline-none"
             />
           </div>
           <div class="flex gap-2">

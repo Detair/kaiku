@@ -137,6 +137,18 @@ export default defineConfig({
       getCSS: () => `@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }`,
     },
   ],
+  variants: [
+    {
+      name: "touch",
+      match(matcher: string) {
+        if (!matcher.startsWith("touch:")) return;
+        return {
+          matcher: matcher.slice(6),
+          parent: "@media (hover: none)",
+        };
+      },
+    },
+  ],
   rules: [
     [/^animate-\[slideUp/, () => ({
       animation: "slideUp 0.2s ease-out",

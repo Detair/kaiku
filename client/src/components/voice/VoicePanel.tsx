@@ -98,7 +98,7 @@ const VoicePanel: Component = () => {
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
                 <span class="hover:text-text-primary transition-colors">{channel()?.name || "Voice Channel"}</span>
                 <Show when={isConnected()}>
-                  <span class="text-text-secondary/50">&middot;</span>
+                  <span class="text-text-muted">&middot;</span>
                   <span class="font-mono">{elapsedTime()}</span>
                   <div
                     class="relative"

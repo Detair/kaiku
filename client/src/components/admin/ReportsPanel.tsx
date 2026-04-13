@@ -312,7 +312,7 @@ const ReportsPanel: Component = () => {
                           {report.target_type}
                         </span>
                         <br />
-                        <span class="text-xs text-text-secondary/50 font-mono">
+                        <span class="text-xs text-text-muted font-mono">
                           {report.target_user_id.slice(0, 8)}...
                         </span>
                       </td>

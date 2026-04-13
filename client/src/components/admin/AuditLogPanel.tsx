@@ -376,10 +376,10 @@ const AuditLogPanel: Component = () => {
                     <div class="flex items-center text-sm text-text-secondary truncate">
                       <Show
                         when={entry.target_type && entry.target_id}
-                        fallback={<span class="text-text-secondary/50">-</span>}
+                        fallback={<span class="text-text-muted">-</span>}
                       >
                         <span class="capitalize">{entry.target_type}</span>
-                        <span class="mx-1 text-text-secondary/50">/</span>
+                        <span class="mx-1 text-text-muted">/</span>
                         <span class="font-mono">
                           {truncateId(entry.target_id!)}
                         </span>
