@@ -5,6 +5,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.VoiceServiceEvent
+import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
@@ -41,6 +43,7 @@ class VoiceRepository @Inject constructor(
     private val webRtcManager: WebRtcManager,
     private val webSocket: KaikuWebSocket,
     private val audioRouteManager: AudioRouteManager,
+    private val voiceServiceEvents: VoiceServiceEvents,
     @ApplicationContext private val context: Context
 ) {
     companion object {
@@ -79,6 +82,9 @@ class VoiceRepository @Inject constructor(
 
     /** WebSocket event collection job — cancelled when leaving a channel. */
     private var eventCollectionJob: Job? = null
+
+    /** Service event collection job — cancelled when leaving a channel. */
+    private var serviceEventJob: Job? = null
 
     // -- Public API ------------------------------------------------------------
 
@@ -128,12 +134,16 @@ class VoiceRepository @Inject constructor(
             // 5. Request audio focus
             audioRouteManager.requestAudioFocus()
 
-            // 6. Start foreground service with notification action callbacks
-            VoiceCallService.onMuteToggle = { toggleMute() }
-            VoiceCallService.onDisconnect = {
-                scope.launch { leaveChannel() }
-            }
+            // 6. Start foreground service and collect notification action events
             VoiceCallService.start(context, channelId, channelId)
+            serviceEventJob = scope.launch {
+                voiceServiceEvents.events.collect { event ->
+                    when (event) {
+                        VoiceServiceEvent.MuteToggle -> toggleMute()
+                        VoiceServiceEvent.Disconnect -> leaveChannel()
+                    }
+                }
+            }
 
             logger.info("Joined voice channel: $channelId")
         } catch (e: CancellationException) {
@@ -238,6 +248,8 @@ class VoiceRepository @Inject constructor(
         // Stop event collection
         eventCollectionJob?.cancel()
         eventCollectionJob = null
+        serviceEventJob?.cancel()
+        serviceEventJob = null
 
         // Close PeerConnection
         webRtcManager.closePeerConnection()
@@ -248,9 +260,7 @@ class VoiceRepository @Inject constructor(
         // Abandon audio focus
         audioRouteManager.abandonAudioFocus()
 
-        // Clear notification callbacks and stop foreground service
-        VoiceCallService.onMuteToggle = null
-        VoiceCallService.onDisconnect = null
+        // Stop foreground service
         VoiceCallService.stop(context)
 
         // Clear state
