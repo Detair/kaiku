@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Android: OIDC callback path matching is now exact instead of prefix-based, preventing potential intent collisions
 - Android: WebSocket connection state correctly waits for server authentication confirmation before reporting Connected
+- Android: voice SDP answer is now sent only after local description is fully committed, preventing ICE state corruption (#5)
+- Android: ICE candidates received before remote description is set are buffered and applied after, preventing silent drops (#10)
+- Android: WebRTC PeerConnection and AudioDeviceModule are properly disposed to prevent native memory leaks across reconnects (#12, #13)
+- Android: voice call notification actions use SharedFlow events instead of static callbacks, fixing a race condition (#6)
+- Android: concurrent leaveChannel calls are serialized with a Mutex to prevent double-cleanup (#14)
+- Android: Bluetooth audio route is set asynchronously after SCO connection is confirmed, fixing incorrect "Bluetooth" display (#21)
+- Android: screen share video track lookup no longer falls back to wrong track in multi-peer scenarios (#23)
 - Admin dashboard status badges, elevation buttons, and warning banners now have readable text instead of invisible same-hue text on colored backgrounds (#524)
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
 - Sent friend requests now show "Cancel" button instead of Accept/Decline buttons in the pending view (#453)
