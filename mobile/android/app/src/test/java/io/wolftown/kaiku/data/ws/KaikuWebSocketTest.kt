@@ -115,17 +115,22 @@ class KaikuWebSocketTest {
     @Test
     fun `send serializes ClientEvent and sends over WebSocket`() = runTest {
         val receivedMessages = mutableListOf<String>()
-        val messageLatch = CountDownLatch(1)
+        // Count 2: one for the automatic Authenticate frame, one for Subscribe
+        val messageLatch = CountDownLatch(2)
 
         mockServer.enqueue(
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    webSocket.send("""{"type":"ready","user_id":"usr-001"}""")
+                    // Server sends ready after receiving the authenticate frame
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     receivedMessages.add(text)
                     messageLatch.countDown()
+                    // Send ready after authenticate so the client can proceed
+                    if (text.contains("authenticate")) {
+                        webSocket.send("""{"type":"ready","user_id":"usr-001"}""")
+                    }
                 }
             })
         )
@@ -136,8 +141,8 @@ class KaikuWebSocketTest {
 
             ws.send(ClientEvent.Subscribe("chan-001"))
 
-            // Wait for the message to arrive at the mock server (max 5s)
-            assertTrue("Server did not receive message in time", messageLatch.await(5, TimeUnit.SECONDS))
+            // Wait for both messages to arrive at the mock server (max 5s)
+            assertTrue("Server did not receive messages in time", messageLatch.await(5, TimeUnit.SECONDS))
 
             val sent = receivedMessages.firstOrNull { it.contains("subscribe") }
             assertTrue("Expected subscribe message to be sent", sent != null)
@@ -173,10 +178,20 @@ class KaikuWebSocketTest {
     }
 
     @Test
-    fun `connect uses Sec-WebSocket-Protocol header with token`() = runTest {
+    fun `connect sends Authenticate frame instead of header`() = runTest {
+        val receivedMessages = mutableListOf<String>()
+        val authLatch = CountDownLatch(1)
+
         mockServer.enqueue(
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    // Don't send ready until we receive the auth frame
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    receivedMessages.add(text)
+                    authLatch.countDown()
+                    // After receiving auth, send ready
                     webSocket.send("""{"type":"ready","user_id":"usr-001"}""")
                 }
             })
@@ -184,11 +199,19 @@ class KaikuWebSocketTest {
 
         ws.events.test(timeout = 10.seconds) {
             ws.connect(mockServer.url("/").toString())
-            awaitItem() // Ready
 
+            // Wait for the authenticate message to arrive at the mock server
+            assertTrue("Server did not receive auth message in time", authLatch.await(5, TimeUnit.SECONDS))
+
+            // Verify no Sec-WebSocket-Protocol header was sent
             val request = mockServer.takeRequest()
             val protocol = request.getHeader("Sec-WebSocket-Protocol")
-            assertEquals("access_token.test-jwt-token", protocol)
+            assertEquals(null, protocol)
+
+            // Verify the first message is the authenticate frame
+            val authMsg = receivedMessages.first()
+            assertTrue("Expected type field", authMsg.contains(""""type":"authenticate""""))
+            assertTrue("Expected token field", authMsg.contains(""""token":"test-jwt-token""""))
 
             cancelAndIgnoreRemainingEvents()
         }

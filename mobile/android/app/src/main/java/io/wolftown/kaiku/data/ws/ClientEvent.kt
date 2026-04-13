@@ -12,6 +12,10 @@ import kotlinx.serialization.Serializable
 sealed class ClientEvent {
 
     @Serializable
+    @SerialName("authenticate")
+    data class Authenticate(val token: String) : ClientEvent()
+
+    @Serializable
     @SerialName("ping")
     data object Ping : ClientEvent()
 

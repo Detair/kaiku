@@ -154,14 +154,16 @@ class KaikuWebSocket @Inject constructor(
 
         val request = Request.Builder()
             .url(wsUrl)
-            .addHeader("Sec-WebSocket-Protocol", "access_token.$token")
             .build()
 
-        webSocket = okHttpClient.newWebSocket(request, createListener())
+        webSocket = okHttpClient.newWebSocket(request, createListener(token))
     }
 
-    private fun createListener() = object : WebSocketListener() {
+    private fun createListener(token: String) = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            // Authenticate via first frame (post-connect auth)
+            send(ClientEvent.Authenticate(token))
+
             logger.info("WebSocket connected")
             _connectionState.value = ConnectionState.Connected
             reconnectDelay = INITIAL_RECONNECT_DELAY_MS
