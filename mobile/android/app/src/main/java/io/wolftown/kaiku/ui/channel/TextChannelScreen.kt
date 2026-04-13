@@ -25,11 +25,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TextChannelScreen(
-    channelName: String,
     currentUserId: String,
     onNavigateBack: () -> Unit,
     viewModel: TextChannelViewModel = hiltViewModel()
 ) {
+    val channelName by viewModel.channelName.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val typingUsers by viewModel.typingUsers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()

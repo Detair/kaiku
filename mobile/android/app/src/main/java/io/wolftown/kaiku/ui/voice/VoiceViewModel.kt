@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.voice.AudioRouteManager
@@ -12,8 +13,11 @@ import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import org.webrtc.EglBase
 import org.webrtc.VideoTrack
 import kotlinx.coroutines.launch
@@ -32,6 +36,7 @@ import javax.inject.Inject
 @HiltViewModel
 class VoiceViewModel @Inject constructor(
     private val voiceRepository: VoiceRepository,
+    private val guildRepository: GuildRepository,
     private val audioRouteManager: AudioRouteManager,
     private val webRtcManager: WebRtcManager,
     savedStateHandle: SavedStateHandle
@@ -42,6 +47,10 @@ class VoiceViewModel @Inject constructor(
     }
 
     private val channelId: String = savedStateHandle["channelId"]!!
+
+    val channelName: StateFlow<String> = guildRepository.channels
+        .map { channels -> channels.find { it.id == channelId }?.name ?: channelId }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), channelId)
 
     val participants: StateFlow<List<VoiceParticipant>> = voiceRepository.participants
     val isMuted: StateFlow<Boolean> = voiceRepository.isMuted
