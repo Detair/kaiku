@@ -2,12 +2,15 @@ package io.wolftown.kaiku.data.local
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import java.io.Closeable
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,16 +20,18 @@ sealed class AuthSession {
 }
 
 @Singleton
-class AuthState @Inject constructor() {
+class AuthState @Inject constructor() : Closeable {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _session = MutableStateFlow<AuthSession>(AuthSession.LoggedOut)
     val session: StateFlow<AuthSession> = _session.asStateFlow()
 
     val isLoggedIn: StateFlow<Boolean> = _session.map { it is AuthSession.LoggedIn }
-        .stateIn(CoroutineScope(Dispatchers.Default), SharingStarted.Eagerly, false)
+        .stateIn(scope, SharingStarted.Eagerly, false)
 
     val currentUserId: StateFlow<String?> = _session.map { (it as? AuthSession.LoggedIn)?.userId }
-        .stateIn(CoroutineScope(Dispatchers.Default), SharingStarted.Eagerly, null)
+        .stateIn(scope, SharingStarted.Eagerly, null)
 
     fun setLoggedIn(userId: String) {
         require(userId.isNotBlank()) { "userId must not be blank" }
@@ -58,5 +63,9 @@ class AuthState @Inject constructor() {
         }
 
         setLoggedOut()
+    }
+
+    override fun close() {
+        scope.cancel()
     }
 }
