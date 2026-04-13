@@ -9,6 +9,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.Closeable
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,7 +22,7 @@ import javax.inject.Singleton
 @Singleton
 class ConnectivityMonitor @Inject constructor(
     @ApplicationContext private val context: Context
-) {
+) : Closeable {
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -44,15 +45,15 @@ class ConnectivityMonitor @Inject constructor(
         ) {
             val hasInternet = networkCapabilities
                 .hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            if (hasInternet) {
-                _isConnected.value = true
-            }
+                && networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            _isConnected.value = hasInternet
         }
     }
 
     init {
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             .build()
         connectivityManager.registerNetworkCallback(request, networkCallback)
     }
@@ -61,5 +62,15 @@ class ConnectivityMonitor @Inject constructor(
         val network = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    override fun close() {
+        try {
+            connectivityManager.unregisterNetworkCallback(networkCallback)
+        } catch (_: IllegalArgumentException) {
+            // Already unregistered
+        }
+        _isConnected.value = false
     }
 }
