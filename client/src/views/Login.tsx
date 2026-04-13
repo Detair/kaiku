@@ -188,7 +188,7 @@ const Login: Component = () => {
   const error = () => localError() || authState.error;
 
   return (
-    <div class="flex items-center justify-center min-h-screen bg-background-primary">
+    <div class="flex items-center justify-center min-h-screen overflow-y-auto bg-background-primary">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         {/* Left: Floki illustration */}
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
