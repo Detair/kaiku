@@ -16,6 +16,7 @@ interface MobileDrawerProps {
 
 const MobileDrawer: Component<MobileDrawerProps> = (props) => {
   let startX = 0;
+  let savedOverflow: string | null = null;
 
   // Swipe-left to close
   const onPointerDown = (e: PointerEvent) => {
@@ -25,18 +26,32 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
     if (startX - e.clientX > 50) props.onClose();
   };
 
-  // Prevent body scroll when drawer is open
+  // Prevent body scroll when drawer is open; save/restore prior overflow
   createEffect(() => {
-    document.body.style.overflow = props.open ? "hidden" : "";
+    if (props.open && savedOverflow === null) {
+      // Closed → open: snapshot the prior value once
+      savedOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+    } else if (!props.open && savedOverflow !== null) {
+      // Open → closed: restore and clear the snapshot
+      document.body.style.overflow = savedOverflow;
+      savedOverflow = null;
+    }
   });
+
   onCleanup(() => {
-    document.body.style.overflow = "";
+    // Component disposed mid-lock: restore so we don't leave the page locked
+    if (savedOverflow !== null) {
+      document.body.style.overflow = savedOverflow;
+      savedOverflow = null;
+    }
   });
 
   return (
     <div
       class="fixed inset-0 z-50"
       classList={{ "pointer-events-none": !props.open }}
+      inert={!props.open ? true : undefined}
     >
       {/* Backdrop */}
       <div
