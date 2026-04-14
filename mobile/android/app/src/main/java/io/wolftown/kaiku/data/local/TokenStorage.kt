@@ -66,10 +66,13 @@ class TokenStorage @Inject constructor(
     }
 
     fun saveOidcPkceState(codeVerifier: String, state: String) {
-        prefs.edit()
+        val success = prefs.edit()
             .putString(KEY_OIDC_CODE_VERIFIER, codeVerifier)
             .putString(KEY_OIDC_STATE, state)
-            .apply()
+            .commit()
+        if (!success) {
+            logger.warning("Failed to persist OIDC PKCE state to storage")
+        }
     }
 
     fun getOidcCodeVerifier(): String? = prefs.getString(KEY_OIDC_CODE_VERIFIER, null)
