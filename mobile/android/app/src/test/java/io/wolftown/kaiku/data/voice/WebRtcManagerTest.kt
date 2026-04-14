@@ -1,11 +1,19 @@
 package io.wolftown.kaiku.data.voice
 
+import android.content.Context
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import io.wolftown.kaiku.data.api.VoiceApi
 import kotlinx.serialization.json.Json
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.webrtc.EglBase
 
 /**
  * Unit tests for the WebRTC voice layer.
@@ -230,5 +238,43 @@ class WebRtcManagerTest {
         assertTrue(routes.contains(AudioRoute.Earpiece))
         assertTrue(routes.contains(AudioRoute.Bluetooth))
         assertTrue(routes.contains(AudioRoute.WiredHeadset))
+    }
+
+    // ========================================================================
+    // ICE candidate buffer cap
+    // ========================================================================
+    // These tests exercise the pure-Kotlin buffering path in addIceCandidate,
+    // which does not touch the native WebRTC runtime when remoteDescriptionSet
+    // is false. EglBase.create() in the primary constructor is stubbed via
+    // mockkStatic so the manager can be instantiated in a JVM test.
+
+    @After
+    fun tearDownEglBaseMock() {
+        // Safe to call even if mockkStatic wasn't invoked this test.
+        try {
+            unmockkStatic(EglBase::class)
+        } catch (_: Throwable) {
+            // Ignore — nothing was mocked.
+        }
+    }
+
+    @Test
+    fun `addIceCandidate buffers up to MAX_PENDING_CANDIDATES then drops`() {
+        mockkStatic(EglBase::class)
+        every { EglBase.create() } returns mockk(relaxed = true)
+
+        val webRtcManager = WebRtcManager(
+            context = mockk<Context>(relaxed = true),
+            voiceApi = mockk<VoiceApi>(relaxed = true)
+        )
+        // remoteDescriptionSet defaults to false — buffering branch is taken.
+
+        repeat(101) { i ->
+            webRtcManager.addIceCandidate(
+                """{"candidate":"c$i","sdpMLineIndex":0,"sdpMid":"0"}"""
+            )
+        }
+
+        assertEquals(100, webRtcManager.pendingCandidatesSize())
     }
 }

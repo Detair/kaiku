@@ -11,7 +11,11 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import dagger.hilt.android.AndroidEntryPoint
+import io.wolftown.kaiku.data.voice.VoiceServiceEvent
+import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import java.util.logging.Logger
+import javax.inject.Inject
 
 /**
  * Android foreground service that keeps voice audio alive when the app is backgrounded.
@@ -26,7 +30,14 @@ import java.util.logging.Logger
  * Notification actions are delivered as service intents (not broadcasts) so they
  * are handled directly in [onStartCommand].
  */
+@AndroidEntryPoint
 class VoiceCallService : Service() {
+
+    @Inject lateinit var voiceServiceEvents: VoiceServiceEvents
+
+    override fun onCreate() {
+        super.onCreate()  // REQUIRED: Hilt injects fields here
+    }
 
     companion object {
         private val logger = Logger.getLogger("VoiceCallService")
@@ -39,10 +50,6 @@ class VoiceCallService : Service() {
         private const val EXTRA_ACTION = "extra_action"
         const val ACTION_MUTE_TOGGLE = "io.wolftown.kaiku.MUTE_TOGGLE"
         const val ACTION_DISCONNECT = "io.wolftown.kaiku.DISCONNECT"
-
-        /** Callback for notification actions. Set by VoiceRepository when starting the service. */
-        @Volatile var onMuteToggle: (() -> Unit)? = null
-        @Volatile var onDisconnect: (() -> Unit)? = null
 
         /**
          * Starts the foreground voice call service.
@@ -73,15 +80,11 @@ class VoiceCallService : Service() {
         // Handle notification action intents
         when (intent?.getStringExtra(EXTRA_ACTION)) {
             ACTION_MUTE_TOGGLE -> {
-                val handler = onMuteToggle
-                if (handler != null) handler.invoke()
-                else logger.warning("Mute toggle callback is null — voice session may have ended")
+                voiceServiceEvents.emit(VoiceServiceEvent.MuteToggle)
                 return START_NOT_STICKY
             }
             ACTION_DISCONNECT -> {
-                val handler = onDisconnect
-                if (handler != null) handler.invoke()
-                else logger.warning("Disconnect callback is null — voice session may have ended")
+                voiceServiceEvents.emit(VoiceServiceEvent.Disconnect)
                 return START_NOT_STICKY
             }
         }

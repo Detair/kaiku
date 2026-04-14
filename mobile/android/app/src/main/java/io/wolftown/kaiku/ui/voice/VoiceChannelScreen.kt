@@ -326,27 +326,20 @@ private fun ScreenShareArea(
 }
 
 /**
- * Finds the best-matching remote video track for a given screen share stream ID.
+ * Finds the remote video track for a given screen share stream ID.
  *
  * The server labels video tracks with the stream ID in the track ID or mid.
- * Falls back to the first available video track if no exact match is found
- * and there is only one screen share.
+ * Returns null if no matching track is found — no fallback to avoid
+ * mismatching tracks when multiple screen shares are active.
  */
 private fun findVideoTrackForStream(
     remoteVideoTracks: Map<String, VideoTrack>,
     streamId: String
 ): VideoTrack? {
-    // Exact match by track ID containing the stream ID
-    remoteVideoTracks.entries.find { (trackId, _) ->
+    // Direct match by track ID containing the stream ID
+    return remoteVideoTracks.entries.find { (trackId, _) ->
         trackId.contains(streamId)
-    }?.let { return it.value }
-
-    // If there's only one video track and one possible match, use it
-    if (remoteVideoTracks.size == 1) {
-        return remoteVideoTracks.values.firstOrNull()
-    }
-
-    return null
+    }?.value
 }
 
 @Composable

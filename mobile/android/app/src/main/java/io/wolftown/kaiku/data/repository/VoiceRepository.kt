@@ -5,6 +5,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.VoiceServiceEvent
+import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
@@ -17,10 +19,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.Closeable
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -41,13 +47,15 @@ class VoiceRepository @Inject constructor(
     private val webRtcManager: WebRtcManager,
     private val webSocket: KaikuWebSocket,
     private val audioRouteManager: AudioRouteManager,
+    private val voiceServiceEvents: VoiceServiceEvents,
     @ApplicationContext private val context: Context
-) {
+) : Closeable {
     companion object {
         private val logger = Logger.getLogger("VoiceRepository")
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val leaveMutex = Mutex()
 
     private val _currentChannelId = MutableStateFlow<String?>(null)
     /** The channel ID currently connected to, or null if not in a voice channel. */
@@ -79,6 +87,9 @@ class VoiceRepository @Inject constructor(
 
     /** WebSocket event collection job — cancelled when leaving a channel. */
     private var eventCollectionJob: Job? = null
+
+    /** Service event collection job — cancelled when leaving a channel. */
+    private var serviceEventJob: Job? = null
 
     // -- Public API ------------------------------------------------------------
 
@@ -128,12 +139,16 @@ class VoiceRepository @Inject constructor(
             // 5. Request audio focus
             audioRouteManager.requestAudioFocus()
 
-            // 6. Start foreground service with notification action callbacks
-            VoiceCallService.onMuteToggle = { toggleMute() }
-            VoiceCallService.onDisconnect = {
-                scope.launch { leaveChannel() }
-            }
+            // 6. Start foreground service and collect notification action events
             VoiceCallService.start(context, channelId, channelId)
+            serviceEventJob = scope.launch {
+                voiceServiceEvents.events.collect { event ->
+                    when (event) {
+                        VoiceServiceEvent.MuteToggle -> toggleMute()
+                        VoiceServiceEvent.Disconnect -> leaveChannel()
+                    }
+                }
+            }
 
             logger.info("Joined voice channel: $channelId")
         } catch (e: CancellationException) {
@@ -156,17 +171,19 @@ class VoiceRepository @Inject constructor(
      * 5. Clear state
      */
     suspend fun leaveChannel() {
-        val channelId = _currentChannelId.value ?: return
+        leaveMutex.withLock {
+            val channelId = _currentChannelId.value ?: return@withLock
 
-        try {
-            // 1. Send VoiceLeave
-            webSocket.send(ClientEvent.VoiceLeave(channelId))
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+            try {
+                // 1. Send VoiceLeave
+                webSocket.send(ClientEvent.VoiceLeave(channelId))
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+            }
+
+            cleanUp()
+            logger.info("Left voice channel: $channelId")
         }
-
-        cleanUp()
-        logger.info("Left voice channel: $channelId")
     }
 
     /**
@@ -184,6 +201,10 @@ class VoiceRepository @Inject constructor(
         } else {
             webSocket.send(ClientEvent.VoiceUnmute(channelId))
         }
+    }
+
+    override fun close() {
+        scope.cancel()
     }
 
     /**
@@ -238,6 +259,8 @@ class VoiceRepository @Inject constructor(
         // Stop event collection
         eventCollectionJob?.cancel()
         eventCollectionJob = null
+        serviceEventJob?.cancel()
+        serviceEventJob = null
 
         // Close PeerConnection
         webRtcManager.closePeerConnection()
@@ -248,9 +271,7 @@ class VoiceRepository @Inject constructor(
         // Abandon audio focus
         audioRouteManager.abandonAudioFocus()
 
-        // Clear notification callbacks and stop foreground service
-        VoiceCallService.onMuteToggle = null
-        VoiceCallService.onDisconnect = null
+        // Stop foreground service
         VoiceCallService.stop(context)
 
         // Clear state

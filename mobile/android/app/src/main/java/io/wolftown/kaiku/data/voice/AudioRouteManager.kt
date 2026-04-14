@@ -12,9 +12,17 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.io.Closeable
 import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -48,7 +56,7 @@ enum class AudioRoute {
 @Singleton
 class AudioRouteManager @Inject constructor(
     @ApplicationContext private val context: Context
-) {
+) : Closeable {
     companion object {
         private val logger = Logger.getLogger("AudioRouteManager")
     }
@@ -64,9 +72,31 @@ class AudioRouteManager @Inject constructor(
     /** The set of currently available audio routes. */
     val availableRoutes: StateFlow<Set<AudioRoute>> = _availableRoutes.asStateFlow()
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     private var audioFocusRequest: AudioFocusRequest? = null
     private var headsetReceiver: BroadcastReceiver? = null
     private var bluetoothReceiver: BroadcastReceiver? = null
+    private var scoTimeoutJob: Job? = null
+
+    private val scoReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
+            when (state) {
+                AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
+                    audioManager.isBluetoothScoOn = true
+                    _currentRoute.value = AudioRoute.Bluetooth
+                    scoTimeoutJob?.cancel()
+                }
+                AudioManager.SCO_AUDIO_STATE_ERROR,
+                AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                    audioManager.isBluetoothScoOn = false
+                    _currentRoute.value = AudioRoute.Speaker
+                    scoTimeoutJob?.cancel()
+                }
+            }
+        }
+    }
 
     /**
      * Requests audio focus for voice communication.
@@ -122,6 +152,11 @@ class AudioRouteManager @Inject constructor(
         logger.info("Audio focus abandoned, mode restored to MODE_NORMAL")
     }
 
+    override fun close() {
+        unregisterReceivers()
+        scope.cancel()
+    }
+
     /**
      * Switches the audio output to the specified [route].
      *
@@ -137,22 +172,26 @@ class AudioRouteManager @Inject constructor(
             AudioRoute.Speaker -> {
                 audioManager.isSpeakerphoneOn = true
                 stopBluetoothSco()
+                _currentRoute.value = route
             }
             AudioRoute.Earpiece -> {
                 audioManager.isSpeakerphoneOn = false
                 stopBluetoothSco()
+                _currentRoute.value = route
             }
             AudioRoute.Bluetooth -> {
+                // Route update is deferred — the scoReceiver will set
+                // _currentRoute once SCO_AUDIO_STATE_CONNECTED arrives.
                 audioManager.isSpeakerphoneOn = false
                 startBluetoothSco()
             }
             AudioRoute.WiredHeadset -> {
                 audioManager.isSpeakerphoneOn = false
                 stopBluetoothSco()
+                _currentRoute.value = route
             }
         }
 
-        _currentRoute.value = route
         logger.info("Switched audio route to $route")
     }
 
@@ -209,7 +248,16 @@ class AudioRouteManager @Inject constructor(
         try {
             @Suppress("DEPRECATION")
             audioManager.startBluetoothSco()
-            audioManager.isBluetoothScoOn = true
+
+            // Wait for BroadcastReceiver to confirm SCO connected; fall back on timeout
+            scoTimeoutJob?.cancel()
+            scoTimeoutJob = scope.launch {
+                delay(3000)
+                if (_currentRoute.value != AudioRoute.Bluetooth) {
+                    logger.warning("Bluetooth SCO timeout — falling back to speaker")
+                    _currentRoute.value = AudioRoute.Speaker
+                }
+            }
         } catch (e: Exception) {
             logger.warning("Failed to start Bluetooth SCO: ${e.message}")
         }
@@ -247,6 +295,19 @@ class AudioRouteManager @Inject constructor(
             context.registerReceiver(headsetReceiver, headsetFilter)
         }
 
+        // Bluetooth SCO audio state
+        val scoFilter = IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(
+                scoReceiver,
+                scoFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            context.registerReceiver(scoReceiver, scoFilter)
+        }
+
         // Bluetooth headset connection state
         bluetoothReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -281,6 +342,12 @@ class AudioRouteManager @Inject constructor(
         }
         headsetReceiver = null
 
+        try {
+            context.unregisterReceiver(scoReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Receiver not registered
+        }
+
         bluetoothReceiver?.let {
             try {
                 context.unregisterReceiver(it)
@@ -289,5 +356,8 @@ class AudioRouteManager @Inject constructor(
             }
         }
         bluetoothReceiver = null
+
+        scoTimeoutJob?.cancel()
+        scoTimeoutJob = null
     }
 }
