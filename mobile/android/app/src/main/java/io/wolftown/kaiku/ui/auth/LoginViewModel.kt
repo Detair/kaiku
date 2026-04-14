@@ -34,8 +34,11 @@ class LoginViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(LoginUiState())
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
-    /** One-shot event flow for OIDC callback URIs received from deep links. */
-    private val _oidcCallbackUri = Channel<Uri>(Channel.BUFFERED)
+    /**
+     * One-shot event flow for OIDC callback URIs received from deep links.
+     * CONFLATED keeps only the latest — redelivery is harmless and trySend never blocks.
+     */
+    private val _oidcCallbackUri = Channel<Uri>(Channel.CONFLATED)
     val oidcCallbackUri = _oidcCallbackUri.receiveAsFlow()
 
     init {

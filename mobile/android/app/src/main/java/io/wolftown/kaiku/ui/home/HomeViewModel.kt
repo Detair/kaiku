@@ -47,8 +47,11 @@ class HomeViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    /** One-shot navigation event for channel selection. */
-    private val _navigateToChannel = Channel<ChannelNavEvent>(Channel.BUFFERED)
+    /**
+     * One-shot navigation event for channel selection.
+     * Bounded capacity (4) prevents buildup if a navigation collector is suspended.
+     */
+    private val _navigateToChannel = Channel<ChannelNavEvent>(capacity = 4)
     val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {
