@@ -6,12 +6,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.data.repository.AuthRepository
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -35,9 +34,12 @@ class LoginViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(LoginUiState())
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
-    /** One-shot event flow for OIDC callback URIs received from deep links. */
-    private val _oidcCallbackUri = MutableSharedFlow<Uri>(extraBufferCapacity = 1)
-    val oidcCallbackUri: SharedFlow<Uri> = _oidcCallbackUri.asSharedFlow()
+    /**
+     * One-shot event flow for OIDC callback URIs received from deep links.
+     * CONFLATED keeps only the latest — redelivery is harmless and trySend never blocks.
+     */
+    private val _oidcCallbackUri = Channel<Uri>(Channel.CONFLATED)
+    val oidcCallbackUri = _oidcCallbackUri.receiveAsFlow()
 
     init {
         // Collect OIDC callbacks and process them
@@ -52,7 +54,7 @@ class LoginViewModel @Inject constructor(
      * Called by MainActivity when an OIDC deep link is received.
      */
     fun onOidcDeepLink(uri: Uri) {
-        _oidcCallbackUri.tryEmit(uri)
+        _oidcCallbackUri.trySend(uri)
     }
 
     /**

@@ -5,10 +5,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.data.repository.ChatRepository
+import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.domain.model.Message
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -18,6 +22,7 @@ import javax.inject.Inject
 @HiltViewModel
 class TextChannelViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
+    private val guildRepository: GuildRepository,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -26,6 +31,10 @@ class TextChannelViewModel @Inject constructor(
     }
 
     private val channelId: String = savedStateHandle["channelId"]!!
+
+    val channelName: StateFlow<String> = guildRepository.channels
+        .map { channels -> channels.find { it.id == channelId }?.name ?: channelId }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), channelId)
 
     val messages: StateFlow<List<Message>> = chatRepository.getMessages(channelId)
     val typingUsers: StateFlow<Set<String>> = chatRepository.getTypingUsers(channelId)

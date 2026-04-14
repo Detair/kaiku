@@ -25,11 +25,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TextChannelScreen(
-    channelName: String,
     currentUserId: String,
     onNavigateBack: () -> Unit,
     viewModel: TextChannelViewModel = hiltViewModel()
 ) {
+    val channelName by viewModel.channelName.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val typingUsers by viewModel.typingUsers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -37,10 +37,18 @@ fun TextChannelScreen(
 
     val listState = rememberLazyListState()
 
-    // Auto-scroll to bottom when new messages arrive
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+    // Auto-scroll to bottom only when a genuinely new message arrives
+    // and the user is already near the bottom of the list.
+    var lastMessageId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(messages.lastOrNull()?.id) {
+        val newLastId = messages.lastOrNull()?.id
+        if (newLastId != null && newLastId != lastMessageId) {
+            lastMessageId = newLastId
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            if (lastVisible >= messages.size - 4) {
+                listState.animateScrollToItem(messages.size - 1)
+            }
         }
     }
 

@@ -40,10 +40,10 @@ import org.webrtc.VideoTrack
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VoiceChannelScreen(
-    channelName: String,
     onNavigateBack: () -> Unit,
     viewModel: VoiceViewModel = hiltViewModel()
 ) {
+    val channelName by viewModel.channelName.collectAsState()
     val participants by viewModel.participants.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()

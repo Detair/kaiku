@@ -25,6 +25,10 @@ fun SettingsScreen(
 
     var showLogoutDialog by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        viewModel.logoutComplete.collect { onLogout() }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -126,7 +130,7 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         showLogoutDialog = false
-                        viewModel.logout { onLogout() }
+                        viewModel.logout()
                     }
                 ) {
                     Text("Log out", color = MaterialTheme.colorScheme.error)

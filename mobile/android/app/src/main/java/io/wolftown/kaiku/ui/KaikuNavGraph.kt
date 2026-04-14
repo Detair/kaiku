@@ -113,19 +113,15 @@ fun KaikuNavGraph(
                     )
                 }
 
-                composable("channel/{channelId}") { backStackEntry ->
-                    val channelId = backStackEntry.arguments?.getString("channelId") ?: ""
+                composable("channel/{channelId}") {
                     TextChannelScreen(
-                        channelName = channelId,
                         currentUserId = currentUserId ?: "",
                         onNavigateBack = { navController.popBackStack() }
                     )
                 }
 
-                composable("voice/{channelId}") { backStackEntry ->
-                    val channelId = backStackEntry.arguments?.getString("channelId") ?: ""
+                composable("voice/{channelId}") {
                     VoiceChannelScreen(
-                        channelName = channelId,
                         onNavigateBack = { navController.popBackStack() }
                     )
                 }

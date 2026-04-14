@@ -6,9 +6,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.User
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -62,7 +64,10 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun logout(onLogoutComplete: () -> Unit) {
+    private val _logoutComplete = Channel<Unit>(Channel.CONFLATED)
+    val logoutComplete = _logoutComplete.receiveAsFlow()
+
+    fun logout() {
         viewModelScope.launch {
             try {
                 authRepository.logout()
@@ -71,7 +76,7 @@ class SettingsViewModel @Inject constructor(
             } catch (e: Exception) {
                 logger.log(Level.WARNING, "Logout failed", e)
             }
-            onLogoutComplete()
+            _logoutComplete.send(Unit)
         }
     }
 }
