@@ -16,6 +16,9 @@ import {
 } from "solid-js";
 import { Dynamic, Portal } from "solid-js/web";
 
+// Each context menu item: py-2.5 (10px top + 10px bottom) + text-sm leading + border ≈ 40px
+const ITEM_HEIGHT_PX = 40;
+
 // --- Types ---
 
 export interface ContextMenuItem {
@@ -71,7 +74,7 @@ export function showContextMenu(
 
   // Estimate menu dimensions for viewport edge flipping
   const menuWidth = 200;
-  const menuHeight = items.length * 36;
+  const menuHeight = items.length * ITEM_HEIGHT_PX;
 
   const viewportW = window.innerWidth;
   const viewportH = window.innerHeight;
@@ -105,7 +108,7 @@ export function showContextMenuAt(
 ): void {
   // Estimate menu dimensions for viewport edge flipping
   const menuWidth = 200;
-  const menuHeight = items.length * 36;
+  const menuHeight = items.length * ITEM_HEIGHT_PX;
 
   const viewportW = window.innerWidth;
   const viewportH = window.innerHeight;
