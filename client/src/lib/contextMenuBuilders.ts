@@ -7,6 +7,7 @@
 import { User, MessageSquare, UserPlus, Ban, Copy, Flag } from "lucide-solid";
 import {
   showContextMenu,
+  showContextMenuAt,
   type ContextMenuEntry,
 } from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
@@ -70,12 +71,9 @@ export function triggerReport(target: {
 }
 
 /**
- * Show a context menu for a user (member list, message author, etc.).
+ * Build context menu items for a user (member list, message author, etc.).
  */
-export function showUserContextMenu(
-  event: MouseEvent,
-  user: UserMenuTarget,
-): void {
+function buildUserContextMenuItems(user: UserMenuTarget): ContextMenuEntry[] {
   const me = currentUser();
   const isSelf = me?.id === user.id;
 
@@ -187,5 +185,26 @@ export function showUserContextMenu(
     },
   );
 
-  showContextMenu(event, items);
+  return items;
+}
+
+/**
+ * Show a context menu for a user (member list, message author, etc.).
+ */
+export function showUserContextMenu(
+  event: MouseEvent,
+  user: UserMenuTarget,
+): void {
+  showContextMenu(event, buildUserContextMenuItems(user));
+}
+
+/**
+ * Show a context menu for a user at specific coordinates (for touch/long-press).
+ */
+export function showUserContextMenuAt(
+  x: number,
+  y: number,
+  user: UserMenuTarget,
+): void {
+  showContextMenuAt(x, y, buildUserContextMenuItems(user));
 }

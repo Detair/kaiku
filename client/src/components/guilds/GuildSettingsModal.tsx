@@ -146,7 +146,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
         tabIndex={-1}
       >
         <div
-          class="border border-white/10 rounded-2xl w-[90vw] md:w-[900px] max-w-5xl max-h-[85vh] flex flex-col shadow-2xl"
+          class="border border-white/10 rounded-2xl w-[90vw] max-w-[900px] overflow-x-hidden max-h-[85vh] flex flex-col shadow-2xl"
           style="background-color: var(--color-surface-base)"
         >
           {/* Header */}
@@ -177,7 +177,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </div>
             <button
               onClick={props.onClose}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              class="p-2.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             >
               <X class="w-5 h-5" />
             </button>

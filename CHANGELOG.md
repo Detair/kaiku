@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Milestone: Phase 6 - Competitive Differentiators & Mastery
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
+### Added
+- Responsive mobile layout: sidebar and server rail collapse into a slide-out drawer below 768px viewport width
+- Mobile header bar with hamburger menu, guild name, and channel name
+- Swipe gestures: right from edge to open drawer, left to close
+- Long-press context menu support for touch devices on messages, channels, and member lists
+- `touch:` UnoCSS variant for touch-specific styling via `@media (hover: none)`
+
 ### Changed
 - Voice connections use dual PeerConnection architecture (publisher + subscriber) for reliable screen sharing and multi-user scalability
 - Screen sharing uses standard WebRTC `addTrack` negotiation instead of `replaceTrack` workarounds
@@ -52,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: rapid channel taps no longer silently drop navigation events (#8)
 - Android: scrolling up to read history no longer snaps back to the bottom when new messages arrive (#9)
 - Android: guild icons are properly announced as interactive buttons by screen readers (#24)
+- Guild settings modal no longer overflows the viewport at 800px window width (#11)
+- Emoji delete button is now visible on touch devices instead of requiring hover (#31)
+- All `text-text-secondary/50` instances replaced with `text-text-muted` for WCAG-compliant contrast (#29)
+- Auth pages (login, register, forgot/reset password) now scroll when content exceeds viewport height (#30)
+- Context menu items have larger touch targets for reliable mobile interaction (#28)
+- Long-press on touch devices no longer shows duplicate context menus (custom menu plus browser native)
+- Mobile drawer no longer traps keyboard focus or screen reader navigation when closed
+- Body scroll lock no longer interferes with overlapping modals
 - Admin dashboard status badges, elevation buttons, and warning banners now have readable text instead of invisible same-hue text on colored backgrounds (#524)
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
 - Sent friend requests now show "Cancel" button instead of Accept/Decline buttons in the pending view (#453)

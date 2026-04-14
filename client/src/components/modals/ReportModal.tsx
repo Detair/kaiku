@@ -156,7 +156,7 @@ const ReportModal: Component<ReportModalProps> = (props) => {
                 <div class="space-y-2">
                   <label class="text-sm font-medium text-text-secondary">
                     Details{" "}
-                    <span class="text-text-secondary/50">
+                    <span class="text-text-muted">
                       (optional, max 500 chars)
                     </span>
                   </label>
@@ -170,7 +170,7 @@ const ReportModal: Component<ReportModalProps> = (props) => {
                     rows={3}
                     maxLength={500}
                   />
-                  <div class="text-xs text-text-secondary/50 text-right">
+                  <div class="text-xs text-text-muted text-right">
                     {description().length}/500
                   </div>
                 </div>

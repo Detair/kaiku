@@ -777,7 +777,7 @@ const CommandCenterPanel: Component = () => {
                 placeholder="Domain..."
                 value={logsDomain()}
                 onInput={(e) => handleLogsDomainChange(e.currentTarget.value)}
-                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-secondary/50"
+                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-muted"
               />
               <div class="relative">
                 <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-text-secondary" />
@@ -788,7 +788,7 @@ const CommandCenterPanel: Component = () => {
                   onInput={(e) =>
                     handleLogsSearchChange(e.currentTarget.value)
                   }
-                  class="w-40 pl-6 pr-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-secondary/50"
+                  class="w-40 pl-6 pr-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-muted"
                 />
               </div>
             </div>
@@ -875,7 +875,7 @@ const CommandCenterPanel: Component = () => {
                 onInput={(e) =>
                   handleTracesDomainChange(e.currentTarget.value)
                 }
-                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-secondary/50"
+                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-muted"
               />
             </div>
           </div>

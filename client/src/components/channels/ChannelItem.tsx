@@ -29,8 +29,10 @@ import { markChannelAsRead, isChannelUnread } from "@/stores/channels";
 import { isFavorited, toggleFavorite } from "@/stores/favorites";
 import {
   showContextMenu,
+  showContextMenuAt,
   type ContextMenuEntry,
 } from "@/components/ui/ContextMenu";
+import { createLongPress } from "@/lib/createLongPress";
 
 interface ChannelItemProps {
   channel: ChannelWithUnread;
@@ -82,7 +84,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
     return localSpeaking || remoteSpeaking;
   });
 
-  const handleContextMenu = (e: MouseEvent) => {
+  const buildContextMenuItems = (): ContextMenuEntry[] => {
     const ch = props.channel;
     const muted = isChannelMuted(ch.id);
     const favorited = props.guildId ? isFavorited(ch.id) : false;
@@ -147,11 +149,29 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
       action: () => navigator.clipboard.writeText(ch.id),
     });
 
-    showContextMenu(e, items);
+    return items;
+  };
+
+  const longPress = createLongPress((x, y) => {
+    showContextMenuAt(x, y, buildContextMenuItems());
+  });
+
+  const handleContextMenu = (e: MouseEvent) => {
+    longPress.onContextMenu(e);
+    if (!e.defaultPrevented) {
+      showContextMenu(e, buildContextMenuItems());
+    }
   };
 
   return (
-    <div class="relative group" onContextMenu={handleContextMenu}>
+    <div
+      class="relative group"
+      onContextMenu={handleContextMenu}
+      onPointerDown={longPress.onPointerDown}
+      onPointerUp={longPress.onPointerUp}
+      onPointerCancel={longPress.onPointerCancel}
+      onPointerMove={longPress.onPointerMove}
+    >
       <button
         type="button"
         data-testid="channel-item"

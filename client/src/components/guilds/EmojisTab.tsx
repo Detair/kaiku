@@ -158,7 +158,7 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
               <Show when={canManageEmojis()}>
                 <button
                   onClick={() => handleDelete(emoji.id)}
-                  class="absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                  class="absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 touch:opacity-60 transition-opacity"
                   classList={{
                     "bg-accent-danger text-white opacity-100":
                       deleteConfirm() === emoji.id,
