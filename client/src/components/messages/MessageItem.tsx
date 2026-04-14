@@ -624,12 +624,17 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         <Show when={!props.compact}>
           <div
             onContextMenu={(e: MouseEvent) => {
+              // Suppress native context menu if a long-press just fired on the
+              // parent message row — prevents triple-stacking native + message + user menus.
+              longPress.onContextMenu(e);
               e.stopPropagation();
-              showUserContextMenu(e, {
-                id: author().id,
-                username: author().username,
-                display_name: author().display_name,
-              });
+              if (!e.defaultPrevented) {
+                showUserContextMenu(e, {
+                  id: author().id,
+                  username: author().username,
+                  display_name: author().display_name,
+                });
+              }
             }}
           >
             <Avatar
@@ -672,12 +677,16 @@ const MessageItem: Component<MessageItemProps> = (props) => {
             <span
               class="font-semibold text-text-primary hover:underline cursor-pointer transition-colors"
               onContextMenu={(e: MouseEvent) => {
+                // Suppress native context menu if long-press fired on parent row.
+                longPress.onContextMenu(e);
                 e.stopPropagation();
-                showUserContextMenu(e, {
-                  id: author().id,
-                  username: author().username,
-                  display_name: author().display_name,
-                });
+                if (!e.defaultPrevented) {
+                  showUserContextMenu(e, {
+                    id: author().id,
+                    username: author().username,
+                    display_name: author().display_name,
+                  });
+                }
               }}
             >
               {author().display_name}
