@@ -3,13 +3,16 @@ export function createLongPress(
   duration = 500
 ) {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let consumed = false;
   let startX = 0;
   let startY = 0;
 
   const onPointerDown = (e: PointerEvent) => {
+    consumed = false;
     startX = e.clientX;
     startY = e.clientY;
     timer = setTimeout(() => {
+      consumed = true;
       onLongPress(e.clientX, e.clientY);
       timer = null;
     }, duration);
@@ -29,9 +32,18 @@ export function createLongPress(
   };
 
   const onContextMenu = (e: Event) => {
-    if (timer) {
+    // Suppress native context menu only if a long-press was just consumed or
+    // is currently pending. Always reset `consumed` afterwards so a subsequent
+    // keyboard-triggered context menu (e.g., Shift+F10) is not incorrectly
+    // suppressed.
+    //
+    // Trade-off: on hybrid devices, if the user touch-long-presses then
+    // immediately right-clicks before the next pointerdown, the right-click
+    // is suppressed. This is acceptable.
+    if (timer || consumed) {
       e.preventDefault();
     }
+    consumed = false;
   };
 
   return {

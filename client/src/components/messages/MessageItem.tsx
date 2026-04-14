@@ -578,13 +578,16 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     return items;
   };
 
-  const handleContextMenu = (e: MouseEvent) => {
-    showContextMenu(e, buildContextMenuItems());
-  };
-
   const longPress = createLongPress((x, y) => {
     showContextMenuAt(x, y, buildContextMenuItems());
   });
+
+  const handleContextMenu = (e: MouseEvent) => {
+    longPress.onContextMenu(e);
+    if (!e.defaultPrevented) {
+      showContextMenu(e, buildContextMenuItems());
+    }
+  };
 
   return (
     <Show

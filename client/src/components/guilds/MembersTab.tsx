@@ -210,13 +210,16 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                           <div
                             data-testid={`members-tab-row-${m().username}`}
                             class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors group"
-                            onContextMenu={(e) =>
-                              showUserContextMenu(e, {
-                                id: m().user_id,
-                                username: m().username,
-                                display_name: m().display_name,
-                              })
-                            }
+                            onContextMenu={(e) => {
+                              memberLongPress.onContextMenu(e);
+                              if (!e.defaultPrevented) {
+                                showUserContextMenu(e, {
+                                  id: m().user_id,
+                                  username: m().username,
+                                  display_name: m().display_name,
+                                });
+                              }
+                            }}
                             onPointerDown={memberLongPress.onPointerDown}
                             onPointerUp={memberLongPress.onPointerUp}
                             onPointerCancel={memberLongPress.onPointerCancel}
