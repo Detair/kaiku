@@ -1,6 +1,9 @@
 package io.wolftown.kaiku
 
 import android.app.Application
+import com.google.android.gms.common.GoogleApiAvailability
+import com.google.android.gms.common.GooglePlayServicesNotAvailableException
+import com.google.android.gms.common.GooglePlayServicesRepairableException
 import com.google.android.gms.security.ProviderInstaller
 import dagger.hilt.android.HiltAndroidApp
 import java.util.logging.Logger
@@ -13,8 +16,12 @@ class KaikuApplication : Application() {
         super.onCreate()
         try {
             ProviderInstaller.installIfNeeded(this)
-        } catch (e: Exception) {
-            logger.warning("Failed to install security provider: ${e.message}")
+        } catch (e: GooglePlayServicesRepairableException) {
+            logger.severe("Play Services needs update for TLS 1.3: ${e.message}")
+            GoogleApiAvailability.getInstance()
+                .showErrorNotification(this, e.connectionStatusCode)
+        } catch (e: GooglePlayServicesNotAvailableException) {
+            logger.severe("Play Services not available — TLS 1.3 unsupported, network will fail: ${e.message}")
         }
     }
 }
