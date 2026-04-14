@@ -91,7 +91,8 @@ pub async fn handler(
     if let Some(token) = extract_token_from_protocol(&headers) {
         let claims = match jwt::validate_access_token(&token, &state.config.jwt_public_key) {
             Ok(claims) => claims,
-            Err(_) => {
+            Err(e) => {
+                warn!("Header-based WS auth failed: {}", e);
                 return error_response(401, "Invalid token");
             }
         };
