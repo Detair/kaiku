@@ -40,7 +40,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https"
                       android:host="kaiku.pmind.de"
-                      android:pathPrefix="/auth/callback" />
+                      android:path="/auth/callback" />
             </intent-filter>
         </activity>
 
