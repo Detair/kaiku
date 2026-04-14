@@ -64,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All `text-text-secondary/50` instances replaced with `text-text-muted` for WCAG-compliant contrast (#29)
 - Auth pages (login, register, forgot/reset password) now scroll when content exceeds viewport height (#30)
 - Context menu items have larger touch targets for reliable mobile interaction (#28)
+- Long-press on touch devices no longer shows duplicate context menus (custom menu plus browser native)
+- Mobile drawer no longer traps keyboard focus or screen reader navigation when closed
+- Body scroll lock no longer interferes with overlapping modals
 - Admin dashboard status badges, elevation buttons, and warning banners now have readable text instead of invisible same-hue text on colored backgrounds (#524)
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
 - Sent friend requests now show "Cancel" button instead of Accept/Decline buttons in the pending view (#453)
