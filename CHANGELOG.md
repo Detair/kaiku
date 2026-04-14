@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: concurrent leaveChannel calls are serialized with a Mutex to prevent double-cleanup (#14)
 - Android: Bluetooth audio route is set asynchronously after SCO connection is confirmed, fixing incorrect "Bluetooth" display (#21)
 - Android: screen share video track lookup no longer falls back to wrong track in multi-peer scenarios (#23)
+- Android: ICE candidate buffer is bounded to prevent unbounded memory growth on buggy SDP flows
+- Android: concurrent voice connection cleanup is now race-free, preventing rare crashes on rapid reconnect
 - Admin dashboard status badges, elevation buttons, and warning banners now have readable text instead of invisible same-hue text on colored backgrounds (#524)
 - Clicking another user's reaction emoji now correctly toggles your own reaction instead of removing theirs (#454)
 - Sent friend requests now show "Cancel" button instead of Accept/Decline buttons in the pending view (#453)
