@@ -29,8 +29,10 @@ interface AuthApi {
     suspend fun refresh(refreshToken: String): AuthResponse
     suspend fun logout()
     suspend fun getMe(): User
+    /** Calls /auth/me with an explicit bearer token, bypassing the interceptor chain. */
+    suspend fun authenticatedGetMe(accessToken: String): User
     suspend fun getOidcProviders(): List<OidcProvider>
-    suspend fun exchangeOidcCode(code: String, state: String, redirectUri: String): AuthResponse
+    suspend fun exchangeOidcCode(code: String, state: String, redirectUri: String, codeVerifier: String? = null): AuthResponse
     suspend fun redeemQrToken(serverUrl: String, token: String): AuthResponse
 }
 
@@ -58,7 +60,8 @@ private data class RefreshTokenRequest(
 private data class OidcCallbackRequest(
     val code: String,
     val state: String,
-    val redirectUri: String
+    val redirectUri: String,
+    val codeVerifier: String? = null
 )
 
 @Serializable
@@ -146,6 +149,21 @@ class AuthApiImpl @Inject constructor(
         return response.body()
     }
 
+    override suspend fun authenticatedGetMe(accessToken: String): User {
+        val response = httpClient.get("/auth/me") {
+            headers {
+                set(HttpHeaders.Authorization, "Bearer $accessToken")
+            }
+        }
+
+        if (!response.status.isSuccess()) {
+            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
+            throw ApiException(response.status, errorBody?.message ?: "Failed to get user")
+        }
+
+        return response.body()
+    }
+
     override suspend fun getOidcProviders(): List<OidcProvider> {
         val response = httpClient.get("/auth/oidc/providers")
 
@@ -160,7 +178,8 @@ class AuthApiImpl @Inject constructor(
     override suspend fun exchangeOidcCode(
         code: String,
         state: String,
-        redirectUri: String
+        redirectUri: String,
+        codeVerifier: String?
     ): AuthResponse {
         // Fallback: call the server's OIDC callback directly via GET.
         // The server exchanges the authorization code internally and returns tokens.
@@ -168,6 +187,9 @@ class AuthApiImpl @Inject constructor(
             url {
                 parameters.append("code", code)
                 parameters.append("state", state)
+                if (codeVerifier != null) {
+                    parameters.append("code_verifier", codeVerifier)
+                }
             }
         }
 

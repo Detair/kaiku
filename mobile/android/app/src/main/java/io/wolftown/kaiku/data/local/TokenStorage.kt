@@ -14,6 +14,8 @@ class TokenStorage @Inject constructor(
         private const val KEY_EXPIRES_AT = "expires_at"
         private const val KEY_USER_ID = "user_id"
         private const val KEY_SERVER_URL = "server_url"
+        private const val KEY_OIDC_CODE_VERIFIER = "oidc_code_verifier"
+        private const val KEY_OIDC_STATE = "oidc_state"
         private val logger = Logger.getLogger("TokenStorage")
     }
 
@@ -61,6 +63,30 @@ class TokenStorage @Inject constructor(
     fun isAccessTokenExpired(): Boolean {
         val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
         return System.currentTimeMillis() >= expiresAt
+    }
+
+    fun saveOidcPkceState(codeVerifier: String, state: String) {
+        val success = prefs.edit()
+            .putString(KEY_OIDC_CODE_VERIFIER, codeVerifier)
+            .putString(KEY_OIDC_STATE, state)
+            .commit()
+        if (!success) {
+            logger.warning("Failed to persist OIDC PKCE state to storage")
+        }
+    }
+
+    fun getOidcCodeVerifier(): String? = prefs.getString(KEY_OIDC_CODE_VERIFIER, null)
+
+    fun getOidcState(): String? = prefs.getString(KEY_OIDC_STATE, null)
+
+    fun clearOidcPkceState() {
+        val success = prefs.edit()
+            .remove(KEY_OIDC_CODE_VERIFIER)
+            .remove(KEY_OIDC_STATE)
+            .commit()
+        if (!success) {
+            logger.warning("Failed to clear OIDC PKCE state from storage")
+        }
     }
 
     fun clear() {

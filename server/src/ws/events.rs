@@ -63,6 +63,11 @@ pub(super) const fn default_pc_type() -> PcType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
+    /// Post-connect authentication (replaces header-based auth for new clients).
+    Authenticate {
+        /// JWT access token.
+        token: String,
+    },
     /// Ping for keepalive
     Ping,
     /// Subscribe to channel events
@@ -217,6 +222,7 @@ impl ClientEvent {
     /// Return a low-cardinality static name for this event variant (for metrics).
     pub const fn variant_name(&self) -> &'static str {
         match self {
+            Self::Authenticate { .. } => "authenticate",
             Self::Ping => "ping",
             Self::Subscribe { .. } => "subscribe",
             Self::Unsubscribe { .. } => "unsubscribe",

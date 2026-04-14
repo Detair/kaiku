@@ -2,10 +2,13 @@ package io.wolftown.kaiku.ui.auth
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 import androidx.browser.customtabs.CustomTabsIntent
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.User
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -42,8 +45,28 @@ class OidcHandler @Inject constructor(
     fun launchOidcLogin(context: Context, providerSlug: String) {
         val serverUrl = tokenStorage.getServerUrl()
             ?: throw IllegalStateException("Server URL not configured")
+
+        // Generate PKCE code_verifier (43-128 chars, URL-safe base64)
+        val codeVerifier = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            .let { Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING) }
+
+        // Compute code_challenge = BASE64URL(SHA256(code_verifier))
+        val codeChallenge = MessageDigest.getInstance("SHA-256")
+            .digest(codeVerifier.toByteArray(Charsets.US_ASCII))
+            .let { Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING) }
+
+        // Generate state nonce for CSRF protection
+        val state = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            .let { Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING) }
+
+        // Persist to EncryptedSharedPreferences for validation in callback
+        tokenStorage.saveOidcPkceState(codeVerifier, state)
+
         val authUrl = "$serverUrl/auth/oidc/authorize/$providerSlug" +
-            "?redirect_uri=${Uri.encode(REDIRECT_URI)}"
+            "?redirect_uri=${Uri.encode(REDIRECT_URI)}" +
+            "&code_challenge=$codeChallenge" +
+            "&code_challenge_method=S256" +
+            "&state=$state"
         try {
             val customTabIntent = CustomTabsIntent.Builder().build()
             customTabIntent.launchUrl(context, Uri.parse(authUrl))
@@ -77,12 +100,21 @@ class OidcHandler @Inject constructor(
      * @return [Result] containing the authenticated [User] or a failure
      */
     suspend fun handleCallback(uri: Uri, authRepository: AuthRepository): Result<User> {
+        // Validate state nonce against saved value (CSRF protection)
+        val savedState = tokenStorage.getOidcState()
+        val uriState = uri.getQueryParameter("state")
+        if (savedState == null || uriState != savedState) {
+            tokenStorage.clearOidcPkceState()
+            return Result.failure(IllegalStateException("OIDC state mismatch — possible CSRF"))
+        }
+
         // Primary path: server already exchanged the code and redirected with tokens
         val accessToken = uri.getQueryParameter("access_token")
         val refreshToken = uri.getQueryParameter("refresh_token")
         val expiresInStr = uri.getQueryParameter("expires_in")
 
         if (accessToken != null && expiresInStr != null) {
+            tokenStorage.clearOidcPkceState()
             val expiresIn = expiresInStr.toIntOrNull()
                 ?: return Result.failure(IllegalArgumentException("Invalid expires_in value"))
             return authRepository.completeOidcLogin(
@@ -97,11 +129,9 @@ class OidcHandler @Inject constructor(
             ?: return Result.failure(
                 IllegalArgumentException("OIDC callback missing both tokens and authorization code")
             )
-        val state = uri.getQueryParameter("state")
-            ?: return Result.failure(
-                IllegalArgumentException("OIDC callback missing state parameter")
-            )
 
-        return authRepository.exchangeOidcCode(code, state)
+        val codeVerifier = tokenStorage.getOidcCodeVerifier()
+        tokenStorage.clearOidcPkceState()
+        return authRepository.exchangeOidcCode(code, uriState, codeVerifier)
     }
 }

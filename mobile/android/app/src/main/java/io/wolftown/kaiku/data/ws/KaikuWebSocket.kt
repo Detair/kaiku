@@ -28,7 +28,8 @@ import javax.inject.Singleton
 enum class ConnectionState {
     Connected,
     Connecting,
-    Disconnected
+    Disconnected,
+    TokenExpired
 }
 
 /**
@@ -52,9 +53,12 @@ class KaikuWebSocket @Inject constructor(
         internal const val PING_INTERVAL_MS = 30_000L
         internal const val INITIAL_RECONNECT_DELAY_MS = 1_000L
         internal const val MAX_RECONNECT_DELAY_MS = 30_000L
+        /** WebSocket close code 1008 (Policy Violation) — server uses this for auth failures. */
+        internal const val AUTH_REJECTED_CLOSE_CODE = 1008
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var connectivityJob: Job? = null
 
     private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<ServerEvent> = _events.asSharedFlow()
@@ -73,8 +77,9 @@ class KaikuWebSocket @Inject constructor(
     private var connectivityMonitor: ConnectivityMonitor? = null
 
     fun setConnectivityMonitor(monitor: ConnectivityMonitor) {
+        connectivityJob?.cancel()
         connectivityMonitor = monitor
-        scope.launch {
+        connectivityJob = scope.launch {
             monitor.isConnected.collect { connected ->
                 if (connected && shouldReconnect && _connectionState.value == ConnectionState.Disconnected) {
                     reconnectDelay = INITIAL_RECONNECT_DELAY_MS
@@ -104,6 +109,8 @@ class KaikuWebSocket @Inject constructor(
         reconnectJob = null
         pingJob?.cancel()
         pingJob = null
+        connectivityJob?.cancel()
+        connectivityJob = null
         webSocket?.close(1000, "Client disconnect")
         webSocket = null
         _connectionState.value = ConnectionState.Disconnected
@@ -133,6 +140,13 @@ class KaikuWebSocket @Inject constructor(
             return
         }
 
+        if (tokenStorage.isAccessTokenExpired()) {
+            logger.info("Access token expired, emitting TokenExpired state")
+            _connectionState.value = ConnectionState.TokenExpired
+            shouldReconnect = false
+            return
+        }
+
         _connectionState.value = ConnectionState.Connecting
 
         val wsUrl = url
@@ -142,23 +156,32 @@ class KaikuWebSocket @Inject constructor(
 
         val request = Request.Builder()
             .url(wsUrl)
-            .addHeader("Sec-WebSocket-Protocol", "access_token.$token")
             .build()
 
-        webSocket = okHttpClient.newWebSocket(request, createListener())
+        webSocket = okHttpClient.newWebSocket(request, createListener(token))
     }
 
-    private fun createListener() = object : WebSocketListener() {
+    private fun createListener(token: String) = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            logger.info("WebSocket connected")
-            _connectionState.value = ConnectionState.Connected
-            reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-            startPingLoop()
+            // Authenticate via first frame (post-connect auth)
+            send(ClientEvent.Authenticate(token))
+
+            logger.info("WebSocket open, awaiting Ready for authentication confirmation")
+            // Stay in Connecting state until server sends Ready event (auth confirmed).
+            // Server's 5s auth timeout closes the WS if auth fails — handled by onClosed/onFailure.
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             try {
                 val event = json.decodeFromString<ServerEvent>(text)
+                // Transition to Connected on Ready event (works for both header-based
+                // and post-connect Authenticate auth modes — server sends Ready in both).
+                if (event is ServerEvent.Ready && _connectionState.value == ConnectionState.Connecting) {
+                    logger.info("WebSocket authenticated, transitioning to Connected")
+                    _connectionState.value = ConnectionState.Connected
+                    reconnectDelay = INITIAL_RECONNECT_DELAY_MS
+                    startPingLoop()
+                }
                 val emitted = _events.tryEmit(event)
                 if (!emitted) {
                     logger.warning("Event buffer full, dropped: ${event::class.simpleName}")
@@ -175,19 +198,31 @@ class KaikuWebSocket @Inject constructor(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             logger.info("WebSocket closed: code=$code reason=$reason")
-            handleDisconnect()
+            handleDisconnect(closeCode = code)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             logger.log(Level.WARNING, "WebSocket failure: ${t.message}", t)
-            handleDisconnect()
+            handleDisconnect(closeCode = null)
         }
     }
 
-    private fun handleDisconnect() {
+    private fun handleDisconnect(closeCode: Int? = null) {
         pingJob?.cancel()
         pingJob = null
         webSocket = null
+
+        // If the server closed with a policy violation (1008) while we were still
+        // authenticating, treat this as an auth failure — don't loop on a bad token.
+        // The user must obtain a new token (typically via re-login or refresh).
+        val wasAuthenticating = _connectionState.value == ConnectionState.Connecting
+        if (wasAuthenticating && closeCode == AUTH_REJECTED_CLOSE_CODE) {
+            logger.warning("WebSocket auth rejected by server (code 1008), suppressing reconnect")
+            _connectionState.value = ConnectionState.TokenExpired
+            shouldReconnect = false
+            return
+        }
+
         _connectionState.value = ConnectionState.Disconnected
 
         if (shouldReconnect) {
