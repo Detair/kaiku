@@ -22,6 +22,10 @@ class KaikuApplication : Application() {
                 .showErrorNotification(this, e.connectionStatusCode)
         } catch (e: GooglePlayServicesNotAvailableException) {
             logger.severe("Play Services not available — TLS 1.3 unsupported, network will fail: ${e.message}")
+        } catch (e: Throwable) {
+            // Defensive fallback — don't crash app startup on unexpected provider errors.
+            // Network calls will fail later if TLS 1.3 was the issue.
+            logger.severe("Unexpected error installing security provider: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 }
