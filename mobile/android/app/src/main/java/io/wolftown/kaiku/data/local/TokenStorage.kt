@@ -80,10 +80,13 @@ class TokenStorage @Inject constructor(
     fun getOidcState(): String? = prefs.getString(KEY_OIDC_STATE, null)
 
     fun clearOidcPkceState() {
-        prefs.edit()
+        val success = prefs.edit()
             .remove(KEY_OIDC_CODE_VERIFIER)
             .remove(KEY_OIDC_STATE)
-            .apply()
+            .commit()
+        if (!success) {
+            logger.warning("Failed to clear OIDC PKCE state from storage")
+        }
     }
 
     fun clear() {
