@@ -181,14 +181,17 @@ class WebRtcManager @Inject constructor(
         localAudioTrack = null
         audioSource?.dispose()
         audioSource = null
-        peerConnection?.close()
-        peerConnection?.dispose()
-        peerConnection = null
+
+        // Clear remote-track flows first so observers don't reach into a disposed PC
+        _remoteAudioTracks.value = emptyMap()
+        _remoteVideoTracks.value = emptyMap()
         remoteDescriptionSet = false
         pendingCandidates.clear()
 
-        _remoteAudioTracks.value = emptyMap()
-        _remoteVideoTracks.value = emptyMap()
+        val pc = peerConnection
+        peerConnection = null  // null first so concurrent readers see null
+        pc?.close()
+        pc?.dispose()
 
         logger.info("PeerConnection closed")
     }
