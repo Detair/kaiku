@@ -53,6 +53,8 @@ class KaikuWebSocket @Inject constructor(
         internal const val PING_INTERVAL_MS = 30_000L
         internal const val INITIAL_RECONNECT_DELAY_MS = 1_000L
         internal const val MAX_RECONNECT_DELAY_MS = 30_000L
+        /** WebSocket close code 1008 (Policy Violation) — server uses this for auth failures. */
+        internal const val AUTH_REJECTED_CLOSE_CODE = 1008
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -196,19 +198,31 @@ class KaikuWebSocket @Inject constructor(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             logger.info("WebSocket closed: code=$code reason=$reason")
-            handleDisconnect()
+            handleDisconnect(closeCode = code)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             logger.log(Level.WARNING, "WebSocket failure: ${t.message}", t)
-            handleDisconnect()
+            handleDisconnect(closeCode = null)
         }
     }
 
-    private fun handleDisconnect() {
+    private fun handleDisconnect(closeCode: Int? = null) {
         pingJob?.cancel()
         pingJob = null
         webSocket = null
+
+        // If the server closed with a policy violation (1008) while we were still
+        // authenticating, treat this as an auth failure — don't loop on a bad token.
+        // The user must obtain a new token (typically via re-login or refresh).
+        val wasAuthenticating = _connectionState.value == ConnectionState.Connecting
+        if (wasAuthenticating && closeCode == AUTH_REJECTED_CLOSE_CODE) {
+            logger.warning("WebSocket auth rejected by server (code 1008), suppressing reconnect")
+            _connectionState.value = ConnectionState.TokenExpired
+            shouldReconnect = false
+            return
+        }
+
         _connectionState.value = ConnectionState.Disconnected
 
         if (shouldReconnect) {
