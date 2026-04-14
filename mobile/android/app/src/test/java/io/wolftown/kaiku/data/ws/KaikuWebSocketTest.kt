@@ -109,6 +109,12 @@ class KaikuWebSocketTest {
                 authLatch.await(5, TimeUnit.SECONDS)
             )
 
+            // Give the WebSocket message loop time to process anything the server
+            // would have sent. Without this real delay, expectNoEvents() returns
+            // immediately and would pass even if the production code transitioned
+            // to Connected directly from onOpen.
+            kotlinx.coroutines.delay(200)
+
             // No transition to Connected — server hasn't sent Ready
             expectNoEvents()
 
