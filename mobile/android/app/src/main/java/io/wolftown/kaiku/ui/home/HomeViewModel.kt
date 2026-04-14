@@ -73,7 +73,10 @@ class HomeViewModel @Inject constructor(
     }
 
     fun onChannelSelected(channelId: String, channelType: ChannelType) {
-        _navigateToChannel.trySend(ChannelNavEvent(channelId, channelType))
+        val result = _navigateToChannel.trySend(ChannelNavEvent(channelId, channelType))
+        if (result.isFailure) {
+            logger.warning("navigateToChannel dropped (collector suspended or buffer full): $channelId")
+        }
     }
 
     fun refresh() {
