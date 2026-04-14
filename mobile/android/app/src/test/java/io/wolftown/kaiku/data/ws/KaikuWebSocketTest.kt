@@ -81,6 +81,42 @@ class KaikuWebSocketTest {
     }
 
     @Test
+    fun `connect stays in Connecting state until Ready event arrives`() = runTest {
+        val authLatch = CountDownLatch(1)
+
+        mockServer.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    // Don't send anything — wait for Authenticate frame
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    // Receive Authenticate but don't respond with Ready
+                    authLatch.countDown()
+                }
+            })
+        )
+
+        ws.connectionState.test(timeout = 10.seconds) {
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            ws.connect(mockServer.url("/").toString())
+            assertEquals(ConnectionState.Connecting, awaitItem())
+
+            // Wait for the auth frame to be received by mock server
+            assertTrue(
+                "Server did not receive auth message in time",
+                authLatch.await(5, TimeUnit.SECONDS)
+            )
+
+            // No transition to Connected — server hasn't sent Ready
+            expectNoEvents()
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `events flow emits parsed server events`() = runTest {
         mockServer.enqueue(
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {

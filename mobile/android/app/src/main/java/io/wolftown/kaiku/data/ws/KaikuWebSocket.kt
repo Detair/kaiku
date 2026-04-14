@@ -164,15 +164,22 @@ class KaikuWebSocket @Inject constructor(
             // Authenticate via first frame (post-connect auth)
             send(ClientEvent.Authenticate(token))
 
-            logger.info("WebSocket connected")
-            _connectionState.value = ConnectionState.Connected
-            reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-            startPingLoop()
+            logger.info("WebSocket open, awaiting Ready for authentication confirmation")
+            // Stay in Connecting state until server sends Ready event (auth confirmed).
+            // Server's 5s auth timeout closes the WS if auth fails — handled by onClosed/onFailure.
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             try {
                 val event = json.decodeFromString<ServerEvent>(text)
+                // Transition to Connected on Ready event (works for both header-based
+                // and post-connect Authenticate auth modes — server sends Ready in both).
+                if (event is ServerEvent.Ready && _connectionState.value == ConnectionState.Connecting) {
+                    logger.info("WebSocket authenticated, transitioning to Connected")
+                    _connectionState.value = ConnectionState.Connected
+                    reconnectDelay = INITIAL_RECONNECT_DELAY_MS
+                    startPingLoop()
+                }
                 val emitted = _events.tryEmit(event)
                 if (!emitted) {
                     logger.warning("Event buffer full, dropped: ${event::class.simpleName}")
