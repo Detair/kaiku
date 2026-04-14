@@ -62,6 +62,9 @@ const AppShell: Component<AppShellProps> = (props) => {
       setDrawerOpen(true);
     edgeStartX = null;
   };
+  const onEdgeReset = () => {
+    edgeStartX = null;
+  };
 
   /** Sidebar content — shared between desktop inline and mobile drawer */
   const sidebarContent = (onNavigate?: () => void) => (
@@ -76,6 +79,7 @@ const AppShell: Component<AppShellProps> = (props) => {
       classList={{ "flex-col": isMobile() }}
       onPointerDown={onEdgePointerDown}
       onPointerUp={onEdgePointerUp}
+      onPointerCancel={onEdgeReset}
     >
       <Show
         when={!isMobile()}
