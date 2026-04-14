@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.Closeable
 import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -55,7 +56,7 @@ enum class AudioRoute {
 @Singleton
 class AudioRouteManager @Inject constructor(
     @ApplicationContext private val context: Context
-) {
+) : Closeable {
     companion object {
         private val logger = Logger.getLogger("AudioRouteManager")
     }
@@ -149,6 +150,11 @@ class AudioRouteManager @Inject constructor(
         unregisterReceivers()
 
         logger.info("Audio focus abandoned, mode restored to MODE_NORMAL")
+    }
+
+    override fun close() {
+        unregisterReceivers()
+        scope.cancel()
     }
 
     /**
