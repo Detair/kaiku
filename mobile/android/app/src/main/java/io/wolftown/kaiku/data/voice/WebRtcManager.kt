@@ -60,6 +60,10 @@ class WebRtcManager @Inject constructor(
 
     private val initMutex = Mutex()
     private var factory: PeerConnectionFactory? = null
+    /** Marked @Volatile so concurrent observers (WS event collector, WebRTC native callbacks)
+     *  reliably see the null assignment in [closePeerConnection]. The check-then-use race
+     *  in [addIceCandidate] / [handleOffer] is tolerated by the surrounding try/catch. */
+    @Volatile
     private var peerConnection: PeerConnection? = null
     private var audioSource: AudioSource? = null
     private var audioDeviceModule: org.webrtc.audio.AudioDeviceModule? = null
@@ -189,7 +193,9 @@ class WebRtcManager @Inject constructor(
         pendingCandidates.clear()
 
         val pc = peerConnection
-        peerConnection = null  // null first so concurrent readers see null
+        // Null first (with @Volatile on the field) so concurrent readers see null
+        // before close+dispose runs on the local reference.
+        peerConnection = null
         pc?.close()
         pc?.dispose()
 
