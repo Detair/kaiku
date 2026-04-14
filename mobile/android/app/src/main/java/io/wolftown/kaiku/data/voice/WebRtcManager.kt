@@ -53,6 +53,7 @@ class WebRtcManager @Inject constructor(
     companion object {
         private val logger = Logger.getLogger("WebRtcManager")
         private const val LOCAL_AUDIO_TRACK_ID = "kaiku-local-audio"
+        private const val MAX_PENDING_CANDIDATES = 100
     }
 
     // -- State ----------------------------------------------------------------
@@ -64,6 +65,9 @@ class WebRtcManager @Inject constructor(
     private var audioDeviceModule: org.webrtc.audio.AudioDeviceModule? = null
     private var remoteDescriptionSet = false
     private val pendingCandidates = mutableListOf<String>()  // buffered JSON strings
+
+    /** Test-only accessor for the buffered ICE candidate count. */
+    internal fun pendingCandidatesSize(): Int = pendingCandidates.size
 
     /** Shared EGL context for video rendering (SurfaceViewRenderer). */
     val eglBase: EglBase = EglBase.create()
@@ -258,6 +262,11 @@ class WebRtcManager @Inject constructor(
      */
     fun addIceCandidate(candidateJson: String) {
         if (!remoteDescriptionSet) {
+            if (pendingCandidates.size >= MAX_PENDING_CANDIDATES) {
+                logger.warning("ICE candidate buffer full ($MAX_PENDING_CANDIDATES), dropping candidate")
+                return
+            }
+            logger.fine("Buffering ICE candidate (remote description not yet set)")
             pendingCandidates.add(candidateJson)
             return
         }
