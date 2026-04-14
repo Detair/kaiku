@@ -80,6 +80,7 @@ const AppShell: Component<AppShellProps> = (props) => {
       onPointerDown={onEdgePointerDown}
       onPointerUp={onEdgePointerUp}
       onPointerCancel={onEdgeReset}
+      onPointerLeave={onEdgeReset}
     >
       <Show
         when={!isMobile()}
