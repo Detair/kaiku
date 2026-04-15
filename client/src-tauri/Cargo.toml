@@ -47,6 +47,7 @@ rodio = "0.22"
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+serde_bytes = "0.11"
 base64 = "0.22"
 
 # HTTP

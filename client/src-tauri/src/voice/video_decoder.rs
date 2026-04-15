@@ -1,24 +1,23 @@
-//! VP8 Video Decoder (Stub)
+//! VP8 Video Decoder
 //!
-//! Reads RTP packets from subscriber video tracks and emits lifecycle events
-//! to the frontend. Actual VP8 frame decoding is not yet implemented — this
-//! stub allows end-to-end pipeline testing while audio (the critical path)
-//! is fully functional.
-//!
-//! Future implementation steps:
-//! 1. VP8 RTP depacketization via `webrtc::rtp::codecs::vp8::Vp8Packet`
-//! 2. VP8 frame decode to YUV via libvpx FFI (`vpx_codec_decode`)
-//! 3. YUV → RGB conversion
-//! 4. JPEG encode via `image` crate
-//! 5. Base64 encode + emit as `VideoFrame` event
-//! 6. Throttle to ~15 fps
+//! Reads RTP packets from subscriber video tracks, depacketizes VP8 frames,
+//! decodes them into YUV (I420) via libvpx, and pushes the result through a
+//! `FrameBuffer` (drop-oldest watch channel) to the webview. The frontend
+//! must call `subscribe_video_frames(stream_id, channel)` to register a
+//! sink — until it does, the decode task drains incoming packets without
+//! decoding (so the SFU does not see a stalled receiver).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tauri::Emitter;
-use tracing::{debug, info};
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 use webrtc::track::track_remote::TrackRemote;
+
+use crate::voice::frame_buffer::FrameBuffer;
 
 /// Maximum concurrent video decode streams.
 ///
@@ -46,10 +45,19 @@ pub struct VideoTrackEvent {
     pub source_type: String,
 }
 
-/// Spawn a background task that reads RTP packets from a video track.
+/// Maximum time to wait for a frontend `subscribe_video_frames` call before
+/// giving up and treating the track as drain-only. Five seconds covers tile
+/// mount latency on slow hardware while bounding wasted decode setup.
+const SUBSCRIPTION_LOOKUP_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Spawn a background task that reads RTP packets from a video track,
+/// depacketizes them, and feeds the resulting VP8 frames into a
+/// `Vp8VideoDecoder` once the frontend registers a `FrameBuffer` for the
+/// stream via `subscribe_video_frames`.
 ///
-/// Currently a **stub**: reads and counts packets, emits track lifecycle
-/// events, but does not decode VP8 frames or produce `VideoFrame` events.
+/// If no subscription arrives within `SUBSCRIPTION_LOOKUP_DEADLINE` after the
+/// first packet, the task continues to drain packets without decoding so the
+/// SFU does not detect a stalled receiver.
 pub fn spawn_video_decode_task(
     track: Arc<TrackRemote>,
     user_id: String,
@@ -57,6 +65,7 @@ pub fn spawn_video_decode_task(
     stream_id: String,
     app: tauri::AppHandle,
     active_count: Arc<AtomicUsize>,
+    video_frame_sinks: Arc<Mutex<HashMap<String, FrameBuffer>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!(
@@ -66,7 +75,8 @@ pub fn spawn_video_decode_task(
             "Video decode task started"
         );
 
-        // Emit track-started event so frontend can show the indicator
+        // Emit track-started event so frontend can show the indicator and
+        // (for screen shares) call subscribe_video_frames in response.
         let start_event = if source_type.starts_with("screen_video") {
             "voice:screen_share_track"
         } else {
@@ -81,10 +91,14 @@ pub fn spawn_video_decode_task(
             },
         );
 
-        // Read RTP packets from the track (drains the buffer even though we
-        // don't decode yet — important so the SFU doesn't think we stalled).
         let mut buf = vec![0u8; 65_535];
         let mut packet_count: u64 = 0;
+        let mut decoder: Option<Vp8VideoDecoder> = None;
+        // We start the deadline window when the first packet arrives, not at
+        // task start — otherwise tracks that take a moment to deliver any
+        // packets at all could miss the window.
+        let mut subscription_deadline: Option<Instant> = None;
+        let mut decoder_init_failed = false;
 
         loop {
             match track.read(&mut buf).await {
@@ -96,25 +110,74 @@ pub fn spawn_video_decode_task(
 
                     packet_count += 1;
 
-                    // Log progress every ~10 seconds at 30 fps (300 packets)
                     if packet_count % 300 == 0 {
                         debug!(
                             user_id = %user_id,
                             packet_count,
                             payload_len = payload.len(),
+                            decoder_active = decoder.is_some(),
                             "Video track receiving packets"
                         );
                     }
 
-                    // TODO: VP8 decode pipeline
-                    // 1. Depacketize RTP → complete VP8 frames
-                    //    (webrtc::rtp::codecs::vp8::Vp8Packet)
-                    // 2. Decode VP8 → YUV (libvpx via vpx-encode FFI)
-                    // 3. Convert YUV → RGB
-                    // 4. JPEG encode (image crate)
-                    // 5. Base64 encode
-                    // 6. Emit VideoFrame event
-                    // 7. Throttle to ~15 fps
+                    // Lazy decoder activation: once a frontend subscription
+                    // appears in the shared map, claim the FrameBuffer and
+                    // build a decoder. Stop polling after the deadline or
+                    // after a previous init failure to avoid hammering the
+                    // mutex on every packet for the rest of the track's life.
+                    if decoder.is_none() && !decoder_init_failed {
+                        let deadline = *subscription_deadline
+                            .get_or_insert_with(|| Instant::now() + SUBSCRIPTION_LOOKUP_DEADLINE);
+                        if Instant::now() < deadline {
+                            let mut sinks = video_frame_sinks.lock().await;
+                            if let Some(fb) = sinks.remove(&stream_id) {
+                                drop(sinks);
+                                match Vp8VideoDecoder::new(stream_id.clone(), fb) {
+                                    Ok(d) => {
+                                        info!(
+                                            stream_id = %stream_id,
+                                            user_id = %user_id,
+                                            "VP8 decoder activated for stream"
+                                        );
+                                        decoder = Some(d);
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            error = %e,
+                                            stream_id = %stream_id,
+                                            "VP8 decoder init failed; falling back to drain-only"
+                                        );
+                                        decoder_init_failed = true;
+                                    }
+                                }
+                            }
+                        } else {
+                            // Past deadline without a subscriber — log once
+                            // and stop checking by treating as init-failed.
+                            info!(
+                                stream_id = %stream_id,
+                                user_id = %user_id,
+                                "No frame subscription within deadline; draining track"
+                            );
+                            decoder_init_failed = true;
+                        }
+                    }
+
+                    if let Some(d) = decoder.as_mut() {
+                        if let Err(e) = d.process_packet(&rtp_packet).await {
+                            // Decode errors are typically recoverable
+                            // (e.g., reference frame loss). Log and continue
+                            // — libvpx will resync on the next keyframe.
+                            warn!(
+                                error = %e,
+                                stream_id = %stream_id,
+                                packet_count,
+                                "VP8 decode error; continuing"
+                            );
+                        }
+                    }
+                    // No decoder: packet already consumed from the buffer,
+                    // which is the SFU-friendly drain behavior we want.
                 }
                 Err(e) => {
                     info!(
@@ -127,6 +190,14 @@ pub fn spawn_video_decode_task(
                 }
             }
         }
+
+        // Drop the decoder before emitting removal so vpx_codec_destroy runs
+        // first (Drop on Vp8VideoDecoder), keeping teardown ordering clean.
+        drop(decoder);
+
+        // If we had registered a sink but never picked it up, remove the
+        // stale entry so the next stream with the same ID doesn't reuse it.
+        video_frame_sinks.lock().await.remove(&stream_id);
 
         // Emit track-removed event so frontend hides the indicator
         let remove_event = if source_type.starts_with("screen_video") {
@@ -149,16 +220,11 @@ pub fn spawn_video_decode_task(
 }
 
 // =============================================================================
-// VP8 native decoder (added by Task D4)
-//
-// The `Vp8VideoDecoder` below is a safe wrapper around env-libvpx-sys FFI. D5
-// will wire it into `spawn_video_decode_task` and introduce a `FrameBuffer`.
-// For now, the type is exposed publicly so D5 can consume it.
+// VP8 native decoder (FFI wrapper around env-libvpx-sys).
 // =============================================================================
 
 use crate::voice::rtp_depacketizer::Vp8Depacketizer;
 use env_libvpx_sys::*;
-use tokio::sync::mpsc;
 use webrtc::rtp::packet::Packet as RtpPacket;
 
 #[derive(Debug, thiserror::Error)]
@@ -167,23 +233,44 @@ pub enum VideoDecodeError {
     Init(u32),
     #[error("VP8 decode failed: code {0}")]
     Decode(u32),
-    #[error("frame sink closed")]
-    FrameSinkClosed,
 }
 
 /// A fully decoded YUV I420 video frame.
-#[derive(Debug)]
-#[allow(dead_code)] // consumed by D5 (frame sink → Tauri Channel) and D6 (WebGL renderer)
+///
+/// `Serialize` (with `serde_bytes` on the planes) is required for transport
+/// over Tauri's `Channel<T>` IPC: planes serialize as binary blobs
+/// (`Uint8Array` in the webview) instead of JSON number arrays.
+#[derive(serde::Serialize, Clone)]
 pub struct DecodedFrame {
     pub stream_id: String,
     pub width: u32,
     pub height: u32,
+    #[serde(with = "serde_bytes")]
     pub y_plane: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     pub u_plane: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     pub v_plane: Vec<u8>,
     pub y_stride: u32,
     pub uv_stride: u32,
     pub pts_ms: u64,
+}
+
+// Manual Debug impl: never dump plane bytes (multi-MB) to logs — print sizes only.
+impl std::fmt::Debug for DecodedFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedFrame")
+            .field("stream_id", &self.stream_id)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("y_plane.len", &self.y_plane.len())
+            .field("u_plane.len", &self.u_plane.len())
+            .field("v_plane.len", &self.v_plane.len())
+            .field("y_stride", &self.y_stride)
+            .field("uv_stride", &self.uv_stride)
+            .field("pts_ms", &self.pts_ms)
+            .finish()
+    }
 }
 
 /// Native VP8 decoder wrapping env-libvpx-sys FFI.
@@ -191,12 +278,11 @@ pub struct DecodedFrame {
 /// The decoder owns a `vpx_codec_ctx_t` raw context and must be driven from a
 /// single tokio task (not `Send + Sync`-safe in the general case, but safe
 /// when task-bound — marked `unsafe impl Send` for this use pattern).
-#[allow(dead_code)] // wired into spawn_video_decode_task by D5
 pub struct Vp8VideoDecoder {
     ctx: vpx_codec_ctx_t,
     depacketizer: Vp8Depacketizer,
     stream_id: String,
-    frame_sink: mpsc::Sender<DecodedFrame>,
+    frame_sink: FrameBuffer,
 }
 
 // Safety: the vpx context is not thread-safe in general, but the decoder is
@@ -204,12 +290,8 @@ pub struct Vp8VideoDecoder {
 // under that usage discipline. D5 preserves this invariant.
 unsafe impl Send for Vp8VideoDecoder {}
 
-#[allow(dead_code)] // public API consumed by D5
 impl Vp8VideoDecoder {
-    pub fn new(
-        stream_id: String,
-        frame_sink: mpsc::Sender<DecodedFrame>,
-    ) -> Result<Self, VideoDecodeError> {
+    pub fn new(stream_id: String, frame_sink: FrameBuffer) -> Result<Self, VideoDecodeError> {
         // SAFETY: vpx_codec_ctx_t is a C struct that vpx fills in via
         // vpx_codec_dec_init_ver. Zero-initialization before the init call is
         // the documented pattern (matches `Default for vpx_codec_ctx` provided
@@ -284,9 +366,10 @@ impl Vp8VideoDecoder {
             // pixel data into owned Vecs before returning, so the borrow
             // does not outlive the next FFI call.
             let frame = unsafe { copy_image_to_decoded_frame(img, &self.stream_id) };
-            if self.frame_sink.send(frame).await.is_err() {
-                return Err(VideoDecodeError::FrameSinkClosed);
-            }
+            // FrameBuffer is a watch channel: push never blocks and silently
+            // drops the previous unread frame (drop-oldest). A failed send
+            // means the emitter task has exited (webview gone) — safe to ignore.
+            self.frame_sink.push(frame);
         }
         Ok(())
     }
