@@ -453,6 +453,7 @@ pub fn spawn_rtp_forwarder(
     layer: Layer,
     track: Arc<TrackRemote>,
     router: Arc<TrackRouter>,
+    peer: Arc<Peer>,
 ) {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 1500]; // MTU size
@@ -462,6 +463,13 @@ pub fn spawn_rtp_forwarder(
             match track.read(&mut buf).await {
                 Ok((packet, _attributes)) => {
                     packet_count += 1;
+
+                    // Drop audio packets from muted peers. Video tracks (screen share,
+                    // webcam) are not affected by mute state.
+                    if source_type == TrackSource::Microphone && peer.is_effectively_muted().await {
+                        continue;
+                    }
+
                     if packet_count == 1 || packet_count.is_multiple_of(500) {
                         let sub_count = router.subscription_count(source_user_id, source_type);
                         debug!(

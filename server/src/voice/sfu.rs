@@ -596,6 +596,7 @@ impl SfuServer {
                         layer,
                         track.clone(),
                         room.track_router.clone(),
+                        peer.clone(),
                     );
 
                     // For video tracks: send PLI every 3 seconds so subscribers
