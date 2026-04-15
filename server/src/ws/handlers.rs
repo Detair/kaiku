@@ -471,6 +471,11 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     pubsub_handle.abort();
     sender_handle.abort();
 
+    // Free per-peer voice rate-limit buckets in case the socket dropped without
+    // an explicit VoiceLeave (ping timeout, TCP drop, app crash). The explicit
+    // VoiceLeave path also calls `forget_peer`; calling it here too is idempotent.
+    state.sfu.voice_rate_limiter().forget_peer(user_id);
+
     // Update user presence to offline
     if let Err(e) = update_presence(&state, user_id, "offline").await {
         warn!("Failed to update presence on disconnect: {}", e);

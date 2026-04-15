@@ -27,7 +27,7 @@ use webrtc::rtp_transceiver::RTCPFeedback;
 
 use super::error::VoiceError;
 use super::peer::Peer;
-use super::rate_limit::VoiceStatsLimiter;
+use super::rate_limit::{VoiceRateLimiter, VoiceStatsLimiter};
 use super::screen_share::ScreenShareInfo;
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
@@ -287,6 +287,8 @@ pub struct SfuServer {
     rate_limiter: Option<Arc<RateLimiter>>,
     /// Rate limiter for voice stats (local/memory).
     stats_limiter: Arc<VoiceStatsLimiter>,
+    /// Per-peer, per-event-class token bucket limiter for voice signaling events.
+    voice_rate_limiter: Arc<VoiceRateLimiter>,
 }
 
 impl SfuServer {
@@ -379,6 +381,7 @@ impl SfuServer {
             config,
             rate_limiter: rate_limiter.map(Arc::new),
             stats_limiter: Arc::new(VoiceStatsLimiter::default()),
+            voice_rate_limiter: Arc::new(VoiceRateLimiter::new()),
         })
     }
 
@@ -868,6 +871,12 @@ impl SfuServer {
     /// Check if a user can report voice stats (rate limit check).
     pub async fn check_stats_rate_limit(&self, user_id: Uuid) -> Result<(), VoiceError> {
         self.stats_limiter.check_stats(user_id).await
+    }
+
+    /// Access the per-peer voice signaling rate limiter.
+    #[must_use]
+    pub const fn voice_rate_limiter(&self) -> &Arc<VoiceRateLimiter> {
+        &self.voice_rate_limiter
     }
 
     /// Get active room count.
