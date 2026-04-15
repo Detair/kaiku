@@ -90,8 +90,21 @@ class WebRtcManager @Inject constructor(
     private var publisherRemoteDescriptionSet = false
     private val publisherPendingCandidates = mutableListOf<String>()
 
-    /** Test-only accessor for the buffered ICE candidate count. */
+    /** Test-only accessor for the buffered subscriber ICE candidate count. */
     internal fun subscriberPendingCandidatesSize(): Int = subscriberPendingCandidates.size
+
+    /** Test-only accessor for the buffered publisher ICE candidate count. */
+    internal fun publisherPendingCandidatesSize(): Int = publisherPendingCandidates.size
+
+    /** Test-only mutator for publisher ICE state (drives [voiceIceConnected] in unit tests). */
+    internal fun setPublisherIceStateForTest(state: PeerConnection.IceConnectionState?) {
+        publisherIceState.value = state
+    }
+
+    /** Test-only mutator for subscriber ICE state (drives [voiceIceConnected] in unit tests). */
+    internal fun setSubscriberIceStateForTest(state: PeerConnection.IceConnectionState?) {
+        subscriberIceState.value = state
+    }
 
     /** Shared EGL context for video rendering (SurfaceViewRenderer). */
     val eglBase: EglBase = EglBase.create()
