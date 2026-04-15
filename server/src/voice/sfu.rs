@@ -859,7 +859,7 @@ impl SfuServer {
                 .map_err(|e| VoiceError::Internal(e.to_string()))?;
 
             if !result.allowed {
-                return Err(VoiceError::RateLimited);
+                return Err(VoiceError::RateLimited("voice_join"));
             }
         }
         Ok(())

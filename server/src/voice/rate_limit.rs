@@ -67,7 +67,7 @@ impl VoiceStatsLimiter {
             let elapsed = last.elapsed();
             if elapsed < self.min_stats_interval {
                 // Still within rate limit window
-                return Err(VoiceError::RateLimited);
+                return Err(VoiceError::RateLimited("voice_stats"));
             }
         }
 

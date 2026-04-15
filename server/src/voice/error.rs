@@ -53,8 +53,8 @@ pub enum VoiceError {
     NotInChannel,
 
     /// Rate limited.
-    #[error("Rate limited: too many voice join requests")]
-    RateLimited,
+    #[error("Rate limited: {0}")]
+    RateLimited(&'static str),
 
     /// Internal error.
     #[error("Internal error: {0}")]
@@ -92,7 +92,7 @@ impl IntoResponse for VoiceError {
             }
             Self::AlreadyJoined => (StatusCode::CONFLICT, "ALREADY_JOINED", self.to_string()),
             Self::NotInChannel => (StatusCode::BAD_REQUEST, "NOT_IN_CHANNEL", self.to_string()),
-            Self::RateLimited => (
+            Self::RateLimited(_) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "RATE_LIMITED",
                 self.to_string(),
