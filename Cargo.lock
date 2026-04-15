@@ -10640,6 +10640,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cpal 0.17.1",
+ "env-libvpx-sys",
  "futures",
  "getrandom 0.2.17",
  "hmac",
