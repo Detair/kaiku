@@ -791,6 +791,15 @@ async fn handle_screen_share_start(
         .ok()
         .flatten()
         .unwrap_or(6);
+    // Use the stream_id provided by the client.
+    let stream_id = params.stream_id;
+
+    // Check for duplicate stream_id FIRST — before reserving the channel slot,
+    // otherwise a duplicate leaks the slot.
+    if room.screen_shares.read().await.contains_key(&stream_id) {
+        return Err(VoiceError::DuplicateStreamId);
+    }
+
     let max_shares: u32 = max_screen_shares.try_into().unwrap_or(6);
 
     // Try to reserve a slot via limiter
@@ -803,16 +812,6 @@ async fn handle_screen_share_start(
             ScreenShareError::InternalError => "Internal error".to_string(),
             _ => format!("{e:?}"),
         }));
-    }
-
-    // Use the stream_id provided by the client.
-    let stream_id = params.stream_id;
-
-    // Reject duplicate stream_id
-    if room.screen_shares.read().await.contains_key(&stream_id) {
-        return Err(VoiceError::Signaling(format!(
-            "Screen share stream already exists: {stream_id}"
-        )));
     }
 
     // Queue pending track sources so setup_track_handler can identify them

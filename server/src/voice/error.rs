@@ -25,6 +25,10 @@ pub enum VoiceError {
     #[error("Signaling error: {0}")]
     Signaling(String),
 
+    /// Screen share `stream_id` already exists in the room.
+    #[error("Screen share stream already exists")]
+    DuplicateStreamId,
+
     /// ICE connection failed.
     #[error("ICE connection failed")]
     IceConnectionFailed,
@@ -80,6 +84,11 @@ impl IntoResponse for VoiceError {
                 "WebRTC operation failed".to_string(),
             ),
             Self::Signaling(_) => (StatusCode::BAD_REQUEST, "SIGNALING_ERROR", self.to_string()),
+            Self::DuplicateStreamId => (
+                StatusCode::CONFLICT,
+                "DUPLICATE_STREAM_ID",
+                self.to_string(),
+            ),
             Self::IceConnectionFailed => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "ICE_FAILED",
