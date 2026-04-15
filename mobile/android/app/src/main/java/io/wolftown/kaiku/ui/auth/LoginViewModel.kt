@@ -44,7 +44,7 @@ class LoginViewModel @Inject constructor(
     init {
         // Collect OIDC callbacks and process them
         viewModelScope.launch {
-            _oidcCallbackUri.collect { uri ->
+            oidcCallbackUri.collect { uri ->
                 handleOidcCallback(uri)
             }
         }
