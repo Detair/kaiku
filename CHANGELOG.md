@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: rapid channel taps no longer silently drop navigation events (#8)
 - Android: scrolling up to read history no longer snaps back to the bottom when new messages arrive (#9)
 - Android: guild icons are properly announced as interactive buttons by screen readers (#24)
+- Browser voice connections no longer fail under restrictive NATs due to ICE candidate race (candidates now buffered until remote description is set)
 - Guild settings modal no longer overflows the viewport at 800px window width (#11)
 - Emoji delete button is now visible on touch devices instead of requiring hover (#31)
 - All `text-text-secondary/50` instances replaced with `text-text-muted` for WCAG-compliant contrast (#29)
