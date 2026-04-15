@@ -13,6 +13,11 @@ tauri-build = { version = "2", features = [] }
 [features]
 default = ["megolm"]
 megolm = []
+# Gates the VP8 decoder integration test (`tests/vp8_decode.rs`).
+# Requires the captured fixture at `tests/fixtures/vp8_sample.rtp` and a
+# working libvpx (via env-libvpx-sys). Off by default to keep `cargo test`
+# fast and avoid forcing libvpx on machines that only run unit tests.
+decode-integration = []
 
 [dependencies]
 # Internal
