@@ -36,13 +36,6 @@ impl VoiceStatsLimiter {
         }
     }
 
-    /// Create a rate limiter with default settings.
-    /// - 1 stats report per second
-    /// - Cleanup every 60 seconds
-    pub fn default() -> Self {
-        Self::new(Duration::from_secs(1))
-    }
-
     /// Start a background task that periodically cleans up stale entries.
     /// Returns a handle to the spawned task.
     pub fn start_cleanup_task(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -93,6 +86,15 @@ impl VoiceStatsLimiter {
     }
 }
 
+impl Default for VoiceStatsLimiter {
+    /// Create a rate limiter with default settings.
+    /// - 1 stats report per second
+    /// - Cleanup every 60 seconds
+    fn default() -> Self {
+        Self::new(Duration::from_secs(1))
+    }
+}
+
 /// Event class key for per-peer voice signaling rate limiting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventClass {
@@ -130,7 +132,7 @@ impl EventClass {
 /// Refills are computed on demand from elapsed time, so no background task is
 /// required. Tokens are capped at `capacity`.
 #[derive(Debug)]
-pub struct TokenBucket {
+pub(crate) struct TokenBucket {
     capacity: u32,
     tokens: AtomicU32,
     refill_per_sec: u32,
@@ -140,7 +142,7 @@ pub struct TokenBucket {
 impl TokenBucket {
     /// Create a new token bucket, starting full at `capacity`.
     #[must_use]
-    pub fn new(capacity: u32, refill_per_sec: u32) -> Self {
+    pub(crate) fn new(capacity: u32, refill_per_sec: u32) -> Self {
         Self {
             capacity,
             tokens: AtomicU32::new(capacity),
@@ -152,7 +154,7 @@ impl TokenBucket {
     /// Attempt to acquire one token. Performs a lazy refill before trying.
     ///
     /// Returns `true` if a token was consumed, `false` if the bucket was empty.
-    pub fn try_acquire(&self) -> bool {
+    pub(crate) fn try_acquire(&self) -> bool {
         let now = TokioInstant::now();
         {
             let mut last = self.last_refill.lock().unwrap();

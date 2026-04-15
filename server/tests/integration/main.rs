@@ -40,6 +40,7 @@ mod threads;
 mod upload_limits;
 mod uploads_http;
 mod voice_mute_enforcement;
+mod voice_rate_limit;
 mod voice_sfu;
 mod webhooks;
 mod websocket_integration;
