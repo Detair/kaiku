@@ -211,7 +211,7 @@ impl Room {
                 user_id: *user_id,
                 username: Some(peer.username.clone()),
                 display_name: Some(peer.display_name.clone()),
-                muted: peer.is_muted().await,
+                muted: peer.is_self_muted().await,
                 screen_sharing: shares.values().any(|s| s.user_id == *user_id),
                 webcam_active: webcams.contains_key(user_id),
             });

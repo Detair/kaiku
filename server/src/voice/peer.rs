@@ -49,8 +49,11 @@ pub struct Peer {
     /// Map: `(source_user_id, source_type)` -> local track
     outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), Arc<TrackLocalStaticRTP>>>,
 
-    /// Whether the user is muted.
-    muted: RwLock<bool>,
+    /// Whether the user muted themselves.
+    self_muted: RwLock<bool>,
+    /// Whether a moderator muted the user. Set only by future moderation events.
+    #[allow(dead_code)]
+    server_muted: RwLock<bool>,
     /// Channel to send signaling messages back to the user.
     pub signal_tx: mpsc::Sender<OutboundMsg>,
     /// Unique session identifier for this connection.
@@ -86,7 +89,8 @@ impl Peer {
             subscriber_pc,
             incoming_tracks: RwLock::new(HashMap::new()),
             outgoing_tracks: RwLock::new(HashMap::new()),
-            muted: RwLock::new(false),
+            self_muted: RwLock::new(false),
+            server_muted: RwLock::new(false),
             signal_tx,
             session_id: Uuid::now_v7(),
             connected_at: Utc::now(),
@@ -189,15 +193,20 @@ impl Peer {
             || self.subscriber_pc.connection_state() == RTCPeerConnectionState::Connected
     }
 
-    /// Set mute state.
-    pub async fn set_muted(&self, muted: bool) {
-        let mut m = self.muted.write().await;
+    /// Set the user's own mute state (does not affect `server_muted`).
+    pub async fn set_self_muted(&self, muted: bool) {
+        let mut m = self.self_muted.write().await;
         *m = muted;
     }
 
-    /// Get mute state.
-    pub async fn is_muted(&self) -> bool {
-        *self.muted.read().await
+    /// Returns true if the user has muted themselves (ignores moderator mute).
+    pub async fn is_self_muted(&self) -> bool {
+        *self.self_muted.read().await
+    }
+
+    /// Returns true if either the user self-muted or a moderator muted them.
+    pub async fn is_effectively_muted(&self) -> bool {
+        *self.self_muted.read().await || *self.server_muted.read().await
     }
 
     /// Close both peer connections.

@@ -611,7 +611,7 @@ async fn handle_mute(
         .await
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
-    peer.set_muted(muted).await;
+    peer.set_self_muted(muted).await;
 
     // Notify other participants
     let event = if muted {
