@@ -44,12 +44,20 @@ sealed class ClientEvent {
     data class VoiceLeave(val channelId: String) : ClientEvent()
 
     @Serializable
-    @SerialName("voice_answer")
-    data class VoiceAnswer(val channelId: String, val sdp: String) : ClientEvent()
+    @SerialName("voice_publisher_offer")
+    data class VoicePublisherOffer(val channelId: String, val sdp: String) : ClientEvent()
+
+    @Serializable
+    @SerialName("voice_subscriber_answer")
+    data class VoiceSubscriberAnswer(val channelId: String, val sdp: String) : ClientEvent()
 
     @Serializable
     @SerialName("voice_ice_candidate")
-    data class VoiceIceCandidate(val channelId: String, val candidate: String) : ClientEvent()
+    data class VoiceIceCandidate(
+        val channelId: String,
+        val candidate: String,
+        val pcType: String  // "publisher" or "subscriber"
+    ) : ClientEvent()
 
     @Serializable
     @SerialName("voice_mute")
