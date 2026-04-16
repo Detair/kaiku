@@ -135,6 +135,7 @@ dependencies {
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("io.mockk:mockk:1.13.14")
+    testImplementation("io.mockk:mockk-agent-jvm:1.13.14")  // Final/abstract class mocking (e.g., EglBase)
     testImplementation("app.cash.turbine:turbine:1.2.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("io.ktor:ktor-client-mock:3.1.0")
