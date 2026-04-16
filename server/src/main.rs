@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
     let db_pool_clone = db_pool.clone();
     let s3_clone = s3.clone();
     let db_cleanup_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Every hour
+        let mut interval = tokio::time::interval(std::time::Duration::from_hours(1)); // Every hour
         loop {
             interval.tick().await;
 

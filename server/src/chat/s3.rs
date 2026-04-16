@@ -230,7 +230,7 @@ impl S3Client {
             .content_length(content_length)
             .send();
 
-        tokio::time::timeout(Duration::from_secs(300), upload_future)
+        tokio::time::timeout(Duration::from_mins(5), upload_future)
             .await
             .map_err(|_| {
                 S3Error::Upload("S3 streaming upload timed out after 5 minutes".to_string())

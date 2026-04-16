@@ -23,7 +23,7 @@ const DELETE_BATCH_SIZE: i64 = 10_000;
 /// task handles in `main`.
 pub fn spawn_retention_task(pool: PgPool) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        let mut interval = tokio::time::interval(Duration::from_hours(1));
         interval.tick().await; // consume immediate first tick
         loop {
             interval.tick().await;
