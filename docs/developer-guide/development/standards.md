@@ -646,6 +646,20 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 cargo deny check licenses
 ```
 
+### Rust Formatting Requires Nightly `rustfmt`
+
+Kaiku's `rustfmt.toml` enables unstable features (`wrap_comments`, `format_code_in_doc_comments`, `comment_width = 100`, `normalize_comments`, `format_strings`, `imports_granularity`, `group_imports`) that only activate under nightly `rustfmt`. Stable `cargo fmt` silently ignores these options — so code that passes `cargo fmt --check` on stable can still fail CI's nightly fmt job.
+
+**Install nightly rustfmt once per machine:**
+
+```bash
+rustup toolchain install nightly --profile minimal -c rustfmt
+```
+
+**Use `make fmt` / `make fmt-check`** — both targets route through `cargo +nightly fmt --all` so local and CI stay in sync. Do not run `cargo fmt` directly without the `+nightly` selector.
+
+If `make fmt-check` fails with `error: no such command: +nightly`, you haven't installed nightly yet.
+
 ---
 
 ## References
