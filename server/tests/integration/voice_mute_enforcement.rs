@@ -16,12 +16,12 @@
 //!
 //! Instead, these tests exercise the mute state machine that the
 //! forwarder consumes:
-//!   * `Peer::is_effectively_muted()` correctly combines the
-//!     self-mute flag with the server-mute flag.
-//!   * `Peer::set_self_muted()` toggles the flag observable both
-//!     on the peer and through `Room::get_participant_info()`.
-//!   * The classification (`TrackSource::is_video`) the forwarder
-//!     uses to skip mute enforcement for video stays intact.
+//!   * `Peer::is_effectively_muted()` correctly combines the self-mute flag with the server-mute
+//!     flag.
+//!   * `Peer::set_self_muted()` toggles the flag observable both on the peer and through
+//!     `Room::get_participant_info()`.
+//!   * The classification (`TrackSource::is_video`) the forwarder uses to skip mute enforcement for
+//!     video stays intact.
 //!
 //! A regression that accidentally removed the `if muted { continue }`
 //! branch inside `spawn_rtp_forwarder` would NOT be caught here —
@@ -270,12 +270,11 @@ async fn per_peer_mute_state_is_independent() {
 /// guards only the two properties the forwarder relies on that are
 /// *not* covered there:
 ///
-/// 1. `Microphone` and `ScreenAudio` are distinct variants, so the
-///    narrow `== TrackSource::Microphone` match excludes system audio
-///    from the mute-drop path.
-/// 2. `ScreenAudio` is classified as audio — a status-quo pin so that
-///    if the policy ever broadens from "drop muted microphone" to
-///    "drop all muted audio", the forwarder must be updated in lockstep.
+/// 1. `Microphone` and `ScreenAudio` are distinct variants, so the narrow `==
+///    TrackSource::Microphone` match excludes system audio from the mute-drop path.
+/// 2. `ScreenAudio` is classified as audio — a status-quo pin so that if the policy ever broadens
+///    from "drop muted microphone" to "drop all muted audio", the forwarder must be updated in
+///    lockstep.
 #[test]
 fn track_source_forwarder_mute_policy_contract() {
     let stream_id = Uuid::new_v4();

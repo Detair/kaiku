@@ -1,6 +1,7 @@
 //! Integration tests for voice signaling rate limiting.
 
 use std::time::Duration;
+
 use uuid::Uuid;
 use vc_server::voice::rate_limit::{EventClass, VoiceRateLimiter};
 
