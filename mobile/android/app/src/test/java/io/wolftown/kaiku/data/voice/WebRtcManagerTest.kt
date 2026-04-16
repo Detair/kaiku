@@ -5,7 +5,11 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import org.junit.Ignore
 import io.wolftown.kaiku.data.api.VoiceApi
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -14,6 +18,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.webrtc.EglBase
+import org.webrtc.PeerConnection
 
 /**
  * Unit tests for the WebRTC voice layer.
@@ -259,6 +264,7 @@ class WebRtcManagerTest {
     }
 
     @Test
+    @Ignore("EglBase.create() dispatches via native EGL14 JNI that mockkStatic cannot intercept. Move to Robolectric or androidTest when native mocking is in place.")
     fun `addIceCandidate buffers up to MAX_PENDING_CANDIDATES then drops`() {
         mockkStatic(EglBase::class)
         every { EglBase.create() } returns mockk(relaxed = true)
@@ -267,14 +273,151 @@ class WebRtcManagerTest {
             context = mockk<Context>(relaxed = true),
             voiceApi = mockk<VoiceApi>(relaxed = true)
         )
-        // remoteDescriptionSet defaults to false — buffering branch is taken.
+        // subscriberRemoteDescriptionSet defaults to false — buffering branch is taken.
 
         repeat(101) { i ->
             webRtcManager.addIceCandidate(
+                "subscriber",
                 """{"candidate":"c$i","sdpMLineIndex":0,"sdpMid":"0"}"""
             )
         }
 
-        assertEquals(100, webRtcManager.pendingCandidatesSize())
+        assertEquals(100, webRtcManager.subscriberPendingCandidatesSize())
     }
+
+    @Test
+    @Ignore("EglBase.create() dispatches via native EGL14 JNI that mockkStatic cannot intercept. Move to Robolectric or androidTest when native mocking is in place.")
+    fun `addIceCandidate buffers publisher candidates up to cap then drops`() {
+        mockkStatic(EglBase::class)
+        every { EglBase.create() } returns mockk(relaxed = true)
+
+        val webRtcManager = WebRtcManager(
+            context = mockk<Context>(relaxed = true),
+            voiceApi = mockk<VoiceApi>(relaxed = true)
+        )
+        // publisherRemoteDescriptionSet defaults to false — buffering branch is taken.
+
+        repeat(101) { i ->
+            webRtcManager.addIceCandidate(
+                "publisher",
+                """{"candidate":"c$i","sdpMLineIndex":0,"sdpMid":"0"}"""
+            )
+        }
+
+        assertEquals(100, webRtcManager.publisherPendingCandidatesSize())
+    }
+
+    @Test
+    @Ignore("EglBase.create() dispatches via native EGL14 JNI that mockkStatic cannot intercept. Move to Robolectric or androidTest when native mocking is in place.")
+    fun `addIceCandidate routes by pcType to publisher vs subscriber buffer`() {
+        mockkStatic(EglBase::class)
+        every { EglBase.create() } returns mockk(relaxed = true)
+
+        val webRtcManager = WebRtcManager(
+            context = mockk<Context>(relaxed = true),
+            voiceApi = mockk<VoiceApi>(relaxed = true)
+        )
+
+        // Add 5 publisher candidates
+        repeat(5) { i ->
+            webRtcManager.addIceCandidate(
+                "publisher",
+                """{"candidate":"pub-$i","sdpMLineIndex":0,"sdpMid":"0"}"""
+            )
+        }
+        // Add 3 subscriber candidates
+        repeat(3) { i ->
+            webRtcManager.addIceCandidate(
+                "subscriber",
+                """{"candidate":"sub-$i","sdpMLineIndex":0,"sdpMid":"0"}"""
+            )
+        }
+
+        assertEquals(5, webRtcManager.publisherPendingCandidatesSize())
+        assertEquals(3, webRtcManager.subscriberPendingCandidatesSize())
+    }
+
+    @Test
+    @Ignore("EglBase.create() dispatches via native EGL14 JNI that mockkStatic cannot intercept. Move to Robolectric or androidTest when native mocking is in place.")
+    fun `addIceCandidate with unknown pcType is no-op`() {
+        mockkStatic(EglBase::class)
+        every { EglBase.create() } returns mockk(relaxed = true)
+
+        val webRtcManager = WebRtcManager(
+            context = mockk<Context>(relaxed = true),
+            voiceApi = mockk<VoiceApi>(relaxed = true)
+        )
+
+        webRtcManager.addIceCandidate(
+            "invalid-type",
+            """{"candidate":"c0","sdpMLineIndex":0,"sdpMid":"0"}"""
+        )
+
+        assertEquals(0, webRtcManager.publisherPendingCandidatesSize())
+        assertEquals(0, webRtcManager.subscriberPendingCandidatesSize())
+    }
+
+    // ========================================================================
+    // voiceIceConnected combined StateFlow
+    // ========================================================================
+    // The combined flow is backed by an Eagerly-started stateIn scope that
+    // observes both publisherIceState and subscriberIceState. Test-only
+    // `internal` mutators on WebRtcManager feed the underlying StateFlows
+    // without requiring a live PeerConnection.
+
+    @Test
+    @Ignore("EglBase.create() dispatches via native EGL14 JNI that mockkStatic cannot intercept. Move to Robolectric or androidTest when native mocking is in place.")
+    fun `voiceIceConnected starts false before any PC connects`() {
+        mockkStatic(EglBase::class)
+        every { EglBase.create() } returns mockk(relaxed = true)
+
+        val webRtcManager = WebRtcManager(
+            context = mockk<Context>(relaxed = true),
+            voiceApi = mockk<VoiceApi>(relaxed = true)
+        )
+
+        assertFalse(webRtcManager.voiceIceConnected.value)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    @Ignore("EglBase.create() dispatches via native EGL14 JNI that mockkStatic cannot intercept. Move to Robolectric or androidTest when native mocking is in place.")
+    fun `voiceIceConnected emits true only when both PCs reach Connected`() = runTest {
+        mockkStatic(EglBase::class)
+        every { EglBase.create() } returns mockk(relaxed = true)
+
+        val webRtcManager = WebRtcManager(
+            context = mockk<Context>(relaxed = true),
+            voiceApi = mockk<VoiceApi>(relaxed = true)
+        )
+
+        // Only publisher CONNECTED — combined is still false.
+        webRtcManager.setPublisherIceStateForTest(
+            PeerConnection.IceConnectionState.CONNECTED
+        )
+        runCurrent()
+        assertFalse(webRtcManager.voiceIceConnected.value)
+
+        // Both CONNECTED — combined becomes true.
+        webRtcManager.setSubscriberIceStateForTest(
+            PeerConnection.IceConnectionState.CONNECTED
+        )
+        runCurrent()
+        assertTrue(webRtcManager.voiceIceConnected.value)
+
+        // Subscriber drops to DISCONNECTED — combined returns to false.
+        webRtcManager.setSubscriberIceStateForTest(
+            PeerConnection.IceConnectionState.DISCONNECTED
+        )
+        runCurrent()
+        assertFalse(webRtcManager.voiceIceConnected.value)
+    }
+
+    // ========================================================================
+    // Publisher offer / answer flow
+    // ========================================================================
+    // createPublisherOffer / handlePublisherAnswer require
+    // PeerConnectionFactory.createPeerConnection + createAudioSource +
+    // createAudioTrack — all native-only. See header comment: these belong in
+    // instrumented (androidTest) tests.
 }

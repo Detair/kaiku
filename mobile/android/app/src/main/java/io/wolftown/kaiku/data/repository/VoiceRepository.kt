@@ -91,6 +91,9 @@ class VoiceRepository @Inject constructor(
     /** Service event collection job — cancelled when leaving a channel. */
     private var serviceEventJob: Job? = null
 
+    /** Dual-PC ICE-connected collection job — cancelled when leaving a channel. */
+    private var iceConnectedJob: Job? = null
+
     // -- Public API ------------------------------------------------------------
 
     /**
@@ -115,15 +118,25 @@ class VoiceRepository @Inject constructor(
             // 1. Initialize WebRTC
             webRtcManager.initialize()
 
-            // 2. Create PeerConnection
-            webRtcManager.createPeerConnection()
+            // 2. Create subscriber PeerConnection (will receive the server's offer)
+            webRtcManager.createSubscriberPeerConnection()
 
-            // 3. Wire up signaling callbacks
-            webRtcManager.onLocalDescription = { sdp ->
-                webSocket.send(ClientEvent.VoiceAnswer(channelId, sdp))
+            // 3. Wire up signaling callbacks (both PCs)
+            webRtcManager.onPublisherOffer = { sdp ->
+                webSocket.send(ClientEvent.VoicePublisherOffer(channelId, sdp))
             }
-            webRtcManager.onIceCandidate = { candidateJson ->
-                webSocket.send(ClientEvent.VoiceIceCandidate(channelId, candidateJson))
+            webRtcManager.onPublisherIceCandidate = { candidateJson ->
+                webSocket.send(
+                    ClientEvent.VoiceIceCandidate(channelId, candidateJson, pcType = "publisher")
+                )
+            }
+            webRtcManager.onSubscriberAnswer = { sdp ->
+                webSocket.send(ClientEvent.VoiceSubscriberAnswer(channelId, sdp))
+            }
+            webRtcManager.onSubscriberIceCandidate = { candidateJson ->
+                webSocket.send(
+                    ClientEvent.VoiceIceCandidate(channelId, candidateJson, pcType = "subscriber")
+                )
             }
             webRtcManager.onError = { errorMsg ->
                 _error.value = errorMsg
@@ -133,13 +146,25 @@ class VoiceRepository @Inject constructor(
             // Start collecting WebSocket events
             startCollectingEvents(channelId)
 
+            // Collect dual-PC ICE-connected flow to gate _isConnected.
+            iceConnectedJob = scope.launch {
+                webRtcManager.voiceIceConnected.collect { bothConnected ->
+                    _isConnected.value = bothConnected
+                }
+            }
+
             // 4. Send VoiceJoin
             webSocket.send(ClientEvent.VoiceJoin(channelId))
 
-            // 5. Request audio focus
+            // 5. Create the publisher offer (Android-initiated).
+            // This adds the mic track, creates an SDP offer, and fires
+            // onPublisherOffer when ready — which sends VoicePublisherOffer.
+            webRtcManager.createPublisherOffer()
+
+            // 6. Request audio focus
             audioRouteManager.requestAudioFocus()
 
-            // 6. Start foreground service and collect notification action events
+            // 7. Start foreground service and collect notification action events
             VoiceCallService.start(context, channelId, channelId)
             serviceEventJob = scope.launch {
                 voiceServiceEvents.events.collect { event ->
@@ -261,11 +286,17 @@ class VoiceRepository @Inject constructor(
         eventCollectionJob = null
         serviceEventJob?.cancel()
         serviceEventJob = null
+        iceConnectedJob?.cancel()
+        iceConnectedJob = null
 
-        // Close PeerConnection
-        webRtcManager.closePeerConnection()
-        webRtcManager.onLocalDescription = null
-        webRtcManager.onIceCandidate = null
+        // Close both PeerConnections
+        webRtcManager.closePeerConnections()
+
+        // Clear all dual-PC callbacks
+        webRtcManager.onPublisherOffer = null
+        webRtcManager.onPublisherIceCandidate = null
+        webRtcManager.onSubscriberAnswer = null
+        webRtcManager.onSubscriberIceCandidate = null
         webRtcManager.onError = null
 
         // Abandon audio focus
@@ -299,19 +330,24 @@ class VoiceRepository @Inject constructor(
                 if (event.channelId == channelId) {
                     _participants.value = event.participants
                     _screenShares.value = event.screenShares
-                    _isConnected.value = true
                 }
             }
 
-            is ServerEvent.VoiceOffer -> {
+            is ServerEvent.VoicePublisherAnswer -> {
                 if (event.channelId == channelId) {
-                    webRtcManager.handleOffer(event.sdp)
+                    webRtcManager.handlePublisherAnswer(event.sdp)
+                }
+            }
+
+            is ServerEvent.VoiceSubscriberOffer -> {
+                if (event.channelId == channelId) {
+                    webRtcManager.handleSubscriberOffer(event.sdp)
                 }
             }
 
             is ServerEvent.VoiceIceCandidate -> {
                 if (event.channelId == channelId) {
-                    webRtcManager.addIceCandidate(event.candidate)
+                    webRtcManager.addIceCandidate(event.pcType, event.candidate)
                 }
             }
 

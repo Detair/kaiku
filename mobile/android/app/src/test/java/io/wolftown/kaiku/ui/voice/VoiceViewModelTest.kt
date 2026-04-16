@@ -3,6 +3,7 @@ package io.wolftown.kaiku.ui.voice
 import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import io.mockk.*
+import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.voice.AudioRouteManager
@@ -24,6 +25,7 @@ import org.junit.Test
 class VoiceViewModelTest {
 
     private lateinit var voiceRepository: VoiceRepository
+    private lateinit var guildRepository: GuildRepository
     private lateinit var audioRouteManager: AudioRouteManager
     private lateinit var webRtcManager: WebRtcManager
     private lateinit var savedStateHandle: SavedStateHandle
@@ -61,6 +63,7 @@ class VoiceViewModelTest {
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
         voiceRepository = mockk(relaxed = true)
+        guildRepository = mockk(relaxed = true)
         audioRouteManager = mockk(relaxed = true)
         webRtcManager = mockk(relaxed = true)
         savedStateHandle = SavedStateHandle(mapOf("channelId" to "voice-ch-1"))
@@ -86,7 +89,7 @@ class VoiceViewModelTest {
     }
 
     private fun createViewModel(): VoiceViewModel {
-        return VoiceViewModel(voiceRepository, audioRouteManager, webRtcManager, savedStateHandle)
+        return VoiceViewModel(voiceRepository, guildRepository, audioRouteManager, webRtcManager, savedStateHandle)
     }
 
     // ========================================================================

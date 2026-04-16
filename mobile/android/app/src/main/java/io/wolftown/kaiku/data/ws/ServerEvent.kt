@@ -92,12 +92,20 @@ sealed class ServerEvent {
     // -- Voice ----------------------------------------------------------------
 
     @Serializable
-    @SerialName("voice_offer")
-    data class VoiceOffer(val channelId: String, val sdp: String) : ServerEvent()
+    @SerialName("voice_publisher_answer")
+    data class VoicePublisherAnswer(val channelId: String, val sdp: String) : ServerEvent()
+
+    @Serializable
+    @SerialName("voice_subscriber_offer")
+    data class VoiceSubscriberOffer(val channelId: String, val sdp: String) : ServerEvent()
 
     @Serializable
     @SerialName("voice_ice_candidate")
-    data class VoiceIceCandidate(val channelId: String, val candidate: String) : ServerEvent()
+    data class VoiceIceCandidate(
+        val channelId: String,
+        val candidate: String,
+        val pcType: String  // "publisher" or "subscriber"
+    ) : ServerEvent()
 
     @Serializable
     @SerialName("voice_user_joined")

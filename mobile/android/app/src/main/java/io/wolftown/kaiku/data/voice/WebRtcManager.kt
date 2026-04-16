@@ -4,11 +4,16 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.wolftown.kaiku.data.api.IceServer
 import io.wolftown.kaiku.data.api.VoiceApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -35,11 +40,17 @@ import javax.inject.Singleton
  * Uses `stream-webrtc-android` (package: `io.getstream.webrtc.android`)
  * which re-exports Google WebRTC classes under the `org.webrtc` package.
  *
- * Signaling flow:
- * 1. Server sends SDP offer via WebSocket (`VoiceOffer`)
- * 2. [handleOffer] sets the remote description and creates an SDP answer
- * 3. The answer is delivered via [onLocalDescription] callback
+ * Signaling flow (subscriber, server-initiated):
+ * 1. Server sends SDP offer via WebSocket (`VoiceSubscriberOffer`)
+ * 2. [handleSubscriberOffer] sets the remote description and creates an SDP answer
+ * 3. The answer is delivered via [onSubscriberAnswer] callback
  * 4. ICE candidates are exchanged bidirectionally
+ *
+ * Signaling flow (publisher, Android-initiated):
+ * 1. [createPublisherOffer] builds the publisher PC + mic track and creates an offer
+ * 2. The offer is delivered via [onPublisherOffer] callback (sent to server)
+ * 3. Server returns an SDP answer; [handlePublisherAnswer] applies it
+ * 4. ICE candidates are exchanged bidirectionally with `pc_type = "publisher"`
  *
  * Testable logic (ICE serialization, mute state) is kept in pure
  * data classes ([IceCandidateData]) and simple boolean fields so that
@@ -61,22 +72,44 @@ class WebRtcManager @Inject constructor(
     private val initMutex = Mutex()
     private var factory: PeerConnectionFactory? = null
     /** Marked @Volatile so concurrent observers (WS event collector, WebRTC native callbacks)
-     *  reliably see the null assignment in [closePeerConnection]. The check-then-use race
-     *  in [addIceCandidate] / [handleOffer] is tolerated by the surrounding try/catch. */
+     *  reliably see the null assignment in [closePeerConnections]. The check-then-use race
+     *  in [addIceCandidate] / [handleSubscriberOffer] is tolerated by the surrounding try/catch. */
     @Volatile
-    private var peerConnection: PeerConnection? = null
+    private var subscriberPc: PeerConnection? = null
     private var audioSource: AudioSource? = null
     private var audioDeviceModule: org.webrtc.audio.AudioDeviceModule? = null
-    private var remoteDescriptionSet = false
-    private val pendingCandidates = mutableListOf<String>()  // buffered JSON strings
+    private var subscriberRemoteDescriptionSet = false
+    private val subscriberPendingCandidates = mutableListOf<String>()  // buffered JSON strings
 
-    /** Test-only accessor for the buffered ICE candidate count. */
-    internal fun pendingCandidatesSize(): Int = pendingCandidates.size
+    // Publisher PC — uploads local mic to SFU
+    @Volatile private var publisherPc: PeerConnection? = null
+    // NOTE: publisherRemoteDescriptionSet and publisherPendingCandidates are
+    // mutated from both the WebRTC signaling thread (via Observer callbacks) and
+    // the IO dispatcher (via addIceCandidate from WS events). Phase 2 audit will
+    // add @Volatile + synchronization for both PCs consistently.
+    private var publisherRemoteDescriptionSet = false
+    private val publisherPendingCandidates = mutableListOf<String>()
+
+    /** Test-only accessor for the buffered subscriber ICE candidate count. */
+    internal fun subscriberPendingCandidatesSize(): Int = subscriberPendingCandidates.size
+
+    /** Test-only accessor for the buffered publisher ICE candidate count. */
+    internal fun publisherPendingCandidatesSize(): Int = publisherPendingCandidates.size
+
+    /** Test-only mutator for publisher ICE state (drives [voiceIceConnected] in unit tests). */
+    internal fun setPublisherIceStateForTest(state: PeerConnection.IceConnectionState?) {
+        publisherIceState.value = state
+    }
+
+    /** Test-only mutator for subscriber ICE state (drives [voiceIceConnected] in unit tests). */
+    internal fun setSubscriberIceStateForTest(state: PeerConnection.IceConnectionState?) {
+        subscriberIceState.value = state
+    }
 
     /** Shared EGL context for video rendering (SurfaceViewRenderer). */
     val eglBase: EglBase = EglBase.create()
 
-    /** The local microphone audio track, null until [createPeerConnection] is called. */
+    /** The local microphone audio track, null until [createPublisherOffer] is called. */
     var localAudioTrack: AudioTrack? = null
         private set
 
@@ -92,13 +125,45 @@ class WebRtcManager @Inject constructor(
     var isMuted: Boolean = false
         private set
 
+    /** ICE connection state of the publisher PC (mic upload). */
+    private val publisherIceState =
+        MutableStateFlow<PeerConnection.IceConnectionState?>(null)
+
+    /** ICE connection state of the subscriber PC (remote-track download). */
+    private val subscriberIceState =
+        MutableStateFlow<PeerConnection.IceConnectionState?>(null)
+
+    /**
+     * Emits true only when both the publisher and subscriber PCs reach
+     * [PeerConnection.IceConnectionState.CONNECTED]. Emits false any time
+     * either PC is in a different state (or null/disposed).
+     *
+     * Backed by an eagerly-collected [combine] flow scoped to an internal
+     * IO scope so collectors always observe the latest combined value.
+     */
+    val voiceIceConnected: StateFlow<Boolean> =
+        combine(publisherIceState, subscriberIceState) { p, s ->
+            p == PeerConnection.IceConnectionState.CONNECTED &&
+                s == PeerConnection.IceConnectionState.CONNECTED
+        }.stateIn(
+            CoroutineScope(Dispatchers.IO),
+            SharingStarted.Eagerly,
+            false
+        )
+
     // -- Callbacks ------------------------------------------------------------
 
     /** Called when an SDP answer has been created and is ready to send. */
-    @Volatile var onLocalDescription: ((String) -> Unit)? = null
+    @Volatile var onSubscriberAnswer: ((String) -> Unit)? = null
 
     /** Called when a new local ICE candidate is available (JSON string). */
-    @Volatile var onIceCandidate: ((String) -> Unit)? = null
+    @Volatile var onSubscriberIceCandidate: ((String) -> Unit)? = null
+
+    /** Called when the publisher SDP offer is ready to send to the server. */
+    @Volatile var onPublisherOffer: ((String) -> Unit)? = null
+
+    /** Called when a new publisher ICE candidate is available (JSON string). */
+    @Volatile var onPublisherIceCandidate: ((String) -> Unit)? = null
 
     /** Called when a remote track is received. */
     @Volatile var onTrackAdded: ((MediaStreamTrack) -> Unit)? = null
@@ -111,8 +176,9 @@ class WebRtcManager @Inject constructor(
     /**
      * Initializes the [PeerConnectionFactory].
      *
-     * Must be called once before [createPeerConnection]. Safe to call multiple
-     * times — subsequent calls are no-ops if the factory already exists.
+     * Must be called once before [createSubscriberPeerConnection] or
+     * [createPublisherOffer]. Safe to call multiple times — subsequent
+     * calls are no-ops if the factory already exists.
      */
     suspend fun initialize() = initMutex.withLock {
         if (factory != null) return
@@ -134,13 +200,17 @@ class WebRtcManager @Inject constructor(
     }
 
     /**
-     * Creates a new PeerConnection, fetching ICE server configuration from
-     * the server API.
+     * Creates the subscriber [PeerConnection], fetching ICE server configuration
+     * from the server API.
      *
-     * Also creates the local audio track and adds it to the connection.
+     * The subscriber PC is receive-only — remote audio and video tracks
+     * (other users' mics + screen shares) are surfaced via [remoteAudioTracks]
+     * and [remoteVideoTracks]. The mic upload is handled by the publisher PC
+     * (see [createPublisherOffer]), so no local track is added here.
+     *
      * Call [initialize] first.
      */
-    suspend fun createPeerConnection() {
+    suspend fun createSubscriberPeerConnection() {
         val pcFactory = factory ?: throw IllegalStateException(
             "PeerConnectionFactory not initialized. Call initialize() first."
         )
@@ -166,21 +236,96 @@ class WebRtcManager @Inject constructor(
                 PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
 
-        peerConnection = pcFactory.createPeerConnection(rtcConfig, createPeerConnectionObserver())
-            ?: throw IllegalStateException("Failed to create PeerConnection")
+        subscriberPc = pcFactory.createPeerConnection(rtcConfig, createSubscriberObserver())
+            ?: throw IllegalStateException("Failed to create subscriber PeerConnection")
 
-        // Create and add local audio track
-        audioSource = pcFactory.createAudioSource(MediaConstraints())
-        localAudioTrack = pcFactory.createAudioTrack(LOCAL_AUDIO_TRACK_ID, audioSource).also {
-            it.setEnabled(!isMuted)
-            peerConnection?.addTrack(it)
-        }
-
-        logger.info("PeerConnection created with ${rtcIceServers.size} ICE servers")
+        logger.info("Subscriber PeerConnection created with ${rtcIceServers.size} ICE servers")
     }
 
-    /** Closes the peer connection and releases audio resources. */
-    fun closePeerConnection() {
+    /**
+     * Creates the publisher [PeerConnection], adds the local mic track, and
+     * creates an SDP offer. When the offer is ready, [onPublisherOffer] is
+     * invoked with the SDP string.
+     *
+     * Android-initiated (the subscriber flow is server-initiated). Call
+     * [initialize] first; safe to call after [closePeerConnections].
+     *
+     * The local mic ([audioSource] + [localAudioTrack]) is created here —
+     * this is the single creation site post dual-PC refactor.
+     */
+    suspend fun createPublisherOffer() {
+        val pcFactory = factory ?: throw IllegalStateException(
+            "PeerConnectionFactory not initialized. Call initialize() first."
+        )
+
+        publisherRemoteDescriptionSet = false
+        publisherPendingCandidates.clear()
+
+        val iceConfig = try {
+            voiceApi.getIceServers()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.log(Level.WARNING, "Failed to fetch ICE servers", e)
+            onError?.invoke("Failed to fetch ICE servers: ${e.message}")
+            throw e
+        }
+
+        val rtcIceServers = iceConfig.iceServers.map { server -> server.toRtcIceServer() }
+        val rtcConfig = PeerConnection.RTCConfiguration(rtcIceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy =
+                PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+        }
+
+        val pub = pcFactory.createPeerConnection(rtcConfig, createPublisherObserver())
+            ?: throw IllegalStateException("Failed to create publisher PeerConnection")
+        publisherPc = pub
+
+        // Create and attach the local mic track — single site of creation.
+        audioSource = pcFactory.createAudioSource(MediaConstraints())
+        val track = pcFactory.createAudioTrack(LOCAL_AUDIO_TRACK_ID, audioSource).also {
+            it.setEnabled(!isMuted)
+        }
+        localAudioTrack = track
+
+        pub.addTransceiver(
+            track,
+            RtpTransceiver.RtpTransceiverInit(
+                RtpTransceiver.RtpTransceiverDirection.SEND_ONLY
+            )
+        )
+
+        pub.createOffer(
+            object : SdpObserverAdapter("createPublisherOffer", onError) {
+                override fun onCreateSuccess(desc: SessionDescription) {
+                    pub.setLocalDescription(
+                        object : SdpObserverAdapter("setPublisherLocalDesc", onError) {
+                            override fun onSetSuccess() {
+                                super.onSetSuccess()
+                                onPublisherOffer?.invoke(desc.description)
+                                logger.info("Publisher SDP offer created and set")
+                            }
+                        },
+                        desc
+                    )
+                }
+            },
+            MediaConstraints()
+        )
+
+        logger.info("Publisher PeerConnection created with ${rtcIceServers.size} ICE servers")
+    }
+
+    /**
+     * Closes both the publisher and subscriber peer connections and releases
+     * audio resources.
+     *
+     * Resets buffered ICE candidates, remote-description flags, and ICE state
+     * flows so that a subsequent [createPublisherOffer] /
+     * [createSubscriberPeerConnection] starts from a clean slate.
+     */
+    fun closePeerConnections() {
         localAudioTrack?.dispose()
         localAudioTrack = null
         audioSource?.dispose()
@@ -189,22 +334,32 @@ class WebRtcManager @Inject constructor(
         // Clear remote-track flows first so observers don't reach into a disposed PC
         _remoteAudioTracks.value = emptyMap()
         _remoteVideoTracks.value = emptyMap()
-        remoteDescriptionSet = false
-        pendingCandidates.clear()
+        publisherRemoteDescriptionSet = false
+        subscriberRemoteDescriptionSet = false
+        publisherPendingCandidates.clear()
+        subscriberPendingCandidates.clear()
 
-        val pc = peerConnection
+        val pub = publisherPc
         // Null first (with @Volatile on the field) so concurrent readers see null
         // before close+dispose runs on the local reference.
-        peerConnection = null
-        pc?.close()
-        pc?.dispose()
+        publisherPc = null
+        pub?.close()
+        pub?.dispose()
 
-        logger.info("PeerConnection closed")
+        val sub = subscriberPc
+        subscriberPc = null
+        sub?.close()
+        sub?.dispose()
+
+        publisherIceState.value = null
+        subscriberIceState.value = null
+
+        logger.info("Publisher and subscriber PeerConnections closed")
     }
 
     /** Disposes of the factory and all resources. Call on application shutdown. */
     fun dispose() {
-        closePeerConnection()
+        closePeerConnections()
         factory?.dispose()
         factory = null
         audioDeviceModule?.release()
@@ -222,35 +377,33 @@ class WebRtcManager @Inject constructor(
     // -- Signaling ------------------------------------------------------------
 
     /**
-     * Handles an SDP offer from the server.
+     * Handles an SDP offer from the server for the subscriber PC.
      *
      * Sets the remote description to the offer, then creates and sets a local
-     * SDP answer. When the answer is ready, [onLocalDescription] is invoked.
+     * SDP answer. When the answer is ready, [onSubscriberAnswer] is invoked.
      */
-    fun handleOffer(sdp: String) {
-        val pc = peerConnection ?: run {
-            logger.warning("handleOffer called but PeerConnection is null")
+    fun handleSubscriberOffer(sdp: String) {
+        val pc = subscriberPc ?: run {
+            logger.warning("handleSubscriberOffer called but subscriber PC is null")
             onError?.invoke("Voice connection error: not initialized")
             return
         }
 
-        remoteDescriptionSet = false
+        subscriberRemoteDescriptionSet = false
         val offer = SessionDescription(SessionDescription.Type.OFFER, sdp)
 
-        pc.setRemoteDescription(object : SdpObserverAdapter("setRemoteDescription", onError) {
+        pc.setRemoteDescription(object : SdpObserverAdapter("setSubscriberRemoteDesc", onError) {
             override fun onSetSuccess() {
-                logger.info("Remote description set successfully")
-                remoteDescriptionSet = true
-                val candidates = pendingCandidates.toList()
-                pendingCandidates.clear()
-                candidates.forEach { addIceCandidate(it) }
-                pc.createAnswer(object : SdpObserverAdapter("createAnswer", onError) {
+                logger.info("Subscriber remote description set successfully")
+                subscriberRemoteDescriptionSet = true
+                drainSubscriberCandidates()
+                pc.createAnswer(object : SdpObserverAdapter("createSubscriberAnswer", onError) {
                     override fun onCreateSuccess(desc: SessionDescription) {
-                        pc.setLocalDescription(object : SdpObserverAdapter("setLocalDescription", onError) {
+                        pc.setLocalDescription(object : SdpObserverAdapter("setSubscriberLocalDesc", onError) {
                             override fun onSetSuccess() {
                                 super.onSetSuccess()
-                                onLocalDescription?.invoke(desc.description)
-                                logger.info("SDP answer created and set")
+                                onSubscriberAnswer?.invoke(desc.description)
+                                logger.info("Subscriber SDP answer created and set")
                             }
                         }, desc)
                     }
@@ -259,38 +412,101 @@ class WebRtcManager @Inject constructor(
         }, offer)
     }
 
-    /** Returns the current local SDP description, or null if none is set. */
+    /**
+     * Handles an SDP answer from the server for the publisher PC.
+     *
+     * Sets the remote description to the answer, then drains any ICE
+     * candidates buffered while the answer was outstanding.
+     */
+    fun handlePublisherAnswer(sdp: String) {
+        val pc = publisherPc ?: run {
+            logger.warning("handlePublisherAnswer called but publisher PC is null")
+            return
+        }
+        val answer = SessionDescription(SessionDescription.Type.ANSWER, sdp)
+        pc.setRemoteDescription(object : SdpObserverAdapter("setPublisherRemoteDesc", onError) {
+            override fun onSetSuccess() {
+                super.onSetSuccess()
+                publisherRemoteDescriptionSet = true
+                logger.info("Publisher remote description set successfully")
+                drainPublisherCandidates()
+            }
+        }, answer)
+    }
+
+    /** Replays subscriber ICE candidates buffered before remote description was set. */
+    private fun drainSubscriberCandidates() {
+        val drained = subscriberPendingCandidates.toList()
+        subscriberPendingCandidates.clear()
+        drained.forEach { candidateJson -> addIceCandidate("subscriber", candidateJson) }
+    }
+
+    /** Replays publisher ICE candidates buffered before remote description was set. */
+    private fun drainPublisherCandidates() {
+        val drained = publisherPendingCandidates.toList()
+        publisherPendingCandidates.clear()
+        drained.forEach { candidateJson -> addIceCandidate("publisher", candidateJson) }
+    }
+
+    /** Returns the current subscriber-PC local SDP description, or null if none is set. */
     fun getLocalDescription(): String? =
-        peerConnection?.localDescription?.description
+        subscriberPc?.localDescription?.description
 
     /**
-     * Adds a remote ICE candidate received from the server via WebSocket.
+     * Adds a remote ICE candidate received from the server via WebSocket,
+     * routed to the publisher or subscriber PC based on [pcType].
      *
+     * If the target PC's remote description has not yet been applied, the
+     * candidate is buffered (capped at [MAX_PENDING_CANDIDATES]) and replayed
+     * on the next successful `setRemoteDescription`.
+     *
+     * @param pcType `"publisher"` or `"subscriber"` (matches the wire-format
+     *   `pc_type` field on `voice_ice_candidate` events).
      * @param candidateJson JSON string in the format:
      *   `{"candidate":"...","sdpMLineIndex":0,"sdpMid":"..."}`
      */
-    fun addIceCandidate(candidateJson: String) {
-        if (!remoteDescriptionSet) {
-            if (pendingCandidates.size >= MAX_PENDING_CANDIDATES) {
-                logger.warning("ICE candidate buffer full ($MAX_PENDING_CANDIDATES), dropping candidate")
+    fun addIceCandidate(pcType: String, candidateJson: String) {
+        val pc: PeerConnection?
+        val buffer: MutableList<String>
+        val remoteSet: Boolean
+        when (pcType) {
+            "publisher" -> {
+                pc = publisherPc
+                buffer = publisherPendingCandidates
+                remoteSet = publisherRemoteDescriptionSet
+            }
+            "subscriber" -> {
+                pc = subscriberPc
+                buffer = subscriberPendingCandidates
+                remoteSet = subscriberRemoteDescriptionSet
+            }
+            else -> {
+                logger.warning("Unknown pc_type: $pcType")
                 return
             }
-            logger.fine("Buffering ICE candidate (remote description not yet set)")
-            pendingCandidates.add(candidateJson)
+        }
+
+        if (!remoteSet) {
+            if (buffer.size >= MAX_PENDING_CANDIDATES) {
+                logger.warning("ICE candidate buffer full for $pcType ($MAX_PENDING_CANDIDATES), dropping candidate")
+                return
+            }
+            logger.fine("Buffering $pcType ICE candidate (remote description not yet set)")
+            buffer.add(candidateJson)
             return
         }
-        val pc = peerConnection ?: run {
-            logger.warning("addIceCandidate called but PeerConnection is null")
-            onError?.invoke("Voice connection error: not initialized")
+
+        val target = pc ?: run {
+            logger.warning("addIceCandidate called for $pcType but PC is null")
             return
         }
 
         try {
             val data = IceCandidateData.fromJson(candidateJson)
             val candidate = IceCandidate(data.sdpMid, data.sdpMLineIndex, data.candidate)
-            pc.addIceCandidate(candidate)
+            target.addIceCandidate(candidate)
         } catch (e: Exception) {
-            logger.log(Level.WARNING, "Failed to parse ICE candidate: $candidateJson", e)
+            logger.log(Level.WARNING, "Failed to parse $pcType ICE candidate: $candidateJson", e)
             onError?.invoke("Failed to process ICE candidate: ${e.message}")
         }
     }
@@ -336,14 +552,14 @@ class WebRtcManager @Inject constructor(
 
     // -- PeerConnection.Observer ----------------------------------------------
 
-    private fun createPeerConnectionObserver() = object : PeerConnection.Observer {
+    private fun createSubscriberObserver() = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate) {
             val data = IceCandidateData(
                 candidate = candidate.sdp,
                 sdpMLineIndex = candidate.sdpMLineIndex,
                 sdpMid = candidate.sdpMid
             )
-            onIceCandidate?.invoke(data.toJson())
+            onSubscriberIceCandidate?.invoke(data.toJson())
         }
 
         override fun onTrack(transceiver: RtpTransceiver) {
@@ -368,30 +584,31 @@ class WebRtcManager @Inject constructor(
         }
 
         override fun onSignalingChange(state: PeerConnection.SignalingState?) {
-            logger.info("Signaling state: $state")
+            logger.info("Subscriber signaling state: $state")
         }
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-            logger.info("ICE connection state: $state")
+            logger.info("Subscriber ICE connection state: $state")
+            subscriberIceState.value = state
             when (state) {
                 PeerConnection.IceConnectionState.FAILED ->
-                    onError?.invoke("Voice connection failed (ICE)")
+                    onError?.invoke("Voice subscriber connection failed (ICE)")
                 PeerConnection.IceConnectionState.DISCONNECTED ->
-                    logger.warning("ICE connection disconnected, may recover")
+                    logger.warning("Subscriber ICE disconnected, may recover")
                 else -> {}
             }
         }
 
         override fun onIceConnectionReceivingChange(receiving: Boolean) {
-            logger.info("ICE connection receiving: $receiving")
+            logger.info("Subscriber ICE connection receiving: $receiving")
         }
 
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-            logger.info("ICE gathering state: $state")
+            logger.info("Subscriber ICE gathering state: $state")
         }
 
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {
-            logger.info("ICE candidates removed: ${candidates?.size ?: 0}")
+            logger.info("Subscriber ICE candidates removed: ${candidates?.size ?: 0}")
         }
 
         override fun onAddStream(stream: MediaStream?) {
@@ -407,7 +624,55 @@ class WebRtcManager @Inject constructor(
         }
 
         override fun onRenegotiationNeeded() {
-            logger.info("Renegotiation needed")
+            logger.info("Subscriber renegotiation needed")
+        }
+    }
+
+    private fun createPublisherObserver() = object : PeerConnection.Observer {
+        override fun onIceCandidate(candidate: IceCandidate) {
+            val data = IceCandidateData(
+                candidate = candidate.sdp,
+                sdpMLineIndex = candidate.sdpMLineIndex,
+                sdpMid = candidate.sdpMid
+            )
+            onPublisherIceCandidate?.invoke(data.toJson())
+        }
+
+        override fun onTrack(transceiver: RtpTransceiver) {
+            // Publisher PC is send-only — incoming tracks are unexpected.
+            logger.info("Publisher onTrack ignored (publisher is send-only)")
+        }
+
+        override fun onSignalingChange(state: PeerConnection.SignalingState?) {
+            logger.info("Publisher signaling state: $state")
+        }
+
+        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+            logger.info("Publisher ICE connection state: $state")
+            publisherIceState.value = state
+            when (state) {
+                PeerConnection.IceConnectionState.FAILED ->
+                    onError?.invoke("Voice publisher connection failed (ICE)")
+                PeerConnection.IceConnectionState.DISCONNECTED ->
+                    logger.warning("Publisher ICE disconnected, may recover")
+                else -> {}
+            }
+        }
+
+        override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+
+        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
+
+        override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
+
+        override fun onAddStream(stream: MediaStream?) {}
+
+        override fun onRemoveStream(stream: MediaStream?) {}
+
+        override fun onDataChannel(channel: DataChannel?) {}
+
+        override fun onRenegotiationNeeded() {
+            logger.info("Publisher renegotiation needed")
         }
     }
 

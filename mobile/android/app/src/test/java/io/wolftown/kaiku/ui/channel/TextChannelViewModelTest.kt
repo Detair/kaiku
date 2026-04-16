@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import io.mockk.*
 import io.wolftown.kaiku.data.repository.ChatRepository
+import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,7 @@ import org.junit.Test
 class TextChannelViewModelTest {
 
     private lateinit var chatRepository: ChatRepository
+    private lateinit var guildRepository: GuildRepository
     private lateinit var viewModel: TextChannelViewModel
     private lateinit var savedStateHandle: SavedStateHandle
 
@@ -54,6 +56,7 @@ class TextChannelViewModelTest {
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
         chatRepository = mockk(relaxed = true)
+        guildRepository = mockk(relaxed = true)
         savedStateHandle = SavedStateHandle(mapOf("channelId" to "ch-1"))
 
         every { chatRepository.getMessages("ch-1") } returns messagesFlow
@@ -66,7 +69,7 @@ class TextChannelViewModelTest {
     }
 
     private fun createViewModel(): TextChannelViewModel {
-        return TextChannelViewModel(chatRepository, savedStateHandle)
+        return TextChannelViewModel(chatRepository, guildRepository, savedStateHandle)
     }
 
     // ========================================================================

@@ -10,7 +10,7 @@ import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.Channel as CoroutineChannel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.logging.Logger
@@ -51,7 +51,7 @@ class HomeViewModel @Inject constructor(
      * One-shot navigation event for channel selection.
      * Bounded capacity (4) prevents buildup if a navigation collector is suspended.
      */
-    private val _navigateToChannel = Channel<ChannelNavEvent>(capacity = 4)
+    private val _navigateToChannel = CoroutineChannel<ChannelNavEvent>(capacity = 4)
     val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {

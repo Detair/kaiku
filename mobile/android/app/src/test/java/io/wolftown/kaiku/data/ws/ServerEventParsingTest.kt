@@ -190,21 +190,31 @@ class ServerEventParsingTest {
     // ========================================================================
 
     @Test
-    fun `VoiceOffer deserializes from server JSON`() {
-        val json = """{"type":"voice_offer","channel_id":"voice-001","sdp":"v=0\r\no=- 123 IN IP4 0.0.0.0\r\n"}"""
+    fun `VoicePublisherAnswer deserializes from server JSON`() {
+        val json = """{"type":"voice_publisher_answer","channel_id":"voice-001","sdp":"v=0\r\no=- 123 IN IP4 0.0.0.0\r\n"}"""
         val event = WsJson.decodeFromString<ServerEvent>(json)
-        assertIs<ServerEvent.VoiceOffer>(event)
+        assertIs<ServerEvent.VoicePublisherAnswer>(event)
+        assertEquals("voice-001", event.channelId)
+        assertTrue(event.sdp.startsWith("v=0"))
+    }
+
+    @Test
+    fun `VoiceSubscriberOffer deserializes from server JSON`() {
+        val json = """{"type":"voice_subscriber_offer","channel_id":"voice-001","sdp":"v=0\r\no=- 456 IN IP4 0.0.0.0\r\n"}"""
+        val event = WsJson.decodeFromString<ServerEvent>(json)
+        assertIs<ServerEvent.VoiceSubscriberOffer>(event)
         assertEquals("voice-001", event.channelId)
         assertTrue(event.sdp.startsWith("v=0"))
     }
 
     @Test
     fun `VoiceIceCandidate deserializes from server JSON`() {
-        val json = """{"type":"voice_ice_candidate","channel_id":"voice-001","candidate":"candidate:1 1 udp 2130706431 192.168.1.1 5000 typ host"}"""
+        val json = """{"type":"voice_ice_candidate","channel_id":"voice-001","candidate":"candidate:1 1 udp 2130706431 192.168.1.1 5000 typ host","pc_type":"subscriber"}"""
         val event = WsJson.decodeFromString<ServerEvent>(json)
         assertIs<ServerEvent.VoiceIceCandidate>(event)
         assertEquals("voice-001", event.channelId)
         assertTrue(event.candidate.startsWith("candidate:"))
+        assertEquals("subscriber", event.pcType)
     }
 
     @Test
