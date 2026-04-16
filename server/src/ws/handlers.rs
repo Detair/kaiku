@@ -73,14 +73,13 @@ fn error_response(status: u16, body: &'static str) -> Response {
 ///
 /// Supports two authentication methods (dual-auth for transition period):
 ///
-/// 1. **Header-based** (legacy): Client sends
-///    `Sec-WebSocket-Protocol: access_token.<jwt_token>`.
-///    Token is validated before upgrade; server responds with
-///    `Sec-WebSocket-Protocol: access_token`.
+/// 1. **Header-based** (legacy): Client sends `Sec-WebSocket-Protocol: access_token.<jwt_token>`.
+///    Token is validated before upgrade; server responds with `Sec-WebSocket-Protocol:
+///    access_token`.
 ///
-/// 2. **Post-connect** (new): Client connects without a token header.
-///    After upgrade the server waits up to 5 seconds for an `Authenticate`
-///    frame carrying the JWT.  On success the normal socket loop starts.
+/// 2. **Post-connect** (new): Client connects without a token header. After upgrade the server
+///    waits up to 5 seconds for an `Authenticate` frame carrying the JWT.  On success the normal
+///    socket loop starts.
 #[tracing::instrument(skip(ws, state, headers))]
 pub async fn handler(
     ws: WebSocketUpgrade,
@@ -1015,7 +1014,7 @@ pub fn spawn_custom_status_sweep(
     redis: fred::clients::Client,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
         loop {
             interval.tick().await;
 

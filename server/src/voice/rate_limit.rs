@@ -26,7 +26,7 @@ impl VoiceStatsLimiter {
         Self {
             last_stats: Arc::new(RwLock::new(HashMap::new())),
             min_stats_interval,
-            cleanup_interval: Duration::from_secs(60), // Default cleanup every 60 seconds
+            cleanup_interval: Duration::from_mins(1), // Default cleanup every 60 seconds
         }
     }
 

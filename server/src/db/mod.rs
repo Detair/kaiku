@@ -53,7 +53,7 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool> {
         // Prevent hanging requests on pool exhaustion
         .acquire_timeout(Duration::from_secs(5))
         // Clean up idle connections to prevent stale connection issues
-        .idle_timeout(Duration::from_secs(600))
+        .idle_timeout(Duration::from_mins(10))
         // Validate connections before use to catch stale/broken connections
         .test_before_acquire(true)
         .connect(database_url)

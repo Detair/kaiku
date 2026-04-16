@@ -136,11 +136,11 @@ lint: check ## Alias for check
 	@cd client && bun run lint
 
 fmt: ## Format all code
-	cargo fmt --all
+	cargo +nightly fmt --all
 	cd client && bun run format
 
 fmt-check: ## Check code formatting
-	cargo fmt --all -- --check
+	cargo +nightly fmt --all -- --check
 	cd client && bun run format -- --check
 
 licenses: ## Check dependency licenses
