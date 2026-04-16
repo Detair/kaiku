@@ -10,7 +10,6 @@ import io.wolftown.kaiku.data.voice.AudioRouteManager
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
-import org.webrtc.EglBase
 import org.webrtc.VideoTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -78,9 +77,6 @@ class VoiceViewModelTest {
         every { audioRouteManager.currentRoute } returns currentRouteFlow
         every { audioRouteManager.availableRoutes } returns availableRoutesFlow
         every { webRtcManager.remoteVideoTracks } returns remoteVideoTracksFlow
-
-        val mockEglBase = mockk<EglBase>(relaxed = true)
-        every { webRtcManager.eglBase } returns mockEglBase
     }
 
     @After

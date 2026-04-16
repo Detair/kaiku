@@ -59,7 +59,8 @@ import javax.inject.Singleton
 @Singleton
 class WebRtcManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val voiceApi: VoiceApi
+    private val voiceApi: VoiceApi,
+    private val eglBaseProvider: EglBaseProvider
 ) {
     companion object {
         private val logger = Logger.getLogger("WebRtcManager")
@@ -106,8 +107,17 @@ class WebRtcManager @Inject constructor(
         subscriberIceState.value = state
     }
 
+    /**
+     * Lazy so tests that never touch video rendering never trigger EGL init,
+     * and so production startup defers the native cost until first use.
+     *
+     * Exposed via the `eglBase` accessor below; dispose() uses `_eglBase.isInitialized()`
+     * to avoid re-triggering init purely to release.
+     */
+    private val _eglBase: Lazy<EglBase> = lazy { eglBaseProvider.create() }
+
     /** Shared EGL context for video rendering (SurfaceViewRenderer). */
-    val eglBase: EglBase = EglBase.create()
+    val eglBase: EglBase get() = _eglBase.value
 
     /** The local microphone audio track, null until [createPublisherOffer] is called. */
     var localAudioTrack: AudioTrack? = null
@@ -364,12 +374,14 @@ class WebRtcManager @Inject constructor(
         factory = null
         audioDeviceModule?.release()
         audioDeviceModule = null
-        try {
-            eglBase.release()
-        } catch (_: IllegalStateException) {
-            // EglBase may already be released
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "Unexpected error releasing EglBase", e)
+        if (_eglBase.isInitialized()) {
+            try {
+                _eglBase.value.release()
+            } catch (_: IllegalStateException) {
+                // EglBase may already be released
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Unexpected error releasing EglBase", e)
+            }
         }
         logger.info("WebRtcManager disposed")
     }
