@@ -65,7 +65,7 @@ class VoiceViewModel @Inject constructor(
     val error: StateFlow<String?> = _error.asStateFlow()
 
     /** Shared EGL context for video rendering. */
-    val eglContext: EglBase.Context = webRtcManager.eglBase.eglBaseContext
+    val eglContext: EglBase.Context by lazy { webRtcManager.eglBase.eglBaseContext }
 
     init {
         onJoin()
