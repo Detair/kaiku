@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: TLS 1.3 provider failure now prompts users to update Play Services instead of failing silently on every network call
 
 ### Fixed
+- Android: test infrastructure now injects EglBase via a provider so unit tests can be written without native EGL14 stubs; unblocks CI coverage for voice signaling
 - Android: OIDC callback path matching is now exact instead of prefix-based, preventing potential intent collisions
 - Android: WebSocket connection state correctly waits for server authentication confirmation before reporting Connected
 - Android: voice SDP answer is now sent only after local description is fully committed, preventing ICE state corruption (#5)
