@@ -17,6 +17,11 @@ use super::{EncodedPacket, VideoError};
 /// Maximum RTP payload size before fragmentation.
 const MAX_PAYLOAD_SIZE: usize = 1200;
 
+/// VP8 payload type — matches the server media engine's VP8 codec registration.
+///
+/// See also: `server/src/voice/sfu.rs` and this crate's `webrtc::mod::<API build>` media engine.
+pub const VP8_PAYLOAD_TYPE: u8 = 96;
+
 /// VP8 RTP payload descriptor (1-byte, no extensions).
 ///
 /// Layout (MSB-first):
@@ -36,6 +41,7 @@ const fn build_vp8_payload_descriptor(is_first: bool) -> u8 {
 pub struct VideoRtpSender {
     track: Arc<TrackLocalStaticRTP>,
     seq: AtomicU16,
+    ssrc: u32,
 }
 
 impl VideoRtpSender {
@@ -43,7 +49,8 @@ impl VideoRtpSender {
     pub fn new(track: Arc<TrackLocalStaticRTP>) -> Self {
         Self {
             track,
-            seq: AtomicU16::new(0),
+            seq: AtomicU16::new(rand::random()),
+            ssrc: rand::random(),
         }
     }
 
@@ -80,9 +87,11 @@ impl VideoRtpSender {
             let rtp_packet = RtpPacket {
                 header: Header {
                     version: 2,
+                    payload_type: VP8_PAYLOAD_TYPE,
                     marker: is_last,
                     sequence_number: seq,
                     timestamp,
+                    ssrc: self.ssrc,
                     ..Default::default()
                 },
                 payload: payload.into(),

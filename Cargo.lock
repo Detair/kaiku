@@ -10648,6 +10648,7 @@ dependencies = [
  "nnnoiseless",
  "nokhwa",
  "opus",
+ "rand 0.8.5",
  "reqwest 0.13.2",
  "rodio",
  "rusqlite",

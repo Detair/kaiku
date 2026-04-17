@@ -2,7 +2,7 @@
 //!
 //! Tauri commands for voice chat functionality.
 
-use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tauri::{command, AppHandle, Emitter, State};
@@ -716,9 +716,11 @@ async fn send_audio_to_track(
     track: Arc<TrackLocalStaticRTP>,
     mut audio_rx: mpsc::Receiver<Vec<u8>>,
 ) {
-    // RTP state - using atomics for simplicity
-    static SEQUENCE_NUMBER: AtomicU16 = AtomicU16::new(0);
-    static TIMESTAMP: AtomicU32 = AtomicU32::new(0);
+    // Per RFC 3550 §5.1: start seq and timestamp at random values for each session.
+    // SSRC is already per-session (derived from SystemTime at spawn), so combining
+    // with a random seq start ensures receivers see a fresh stream after reconnect.
+    let mut seq: u16 = rand::random();
+    let mut timestamp: u32 = rand::random();
 
     // Calculate samples per frame (20ms at 48kHz)
     const SAMPLES_PER_FRAME: u32 = SAMPLE_RATE / 1000 * FRAME_SIZE_MS as u32;
@@ -736,10 +738,6 @@ async fn send_audio_to_track(
     info!("Starting RTP audio sender task (SSRC: {})", ssrc);
 
     while let Some(opus_data) = audio_rx.recv().await {
-        // Get current sequence number and timestamp
-        let seq = SEQUENCE_NUMBER.fetch_add(1, Ordering::Relaxed);
-        let ts = TIMESTAMP.fetch_add(SAMPLES_PER_FRAME, Ordering::Relaxed);
-
         // Create RTP packet
         let rtp_packet = RtpPacket {
             header: webrtc::rtp::header::Header {
@@ -749,7 +747,7 @@ async fn send_audio_to_track(
                 marker: false,
                 payload_type: OPUS_PAYLOAD_TYPE,
                 sequence_number: seq,
-                timestamp: ts,
+                timestamp,
                 ssrc,
                 ..Default::default()
             },
@@ -761,6 +759,11 @@ async fn send_audio_to_track(
             warn!("Failed to write RTP packet: {}", e);
             // Don't break - connection might recover
         }
+
+        // Advance state for next packet. The first packet uses the random
+        // initial values per RFC 3550 §5.1.
+        seq = seq.wrapping_add(1);
+        timestamp = timestamp.wrapping_add(SAMPLES_PER_FRAME);
     }
 
     info!("RTP audio sender task ended");

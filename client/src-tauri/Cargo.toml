@@ -91,6 +91,7 @@ hmac = "0.12"
 aes-gcm = "0.10"
 argon2.workspace = true
 getrandom = "0.2"
+rand = "0.8"
 
 # Zeroize
 zeroize.workspace = true

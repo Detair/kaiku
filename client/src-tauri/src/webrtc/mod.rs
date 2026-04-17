@@ -28,6 +28,8 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_remote::TrackRemote;
 
+use crate::video::rtp::VP8_PAYLOAD_TYPE;
+
 /// Build 3-layer simulcast encoding parameters (high / medium / low).
 ///
 /// **Limitation:** webrtc-rs 0.11 `add_transceiver_from_track` accepts
@@ -193,7 +195,7 @@ impl WebRtcClient {
                         sdp_fmtp_line: String::new(),
                         rtcp_feedback: video_rtcp_feedback,
                     },
-                    payload_type: 96,
+                    payload_type: VP8_PAYLOAD_TYPE,
                     ..Default::default()
                 },
                 RTPCodecType::Video,

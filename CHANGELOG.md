@@ -98,6 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sending multiple messages rapidly no longer reorders them in the chat view
 - Slow WebSocket clients are now disconnected instead of blocking the message bus
 - Typing indicators no longer trigger database permission queries on every keystroke
+- Desktop voice audio is now clear at session start (fixed RTP sequence number regression on reconnect)
+- Desktop screen share now actually reaches other participants (fixed VP8 payload type)
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting
