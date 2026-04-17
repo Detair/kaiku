@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Voice signaling events are rate-limited per peer to prevent flooding
 
 ### Fixed
+- Android: voice-layer `CoroutineScope` is now DI-provided, making the full `WebRtcManager` test suite runnable under `TestCoroutineScheduler` and unblocking CI coverage for dual-PC ICE state transitions
 - Screen share slots are no longer leaked by duplicate stream IDs
 - Android: test infrastructure now injects EglBase via a provider so unit tests can be written without native EGL14 stubs; unblocks CI coverage for voice signaling
 - Android: OIDC callback path matching is now exact instead of prefix-based, preventing potential intent collisions
