@@ -4,8 +4,8 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.wolftown.kaiku.data.api.IceServer
 import io.wolftown.kaiku.data.api.VoiceApi
+import io.wolftown.kaiku.di.VoiceCoroutineScope
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,7 +60,8 @@ import javax.inject.Singleton
 class WebRtcManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val voiceApi: VoiceApi,
-    private val eglBaseProvider: EglBaseProvider
+    private val eglBaseProvider: EglBaseProvider,
+    @VoiceCoroutineScope private val voiceScope: CoroutineScope,
 ) {
     companion object {
         private val logger = Logger.getLogger("WebRtcManager")
@@ -155,11 +156,7 @@ class WebRtcManager @Inject constructor(
         combine(publisherIceState, subscriberIceState) { p, s ->
             p == PeerConnection.IceConnectionState.CONNECTED &&
                 s == PeerConnection.IceConnectionState.CONNECTED
-        }.stateIn(
-            CoroutineScope(Dispatchers.IO),
-            SharingStarted.Eagerly,
-            false
-        )
+        }.stateIn(voiceScope, SharingStarted.Eagerly, false)
 
     // -- Callbacks ------------------------------------------------------------
 

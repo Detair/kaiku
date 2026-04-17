@@ -3,7 +3,10 @@ package io.wolftown.kaiku.data.voice
 import android.content.Context
 import io.mockk.mockk
 import io.wolftown.kaiku.data.api.VoiceApi
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -11,7 +14,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 import org.webrtc.PeerConnection
 
@@ -41,11 +43,21 @@ class WebRtcManagerTest {
      * Construct a [WebRtcManager] with mocks suitable for tests that exercise
      * signaling/state behavior without needing a real EGL or native PeerConnection.
      * The provider's `create()` is never invoked unless the test reads `.eglBase`.
+     *
+     * [voiceScope] defaults to an `UnconfinedTestDispatcher`-backed [TestScope],
+     * which runs continuations synchronously on the calling thread. Tests that
+     * need scheduler control (i.e., `runCurrent()` / `advanceUntilIdle()` must
+     * drive the stateIn combine) should pass `backgroundScope` from a `runTest`
+     * block instead.
      */
-    private fun newWebRtcManager(): WebRtcManager = WebRtcManager(
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun newWebRtcManager(
+        voiceScope: CoroutineScope = TestScope(UnconfinedTestDispatcher()),
+    ): WebRtcManager = WebRtcManager(
         context = mockk<Context>(relaxed = true),
         voiceApi = mockk<VoiceApi>(relaxed = true),
         eglBaseProvider = mockk<EglBaseProvider>(relaxed = true),
+        voiceScope = voiceScope,
     )
 
     // ========================================================================
@@ -342,13 +354,8 @@ class WebRtcManagerTest {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    @Ignore(
-        "voiceIceConnected uses stateIn(CoroutineScope(Dispatchers.IO), Eagerly) " +
-            "whose re-emissions can't be driven by TestCoroutineScheduler. Unblock by " +
-            "injecting the CoroutineScope into WebRtcManager (separate workstream)."
-    )
     fun `voiceIceConnected emits true only when both PCs reach Connected`() = runTest {
-        val webRtcManager = newWebRtcManager()
+        val webRtcManager = newWebRtcManager(voiceScope = backgroundScope)
 
         // Only publisher CONNECTED — combined is still false.
         webRtcManager.setPublisherIceStateForTest(
