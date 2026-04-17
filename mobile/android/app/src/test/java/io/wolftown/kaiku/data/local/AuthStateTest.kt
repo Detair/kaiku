@@ -3,6 +3,10 @@ package io.wolftown.kaiku.data.local
 import app.cash.turbine.test
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,13 +15,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class AuthStateTest {
 
     private lateinit var authState: AuthState
 
     @Before
     fun setUp() {
-        authState = AuthState()
+        // UnconfinedTestDispatcher runs stateIn continuations synchronously on
+        // the calling thread, so `.value` reflects setLoggedIn/setLoggedOut
+        // immediately. See app/src/test/AGENTS.md ("inject the scope").
+        authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
     }
 
     // ========================================================================

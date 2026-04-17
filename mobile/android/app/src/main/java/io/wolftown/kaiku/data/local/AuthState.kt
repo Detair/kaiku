@@ -1,9 +1,7 @@
 package io.wolftown.kaiku.data.local
 
+import io.wolftown.kaiku.di.AuthCoroutineScope
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -20,9 +18,9 @@ sealed class AuthSession {
 }
 
 @Singleton
-class AuthState @Inject constructor() : Closeable {
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+class AuthState @Inject constructor(
+    @AuthCoroutineScope private val scope: CoroutineScope,
+) : Closeable {
 
     private val _session = MutableStateFlow<AuthSession>(AuthSession.LoggedOut)
     val session: StateFlow<AuthSession> = _session.asStateFlow()
@@ -66,6 +64,8 @@ class AuthState @Inject constructor() : Closeable {
     }
 
     override fun close() {
-        scope.cancel()
+        // Scope is now owned by Hilt's SingletonComponent (see AuthCoroutineScopeModule)
+        // — do not cancel here. Same rationale as WebRtcManager.dispose() after #538:
+        // SupervisorJob, potential future shared consumers, app-lifetime ownership.
     }
 }
