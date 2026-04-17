@@ -9,7 +9,10 @@ import io.wolftown.kaiku.data.ws.ConnectionState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.User
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
@@ -47,7 +50,10 @@ class AuthFlowTest {
     fun setUp() {
         authApi = mockk()
         tokenStorage = mockk(relaxed = true)
-        authState = AuthState()
+        // UnconfinedTestDispatcher drives AuthState's stateIn synchronously so
+        // `.isLoggedIn.value` / `.currentUserId.value` reflect setLoggedIn and
+        // setLoggedOut immediately. See app/src/test/AGENTS.md.
+        authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
         webSocket = mockk(relaxed = true)
 
         authRepository = AuthRepository(authApi, tokenStorage, authState)
@@ -60,24 +66,16 @@ class AuthFlowTest {
     @Test
     fun `login stores tokens and sets auth state to logged in`() = runTest {
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.getMe() } returns testUser
+        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
 
         val result = authRepository.login("testuser", "pass")
 
         assertTrue(result.isSuccess)
         assertEquals(testUser, result.getOrNull())
 
-        // Verify tokens were saved (twice: once before getMe, once after with userId)
-        verify(exactly = 2) {
-            tokenStorage.saveTokens(
-                accessToken = "access-token-abc",
-                refreshToken = "refresh-token-xyz",
-                expiresIn = 900,
-                userId = any()
-            )
-        }
-        // Second call should have the correct userId
-        verify {
+        // Since #525, tokens are persisted exactly once — after authenticatedGetMe
+        // succeeds — with the real userId. No placeholder empty-userId write.
+        verify(exactly = 1) {
             tokenStorage.saveTokens(
                 accessToken = "access-token-abc",
                 refreshToken = "refresh-token-xyz",
@@ -115,7 +113,7 @@ class AuthFlowTest {
         coEvery {
             authApi.register("newuser", "pass", null, null)
         } returns testAuthResponse
-        coEvery { authApi.getMe() } throws RuntimeException("Network error")
+        coEvery { authApi.authenticatedGetMe(any()) } throws RuntimeException("Network error")
 
         val result = authRepository.register("newuser", "pass", null, null)
 
@@ -131,7 +129,7 @@ class AuthFlowTest {
     fun `logout clears tokens and sets auth state to logged out`() = runTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.getMe() } returns testUser
+        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
         coEvery { authApi.logout() } just Runs
         authRepository.login("testuser", "pass")
 
@@ -149,7 +147,7 @@ class AuthFlowTest {
     fun `logout succeeds even when server-side logout fails`() = runTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.getMe() } returns testUser
+        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
         coEvery { authApi.logout() } throws Exception("Network error")
         authRepository.login("testuser", "pass")
 
@@ -210,7 +208,7 @@ class AuthFlowTest {
     @Test
     fun `WebSocket can connect after login stores token`() = runTest {
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.getMe() } returns testUser
+        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
         every { tokenStorage.getAccessToken() } returns "access-token-abc"
         every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
 
@@ -228,7 +226,7 @@ class AuthFlowTest {
 
     @Test
     fun `OIDC login stores tokens and sets auth state`() = runTest {
-        coEvery { authApi.getMe() } returns testUser
+        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
 
         val result = authRepository.completeOidcLogin(
             accessToken = "oidc-access-token",

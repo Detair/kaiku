@@ -7,7 +7,10 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.User
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
@@ -47,7 +50,10 @@ class QrLoginFlowTest {
     fun setUp() {
         authApi = mockk()
         tokenStorage = mockk(relaxed = true)
-        authState = AuthState()
+        // UnconfinedTestDispatcher drives AuthState's stateIn synchronously so
+        // `.isLoggedIn.value` / `.currentUserId.value` reflect setLoggedIn and
+        // setLoggedOut immediately. See app/src/test/AGENTS.md.
+        authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
 
         authRepository = AuthRepository(authApi, tokenStorage, authState)
     }
@@ -59,32 +65,28 @@ class QrLoginFlowTest {
     @Test
     fun `QR redeem stores server URL, tokens, and sets auth state to logged in`() = runTest {
         coEvery { authApi.redeemQrToken(testServerUrl, testToken) } returns testAuthResponse
-        coEvery { authApi.getMe() } returns testUser
+        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
 
         val result = authRepository.redeemQrToken(testServerUrl, testToken)
 
         assertTrue(result.isSuccess)
         assertEquals(testUser, result.getOrNull())
 
-        // Verify tokens were saved (twice: once before getMe, once after with userId)
-        verify(exactly = 2) {
+        // Since #525, tokens are persisted exactly once — after authenticatedGetMe
+        // succeeds — with the real userId. No placeholder empty-userId write.
+        verify(exactly = 1) {
             tokenStorage.saveTokens(
                 accessToken = "qr-access-token-abc",
                 refreshToken = "qr-refresh-token-xyz",
                 expiresIn = 900,
-                userId = any()
+                userId = "user-42"
             )
         }
 
-        // Server URL must be saved BEFORE getMe (KaikuHttpClient needs it for the base URL)
+        // Server URL must be saved BEFORE saveTokens (KaikuHttpClient needs the
+        // base URL for the authenticatedGetMe call that precedes saveTokens).
         verifyOrder {
             tokenStorage.saveServerUrl(testServerUrl)
-            tokenStorage.saveTokens(
-                accessToken = "qr-access-token-abc",
-                refreshToken = "qr-refresh-token-xyz",
-                expiresIn = 900,
-                userId = ""
-            )
             tokenStorage.saveTokens(
                 accessToken = "qr-access-token-abc",
                 refreshToken = "qr-refresh-token-xyz",
@@ -105,7 +107,7 @@ class QrLoginFlowTest {
     @Test
     fun `QR redeem cleans up when getMe fails after successful redeem`() = runTest {
         coEvery { authApi.redeemQrToken(testServerUrl, testToken) } returns testAuthResponse
-        coEvery { authApi.getMe() } throws RuntimeException("getMe failed")
+        coEvery { authApi.authenticatedGetMe(any()) } throws RuntimeException("getMe failed")
 
         val result = authRepository.redeemQrToken(testServerUrl, testToken)
 
