@@ -42,8 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: network connectivity detection uses `NET_CAPABILITY_VALIDATED` to avoid false positives on captive portals
 - Android: OIDC PKCE state is persisted synchronously, preventing intermittent CSRF-error login failures on low-memory devices
 - Android: TLS 1.3 provider failure now prompts users to update Play Services instead of failing silently on every network call
+- Self-muted users' audio is now actually dropped at the server rather than being forwarded to listeners
+- Voice signaling events are rate-limited per peer to prevent flooding
 
 ### Fixed
+- Screen share slots are no longer leaked by duplicate stream IDs
 - Android: test infrastructure now injects EglBase via a provider so unit tests can be written without native EGL14 stubs; unblocks CI coverage for voice signaling
 - Android: OIDC callback path matching is now exact instead of prefix-based, preventing potential intent collisions
 - Android: WebSocket connection state correctly waits for server authentication confirmation before reporting Connected

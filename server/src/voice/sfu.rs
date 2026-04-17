@@ -27,7 +27,7 @@ use webrtc::rtp_transceiver::RTCPFeedback;
 
 use super::error::VoiceError;
 use super::peer::Peer;
-use super::rate_limit::VoiceStatsLimiter;
+use super::rate_limit::{VoiceRateLimiter, VoiceStatsLimiter};
 use super::screen_share::ScreenShareInfo;
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
@@ -211,7 +211,7 @@ impl Room {
                 user_id: *user_id,
                 username: Some(peer.username.clone()),
                 display_name: Some(peer.display_name.clone()),
-                muted: peer.is_muted().await,
+                muted: peer.is_self_muted().await,
                 screen_sharing: shares.values().any(|s| s.user_id == *user_id),
                 webcam_active: webcams.contains_key(user_id),
             });
@@ -287,6 +287,8 @@ pub struct SfuServer {
     rate_limiter: Option<Arc<RateLimiter>>,
     /// Rate limiter for voice stats (local/memory).
     stats_limiter: Arc<VoiceStatsLimiter>,
+    /// Per-peer, per-event-class token bucket limiter for voice signaling events.
+    voice_rate_limiter: Arc<VoiceRateLimiter>,
 }
 
 impl SfuServer {
@@ -379,6 +381,7 @@ impl SfuServer {
             config,
             rate_limiter: rate_limiter.map(Arc::new),
             stats_limiter: Arc::new(VoiceStatsLimiter::default()),
+            voice_rate_limiter: Arc::new(VoiceRateLimiter::new()),
         })
     }
 
@@ -596,6 +599,7 @@ impl SfuServer {
                         layer,
                         track.clone(),
                         room.track_router.clone(),
+                        peer.clone(),
                     );
 
                     // For video tracks: send PLI every 3 seconds so subscribers
@@ -858,7 +862,7 @@ impl SfuServer {
                 .map_err(|e| VoiceError::Internal(e.to_string()))?;
 
             if !result.allowed {
-                return Err(VoiceError::RateLimited);
+                return Err(VoiceError::RateLimited("voice_join"));
             }
         }
         Ok(())
@@ -867,6 +871,12 @@ impl SfuServer {
     /// Check if a user can report voice stats (rate limit check).
     pub async fn check_stats_rate_limit(&self, user_id: Uuid) -> Result<(), VoiceError> {
         self.stats_limiter.check_stats(user_id).await
+    }
+
+    /// Access the per-peer voice signaling rate limiter.
+    #[must_use]
+    pub const fn voice_rate_limiter(&self) -> &Arc<VoiceRateLimiter> {
+        &self.voice_rate_limiter
     }
 
     /// Get active room count.

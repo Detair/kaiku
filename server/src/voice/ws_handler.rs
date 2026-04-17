@@ -12,6 +12,7 @@ use vc_common::protocol::PcType;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id, store_metrics};
+use super::rate_limit::EventClass;
 use super::screen_share::{
     validate_source_label, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
 };
@@ -43,6 +44,44 @@ pub async fn handle_voice_event(
     tx: &mpsc::Sender<OutboundMsg>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
 ) -> Result<(), VoiceError> {
+    // Per-peer, per-event-class token bucket rate limiting.
+    //
+    // Events that exceed the limit are dropped silently (no error returned
+    // to the client) per the design in
+    // `docs/superpowers/specs/2026-04-15-voice-screenshare-fixes-design.md`
+    // Fix 2. VoiceJoin is handled by the separate join rate limit; VoiceStats
+    // is handled by `VoiceStatsLimiter`; VoiceLeave is never limited.
+    let rate_limit_class: Option<EventClass> = match &event {
+        ClientEvent::VoiceIceCandidate { pc_type, .. } => Some(match pc_type {
+            PcType::Publisher => EventClass::IceCandidatePublisher,
+            PcType::Subscriber => EventClass::IceCandidateSubscriber,
+        }),
+        ClientEvent::VoicePublisherOffer { .. } | ClientEvent::VoiceSubscriberAnswer { .. } => {
+            Some(EventClass::PublisherOffer)
+        }
+        ClientEvent::VoiceScreenShareStart { .. } | ClientEvent::VoiceScreenShareStop { .. } => {
+            Some(EventClass::ScreenShareToggle)
+        }
+        ClientEvent::VoiceMute { .. }
+        | ClientEvent::VoiceUnmute { .. }
+        | ClientEvent::VoiceWebcamStart { .. }
+        | ClientEvent::VoiceWebcamStop { .. } => Some(EventClass::MuteOrWebcamToggle),
+        ClientEvent::VoiceSetLayerPreference { .. } => Some(EventClass::SetLayerPreference),
+        _ => None,
+    };
+    if let Some(class) = rate_limit_class {
+        if !sfu.voice_rate_limiter().try_acquire(user_id, class) {
+            // Structured log for observability. A follow-up PR should wire
+            // this into a Prometheus `voice_rate_limit_drops_total` counter.
+            warn!(
+                user_id = %user_id,
+                event_class = class.as_scope(),
+                "voice_rate_limit_drop",
+            );
+            return Ok(());
+        }
+    }
+
     match event {
         ClientEvent::VoiceJoin { channel_id } => {
             let result = handle_join(sfu, pool, user_id, channel_id, tx).await;
@@ -366,6 +405,9 @@ async fn handle_leave(
         peer.close().await;
     }
 
+    // Free per-peer rate-limit buckets so they don't accumulate across reconnects.
+    sfu.voice_rate_limiter().forget_peer(user_id);
+
     room.broadcast_except(
         user_id,
         ServerEvent::VoiceUserLeft {
@@ -611,7 +653,7 @@ async fn handle_mute(
         .await
         .ok_or(VoiceError::ParticipantNotFound(user_id))?;
 
-    peer.set_muted(muted).await;
+    peer.set_self_muted(muted).await;
 
     // Notify other participants
     let event = if muted {
@@ -749,6 +791,15 @@ async fn handle_screen_share_start(
         .ok()
         .flatten()
         .unwrap_or(6);
+    // Use the stream_id provided by the client.
+    let stream_id = params.stream_id;
+
+    // Check for duplicate stream_id FIRST — before reserving the channel slot,
+    // otherwise a duplicate leaks the slot.
+    if room.screen_shares.read().await.contains_key(&stream_id) {
+        return Err(VoiceError::DuplicateStreamId);
+    }
+
     let max_shares: u32 = max_screen_shares.try_into().unwrap_or(6);
 
     // Try to reserve a slot via limiter
@@ -761,16 +812,6 @@ async fn handle_screen_share_start(
             ScreenShareError::InternalError => "Internal error".to_string(),
             _ => format!("{e:?}"),
         }));
-    }
-
-    // Use the stream_id provided by the client.
-    let stream_id = params.stream_id;
-
-    // Reject duplicate stream_id
-    if room.screen_shares.read().await.contains_key(&stream_id) {
-        return Err(VoiceError::Signaling(format!(
-            "Screen share stream already exists: {stream_id}"
-        )));
     }
 
     // Queue pending track sources so setup_track_handler can identify them

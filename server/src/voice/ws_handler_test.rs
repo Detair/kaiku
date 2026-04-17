@@ -267,7 +267,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            error::VoiceError::RateLimited => {
+            error::VoiceError::RateLimited(_) => {
                 // Expected
             }
             other => panic!("Expected RateLimited error, got: {other:?}"),

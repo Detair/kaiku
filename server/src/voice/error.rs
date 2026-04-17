@@ -25,6 +25,10 @@ pub enum VoiceError {
     #[error("Signaling error: {0}")]
     Signaling(String),
 
+    /// Screen share `stream_id` already exists in the room.
+    #[error("Screen share stream already exists")]
+    DuplicateStreamId,
+
     /// ICE connection failed.
     #[error("ICE connection failed")]
     IceConnectionFailed,
@@ -53,8 +57,8 @@ pub enum VoiceError {
     NotInChannel,
 
     /// Rate limited.
-    #[error("Rate limited: too many voice join requests")]
-    RateLimited,
+    #[error("Rate limited: {0}")]
+    RateLimited(&'static str),
 
     /// Internal error.
     #[error("Internal error: {0}")]
@@ -80,6 +84,11 @@ impl IntoResponse for VoiceError {
                 "WebRTC operation failed".to_string(),
             ),
             Self::Signaling(_) => (StatusCode::BAD_REQUEST, "SIGNALING_ERROR", self.to_string()),
+            Self::DuplicateStreamId => (
+                StatusCode::CONFLICT,
+                "DUPLICATE_STREAM_ID",
+                self.to_string(),
+            ),
             Self::IceConnectionFailed => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "ICE_FAILED",
@@ -92,7 +101,7 @@ impl IntoResponse for VoiceError {
             }
             Self::AlreadyJoined => (StatusCode::CONFLICT, "ALREADY_JOINED", self.to_string()),
             Self::NotInChannel => (StatusCode::BAD_REQUEST, "NOT_IN_CHANNEL", self.to_string()),
-            Self::RateLimited => (
+            Self::RateLimited(_) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "RATE_LIMITED",
                 self.to_string(),
