@@ -11,7 +11,6 @@ use std::path::Path;
 // Do not import anything from `vc_client` — keeping this standalone makes
 // it buildable independent of the main crate's screen-capture dependency
 // chain (which may fail on some dev machines due to libspa header mismatch).
-
 use vpx_encode::{Config, Encoder, VideoCodecId};
 use webrtc::rtp::header::Header as RtpHeader;
 use webrtc::rtp::packet::Packet as RtpPacket;
@@ -24,9 +23,8 @@ const VP8_PAYLOAD_TYPE: u8 = 96;
 const MAX_RTP_PAYLOAD_SIZE: usize = 1200;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Synthesize a simple moving pattern in I420 (YUV) format.
-    //    Luma plane: a vertical gradient that shifts by frame index.
-    //    Chroma planes: constant (grey).
+    // 1. Synthesize a simple moving pattern in I420 (YUV) format. Luma plane: a vertical gradient
+    //    that shifts by frame index. Chroma planes: constant (grey).
     let yuv_frames = synth_yuv_frames(WIDTH, HEIGHT, FPS * DURATION_S);
 
     // 2. Encode with vpx-encode.
@@ -45,7 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pts = idx as i64;
         let encoded_frames = encoder.encode(pts, frame)?;
         for vp8_frame in encoded_frames {
-            // Packetize: split into MAX_RTP_PAYLOAD_SIZE - 1 chunks (leaving room for 1-byte VP8 descriptor)
+            // Packetize: split into MAX_RTP_PAYLOAD_SIZE - 1 chunks (leaving room for 1-byte VP8
+            // descriptor)
             let data = &vp8_frame.data;
             let max_payload = MAX_RTP_PAYLOAD_SIZE - 1;
             let fragments: Vec<&[u8]> = data.chunks(max_payload).collect();
@@ -108,9 +107,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 3. Serialize RTP packets to disk as length-prefixed binary:
-    //    <u32 be length> <packet bytes>... repeated.
-    //    Keeps the format simple and self-describing for test code.
+    // 3. Serialize RTP packets to disk as length-prefixed binary: <u32 be length> <packet bytes>...
+    //    repeated. Keeps the format simple and self-describing for test code.
     let output_dir = Path::new("tests/fixtures");
     fs::create_dir_all(output_dir)?;
     let out_path = output_dir.join("vp8_sample.rtp");

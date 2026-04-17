@@ -223,9 +223,10 @@ pub fn spawn_video_decode_task(
 // VP8 native decoder (FFI wrapper around env-libvpx-sys).
 // =============================================================================
 
-use crate::voice::rtp_depacketizer::Vp8Depacketizer;
 use env_libvpx_sys::*;
 use webrtc::rtp::packet::Packet as RtpPacket;
+
+use crate::voice::rtp_depacketizer::Vp8Depacketizer;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VideoDecodeError {

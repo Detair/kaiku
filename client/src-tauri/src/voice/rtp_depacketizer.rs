@@ -175,9 +175,7 @@ impl Vp8Depacketizer {
             let is_keyframe = (frame[0] & 0x01) == 0;
 
             if self.expecting_keyframe && !is_keyframe {
-                debug!(
-                    "VP8 depacketizer: waiting for keyframe, discarding assembled interframe"
-                );
+                debug!("VP8 depacketizer: waiting for keyframe, discarding assembled interframe");
                 // Keep expecting_keyframe = true; drop the frame.
                 return None;
             }
@@ -201,10 +199,11 @@ impl Default for Vp8Depacketizer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::Bytes;
     use webrtc::rtp::header::Header;
     use webrtc::rtp::packet::Packet;
+
+    use super::*;
 
     /// Build a minimal RTP packet for tests.
     fn pkt(seq: u16, marker: bool, payload: Vec<u8>) -> Packet {
@@ -268,7 +267,11 @@ mod tests {
         let mut dp = Vp8Depacketizer::new();
 
         // Feed seq=100 (keyframe start, no marker).
-        let p1 = pkt(100, false, keyframe_payload_fragment(&[0x10], &[0x00, 0xAA]));
+        let p1 = pkt(
+            100,
+            false,
+            keyframe_payload_fragment(&[0x10], &[0x00, 0xAA]),
+        );
         assert!(dp.depacketize(&p1).is_none());
 
         // Feed seq=101 (continuation, no marker).
