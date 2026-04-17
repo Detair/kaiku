@@ -92,24 +92,44 @@ or launches collectors on its own `Dispatchers.IO` scope cannot be driven by
 test dispatcher, so synchronous assertions on `.value` right after mutating the
 source flow may read stale state.
 
-Workarounds (in order of preference):
+**Canonical fix: inject the scope via Hilt with a dedicated qualifier.**
 
-1. **Use `turbine.test { }` with `awaitItem()`** — turbine's default timeout
-   (1s) covers real IO emission, so downstream state changes are observable
-   even though the producer runs on `Dispatchers.IO`.
-2. **Inject the scope** — make the production class accept a `CoroutineScope`
-   constructor parameter so tests can pass `TestScope(testDispatcher)`. Best
-   long-term fix; requires a Hilt `@Provides` for the default scope.
-3. **`@Ignore` with explicit reason** — acceptable when the test can only be
-   driven synchronously and option 2 is out of scope. Leave a one-line reason
-   referencing this constraint.
+```kotlin
+// Production — in a Hilt module
+@Module @InstallIn(SingletonComponent::class)
+object MyFeatureScopeModule {
+    @Provides @Singleton @MyFeatureScope
+    fun provideScope(): CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.IO)
+}
+
+// Production — in the consumer
+class MyFeature @Inject constructor(
+    @MyFeatureScope private val scope: CoroutineScope,
+) {
+    val state: StateFlow<Boolean> = combine(...).stateIn(scope, Eagerly, false)
+}
+
+// Test
+@Test fun test() = runTest {
+    val feature = MyFeature(scope = backgroundScope)
+    // TestCoroutineScheduler now drives the stateIn combine.
+}
+```
+
+`WebRtcManager`'s `voiceIceConnected` uses this pattern via `@VoiceCoroutineScope`
+(`mobile/android/app/src/main/java/io/wolftown/kaiku/di/VoiceCoroutineScope.kt`).
+
+**Fallbacks (avoid unless the injection path is genuinely blocked):**
+
+- `@VisibleForTesting internal var scope` setter — requires making the
+  downstream `StateFlow` `by lazy` and introduces a test-only code path.
+- `Dispatchers.Unconfined` for `stateIn` — sidesteps scheduling but runs
+  continuations on the emitter's thread, with subtle correctness risks.
 
 ## Currently `@Ignore`d tests
 
-- `WebRtcManagerTest.voiceIceConnected emits true only when both PCs reach Connected`
-  — blocked by option 2 above: `WebRtcManager.voiceIceConnected` uses
-  `stateIn(CoroutineScope(Dispatchers.IO), …)`. Un-ignore when the scope is
-  injectable.
+None.
 
 If you add a new `@Ignore`, append it here with a one-line reason and link
 an issue or ticket.
