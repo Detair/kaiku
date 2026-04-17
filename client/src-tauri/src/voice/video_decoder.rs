@@ -223,7 +223,9 @@ pub fn spawn_video_decode_task(
 // VP8 native decoder (FFI wrapper around env-libvpx-sys).
 // =============================================================================
 
-use env_libvpx_sys::*;
+// env-libvpx-sys is published on crates.io as `env-libvpx-sys` but declares
+// `[lib] name = "vpx_sys"` in its Cargo.toml, so the importable crate is `vpx_sys`.
+use vpx_sys::*;
 use webrtc::rtp::packet::Packet as RtpPacket;
 
 use crate::voice::rtp_depacketizer::Vp8Depacketizer;
