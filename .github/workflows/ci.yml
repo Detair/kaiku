@@ -29,6 +29,15 @@ jobs:
           toolchain: ${{ matrix.check == 'fmt' && 'nightly' || 'stable' }}
           components: ${{ matrix.check == 'fmt' && 'rustfmt' || 'clippy' }}
 
+      - name: Install libvpx for env-libvpx-sys build script
+        # Clippy compiles the workspace including the kaiku-vp8-decoder sub-crate,
+        # whose env-libvpx-sys dep has a build.rs that calls pkg-config for the
+        # system `vpx` library. Skip on fmt since rustfmt never invokes build.rs.
+        if: matrix.check == 'clippy'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libvpx-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -105,6 +114,14 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libvpx for env-libvpx-sys build script
+        # cargo nextest compiles the workspace (including the kaiku-vp8-decoder
+        # sub-crate), whose env-libvpx-sys dep requires pkg-config + system
+        # libvpx at build time.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libvpx-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
