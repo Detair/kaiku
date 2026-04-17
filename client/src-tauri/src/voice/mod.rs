@@ -4,6 +4,5 @@
 
 pub mod audio_mixer;
 pub mod frame_buffer;
-pub mod rtp_depacketizer;
 pub mod subscriber;
 pub mod video_decoder;

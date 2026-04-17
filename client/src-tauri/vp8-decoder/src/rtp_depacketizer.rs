@@ -24,7 +24,7 @@ pub struct Vp8Depacketizer {
 }
 
 impl Vp8Depacketizer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             frame_buffer: Vec::new(),
             last_seq: None,

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "server",
     "client/src-tauri",
+    "client/src-tauri/vp8-decoder",
     "shared/vc-common",
     "shared/vc-crypto",
 ]

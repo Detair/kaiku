@@ -83,7 +83,9 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 
 # Video encoding
 vpx-encode = "0.3"
-env-libvpx-sys = "4"  # match existing vpx-encode 0.3.0 transitive pin (4.0.13)
+# Native VP8 decode path lives in a sub-crate so unsafe FFI is isolated from
+# the workspace's `unsafe_code = "forbid"` policy. See client/src-tauri/vp8-decoder/.
+kaiku-vp8-decoder = { path = "vp8-decoder" }
 
 # Image encoding (thumbnails)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

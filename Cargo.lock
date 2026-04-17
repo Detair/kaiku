@@ -4674,6 +4674,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaiku-vp8-decoder"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "env-libvpx-sys",
+ "serde",
+ "serde_bytes",
+ "thiserror 1.0.69",
+ "tracing",
+ "webrtc",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10640,11 +10653,11 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cpal 0.17.1",
- "env-libvpx-sys",
  "futures",
  "getrandom 0.2.17",
  "hmac",
  "image",
+ "kaiku-vp8-decoder",
  "keyring",
  "nnnoiseless",
  "nokhwa",

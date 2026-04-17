@@ -1,0 +1,71 @@
+[package]
+name = "kaiku-vp8-decoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "VP8 RTP depacketizer + native libvpx decoder for the Kaiku Tauri client"
+publish = false
+
+[dependencies]
+# FFI to libvpx (published as env-libvpx-sys on crates.io, importable as vpx_sys)
+env-libvpx-sys = "4"
+# RTP types (Packet) — match vc-client's webrtc version
+webrtc = "0.11"
+# Error wrapping
+thiserror = "1"
+# DecodedFrame carries binary plane data over Tauri Channel<T>; callers serialize
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+# Structured logging for the depacketizer + decoder
+tracing = "0.1"
+
+[dev-dependencies]
+# Depacketizer unit tests construct RTP Packet fixtures with `Bytes` payloads.
+bytes = "1"
+
+[lints.rust]
+# FFI to libvpx requires unsafe; the workspace forbids it by default. This
+# sub-crate is the designated boundary where native bindings are wrapped. All
+# unsafe blocks carry SAFETY comments documenting their invariants.
+unsafe_code = "allow"
+
+[lints.clippy]
+# Mirror the workspace's clippy config. Cargo does not support `workspace =
+# true` inside a per-tool lint table (only at the top-level `[lints]`), and
+# the top-level form would re-inherit `unsafe_code = "forbid"`. Keep this
+# list in sync with the workspace block if new lint allows are added there.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+unreadable_literal = "allow"
+too_many_lines = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+map_unwrap_or = "allow"
+module_name_repetitions = "allow"
+similar_names = "allow"
+struct_field_names = "allow"
+must_use_candidate = "allow"
+let_underscore_future = "allow"
+match_same_arms = "allow"
+significant_drop_tightening = "allow"
+significant_drop_in_scrutinee = "allow"
+option_if_let_else = "allow"
+needless_pass_by_value = "allow"
+type_complexity = "allow"
+non_std_lazy_statics = "allow"
+never_loop = "allow"
+redundant_closure_for_method_calls = "allow"
+unused_async = "allow"
+manual_let_else = "allow"
+# FFI-specific: `use vpx_sys::*;` brings ~hundreds of libvpx types into scope.
+# Listing them explicitly adds no safety benefit.
+wildcard_imports = "allow"
+# FFI-specific: `&mut self.ctx as *mut _` is idiomatic for C pointer APIs.
+borrow_as_ptr = "allow"
