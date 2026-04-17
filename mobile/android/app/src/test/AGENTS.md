@@ -84,13 +84,13 @@ Same pattern applies to any `companion object` method that constructs
 - **Instrumented (`androidTest/`)**: for native WebRTC interactions, real
   `PeerConnectionFactory`, and full UI bindings. Requires emulator/device in CI.
 
-## `CoroutineScope(Dispatchers.IO)` + `StandardTestDispatcher` caveat
+## `CoroutineScope(Dispatchers.*)` + `StandardTestDispatcher` caveat
 
 Production code that wraps a flow in `stateIn(CoroutineScope(Dispatchers.IO), Eagerly, …)`
-or launches collectors on its own `Dispatchers.IO` scope cannot be driven by
-`TestCoroutineScheduler`. `runCurrent()` / `advanceUntilIdle()` only drain the
-test dispatcher, so synchronous assertions on `.value` right after mutating the
-source flow may read stale state.
+(or `Dispatchers.Default`, same problem) or launches collectors on its own
+privately-owned scope cannot be driven by `TestCoroutineScheduler`. `runCurrent()`
+/ `advanceUntilIdle()` only drain the test dispatcher, so synchronous assertions
+on `.value` right after mutating the source flow may read stale state.
 
 **Canonical fix: inject the scope via Hilt with a dedicated qualifier.**
 
@@ -117,8 +117,21 @@ class MyFeature @Inject constructor(
 }
 ```
 
-`WebRtcManager`'s `voiceIceConnected` uses this pattern via `@VoiceCoroutineScope`
-(`mobile/android/app/src/main/java/io/wolftown/kaiku/di/VoiceCoroutineScope.kt`).
+Existing examples in this codebase:
+
+- `@VoiceCoroutineScope` — drives `WebRtcManager.voiceIceConnected`
+  (`mobile/android/app/src/main/java/io/wolftown/kaiku/di/VoiceCoroutineScope.kt`,
+  module provides `Dispatchers.IO`).
+- `@AuthCoroutineScope` — drives `AuthState.isLoggedIn` and `currentUserId`
+  (`mobile/android/app/src/main/java/io/wolftown/kaiku/di/AuthCoroutineScope.kt`,
+  module provides `Dispatchers.Default` — the work is a cheap `.map`, not I/O).
+- `@ChatCoroutineScope` — drives `ChatRepository`'s WebSocket event collector
+  (`mobile/android/app/src/main/java/io/wolftown/kaiku/di/ChatCoroutineScope.kt`,
+  module provides `Dispatchers.IO` — WS decoding and state mutation).
+
+Apply the pattern anywhere production code wraps a flow in
+`stateIn(CoroutineScope(Dispatchers.*), Eagerly, …)` where tests need to assert
+on the derived `StateFlow.value` synchronously.
 
 **Fallbacks (avoid unless the injection path is genuinely blocked):**
 
