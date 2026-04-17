@@ -85,8 +85,8 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun KaikuApp(
+    authState: AuthState,
     startDestination: String = "server_url",
-    authState: AuthState? = null,
     appVersion: String = ""
 ) {
     KaikuTheme(darkTheme = true) {
@@ -98,7 +98,7 @@ fun KaikuApp(
             KaikuNavGraph(
                 navController = navController,
                 startDestination = startDestination,
-                authState = authState ?: AuthState(),
+                authState = authState,
                 appVersion = appVersion
             )
         }
