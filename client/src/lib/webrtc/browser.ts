@@ -46,6 +46,28 @@ type AudioElementWithSinkId = HTMLAudioElement & {
   setSinkId(id: string): Promise<void>;
 };
 
+/**
+ * Maximum number of ICE candidates buffered per PeerConnection while waiting
+ * for `setRemoteDescription` to complete. Bounded to prevent unbounded memory
+ * growth from a misbehaving or malicious server.
+ */
+const MAX_PENDING_CANDIDATES = 100;
+
+/**
+ * Bundled peer-connection state: the PC itself plus the flag/queue needed to
+ * buffer ICE candidates that arrive before the remote description is applied.
+ *
+ * Restrictive-NAT deployments can deliver trickle ICE candidates before the
+ * SDP answer/offer is applied; adding them pre-SRD throws `InvalidStateError`
+ * and silently breaks connectivity. Buffering here, then draining on SRD
+ * completion, closes that race.
+ */
+interface PcState {
+  pc: RTCPeerConnection;
+  remoteDescriptionSet: boolean;
+  pendingCandidates: RTCIceCandidateInit[];
+}
+
 export class BrowserVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
   private channelId: string | null = null;
@@ -53,9 +75,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private deafened = false;
   private noiseSuppression = true;
 
-  // WebRTC — dual PeerConnection model
-  private publisherPC: RTCPeerConnection | null = null;
-  private subscriberPC: RTCPeerConnection | null = null;
+  // WebRTC — dual PeerConnection model with ICE candidate buffering
+  private publisherState: PcState | null = null;
+  private subscriberState: PcState | null = null;
   private localStream: MediaStream | null = null;
   private remoteStreams = new Map<string, MediaStream>();
 
@@ -119,7 +141,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     console.log(`[BrowserVoiceAdapter] Joining channel: ${channelId}`);
 
     // Clean up any stale connection (e.g., from WebSocket reconnect)
-    if (this.publisherPC || this.subscriberPC) {
+    if (this.publisherState || this.subscriberState) {
       console.log("[BrowserVoiceAdapter] Cleaning up stale connection");
       this.cleanup();
     }
@@ -149,9 +171,17 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Fetch ICE servers (STUN + TURN) from the API
       const config = await this.fetchIceConfig();
 
-      // Create dual PeerConnections
-      this.publisherPC = new RTCPeerConnection(config);
-      this.subscriberPC = new RTCPeerConnection(config);
+      // Create dual PeerConnections with bundled state for ICE buffering
+      this.publisherState = {
+        pc: new RTCPeerConnection(config),
+        remoteDescriptionSet: false,
+        pendingCandidates: [],
+      };
+      this.subscriberState = {
+        pc: new RTCPeerConnection(config),
+        remoteDescriptionSet: false,
+        pendingCandidates: [],
+      };
       this.setupPublisherPC(channelId);
       this.setupSubscriberPC(channelId);
 
@@ -213,7 +243,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Add mic track to publisherPC — this triggers onnegotiationneeded
       // which creates and sends the publisher offer automatically
       this.localStream.getTracks().forEach((track) => {
-        this.publisherPC!.addTrack(track, this.localStream!);
+        this.publisherState!.pc.addTrack(track, this.localStream!);
       });
 
       console.log("[BrowserVoiceAdapter] Mic tracks added, publisher offer will be sent via onnegotiationneeded");
@@ -371,7 +401,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       `[BrowserVoiceAdapter] Handling publisher answer for channel: ${channelId}`,
     );
 
-    if (!this.publisherPC) {
+    const state = this.publisherState;
+    if (!state) {
       return {
         ok: false,
         error: { type: "not_connected" },
@@ -389,11 +420,35 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    // Reset buffering flags for this negotiation — any candidates queued from
+    // a prior session or stale renegotiation must not be reused.
+    state.remoteDescriptionSet = false;
+    state.pendingCandidates = [];
+
     try {
-      await this.publisherPC.setRemoteDescription(
+      await state.pc.setRemoteDescription(
         new RTCSessionDescription({ type: "answer", sdp }),
       );
       console.log("[BrowserVoiceAdapter] Publisher answer applied");
+
+      // Mark remote description applied and drain any buffered candidates.
+      state.remoteDescriptionSet = true;
+      const candidates = state.pendingCandidates.splice(0);
+      for (const candidate of candidates) {
+        try {
+          await state.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.warn(
+            "[BrowserVoiceAdapter] Drained publisher ICE candidate failed:",
+            err,
+          );
+        }
+      }
+      if (candidates.length > 0) {
+        console.log(
+          `[BrowserVoiceAdapter] Drained ${candidates.length} buffered publisher ICE candidate(s)`,
+        );
+      }
 
       // Release negotiation lock
       this.isNegotiating = false;
@@ -401,7 +456,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       // Drain pending negotiation
       if (this.pendingNegotiation) {
         this.pendingNegotiation = false;
-        this.publisherPC.dispatchEvent(new Event("negotiationneeded"));
+        state.pc.dispatchEvent(new Event("negotiationneeded"));
       }
 
       return { ok: true, value: undefined };
@@ -426,7 +481,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       `[BrowserVoiceAdapter] Handling subscriber offer for channel: ${channelId}`,
     );
 
-    if (!this.subscriberPC) {
+    const state = this.subscriberState;
+    if (!state) {
       return {
         ok: false,
         error: { type: "not_connected" },
@@ -444,12 +500,37 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    // Reset buffering flags for this negotiation — any candidates queued from
+    // a prior session or stale renegotiation must not be reused.
+    state.remoteDescriptionSet = false;
+    state.pendingCandidates = [];
+
     try {
-      await this.subscriberPC.setRemoteDescription(
+      await state.pc.setRemoteDescription(
         new RTCSessionDescription({ type: "offer", sdp }),
       );
-      const answer = await this.subscriberPC.createAnswer();
-      await this.subscriberPC.setLocalDescription(answer);
+
+      // Mark remote description applied and drain any buffered candidates.
+      state.remoteDescriptionSet = true;
+      const candidates = state.pendingCandidates.splice(0);
+      for (const candidate of candidates) {
+        try {
+          await state.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.warn(
+            "[BrowserVoiceAdapter] Drained subscriber ICE candidate failed:",
+            err,
+          );
+        }
+      }
+      if (candidates.length > 0) {
+        console.log(
+          `[BrowserVoiceAdapter] Drained ${candidates.length} buffered subscriber ICE candidate(s)`,
+        );
+      }
+
+      const answer = await state.pc.createAnswer();
+      await state.pc.setLocalDescription(answer);
 
       console.log("[BrowserVoiceAdapter] Subscriber answer created");
 
@@ -484,9 +565,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   ): Promise<VoiceResult<void>> {
     const startTime = performance.now();
 
-    const pc = pcType === "subscriber" ? this.subscriberPC : this.publisherPC;
+    const state =
+      pcType === "subscriber" ? this.subscriberState : this.publisherState;
 
-    if (!pc) {
+    if (!state) {
       console.warn(
         `[BrowserVoiceAdapter] No ${pcType} peer connection for ICE candidate`,
       );
@@ -511,9 +593,28 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     try {
-      // Parse and add ICE candidate immediately (critical for NAT traversal)
-      const candidateInit = JSON.parse(candidate);
-      await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+      const candidateInit: RTCIceCandidateInit = JSON.parse(candidate);
+
+      // Buffer until `setRemoteDescription` completes. On restrictive NATs the
+      // server's ICE candidates can arrive before the SDP answer/offer is
+      // applied; adding them early throws InvalidStateError and silently
+      // breaks the connection.
+      if (!state.remoteDescriptionSet) {
+        if (state.pendingCandidates.length >= MAX_PENDING_CANDIDATES) {
+          console.warn(
+            `[BrowserVoiceAdapter] ICE candidate buffer full for ${pcType} (${MAX_PENDING_CANDIDATES} queued), dropping candidate`,
+          );
+          return { ok: true, value: undefined };
+        }
+        state.pendingCandidates.push(candidateInit);
+        const elapsed = performance.now() - startTime;
+        console.log(
+          `[BrowserVoiceAdapter] ICE candidate (${pcType}) buffered — remote description not yet set (${elapsed.toFixed(2)}ms, ${state.pendingCandidates.length} pending)`,
+        );
+        return { ok: true, value: undefined };
+      }
+
+      await state.pc.addIceCandidate(new RTCIceCandidate(candidateInit));
 
       const elapsed = performance.now() - startTime;
       console.log(
@@ -572,11 +673,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
-    if (!this.publisherPC) return null;
+    if (!this.publisherState) return null;
 
     try {
       // RTT comes from the publisher PC's candidate-pair stats
-      const pubStats = await this.publisherPC.getStats();
+      const pubStats = await this.publisherState.pc.getStats();
       let latency = 0;
       let jitter = 0;
       let totalLost = 0;
@@ -589,8 +690,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       });
 
       // Inbound audio stats come from the subscriber PC (incoming tracks)
-      if (this.subscriberPC) {
-        const subStats = await this.subscriberPC.getStats();
+      if (this.subscriberState) {
+        const subStats = await this.subscriberState.pc.getStats();
         subStats.forEach((report) => {
           if (report.type === "inbound-rtp" && report.kind === "audio") {
             totalLost += report.packetsLost ?? 0;
@@ -734,7 +835,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.inputDeviceId = deviceId;
 
     // If already in a call, restart the stream with the new device
-    if (this.localStream && this.publisherPC) {
+    if (this.localStream && this.publisherState) {
       try {
         // Stop VAD before replacing the stream — the cloned monitor track
         // references the old mic and would go stale (deliver silence).
@@ -757,7 +858,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           await navigator.mediaDevices.getUserMedia(constraints);
 
         // Replace tracks in publisher peer connection
-        const sender = this.publisherPC
+        const sender = this.publisherState.pc
           .getSenders()
           .find((s) => s.track?.kind === "audio");
         if (sender) {
@@ -871,7 +972,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   async startScreenShare(
     options?: ScreenShareOptions,
   ): Promise<VoiceResult<void>> {
-    if (!this.publisherPC) {
+    const publisher = this.publisherState;
+    if (!publisher) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
@@ -889,13 +991,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Add video track to publisher PC
       const videoTrack = stream.getVideoTracks()[0];
-      const videoSender = this.publisherPC.addTrack(videoTrack, stream);
+      const videoSender = publisher.pc.addTrack(videoTrack, stream);
 
       // Add audio track if present
       let audioSender: RTCRtpSender | null = null;
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
-        audioSender = this.publisherPC.addTrack(audioTrack, stream);
+        audioSender = publisher.pc.addTrack(audioTrack, stream);
       }
 
       // onnegotiationneeded fires automatically -> creates offer -> server answers -> RTP flows
@@ -919,7 +1021,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
-    if (!this.publisherPC) {
+    const publisher = this.publisherState;
+    if (!publisher) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
@@ -940,9 +1043,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
 
     // Remove tracks from publisher PC
-    this.publisherPC.removeTrack(share.videoSender);
+    publisher.pc.removeTrack(share.videoSender);
     if (share.audioSender) {
-      this.publisherPC.removeTrack(share.audioSender);
+      publisher.pc.removeTrack(share.audioSender);
     }
 
     // Stop media tracks
@@ -982,7 +1085,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   async startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
-    if (!this.publisherPC) {
+    const publisher = this.publisherState;
+    if (!publisher) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
@@ -1024,7 +1128,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Add video track to publisher peer connection with simulcast encodings
       const webcamBitrate = QUALITY_BITRATES[options?.quality ?? "medium"];
-      const webcamTransceiver = this.publisherPC.addTransceiver(videoTrack, {
+      const webcamTransceiver = publisher.pc.addTransceiver(videoTrack, {
         direction: "sendonly",
         streams: [stream],
         sendEncodings: simulcastEncodings(webcamBitrate),
@@ -1195,8 +1299,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   private cleanupWebcamState(): void {
     // Remove track from publisher peer connection
-    if (this.publisherPC && this.webcamSender) {
-      this.publisherPC.removeTrack(this.webcamSender);
+    if (this.publisherState && this.webcamSender) {
+      this.publisherState.pc.removeTrack(this.webcamSender);
     }
 
     // Stop the stream tracks
@@ -1210,13 +1314,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   private setupPublisherPC(channelId: string) {
-    if (!this.publisherPC) return;
+    const publisher = this.publisherState;
+    if (!publisher) return;
 
     // Client-initiated negotiation: create offer and send to server
     // Uses a negotiation lock to prevent concurrent offers when multiple
     // tracks are added in quick succession (e.g., mic + screen share).
-    this.publisherPC.onnegotiationneeded = async () => {
-      if (!this.publisherPC) return;
+    publisher.pc.onnegotiationneeded = async () => {
+      const current = this.publisherState;
+      if (!current) return;
 
       if (this.isNegotiating) {
         this.pendingNegotiation = true;
@@ -1225,8 +1331,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       this.isNegotiating = true;
       try {
-        const offer = await this.publisherPC.createOffer();
-        await this.publisherPC.setLocalDescription(offer);
+        const offer = await current.pc.createOffer();
+        await current.pc.setLocalDescription(offer);
 
         const { wsSend } = await import("@/lib/tauri");
         await wsSend({
@@ -1241,7 +1347,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     };
 
     // ICE candidate handler for publisher
-    this.publisherPC.onicecandidate = (event) => {
+    publisher.pc.onicecandidate = (event) => {
       if (event.candidate) {
         const candidateJson = JSON.stringify(event.candidate.toJSON());
         // Send ICE candidate with pc_type via WS
@@ -1261,8 +1367,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     };
 
     // Connection state change — publisher PC determines connected state
-    this.publisherPC.onconnectionstatechange = () => {
-      const state = this.publisherPC!.connectionState;
+    publisher.pc.onconnectionstatechange = () => {
+      const state = this.publisherState?.pc.connectionState;
       console.log(`[BrowserVoiceAdapter] Publisher connection state: ${state}`);
 
       switch (state) {
@@ -1295,10 +1401,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   }
 
   private setupSubscriberPC(channelId: string) {
-    if (!this.subscriberPC) return;
+    const subscriber = this.subscriberState;
+    if (!subscriber) return;
 
     // Remote track handler — all remote tracks arrive on subscriberPC
-    this.subscriberPC.ontrack = (event) => {
+    subscriber.pc.ontrack = (event) => {
       const track = event.track;
       const stream = event.streams[0];
 
@@ -1369,7 +1476,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     };
 
     // ICE candidate handler for subscriber
-    this.subscriberPC.onicecandidate = (event) => {
+    subscriber.pc.onicecandidate = (event) => {
       if (event.candidate) {
         const candidateJson = JSON.stringify(event.candidate.toJSON());
         import("@/lib/tauri")
@@ -1388,8 +1495,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     };
 
     // Subscriber connection state (log only, publisher determines main state)
-    this.subscriberPC.onconnectionstatechange = () => {
-      const state = this.subscriberPC?.connectionState;
+    subscriber.pc.onconnectionstatechange = () => {
+      const state = this.subscriberState?.pc.connectionState;
       console.log(`[BrowserVoiceAdapter] Subscriber connection state: ${state}`);
 
       if (state === "failed") {
@@ -1527,14 +1634,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       this.localStream = null;
     }
 
-    // Close both peer connections
-    if (this.publisherPC) {
-      this.publisherPC.close();
-      this.publisherPC = null;
+    // Close both peer connections (also drops buffered ICE candidates)
+    if (this.publisherState) {
+      this.publisherState.pc.close();
+      this.publisherState = null;
     }
-    if (this.subscriberPC) {
-      this.subscriberPC.close();
-      this.subscriberPC = null;
+    if (this.subscriberState) {
+      this.subscriberState.pc.close();
+      this.subscriberState = null;
     }
 
     // Clear remote streams
