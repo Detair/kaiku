@@ -8,10 +8,13 @@ import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.User
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -66,7 +69,16 @@ class MessageFlowTest {
         webSocket = mockk(relaxed = true)
         every { webSocket.events } returns eventsFlow
 
-        chatRepository = ChatRepository(messageApi, webSocket, json)
+        // UnconfinedTestDispatcher runs the WebSocket event-collector
+        // continuations synchronously on the calling thread, so `.value`
+        // reflects emitted ServerEvents after `advanceUntilIdle()`. See
+        // app/src/test/AGENTS.md ("inject the scope").
+        chatRepository = ChatRepository(
+            messageApi,
+            webSocket,
+            json,
+            CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+        )
     }
 
     // ========================================================================

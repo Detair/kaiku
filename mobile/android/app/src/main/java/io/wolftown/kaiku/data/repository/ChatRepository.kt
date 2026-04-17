@@ -4,11 +4,10 @@ import io.wolftown.kaiku.data.api.MessageApi
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
+import io.wolftown.kaiku.di.ChatCoroutineScope
 import io.wolftown.kaiku.domain.model.Message
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,14 +35,13 @@ import javax.inject.Singleton
 class ChatRepository @Inject constructor(
     private val messageApi: MessageApi,
     private val webSocket: KaikuWebSocket,
-    private val json: Json
+    private val json: Json,
+    @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     companion object {
         private val logger = Logger.getLogger("ChatRepository")
         private const val TYPING_DEBOUNCE_MS = 3_000L
     }
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Per-channel message lists. */
     private val channelMessages = ConcurrentHashMap<String, MutableStateFlow<List<Message>>>()
