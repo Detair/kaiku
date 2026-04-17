@@ -13,6 +13,11 @@ tauri-build = { version = "2", features = [] }
 [features]
 default = ["megolm"]
 megolm = []
+# Gates the VP8 decoder integration test (`tests/vp8_decode.rs`).
+# Requires the captured fixture at `tests/fixtures/vp8_sample.rtp` and a
+# working libvpx (via env-libvpx-sys). Off by default to keep `cargo test`
+# fast and avoid forcing libvpx on machines that only run unit tests.
+decode-integration = []
 
 [dependencies]
 # Internal
@@ -42,6 +47,7 @@ rodio = "0.22"
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+serde_bytes = "0.11"
 base64 = "0.22"
 
 # HTTP
@@ -77,6 +83,9 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 
 # Video encoding
 vpx-encode = "0.3"
+# Native VP8 decode path lives in a sub-crate so unsafe FFI is isolated from
+# the workspace's `unsafe_code = "forbid"` policy. See client/src-tauri/vp8-decoder/.
+kaiku-vp8-decoder = { path = "vp8-decoder" }
 
 # Image encoding (thumbnails)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

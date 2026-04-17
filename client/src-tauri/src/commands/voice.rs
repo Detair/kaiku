@@ -122,6 +122,7 @@ pub async fn join_voice(
     let voice_arc = state.voice.clone();
     let active_video_count = voice_state.active_video_count.clone();
     let video_tasks = voice_state.video_tasks.clone();
+    let video_frame_sinks = voice_state.video_frame_sinks.clone();
     voice_state
         .webrtc
         .set_on_subscriber_track(move |track, _receiver| {
@@ -248,6 +249,7 @@ pub async fn join_voice(
                     extracted_stream_id,
                     app_clone.clone(),
                     count,
+                    video_frame_sinks.clone(),
                 );
 
                 // Store handle for cleanup on leave_voice
@@ -481,6 +483,11 @@ pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
         voice_state.active_video_count.store(0, Ordering::Relaxed);
     }
 
+    // Drop any pending frame sinks (subscriptions whose track never arrived).
+    // Dropping the FrameBuffer closes its watch channel, which causes the
+    // emitter task in spawn_frame_emitter to exit cleanly.
+    voice_state.video_frame_sinks.lock().await.clear();
+
     // Stop audio and drop mixer
     voice_state.audio.stop_all().await;
     voice_state.audio_tx = None;
@@ -704,6 +711,42 @@ pub async fn get_voice_channel(state: State<'_, AppState>) -> Result<Option<Stri
     } else {
         Ok(None)
     }
+}
+
+/// Subscribe to decoded video frames for a given stream.
+///
+/// Called by the frontend (Solid.js) when mounting a screen-share / webcam
+/// tile. Registers a `FrameBuffer` under `stream_id` in `VoiceState` and
+/// spawns an emitter task that forwards decoded frames to the provided
+/// Tauri `Channel<DecodedFrame>`.
+///
+/// The video decode task (see `spawn_video_decode_task`) looks up the
+/// matching `FrameBuffer` by `stream_id` when the remote track arrives and
+/// hands it to a `Vp8VideoDecoder` instance. If the track has already
+/// arrived without a sink, the decode task drains packets until either a
+/// sink is registered or the lookup deadline passes.
+#[command]
+pub async fn subscribe_video_frames(
+    stream_id: String,
+    on_frame: tauri::ipc::Channel<crate::voice::video_decoder::DecodedFrame>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use crate::voice::frame_buffer::{spawn_frame_emitter, FrameBuffer};
+
+    let (frame_buffer, frame_rx) = FrameBuffer::new();
+    spawn_frame_emitter(on_frame, frame_rx);
+
+    let voice_guard = state.voice.read().await;
+    let voice = voice_guard
+        .as_ref()
+        .ok_or_else(|| "Voice state not initialized".to_string())?;
+    voice
+        .video_frame_sinks
+        .lock()
+        .await
+        .insert(stream_id.clone(), frame_buffer);
+    info!(stream_id = %stream_id, "Registered video frame subscription");
+    Ok(())
 }
 
 /// Send captured audio to WebRTC track with RTP packetization.

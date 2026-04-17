@@ -19,15 +19,21 @@ COPY shared/vc-common/Cargo.toml shared/vc-common/Cargo.toml
 COPY shared/vc-crypto/Cargo.toml shared/vc-crypto/Cargo.toml
 COPY server/Cargo.toml server/Cargo.toml
 COPY client/src-tauri/Cargo.toml client/src-tauri/Cargo.toml
+COPY client/src-tauri/vp8-decoder/Cargo.toml client/src-tauri/vp8-decoder/Cargo.toml
 
 # Create dummy source files for dependency caching
-RUN mkdir -p shared/vc-common/src shared/vc-crypto/src server/src client/src-tauri/src && \
+RUN mkdir -p \
+        shared/vc-common/src shared/vc-crypto/src \
+        server/src \
+        client/src-tauri/src \
+        client/src-tauri/vp8-decoder/src && \
     echo "fn main() {}" > shared/vc-common/src/lib.rs && \
     echo "fn main() {}" > shared/vc-crypto/src/lib.rs && \
     echo "fn main() {}" > server/src/lib.rs && \
     echo "fn main() {}" > server/src/main.rs && \
     echo "fn main() {}" > client/src-tauri/src/lib.rs && \
-    echo "fn main() {}" > client/src-tauri/src/main.rs
+    echo "fn main() {}" > client/src-tauri/src/main.rs && \
+    echo "fn main() {}" > client/src-tauri/vp8-decoder/src/lib.rs
 
 # Build dependencies only (this layer will be cached)
 RUN cargo build --release --package vc-server 2>/dev/null || true

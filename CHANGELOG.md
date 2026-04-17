@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Swipe gestures: right from edge to open drawer, left to close
 - Long-press context menu support for touch devices on messages, channels, and member lists
 - `touch:` UnoCSS variant for touch-specific styling via `@media (hover: none)`
+- Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
 - Voice connections use dual PeerConnection architecture (publisher + subscriber) for reliable screen sharing and multi-user scalability

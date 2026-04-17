@@ -50,6 +50,23 @@ Platform-specific notes:
 
 Icons in `client/src-tauri/icons/` must be committed to the repo. The Tauri bundler needs `icon.ico` for deb packaging and `icon.icns` for macOS.
 
+### Native VP8 Decode
+
+The Tauri client decodes incoming VP8 RTP streams natively via `libvpx`.
+
+- **Dependency:** `env-libvpx-sys = "4"` is a direct dep of the Tauri client crate. It matches the transitive pin from `vpx-encode 0.3.0` (resolves to `env-libvpx-sys 4.0.13`), so there is no dual-version conflict at link time.
+- **Windows:** the existing vcpkg `libvpx → vpx.lib` rename workaround in `.github/workflows/tauri-build.yml` (see table above) continues to apply. No new CI changes needed.
+- **Integration test:** the fixture-based decode test is gated behind a feature flag and ignored by default. Run it explicitly with:
+  ```bash
+  cd client/src-tauri
+  cargo test --features decode-integration --test vp8_decode
+  ```
+- **Fixture regeneration:** re-capture `tests/fixtures/vp8_sample.rtp` after any VP8 encoder upgrade and commit the updated `.rtp`:
+  ```bash
+  cd client/src-tauri
+  cargo run --example capture_vp8_fixture
+  ```
+
 ## Separate Tauri Build Workflow
 
 A dedicated Tauri build workflow exists at `.github/workflows/tauri-build.yml`. It runs independently from the CI pipeline and includes:

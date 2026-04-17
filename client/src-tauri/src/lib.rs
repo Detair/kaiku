@@ -120,6 +120,7 @@ pub fn run() {
             commands::voice::set_output_device,
             commands::voice::is_in_voice,
             commands::voice::get_voice_channel,
+            commands::voice::subscribe_video_frames,
             // Screen share commands
             commands::screen_share::enumerate_capture_sources,
             commands::screen_share::start_screen_share,
@@ -320,6 +321,12 @@ pub struct VoiceState {
     pub video_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// Number of currently active video decode streams.
     pub active_video_count: Arc<AtomicUsize>,
+    /// Per-stream `FrameBuffer` handles registered by `subscribe_video_frames`
+    /// (called from the frontend when mounting a video tile). The video decode
+    /// task removes the matching entry by `stream_id` when the track arrives
+    /// and uses it to construct a `Vp8VideoDecoder`.
+    pub video_frame_sinks:
+        Arc<tokio::sync::Mutex<HashMap<String, voice::frame_buffer::FrameBuffer>>>,
 }
 
 impl VoiceState {
@@ -336,6 +343,7 @@ impl VoiceState {
             audio_mixer: None,
             video_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             active_video_count: Arc::new(AtomicUsize::new(0)),
+            video_frame_sinks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }
 }
