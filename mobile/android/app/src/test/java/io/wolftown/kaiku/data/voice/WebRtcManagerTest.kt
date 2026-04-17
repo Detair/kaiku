@@ -14,7 +14,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 import org.webrtc.PeerConnection
 
@@ -355,13 +354,8 @@ class WebRtcManagerTest {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    @Ignore(
-        "voiceIceConnected uses stateIn(CoroutineScope(Dispatchers.IO), Eagerly) " +
-            "whose re-emissions can't be driven by TestCoroutineScheduler. Unblock by " +
-            "injecting the CoroutineScope into WebRtcManager (separate workstream)."
-    )
     fun `voiceIceConnected emits true only when both PCs reach Connected`() = runTest {
-        val webRtcManager = newWebRtcManager()
+        val webRtcManager = newWebRtcManager(voiceScope = backgroundScope)
 
         // Only publisher CONNECTED — combined is still false.
         webRtcManager.setPublisherIceStateForTest(
