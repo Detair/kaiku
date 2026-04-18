@@ -11,16 +11,6 @@ use vc_server::pages::{
     PageListItem, UpdatePageRequest,
 };
 
-/// Helper to create a test database pool.
-async fn create_test_pool() -> PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
 /// Helper to create a unique test slug.
 fn test_slug() -> String {
     format!("test-page-{}", &Uuid::new_v4().to_string()[..8])
@@ -92,10 +82,8 @@ fn test_is_reserved_slug() {
 }
 
 /// Test page count for platform pages.
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_count_platform_pages() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_count_platform_pages(pool: PgPool) {
 
     let count = count_pages(&pool, None)
         .await
@@ -106,10 +94,8 @@ async fn test_count_platform_pages() {
 }
 
 /// Test page count for guild pages.
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_count_guild_pages() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_count_guild_pages(pool: PgPool) {
 
     // Use a random guild ID (won't exist, should return 0)
     let guild_id = Uuid::new_v4();
@@ -122,10 +108,8 @@ async fn test_count_guild_pages() {
 }
 
 /// Test slug existence check for non-existent slug.
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_slug_not_exists() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_slug_not_exists(pool: PgPool) {
     let slug = test_slug();
 
     let exists = slug_exists(&pool, None, &slug, None)
