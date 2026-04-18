@@ -6,6 +6,7 @@
 //! Run with: `cargo test --test integration filters_http -- --nocapture`
 
 use axum::body::Body;
+use sqlx::PgPool;
 use axum::http::Method;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
@@ -147,14 +148,11 @@ async fn edit_message_raw(
 // Filter Config CRUD
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_list_filter_configs_empty() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_list_filter_configs_empty(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::GET, &format!("/api/guilds/{guild_id}/filters"))
         .header("Authorization", format!("Bearer {token}"))
@@ -165,17 +163,13 @@ async fn test_list_filter_configs_empty() {
     assert_eq!(resp.status(), 200);
     let json = body_to_json(resp).await;
     assert!(json.as_array().unwrap().is_empty());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_enable_and_list_filter_category() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_enable_and_list_filter_category(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     enable_filter_category(&app, guild_id, &token, "spam", "block").await;
 
@@ -192,17 +186,13 @@ async fn test_enable_and_list_filter_category() {
     assert_eq!(configs[0]["category"], "spam");
     assert_eq!(configs[0]["enabled"], true);
     assert_eq!(configs[0]["action"], "block");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_disable_filter_category() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_disable_filter_category(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Enable then disable
     enable_filter_category(&app, guild_id, &token, "spam", "block").await;
@@ -220,51 +210,39 @@ async fn test_disable_filter_category() {
     assert_eq!(resp.status(), 200);
     let json = body_to_json(resp).await;
     assert_eq!(json[0]["enabled"], false);
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Custom Patterns
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_custom_keyword_pattern() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_create_custom_keyword_pattern(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let pattern = create_pattern(&app, guild_id, &token, "badword", false).await;
     assert_eq!(pattern["pattern"], "badword");
     assert_eq!(pattern["is_regex"], false);
     assert_eq!(pattern["enabled"], true);
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_custom_regex_pattern() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_create_custom_regex_pattern(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let pattern = create_pattern(&app, guild_id, &token, r"(?i)bad\s+word", true).await;
     assert_eq!(pattern["is_regex"], true);
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_invalid_regex_rejected() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_invalid_regex_rejected(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({
         "pattern": "[invalid",
@@ -281,17 +259,13 @@ async fn test_invalid_regex_rejected() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Invalid regex should be rejected");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_delete_custom_pattern() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_delete_custom_pattern(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let pattern = create_pattern(&app, guild_id, &token, "deleteme", false).await;
     let pattern_id = pattern["id"].as_str().unwrap();
@@ -306,21 +280,17 @@ async fn test_delete_custom_pattern() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 204, "Expected 204 No Content for delete");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Message Blocking
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_message_blocked_by_custom_keyword() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_message_blocked_by_custom_keyword(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Add custom keyword
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
@@ -330,17 +300,13 @@ async fn test_message_blocked_by_custom_keyword() {
         send_message_raw(&app, channel_id, &token, "this is forbidden content").await;
     assert_eq!(status, 403, "Blocked message should return 403");
     assert_eq!(json["error"], "CONTENT_FILTERED");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_clean_message_allowed() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_clean_message_allowed(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Add custom keyword
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
@@ -348,17 +314,13 @@ async fn test_clean_message_allowed() {
     // Send clean message
     let (status, _) = send_message_raw(&app, channel_id, &token, "this is perfectly fine").await;
     assert_eq!(status, 201, "Clean message should be allowed");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_edit_blocked_by_filter() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_edit_blocked_by_filter(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Create clean message first
     let (status, msg) = send_message_raw(&app, channel_id, &token, "clean message").await;
@@ -375,21 +337,17 @@ async fn test_edit_blocked_by_filter() {
         "Edited message with blocked word should return 403"
     );
     assert_eq!(json["error"], "CONTENT_FILTERED");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Encrypted & DM Skip
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_encrypted_message_not_filtered() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_encrypted_message_not_filtered(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Add filter
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
@@ -400,41 +358,30 @@ async fn test_encrypted_message_not_filtered() {
         status, 201,
         "Encrypted message should bypass content filter"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_dm_message_not_filtered() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_dm_message_not_filtered(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
     let dm_channel = super::helpers::create_dm_channel(&app.pool, user_a, user_b).await;
 
-    let mut guard = app.cleanup_guard();
-    guard
-        .add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_channel).await });
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
-
     // DMs have no guild_id, so filters don't apply
     let (status, _) = send_message_raw(&app, dm_channel, &token_a, "anything goes in DMs").await;
     assert_eq!(status, 201, "DM messages should not be filtered");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Log Action (non-block)
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_log_action_allows_message_but_creates_log() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_log_action_allows_message_but_creates_log(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Enable spam category with "log" action
     enable_filter_category(&app, guild_id, &token, "spam", "log").await;
@@ -462,21 +409,17 @@ async fn test_log_action_allows_message_but_creates_log() {
         json["total"].as_i64().unwrap() > 0,
         "Moderation log should have entries from log action"
     );
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Moderation Log
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_moderation_log_pagination() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_moderation_log_pagination(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Add filter and trigger some blocks
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
@@ -497,16 +440,15 @@ async fn test_moderation_log_pagination() {
     let json = body_to_json(resp).await;
     assert_eq!(json["items"].as_array().unwrap().len(), 2);
     assert!(json["total"].as_i64().unwrap() >= 3);
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Permission Checks
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_non_admin_cannot_modify_filters() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_non_admin_cannot_modify_filters(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (member_id, _) = create_test_user(&app.pool).await;
     let member_token = generate_access_token(&app.config, member_id);
@@ -514,11 +456,6 @@ async fn test_non_admin_cannot_modify_filters() {
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, owner_id, perms).await;
     super::helpers::add_guild_member(&app.pool, guild_id, member_id).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(owner_id);
-    guard.delete_user(member_id);
 
     // Try to list configs as non-admin
     let req = TestApp::request(Method::GET, &format!("/api/guilds/{guild_id}/filters"))
@@ -528,21 +465,17 @@ async fn test_non_admin_cannot_modify_filters() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 403, "Non-admin should get 403");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Test Endpoint
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_filter_dry_run() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_filter_dry_run(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Add a keyword
     create_pattern(&app, guild_id, &token, "testblock", false).await;
@@ -580,21 +513,17 @@ async fn test_filter_dry_run() {
     let json = body_to_json(resp).await;
     assert_eq!(json["blocked"], false);
     assert!(json["matches"].as_array().unwrap().is_empty());
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Cache Invalidation
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cache_invalidation_on_config_change() {
-    let app = TestApp::new().await;
-    let (user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
+#[sqlx::test]
+async fn test_cache_invalidation_on_config_change(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Message should pass with no filters
     let (status, _) = send_message_raw(&app, channel_id, &token, "forbidden content").await;
@@ -610,5 +539,4 @@ async fn test_cache_invalidation_on_config_change() {
         "After adding filter, message should be blocked"
     );
     assert_eq!(json["error"], "CONTENT_FILTERED");
-    guard.cleanup().await;
 }
