@@ -2,10 +2,14 @@
 //!
 //! Tests for data export and account deletion lifecycle.
 //!
+//! Each test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so no manual row cleanup is required.
+//!
 //! Run with: `cargo test --test integration governance -- --nocapture`
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 use vc_server::auth::hash_password;
 
 use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
@@ -34,15 +38,12 @@ async fn create_test_user_with_password(
 // Data Export Tests
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_request_data_export_no_s3() {
+#[sqlx::test]
+async fn test_request_data_export_no_s3(pool: PgPool) {
     // Without S3 configured, export request should return 503
-    let app = TestApp::new().await;
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/me/data-export")
         .header("Authorization", format!("Bearer {token}"))
@@ -55,17 +56,13 @@ async fn test_request_data_export_no_s3() {
         503,
         "Should return 503 when S3 is not configured"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_get_export_status_none() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_get_export_status_none(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::GET, "/api/me/data-export")
         .header("Authorization", format!("Bearer {token}"))
@@ -78,17 +75,13 @@ async fn test_get_export_status_none() {
         404,
         "Should return 404 when no export job exists"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_request_export_recovers_stale_pending_job() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_request_export_recovers_stale_pending_job(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let stale_job_id = uuid::Uuid::new_v4();
     sqlx::query(
@@ -120,22 +113,18 @@ async fn test_request_export_recovers_stale_pending_job() {
             .await
             .unwrap();
     assert_eq!(status.as_deref(), Some("failed"));
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Account Deletion Tests
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_request_deletion_requires_confirm() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_request_deletion_requires_confirm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Missing "DELETE" confirmation
     let body = serde_json::json!({
@@ -155,18 +144,14 @@ async fn test_request_deletion_requires_confirm() {
         400,
         "Should reject wrong confirmation string"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_request_deletion_requires_password() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_request_deletion_requires_password(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // No password provided
     let body = serde_json::json!({
@@ -181,18 +166,14 @@ async fn test_request_deletion_requires_password() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Should require password for local auth");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_request_deletion_wrong_password() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_request_deletion_wrong_password(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({
         "password": "wrong_password",
@@ -207,18 +188,14 @@ async fn test_request_deletion_wrong_password() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 401, "Should reject wrong password");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_request_deletion_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_request_deletion_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({
         "password": password,
@@ -243,22 +220,17 @@ async fn test_request_deletion_success() {
         json["message"].as_str().unwrap().contains("scheduled"),
         "Response should contain scheduling message"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_deletion_blocked_by_guild_ownership() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_deletion_blocked_by_guild_ownership(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
 
     // Create a guild owned by this user
-    let guild_id = super::helpers::create_guild(&app.pool, user_id).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
+    let _guild_id = super::helpers::create_guild(&app.pool, user_id).await;
 
     let body = serde_json::json!({
         "password": password,
@@ -288,18 +260,14 @@ async fn test_deletion_blocked_by_guild_ownership() {
         json["message"].as_str().unwrap().contains("guilds"),
         "Message should mention guilds"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cancel_deletion() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_cancel_deletion(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // First, request deletion
     let body = serde_json::json!({
@@ -333,17 +301,13 @@ async fn test_cancel_deletion() {
         json["message"].as_str().unwrap().contains("cancelled"),
         "Response should confirm cancellation"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cancel_deletion_when_not_pending() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_cancel_deletion_when_not_pending(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/me/delete-account/cancel")
         .header("Authorization", format!("Bearer {token}"))
@@ -356,18 +320,14 @@ async fn test_cancel_deletion_when_not_pending() {
         404,
         "Should return 404 when no deletion is pending"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_duplicate_deletion_request() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_duplicate_deletion_request(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({
         "password": password,
@@ -398,22 +358,18 @@ async fn test_duplicate_deletion_request() {
         409,
         "Should reject duplicate deletion request"
     );
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // UserProfile includes deletion_scheduled_at
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_profile_shows_deletion_scheduled() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_profile_shows_deletion_scheduled(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Request deletion
     let body = serde_json::json!({
@@ -445,5 +401,4 @@ async fn test_profile_shows_deletion_scheduled() {
         json["deletion_scheduled_at"].is_string(),
         "Profile should include deletion_scheduled_at after deletion request"
     );
-    guard.cleanup().await;
 }
