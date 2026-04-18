@@ -3,9 +3,12 @@
 //! Provides `TestApp` for building and sending requests through the full axum router,
 //! plus utilities for user creation, admin grants, and JWT generation.
 //!
-//! ## Shared Resources
+//! ## Integration test pattern
 //!
-//! Use [`shared_pool()`] to avoid creating new connections per test.
+//! Integration tests use `#[sqlx::test]`; each test receives a fresh `PgPool`
+//! against an isolated database. Call [`TestApp::with_pool`] (or
+//! [`TestApp::with_pool_and_screen_share_limiter`] /
+//! [`TestApp::with_pool_and_config`]) to wire the axum router onto that pool.
 //!
 //! ## Cleanup Guards
 //!
@@ -28,7 +31,6 @@ use axum::http::{self, Method, Request, Response};
 use axum::Router;
 use http_body_util::BodyExt;
 use sqlx::PgPool;
-use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -40,38 +42,6 @@ use vc_server::db;
 use vc_server::permissions::GuildPermissions;
 use vc_server::voice::screen_share::ScreenShareLimiter;
 use vc_server::voice::sfu::SfuServer;
-
-// ============================================================================
-// Shared resources (Issue #138)
-// ============================================================================
-
-/// Shared database pool across all tests in the same binary.
-static SHARED_POOL: OnceCell<PgPool> = OnceCell::const_new();
-
-/// Shared config across all tests in the same binary.
-static SHARED_CONFIG: OnceCell<Config> = OnceCell::const_new();
-
-/// Get or create a shared database pool.
-///
-/// Reuses a single pool across all test cases in the same binary,
-/// avoiding connection exhaustion from creating pools per-test.
-pub async fn shared_pool() -> &'static PgPool {
-    SHARED_POOL
-        .get_or_init(|| async {
-            let config = shared_config().await;
-            db::create_pool(&config.database_url)
-                .await
-                .expect("Failed to connect to test DB")
-        })
-        .await
-}
-
-/// Get or create a shared config.
-pub async fn shared_config() -> &'static Config {
-    SHARED_CONFIG
-        .get_or_init(|| async { Config::default_for_test() })
-        .await
-}
 
 // ============================================================================
 // Cleanup Guard (Issue #137)
@@ -262,7 +232,7 @@ impl TestApp {
     /// Pass a pool from `#[sqlx::test]`'s fixture. The returned `TestApp`
     /// owns `pool` for the duration of the test.
     pub async fn with_pool(pool: PgPool) -> Self {
-        let config = shared_config().await.clone();
+        let config = Config::default_for_test();
         let redis = db::create_redis_client(&config.redis_url)
             .await
             .expect("Failed to connect to test Redis");
@@ -291,19 +261,15 @@ impl TestApp {
         }
     }
 
-    /// Legacy no-arg constructor — delegates to [`Self::with_pool`] using the
-    /// shared process-global pool. Retained for tests not yet migrated to
-    /// `#[sqlx::test]`. Removed in Phase 5.
-    pub async fn new() -> Self {
-        Self::with_pool(shared_pool().await.clone()).await
-    }
-
-    /// Pool-injecting variant of [`Self::with_screen_share_limiter`].
+    /// Pool-injecting constructor wired with a real `ScreenShareLimiter`
+    /// backed by the shared Redis.
     ///
-    /// Pass a pool from `#[sqlx::test]`'s fixture; the returned `TestApp`
-    /// is wired with a real `ScreenShareLimiter` backed by the shared Redis.
+    /// Use this for screen share integration tests that call the
+    /// `/screenshare/check`, `/screenshare/start`, or `/screenshare/stop`
+    /// endpoints — those handlers return 500 when `screen_share_limiter`
+    /// is `None`.
     pub async fn with_pool_and_screen_share_limiter(pool: PgPool) -> Self {
-        let config = shared_config().await.clone();
+        let config = Config::default_for_test();
         let redis = db::create_redis_client(&config.redis_url)
             .await
             .expect("Failed to connect to test Redis");
@@ -338,21 +304,6 @@ impl TestApp {
         }
     }
 
-    /// Create a test app with a real `ScreenShareLimiter` backed by Redis.
-    ///
-    /// Use this for screen share integration tests that call the `/screenshare/check`,
-    /// `/screenshare/start`, or `/screenshare/stop` endpoints — those handlers return
-    /// 500 when `screen_share_limiter` is `None`.
-    ///
-    /// Legacy no-arg form — delegates to
-    /// [`Self::with_pool_and_screen_share_limiter`] using the shared
-    /// process-global pool. Removed in Phase 5.
-    pub async fn with_screen_share_limiter() -> Self {
-        Self::with_pool_and_screen_share_limiter(shared_pool().await.clone()).await
-    }
-
-    /// Pool-injecting variant of [`Self::with_config`].
-    ///
     /// Create a test app with a custom config and a caller-supplied pool
     /// (typically from `#[sqlx::test]`).
     pub async fn with_pool_and_config(pool: PgPool, config: Config) -> Self {
@@ -384,14 +335,6 @@ impl TestApp {
         }
     }
 
-    /// Create a test app with a custom config (for limit testing).
-    ///
-    /// Legacy no-arg form — delegates to [`Self::with_pool_and_config`]
-    /// using the shared process-global pool. Removed in Phase 5.
-    pub async fn with_config(config: Config) -> Self {
-        Self::with_pool_and_config(shared_pool().await.clone(), config).await
-    }
-
     /// Build an HTTP request with the given method and URI.
     pub fn request(method: Method, uri: &str) -> http::request::Builder {
         Request::builder().method(method).uri(uri)
@@ -415,18 +358,18 @@ impl TestApp {
 /// Build a [`TestApp`] with S3 connected to a local `RustFS` instance,
 /// using the provided pool.
 ///
-/// Pool-injecting variant of [`fresh_test_app_with_s3`] for tests that use
-/// `#[sqlx::test]` per-test database isolation.
+/// Pool-injecting helper for tests that use `#[sqlx::test]` per-test
+/// database isolation.
 ///
 /// Requires `canis-dev-rustfs` running on `localhost:9000`.
-/// Creates a unique test bucket per invocation and cleans it up on drop
-/// (via `CleanupGuard`).
+/// Creates a unique test bucket per invocation; callers are responsible
+/// for any bucket teardown they need.
 ///
 /// Environment variables must be set before calling:
 /// - `AWS_ACCESS_KEY_ID=rustfsdev`
 /// - `AWS_SECRET_ACCESS_KEY=rustfsdev_secret`
 pub async fn fresh_test_app_with_s3_and_pool(pool: PgPool) -> (TestApp, String) {
-    let mut config = shared_config().await.clone();
+    let mut config = Config::default_for_test();
     let bucket = format!("test-{}", Uuid::now_v7());
     config.s3_endpoint = Some("http://localhost:9000".to_string());
     config.s3_bucket = bucket.clone();
@@ -471,15 +414,6 @@ pub async fn fresh_test_app_with_s3_and_pool(pool: PgPool) -> (TestApp, String) 
     )
 }
 
-/// Build a [`TestApp`] with S3 connected to a local `RustFS` instance.
-///
-/// Legacy no-arg form — delegates to [`fresh_test_app_with_s3_and_pool`]
-/// using the shared process-global pool. Retained for tests not yet
-/// migrated to `#[sqlx::test]`. Removed in Phase 5.
-pub async fn fresh_test_app_with_s3() -> (TestApp, String) {
-    fresh_test_app_with_s3_and_pool(shared_pool().await.clone()).await
-}
-
 // ============================================================================
 // Test Server (Issue #139)
 // ============================================================================
@@ -503,11 +437,14 @@ pub struct TestServer {
 /// # Example
 ///
 /// ```ignore
-/// let app = TestApp::new().await;
-/// let server = spawn_test_server(app.router.clone()).await;
+/// #[sqlx::test]
+/// async fn my_server_test(pool: PgPool) {
+///     let app = TestApp::with_pool(pool.clone()).await;
+///     let server = spawn_test_server(app.router.clone()).await;
 ///
-/// let client = reqwest::Client::new();
-/// let resp = client.get(format!("{}/api/health", server.url)).send().await?;
+///     let client = reqwest::Client::new();
+///     let resp = client.get(format!("{}/api/health", server.url)).send().await?;
+/// }
 /// ```
 pub async fn spawn_test_server(router: Router) -> TestServer {
     use std::net::SocketAddr;
