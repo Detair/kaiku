@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT u.id, u.username, u.display_name, u.email, u.avatar_url, u.created_at,\n               EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = u.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as \"is_banned!\"\n        FROM users u\n        WHERE $1::text IS NULL\n           OR LOWER(u.username) LIKE $1\n           OR LOWER(u.display_name) LIKE $1\n           OR LOWER(COALESCE(u.email, '')) LIKE $1\n        ORDER BY u.created_at DESC\n        LIMIT 10000\n        ",
+  "query": "SELECT u.id, u.username, u.display_name, u.email, u.avatar_url, u.created_at,\n                  EXISTS(\n                      SELECT 1 FROM global_bans gb\n                      WHERE gb.user_id = u.id\n                        AND (gb.expires_at IS NULL OR gb.expires_at > NOW())\n                  ) as \"is_banned!\"\n           FROM users u\n           WHERE $1::text IS NULL\n              OR LOWER(u.username) LIKE $1\n              OR LOWER(u.display_name) LIKE $1\n              OR LOWER(COALESCE(u.email, '')) LIKE $1\n           ORDER BY u.created_at DESC\n           LIMIT 10000",
   "describe": {
     "columns": [
       {
@@ -54,5 +54,5 @@
       null
     ]
   },
-  "hash": "d756ec45b5123814380517d78217f1e062398be4cc807b8eb54dda216c730c42"
+  "hash": "15df6ca65b916dbfaf34234752d5e3f3e751b3dec3def80158862b806205020a"
 }
