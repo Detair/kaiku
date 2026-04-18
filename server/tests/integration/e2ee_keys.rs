@@ -11,6 +11,7 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 // ============================================================================
@@ -142,17 +143,6 @@ fn test_claimed_prekey_fields() {
 // Integration Tests (require database - marked as #[ignore])
 // ============================================================================
 
-/// Helper to create a test database pool.
-#[allow(dead_code)]
-async fn create_test_pool() -> sqlx::PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
 /// Test user struct for cleanup.
 #[allow(dead_code)]
 struct TestUser {
@@ -181,30 +171,6 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str) -> TestUser {
         id: user_id,
         username: username.to_string(),
     }
-}
-
-/// Helper to cleanup test data.
-#[allow(dead_code)]
-async fn cleanup_test_user(pool: &sqlx::PgPool, user_id: Uuid) {
-    // Delete in correct order due to foreign key constraints
-    let _ = sqlx::query(
-        "DELETE FROM prekeys WHERE device_id IN (SELECT id FROM user_devices WHERE user_id = $1)",
-    )
-    .bind(user_id)
-    .execute(pool)
-    .await;
-    let _ = sqlx::query("DELETE FROM user_devices WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM key_backups WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
 }
 
 /// Helper to generate mock identity keys.
@@ -247,10 +213,8 @@ fn generate_mock_prekeys(count: usize) -> Vec<(String, String)> {
         .collect()
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_device_registration() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_device_registration(pool: PgPool) {
 
     // Create test user
     let username = format!("test_device_{}", &Uuid::new_v4().to_string()[..8]);
@@ -283,14 +247,10 @@ async fn test_device_registration() {
 
     assert!(device_exists.is_some(), "Device should exist");
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_device_upsert_on_same_identity_key() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_device_upsert_on_same_identity_key(pool: PgPool) {
 
     // Create test user
     let username = format!("test_upsert_{}", &Uuid::new_v4().to_string()[..8]);
@@ -350,14 +310,10 @@ async fn test_device_upsert_on_same_identity_key() {
         "Should only have one device after upsert"
     );
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_prekey_upload() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_prekey_upload(pool: PgPool) {
 
     // Create test user and device
     let username = format!("test_prekey_{}", &Uuid::new_v4().to_string()[..8]);
@@ -410,14 +366,10 @@ async fn test_prekey_upload() {
 
     assert_eq!(prekey_count.0, 10, "Should have 10 prekeys");
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_prekey_claim_single() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_prekey_claim_single(pool: PgPool) {
 
     // Create owner and claimer users
     let owner_username = format!("test_owner_{}", &Uuid::new_v4().to_string()[..8]);
@@ -490,15 +442,10 @@ async fn test_prekey_claim_single() {
 
     assert_eq!(unclaimed_count.0, 4, "Should have 4 unclaimed prekeys left");
 
-    // Cleanup
-    cleanup_test_user(&pool, owner.id).await;
-    cleanup_test_user(&pool, claimer.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_prekey_claim_when_exhausted() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_prekey_claim_when_exhausted(pool: PgPool) {
 
     // Create owner and claimer
     let owner_username = format!("test_exhausted_{}", &Uuid::new_v4().to_string()[..8]);
@@ -546,15 +493,10 @@ async fn test_prekey_claim_when_exhausted() {
         "Should return None when no prekeys available"
     );
 
-    // Cleanup
-    cleanup_test_user(&pool, owner.id).await;
-    cleanup_test_user(&pool, claimer.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_prekey_duplicate_upload_ignored() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_prekey_duplicate_upload_ignored(pool: PgPool) {
 
     // Create test user and device
     let username = format!("test_dup_prekey_{}", &Uuid::new_v4().to_string()[..8]);
@@ -621,14 +563,10 @@ async fn test_prekey_duplicate_upload_ignored() {
 
     assert_eq!(count.0, 1, "Should only have 1 prekey");
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_key_backup_upload_and_retrieve() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_key_backup_upload_and_retrieve(pool: PgPool) {
 
     // Create test user
     let username = format!("test_backup_{}", &Uuid::new_v4().to_string()[..8]);
@@ -676,14 +614,10 @@ async fn test_key_backup_upload_and_retrieve() {
     assert_eq!(retrieved_ciphertext, ciphertext.to_vec());
     assert_eq!(version, 1);
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_key_backup_upsert() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_key_backup_upsert(pool: PgPool) {
 
     // Create test user
     let username = format!("test_backup_upsert_{}", &Uuid::new_v4().to_string()[..8]);
@@ -748,14 +682,10 @@ async fn test_key_backup_upsert() {
 
     assert_eq!(backup.0, 2, "Backup should be version 2");
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_backup_status_no_backup() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_backup_status_no_backup(pool: PgPool) {
 
     // Create test user (no backup)
     let username = format!("test_no_backup_{}", &Uuid::new_v4().to_string()[..8]);
@@ -771,14 +701,10 @@ async fn test_backup_status_no_backup() {
 
     assert!(backup.is_none(), "Should have no backup");
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_get_user_device_keys() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_get_user_device_keys(pool: PgPool) {
 
     // Create test user with multiple devices
     let username = format!("test_multi_device_{}", &Uuid::new_v4().to_string()[..8]);
@@ -818,16 +744,12 @@ async fn test_get_user_device_keys() {
 
     assert_eq!(devices.len(), 3, "Should have 3 devices");
 
-    // Cleanup
-    cleanup_test_user(&pool, user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_concurrent_prekey_claims_unique() {
+#[sqlx::test]
+async fn test_concurrent_prekey_claims_unique(pool: PgPool) {
     use tokio::task::JoinSet;
 
-    let pool = create_test_pool().await;
 
     // Create owner
     let owner_username = format!("test_concurrent_{}", &Uuid::new_v4().to_string()[..8]);
@@ -926,10 +848,4 @@ async fn test_concurrent_prekey_claims_unique() {
             .expect("Query should succeed");
 
     assert_eq!(unclaimed_count.0, 0, "All prekeys should be claimed");
-
-    // Cleanup
-    cleanup_test_user(&pool, owner.id).await;
-    for claimer_id in &claimer_ids {
-        cleanup_test_user(&pool, *claimer_id).await;
-    }
 }
