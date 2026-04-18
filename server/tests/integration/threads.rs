@@ -10,7 +10,7 @@ use axum::http::Method;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::helpers::{body_to_json, create_test_user, delete_user, generate_access_token, TestApp};
+use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 
 // ============================================================================
 // Test Helpers
@@ -135,22 +135,13 @@ async fn list_thread_replies(
     body_to_json(resp).await
 }
 
-/// Clean up: delete guild (cascades to channels, members, messages).
-async fn cleanup_guild(pool: &PgPool, guild_id: Uuid) {
-    sqlx::query("DELETE FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .execute(pool)
-        .await
-        .expect("Failed to delete guild");
-}
-
 // ============================================================================
 // Thread Reply CRUD
 // ============================================================================
 
-#[tokio::test]
-async fn test_create_thread_reply() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_thread_reply(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -184,15 +175,11 @@ async fn test_create_thread_reply() {
 
     assert_eq!(row.0, 1, "thread_reply_count should be 1");
     assert!(row.1, "thread_last_reply_at should be set");
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
-#[tokio::test]
-async fn test_thread_replies_not_in_channel_feed() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_thread_replies_not_in_channel_feed(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -220,15 +207,11 @@ async fn test_thread_replies_not_in_channel_feed() {
         "Channel feed should only have the parent message"
     );
     assert_eq!(items[0]["id"], parent_id);
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
-#[tokio::test]
-async fn test_list_thread_replies() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_thread_replies(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -264,15 +247,11 @@ async fn test_list_thread_replies() {
     for item in items {
         assert_eq!(item["parent_id"], parent_id_str);
     }
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
-#[tokio::test]
-async fn test_thread_replies_pagination() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_thread_replies_pagination(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -345,19 +324,15 @@ async fn test_thread_replies_pagination() {
     assert_eq!(items3.len(), 1);
     assert_eq!(items3[0]["content"], "Reply 5");
     assert!(!page3["has_more"].as_bool().unwrap(), "No more pages");
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Nested Thread Prevention
 // ============================================================================
 
-#[tokio::test]
-async fn test_cannot_nest_threads() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_cannot_nest_threads(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -383,19 +358,15 @@ async fn test_cannot_nest_threads() {
 
     let resp = app.oneshot(req).await;
     assert_ne!(resp.status(), 201, "Nested threads should be rejected");
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Thread Counter Updates on Delete
 // ============================================================================
 
-#[tokio::test]
-async fn test_delete_thread_reply_decrements_counter() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_delete_thread_reply_decrements_counter(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -440,19 +411,15 @@ async fn test_delete_thread_reply_decrements_counter() {
         count_after, 1,
         "Counter should decrement after reply deletion"
     );
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Thread Read State
 // ============================================================================
 
-#[tokio::test]
-async fn test_mark_thread_read() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_mark_thread_read(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -497,19 +464,15 @@ async fn test_mark_thread_read() {
         Some(reply_id),
         "last_read_message_id should point to the latest reply"
     );
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Permission Checks
 // ============================================================================
 
-#[tokio::test]
-async fn test_thread_replies_require_auth() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_thread_replies_require_auth(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let parent_id = Uuid::new_v4();
 
     let req = TestApp::request(Method::GET, &format!("/api/messages/{parent_id}/thread"))
@@ -520,9 +483,9 @@ async fn test_thread_replies_require_auth() {
     assert_eq!(resp.status(), 401, "Thread listing should require auth");
 }
 
-#[tokio::test]
-async fn test_thread_replies_nonexistent_parent() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_thread_replies_nonexistent_parent(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let fake_parent = Uuid::new_v4();
@@ -534,14 +497,11 @@ async fn test_thread_replies_nonexistent_parent() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Should 404 for nonexistent parent");
-
-    // Cleanup
-    delete_user(&app.pool, user_id).await;
 }
 
-#[tokio::test]
-async fn test_thread_reply_from_second_user() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_thread_reply_from_second_user(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -573,20 +533,15 @@ async fn test_thread_reply_from_second_user() {
         .await
         .unwrap();
     assert_eq!(count, 1);
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
 // ============================================================================
 // Thread Info in Parent Response
 // ============================================================================
 
-#[tokio::test]
-async fn test_parent_message_includes_thread_info() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_parent_message_includes_thread_info(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_owner(&app.pool, user_id).await;
@@ -610,8 +565,4 @@ async fn test_parent_message_includes_thread_info() {
         parent_msg["thread_last_reply_at"].is_string(),
         "thread_last_reply_at should be set"
     );
-
-    // Cleanup
-    cleanup_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
