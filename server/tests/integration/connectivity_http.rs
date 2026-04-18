@@ -116,9 +116,7 @@ async fn test_summary_with_data(pool: PgPool) {
         .await
         .unwrap();
 
-    let session_id = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 3).await;
-
-    let _sid = session_id;
+    let _session_id = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 3).await;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/summary")
         .header("Authorization", format!("Bearer {token}"))
@@ -179,8 +177,6 @@ async fn test_sessions_with_data(pool: PgPool) {
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "voice-sess").await;
 
     let session_id = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
-
-    let _sid = session_id;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")
         .header("Authorization", format!("Bearer {token}"))
@@ -258,8 +254,6 @@ async fn test_session_detail(pool: PgPool) {
     // Insert session with 5 metrics (< 200, so no downsampling)
     let session_id = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 5).await;
 
-    let _sid = session_id;
-
     let url = format!("/api/me/connection/sessions/{session_id}");
     let req = TestApp::request(Method::GET, &url)
         .header("Authorization", format!("Bearer {token}"))
@@ -317,9 +311,7 @@ async fn test_session_rls_isolation(pool: PgPool) {
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "voice-rls").await;
 
     // Insert a session for user A
-    let session_a = insert_test_session(&app.pool, user_a, channel_id, Some(guild_id), 0).await;
-
-    let _sa = session_a;
+    let _session_a = insert_test_session(&app.pool, user_a, channel_id, Some(guild_id), 0).await;
 
     // User B should not see user A's sessions
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")

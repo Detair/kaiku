@@ -33,7 +33,6 @@ async fn test_guild_creation_limit(pool: PgPool) {
     let token = generate_access_token(&app.config, user_id);
 
     // Create 2 guilds (at limit)
-    let mut guild_ids = Vec::new();
     for i in 0..2 {
         let resp = app
             .oneshot(
@@ -45,8 +44,6 @@ async fn test_guild_creation_limit(pool: PgPool) {
             )
             .await;
         assert_eq!(resp.status(), StatusCode::OK, "Guild {i} should succeed");
-        let body = body_to_json(resp).await;
-        guild_ids.push(body["id"].as_str().unwrap().to_string());
     }
 
     // 3rd guild should fail
