@@ -339,19 +339,8 @@ async fn test_room_remove_nonexistent_screen_share() {
 }
 
 // ============================================================================
-// Integration Tests (require database/WebRTC - marked as #[ignore])
+// Integration Tests (require WebRTC - marked as #[ignore])
 // ============================================================================
-
-/// Helper to create a test database pool.
-#[allow(dead_code)]
-async fn create_test_pool() -> sqlx::PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
 
 #[tokio::test]
 #[ignore] // Requires PostgreSQL and WebRTC
