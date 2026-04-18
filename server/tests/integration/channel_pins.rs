@@ -4,13 +4,13 @@
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_channel, create_guild_with_default_role,
-    create_test_user, delete_guild, generate_access_token, insert_deleted_message, insert_message,
-    TestApp,
+    create_test_user, generate_access_token, insert_deleted_message, insert_message, TestApp,
 };
 
 // ============================================================================
@@ -84,17 +84,13 @@ fn pin_perms() -> GuildPermissions {
 // Tests
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pin_message_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_pin_message_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-success-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let msg_id = insert_message(&app.pool, channel_id, user_id, "Pin me!").await;
 
@@ -119,20 +115,15 @@ async fn test_pin_message_success() {
         pins_arr[0]["pinned_at"].is_string(),
         "Should include pinned_at"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_unpin_message_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_unpin_message_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "unpin-success-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let msg_id = insert_message(&app.pool, channel_id, user_id, "Pin then unpin").await;
 
@@ -148,20 +139,15 @@ async fn test_unpin_message_success() {
     let pins = list_pins(&app, channel_id, &token).await;
     let pins_arr = pins.as_array().expect("pins should be an array");
     assert!(pins_arr.is_empty(), "Pins list should be empty after unpin");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pin_idempotent() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_pin_idempotent(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-idempotent-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let msg_id = insert_message(&app.pool, channel_id, user_id, "Pin me twice").await;
 
@@ -180,20 +166,15 @@ async fn test_pin_idempotent() {
         1,
         "Should have exactly one pin despite pinning twice"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pin_limit_50() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_pin_limit_50(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-limit-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Create and pin 50 messages
     for i in 1..=50 {
@@ -217,12 +198,11 @@ async fn test_pin_limit_50() {
         "PIN_LIMIT_REACHED",
         "Error code should be PIN_LIMIT_REACHED"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pin_forbidden_without_permission() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_pin_forbidden_without_permission(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let owner_token = generate_access_token(&app.config, owner_id);
@@ -233,11 +213,6 @@ async fn test_pin_forbidden_without_permission() {
     let guild_id = create_guild_with_default_role(&app.pool, owner_id, perms).await;
     add_guild_member(&app.pool, guild_id, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-forbidden-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(owner_id);
-    guard.delete_user(user_id);
 
     let msg_id = insert_message(&app.pool, channel_id, owner_id, "Can't pin this").await;
 
@@ -256,21 +231,16 @@ async fn test_pin_forbidden_without_permission() {
         200,
         "Owner should succeed regardless of @everyone role permissions"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pin_message_not_in_channel() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_pin_message_not_in_channel(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_a = create_channel(&app.pool, guild_id, "pin-chan-a").await;
     let channel_b = create_channel(&app.pool, guild_id, "pin-chan-b").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Insert message in channel A
     let msg_id = insert_message(&app.pool, channel_a, user_id, "I belong to A").await;
@@ -282,20 +252,15 @@ async fn test_pin_message_not_in_channel() {
         404,
         "Pinning a message in the wrong channel should return 404"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pin_deleted_message() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_pin_deleted_message(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-deleted-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Insert a soft-deleted message
     let msg_id = insert_deleted_message(&app.pool, channel_id, user_id, "Deleted message").await;
@@ -307,20 +272,15 @@ async fn test_pin_deleted_message() {
         404,
         "Pinning a deleted message should return 404"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_system_message_on_pin() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_system_message_on_pin(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-sysmsg-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let msg_id = insert_message(&app.pool, channel_id, user_id, "Pin for system msg").await;
 
@@ -346,20 +306,15 @@ async fn test_system_message_on_pin() {
         content.contains("pinned a message"),
         "System message should contain 'pinned a message', got: {content}"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pinned_field_in_message_list() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_pinned_field_in_message_list(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-field-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let pinned_msg_id = insert_message(&app.pool, channel_id, user_id, "I will be pinned").await;
     let _unpinned_msg_id =
@@ -389,20 +344,15 @@ async fn test_pinned_field_in_message_list() {
             assert!(!pinned, "Non-pinned message should have pinned=false");
         }
     }
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cascade_on_message_delete() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_cascade_on_message_delete(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild_with_default_role(&app.pool, user_id, pin_perms()).await;
     let channel_id = create_channel(&app.pool, guild_id, "pin-cascade-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let msg_id = insert_message(&app.pool, channel_id, user_id, "Pin then delete").await;
 
@@ -430,5 +380,4 @@ async fn test_cascade_on_message_delete() {
         pins_arr.is_empty(),
         "Pins list should be empty after message deletion"
     );
-    guard.cleanup().await;
 }
