@@ -21,11 +21,13 @@
 //! 3. Test guild membership checks run before size validation
 //! 4. Verify middleware and handler limits work together correctly
 //!
+//! Each test that touches the database runs against a fresh per-test database
+//! provisioned by `#[sqlx::test]`, so no manual row cleanup is required.
+//!
 //! Run with: `cargo test --test integration upload_limits`
 
 use sqlx::PgPool;
 use vc_server::config::Config;
-use vc_server::db;
 
 /// Helper to create a test user and return their ID
 async fn create_test_user(pool: &PgPool) -> uuid::Uuid {
@@ -62,8 +64,8 @@ async fn create_test_guild(pool: &PgPool, owner_id: uuid::Uuid) -> uuid::Uuid {
     .expect("Create guild")
 }
 
-#[tokio::test]
-async fn test_config_default_upload_limits() {
+#[test]
+fn test_config_default_upload_limits() {
     let config = Config::default_for_test();
 
     assert_eq!(config.max_upload_size, 50 * 1024 * 1024);
@@ -71,25 +73,21 @@ async fn test_config_default_upload_limits() {
     assert_eq!(config.max_emoji_size, 256 * 1024);
 }
 
-#[tokio::test]
-async fn test_upload_limits_endpoint_returns_defaults() {
+#[sqlx::test]
+async fn test_upload_limits_endpoint_returns_defaults(_pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     // Verify config values would be returned by the endpoint
     assert_eq!(config.max_upload_size, 50 * 1024 * 1024);
     assert_eq!(config.max_avatar_size, 5 * 1024 * 1024);
     assert_eq!(config.max_emoji_size, 256 * 1024);
-
-    pool.close().await;
 }
 
 /// Test avatar upload size validation logic
 /// NOTE: This tests the boundary arithmetic, not actual handler behavior
-#[tokio::test]
-async fn test_avatar_size_validation_logic() {
+#[sqlx::test]
+async fn test_avatar_size_validation_logic(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let _user_id = create_test_user(&pool).await;
 
@@ -106,16 +104,13 @@ async fn test_avatar_size_validation_logic() {
         one_byte_over > config.max_avatar_size,
         "File one byte over limit should be rejected (handler uses > check)"
     );
-
-    pool.close().await;
 }
 
 /// Test emoji upload size validation logic
 /// NOTE: This tests the boundary arithmetic, not actual handler behavior
-#[tokio::test]
-async fn test_emoji_size_validation_logic() {
+#[sqlx::test]
+async fn test_emoji_size_validation_logic(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let user_id = create_test_user(&pool).await;
     let _guild_id = create_test_guild(&pool, user_id).await;
@@ -133,15 +128,12 @@ async fn test_emoji_size_validation_logic() {
         one_byte_over > config.max_emoji_size,
         "Emoji one byte over limit should be rejected"
     );
-
-    pool.close().await;
 }
 
 /// Test that avatar validation uses correct config field (`max_avatar_size`, not `max_upload_size`)
-#[tokio::test]
-async fn test_avatar_uses_avatar_limit_not_attachment_limit() {
+#[sqlx::test]
+async fn test_avatar_uses_avatar_limit_not_attachment_limit(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let _user_id = create_test_user(&pool).await;
 
@@ -157,16 +149,13 @@ async fn test_avatar_uses_avatar_limit_not_attachment_limit() {
         file_size_over_avatar < config.max_upload_size,
         "6MB file should be under attachment limit (50MB)"
     );
-
-    pool.close().await;
 }
 
 /// Test that DM icon validation uses avatar limit, not attachment limit
-#[tokio::test]
+#[sqlx::test]
 #[ignore = "DM feature not yet implemented - enable once dm_conversations table exists"]
-async fn test_dm_icon_uses_avatar_limit_not_attachment_limit() {
+async fn test_dm_icon_uses_avatar_limit_not_attachment_limit(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let _user_id = create_test_user(&pool).await;
 
@@ -182,15 +171,12 @@ async fn test_dm_icon_uses_avatar_limit_not_attachment_limit() {
         file_size_over_avatar < config.max_upload_size,
         "6MB file should be under attachment limit (50MB)"
     );
-
-    pool.close().await;
 }
 
 /// Test that emoji validation uses correct config field (`max_emoji_size`)
-#[tokio::test]
-async fn test_emoji_uses_emoji_limit_not_attachment_limit() {
+#[sqlx::test]
+async fn test_emoji_uses_emoji_limit_not_attachment_limit(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let user_id = create_test_user(&pool).await;
     let _guild_id = create_test_guild(&pool, user_id).await;
@@ -206,15 +192,12 @@ async fn test_emoji_uses_emoji_limit_not_attachment_limit() {
         file_size_over_emoji < config.max_upload_size,
         "512KB file should be under attachment limit (50MB)"
     );
-
-    pool.close().await;
 }
 
 /// Test boundary: file exactly at avatar limit should be accepted
-#[tokio::test]
-async fn test_avatar_exactly_at_limit_accepted() {
+#[sqlx::test]
+async fn test_avatar_exactly_at_limit_accepted(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let _user_id = create_test_user(&pool).await;
 
@@ -223,15 +206,12 @@ async fn test_avatar_exactly_at_limit_accepted() {
         file_size_at_limit <= config.max_avatar_size,
         "File exactly at limit should be accepted (handler checks data.len() > max_size)"
     );
-
-    pool.close().await;
 }
 
 /// Test boundary: file one byte over avatar limit should be rejected
-#[tokio::test]
-async fn test_avatar_one_byte_over_limit_fails() {
+#[sqlx::test]
+async fn test_avatar_one_byte_over_limit_fails(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let _user_id = create_test_user(&pool).await;
 
@@ -240,15 +220,12 @@ async fn test_avatar_one_byte_over_limit_fails() {
         file_size_over_limit > config.max_avatar_size,
         "File one byte over limit should be rejected"
     );
-
-    pool.close().await;
 }
 
 /// Test boundary: file exactly at emoji limit should be accepted
-#[tokio::test]
-async fn test_emoji_exactly_at_limit_accepted() {
+#[sqlx::test]
+async fn test_emoji_exactly_at_limit_accepted(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let user_id = create_test_user(&pool).await;
     let _guild_id = create_test_guild(&pool, user_id).await;
@@ -258,15 +235,12 @@ async fn test_emoji_exactly_at_limit_accepted() {
         file_size_at_limit <= config.max_emoji_size,
         "Emoji exactly at limit should be accepted"
     );
-
-    pool.close().await;
 }
 
 /// Test boundary: emoji one byte over limit should be rejected
-#[tokio::test]
-async fn test_emoji_one_byte_over_limit_fails() {
+#[sqlx::test]
+async fn test_emoji_one_byte_over_limit_fails(pool: PgPool) {
     let config = Config::default_for_test();
-    let pool = db::create_pool(&config.database_url).await.unwrap();
 
     let user_id = create_test_user(&pool).await;
     let _guild_id = create_test_guild(&pool, user_id).await;
@@ -283,13 +257,11 @@ async fn test_emoji_one_byte_over_limit_fails() {
         file_size_over_limit > config.max_emoji_size,
         "Emoji one byte over limit should be rejected"
     );
-
-    pool.close().await;
 }
 
 /// Test edge case: zero-byte uploads should be rejected
-#[tokio::test]
-async fn test_zero_byte_uploads_handled() {
+#[test]
+fn test_zero_byte_uploads_handled() {
     let config = Config::default_for_test();
 
     let zero_bytes = 0;
