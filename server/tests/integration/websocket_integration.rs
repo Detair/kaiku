@@ -8,14 +8,12 @@ use vc_server::db;
 use vc_server::ws::{OutboundMsg, ServerEvent};
 
 // Mock WebSocket connection logic for testing
-#[tokio::test]
-async fn test_websocket_broadcast_flow() {
+#[sqlx::test]
+async fn test_websocket_broadcast_flow(pool: PgPool) {
     // 1. Setup Test Environment (DB, Redis, AppState)
     // Note: We need a real Redis and Postgres for this integration test
     let config = Config::default_for_test();
-    let db_pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
+    let db_pool: PgPool = pool;
     let redis = db::create_redis_client(&config.redis_url)
         .await
         .expect("Failed to connect to Redis");
@@ -170,13 +168,11 @@ struct PermissionTestContext {
 
 impl PermissionTestContext {
     /// Setup test environment with guild, roles, and users
-    async fn setup() -> Self {
+    async fn setup(pool: PgPool) -> Self {
         use vc_server::permissions::GuildPermissions;
 
         let config = Config::default_for_test();
-        let db_pool: PgPool = db::create_pool(&config.database_url)
-            .await
-            .expect("Failed to connect to DB");
+        let db_pool: PgPool = pool;
         let redis = db::create_redis_client(&config.redis_url)
             .await
             .expect("Failed to connect to Redis");
@@ -366,11 +362,11 @@ impl PermissionTestContext {
 }
 
 /// Test that WebSocket Subscribe is denied without `VIEW_CHANNEL` permission
-#[tokio::test]
-async fn test_websocket_subscribe_denied_without_permission() {
+#[sqlx::test]
+async fn test_websocket_subscribe_denied_without_permission(pool: PgPool) {
     use tokio::sync::mpsc;
 
-    let ctx = PermissionTestContext::setup().await;
+    let ctx = PermissionTestContext::setup(pool).await;
 
     let (tx, mut rx) = mpsc::channel(10);
     let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
@@ -422,11 +418,11 @@ async fn test_websocket_subscribe_denied_without_permission() {
 }
 
 /// Test that WebSocket Subscribe is allowed with `VIEW_CHANNEL` permission
-#[tokio::test]
-async fn test_websocket_subscribe_allowed_with_permission() {
+#[sqlx::test]
+async fn test_websocket_subscribe_allowed_with_permission(pool: PgPool) {
     use tokio::sync::mpsc;
 
-    let ctx = PermissionTestContext::setup().await;
+    let ctx = PermissionTestContext::setup(pool).await;
 
     let (tx, mut rx) = mpsc::channel(10);
     let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
@@ -476,11 +472,11 @@ async fn test_websocket_subscribe_allowed_with_permission() {
 }
 
 /// Test that guild owner can subscribe (owner bypass)
-#[tokio::test]
-async fn test_websocket_subscribe_owner_bypass() {
+#[sqlx::test]
+async fn test_websocket_subscribe_owner_bypass(pool: PgPool) {
     use tokio::sync::mpsc;
 
-    let ctx = PermissionTestContext::setup().await;
+    let ctx = PermissionTestContext::setup(pool).await;
 
     let (tx, mut rx) = mpsc::channel(10);
     let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
