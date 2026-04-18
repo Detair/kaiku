@@ -7,6 +7,7 @@
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
@@ -50,16 +51,12 @@ async fn list_dms(app: &TestApp, token: &str) -> serde_json::Value {
 // DM CRUD
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_and_get_dm() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_and_get_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
 
     // Create DM between A and B
     let (status, dm) = create_dm_via_api(&app, &token_a, &[user_b]).await;
@@ -71,9 +68,6 @@ async fn test_create_and_get_dm() {
         "Response should have participants"
     );
 
-    let dm_uuid = Uuid::parse_str(dm_id).unwrap();
-    guard.add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_uuid).await });
-
     // GET the DM
     let req = TestApp::request(Method::GET, &format!("/api/dm/{dm_id}"))
         .header("Authorization", format!("Bearer {token_a}"))
@@ -84,27 +78,19 @@ async fn test_create_and_get_dm() {
     let fetched = body_to_json(resp).await;
     assert_eq!(fetched["id"].as_str().unwrap(), dm_id);
     assert_eq!(fetched["channel_type"], "dm");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_dm_returns_existing() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_dm_returns_existing(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
 
     // Create DM first time
     let (status1, dm1) = create_dm_via_api(&app, &token_a, &[user_b]).await;
     assert_eq!(status1, 201, "DM creation failed: {dm1}");
     let dm_id1 = dm1["id"].as_str().unwrap();
-
-    let dm_uuid = Uuid::parse_str(dm_id1).unwrap();
-    guard.add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_uuid).await });
 
     // Create DM second time → same channel_id (idempotent)
     let (status2, dm2) = create_dm_via_api(&app, &token_a, &[user_b]).await;
@@ -115,34 +101,22 @@ async fn test_create_dm_returns_existing() {
         dm_id1, dm_id2,
         "Creating DM twice with same participants should return same channel"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_list_dms() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_dms(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let (user_c, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
     let token_b = generate_access_token(&app.config, user_b);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
-    guard.delete_user(user_c);
-
     // A creates DM with B
-    let (_, dm_ab) = create_dm_via_api(&app, &token_a, &[user_b]).await;
-    let dm_ab_uuid = Uuid::parse_str(dm_ab["id"].as_str().unwrap()).unwrap();
-    guard
-        .add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_ab_uuid).await });
+    let (_, _dm_ab) = create_dm_via_api(&app, &token_a, &[user_b]).await;
 
     // A creates DM with C
-    let (_, dm_ac) = create_dm_via_api(&app, &token_a, &[user_c]).await;
-    let dm_ac_uuid = Uuid::parse_str(dm_ac["id"].as_str().unwrap()).unwrap();
-    guard
-        .add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_ac_uuid).await });
+    let (_, _dm_ac) = create_dm_via_api(&app, &token_a, &[user_c]).await;
 
     // A lists → should have 2 DMs
     let dms_a = list_dms(&app, &token_a).await;
@@ -153,28 +127,20 @@ async fn test_list_dms() {
     let dms_b = list_dms(&app, &token_b).await;
     let arr_b = dms_b.as_array().expect("DM list should be an array");
     assert_eq!(arr_b.len(), 1, "User B should see 1 DM");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_dm_non_participant_forbidden() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_dm_non_participant_forbidden(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let (user_c, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
     let token_c = generate_access_token(&app.config, user_c);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
-    guard.delete_user(user_c);
-
     // A creates DM with B
     let (_, dm) = create_dm_via_api(&app, &token_a, &[user_b]).await;
     let dm_id = dm["id"].as_str().unwrap();
-    let dm_uuid = Uuid::parse_str(dm_id).unwrap();
-    guard.add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_uuid).await });
 
     // User C (non-participant) tries to GET the DM → 403
     let req = TestApp::request(Method::GET, &format!("/api/dm/{dm_id}"))
@@ -187,25 +153,18 @@ async fn test_dm_non_participant_forbidden() {
         403,
         "Non-participant should get 403 when accessing DM"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_leave_dm() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_leave_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
-
     // A creates DM with B
     let (_, dm) = create_dm_via_api(&app, &token_a, &[user_b]).await;
     let dm_id = dm["id"].as_str().unwrap();
-    let dm_uuid = Uuid::parse_str(dm_id).unwrap();
-    guard.add(move |pool| async move { super::helpers::delete_dm_channel(&pool, dm_uuid).await });
 
     // A leaves the DM → 204
     let req = TestApp::request(Method::POST, &format!("/api/dm/{dm_id}/leave"))
@@ -226,5 +185,4 @@ async fn test_leave_dm() {
         "After leaving, GET DM should return 403 or 404, got {}",
         resp.status()
     );
-    guard.cleanup().await;
 }
