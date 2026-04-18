@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add pool-injecting factories to `TestApp` (backward-compatible with existing no-arg forms), then migrate 3 pilot integration test files (`blocking.rs`, `e2ee_settings.rs`, `pages.rs`) to `#[sqlx::test]` to validate the template-DB + migrations pipeline in CI before bulk migration.
+**Goal:** Add pool-injecting factories to `TestApp` (backward-compatible with existing no-arg forms), then migrate 3 pilot integration test files (`blocking.rs`, `dm_http.rs`, `favorites.rs`) to `#[sqlx::test]` to validate the template-DB + migrations pipeline in CI before bulk migration.
 
 **Architecture:** The existing no-arg factories (`TestApp::new`, `TestApp::with_screen_share_limiter`, `fresh_test_app_with_s3`) are preserved and retrofitted to delegate to new pool-injecting forms (`TestApp::with_pool`, `TestApp::with_pool_and_screen_share_limiter`, `fresh_test_app_with_s3_and_pool`). The 3 pilot tests switch to `#[sqlx::test]` + new factories; all other tests remain on the old pattern until Phases 2–4.
 
@@ -62,8 +62,8 @@ Working branch: `feat/sqlx-test-phase1`. Working directory for every task below:
 |------|--------|------|
 | `server/tests/integration/helpers/mod.rs` | Modify (add new factories, rewire old as delegates) | 1, 2 |
 | `server/tests/integration/blocking.rs` | Modify (pilot migrate) | 3 |
-| `server/tests/integration/e2ee_settings.rs` | Modify (pilot migrate) | 4 |
-| `server/tests/integration/pages.rs` | Modify (pilot migrate) | 5 |
+| `server/tests/integration/dm_http.rs` | Modify (pilot migrate) | 4 |
+| `server/tests/integration/favorites.rs` | Modify (pilot migrate) | 5 |
 
 ---
 
@@ -211,6 +211,7 @@ Observe: (a) the existing use statements — likely `use crate::integration::hel
 
 For **every** test function in the file, do:
 
+0. **If the attribute has arguments** (e.g., `#[tokio::test(flavor = "current_thread", start_paused = true)]`) — STOP. Do not convert this test. `#[sqlx::test]` has a different argument surface and the semantics don't translate. File should be treated as a carve-out and removed from its batch. Examples in this repo: `voice_rate_limit.rs` uses `start_paused = true` and has no DB at all — it stays on `#[tokio::test]`.
 1. Change the attribute: `#[tokio::test]` → `#[sqlx::test]`
 2. Add a `pool: PgPool` parameter: `async fn test_xxx() {` → `async fn test_xxx(pool: PgPool) {`
 3. Replace factory calls:
@@ -218,8 +219,9 @@ For **every** test function in the file, do:
    - `TestApp::with_screen_share_limiter().await` → `TestApp::with_pool_and_screen_share_limiter(pool.clone()).await`
    - `fresh_test_app_with_s3().await` → `fresh_test_app_with_s3_and_pool(pool.clone()).await`
 4. Remove any `#[serial]` attribute on the function (and the `use serial_test::serial;` import at file top if no attribute remains).
-5. Remove `CleanupGuard` calls that only perform DB-row cleanup (e.g., `guard.delete_user(id)`). Keep non-DB cleanup. If the guard becomes empty, remove its declaration.
+5. Remove `CleanupGuard` calls that only perform DB-row cleanup (e.g., `guard.delete_user(id)`, `guard.restore_setup_complete(prev)`). Also remove stand-alone DB-cleanup helper calls at test end (e.g., `helpers::delete_user(&app.pool, user_id).await;`). Keep non-DB cleanup. If the guard becomes empty, remove its declaration.
 6. Add `use sqlx::PgPool;` at the top of the file if not already imported.
+7. Delete in-file DB helper functions that duplicate what `#[sqlx::test]` now provides. Example: if a file has a local `create_test_pool()` that reads `DATABASE_URL` directly, remove it — callers use the injected `pool` parameter instead.
 
 Refer to the spec's §"Phases 2–4 — bulk migration by batch" for the complete recipe.
 
@@ -254,10 +256,12 @@ git commit -m "test(infra): migrate blocking.rs to #[sqlx::test] (pilot)"
 
 ---
 
-## Task 4: Pilot migrate `e2ee_settings.rs`
+## Task 4: Pilot migrate `dm_http.rs`
 
 **Files:**
-- Modify: `server/tests/integration/e2ee_settings.rs`
+- Modify: `server/tests/integration/dm_http.rs`
+
+Rationale for choosing this pilot: 10 `TestApp::new()`/`#[tokio::test]` usages — exercises the full recipe (factory swap + function signature + attribute). Medium-sized file (~200 LOC).
 
 - [ ] **Step 1: Apply the same 6-point recipe from Task 3 Step 2 to every test in this file.**
 
@@ -269,11 +273,11 @@ SQLX_OFFLINE=true cargo check -p vc-server --tests 2>&1 | grep -E "^error" | hea
 
 Expected: no errors.
 
-- [ ] **Step 3: Run just `e2ee_settings.rs` tests (if local DB available)**
+- [ ] **Step 3: Run just `dm_http.rs` tests (if local DB available)**
 
 ```bash
 DATABASE_URL="postgres://voicechat:voicechat_dev@localhost:5433/voicechat" \
-cargo nextest run --test 'integration' e2ee_settings:: 2>&1 | tail -10
+cargo nextest run --test 'integration' dm_http:: 2>&1 | tail -10
 ```
 
 Expected: green.
@@ -281,16 +285,18 @@ Expected: green.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add server/tests/integration/e2ee_settings.rs
-git commit -m "test(infra): migrate e2ee_settings.rs to #[sqlx::test] (pilot)"
+git add server/tests/integration/dm_http.rs
+git commit -m "test(infra): migrate dm_http.rs to #[sqlx::test] (pilot)"
 ```
 
 ---
 
-## Task 5: Pilot migrate `pages.rs`
+## Task 5: Pilot migrate `favorites.rs`
 
 **Files:**
-- Modify: `server/tests/integration/pages.rs`
+- Modify: `server/tests/integration/favorites.rs`
+
+Rationale: 6 `TestApp` usages, includes `CleanupGuard` patterns — exercises recipe step 7 (guard simplification/removal).
 
 - [ ] **Step 1: Apply the same 6-point recipe from Task 3 Step 2.**
 
@@ -300,7 +306,7 @@ git commit -m "test(infra): migrate e2ee_settings.rs to #[sqlx::test] (pilot)"
 SQLX_OFFLINE=true cargo check -p vc-server --tests 2>&1 | grep -E "^error" | head -5
 ```
 
-- [ ] **Step 3: Run just `pages.rs` tests (if local DB available)**
+- [ ] **Step 3: Run just `favorites.rs` tests (if local DB available)**
 
 ```bash
 DATABASE_URL="postgres://voicechat:voicechat_dev@localhost:5433/voicechat" \
@@ -310,8 +316,8 @@ cargo nextest run --test 'integration' pages:: 2>&1 | tail -10
 - [ ] **Step 4: Commit**
 
 ```bash
-git add server/tests/integration/pages.rs
-git commit -m "test(infra): migrate pages.rs to #[sqlx::test] (pilot)"
+git add server/tests/integration/favorites.rs
+git commit -m "test(infra): migrate favorites.rs to #[sqlx::test] (pilot)"
 ```
 
 ---
@@ -339,8 +345,8 @@ git log --oneline origin/main..HEAD
 Expected 4 commits:
 1. `test(infra): add TestApp::with_pool pool-injecting factories`
 2. `test(infra): migrate blocking.rs to #[sqlx::test] (pilot)`
-3. `test(infra): migrate e2ee_settings.rs to #[sqlx::test] (pilot)`
-4. `test(infra): migrate pages.rs to #[sqlx::test] (pilot)`
+3. `test(infra): migrate dm_http.rs to #[sqlx::test] (pilot)`
+4. `test(infra): migrate favorites.rs to #[sqlx::test] (pilot)`
 
 - [ ] **Step 3: Push + open PR**
 
@@ -355,7 +361,7 @@ Phase 1 of the integration-test migration to `#[sqlx::test]`'s per-test database
 
 - New factories: `TestApp::with_pool`, `TestApp::with_pool_and_screen_share_limiter`, `fresh_test_app_with_s3_and_pool`.
 - Existing factories (`TestApp::new`, `with_screen_share_limiter`, `fresh_test_app_with_s3`) kept, now delegating via the shared pool.
-- Pilot migrations: `blocking.rs`, `e2ee_settings.rs`, `pages.rs`.
+- Pilot migrations: `blocking.rs`, `dm_http.rs`, `favorites.rs`.
 
 Spec: `docs/superpowers/specs/2026-04-18-sqlx-test-integration-migration-design.md` — Phase 1.
 
@@ -402,7 +408,7 @@ git fetch origin --prune
 
 1. `TestApp::with_pool`, `TestApp::with_pool_and_screen_share_limiter`, and `fresh_test_app_with_s3_and_pool` exist on `main`.
 2. Existing `TestApp::new()`, `TestApp::with_screen_share_limiter()`, and `fresh_test_app_with_s3()` continue to work unchanged from a caller's perspective.
-3. `blocking.rs`, `e2ee_settings.rs`, `pages.rs` all run under `#[sqlx::test]` and pass CI.
+3. `blocking.rs`, `dm_http.rs`, `favorites.rs` all run under `#[sqlx::test]` and pass CI.
 4. No regression in the full integration test suite's green-test count.
 
 ## Notes for the implementer

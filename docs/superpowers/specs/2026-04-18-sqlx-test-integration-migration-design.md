@@ -28,7 +28,7 @@ Each fix addresses only the test class that flaked most recently; the underlying
 
 ## Scope
 
-Target: 45 integration test files and ~406 test functions under `server/tests/integration/`. In scope: the `TestApp` constructor API, the `SHARED_POOL`/`SHARED_CONFIG` `OnceCell`s, the `[test-groups]` nextest entries, the `#[serial]` attributes on test functions, and the `CleanupGuard` DB-cleanup methods. Out of scope (deliberate):
+Target: 45 integration test files (plus `helpers/mod.rs`) and ~406 test functions under `server/tests/integration/`. Three files are carved out as not requiring migration (they have no DB/`TestApp` dependency, so they neither cause nor suffer the cross-process deadlock): `e2ee_settings.rs` (pure parsing tests, 0 `TestApp` usages), `pages.rs` (all `#[ignore]`'d, uses its own `DATABASE_URL` helper), `voice_rate_limit.rs` (`#[tokio::test(start_paused = true)]` exercising a pure in-memory rate limiter). Effective migration scope: **42 files**. In scope: the `TestApp` constructor API, the `SHARED_POOL`/`SHARED_CONFIG` `OnceCell`s, the `[test-groups]` nextest entries, the `#[serial]` attributes on test functions, and the `CleanupGuard` DB-cleanup methods. Out of scope (deliberate):
 
 - **Unit tests under `server/src/`** — already use `#[sqlx::test]`; nothing to migrate.
 - **Tauri / Android / client-side tests** — unrelated subsystem; their own concurrency story.

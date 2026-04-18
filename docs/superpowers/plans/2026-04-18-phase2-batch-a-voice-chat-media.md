@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate 14 voice/chat/media integration test files to `#[sqlx::test]` using the Phase-1-established `TestApp::with_pool` API.
+**Goal:** Migrate 11 voice/chat/media integration test files to `#[sqlx::test]` using the Phase-1-established `TestApp::with_pool` API. (Down from an initial 14: `dm_http.rs` and `favorites.rs` moved to Phase 1's pilot trio; `voice_rate_limit.rs` is a pure in-memory rate-limiter test with no DB and no migration needed — it stays on `#[tokio::test(start_paused = true)]`.)
 
 **Architecture:** Mechanical per-file rewrite applying the Phase 1 migration recipe. Each file is converted in isolation; test count per file ranges from a few to a few dozen. All files in this batch share the same transformation — no per-file custom logic.
 
@@ -49,24 +49,27 @@ cd .claude/worktrees/sqlx-test-phase2
 
 ## File Map
 
-14 files, each receiving the Phase 1 recipe. One task per file keeps review granular and per-file failures isolated:
+11 files, each receiving the Phase 1 recipe. One task per file keeps review granular and per-file failures isolated:
 
 | Task | File |
 |------|------|
 | 1 | `server/tests/integration/voice_sfu.rs` |
 | 2 | `server/tests/integration/voice_mute_enforcement.rs` |
-| 3 | `server/tests/integration/voice_rate_limit.rs` |
-| 4 | `server/tests/integration/channels_http.rs` |
-| 5 | `server/tests/integration/channel_pins.rs` |
-| 6 | `server/tests/integration/messages_http.rs` |
-| 7 | `server/tests/integration/threads.rs` |
-| 8 | `server/tests/integration/dm_http.rs` |
-| 9 | `server/tests/integration/media_processing.rs` |
-| 10 | `server/tests/integration/upload_limits.rs` |
-| 11 | `server/tests/integration/uploads_http.rs` |
-| 12 | `server/tests/integration/screenshare.rs` |
-| 13 | `server/tests/integration/favorites.rs` |
-| 14 | `server/tests/integration/custom_status.rs` |
+| 3 | `server/tests/integration/channels_http.rs` |
+| 4 | `server/tests/integration/channel_pins.rs` |
+| 5 | `server/tests/integration/messages_http.rs` |
+| 6 | `server/tests/integration/threads.rs` |
+| 7 | `server/tests/integration/media_processing.rs` |
+| 8 | `server/tests/integration/upload_limits.rs` |
+| 9 | `server/tests/integration/uploads_http.rs` |
+| 10 | `server/tests/integration/screenshare.rs` |
+| 11 | `server/tests/integration/custom_status.rs` |
+
+**Carve-outs (not in this batch, not in any batch):**
+- `voice_rate_limit.rs` — `#[tokio::test(start_paused = true)]`, pure in-memory `VoiceRateLimiter`, no DB. Stays on `#[tokio::test]`.
+- `dm_http.rs`, `favorites.rs` — migrated in Phase 1 as pilots.
+
+**Per-file sanity check before applying the recipe**: run `grep -c '#\[tokio::test(' <file>` — if it returns > 0, the file has attribute arguments (e.g., `start_paused`). STOP, carve-out per the Phase 1 recipe's Step 0, and do not migrate.
 
 ---
 
@@ -156,11 +159,13 @@ Expected: all green.
 - [ ] **Grep sweep for remaining `#[tokio::test]` in this batch**
 
 ```bash
-for f in voice_sfu voice_mute_enforcement voice_rate_limit channels_http channel_pins messages_http threads dm_http media_processing upload_limits uploads_http screenshare favorites custom_status; do
+for f in voice_sfu voice_mute_enforcement channels_http channel_pins messages_http threads media_processing upload_limits uploads_http screenshare custom_status; do
     c=$(grep -c '#\[tokio::test' "server/tests/integration/$f.rs" 2>/dev/null || echo 0)
     [ "$c" -gt 0 ] && echo "  $f.rs: $c remaining #[tokio::test] — FIX BEFORE PR"
 done
 ```
+
+Note: `voice_rate_limit.rs` retains `#[tokio::test(start_paused = true)]` — it's a documented carve-out, not a bug.
 
 Expected: no output (every `#[tokio::test]` in these 14 files has been converted). Any output is a MUST-FIX before opening the PR.
 
@@ -170,7 +175,7 @@ Expected: no output (every `#[tokio::test]` in these 14 files has been converted
 git log --oneline origin/main..HEAD
 ```
 
-Expected: 14 commits, each matching `test(infra): migrate <filename> to #[sqlx::test]`.
+Expected: 11 commits, each matching `test(infra): migrate <filename> to #[sqlx::test]`.
 
 - [ ] **Push + open PR**
 
