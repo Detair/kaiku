@@ -3,8 +3,8 @@
 //! Run with: `cargo test --test integration workspaces -- --nocapture`
 
 use axum::body::Body;
-use sqlx::PgPool;
 use axum::http::Method;
+use sqlx::PgPool;
 
 use super::helpers::{
     body_to_json, create_channel, create_guild, create_test_user, generate_access_token, TestApp,
@@ -19,7 +19,6 @@ async fn test_create_workspace(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -48,7 +47,6 @@ async fn test_create_workspace_name_too_long(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let long_name = "a".repeat(101);
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -67,7 +65,6 @@ async fn test_create_workspace_icon_too_long(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     let long_icon = "x".repeat(65);
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -94,7 +91,6 @@ async fn test_create_workspace_unicode_name_length(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     // 100 CJK characters (300 bytes in UTF-8) should be accepted
     let cjk_name: String = "你".repeat(100);
@@ -132,7 +128,6 @@ async fn test_create_workspace_empty_name(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -150,7 +145,6 @@ async fn test_create_workspace_limit_exceeded(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     // Fill up to the limit via direct DB inserts
     let limit = app.config.max_workspaces_per_user;
@@ -186,7 +180,6 @@ async fn test_list_workspaces(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     // Create 3 workspaces
     for name in &["Alpha", "Beta", "Gamma"] {
         let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -221,7 +214,6 @@ async fn test_list_workspaces_empty(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let req = TestApp::request(Method::GET, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
@@ -242,7 +234,6 @@ async fn test_get_workspace_with_entries(pool: PgPool) {
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
-
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -293,7 +284,6 @@ async fn test_get_workspace_not_found(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let fake_id = uuid::Uuid::new_v4();
     let req = TestApp::request(Method::GET, &format!("/api/me/workspaces/{fake_id}"))
         .header("Authorization", format!("Bearer {token}"))
@@ -340,7 +330,6 @@ async fn test_update_workspace(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     // Create
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -376,7 +365,6 @@ async fn test_update_workspace_clear_icon(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     // Create with icon
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -440,7 +428,6 @@ async fn test_update_workspace_icon_too_long(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -473,7 +460,6 @@ async fn test_delete_workspace(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     // Create
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -516,7 +502,6 @@ async fn test_add_entry(pool: PgPool) {
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "raids").await;
 
-
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -556,7 +541,6 @@ async fn test_add_entry_duplicate(pool: PgPool) {
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "dup-test").await;
-
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -641,7 +625,6 @@ async fn test_add_entry_limit_exceeded(pool: PgPool) {
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
 
-
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -697,7 +680,6 @@ async fn test_remove_entry(pool: PgPool) {
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "removable").await;
-
 
     // Create workspace + add entry
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -761,7 +743,6 @@ async fn test_reorder_entries(pool: PgPool) {
     let guild_id = create_guild(&app.pool, user_id).await;
     let ch1 = create_channel(&app.pool, guild_id, "ch-one").await;
     let ch2 = create_channel(&app.pool, guild_id, "ch-two").await;
-
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -828,7 +809,6 @@ async fn test_reorder_workspaces(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     // Create 3 workspaces
     let mut ws_ids = Vec::new();
     for name in &["First", "Second", "Third"] {
@@ -875,7 +855,6 @@ async fn test_reorder_entries_rejects_oversized_payload(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let oversized = (0..=app.config.max_entries_per_workspace as usize)
         .map(|_| uuid::Uuid::new_v4().to_string())
         .collect::<Vec<_>>();
@@ -903,7 +882,6 @@ async fn test_reorder_workspaces_rejects_oversized_payload(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     let oversized = (0..=app.config.max_workspaces_per_user as usize)
         .map(|_| uuid::Uuid::new_v4().to_string())

@@ -142,7 +142,6 @@ async fn test_search_messages_basic(pool: PgPool) {
     .expect("Search query failed");
 
     assert_eq!(results.len(), 2, "Expected 2 results for 'test'");
-
 }
 
 #[sqlx::test]
@@ -172,7 +171,6 @@ async fn test_search_messages_no_results(pool: PgPool) {
     .expect("Search query failed");
 
     assert_eq!(results.len(), 0, "Expected no results for 'nonexistent'");
-
 }
 
 #[sqlx::test]
@@ -247,7 +245,6 @@ async fn test_search_messages_pagination(pool: PgPool) {
             "Pages should not have overlapping results"
         );
     }
-
 }
 
 #[sqlx::test]
@@ -282,7 +279,6 @@ async fn test_search_messages_count(pool: PgPool) {
     .expect("Count query failed");
 
     assert_eq!(count.0, 15, "Expected 15 matching messages");
-
 }
 
 #[sqlx::test]
@@ -330,7 +326,6 @@ async fn test_search_excludes_deleted_messages(pool: PgPool) {
         results[0].0, msg_id,
         "Deleted message should not be in results"
     );
-
 }
 
 #[sqlx::test]
@@ -385,5 +380,4 @@ async fn test_search_websearch_syntax(pool: PgPool) {
         3,
         "Expected 3 results for 'quick OR lazy'"
     );
-
 }

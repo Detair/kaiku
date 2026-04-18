@@ -79,7 +79,6 @@ async fn test_summary_empty(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let req = TestApp::request(Method::GET, "/api/me/connection/summary")
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
@@ -158,7 +157,6 @@ async fn test_sessions_empty(pool: PgPool) {
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
@@ -212,7 +210,6 @@ async fn test_sessions_pagination(pool: PgPool) {
     let _s1 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
     let _s2 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
     let _s3 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
-
 
     // Request page: limit=1, offset=1
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions?limit=1&offset=1")
@@ -291,7 +288,6 @@ async fn test_session_detail_not_found(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
 
     let random_id = Uuid::new_v4();
     let url = format!("/api/me/connection/sessions/{random_id}");

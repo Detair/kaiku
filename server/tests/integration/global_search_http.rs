@@ -11,9 +11,8 @@ use sqlx::PgPool;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
-    create_test_user, generate_access_token,
-    insert_attachment, insert_deleted_message, insert_encrypted_message, insert_message,
-    insert_message_at, TestApp,
+    create_test_user, generate_access_token, insert_attachment, insert_deleted_message,
+    insert_encrypted_message, insert_message, insert_message_at, TestApp,
 };
 
 // ============================================================================
@@ -105,7 +104,6 @@ async fn test_global_search_basic(pool: PgPool) {
     // Verify rank is positive
     let rank = result["rank"].as_f64().unwrap();
     assert!(rank > 0.0, "rank should be positive, got: {rank}");
-
 }
 
 // ============================================================================
@@ -146,7 +144,6 @@ async fn test_global_search_multi_guild(pool: PgPool) {
         guild_ids.contains(&guild_b.to_string().as_str()),
         "Should include result from guild B"
     );
-
 }
 
 // ============================================================================
@@ -184,7 +181,6 @@ async fn test_global_search_includes_dms(pool: PgPool) {
         "Should have a guild source"
     );
     assert!(source_types.contains(&"dm"), "Should have a dm source");
-
 }
 
 // ============================================================================
@@ -221,7 +217,6 @@ async fn test_global_search_source_guild(pool: PgPool) {
         source["guild_name"].is_string(),
         "guild_name should be present for guild source"
     );
-
 }
 
 // ============================================================================
@@ -255,7 +250,6 @@ async fn test_global_search_source_dm(pool: PgPool) {
         source["guild_name"].is_null(),
         "guild_name should be null for DM source"
     );
-
 }
 
 // ============================================================================
@@ -290,7 +284,6 @@ async fn test_global_search_excludes_inaccessible(pool: PgPool) {
         json["results"][0]["source"]["guild_id"],
         guild_b.to_string()
     );
-
 }
 
 // ============================================================================
@@ -317,7 +310,6 @@ async fn test_global_search_excludes_deleted(pool: PgPool) {
         json["total"], 1,
         "Soft-deleted message should be excluded from global search"
     );
-
 }
 
 // ============================================================================
@@ -350,7 +342,6 @@ async fn test_global_search_excludes_encrypted(pool: PgPool) {
         json["total"], 1,
         "Encrypted message should be excluded from global search"
     );
-
 }
 
 // ============================================================================
@@ -384,7 +375,6 @@ async fn test_global_search_date_filter(pool: PgPool) {
         json["total"], 1,
         "Only the recent message should match with date_from filter"
     );
-
 }
 
 // ============================================================================
@@ -412,7 +402,6 @@ async fn test_global_search_author_filter(pool: PgPool) {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 1);
     assert_eq!(json["results"][0]["author"]["id"], user_b.to_string());
-
 }
 
 // ============================================================================
@@ -445,7 +434,6 @@ async fn test_global_search_has_link(pool: PgPool) {
         json["total"], 1,
         "Only the message with a link should match"
     );
-
 }
 
 // ============================================================================
@@ -480,7 +468,6 @@ async fn test_global_search_has_file(pool: PgPool) {
         json["total"], 1,
         "Only the message with attachment should match"
     );
-
 }
 
 // ============================================================================
@@ -518,7 +505,6 @@ async fn test_global_search_sort_relevance(pool: PgPool) {
         rank_0 >= rank_1,
         "Results should be sorted by rank descending: {rank_0} >= {rank_1}"
     );
-
 }
 
 // ============================================================================
@@ -557,7 +543,6 @@ async fn test_global_search_sort_date(pool: PgPool) {
         date_0 > date_1,
         "sort=date should return newest first: {date_0} > {date_1}"
     );
-
 }
 
 // ============================================================================
@@ -586,7 +571,6 @@ async fn test_global_search_validation(pool: PgPool) {
         let resp = app.oneshot(req).await;
         assert_eq!(resp.status(), 400, "{label} should return 400");
     }
-
 }
 
 // ============================================================================
@@ -665,7 +649,6 @@ async fn test_global_search_pagination(pool: PgPool) {
         0,
         "Should return empty results when offset exceeds total"
     );
-
 }
 
 // ============================================================================
@@ -711,7 +694,6 @@ async fn test_global_search_limit_clamping(pool: PgPool) {
         1,
         "Clamped limit=1 should return 1 result"
     );
-
 }
 
 // ============================================================================
@@ -756,7 +738,6 @@ async fn test_global_search_channel_id_filter(pool: PgPool) {
         ch_a.to_string(),
         "Result should be from the filtered channel"
     );
-
 }
 
 // ============================================================================
@@ -783,5 +764,4 @@ async fn test_global_search_channel_id_forbidden(pool: PgPool) {
         403,
         "Should return 403 when filtering by a channel the user cannot access"
     );
-
 }

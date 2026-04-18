@@ -6,16 +6,15 @@
 //! Run with: `cargo test --test integration search_http`
 
 use axum::body::Body;
-use sqlx::PgPool;
 use axum::http::Method;
+use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
-    create_guild_with_default_role, create_test_user,
-    generate_access_token, insert_attachment, insert_encrypted_message, insert_message,
-    insert_message_at, TestApp,
+    create_guild_with_default_role, create_test_user, generate_access_token, insert_attachment,
+    insert_encrypted_message, insert_message, insert_message_at, TestApp,
 };
 
 // ============================================================================
@@ -64,7 +63,6 @@ async fn test_guild_search_requires_auth(pool: PgPool) {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 401);
-
 }
 
 // ============================================================================
@@ -86,7 +84,6 @@ async fn test_guild_search_non_member_forbidden(pool: PgPool) {
     let req = guild_search_request(guild_id, "q=test", &token);
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 403);
-
 }
 
 // ============================================================================
@@ -103,7 +100,6 @@ async fn test_guild_search_nonexistent_guild(pool: PgPool) {
     let req = guild_search_request(fake_guild_id, "q=test", &token);
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404);
-
 }
 
 // ============================================================================
@@ -129,7 +125,6 @@ async fn test_guild_search_basic(pool: PgPool) {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 2);
     assert_eq!(json["results"].as_array().unwrap().len(), 2);
-
 }
 
 // ============================================================================
@@ -153,7 +148,6 @@ async fn test_guild_search_excludes_encrypted(pool: PgPool) {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 1, "Encrypted message should be excluded");
-
 }
 
 // ============================================================================
@@ -185,7 +179,6 @@ async fn test_guild_search_date_filter(pool: PgPool) {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 1, "Only the recent message should match");
-
 }
 
 // ============================================================================
@@ -214,7 +207,6 @@ async fn test_guild_search_author_filter(pool: PgPool) {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 1);
     assert_eq!(json["results"][0]["author"]["id"], user_b.to_string());
-
 }
 
 // ============================================================================
@@ -241,7 +233,6 @@ async fn test_guild_search_channel_filter(pool: PgPool) {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 1);
     assert_eq!(json["results"][0]["channel_id"], ch_a.to_string());
-
 }
 
 // ============================================================================
@@ -274,7 +265,6 @@ async fn test_guild_search_has_link(pool: PgPool) {
         json["total"], 1,
         "Only the message with a link should match"
     );
-
 }
 
 // ============================================================================
@@ -303,7 +293,6 @@ async fn test_guild_search_has_file(pool: PgPool) {
         json["total"], 1,
         "Only the message with attachment should match"
     );
-
 }
 
 // ============================================================================
@@ -332,7 +321,6 @@ async fn test_guild_search_validation(pool: PgPool) {
         let resp = app.oneshot(req).await;
         assert_eq!(resp.status(), 400, "{label} should return 400");
     }
-
 }
 
 // ============================================================================
@@ -374,7 +362,6 @@ async fn test_dm_search_basic(pool: PgPool) {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 2);
     assert_eq!(json["results"].as_array().unwrap().len(), 2);
-
 }
 
 // ============================================================================
@@ -408,7 +395,6 @@ async fn test_dm_search_only_own_dms(pool: PgPool) {
         "User A should only see their own DM results"
     );
     assert_eq!(json["results"][0]["channel_id"], dm_ab.to_string());
-
 }
 
 // ============================================================================
@@ -438,7 +424,6 @@ async fn test_dm_search_channel_filter(pool: PgPool) {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 1);
     assert_eq!(json["results"][0]["channel_id"], dm_ab.to_string());
-
 }
 
 // ============================================================================
@@ -465,7 +450,6 @@ async fn test_dm_search_excludes_encrypted(pool: PgPool) {
         json["total"], 1,
         "Encrypted DM should be excluded from search"
     );
-
 }
 
 // ============================================================================
@@ -504,7 +488,6 @@ async fn test_guild_search_headline_contains_mark(pool: PgPool) {
         headline.contains("</mark>"),
         "headline should contain </mark> tags, got: {headline}"
     );
-
 }
 
 // ============================================================================
@@ -540,7 +523,6 @@ async fn test_guild_search_rank_present(pool: PgPool) {
         rank.unwrap() > 0.0,
         "rank should be a positive float, got: {rank:?}"
     );
-
 }
 
 // ============================================================================
@@ -587,7 +569,6 @@ async fn test_guild_search_sort_relevance(pool: PgPool) {
         rank_0 >= rank_1,
         "Results should be sorted by rank descending: {rank_0} >= {rank_1}"
     );
-
 }
 
 // ============================================================================
@@ -626,7 +607,6 @@ async fn test_guild_search_sort_date(pool: PgPool) {
         date_0 > date_1,
         "sort=date should return newest first: {date_0} > {date_1}"
     );
-
 }
 
 // ============================================================================
@@ -671,7 +651,6 @@ async fn test_guild_search_special_characters_no_error(pool: PgPool) {
             "'{label}' returned unexpected status {status} — expected 200 or 400"
         );
     }
-
 }
 
 /// A query longer than 1000 characters must be rejected with 400.
@@ -693,7 +672,6 @@ async fn test_guild_search_long_query_rejected(pool: PgPool) {
         400,
         "query of 1001 chars should be rejected with 400"
     );
-
 }
 
 /// A query of exactly 1000 characters must be accepted (boundary condition).
@@ -715,7 +693,6 @@ async fn test_guild_search_max_length_query_accepted(pool: PgPool) {
         200,
         "query of exactly 1000 chars should be accepted"
     );
-
 }
 
 /// Messages containing HTML/XSS payloads are returned verbatim in the `content`
@@ -751,7 +728,6 @@ async fn test_guild_search_xss_content_returned_verbatim(pool: PgPool) {
         !content.contains("&lt;"),
         "content field must not be HTML-escaped by the server; clients escape on render"
     );
-
 }
 
 // ============================================================================
@@ -835,7 +811,6 @@ async fn test_guild_search_large_result_set_pagination(pool: PgPool) {
         ids1.is_disjoint(&ids2),
         "page 1 and page 2 must not share any message IDs"
     );
-
 }
 
 // ============================================================================
@@ -973,7 +948,6 @@ async fn test_guild_search_excludes_hidden_channels(pool: PgPool) {
         visible_ch.to_string(),
         "result must be from the visible channel, not the restricted one"
     );
-
 }
 
 /// Guild owner bypasses channel permission overrides and can find messages in all channels.
@@ -1010,7 +984,6 @@ async fn test_guild_search_owner_sees_all_channels(pool: PgPool) {
         json["total"], 1,
         "guild owner must bypass channel permission overrides"
     );
-
 }
 
 /// A channel-level allow override for `VIEW_CHANNEL` grants search access
@@ -1063,7 +1036,6 @@ async fn test_guild_search_channel_allow_override_grants_access(pool: PgPool) {
         json["results"][0]["channel_id"].as_str().unwrap(),
         special_ch.to_string()
     );
-
 }
 
 /// When the user provides a `channel_id` filter for a channel they cannot view,
@@ -1100,7 +1072,6 @@ async fn test_guild_search_channel_filter_respects_visibility(pool: PgPool) {
         json["total"], 0,
         "filtering to a hidden channel must return 0 results to avoid info leakage"
     );
-
 }
 
 // ============================================================================
@@ -1125,5 +1096,4 @@ async fn test_dm_search_long_query_rejected(pool: PgPool) {
         400,
         "DM search query of 1001 chars should be rejected with 400"
     );
-
 }

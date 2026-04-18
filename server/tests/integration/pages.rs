@@ -84,7 +84,6 @@ fn test_is_reserved_slug() {
 /// Test page count for platform pages.
 #[sqlx::test]
 async fn test_count_platform_pages(pool: PgPool) {
-
     let count = count_pages(&pool, None)
         .await
         .expect("Failed to count platform pages");
@@ -96,7 +95,6 @@ async fn test_count_platform_pages(pool: PgPool) {
 /// Test page count for guild pages.
 #[sqlx::test]
 async fn test_count_guild_pages(pool: PgPool) {
-
     // Use a random guild ID (won't exist, should return 0)
     let guild_id = Uuid::new_v4();
     let count = count_pages(&pool, Some(guild_id))

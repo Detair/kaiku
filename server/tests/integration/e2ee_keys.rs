@@ -215,7 +215,6 @@ fn generate_mock_prekeys(count: usize) -> Vec<(String, String)> {
 
 #[sqlx::test]
 async fn test_device_registration(pool: PgPool) {
-
     // Create test user
     let username = format!("test_device_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -246,12 +245,10 @@ async fn test_device_registration(pool: PgPool) {
             .expect("Query should succeed");
 
     assert!(device_exists.is_some(), "Device should exist");
-
 }
 
 #[sqlx::test]
 async fn test_device_upsert_on_same_identity_key(pool: PgPool) {
-
     // Create test user
     let username = format!("test_upsert_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -309,12 +306,10 @@ async fn test_device_upsert_on_same_identity_key(pool: PgPool) {
         device_count.0, 1,
         "Should only have one device after upsert"
     );
-
 }
 
 #[sqlx::test]
 async fn test_prekey_upload(pool: PgPool) {
-
     // Create test user and device
     let username = format!("test_prekey_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -365,12 +360,10 @@ async fn test_prekey_upload(pool: PgPool) {
         .expect("Query should succeed");
 
     assert_eq!(prekey_count.0, 10, "Should have 10 prekeys");
-
 }
 
 #[sqlx::test]
 async fn test_prekey_claim_single(pool: PgPool) {
-
     // Create owner and claimer users
     let owner_username = format!("test_owner_{}", &Uuid::new_v4().to_string()[..8]);
     let claimer_username = format!("test_claimer_{}", &Uuid::new_v4().to_string()[..8]);
@@ -441,12 +434,10 @@ async fn test_prekey_claim_single(pool: PgPool) {
             .expect("Query should succeed");
 
     assert_eq!(unclaimed_count.0, 4, "Should have 4 unclaimed prekeys left");
-
 }
 
 #[sqlx::test]
 async fn test_prekey_claim_when_exhausted(pool: PgPool) {
-
     // Create owner and claimer
     let owner_username = format!("test_exhausted_{}", &Uuid::new_v4().to_string()[..8]);
     let claimer_username = format!("test_claimer_ex_{}", &Uuid::new_v4().to_string()[..8]);
@@ -492,12 +483,10 @@ async fn test_prekey_claim_when_exhausted(pool: PgPool) {
         claimed.is_none(),
         "Should return None when no prekeys available"
     );
-
 }
 
 #[sqlx::test]
 async fn test_prekey_duplicate_upload_ignored(pool: PgPool) {
-
     // Create test user and device
     let username = format!("test_dup_prekey_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -562,12 +551,10 @@ async fn test_prekey_duplicate_upload_ignored(pool: PgPool) {
         .expect("Query should succeed");
 
     assert_eq!(count.0, 1, "Should only have 1 prekey");
-
 }
 
 #[sqlx::test]
 async fn test_key_backup_upload_and_retrieve(pool: PgPool) {
-
     // Create test user
     let username = format!("test_backup_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -613,12 +600,10 @@ async fn test_key_backup_upload_and_retrieve(pool: PgPool) {
     assert_eq!(retrieved_nonce, nonce.to_vec());
     assert_eq!(retrieved_ciphertext, ciphertext.to_vec());
     assert_eq!(version, 1);
-
 }
 
 #[sqlx::test]
 async fn test_key_backup_upsert(pool: PgPool) {
-
     // Create test user
     let username = format!("test_backup_upsert_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -681,12 +666,10 @@ async fn test_key_backup_upsert(pool: PgPool) {
         .expect("Query should succeed");
 
     assert_eq!(backup.0, 2, "Backup should be version 2");
-
 }
 
 #[sqlx::test]
 async fn test_backup_status_no_backup(pool: PgPool) {
-
     // Create test user (no backup)
     let username = format!("test_no_backup_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -700,12 +683,10 @@ async fn test_backup_status_no_backup(pool: PgPool) {
             .expect("Query should succeed");
 
     assert!(backup.is_none(), "Should have no backup");
-
 }
 
 #[sqlx::test]
 async fn test_get_user_device_keys(pool: PgPool) {
-
     // Create test user with multiple devices
     let username = format!("test_multi_device_{}", &Uuid::new_v4().to_string()[..8]);
     let user = create_test_user(&pool, &username).await;
@@ -743,13 +724,11 @@ async fn test_get_user_device_keys(pool: PgPool) {
     .expect("Query should succeed");
 
     assert_eq!(devices.len(), 3, "Should have 3 devices");
-
 }
 
 #[sqlx::test]
 async fn test_concurrent_prekey_claims_unique(pool: PgPool) {
     use tokio::task::JoinSet;
-
 
     // Create owner
     let owner_username = format!("test_concurrent_{}", &Uuid::new_v4().to_string()[..8]);

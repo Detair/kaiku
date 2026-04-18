@@ -7,8 +7,7 @@ use vc_server::config::Config;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_bot_application, create_channel, create_guild,
-    create_test_user, generate_access_token,
-    TestApp,
+    create_test_user, generate_access_token, TestApp,
 };
 
 /// Helper: create a Config with low limits for testing.
@@ -258,7 +257,6 @@ async fn test_bot_limit(pool: PgPool) {
     // Create 2 bots
     let (_app1_id, bot1_id, _) = create_bot_application(&app.pool, owner_id).await;
     let (_app2_id, bot2_id, _) = create_bot_application(&app.pool, owner_id).await;
-
 
     // Install first bot (1/1)
     let resp = app

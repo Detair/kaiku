@@ -6,8 +6,8 @@
 //! Run with: `cargo test --test integration filters_http -- --nocapture`
 
 use axum::body::Body;
-use sqlx::PgPool;
 use axum::http::Method;
+use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
@@ -153,7 +153,6 @@ async fn test_list_filter_configs_empty(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-
     let req = TestApp::request(Method::GET, &format!("/api/guilds/{guild_id}/filters"))
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
@@ -169,7 +168,6 @@ async fn test_list_filter_configs_empty(pool: PgPool) {
 async fn test_enable_and_list_filter_category(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
-
 
     enable_filter_category(&app, guild_id, &token, "spam", "block").await;
 
@@ -192,7 +190,6 @@ async fn test_enable_and_list_filter_category(pool: PgPool) {
 async fn test_disable_filter_category(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
-
 
     // Enable then disable
     enable_filter_category(&app, guild_id, &token, "spam", "block").await;
@@ -221,7 +218,6 @@ async fn test_create_custom_keyword_pattern(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-
     let pattern = create_pattern(&app, guild_id, &token, "badword", false).await;
     assert_eq!(pattern["pattern"], "badword");
     assert_eq!(pattern["is_regex"], false);
@@ -233,7 +229,6 @@ async fn test_create_custom_regex_pattern(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-
     let pattern = create_pattern(&app, guild_id, &token, r"(?i)bad\s+word", true).await;
     assert_eq!(pattern["is_regex"], true);
 }
@@ -242,7 +237,6 @@ async fn test_create_custom_regex_pattern(pool: PgPool) {
 async fn test_invalid_regex_rejected(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
-
 
     let body = serde_json::json!({
         "pattern": "[invalid",
@@ -265,7 +259,6 @@ async fn test_invalid_regex_rejected(pool: PgPool) {
 async fn test_delete_custom_pattern(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
-
 
     let pattern = create_pattern(&app, guild_id, &token, "deleteme", false).await;
     let pattern_id = pattern["id"].as_str().unwrap();
@@ -291,7 +284,6 @@ async fn test_message_blocked_by_custom_keyword(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-
     // Add custom keyword
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
 
@@ -307,7 +299,6 @@ async fn test_clean_message_allowed(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
 
-
     // Add custom keyword
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
 
@@ -320,7 +311,6 @@ async fn test_clean_message_allowed(pool: PgPool) {
 async fn test_edit_blocked_by_filter(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
-
 
     // Create clean message first
     let (status, msg) = send_message_raw(&app, channel_id, &token, "clean message").await;
@@ -347,7 +337,6 @@ async fn test_edit_blocked_by_filter(pool: PgPool) {
 async fn test_encrypted_message_not_filtered(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
-
 
     // Add filter
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
@@ -381,7 +370,6 @@ async fn test_dm_message_not_filtered(pool: PgPool) {
 async fn test_log_action_allows_message_but_creates_log(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
-
 
     // Enable spam category with "log" action
     enable_filter_category(&app, guild_id, &token, "spam", "log").await;
@@ -419,7 +407,6 @@ async fn test_log_action_allows_message_but_creates_log(pool: PgPool) {
 async fn test_moderation_log_pagination(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
-
 
     // Add filter and trigger some blocks
     create_pattern(&app, guild_id, &token, "forbidden", false).await;
@@ -476,7 +463,6 @@ async fn test_filter_dry_run(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, _, token) = setup_guild_with_filters(&app).await;
 
-
     // Add a keyword
     create_pattern(&app, guild_id, &token, "testblock", false).await;
 
@@ -523,7 +509,6 @@ async fn test_filter_dry_run(pool: PgPool) {
 async fn test_cache_invalidation_on_config_change(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_user_id, guild_id, channel_id, token) = setup_guild_with_filters(&app).await;
-
 
     // Message should pass with no filters
     let (status, _) = send_message_raw(&app, channel_id, &token, "forbidden content").await;

@@ -40,7 +40,6 @@ async fn test_create_bot_application(pool: PgPool) {
     assert_eq!(app_response["name"], "Test Bot");
     assert_eq!(app_response["description"], "A test bot application");
     assert!(app_response["id"].is_string());
-
 }
 
 /// Test creating application with invalid name.
@@ -64,7 +63,6 @@ async fn test_create_bot_application_invalid_name(pool: PgPool) {
 
     let response = app.oneshot(request).await;
     assert_eq!(response.status(), 400);
-
 }
 
 /// Test listing bot applications.
@@ -105,7 +103,6 @@ async fn test_list_bot_applications(pool: PgPool) {
     assert_eq!(apps.len(), 2);
     assert_eq!(apps[0]["name"], "Bot 2"); // Ordered by created_at DESC
     assert_eq!(apps[1]["name"], "Bot 1");
-
 }
 
 /// Test creating a bot user for an application.
@@ -161,7 +158,6 @@ async fn test_create_bot_user(pool: PgPool) {
 
     assert!(bot_user.is_bot);
     assert_eq!(bot_user.bot_owner_id, Some(user_id));
-
 }
 
 /// Test that creating bot user twice fails.
@@ -203,7 +199,6 @@ async fn test_create_bot_user_twice_fails(pool: PgPool) {
         .unwrap();
     let bot_resp2 = app.oneshot(bot_req2).await;
     assert_eq!(bot_resp2.status(), 409); // Conflict
-
 }
 
 /// Test resetting bot token.
@@ -256,7 +251,6 @@ async fn test_reset_bot_token(pool: PgPool) {
     let new_token = new_data["token"].as_str().unwrap();
 
     assert_ne!(original_token, new_token);
-
 }
 
 /// Test deleting a bot application.
@@ -303,7 +297,6 @@ async fn test_delete_bot_application(pool: PgPool) {
     let apps: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(apps.len(), 0);
-
 }
 
 /// Test registering slash commands.
@@ -368,7 +361,6 @@ async fn test_register_slash_commands(pool: PgPool) {
     assert_eq!(commands.len(), 2);
     assert_eq!(commands[0]["name"], "hello");
     assert_eq!(commands[1]["name"], "ping");
-
 }
 
 /// Test command name validation.
@@ -416,7 +408,6 @@ async fn test_register_command_invalid_name(pool: PgPool) {
 
     let register_resp = app.oneshot(register_req).await;
     assert_eq!(register_resp.status(), 400);
-
 }
 
 /// Test listing slash commands.
@@ -477,7 +468,6 @@ async fn test_list_slash_commands(pool: PgPool) {
 
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0]["name"], "test");
-
 }
 
 /// Test guild-scoped command operations stay isolated per application.
@@ -614,7 +604,6 @@ async fn test_guild_scoped_commands_are_isolated_per_application(pool: PgPool) {
     let commands_b: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
     assert_eq!(commands_b.len(), 1);
     assert_eq!(commands_b[0]["name"], "beta");
-
 }
 
 /// Test deleting a slash command.
@@ -692,7 +681,6 @@ async fn test_delete_slash_command(pool: PgPool) {
     let commands: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(commands.len(), 0);
-
 }
 
 /// Test that non-owners cannot access applications.
@@ -1365,7 +1353,6 @@ async fn test_register_commands_rejects_batch_duplicates(pool: PgPool) {
         409,
         "Expected 409 Conflict for duplicate command names in batch"
     );
-
 }
 
 /// Test that listing guild commands shows entries from all installed bots (no deduplication)
