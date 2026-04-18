@@ -1,18 +1,17 @@
 //! HTTP Integration Tests for Setup Endpoints
 //!
 //! Tests the setup API at the HTTP layer using `tower::ServiceExt::oneshot`.
-//! Each test that modifies shared state (`setup_complete`, `system_admins`)
-//! uses `#[serial(setup)]` and a [`CleanupGuard`] to guarantee state restoration
-//! even if assertions fail.
 //!
-//! Each test uses `TestApp::new()` which creates a fresh Redis client per call
-//! to avoid stale `OnceCell` connections across `#[tokio::test]` runtimes.
+//! Each test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so mutations of the singleton `server_config.setup_complete`
+//! row are isolated. Tests that depend on a specific initial value set it
+//! explicitly; no cross-test state restoration is needed.
 //!
 //! Run with: `cargo test --test integration setup_http -- --nocapture`
 
 use axum::body::Body;
 use axum::http::Method;
-use serial_test::serial;
+use sqlx::PgPool;
 use tokio::time::{timeout, Duration};
 
 use super::helpers::{body_to_json, create_test_user, generate_access_token, make_admin, TestApp};
@@ -21,33 +20,22 @@ use super::helpers::{body_to_json, create_test_user, generate_access_token, make
 // Database state helpers
 // ============================================================================
 
-/// Set `setup_complete` to the given value and return the previous value.
-async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
-    let prev: serde_json::Value =
-        sqlx::query_scalar("SELECT value FROM server_config WHERE key = 'setup_complete'")
-            .fetch_one(pool)
-            .await
-            .expect("Failed to read setup_complete");
-
+/// Set `setup_complete` to the given value.
+async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) {
     sqlx::query("UPDATE server_config SET value = $1::jsonb WHERE key = 'setup_complete'")
         .bind(serde_json::json!(complete))
         .execute(pool)
         .await
         .expect("Failed to set setup_complete");
-
-    prev.as_bool().unwrap_or_else(|| {
-        panic!("setup_complete has invalid type in database, expected boolean, got: {prev:?}")
-    })
 }
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_status_returns_setup_state() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_status_returns_setup_state(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let req = TestApp::request(Method::GET, "/api/setup/status")
         .body(Body::empty())
@@ -64,15 +52,10 @@ async fn test_status_returns_setup_state() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_config_returns_values_when_setup_incomplete() {
-    let app = TestApp::new().await;
-    let prev = set_setup_complete(&app.pool, false).await;
-
-    // Guard restores setup_complete even if assertions below panic
-    let mut guard = app.cleanup_guard();
-    guard.restore_setup_complete(prev);
+#[sqlx::test]
+async fn test_config_returns_values_when_setup_incomplete(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    set_setup_complete(&app.pool, false).await;
 
     let req = TestApp::request(Method::GET, "/api/setup/config")
         .body(Body::empty())
@@ -98,17 +81,12 @@ async fn test_config_returns_values_when_setup_incomplete() {
         json["privacy_url"].is_null() || json["privacy_url"].is_string(),
         "Expected privacy_url to be null or string"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_config_returns_403_when_setup_complete() {
-    let app = TestApp::new().await;
-    let prev = set_setup_complete(&app.pool, true).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.restore_setup_complete(prev);
+#[sqlx::test]
+async fn test_config_returns_403_when_setup_complete(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    set_setup_complete(&app.pool, true).await;
 
     let req = TestApp::request(Method::GET, "/api/setup/config")
         .body(Body::empty())
@@ -119,13 +97,11 @@ async fn test_config_returns_403_when_setup_complete() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "SETUP_ALREADY_COMPLETE");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_complete_requires_auth() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_complete_requires_auth(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -145,18 +121,13 @@ async fn test_complete_requires_auth() {
     assert_eq!(json["error"], "MISSING_AUTH");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_complete_requires_admin() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_complete_requires_admin(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let prev = set_setup_complete(&app.pool, false).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.restore_setup_complete(prev);
-    guard.delete_user(user_id);
+    set_setup_complete(&app.pool, false).await;
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -175,23 +146,16 @@ async fn test_complete_requires_admin() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "FORBIDDEN");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_complete_succeeds_for_admin() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_complete_succeeds_for_admin(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     make_admin(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let prev = set_setup_complete(&app.pool, false).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.restore_config_defaults();
-    guard.restore_setup_complete(prev);
-    guard.delete_user(user_id);
+    set_setup_complete(&app.pool, false).await;
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -221,22 +185,16 @@ async fn test_complete_succeeds_for_admin() {
         Some(true),
         "setup_complete should be true after completion"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_complete_rejects_invalid_body() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_complete_rejects_invalid_body(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     make_admin(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let prev = set_setup_complete(&app.pool, false).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.restore_setup_complete(prev);
-    guard.delete_user(user_id);
+    set_setup_complete(&app.pool, false).await;
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -255,22 +213,16 @@ async fn test_complete_rejects_invalid_body() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_complete_already_done() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_complete_already_done(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
     make_admin(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let prev = set_setup_complete(&app.pool, true).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.restore_setup_complete(prev);
-    guard.delete_user(user_id);
+    set_setup_complete(&app.pool, true).await;
 
     let req = TestApp::request(Method::POST, "/api/setup/complete")
         .header("Content-Type", "application/json")
@@ -291,5 +243,4 @@ async fn test_complete_already_done() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "SETUP_ALREADY_COMPLETE");
-    guard.cleanup().await;
 }
