@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO global_bans (user_id, banned_by, reason, expires_at)\n           VALUES ($1, $2, $3, $4)\n           ON CONFLICT (user_id) DO UPDATE SET\n               banned_by = $2,\n               reason = $3,\n               expires_at = $4,\n               created_at = NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "750682915019707aedaa21a51cb26cc657547a625a958c8cedeeec91aa7cdb3f"
+}

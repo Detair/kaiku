@@ -7,9 +7,12 @@
 //! - Token refresh lifecycle
 //! - Session revocation
 //!
+//! Each DB test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so no manual row cleanup is required.
+//!
 //! Run with: `cargo test --test integration auth`
-//! Run ignored (integration) tests: `cargo test --test integration auth -- --ignored`
 
+use sqlx::PgPool;
 use vc_server::auth::{hash_password, verify_password};
 
 // ============================================================================
@@ -122,25 +125,11 @@ fn test_token_hash_produces_hex_output() {
 }
 
 // ============================================================================
-// Integration Tests (require database - marked as #[ignore])
+// Integration Tests (each uses a fresh per-test DB via #[sqlx::test])
 // ============================================================================
 
-/// Helper to create a test database pool.
-#[allow(dead_code)]
-async fn create_test_pool() -> sqlx::PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_user_registration_creates_user() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_user_registration_creates_user(pool: PgPool) {
     // Generate unique username for test
     let username = format!("test_user_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password = "Test123!@#";
@@ -157,25 +146,15 @@ async fn test_user_registration_creates_user() {
     assert_eq!(user.username, username);
     assert_eq!(user.display_name, display_name);
     assert!(user.password_hash.is_some());
-
-    // Clean up
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .expect("Cleanup should succeed");
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_duplicate_username_rejected() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_duplicate_username_rejected(pool: PgPool) {
     let username = format!("test_dup_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
 
     // Create first user
-    let user1 = vc_server::db::create_user(&pool, &username, "User 1", None, &password_hash)
+    let _user1 = vc_server::db::create_user(&pool, &username, "User 1", None, &password_hash)
         .await
         .expect("First user should be created");
 
@@ -183,20 +162,10 @@ async fn test_duplicate_username_rejected() {
     let result = vc_server::db::create_user(&pool, &username, "User 2", None, &password_hash).await;
 
     assert!(result.is_err(), "Duplicate username should fail");
-
-    // Clean up
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user1.id)
-        .execute(&pool)
-        .await
-        .ok();
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_session_creation_and_lookup() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_session_creation_and_lookup(pool: PgPool) {
     // Create a test user first
     let username = format!("test_session_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
@@ -232,25 +201,10 @@ async fn test_session_creation_and_lookup() {
 
     assert!(found.is_some(), "Session should be found");
     assert_eq!(found.unwrap().id, session.id);
-
-    // Clean up
-    sqlx::query("DELETE FROM sessions WHERE id = $1")
-        .bind(session.id)
-        .execute(&pool)
-        .await
-        .ok();
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .ok();
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_session_revocation() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_session_revocation(pool: PgPool) {
     // Create a test user
     let username = format!("test_revoke_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
@@ -306,20 +260,10 @@ async fn test_session_revocation() {
 
     assert!(session1.is_none(), "Session 1 should be deleted");
     assert!(session2.is_none(), "Session 2 should be deleted");
-
-    // Clean up user
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .ok();
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_expired_session_not_found() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_expired_session_not_found(pool: PgPool) {
     // Create a test user
     let username = format!("test_expired_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = hash_password("password").unwrap();
@@ -347,16 +291,4 @@ async fn test_expired_session_not_found() {
         .expect("Lookup should succeed");
 
     assert!(found.is_none(), "Expired session should not be found");
-
-    // Clean up
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .ok();
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .ok();
 }

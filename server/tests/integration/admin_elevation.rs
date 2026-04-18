@@ -7,10 +7,13 @@
 //! - Elevation required for ban/suspend operations
 //! - Elevation cache behavior
 //!
+//! Each DB test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so no manual row cleanup is required.
+//!
 //! Run with: `cargo test --test integration admin_elevation`
-//! Run ignored (integration) tests: `cargo test --test integration admin_elevation -- --ignored`
 
 use chrono::{Duration, Utc};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 // ============================================================================
@@ -122,30 +125,18 @@ fn test_elevation_cache_key_format() {
 }
 
 // ============================================================================
-// Integration Tests (require database - marked as #[ignore])
+// Integration Tests (each uses a fresh per-test DB via #[sqlx::test])
 // ============================================================================
 
-/// Helper to create a test database pool.
-#[allow(dead_code)]
-async fn create_test_pool() -> sqlx::PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
-/// Helper struct for test user cleanup.
-#[allow(dead_code)]
+/// Helper struct for tracking created users in tests.
 struct TestUser {
     id: Uuid,
+    #[allow(dead_code)]
     username: String,
 }
 
 /// Helper to create a test user.
-#[allow(dead_code)]
-async fn create_test_user(pool: &sqlx::PgPool, username: &str) -> TestUser {
+async fn create_test_user(pool: &PgPool, username: &str) -> TestUser {
     let user_id = Uuid::now_v7();
     let password_hash = vc_server::auth::hash_password("Test123!@#").unwrap();
 
@@ -167,8 +158,7 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str) -> TestUser {
 }
 
 /// Helper to grant system admin to a user.
-#[allow(dead_code)]
-async fn grant_system_admin(pool: &sqlx::PgPool, user_id: Uuid, granted_by: Uuid) {
+async fn grant_system_admin(pool: &PgPool, user_id: Uuid, granted_by: Uuid) {
     sqlx::query("INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $2)")
         .bind(user_id)
         .bind(granted_by)
@@ -178,8 +168,7 @@ async fn grant_system_admin(pool: &sqlx::PgPool, user_id: Uuid, granted_by: Uuid
 }
 
 /// Helper to create a session for a user.
-#[allow(dead_code)]
-async fn create_session(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
+async fn create_session(pool: &PgPool, user_id: Uuid) -> Uuid {
     let session_id = Uuid::now_v7();
     // Use a unique token per invocation to avoid unique constraint violations
     // when multiple tests create sessions in the same test database.
@@ -200,33 +189,8 @@ async fn create_session(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
     session_id
 }
 
-/// Helper to cleanup test data.
-#[allow(dead_code)]
-async fn cleanup_test_user(pool: &sqlx::PgPool, user_id: Uuid) {
-    // Delete in correct order due to foreign key constraints
-    let _ = sqlx::query("DELETE FROM elevated_sessions WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM system_admins WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-}
-
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_system_admin_check() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_system_admin_check(pool: PgPool) {
     // Create test users
     let admin_username = format!("test_admin_{}", &Uuid::new_v4().to_string()[..8]);
     let regular_username = format!("test_regular_{}", &Uuid::new_v4().to_string()[..8]);
@@ -252,17 +216,10 @@ async fn test_system_admin_check() {
         regular_status.is_none(),
         "User should NOT be a system admin"
     );
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
-    cleanup_test_user(&pool, regular_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_elevation_session_creation() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_elevation_session_creation(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_elevate_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -298,16 +255,10 @@ async fn test_elevation_session_creation() {
         diff.num_minutes() >= 14 && diff.num_minutes() <= 15,
         "Elevation should expire in ~15 minutes"
     );
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_elevation_session_lookup() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_elevation_session_lookup(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_lookup_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -342,16 +293,10 @@ async fn test_elevation_session_lookup() {
     .expect("Query should succeed");
 
     assert!(elevated.is_some(), "Should be elevated now");
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_elevation_expiry_excludes_expired_sessions() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_elevation_expiry_excludes_expired_sessions(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_expiry_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -393,16 +338,10 @@ async fn test_elevation_expiry_excludes_expired_sessions() {
             .expect("Query should succeed");
 
     assert!(any_session.is_some(), "Session should exist in table");
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_de_elevation_removes_sessions() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_de_elevation_removes_sessions(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_de_elev_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -442,16 +381,10 @@ async fn test_de_elevation_removes_sessions() {
         count_after.0, 0,
         "Should have no elevated sessions after de-elevation"
     );
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_elevation_upsert_updates_expiry() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_elevation_upsert_updates_expiry(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_upsert_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -505,16 +438,10 @@ async fn test_elevation_upsert_updates_expiry() {
         count.0, 1,
         "Should have exactly one elevated session after upsert"
     );
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_non_admin_cannot_have_elevated_session() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_non_admin_cannot_have_elevated_session(pool: PgPool) {
     // Create test regular user (not an admin)
     let regular_username = format!("test_nonadmin_{}", &Uuid::new_v4().to_string()[..8]);
     let regular_user = create_test_user(&pool, &regular_username).await;
@@ -558,20 +485,10 @@ async fn test_non_admin_cannot_have_elevated_session() {
         admin_status_after.is_none(),
         "User still should not be admin after elevation attempt"
     );
-
-    // Cleanup
-    let _ = sqlx::query("DELETE FROM elevated_sessions WHERE user_id = $1")
-        .bind(regular_user.id)
-        .execute(&pool)
-        .await;
-    cleanup_test_user(&pool, regular_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_elevation_with_reason_stored() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_elevation_with_reason_stored(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_reason_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -605,16 +522,10 @@ async fn test_elevation_with_reason_stored() {
 
     assert!(stored_reason.is_some());
     assert_eq!(stored_reason.unwrap().0.as_deref(), Some(reason_text));
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_elevation_without_reason() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_elevation_without_reason(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_no_reason_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -636,16 +547,10 @@ async fn test_elevation_without_reason() {
     .expect("Elevation should succeed");
 
     assert!(elevated.reason.is_none(), "Reason should be None");
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_elevation_ip_address_stored() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_elevation_ip_address_stored(pool: PgPool) {
     // Create test admin user
     let admin_username = format!("test_ip_{}", &Uuid::new_v4().to_string()[..8]);
     let admin_user = create_test_user(&pool, &admin_username).await;
@@ -670,7 +575,4 @@ async fn test_elevation_ip_address_stored() {
 
     assert!(stored_ip.is_some());
     assert_eq!(stored_ip.unwrap().0, test_ip);
-
-    // Cleanup
-    cleanup_test_user(&pool, admin_user.id).await;
 }

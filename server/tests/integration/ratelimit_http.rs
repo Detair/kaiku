@@ -8,11 +8,15 @@
 //! rate limiting is stateful middleware that needs to persist state
 //! across multiple requests.
 //!
-//! Run with: `cargo test --test integration ratelimit_http -- --ignored -- --nocapture`
+//! Each test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`.
+//!
+//! Run with: `cargo test --test integration ratelimit_http -- --nocapture`
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use sqlx::PgPool;
 use vc_server::api::{create_router, AppState, AppStateConfig};
 use vc_server::config::Config;
 use vc_server::ratelimit::{LimitConfig, RateLimitConfig, RateLimiter, RateLimits};
@@ -21,9 +25,11 @@ use vc_server::voice::sfu::SfuServer;
 use super::helpers::spawn_test_server;
 
 /// Create a test app with rate limiting enabled using a real server.
-async fn create_rate_limited_app(limits: RateLimits) -> (super::helpers::TestServer, Config) {
+async fn create_rate_limited_app(
+    pool: PgPool,
+    limits: RateLimits,
+) -> (super::helpers::TestServer, Config) {
     let config = Config::default_for_test();
-    let pool = super::helpers::shared_pool().await.clone();
     let redis = vc_server::db::create_redis_client(&config.redis_url)
         .await
         .expect("Failed to connect to test Redis");
@@ -62,9 +68,8 @@ async fn create_rate_limited_app(limits: RateLimits) -> (super::helpers::TestSer
 ///
 /// Uses GET /api/discover/guilds which is covered by `rate_limit_by_ip` +
 /// `RateLimitCategory::Search` in the public discovery router.
-#[tokio::test]
-#[ignore] // Requires Redis
-async fn test_http_rate_limiting_returns_429() {
+#[sqlx::test]
+async fn test_http_rate_limiting_returns_429(pool: PgPool) {
     let limits = RateLimits {
         // Use the Search category — this is what the discovery public router applies.
         search: LimitConfig {
@@ -74,7 +79,7 @@ async fn test_http_rate_limiting_returns_429() {
         ..RateLimits::default()
     };
 
-    let (server, _config) = create_rate_limited_app(limits).await;
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
     let client = reqwest::Client::new();
 
     // First 3 requests should succeed (200 from public guild discovery)
@@ -116,9 +121,8 @@ async fn test_http_rate_limiting_returns_429() {
 ///
 /// Uses GET /api/discover/guilds which is covered by `rate_limit_by_ip` +
 /// `RateLimitCategory::Search` in the public discovery router.
-#[tokio::test]
-#[ignore] // Requires Redis
-async fn test_http_rate_limit_headers() {
+#[sqlx::test]
+async fn test_http_rate_limit_headers(pool: PgPool) {
     let limits = RateLimits {
         // Use the Search category — this is what the discovery public router applies.
         search: LimitConfig {
@@ -128,7 +132,7 @@ async fn test_http_rate_limit_headers() {
         ..RateLimits::default()
     };
 
-    let (server, _config) = create_rate_limited_app(limits).await;
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
     let client = reqwest::Client::new();
 
     let resp = client
@@ -151,11 +155,10 @@ async fn test_http_rate_limit_headers() {
 }
 
 /// Test that request IDs are unique across multiple requests.
-#[tokio::test]
-#[ignore] // Requires Redis
-async fn test_request_ids_are_unique() {
+#[sqlx::test]
+async fn test_request_ids_are_unique(pool: PgPool) {
     let limits = RateLimits::default();
-    let (server, _config) = create_rate_limited_app(limits).await;
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
     let client = reqwest::Client::new();
 
     let mut request_ids = HashSet::new();

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*) as \"count!\"\n               FROM users u\n               WHERE LOWER(u.username) LIKE $1\n                  OR LOWER(u.display_name) LIKE $1\n                  OR LOWER(COALESCE(u.email, '')) LIKE $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e4f5319507d8d32b97c903f7c2db5652b29ea9f22641959bc17e704ee4401fc2"
+}

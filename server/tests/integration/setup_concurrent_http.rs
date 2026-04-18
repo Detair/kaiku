@@ -8,39 +8,27 @@
 //! auth middleware, JSON deserialization, validation, compare-and-swap,
 //! and response serialization — all under concurrent load.
 //!
-//! Cross-process serialization with other tests that mutate
-//! `server_config.setup_complete` is enforced by the `setup-state`
-//! nextest test-group in `.config/nextest.toml`. The in-process
-//! `#[serial(setup)]` lock below provides defense in depth for
-//! plain `cargo test` runs (which run all tests in a single process).
+//! Each test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so mutations of the singleton
+//! `server_config.setup_complete` row are isolated from other tests.
 //!
 //! Run with: `cargo test --test integration setup_concurrent_http -- --nocapture`
 
 use axum::body::Body;
 use axum::http::Method;
-use serial_test::serial;
+use sqlx::PgPool;
 use tokio::time::{timeout, Duration};
 use tower::ServiceExt;
 
 use super::helpers::{create_test_user, generate_access_token, make_admin, TestApp};
 
-/// Set `setup_complete` to the given value and return the previous value.
-async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
-    let prev: serde_json::Value =
-        sqlx::query_scalar("SELECT value FROM server_config WHERE key = 'setup_complete'")
-            .fetch_one(pool)
-            .await
-            .expect("Failed to read setup_complete");
-
+/// Set `setup_complete` to the given value.
+async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) {
     sqlx::query("UPDATE server_config SET value = $1::jsonb WHERE key = 'setup_complete'")
         .bind(serde_json::json!(complete))
         .execute(pool)
         .await
         .expect("Failed to set setup_complete");
-
-    prev.as_bool().unwrap_or_else(|| {
-        panic!("setup_complete has invalid type in database, expected boolean, got: {prev:?}")
-    })
 }
 
 /// Test that concurrent HTTP setup completion requests result in exactly one 204.
@@ -48,10 +36,9 @@ async fn set_setup_complete(pool: &sqlx::PgPool, complete: bool) -> bool {
 /// Two admin users simultaneously POST to `/api/setup/complete`.
 /// The compare-and-swap pattern ensures exactly one succeeds (204),
 /// while the other gets 403 (`SETUP_ALREADY_COMPLETE`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_concurrent_http_setup_completion() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_concurrent_http_setup_completion(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     // Create two separate admin users
     let (admin1_id, _) = create_test_user(&app.pool).await;
@@ -62,15 +49,9 @@ async fn test_concurrent_http_setup_completion() {
     let token1 = generate_access_token(&app.config, admin1_id);
     let token2 = generate_access_token(&app.config, admin2_id);
 
-    // Reset setup to incomplete
-    let prev = set_setup_complete(&app.pool, false).await;
-
-    // Guard ensures cleanup even if assertions panic
-    let mut guard = app.cleanup_guard();
-    guard.restore_config_defaults();
-    guard.restore_setup_complete(prev);
-    guard.delete_user(admin1_id);
-    guard.delete_user(admin2_id);
+    // Reset setup to incomplete (migration default is already false,
+    // but set explicitly for clarity).
+    set_setup_complete(&app.pool, false).await;
 
     // Build two concurrent completion requests
     let req1 = TestApp::request(Method::POST, "/api/setup/complete")
@@ -126,35 +107,24 @@ async fn test_concurrent_http_setup_completion() {
         Some(true),
         "setup_complete should be true after concurrent completion"
     );
-    guard.cleanup().await;
 }
 
 /// Test that concurrent completion with 5 admins still results in exactly one success.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(setup)]
-async fn test_concurrent_http_setup_five_admins() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_concurrent_http_setup_five_admins(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let num_admins = 5;
-    let mut admin_ids = Vec::new();
     let mut tokens = Vec::new();
 
     for _ in 0..num_admins {
         let (user_id, _) = create_test_user(&app.pool).await;
         make_admin(&app.pool, user_id).await;
         let token = generate_access_token(&app.config, user_id);
-        admin_ids.push(user_id);
         tokens.push(token);
     }
 
-    let prev = set_setup_complete(&app.pool, false).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.restore_config_defaults();
-    guard.restore_setup_complete(prev);
-    for &id in &admin_ids {
-        guard.delete_user(id);
-    }
+    set_setup_complete(&app.pool, false).await;
 
     // Spawn concurrent requests
     let mut handles = Vec::new();
@@ -201,5 +171,4 @@ async fn test_concurrent_http_setup_five_admins() {
         num_admins - 1,
         "All other admins should get 403"
     );
-    guard.cleanup().await;
 }

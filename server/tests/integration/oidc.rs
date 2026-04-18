@@ -3,9 +3,12 @@
 //! Tests for OIDC provider management, secret encryption/decryption,
 //! username generation from claims, and flow state serialization.
 //!
-//! Run unit tests: `cargo test --test integration oidc`
-//! Run integration tests: `cargo test --test integration oidc -- --ignored`
+//! Each DB test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so no manual row cleanup is required.
+//!
+//! Run tests: `cargo test --test integration oidc`
 
+use sqlx::PgPool;
 use vc_server::auth::oidc::{
     append_collision_suffix, generate_username_from_claims, OidcFlowState, OidcProviderManager,
     OidcUserInfo,
@@ -452,21 +455,10 @@ async fn test_manager_exchange_code_unknown_provider() {
 }
 
 // ============================================================================
-// Integration Tests (require database - marked as #[ignore])
+// Integration Tests (each uses a fresh per-test DB via #[sqlx::test])
 // ============================================================================
 
-#[allow(dead_code)]
-async fn create_test_pool() -> sqlx::PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
-/// Create a temporary test user and return their ID. Caller must clean up.
-#[allow(dead_code)]
+/// Create a temporary test user and return their ID.
 async fn create_test_user(pool: &sqlx::PgPool) -> uuid::Uuid {
     let username = format!("oidc_test_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let password_hash = vc_server::auth::hash_password("test_password").unwrap();
@@ -476,20 +468,8 @@ async fn create_test_user(pool: &sqlx::PgPool) -> uuid::Uuid {
     user.id
 }
 
-/// Clean up a test user.
-#[allow(dead_code)]
-async fn delete_test_user(pool: &sqlx::PgPool, user_id: uuid::Uuid) {
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-}
-
-#[tokio::test]
-#[ignore] // Requires PostgreSQL with oidc_providers table
-async fn test_oidc_provider_crud() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_oidc_provider_crud(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let key = test_encryption_key();
     let manager = OidcProviderManager::new(key);
@@ -542,15 +522,10 @@ async fn test_oidc_provider_crud() {
     // Verify deletion
     let result = vc_server::db::get_oidc_provider_by_slug(&pool, &slug).await;
     assert!(result.is_err(), "Deleted provider should not be found");
-
-    // Cleanup
-    delete_test_user(&pool, user_id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_auth_methods_config_crud() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_auth_methods_config_crud(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
 
     // Read current auth methods
@@ -578,15 +553,10 @@ async fn test_auth_methods_config_crud() {
     vc_server::db::set_auth_methods_allowed(&pool, &methods, user_id)
         .await
         .expect("Should restore auth methods");
-
-    // Cleanup
-    delete_test_user(&pool, user_id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_load_providers_from_database() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_load_providers_from_database(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let key = test_encryption_key();
     let manager = OidcProviderManager::new(key);
@@ -637,7 +607,6 @@ async fn test_load_providers_from_database() {
     vc_server::db::delete_oidc_provider(&pool, provider.id)
         .await
         .ok();
-    delete_test_user(&pool, user_id).await;
 }
 
 // ============================================================================
@@ -771,10 +740,8 @@ fn test_collision_suffix_short_base_unchanged() {
 // Registration Policy + First-User Admin Tests (require database)
 // ============================================================================
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_registration_policy_blocks_non_open() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_registration_policy_blocks_non_open(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
 
     // Set policy to invite_only
@@ -816,15 +783,10 @@ async fn test_registration_policy_blocks_non_open() {
     )
     .await
     .expect("Should restore policy");
-
-    delete_test_user(&pool, user_id).await;
 }
 
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_first_user_detection() {
-    let pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_first_user_detection(pool: PgPool) {
     // Count users — this is the same query used in first-user admin logic
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
         .fetch_one(&pool)

@@ -6,7 +6,6 @@
 //! automatically, so concurrent execution is safe.
 
 use sqlx::PgPool;
-use vc_server::config::Config;
 use vc_server::db;
 
 /// Test that the first user registration logic is set up correctly.
@@ -15,13 +14,8 @@ use vc_server::db;
 /// first-user detection and grant occurs atomically in POST /auth/register
 /// (handlers.rs registration flow). See `setup_integration.rs` for
 /// full-flow testing including concurrent registration scenarios.
-#[tokio::test]
-async fn test_first_user_detection_works() {
-    let config = Config::default_for_test();
-    let pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
-
+#[sqlx::test]
+async fn test_first_user_detection_works(pool: PgPool) {
     // Use a transaction for isolation (will be rolled back automatically on drop)
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -81,13 +75,8 @@ async fn test_first_user_detection_works() {
 }
 
 /// Test that setup status is initially incomplete.
-#[tokio::test]
-async fn test_setup_initially_incomplete() {
-    let config = Config::default_for_test();
-    let pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
-
+#[sqlx::test]
+async fn test_setup_initially_incomplete(pool: PgPool) {
     // For fresh installs, setup should be incomplete
     // For existing installs with users, the migration marks it complete
     let setup_complete = db::is_setup_complete(&pool)
@@ -110,13 +99,8 @@ async fn test_setup_initially_incomplete() {
 /// Test server config CRUD operations.
 ///
 /// Uses a transaction to avoid mutating shared database state.
-#[tokio::test]
-async fn test_server_config_operations() {
-    let config = Config::default_for_test();
-    let pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
-
+#[sqlx::test]
+async fn test_server_config_operations(pool: PgPool) {
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
     // Get default server name
@@ -184,13 +168,8 @@ async fn test_server_config_operations() {
 ///
 /// Note: This test uses a transaction that is rolled back to avoid
 /// permanently modifying the database state.
-#[tokio::test]
-async fn test_mark_setup_complete() {
-    let config = Config::default_for_test();
-    let pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
-
+#[sqlx::test]
+async fn test_mark_setup_complete(pool: PgPool) {
     // Use a transaction for isolation (will be rolled back automatically)
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -262,13 +241,8 @@ async fn test_mark_setup_complete() {
 /// Test that the `setup_complete` lock serialization works correctly.
 /// This verifies the actual locking pattern used in production (handlers.rs:225-237).
 /// Full concurrent behavior requires integration testing through HTTP endpoints.
-#[tokio::test]
-async fn test_setup_complete_lock_serialization() {
-    let config = Config::default_for_test();
-    let pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
-
+#[sqlx::test]
+async fn test_setup_complete_lock_serialization(pool: PgPool) {
     // Use isolated transaction
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -313,13 +287,8 @@ async fn test_setup_complete_lock_serialization() {
 /// Note: This test uses a transaction to avoid modifying shared database state.
 /// It documents that the database layer is permissive and validation should
 /// happen at the API layer.
-#[tokio::test]
-async fn test_config_validation() {
-    let config = Config::default_for_test();
-    let pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
-
+#[sqlx::test]
+async fn test_config_validation(pool: PgPool) {
     // Use transaction for isolation
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -417,13 +386,8 @@ async fn test_config_validation() {
 }
 
 /// Test that second user does NOT receive admin permissions.
-#[tokio::test]
-async fn test_second_user_not_admin() {
-    let config = Config::default_for_test();
-    let pool: PgPool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to DB");
-
+#[sqlx::test]
+async fn test_second_user_not_admin(pool: PgPool) {
     // Use isolated transaction
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 

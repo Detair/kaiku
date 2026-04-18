@@ -7,9 +7,10 @@
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 
 use super::helpers::{
-    body_to_json, create_elevated_session, create_test_report, create_test_user, delete_user,
+    body_to_json, create_elevated_session, create_test_report, create_test_user,
     generate_access_token, make_admin, TestApp,
 };
 
@@ -17,9 +18,9 @@ use super::helpers::{
 // Access Control Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_list_reports_requires_admin() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_reports_requires_admin(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user);
 
@@ -33,14 +34,11 @@ async fn test_list_reports_requires_admin() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "not_admin");
-
-    // Cleanup
-    delete_user(&app.pool, user).await;
 }
 
-#[tokio::test]
-async fn test_list_reports_requires_elevation() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_reports_requires_elevation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     let token = generate_access_token(&app.config, admin);
@@ -56,18 +54,15 @@ async fn test_list_reports_requires_elevation() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "elevation_required");
-
-    // Cleanup
-    delete_user(&app.pool, admin).await;
 }
 
 // ============================================================================
 // List Reports Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_list_reports_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_reports_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -88,16 +83,11 @@ async fn test_list_reports_success() {
     let json = body_to_json(resp).await;
     assert!(json["items"].is_array());
     assert!(json["total"].as_i64().unwrap() >= 1);
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
-    delete_user(&app.pool, admin).await;
 }
 
-#[tokio::test]
-async fn test_list_reports_filter_by_status() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_reports_filter_by_status(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -120,20 +110,15 @@ async fn test_list_reports_filter_by_status() {
     for item in items {
         assert_eq!(item["status"], "pending");
     }
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
-    delete_user(&app.pool, admin).await;
 }
 
 // ============================================================================
 // Get Report Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_get_report_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_get_report_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -155,16 +140,11 @@ async fn test_get_report_success() {
     assert_eq!(json["id"], report_id.to_string());
     assert_eq!(json["reporter_id"], reporter.to_string());
     assert_eq!(json["target_user_id"], target.to_string());
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
-    delete_user(&app.pool, admin).await;
 }
 
-#[tokio::test]
-async fn test_get_report_not_found() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_get_report_not_found(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -181,18 +161,15 @@ async fn test_get_report_not_found() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "REPORT_NOT_FOUND");
-
-    // Cleanup
-    delete_user(&app.pool, admin).await;
 }
 
 // ============================================================================
 // Claim Report Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_claim_report_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_claim_report_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -216,16 +193,11 @@ async fn test_claim_report_success() {
     let json = body_to_json(resp).await;
     assert_eq!(json["status"], "reviewing");
     assert_eq!(json["assigned_admin_id"], admin.to_string());
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
-    delete_user(&app.pool, admin).await;
 }
 
-#[tokio::test]
-async fn test_claim_already_reviewing_fails() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_claim_already_reviewing_fails(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -259,20 +231,15 @@ async fn test_claim_already_reviewing_fails() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "REPORT_NOT_FOUND");
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
-    delete_user(&app.pool, admin).await;
 }
 
 // ============================================================================
 // Resolve Report Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_resolve_report_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_resolve_report_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -303,16 +270,11 @@ async fn test_resolve_report_success() {
     let json = body_to_json(resp).await;
     assert_eq!(json["status"], "resolved");
     assert_eq!(json["resolution_action"], "warned");
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
-    delete_user(&app.pool, admin).await;
 }
 
-#[tokio::test]
-async fn test_resolve_invalid_action() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_resolve_invalid_action(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -341,20 +303,15 @@ async fn test_resolve_invalid_action() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
-    delete_user(&app.pool, admin).await;
 }
 
 // ============================================================================
 // Report Stats Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_report_stats_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_report_stats_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
     create_elevated_session(&app.pool, admin).await;
@@ -379,7 +336,4 @@ async fn test_report_stats_success() {
         json["dismissed"].is_number(),
         "dismissed should be a number"
     );
-
-    // Cleanup
-    delete_user(&app.pool, admin).await;
 }

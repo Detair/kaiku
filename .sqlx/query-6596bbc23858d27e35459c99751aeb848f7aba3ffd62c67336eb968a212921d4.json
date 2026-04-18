@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE guilds SET\n               suspended_at = NOW(),\n               suspended_by = $2,\n               suspension_reason = $3\n           WHERE id = $1 AND suspended_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6596bbc23858d27e35459c99751aeb848f7aba3ffd62c67336eb968a212921d4"
+}

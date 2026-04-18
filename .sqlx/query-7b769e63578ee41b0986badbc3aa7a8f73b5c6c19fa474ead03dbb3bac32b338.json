@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT MAX(created_at) as \"last_login\"\n        FROM sessions\n        WHERE user_id = $1\n        ",
+  "query": "SELECT MAX(created_at) as \"last_login\"\n           FROM sessions\n           WHERE user_id = $1",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       null
     ]
   },
-  "hash": "9185b18e53bdea8d92992ef6c1f3ff0f80e754260fdd4fe16d8be4b350e0200f"
+  "hash": "7b769e63578ee41b0986badbc3aa7a8f73b5c6c19fa474ead03dbb3bac32b338"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, username, display_name, email, avatar_url, created_at,\n               EXISTS(SELECT 1 FROM global_bans gb WHERE gb.user_id = users.id AND (gb.expires_at IS NULL OR gb.expires_at > NOW())) as \"is_banned!\"\n        FROM users\n        WHERE id = $1\n        ",
+  "query": "SELECT id, username, display_name, email, avatar_url, created_at,\n                  EXISTS(\n                      SELECT 1 FROM global_bans gb\n                      WHERE gb.user_id = users.id\n                        AND (gb.expires_at IS NULL OR gb.expires_at > NOW())\n                  ) as \"is_banned!\"\n           FROM users\n           WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -54,5 +54,5 @@
       null
     ]
   },
-  "hash": "b19db20b579f2200d680bfd7664725f25ffd734613c003ec0fb76b507878c033"
+  "hash": "037c6e3b43c4b89868377be2fa99505d52fa40b7f6647852678852e795df54cb"
 }

@@ -1,22 +1,24 @@
 //! HTTP Integration Tests for User-Facing Report Endpoint
 //!
 //! Tests `POST /api/reports` at the HTTP layer using `tower::ServiceExt::oneshot`.
-//! Each test creates its own users and cleans up via `delete_user` (CASCADE).
+//! Each test runs against a fresh per-test database provisioned by `#[sqlx::test]`,
+//! so no manual row cleanup is required.
 //!
 //! Run with: `cargo test --test integration reports -- --nocapture`
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 
-use super::helpers::{body_to_json, create_test_user, delete_user, generate_access_token, TestApp};
+use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
 
 // ============================================================================
 // Report Creation Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_create_report_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_report_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, reporter);
@@ -54,15 +56,11 @@ async fn test_create_report_success() {
     .await
     .expect("Report row should exist");
     assert_eq!(status, "pending");
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
 }
 
-#[tokio::test]
-async fn test_create_report_requires_auth() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_report_requires_auth(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (target, _) = create_test_user(&app.pool).await;
 
     let req = TestApp::request(Method::POST, "/api/reports")
@@ -79,14 +77,11 @@ async fn test_create_report_requires_auth() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 401);
-
-    // Cleanup
-    delete_user(&app.pool, target).await;
 }
 
-#[tokio::test]
-async fn test_create_report_self_fails() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_report_self_fails(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user);
 
@@ -108,14 +103,11 @@ async fn test_create_report_self_fails() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-
-    // Cleanup
-    delete_user(&app.pool, user).await;
 }
 
-#[tokio::test]
-async fn test_create_report_invalid_target() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_report_invalid_target(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (reporter, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, reporter);
     let fake_id = uuid::Uuid::new_v4();
@@ -138,14 +130,11 @@ async fn test_create_report_invalid_target() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
 }
 
-#[tokio::test]
-async fn test_create_report_invalid_category() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_report_invalid_category(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, reporter);
@@ -165,15 +154,11 @@ async fn test_create_report_invalid_category() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 422);
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
 }
 
-#[tokio::test]
-async fn test_create_report_duplicate_active() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_report_duplicate_active(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, reporter);
@@ -212,8 +197,4 @@ async fn test_create_report_duplicate_active() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "DUPLICATE_REPORT");
-
-    // Cleanup
-    delete_user(&app.pool, reporter).await;
-    delete_user(&app.pool, target).await;
 }
