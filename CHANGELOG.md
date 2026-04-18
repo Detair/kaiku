@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Integration tests now use `#[sqlx::test]`'s per-test database isolation; the shared-pool model that produced sporadic Postgres deadlocks in CI is retired. Contributor-facing documentation is in `server/tests/AGENTS.md`.
 - Voice connections use dual PeerConnection architecture (publisher + subscriber) for reliable screen sharing and multi-user scalability
 - Screen sharing uses standard WebRTC `addTrack` negotiation instead of `replaceTrack` workarounds
 - Voice channel view uses tile-based grid with focus mode for screen shares and webcams
