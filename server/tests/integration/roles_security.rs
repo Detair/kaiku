@@ -1,25 +1,12 @@
 //! Security integration tests for role management.
 //!
-//! Run with: `cargo test --test integration roles_security -- --ignored`
+//! Run with: `cargo test --test integration roles_security`
 
 use sqlx::PgPool;
 use vc_server::permissions::GuildPermissions;
 
-/// Helper to create a test database pool.
-async fn create_test_pool() -> PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
-#[tokio::test]
-#[ignore] // Requires PostgreSQL
-async fn test_cannot_grant_dangerous_permissions_to_everyone() {
-    let _pool = create_test_pool().await;
-
+#[sqlx::test]
+async fn test_cannot_grant_dangerous_permissions_to_everyone(_pool: PgPool) {
     // 1. Setup: Create a guild and get the @everyone role
     // This part requires recreating some of the app state and handler logic
     // For this test to be truly effective as a regression test, it should use the actual API
