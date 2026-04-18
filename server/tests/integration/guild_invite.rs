@@ -10,6 +10,7 @@
 //! Run ignored (integration) tests: `cargo test --test integration guild_invite -- --ignored`
 
 use chrono::{Duration, Utc};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 // ============================================================================
@@ -266,22 +267,10 @@ fn test_max_active_invites_constant() {
 // Integration Tests (require database - marked as #[ignore])
 // ============================================================================
 
-/// Helper to create a test database pool.
-#[allow(dead_code)]
-async fn create_test_pool() -> sqlx::PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_invite_rejected_when_expired() {
+async fn test_invite_rejected_when_expired(_pool: PgPool) {
     // This test verifies the database query filters out expired invites
-    let _pool = create_test_pool().await;
 
     // The SQL query in join_via_invite includes:
     // WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())
@@ -294,11 +283,10 @@ async fn test_invite_rejected_when_expired() {
     // 4. Verify it returns "Invalid or expired invite code"
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_invite_rate_limit_enforcement() {
+async fn test_invite_rate_limit_enforcement(_pool: PgPool) {
     // This test verifies max 10 active invites per guild
-    let _pool = create_test_pool().await;
 
     // The implementation checks:
     // if active_count.0 >= 10 {
@@ -312,11 +300,10 @@ async fn test_invite_rate_limit_enforcement() {
     // 4. Verify it returns validation error
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_already_member_returns_guild_info() {
+async fn test_already_member_returns_guild_info(_pool: PgPool) {
     // This test verifies existing members get guild info without re-joining
-    let _pool = create_test_pool().await;
 
     // The implementation checks:
     // let is_member = db::is_guild_member(&state.db, invite.guild_id, auth.id).await?;
@@ -330,11 +317,10 @@ async fn test_already_member_returns_guild_info() {
     // 5. Verify use_count was NOT incremented
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_invite_use_count_increments() {
+async fn test_invite_use_count_increments(_pool: PgPool) {
     // This test verifies use_count increments when invite is used
-    let _pool = create_test_pool().await;
 
     // Would need to:
     // 1. Create test guild
@@ -345,11 +331,10 @@ async fn test_invite_use_count_increments() {
     // 6. Verify use_count = 2
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_invite_code_collision_handling() {
+async fn test_invite_code_collision_handling(_pool: PgPool) {
     // This test verifies code regeneration on collision
-    let _pool = create_test_pool().await;
 
     // The implementation retries up to 5 times:
     // while attempts < 5 {
@@ -360,11 +345,10 @@ async fn test_invite_code_collision_handling() {
     // }
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_delete_invite_removes_from_db() {
+async fn test_delete_invite_removes_from_db(_pool: PgPool) {
     // This test verifies invite deletion
-    let _pool = create_test_pool().await;
 
     // Would need to:
     // 1. Create test guild
@@ -374,30 +358,27 @@ async fn test_delete_invite_removes_from_db() {
     // 5. Verify use returns "Invalid or expired invite code"
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_only_owner_can_create_invite() {
+async fn test_only_owner_can_create_invite(_pool: PgPool) {
     // This test verifies ownership check for invite creation
-    let _pool = create_test_pool().await;
 
     // The implementation checks:
     // if guild.0 != auth.id { return Err(GuildError::Forbidden); }
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_only_owner_can_delete_invite() {
+async fn test_only_owner_can_delete_invite(_pool: PgPool) {
     // This test verifies ownership check for invite deletion
-    let _pool = create_test_pool().await;
 
     // Same ownership check as create
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Requires PostgreSQL
-async fn test_only_owner_can_list_invites() {
+async fn test_only_owner_can_list_invites(_pool: PgPool) {
     // This test verifies ownership check for listing invites
-    let _pool = create_test_pool().await;
 
     // Same ownership check as create/delete
 }
@@ -406,9 +387,9 @@ async fn test_only_owner_can_list_invites() {
 // Future Test Stubs (for planned features)
 // ============================================================================
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Feature not yet implemented
-async fn test_invite_rejected_after_max_uses() {
+async fn test_invite_rejected_after_max_uses(_pool: PgPool) {
     // TODO: When max_uses is added to GuildInvite:
     // 1. Create invite with max_uses = 5
     // 2. Have 5 users join
@@ -416,9 +397,9 @@ async fn test_invite_rejected_after_max_uses() {
     // 4. Verify rejection
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Feature not yet implemented
-async fn test_banned_user_cannot_join_via_invite() {
+async fn test_banned_user_cannot_join_via_invite(_pool: PgPool) {
     // TODO: When bans table is implemented:
     // 1. Create guild and invite
     // 2. Ban a user from guild
@@ -426,9 +407,9 @@ async fn test_banned_user_cannot_join_via_invite() {
     // 4. Verify rejection with appropriate error
 }
 
-#[tokio::test]
+#[sqlx::test]
 #[ignore] // Feature not yet implemented
-async fn test_invite_to_suspended_guild_rejected() {
+async fn test_invite_to_suspended_guild_rejected(_pool: PgPool) {
     // TODO: When guild suspension is implemented:
     // 1. Create guild and invite
     // 2. Suspend guild

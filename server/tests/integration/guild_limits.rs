@@ -2,12 +2,12 @@
 
 use axum::body::Body;
 use axum::http::{Method, StatusCode};
+use sqlx::PgPool;
 use vc_server::config::Config;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_bot_application, create_channel, create_guild,
-    create_test_user, delete_bot_application, delete_guild, delete_user, generate_access_token,
-    TestApp,
+    create_test_user, generate_access_token, TestApp,
 };
 
 /// Helper: create a Config with low limits for testing.
@@ -26,16 +26,13 @@ fn low_limit_config() -> Config {
 // Guild creation limit
 // ============================================================================
 
-#[tokio::test]
-async fn test_guild_creation_limit() {
-    let app = TestApp::with_config(low_limit_config()).await;
+#[sqlx::test]
+async fn test_guild_creation_limit(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(pool.clone(), low_limit_config()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create 2 guilds (at limit)
-    let mut guild_ids = Vec::new();
     for i in 0..2 {
         let resp = app
             .oneshot(
@@ -47,8 +44,6 @@ async fn test_guild_creation_limit() {
             )
             .await;
         assert_eq!(resp.status(), StatusCode::OK, "Guild {i} should succeed");
-        let body = body_to_json(resp).await;
-        guild_ids.push(body["id"].as_str().unwrap().to_string());
     }
 
     // 3rd guild should fail
@@ -64,35 +59,21 @@ async fn test_guild_creation_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
-
-    // Cleanup
-    for gid in &guild_ids {
-        let uuid = uuid::Uuid::parse_str(gid).unwrap();
-        delete_guild(&app.pool, uuid).await;
-    }
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Member limit on invite join
 // ============================================================================
 
-#[tokio::test]
-async fn test_member_limit_on_invite_join() {
-    let app = TestApp::with_config(low_limit_config()).await;
+#[sqlx::test]
+async fn test_member_limit_on_invite_join(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(pool.clone(), low_limit_config()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (user2_id, _) = create_test_user(&app.pool).await;
     let (user3_id, _) = create_test_user(&app.pool).await;
     let owner_token = generate_access_token(&app.config, owner_id);
     let user3_token = generate_access_token(&app.config, user3_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-        delete_user(&pool, user2_id).await;
-        delete_user(&pool, user3_id).await;
-    });
 
     // Owner is already member (1/2). Add user2 (2/2).
     add_guild_member(&app.pool, guild_id, user2_id).await;
@@ -123,24 +104,18 @@ async fn test_member_limit_on_invite_join() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Channel limit
 // ============================================================================
 
-#[tokio::test]
-async fn test_channel_limit() {
-    let app = TestApp::with_config(low_limit_config()).await;
+#[sqlx::test]
+async fn test_channel_limit(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(pool.clone(), low_limit_config()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, owner_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-    });
 
     // Create @everyone role with MANAGE_CHANNELS
     sqlx::query(
@@ -188,24 +163,18 @@ async fn test_channel_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Role limit
 // ============================================================================
 
-#[tokio::test]
-async fn test_role_limit() {
-    let app = TestApp::with_config(low_limit_config()).await;
+#[sqlx::test]
+async fn test_role_limit(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(pool.clone(), low_limit_config()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, owner_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-    });
 
     sqlx::query(
         "UPDATE guild_roles SET permissions = $1 WHERE guild_id = $2 AND is_default = true",
@@ -258,20 +227,18 @@ async fn test_role_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Bot limit
 // ============================================================================
 
-#[tokio::test]
-async fn test_bot_limit() {
-    let app = TestApp::with_config(low_limit_config()).await;
+#[sqlx::test]
+async fn test_bot_limit(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(pool.clone(), low_limit_config()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, owner_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
 
     // Create @everyone with MANAGE_GUILD
     sqlx::query(
@@ -285,15 +252,8 @@ async fn test_bot_limit() {
     .unwrap();
 
     // Create 2 bots
-    let (app1_id, bot1_id, _) = create_bot_application(&app.pool, owner_id).await;
-    let (app2_id, bot2_id, _) = create_bot_application(&app.pool, owner_id).await;
-
-    guard.add(move |pool| async move {
-        delete_bot_application(&pool, app1_id).await;
-        delete_bot_application(&pool, app2_id).await;
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-    });
+    let (_app1_id, bot1_id, _) = create_bot_application(&app.pool, owner_id).await;
+    let (_app2_id, bot2_id, _) = create_bot_application(&app.pool, owner_id).await;
 
     // Install first bot (1/1)
     let resp = app
@@ -328,24 +288,18 @@ async fn test_bot_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Emoji limit
 // ============================================================================
 
-#[tokio::test]
-async fn test_emoji_limit() {
-    let app = TestApp::with_config(low_limit_config()).await;
+#[sqlx::test]
+async fn test_emoji_limit(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(pool.clone(), low_limit_config()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, owner_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-    });
 
     // Insert 1 emoji directly (at limit of 1)
     sqlx::query(
@@ -376,30 +330,22 @@ async fn test_emoji_limit() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Member limit on discovery join
 // ============================================================================
 
-#[tokio::test]
-async fn test_member_limit_on_discovery_join() {
+#[sqlx::test]
+async fn test_member_limit_on_discovery_join(pool: PgPool) {
     let mut config = low_limit_config();
     config.enable_guild_discovery = true;
-    let app = TestApp::with_config(config).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (user2_id, _) = create_test_user(&app.pool).await;
     let (user3_id, _) = create_test_user(&app.pool).await;
     let user3_token = generate_access_token(&app.config, user3_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-        delete_user(&pool, user2_id).await;
-        delete_user(&pool, user3_id).await;
-    });
 
     // Make guild discoverable
     sqlx::query("UPDATE guilds SET discoverable = true WHERE id = $1")
@@ -426,24 +372,17 @@ async fn test_member_limit_on_discovery_join() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(resp).await;
     assert_eq!(body["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn test_globally_banned_user_cannot_join_via_discovery() {
+#[sqlx::test]
+async fn test_globally_banned_user_cannot_join_via_discovery(pool: PgPool) {
     let mut config = low_limit_config();
     config.enable_guild_discovery = true;
-    let app = TestApp::with_config(config).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (banned_user_id, _) = create_test_user(&app.pool).await;
     let banned_token = generate_access_token(&app.config, banned_user_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-        delete_user(&pool, banned_user_id).await;
-    });
 
     sqlx::query("UPDATE guilds SET discoverable = true WHERE id = $1")
         .bind(guild_id)
@@ -473,24 +412,18 @@ async fn test_globally_banned_user_cannot_join_via_discovery() {
     assert_eq!(banned_resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(banned_resp).await;
     assert_eq!(body["error"], "FORBIDDEN");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Usage endpoint
 // ============================================================================
 
-#[tokio::test]
-async fn test_usage_endpoint() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_usage_endpoint(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, owner_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-    });
 
     // Create some channels
     create_channel(&app.pool, guild_id, "general").await;
@@ -513,22 +446,15 @@ async fn test_usage_endpoint() {
     assert_eq!(body["channels"]["current"], 2);
     assert!(body["members"]["limit"].as_i64().unwrap() > 0);
     assert!(body["channels"]["limit"].as_i64().unwrap() > 0);
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn test_usage_requires_membership() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_usage_requires_membership(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (outsider_id, _) = create_test_user(&app.pool).await;
     let outsider_token = generate_access_token(&app.config, outsider_id);
     let guild_id = create_guild(&app.pool, owner_id).await;
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        delete_guild(&pool, guild_id).await;
-        delete_user(&pool, owner_id).await;
-        delete_user(&pool, outsider_id).await;
-    });
 
     let resp = app
         .oneshot(
@@ -539,16 +465,15 @@ async fn test_usage_requires_membership() {
         )
         .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Instance limits endpoint
 // ============================================================================
 
-#[tokio::test]
-async fn test_instance_limits_endpoint() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_instance_limits_endpoint(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let resp = app
         .oneshot(

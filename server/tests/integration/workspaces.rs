@@ -4,6 +4,7 @@
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 
 use super::helpers::{
     body_to_json, create_channel, create_guild, create_test_user, generate_access_token, TestApp,
@@ -13,14 +14,11 @@ use super::helpers::{
 // Workspace CRUD Tests
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_workspace() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_workspace(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -41,17 +39,13 @@ async fn test_create_workspace() {
     assert_eq!(json["name"], "Gaming Setup");
     assert_eq!(json["icon"], "🎮");
     assert!(json["id"].is_string());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_workspace_name_too_long() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_workspace_name_too_long(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let long_name = "a".repeat(101);
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -64,17 +58,13 @@ async fn test_create_workspace_name_too_long() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Should reject name > 100 chars");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_workspace_icon_too_long() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_workspace_icon_too_long(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let long_icon = "x".repeat(65);
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -94,17 +84,13 @@ async fn test_create_workspace_icon_too_long() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_workspace_unicode_name_length() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_workspace_unicode_name_length(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // 100 CJK characters (300 bytes in UTF-8) should be accepted
     let cjk_name: String = "你".repeat(100);
@@ -134,17 +120,13 @@ async fn test_create_workspace_unicode_name_length() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "101 Unicode chars should be rejected");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_workspace_empty_name() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_workspace_empty_name(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -156,17 +138,13 @@ async fn test_create_workspace_empty_name() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 400, "Should reject empty/whitespace name");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_workspace_limit_exceeded() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_workspace_limit_exceeded(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Fill up to the limit via direct DB inserts
     let limit = app.config.max_workspaces_per_user;
@@ -194,17 +172,13 @@ async fn test_create_workspace_limit_exceeded() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_list_workspaces() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_workspaces(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create 3 workspaces
     for name in &["Alpha", "Beta", "Gamma"] {
@@ -232,17 +206,13 @@ async fn test_list_workspaces() {
     let arr = json.as_array().expect("Should be an array");
     assert_eq!(arr.len(), 3, "Should have 3 workspaces");
     assert!(arr[0]["entry_count"].is_number());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_list_workspaces_empty() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_workspaces_empty(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::GET, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -255,19 +225,15 @@ async fn test_list_workspaces_empty() {
     let json = body_to_json(resp).await;
     let arr = json.as_array().expect("Should be an array");
     assert!(arr.is_empty(), "Should be empty");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_get_workspace_with_entries() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_get_workspace_with_entries(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -310,17 +276,13 @@ async fn test_get_workspace_with_entries() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["channel_name"], "general");
     assert!(entries[0]["guild_name"].is_string());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_get_workspace_not_found() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_get_workspace_not_found(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let fake_id = uuid::Uuid::new_v4();
     let req = TestApp::request(Method::GET, &format!("/api/me/workspaces/{fake_id}"))
@@ -330,20 +292,15 @@ async fn test_get_workspace_not_found() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404);
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_get_workspace_not_owner() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_get_workspace_not_owner(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user1_id, _) = create_test_user(&app.pool).await;
     let (user2_id, _) = create_test_user(&app.pool).await;
     let token1 = generate_access_token(&app.config, user1_id);
     let token2 = generate_access_token(&app.config, user2_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user1_id);
-    guard.delete_user(user2_id);
 
     // User1 creates a workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -365,17 +322,13 @@ async fn test_get_workspace_not_owner() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Other user should get 404");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_update_workspace() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_update_workspace(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -405,17 +358,13 @@ async fn test_update_workspace() {
     let json = body_to_json(resp).await;
     assert_eq!(json["name"], "New Name");
     assert_eq!(json["icon"], "🎯");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_update_workspace_clear_icon() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_update_workspace_clear_icon(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create with icon
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -471,17 +420,13 @@ async fn test_update_workspace_clear_icon() {
     let json = body_to_json(resp).await;
     assert_eq!(json["name"], "Renamed");
     assert_eq!(json["icon"], "🔧", "Icon should be unchanged when omitted");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_update_workspace_icon_too_long() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_update_workspace_icon_too_long(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
         .header("Authorization", format!("Bearer {token}"))
@@ -508,17 +453,13 @@ async fn test_update_workspace_icon_too_long() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_delete_workspace() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_delete_workspace(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -547,23 +488,19 @@ async fn test_delete_workspace() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Should be gone");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Entry Tests
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_add_entry() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_add_entry(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "raids").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -595,19 +532,15 @@ async fn test_add_entry() {
     let json = body_to_json(resp).await;
     assert_eq!(json["channel_name"], "raids");
     assert!(json["guild_name"].is_string());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_add_entry_duplicate() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_add_entry_duplicate(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "dup-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -644,12 +577,11 @@ async fn test_add_entry_duplicate() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 409, "Should reject duplicate entry");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_add_entry_no_guild_membership() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_add_entry_no_guild_membership(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let (other_user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
@@ -657,10 +589,6 @@ async fn test_add_entry_no_guild_membership() {
     // Other user's guild — user_id is NOT a member
     let guild_id = create_guild(&app.pool, other_user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "secret").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
-    guard.delete_user(other_user_id);
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -688,18 +616,14 @@ async fn test_add_entry_no_guild_membership() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Should reject non-member");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_add_entry_limit_exceeded() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_add_entry_limit_exceeded(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -747,19 +671,15 @@ async fn test_add_entry_limit_exceeded() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "LIMIT_EXCEEDED");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_remove_entry() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_remove_entry(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "removable").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create workspace + add entry
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -809,24 +729,20 @@ async fn test_remove_entry() {
     let json = body_to_json(resp).await;
     let entries = json["entries"].as_array().unwrap();
     assert!(entries.is_empty(), "Should have no entries after removal");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Reorder Tests
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_reorder_entries() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_reorder_entries(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = create_guild(&app.pool, user_id).await;
     let ch1 = create_channel(&app.pool, guild_id, "ch-one").await;
     let ch2 = create_channel(&app.pool, guild_id, "ch-two").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create workspace
     let req = TestApp::request(Method::POST, "/api/me/workspaces")
@@ -885,17 +801,13 @@ async fn test_reorder_entries() {
     let entries = json["entries"].as_array().unwrap();
     assert_eq!(entries[0]["channel_name"], "ch-two");
     assert_eq!(entries[1]["channel_name"], "ch-one");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_reorder_workspaces() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_reorder_workspaces(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create 3 workspaces
     let mut ws_ids = Vec::new();
@@ -935,19 +847,15 @@ async fn test_reorder_workspaces() {
     assert_eq!(arr[0]["name"], "Third");
     assert_eq!(arr[1]["name"], "Second");
     assert_eq!(arr[2]["name"], "First");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_reorder_entries_rejects_oversized_payload() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_reorder_entries_rejects_oversized_payload(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
-
-    let oversized = (0..(app.config.max_entries_per_workspace as usize + 1))
+    let oversized = (0..=app.config.max_entries_per_workspace as usize)
         .map(|_| uuid::Uuid::new_v4().to_string())
         .collect::<Vec<_>>();
 
@@ -967,19 +875,15 @@ async fn test_reorder_entries_rejects_oversized_payload() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_reorder_workspaces_rejects_oversized_payload() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_reorder_workspaces_rejects_oversized_payload(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
-
-    let oversized = (0..(app.config.max_workspaces_per_user as usize + 1))
+    let oversized = (0..=app.config.max_workspaces_per_user as usize)
         .map(|_| uuid::Uuid::new_v4().to_string())
         .collect::<Vec<_>>();
 
@@ -996,5 +900,4 @@ async fn test_reorder_workspaces_rejects_oversized_payload() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "VALIDATION_ERROR");
-    guard.cleanup().await;
 }

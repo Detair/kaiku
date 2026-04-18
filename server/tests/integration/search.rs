@@ -6,16 +6,6 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Helper to create a test database pool.
-async fn create_test_pool() -> PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
-
 /// Helper to create a test user and return their ID.
 async fn create_test_user(pool: &PgPool) -> Uuid {
     let user_id = Uuid::new_v4();
@@ -118,52 +108,12 @@ async fn create_test_message(
     message_id
 }
 
-/// Helper to cleanup test data.
-async fn cleanup_test_data(pool: &PgPool, user_id: Uuid, guild_id: Uuid) {
-    // Delete messages first (FK constraint)
-    sqlx::query("DELETE FROM messages WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-
-    // Delete channels
-    sqlx::query("DELETE FROM channels WHERE guild_id = $1")
-        .bind(guild_id)
-        .execute(pool)
-        .await
-        .ok();
-
-    // Delete guild members
-    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1")
-        .bind(guild_id)
-        .execute(pool)
-        .await
-        .ok();
-
-    // Delete guild
-    sqlx::query("DELETE FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .execute(pool)
-        .await
-        .ok();
-
-    // Delete user
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-}
-
 // ============================================================================
 // Search Query Tests
 // ============================================================================
 
-#[tokio::test]
-#[ignore = "requires database"]
-async fn test_search_messages_basic() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_search_messages_basic(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general").await;
@@ -192,14 +142,10 @@ async fn test_search_messages_basic() {
     .expect("Search query failed");
 
     assert_eq!(results.len(), 2, "Expected 2 results for 'test'");
-
-    cleanup_test_data(&pool, user_id, guild_id).await;
 }
 
-#[tokio::test]
-#[ignore = "requires database"]
-async fn test_search_messages_no_results() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_search_messages_no_results(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general").await;
@@ -225,14 +171,10 @@ async fn test_search_messages_no_results() {
     .expect("Search query failed");
 
     assert_eq!(results.len(), 0, "Expected no results for 'nonexistent'");
-
-    cleanup_test_data(&pool, user_id, guild_id).await;
 }
 
-#[tokio::test]
-#[ignore = "requires database"]
-async fn test_search_messages_pagination() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_search_messages_pagination(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general").await;
@@ -303,14 +245,10 @@ async fn test_search_messages_pagination() {
             "Pages should not have overlapping results"
         );
     }
-
-    cleanup_test_data(&pool, user_id, guild_id).await;
 }
 
-#[tokio::test]
-#[ignore = "requires database"]
-async fn test_search_messages_count() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_search_messages_count(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general").await;
@@ -341,14 +279,10 @@ async fn test_search_messages_count() {
     .expect("Count query failed");
 
     assert_eq!(count.0, 15, "Expected 15 matching messages");
-
-    cleanup_test_data(&pool, user_id, guild_id).await;
 }
 
-#[tokio::test]
-#[ignore = "requires database"]
-async fn test_search_excludes_deleted_messages() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_search_excludes_deleted_messages(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general").await;
@@ -392,14 +326,10 @@ async fn test_search_excludes_deleted_messages() {
         results[0].0, msg_id,
         "Deleted message should not be in results"
     );
-
-    cleanup_test_data(&pool, user_id, guild_id).await;
 }
 
-#[tokio::test]
-#[ignore = "requires database"]
-async fn test_search_websearch_syntax() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_search_websearch_syntax(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general").await;
@@ -450,6 +380,4 @@ async fn test_search_websearch_syntax() {
         3,
         "Expected 3 results for 'quick OR lazy'"
     );
-
-    cleanup_test_data(&pool, user_id, guild_id).await;
 }

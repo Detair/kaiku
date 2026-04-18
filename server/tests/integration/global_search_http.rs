@@ -7,12 +7,12 @@
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
-    create_test_user, delete_dm_channel, delete_guild, delete_user, generate_access_token,
-    insert_attachment, insert_deleted_message, insert_encrypted_message, insert_message,
-    insert_message_at, TestApp,
+    create_test_user, generate_access_token, insert_attachment, insert_deleted_message,
+    insert_encrypted_message, insert_message, insert_message_at, TestApp,
 };
 
 // ============================================================================
@@ -31,9 +31,9 @@ fn global_search_request(query_string: &str, token: &str) -> axum::http::Request
 // Global Search — Auth
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_requires_auth() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_requires_auth(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let req = TestApp::request(Method::GET, "/api/search?q=test")
         .body(Body::empty())
@@ -47,9 +47,9 @@ async fn test_global_search_requires_auth() {
 // Global Search — Basic
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_basic() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_basic(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -104,18 +104,15 @@ async fn test_global_search_basic() {
     // Verify rank is positive
     let rank = result["rank"].as_f64().unwrap();
     assert!(rank > 0.0, "rank should be positive, got: {rank}");
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Multi Guild
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_multi_guild() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_multi_guild(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -147,19 +144,15 @@ async fn test_global_search_multi_guild() {
         guild_ids.contains(&guild_b.to_string().as_str()),
         "Should include result from guild B"
     );
-
-    delete_guild(&app.pool, guild_a).await;
-    delete_guild(&app.pool, guild_b).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Includes DMs
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_includes_dms() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_includes_dms(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
@@ -188,20 +181,15 @@ async fn test_global_search_includes_dms() {
         "Should have a guild source"
     );
     assert!(source_types.contains(&"dm"), "Should have a dm source");
-
-    delete_dm_channel(&app.pool, dm_id).await;
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
 // ============================================================================
 // Global Search — Source Guild
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_source_guild() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_source_guild(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -229,18 +217,15 @@ async fn test_global_search_source_guild() {
         source["guild_name"].is_string(),
         "guild_name should be present for guild source"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Source DM
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_source_dm() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_source_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
@@ -265,19 +250,15 @@ async fn test_global_search_source_dm() {
         source["guild_name"].is_null(),
         "guild_name should be null for DM source"
     );
-
-    delete_dm_channel(&app.pool, dm_id).await;
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
 // ============================================================================
 // Global Search — Excludes Inaccessible
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_excludes_inaccessible() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_excludes_inaccessible(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
 
@@ -303,20 +284,15 @@ async fn test_global_search_excludes_inaccessible() {
         json["results"][0]["source"]["guild_id"],
         guild_b.to_string()
     );
-
-    delete_guild(&app.pool, guild_a).await;
-    delete_guild(&app.pool, guild_b).await;
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
 // ============================================================================
 // Global Search — Excludes Deleted Messages
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_excludes_deleted() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_excludes_deleted(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -334,18 +310,15 @@ async fn test_global_search_excludes_deleted() {
         json["total"], 1,
         "Soft-deleted message should be excluded from global search"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Excludes Encrypted Messages
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_excludes_encrypted() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_excludes_encrypted(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -369,18 +342,15 @@ async fn test_global_search_excludes_encrypted() {
         json["total"], 1,
         "Encrypted message should be excluded from global search"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Date Filter
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_date_filter() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_date_filter(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -405,18 +375,15 @@ async fn test_global_search_date_filter() {
         json["total"], 1,
         "Only the recent message should match with date_from filter"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Author Filter
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_author_filter() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_author_filter(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_a).await;
@@ -435,19 +402,15 @@ async fn test_global_search_author_filter() {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 1);
     assert_eq!(json["results"][0]["author"]["id"], user_b.to_string());
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
 // ============================================================================
 // Global Search — Has Link
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_has_link() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_has_link(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -471,18 +434,15 @@ async fn test_global_search_has_link() {
         json["total"], 1,
         "Only the message with a link should match"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Has File
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_has_file() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_has_file(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -508,18 +468,15 @@ async fn test_global_search_has_file() {
         json["total"], 1,
         "Only the message with attachment should match"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Sort by Relevance
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_sort_relevance() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_sort_relevance(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -548,18 +505,15 @@ async fn test_global_search_sort_relevance() {
         rank_0 >= rank_1,
         "Results should be sorted by rank descending: {rank_0} >= {rank_1}"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Sort by Date
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_sort_date() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_sort_date(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -589,18 +543,15 @@ async fn test_global_search_sort_date() {
         date_0 > date_1,
         "sort=date should return newest first: {date_0} > {date_1}"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Validation (data-driven)
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_validation() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_validation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -620,17 +571,15 @@ async fn test_global_search_validation() {
         let resp = app.oneshot(req).await;
         assert_eq!(resp.status(), 400, "{label} should return 400");
     }
-
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Pagination (with offset verification)
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_pagination() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_pagination(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -700,18 +649,15 @@ async fn test_global_search_pagination() {
         0,
         "Should return empty results when offset exceeds total"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Limit Clamping
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_limit_clamping() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_limit_clamping(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let channel_id = create_channel(&app.pool, guild_id, "general").await;
@@ -748,18 +694,15 @@ async fn test_global_search_limit_clamping() {
         1,
         "Clamped limit=1 should return 1 result"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Channel ID Filter (Happy Path)
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_channel_id_filter() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_channel_id_filter(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let guild_id = create_guild(&app.pool, user_id).await;
     let ch_a = create_channel(&app.pool, guild_id, "channel-a").await;
@@ -795,18 +738,15 @@ async fn test_global_search_channel_id_filter() {
         ch_a.to_string(),
         "Result should be from the filtered channel"
     );
-
-    delete_guild(&app.pool, guild_id).await;
-    delete_user(&app.pool, user_id).await;
 }
 
 // ============================================================================
 // Global Search — Channel ID Filter (Forbidden)
 // ============================================================================
 
-#[tokio::test]
-async fn test_global_search_channel_id_forbidden() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_global_search_channel_id_forbidden(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
 
@@ -824,8 +764,4 @@ async fn test_global_search_channel_id_forbidden() {
         403,
         "Should return 403 when filtering by a channel the user cannot access"
     );
-
-    delete_guild(&app.pool, guild_a).await;
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }

@@ -2,6 +2,7 @@
 
 use axum::body::Body;
 use axum::http::{Method, StatusCode};
+use sqlx::PgPool;
 
 use super::helpers::*;
 
@@ -9,14 +10,12 @@ use super::helpers::*;
 // Intent Persistence Tests
 // ============================================================================
 
-#[tokio::test]
-async fn update_intents_persists() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn update_intents_persists(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let (app_id, _, _) = create_bot_application(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({
         "intents": ["messages", "members", "commands"],
@@ -37,17 +36,14 @@ async fn update_intents_persists() {
     assert!(intents.iter().any(|v| v == "messages"));
     assert!(intents.iter().any(|v| v == "members"));
     assert!(intents.iter().any(|v| v == "commands"));
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn update_intents_reflects_in_get() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn update_intents_reflects_in_get(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let (app_id, _, _) = create_bot_application(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Update intents
     let body = serde_json::json!({ "intents": ["messages", "members"] });
@@ -74,21 +70,18 @@ async fn update_intents_reflects_in_get() {
     assert_eq!(intents.len(), 2);
     assert!(intents.iter().any(|v| v == "messages"));
     assert!(intents.iter().any(|v| v == "members"));
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Intent Validation Tests
 // ============================================================================
 
-#[tokio::test]
-async fn invalid_intent_name_rejected() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn invalid_intent_name_rejected(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let (app_id, _, _) = create_bot_application(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({
         "intents": ["messages", "invalid_intent"],
@@ -102,17 +95,14 @@ async fn invalid_intent_name_rejected() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn empty_intents_allowed() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn empty_intents_allowed(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let (app_id, _, _) = create_bot_application(&app.pool, user_id).await;
     let token = generate_access_token(&app.config, user_id);
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({ "intents": [] });
 
@@ -128,23 +118,19 @@ async fn empty_intents_allowed() {
     let json = body_to_json(resp).await;
     let intents = json["gateway_intents"].as_array().unwrap();
     assert!(intents.is_empty());
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Ownership Tests
 // ============================================================================
 
-#[tokio::test]
-async fn non_owner_cannot_update_intents() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn non_owner_cannot_update_intents(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (other_id, _) = create_test_user(&app.pool).await;
     let (app_id, _, _) = create_bot_application(&app.pool, owner_id).await;
     let other_token = generate_access_token(&app.config, other_id);
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(owner_id);
-    guard.delete_user(other_id);
 
     let body = serde_json::json!({ "intents": ["messages"] });
 
@@ -156,20 +142,17 @@ async fn non_owner_cannot_update_intents() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Default Intent Behavior Tests
 // ============================================================================
 
-#[tokio::test]
-async fn new_application_has_default_intents() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn new_application_has_default_intents(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     // Create application via API
     let body = serde_json::json!({
@@ -190,15 +173,14 @@ async fn new_application_has_default_intents() {
     // New applications should have empty gateway_intents by default (from DB default)
     let intents = json["gateway_intents"].as_array().unwrap();
     assert!(intents.is_empty());
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Intent Logic Unit Tests (via shared events module)
 // ============================================================================
 
-#[tokio::test]
-async fn intents_permit_event_messages() {
+#[sqlx::test]
+async fn intents_permit_event_messages(_pool: PgPool) {
     use vc_server::webhooks::events::{BotEventType, GatewayIntent};
 
     let intents = vec!["messages".to_string()];
@@ -221,8 +203,8 @@ async fn intents_permit_event_messages() {
     ));
 }
 
-#[tokio::test]
-async fn intents_permit_event_members() {
+#[sqlx::test]
+async fn intents_permit_event_members(_pool: PgPool) {
     use vc_server::webhooks::events::{BotEventType, GatewayIntent};
 
     let intents = vec!["members".to_string()];
@@ -244,8 +226,8 @@ async fn intents_permit_event_members() {
     ));
 }
 
-#[tokio::test]
-async fn intents_permit_event_combined() {
+#[sqlx::test]
+async fn intents_permit_event_combined(_pool: PgPool) {
     use vc_server::webhooks::events::{BotEventType, GatewayIntent};
 
     let intents = vec!["messages".to_string(), "members".to_string()];
@@ -267,8 +249,8 @@ async fn intents_permit_event_combined() {
     ));
 }
 
-#[tokio::test]
-async fn no_intents_still_permits_commands() {
+#[sqlx::test]
+async fn no_intents_still_permits_commands(_pool: PgPool) {
     use vc_server::webhooks::events::{BotEventType, GatewayIntent};
 
     let intents: Vec<String> = vec![];
