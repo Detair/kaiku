@@ -406,6 +406,7 @@ fn test_screen_share_stop_request_deserialization() {
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
+use sqlx::PgPool;
 use vc_server::permissions::GuildPermissions;
 
 use super::helpers::{
@@ -414,9 +415,9 @@ use super::helpers::{
 };
 
 /// Screen share check endpoint requires authentication.
-#[tokio::test]
-async fn test_screen_share_check_requires_auth() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_screen_share_check_requires_auth(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let channel_id = Uuid::now_v7();
 
     let body = serde_json::json!({
@@ -438,9 +439,9 @@ async fn test_screen_share_check_requires_auth() {
 }
 
 /// Screen share check endpoint requires `SCREEN_SHARE` permission.
-#[tokio::test]
-async fn test_screen_share_check_requires_permission() {
-    let app = TestApp::with_screen_share_limiter().await;
+#[sqlx::test]
+async fn test_screen_share_check_requires_permission(pool: PgPool) {
+    let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (member_id, _) = create_test_user(&app.pool).await;
 
@@ -484,9 +485,9 @@ async fn test_screen_share_check_requires_permission() {
 }
 
 /// Screen share check allows permitted users.
-#[tokio::test]
-async fn test_screen_share_check_allowed() {
-    let app = TestApp::with_screen_share_limiter().await;
+#[sqlx::test]
+async fn test_screen_share_check_allowed(pool: PgPool) {
+    let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL
@@ -521,10 +522,10 @@ async fn test_screen_share_check_allowed() {
 }
 
 /// Screen share start requires voice room membership.
-#[tokio::test]
+#[sqlx::test]
 #[ignore = "Requires SFU ScreenShareLimiter in test app"]
-async fn test_screen_share_start_requires_room_membership() {
-    let app = TestApp::new().await;
+async fn test_screen_share_start_requires_room_membership(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL
@@ -554,9 +555,9 @@ async fn test_screen_share_start_requires_room_membership() {
 }
 
 /// Screen share stop is a no-op when not sharing.
-#[tokio::test]
-async fn test_screen_share_stop_noop() {
-    let app = TestApp::with_screen_share_limiter().await;
+#[sqlx::test]
+async fn test_screen_share_stop_noop(pool: PgPool) {
+    let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL
@@ -583,10 +584,10 @@ async fn test_screen_share_stop_noop() {
 }
 
 /// Screen share check rejects invalid source labels (XSS attempt).
-#[tokio::test]
+#[sqlx::test]
 #[ignore = "Requires SFU ScreenShareLimiter in test app"]
-async fn test_screen_share_check_invalid_source_label() {
-    let app = TestApp::new().await;
+async fn test_screen_share_check_invalid_source_label(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _username) = create_test_user(&app.pool).await;
 
     let perms = GuildPermissions::VIEW_CHANNEL
