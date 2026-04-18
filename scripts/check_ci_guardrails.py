@@ -72,12 +72,11 @@ def check_setup_integration_guardrails(content: str, errors: list[str]) -> None:
 
 
 def check_uploads_guardrails(content: str, errors: list[str]) -> None:
-    require_token(
+    if not re.search(
+        r"async fn test_get_attachment_anti_enumeration_parity\(",
         content,
-        "async fn test_get_attachment_anti_enumeration_parity()",
-        "uploads_http.rs",
-        errors,
-    )
+    ):
+        errors.append("uploads_http.rs: missing required function test_get_attachment_anti_enumeration_parity")
     if not re.search(
         r'assert_eq!\(\s*resp\.status\(\)\s*,\s*403\s*,\s*"GET nonexistent attachment should return 403"\s*\)',
         content,
