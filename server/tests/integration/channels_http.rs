@@ -3,10 +3,14 @@
 //! Tests channel creation, validation, permission-gated update/delete,
 //! and not-found handling.
 //!
+//! Each test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so no manual cleanup is required.
+//!
 //! Run with: `cargo test --test integration channels_http -- --nocapture`
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
@@ -16,17 +20,13 @@ use super::helpers::{body_to_json, create_test_user, generate_access_token, Test
 // Channel CRUD
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_channel_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_channel_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let body = serde_json::json!({
         "name": "new-channel",
@@ -47,20 +47,15 @@ async fn test_create_channel_success() {
     assert_eq!(json["name"], "new-channel");
     assert_eq!(json["channel_type"], "text");
     assert_eq!(json["guild_id"], guild_id.to_string());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_channel_validation_errors() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_channel_validation_errors(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Empty name → 400
     let body = serde_json::json!({
@@ -108,12 +103,11 @@ async fn test_create_channel_validation_errors() {
         400,
         "Voice channel with user_limit=100 should return 400"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_update_channel_requires_manage_channels() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_update_channel_requires_manage_channels(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (member_id, _) = create_test_user(&app.pool).await;
     let token_owner = generate_access_token(&app.config, owner_id);
@@ -124,11 +118,6 @@ async fn test_update_channel_requires_manage_channels() {
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, owner_id, perms).await;
     super::helpers::add_guild_member(&app.pool, guild_id, member_id).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "perm-update-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(owner_id);
-    guard.delete_user(member_id);
 
     let body = serde_json::json!({ "name": "renamed-by-member" });
 
@@ -157,12 +146,11 @@ async fn test_update_channel_requires_manage_channels() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["name"], "renamed-by-owner");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_delete_channel_requires_manage_channels() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_delete_channel_requires_manage_channels(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (member_id, _) = create_test_user(&app.pool).await;
     let token_owner = generate_access_token(&app.config, owner_id);
@@ -173,11 +161,6 @@ async fn test_delete_channel_requires_manage_channels() {
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, owner_id, perms).await;
     super::helpers::add_guild_member(&app.pool, guild_id, member_id).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "perm-delete-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(owner_id);
-    guard.delete_user(member_id);
 
     // Member without MANAGE_CHANNELS → 403
     let req = TestApp::request(Method::DELETE, &format!("/api/channels/{channel_id}"))
@@ -198,17 +181,13 @@ async fn test_delete_channel_requires_manage_channels() {
         .unwrap();
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 204, "Owner should be able to delete");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_get_channel_not_found() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_get_channel_not_found(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let fake_id = Uuid::now_v7();
     let req = TestApp::request(Method::GET, &format!("/api/channels/{fake_id}"))
@@ -224,5 +203,4 @@ async fn test_get_channel_not_found() {
         "Non-existent channel should return 403 or 404, got {}",
         resp.status()
     );
-    guard.cleanup().await;
 }

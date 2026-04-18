@@ -7,6 +7,7 @@
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
@@ -61,18 +62,14 @@ async fn list_messages(
 // Message CRUD
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_message_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_message_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "msg-create-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let msg = send_message(&app, channel_id, &token, "Hello, world!").await;
 
@@ -85,22 +82,17 @@ async fn test_create_message_success() {
         msg["created_at"].is_string(),
         "Response should have created_at"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_message_validation_errors() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_message_validation_errors(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id =
         super::helpers::create_channel(&app.pool, guild_id, "msg-validation-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Empty content → 400
     let body = serde_json::json!({ "content": "" });
@@ -136,22 +128,17 @@ async fn test_create_message_validation_errors() {
         400,
         "Encrypted message without nonce should return 400"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_list_messages_pagination() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_messages_pagination(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id =
         super::helpers::create_channel(&app.pool, guild_id, "msg-pagination-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Create 5 messages with small delays to ensure distinct ordering
     for i in 1..=5 {
@@ -193,12 +180,11 @@ async fn test_list_messages_pagination() {
             "Page 2 should not contain items from page 1"
         );
     }
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_edit_message_owner_only() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_edit_message_owner_only(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -208,11 +194,6 @@ async fn test_edit_message_owner_only() {
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_a, perms).await;
     super::helpers::add_guild_member(&app.pool, guild_id, user_b).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "msg-edit-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
 
     // User A creates a message
     let msg = send_message(&app, channel_id, &token_a, "Original content").await;
@@ -247,12 +228,11 @@ async fn test_edit_message_owner_only() {
         edited["edited_at"].is_string(),
         "edited_at should be set after edit"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_delete_message_owner_only() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_delete_message_owner_only(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -262,11 +242,6 @@ async fn test_delete_message_owner_only() {
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_a, perms).await;
     super::helpers::add_guild_member(&app.pool, guild_id, user_b).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "msg-delete-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
 
     // User A creates a message
     let msg = send_message(&app, channel_id, &token_a, "To be deleted").await;
@@ -293,17 +268,13 @@ async fn test_delete_message_owner_only() {
     let items = msgs["items"].as_array().unwrap();
     let found = items.iter().any(|m| m["id"].as_str() == Some(msg_id));
     assert!(!found, "Deleted message should not appear in listing");
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_create_message_nonexistent_channel() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_message_nonexistent_channel(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let fake_channel = Uuid::now_v7();
     let body = serde_json::json!({ "content": "Hello" });
@@ -325,5 +296,4 @@ async fn test_create_message_nonexistent_channel() {
         404,
         "Posting to nonexistent channel should return 404"
     );
-    guard.cleanup().await;
 }

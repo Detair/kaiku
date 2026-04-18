@@ -5,9 +5,10 @@
 //! Run with: `cargo test --test integration custom_status -- --nocapture`
 
 use chrono::{Duration, Utc};
+use sqlx::PgPool;
 use vc_server::presence::CustomStatus;
 
-use super::helpers::{create_test_user, shared_pool, CleanupGuard};
+use super::helpers::create_test_user;
 
 // ============================================================================
 // Validation Tests (pure logic, no DB required)
@@ -178,19 +179,15 @@ fn test_custom_status_validate_zalgo_text_rejected() {
 }
 
 // ============================================================================
-// Database Persistence Tests (require PostgreSQL at localhost:5433)
+// Database Persistence Tests
 //
-// These tests use `CleanupGuard` for RAII-based cleanup that runs even if
-// the test panics or the tokio runtime is shutting down. The guard creates
-// its own runtime for cleanup, avoiding issues with the shared pool.
+// Each test runs against a fresh per-test database provisioned by
+// `#[sqlx::test]`, so no manual row cleanup is required.
 // ============================================================================
 
-#[tokio::test]
-async fn test_custom_status_set_in_database() {
-    let pool = shared_pool().await;
-    let (user_id, _) = create_test_user(pool).await;
-    let mut guard = CleanupGuard::new(pool.clone());
-    guard.delete_user(user_id);
+#[sqlx::test]
+async fn test_custom_status_set_in_database(pool: PgPool) {
+    let (user_id, _) = create_test_user(&pool).await;
 
     let status = CustomStatus {
         text: "Testing custom status".to_string(),
@@ -203,7 +200,7 @@ async fn test_custom_status_set_in_database() {
     sqlx::query("UPDATE users SET custom_status = $1 WHERE id = $2")
         .bind(&json_value)
         .bind(user_id)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Failed to set custom status in DB");
 
@@ -211,7 +208,7 @@ async fn test_custom_status_set_in_database() {
     let row: (Option<serde_json::Value>,) =
         sqlx::query_as("SELECT custom_status FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .expect("Failed to read custom status from DB");
 
@@ -222,15 +219,11 @@ async fn test_custom_status_set_in_database() {
     assert_eq!(deserialized.text, "Testing custom status");
     assert_eq!(deserialized.emoji, Some("\u{1F9EA}".to_string()));
     assert!(deserialized.expires_at.is_none());
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn test_custom_status_clear_in_database() {
-    let pool = shared_pool().await;
-    let (user_id, _) = create_test_user(pool).await;
-    let mut guard = CleanupGuard::new(pool.clone());
-    guard.delete_user(user_id);
+#[sqlx::test]
+async fn test_custom_status_clear_in_database(pool: PgPool) {
+    let (user_id, _) = create_test_user(&pool).await;
 
     // First, set a custom status
     let status = CustomStatus {
@@ -243,7 +236,7 @@ async fn test_custom_status_clear_in_database() {
     sqlx::query("UPDATE users SET custom_status = $1 WHERE id = $2")
         .bind(&json_value)
         .bind(user_id)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Failed to set custom status");
 
@@ -251,7 +244,7 @@ async fn test_custom_status_clear_in_database() {
     let row: (Option<serde_json::Value>,) =
         sqlx::query_as("SELECT custom_status FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .expect("Failed to read custom status");
     assert!(row.0.is_some(), "custom_status should be set before clear");
@@ -259,7 +252,7 @@ async fn test_custom_status_clear_in_database() {
     // Clear custom_status
     sqlx::query("UPDATE users SET custom_status = NULL WHERE id = $1")
         .bind(user_id)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Failed to clear custom status");
 
@@ -267,22 +260,18 @@ async fn test_custom_status_clear_in_database() {
     let row: (Option<serde_json::Value>,) =
         sqlx::query_as("SELECT custom_status FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .expect("Failed to read custom status after clear");
     assert!(
         row.0.is_none(),
         "custom_status should be NULL after clearing"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn test_custom_status_with_expiry_persists() {
-    let pool = shared_pool().await;
-    let (user_id, _) = create_test_user(pool).await;
-    let mut guard = CleanupGuard::new(pool.clone());
-    guard.delete_user(user_id);
+#[sqlx::test]
+async fn test_custom_status_with_expiry_persists(pool: PgPool) {
+    let (user_id, _) = create_test_user(&pool).await;
 
     let future_time = Utc::now() + Duration::hours(2);
     let status = CustomStatus {
@@ -295,7 +284,7 @@ async fn test_custom_status_with_expiry_persists() {
     sqlx::query("UPDATE users SET custom_status = $1 WHERE id = $2")
         .bind(&json_value)
         .bind(user_id)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Failed to set custom status with expiry");
 
@@ -303,7 +292,7 @@ async fn test_custom_status_with_expiry_persists() {
     let row: (Option<serde_json::Value>,) =
         sqlx::query_as("SELECT custom_status FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .expect("Failed to read custom status");
 
@@ -320,7 +309,6 @@ async fn test_custom_status_with_expiry_persists() {
         diff <= 1,
         "Expiry time should be within 1 second of set value, diff was {diff}s"
     );
-    guard.cleanup().await;
 }
 
 // ============================================================================
@@ -330,12 +318,9 @@ async fn test_custom_status_with_expiry_persists() {
 // to find and clear expired custom statuses.
 // ============================================================================
 
-#[tokio::test]
-async fn test_expiry_sweep_finds_expired_status() {
-    let pool = shared_pool().await;
-    let (user_id, _) = create_test_user(pool).await;
-    let mut guard = CleanupGuard::new(pool.clone());
-    guard.delete_user(user_id);
+#[sqlx::test]
+async fn test_expiry_sweep_finds_expired_status(pool: PgPool) {
+    let (user_id, _) = create_test_user(&pool).await;
 
     // Insert an already-expired custom status directly into the DB
     let expired_status = serde_json::json!({
@@ -346,7 +331,7 @@ async fn test_expiry_sweep_finds_expired_status() {
     sqlx::query("UPDATE users SET custom_status = $1 WHERE id = $2")
         .bind(&expired_status)
         .bind(user_id)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Failed to set expired custom status");
 
@@ -359,7 +344,7 @@ async fn test_expiry_sweep_finds_expired_status() {
           AND (custom_status->>'expires_at')::timestamptz <= NOW()
         ",
     )
-    .fetch_all(pool)
+    .fetch_all(&pool)
     .await
     .expect("Sweep SELECT query failed");
 
@@ -372,7 +357,7 @@ async fn test_expiry_sweep_finds_expired_status() {
     // Run the sweep UPDATE query to clear expired statuses
     sqlx::query("UPDATE users SET custom_status = NULL WHERE id = ANY($1)")
         .bind(&expired_ids)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Sweep UPDATE query failed");
 
@@ -380,7 +365,7 @@ async fn test_expiry_sweep_finds_expired_status() {
     let row: (Option<serde_json::Value>,) =
         sqlx::query_as("SELECT custom_status FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .expect("Failed to read custom status after sweep");
 
@@ -388,15 +373,11 @@ async fn test_expiry_sweep_finds_expired_status() {
         row.0.is_none(),
         "custom_status should be NULL after sweep clears expired status"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn test_expiry_sweep_ignores_non_expired_status() {
-    let pool = shared_pool().await;
-    let (user_id, _) = create_test_user(pool).await;
-    let mut guard = CleanupGuard::new(pool.clone());
-    guard.delete_user(user_id);
+#[sqlx::test]
+async fn test_expiry_sweep_ignores_non_expired_status(pool: PgPool) {
+    let (user_id, _) = create_test_user(&pool).await;
 
     // Insert a custom status that expires in the future
     let future_status = CustomStatus {
@@ -409,7 +390,7 @@ async fn test_expiry_sweep_ignores_non_expired_status() {
     sqlx::query("UPDATE users SET custom_status = $1 WHERE id = $2")
         .bind(&json_value)
         .bind(user_id)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Failed to set future custom status");
 
@@ -422,7 +403,7 @@ async fn test_expiry_sweep_ignores_non_expired_status() {
           AND (custom_status->>'expires_at')::timestamptz <= NOW()
         ",
     )
-    .fetch_all(pool)
+    .fetch_all(&pool)
     .await
     .expect("Sweep SELECT query failed");
 
@@ -436,7 +417,7 @@ async fn test_expiry_sweep_ignores_non_expired_status() {
     let row: (Option<serde_json::Value>,) =
         sqlx::query_as("SELECT custom_status FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .expect("Failed to read custom status");
 
@@ -444,15 +425,11 @@ async fn test_expiry_sweep_ignores_non_expired_status() {
         row.0.is_some(),
         "Non-expired custom_status should still be present"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test]
-async fn test_expiry_sweep_ignores_status_without_expiry() {
-    let pool = shared_pool().await;
-    let (user_id, _) = create_test_user(pool).await;
-    let mut guard = CleanupGuard::new(pool.clone());
-    guard.delete_user(user_id);
+#[sqlx::test]
+async fn test_expiry_sweep_ignores_status_without_expiry(pool: PgPool) {
+    let (user_id, _) = create_test_user(&pool).await;
 
     // Insert a custom status without expires_at
     let status = CustomStatus {
@@ -465,7 +442,7 @@ async fn test_expiry_sweep_ignores_status_without_expiry() {
     sqlx::query("UPDATE users SET custom_status = $1 WHERE id = $2")
         .bind(&json_value)
         .bind(user_id)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect("Failed to set permanent custom status");
 
@@ -478,7 +455,7 @@ async fn test_expiry_sweep_ignores_status_without_expiry() {
           AND (custom_status->>'expires_at')::timestamptz <= NOW()
         ",
     )
-    .fetch_all(pool)
+    .fetch_all(&pool)
     .await
     .expect("Sweep SELECT query failed");
 
@@ -487,5 +464,4 @@ async fn test_expiry_sweep_ignores_status_without_expiry() {
         !expired_ids.contains(&user_id),
         "Status without expiry should NOT be found by sweep query"
     );
-    guard.cleanup().await;
 }

@@ -10,6 +10,7 @@
 use axum::body::Body;
 use axum::http::Method;
 use http_body_util::BodyExt;
+use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
@@ -59,9 +60,9 @@ fn build_upload_multipart(
 // Auth & Error Path Tests (no S3 required)
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_variant_download_requires_auth() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_variant_download_requires_auth(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let attachment_id = Uuid::now_v7();
 
     let req = TestApp::request(
@@ -80,14 +81,11 @@ async fn test_variant_download_requires_auth() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_variant_download_not_found() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_variant_download_not_found(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
-
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let fake_id = Uuid::now_v7();
     let req = TestApp::request(
@@ -105,29 +103,24 @@ async fn test_variant_download_not_found() {
         "Variant download for non-existent attachment should return 403, 404, or 503 (no S3), got {}",
         resp.status()
     );
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // Full Pipeline Tests (S3 required)
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_image_upload_generates_metadata() {
+#[sqlx::test]
+async fn test_image_upload_generates_metadata(pool: PgPool) {
     if !super::helpers::rustfs_available().await {
         return;
     }
-    let (app, _bucket) = super::helpers::fresh_test_app_with_s3().await;
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "media-test").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Create a 500x400 PNG (large enough for thumbnail, no medium)
     let png_data = create_test_png(500, 400);
@@ -173,25 +166,20 @@ async fn test_image_upload_generates_metadata() {
         attachment["medium_url"].is_null(),
         "Should not have medium_url for 500px image"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_non_image_upload_no_metadata() {
+#[sqlx::test]
+async fn test_non_image_upload_no_metadata(pool: PgPool) {
     if !super::helpers::rustfs_available().await {
         return;
     }
-    let (app, _bucket) = super::helpers::fresh_test_app_with_s3().await;
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "media-test-txt").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let (boundary, body) =
         build_upload_multipart("readme.txt", "text/plain", b"hello world", "a text file");
@@ -227,25 +215,20 @@ async fn test_non_image_upload_no_metadata() {
         attachment["thumbnail_url"].is_null(),
         "Text file should not have thumbnail_url"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_variant_download_returns_webp() {
+#[sqlx::test]
+async fn test_variant_download_returns_webp(pool: PgPool) {
     if !super::helpers::rustfs_available().await {
         return;
     }
-    let (app, _bucket) = super::helpers::fresh_test_app_with_s3().await;
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "media-test-dl").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Upload a 500x400 PNG (generates thumbnail)
     let png_data = create_test_png(500, 400);
@@ -294,25 +277,20 @@ async fn test_variant_download_returns_webp() {
         !thumb_bytes.is_empty(),
         "Thumbnail data should not be empty"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_variant_fallback_to_original() {
+#[sqlx::test]
+async fn test_variant_fallback_to_original(pool: PgPool) {
     if !super::helpers::rustfs_available().await {
         return;
     }
-    let (app, _bucket) = super::helpers::fresh_test_app_with_s3().await;
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "media-test-fb").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     // Upload a tiny 50x50 PNG (too small for any variants)
     let png_data = create_test_png(50, 50);
@@ -360,15 +338,14 @@ async fn test_variant_fallback_to_original() {
         "image/png",
         "Fallback should serve original PNG content type"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_invalid_variant_returns_validation_error() {
+#[sqlx::test]
+async fn test_invalid_variant_returns_validation_error(pool: PgPool) {
     if !super::helpers::rustfs_available().await {
         return;
     }
-    let (app, _bucket) = super::helpers::fresh_test_app_with_s3().await;
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -376,10 +353,6 @@ async fn test_invalid_variant_returns_validation_error() {
     let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
     let channel_id =
         super::helpers::create_channel(&app.pool, guild_id, "media-test-invalid-variant").await;
-
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move { super::helpers::delete_guild(&pool, guild_id).await });
-    guard.delete_user(user_id);
 
     let png_data = create_test_png(500, 400);
     let (boundary, body) =
@@ -427,5 +400,4 @@ async fn test_invalid_variant_returns_validation_error() {
         "Unexpected validation message: {}",
         error
     );
-    guard.cleanup().await;
 }
