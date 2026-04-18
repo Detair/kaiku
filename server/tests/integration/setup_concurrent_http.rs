@@ -115,14 +115,12 @@ async fn test_concurrent_http_setup_five_admins(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
 
     let num_admins = 5;
-    let mut admin_ids = Vec::new();
     let mut tokens = Vec::new();
 
     for _ in 0..num_admins {
         let (user_id, _) = create_test_user(&app.pool).await;
         make_admin(&app.pool, user_id).await;
         let token = generate_access_token(&app.config, user_id);
-        admin_ids.push(user_id);
         tokens.push(token);
     }
 
