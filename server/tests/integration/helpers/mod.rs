@@ -257,9 +257,11 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Create a new test app using shared DB pool and fresh Redis client.
-    pub async fn new() -> Self {
-        let pool = shared_pool().await.clone();
+    /// Canonical pool-injecting constructor for integration tests.
+    ///
+    /// Pass a pool from `#[sqlx::test]`'s fixture. The returned `TestApp`
+    /// owns `pool` for the duration of the test.
+    pub async fn with_pool(pool: PgPool) -> Self {
         let config = shared_config().await.clone();
         let redis = db::create_redis_client(&config.redis_url)
             .await
@@ -289,13 +291,18 @@ impl TestApp {
         }
     }
 
-    /// Create a test app with a real `ScreenShareLimiter` backed by Redis.
+    /// Legacy no-arg constructor — delegates to [`Self::with_pool`] using the
+    /// shared process-global pool. Retained for tests not yet migrated to
+    /// `#[sqlx::test]`. Removed in Phase 5.
+    pub async fn new() -> Self {
+        Self::with_pool(shared_pool().await.clone()).await
+    }
+
+    /// Pool-injecting variant of [`Self::with_screen_share_limiter`].
     ///
-    /// Use this for screen share integration tests that call the `/screenshare/check`,
-    /// `/screenshare/start`, or `/screenshare/stop` endpoints — those handlers return
-    /// 500 when `screen_share_limiter` is `None`.
-    pub async fn with_screen_share_limiter() -> Self {
-        let pool = shared_pool().await.clone();
+    /// Pass a pool from `#[sqlx::test]`'s fixture; the returned `TestApp`
+    /// is wired with a real `ScreenShareLimiter` backed by the shared Redis.
+    pub async fn with_pool_and_screen_share_limiter(pool: PgPool) -> Self {
         let config = shared_config().await.clone();
         let redis = db::create_redis_client(&config.redis_url)
             .await
@@ -331,9 +338,24 @@ impl TestApp {
         }
     }
 
-    /// Create a test app with a custom config (for limit testing).
-    pub async fn with_config(config: Config) -> Self {
-        let pool = shared_pool().await.clone();
+    /// Create a test app with a real `ScreenShareLimiter` backed by Redis.
+    ///
+    /// Use this for screen share integration tests that call the `/screenshare/check`,
+    /// `/screenshare/start`, or `/screenshare/stop` endpoints — those handlers return
+    /// 500 when `screen_share_limiter` is `None`.
+    ///
+    /// Legacy no-arg form — delegates to
+    /// [`Self::with_pool_and_screen_share_limiter`] using the shared
+    /// process-global pool. Removed in Phase 5.
+    pub async fn with_screen_share_limiter() -> Self {
+        Self::with_pool_and_screen_share_limiter(shared_pool().await.clone()).await
+    }
+
+    /// Pool-injecting variant of [`Self::with_config`].
+    ///
+    /// Create a test app with a custom config and a caller-supplied pool
+    /// (typically from `#[sqlx::test]`).
+    pub async fn with_pool_and_config(pool: PgPool, config: Config) -> Self {
         let redis = db::create_redis_client(&config.redis_url)
             .await
             .expect("Failed to connect to test Redis");
@@ -362,6 +384,14 @@ impl TestApp {
         }
     }
 
+    /// Create a test app with a custom config (for limit testing).
+    ///
+    /// Legacy no-arg form — delegates to [`Self::with_pool_and_config`]
+    /// using the shared process-global pool. Removed in Phase 5.
+    pub async fn with_config(config: Config) -> Self {
+        Self::with_pool_and_config(shared_pool().await.clone(), config).await
+    }
+
     /// Build an HTTP request with the given method and URI.
     pub fn request(method: Method, uri: &str) -> http::request::Builder {
         Request::builder().method(method).uri(uri)
@@ -382,7 +412,11 @@ impl TestApp {
     }
 }
 
-/// Build a [`TestApp`] with S3 connected to a local `RustFS` instance.
+/// Build a [`TestApp`] with S3 connected to a local `RustFS` instance,
+/// using the provided pool.
+///
+/// Pool-injecting variant of [`fresh_test_app_with_s3`] for tests that use
+/// `#[sqlx::test]` per-test database isolation.
 ///
 /// Requires `canis-dev-rustfs` running on `localhost:9000`.
 /// Creates a unique test bucket per invocation and cleans it up on drop
@@ -391,7 +425,7 @@ impl TestApp {
 /// Environment variables must be set before calling:
 /// - `AWS_ACCESS_KEY_ID=rustfsdev`
 /// - `AWS_SECRET_ACCESS_KEY=rustfsdev_secret`
-pub async fn fresh_test_app_with_s3() -> (TestApp, String) {
+pub async fn fresh_test_app_with_s3_and_pool(pool: PgPool) -> (TestApp, String) {
     let mut config = shared_config().await.clone();
     let bucket = format!("test-{}", Uuid::now_v7());
     config.s3_endpoint = Some("http://localhost:9000".to_string());
@@ -408,9 +442,6 @@ pub async fn fresh_test_app_with_s3() -> (TestApp, String) {
         .await
         .expect("Failed to create test bucket");
 
-    let pool = db::create_pool(&config.database_url)
-        .await
-        .expect("Failed to connect to test DB");
     let redis = db::create_redis_client(&config.redis_url)
         .await
         .expect("Failed to connect to test Redis");
@@ -438,6 +469,15 @@ pub async fn fresh_test_app_with_s3() -> (TestApp, String) {
         },
         bucket,
     )
+}
+
+/// Build a [`TestApp`] with S3 connected to a local `RustFS` instance.
+///
+/// Legacy no-arg form — delegates to [`fresh_test_app_with_s3_and_pool`]
+/// using the shared process-global pool. Retained for tests not yet
+/// migrated to `#[sqlx::test]`. Removed in Phase 5.
+pub async fn fresh_test_app_with_s3() -> (TestApp, String) {
+    fresh_test_app_with_s3_and_pool(shared_pool().await.clone()).await
 }
 
 // ============================================================================

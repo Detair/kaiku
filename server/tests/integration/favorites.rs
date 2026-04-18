@@ -1,20 +1,10 @@
 //! Integration tests for the favorites system.
 //!
-//! These tests require a running `PostgreSQL` instance with the schema applied.
-//! Run with: `cargo test favorites --ignored -- --nocapture`
+//! Each test runs against a fresh per-test database provisioned by
+//! `#[sqlx::test]`, so no manual cleanup is required.
 
 use sqlx::PgPool;
 use uuid::Uuid;
-
-/// Helper to create a test database pool.
-async fn create_test_pool() -> PgPool {
-    let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/vc_test".into());
-
-    PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to test database")
-}
 
 /// Helper to create a test user and return their ID.
 async fn create_test_user(pool: &PgPool) -> Uuid {
@@ -151,44 +141,9 @@ async fn count_favorite_guilds(pool: &PgPool, user_id: Uuid) -> i64 {
     result.0
 }
 
-/// Helper to clean up test data.
-async fn cleanup_test_data(pool: &PgPool, user_id: Uuid) {
-    // Delete favorites first (cascade should handle this, but be explicit)
-    sqlx::query("DELETE FROM user_favorite_channels WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("DELETE FROM user_favorite_guilds WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-    // Delete user's guild memberships
-    sqlx::query("DELETE FROM guild_members WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-    // Delete guilds owned by user (channels cascade)
-    sqlx::query("DELETE FROM guilds WHERE owner_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-    // Delete user
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .ok();
-}
-
 /// Test adding a favorite channel.
-#[tokio::test]
-#[ignore]
-async fn test_add_favorite_channel() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_add_favorite_channel(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general", "text").await;
@@ -200,15 +155,11 @@ async fn test_add_favorite_channel() {
 
     let guild_count = count_favorite_guilds(&pool, user_id).await;
     assert_eq!(guild_count, 1, "Should have 1 favorite guild");
-
-    cleanup_test_data(&pool, user_id).await;
 }
 
 /// Test removing a favorite triggers guild cleanup.
-#[tokio::test]
-#[ignore]
-async fn test_remove_favorite_triggers_guild_cleanup() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_remove_favorite_triggers_guild_cleanup(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general", "text").await;
@@ -228,15 +179,11 @@ async fn test_remove_favorite_triggers_guild_cleanup() {
     // Guild should be auto-cleaned by trigger
     let guild_count = count_favorite_guilds(&pool, user_id).await;
     assert_eq!(guild_count, 0, "Guild should be removed by cleanup trigger");
-
-    cleanup_test_data(&pool, user_id).await;
 }
 
 /// Test that multiple channels in same guild share guild entry.
-#[tokio::test]
-#[ignore]
-async fn test_multiple_channels_same_guild() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_multiple_channels_same_guild(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel1_id = create_test_channel(&pool, guild_id, "general", "text").await;
@@ -255,15 +202,11 @@ async fn test_multiple_channels_same_guild() {
         1,
         "Should have only 1 guild entry"
     );
-
-    cleanup_test_data(&pool, user_id).await;
 }
 
 /// Test user cascade delete removes favorites.
-#[tokio::test]
-#[ignore]
-async fn test_user_delete_cascades_to_favorites() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_user_delete_cascades_to_favorites(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general", "text").await;
@@ -296,10 +239,8 @@ async fn test_user_delete_cascades_to_favorites() {
 }
 
 /// Test channel delete cascades to favorites.
-#[tokio::test]
-#[ignore]
-async fn test_channel_delete_cascades_to_favorites() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_channel_delete_cascades_to_favorites(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel_id = create_test_channel(&pool, guild_id, "general", "text").await;
@@ -321,15 +262,11 @@ async fn test_channel_delete_cascades_to_favorites() {
     // Guild entry should also be gone (trigger)
     let guild_count = count_favorite_guilds(&pool, user_id).await;
     assert_eq!(guild_count, 0, "Guild entry should be removed by trigger");
-
-    cleanup_test_data(&pool, user_id).await;
 }
 
 /// Test position ordering for channels.
-#[tokio::test]
-#[ignore]
-async fn test_channel_position_ordering() {
-    let pool = create_test_pool().await;
+#[sqlx::test]
+async fn test_channel_position_ordering(pool: PgPool) {
     let user_id = create_test_user(&pool).await;
     let guild_id = create_test_guild(&pool, user_id).await;
     let channel1_id = create_test_channel(&pool, guild_id, "first", "text").await;
@@ -353,6 +290,4 @@ async fn test_channel_position_ordering() {
     assert_eq!(positions[0].0, 0);
     assert_eq!(positions[1].0, 1);
     assert_eq!(positions[2].0, 2);
-
-    cleanup_test_data(&pool, user_id).await;
 }
