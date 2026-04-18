@@ -3,17 +3,3 @@
 slow-timeout = { period = "120s", terminate-after = 1 }
 # Continue running other tests even if one fails or times out
 fail-fast = false
-
-# Cross-process serialization for tests that mutate the singleton
-# `server_config.setup_complete` row. Each nextest test runs in its own process,
-# so the in-process `#[serial(setup)]` lock from `serial_test` does NOT serialize
-# tests across processes. Without this group, two parallel processes can both
-# call `set_setup_complete(false)` and then race their CAS UPDATE against each
-# other, producing 5×403 (or any-x-403) instead of the expected 1×204.
-# See issue #509.
-[test-groups]
-setup-state = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'test(setup_http::) + test(setup_concurrent_http::)'
-test-group = 'setup-state'
