@@ -10,19 +10,13 @@
 //! [`TestApp::with_pool_and_screen_share_limiter`] /
 //! [`TestApp::with_pool_and_config`]) to wire the axum router onto that pool.
 //!
-//! ## Cleanup Guards
-//!
-//! Use [`CleanupGuard`] for RAII-based cleanup that runs even if a test panics.
-//!
 //! ## Test Servers
 //!
 //! Use [`spawn_test_server()`] when you need stateful middleware testing
 //! (rate limiting, request IDs, etc.) instead of `tower::ServiceExt::oneshot`.
 #![allow(dead_code)]
 
-use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,169 +36,6 @@ use vc_server::db;
 use vc_server::permissions::GuildPermissions;
 use vc_server::voice::screen_share::ScreenShareLimiter;
 use vc_server::voice::sfu::SfuServer;
-
-// ============================================================================
-// Cleanup Guard (Issue #137)
-// ============================================================================
-
-/// Async cleanup action type.
-type CleanupAction = Box<dyn FnOnce(PgPool) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
-
-/// RAII guard that runs cleanup actions on drop, even if the test panics.
-///
-/// # Example
-///
-/// ```ignore
-/// let mut guard = CleanupGuard::new(app.pool.clone());
-/// guard.delete_user(user_id);
-/// guard.restore_setup_complete(prev);
-///
-/// // Test assertions here — cleanup runs even if these panic
-/// assert_eq!(resp.status(), 200);
-/// // guard dropped here → cleanup runs
-/// ```
-pub struct CleanupGuard {
-    pool: PgPool,
-    actions: Vec<CleanupAction>,
-}
-
-impl CleanupGuard {
-    /// Create a new cleanup guard for the given pool.
-    pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            actions: Vec::new(),
-        }
-    }
-
-    /// Register a generic async cleanup action.
-    pub fn add<F, Fut>(&mut self, action: F)
-    where
-        F: FnOnce(PgPool) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        self.actions
-            .push(Box::new(move |pool| Box::pin(action(pool))));
-    }
-
-    /// Register cleanup to delete a user by ID.
-    pub fn delete_user(&mut self, user_id: Uuid) {
-        self.add(move |pool| async move {
-            let _ = sqlx::query("DELETE FROM users WHERE id = $1")
-                .bind(user_id)
-                .execute(&pool)
-                .await;
-        });
-    }
-
-    /// Register cleanup to restore `setup_complete` to a previous value.
-    pub fn restore_setup_complete(&mut self, value: bool) {
-        self.add(move |pool| async move {
-            let _ = sqlx::query(
-                "UPDATE server_config SET value = $1::jsonb WHERE key = 'setup_complete'",
-            )
-            .bind(serde_json::json!(value))
-            .execute(&pool)
-            .await;
-        });
-    }
-
-    /// Register cleanup to restore default config values.
-    pub fn restore_config_defaults(&mut self) {
-        self.add(|pool| async move {
-            for (key, val) in [
-                ("server_name", serde_json::json!("Kaiku Server")),
-                ("registration_policy", serde_json::json!("open")),
-                ("terms_url", serde_json::Value::Null),
-                ("privacy_url", serde_json::Value::Null),
-            ] {
-                let _ = sqlx::query(
-                    "UPDATE server_config SET value = $1, updated_by = NULL WHERE key = $2",
-                )
-                .bind(val)
-                .bind(key)
-                .execute(&pool)
-                .await;
-            }
-        });
-    }
-
-    /// Run all registered cleanup actions on the caller's tokio runtime
-    /// and consume the guard.
-    ///
-    /// Tests MUST call this at the end of the test body. Forgetting it
-    /// triggers a runtime warning from the Drop fallback. The fallback
-    /// still runs the cleanup actions (so DB rows are not leaked), but
-    /// it does so on a fresh thread with a new tokio runtime — which
-    /// is the source of the original CI flake. After the migration
-    /// completes, the warning will be replaced with panic!() and any
-    /// forgotten cleanup will fail the test loudly.
-    pub async fn cleanup(mut self) {
-        let actions = std::mem::take(&mut self.actions);
-        let pool = self.pool.clone();
-        for action in actions {
-            action(pool.clone()).await;
-        }
-        // Drop runs after this returns, but `actions` is now empty so
-        // Drop is a no-op.
-    }
-}
-
-impl Drop for CleanupGuard {
-    fn drop(&mut self) {
-        let actions = std::mem::take(&mut self.actions);
-        if actions.is_empty() {
-            return;
-        }
-
-        // Migration signal: test forgot to call .cleanup().await. We still
-        // run cleanup so we don't leak DB rows, but the warning makes the
-        // unmigrated test visible. Replaced with panic!() in a follow-up
-        // commit after migration completes.
-        eprintln!(
-            "warning: CleanupGuard dropped with {} pending actions — \
-             test forgot to call .cleanup().await",
-            actions.len()
-        );
-
-        let pool = self.pool.clone();
-        let handle = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create cleanup runtime");
-            runtime.block_on(async move {
-                for action in actions {
-                    action(pool.clone()).await;
-                }
-            });
-        });
-
-        // Bounded join: poll for up to 30s, then detach if still running.
-        // Prevents flaky cleanup hangs from triggering nextest's 120s slow-timeout.
-        // Tradeoff: panics in the detached thread (timeout path) are silently
-        // discarded. Happy-path joins still propagate panics via .expect().
-        // Kept as a safety net for tests that panic before reaching
-        // .cleanup().await (RAII semantics). Removed only when the Drop
-        // fallback itself becomes panic!() (Layer 3 follow-up).
-        let timeout = std::time::Duration::from_secs(30);
-        let start = std::time::Instant::now();
-        loop {
-            if handle.is_finished() {
-                handle.join().expect("cleanup thread panicked");
-                return;
-            }
-            if start.elapsed() > timeout {
-                eprintln!(
-                    "warning: CleanupGuard did not complete within {timeout:?}, \
-                     detaching thread to allow test to finish"
-                );
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-}
 
 pub async fn rustfs_available() -> bool {
     tokio::time::timeout(
@@ -347,11 +178,6 @@ impl TestApp {
             .oneshot(request)
             .await
             .expect("oneshot request failed")
-    }
-
-    /// Create a [`CleanupGuard`] for this app's pool.
-    pub fn cleanup_guard(&self) -> CleanupGuard {
-        CleanupGuard::new(self.pool.clone())
     }
 }
 
