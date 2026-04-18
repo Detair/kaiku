@@ -1,24 +1,26 @@
 //! HTTP Integration Tests for Blocking Endpoints
 //!
 //! Tests the block/unblock API at the HTTP layer using `tower::ServiceExt::oneshot`.
-//! Each test creates its own users and cleans up via `delete_user` (CASCADE).
+//! Each test runs against a fresh per-test database provisioned by `#[sqlx::test]`,
+//! so no manual row cleanup is required.
 //!
 //! Run with: `cargo test --test integration blocking -- --nocapture`
 
 use axum::body::Body;
 use axum::http::Method;
+use sqlx::PgPool;
 
 use super::helpers::{
-    body_to_json, create_dm_channel, create_test_user, delete_user, generate_access_token, TestApp,
+    body_to_json, create_dm_channel, create_test_user, generate_access_token, TestApp,
 };
 
 // ============================================================================
 // Block / Unblock Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_block_user_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_block_user_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
@@ -46,15 +48,11 @@ async fn test_block_user_success() {
     .await
     .expect("Friendship row should exist");
     assert_eq!(row, "blocked");
-
-    // Cleanup
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
-#[tokio::test]
-async fn test_block_user_requires_auth() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_block_user_requires_auth(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_b, _) = create_test_user(&app.pool).await;
 
     let req = TestApp::request(Method::POST, &format!("/api/friends/{user_b}/block"))
@@ -63,14 +61,11 @@ async fn test_block_user_requires_auth() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 401);
-
-    // Cleanup
-    delete_user(&app.pool, user_b).await;
 }
 
-#[tokio::test]
-async fn test_block_self_fails() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_block_self_fails(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
 
@@ -84,14 +79,11 @@ async fn test_block_self_fails() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "SELF_FRIEND_REQUEST");
-
-    // Cleanup
-    delete_user(&app.pool, user_a).await;
 }
 
-#[tokio::test]
-async fn test_unblock_user_success() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_unblock_user_success(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
@@ -122,15 +114,11 @@ async fn test_unblock_user_success() {
     .await
     .expect("Query should succeed");
     assert!(!exists, "Friendship row should be deleted after unblock");
-
-    // Cleanup
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
-#[tokio::test]
-async fn test_unblock_nonexistent_fails() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_unblock_nonexistent_fails(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_a);
@@ -146,15 +134,11 @@ async fn test_unblock_nonexistent_fails() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "FRIENDSHIP_NOT_FOUND");
-
-    // Cleanup
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
-#[tokio::test]
-async fn test_block_prevents_friend_request() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_block_prevents_friend_request(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -187,15 +171,11 @@ async fn test_block_prevents_friend_request() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "BLOCKED");
-
-    // Cleanup
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
-#[tokio::test]
-async fn test_block_prevents_dm_creation() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_block_prevents_dm_creation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -230,15 +210,11 @@ async fn test_block_prevents_dm_creation() {
         "Expected block-related validation message, got: {}",
         json["message"]
     );
-
-    // Cleanup
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
 
-#[tokio::test]
-async fn test_block_prevents_message_in_dm() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_block_prevents_message_in_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;
     let (user_b, _) = create_test_user(&app.pool).await;
     let token_a = generate_access_token(&app.config, user_a);
@@ -268,8 +244,4 @@ async fn test_block_prevents_message_in_dm() {
 
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "BLOCKED");
-
-    // Cleanup
-    delete_user(&app.pool, user_a).await;
-    delete_user(&app.pool, user_b).await;
 }
