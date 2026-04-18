@@ -73,14 +73,12 @@ async fn insert_test_session(
 // GET /api/me/connection/summary
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_summary_empty() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_summary_empty(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::GET, "/api/me/connection/summary")
         .header("Authorization", format!("Bearer {token}"))
@@ -99,12 +97,11 @@ async fn test_summary_empty() {
     assert_eq!(json["total_sessions"], 0);
     assert_eq!(json["total_duration_secs"], 0);
     assert!(json["daily_stats"].as_array().unwrap().is_empty());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_summary_with_data() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_summary_with_data(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let channel_id = super::helpers::create_channel(
@@ -122,15 +119,7 @@ async fn test_summary_with_data() {
 
     let session_id = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 3).await;
 
-    let mut guard = app.cleanup_guard();
-    let sid = session_id;
-    guard.add(move |pool| async move {
-        super::helpers::delete_connection_data(&pool, sid).await;
-    });
-    guard.add(move |pool| async move {
-        super::helpers::delete_guild(&pool, guild_id).await;
-    });
-    guard.delete_user(user_id);
+    let _sid = session_id;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/summary")
         .header("Authorization", format!("Bearer {token}"))
@@ -145,12 +134,11 @@ async fn test_summary_with_data() {
     assert!(json["total_duration_secs"].as_i64().unwrap() > 0);
     assert!(json["avg_latency"].is_number());
     assert!(!json["daily_stats"].as_array().unwrap().is_empty());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_summary_unauthenticated() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_summary_unauthenticated(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/summary")
         .body(Body::empty())
@@ -164,14 +152,12 @@ async fn test_summary_unauthenticated() {
 // GET /api/me/connection/sessions
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_sessions_empty() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_sessions_empty(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")
         .header("Authorization", format!("Bearer {token}"))
@@ -184,12 +170,11 @@ async fn test_sessions_empty() {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 0);
     assert!(json["sessions"].as_array().unwrap().is_empty());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_sessions_with_data() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_sessions_with_data(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = super::helpers::create_guild(&app.pool, user_id).await;
@@ -197,15 +182,7 @@ async fn test_sessions_with_data() {
 
     let session_id = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
 
-    let mut guard = app.cleanup_guard();
-    let sid = session_id;
-    guard.add(move |pool| async move {
-        super::helpers::delete_connection_data(&pool, sid).await;
-    });
-    guard.add(move |pool| async move {
-        super::helpers::delete_guild(&pool, guild_id).await;
-    });
-    guard.delete_user(user_id);
+    let _sid = session_id;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")
         .header("Authorization", format!("Bearer {token}"))
@@ -222,31 +199,20 @@ async fn test_sessions_with_data() {
     assert_eq!(sessions[0]["id"], session_id.to_string());
     assert_eq!(sessions[0]["channel_name"], "voice-sess");
     assert!(sessions[0]["guild_name"].is_string());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_sessions_pagination() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_sessions_pagination(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = super::helpers::create_guild(&app.pool, user_id).await;
     let channel_id = super::helpers::create_channel(&app.pool, guild_id, "voice-page").await;
 
-    let s1 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
-    let s2 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
-    let s3 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
+    let _s1 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
+    let _s2 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
+    let _s3 = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 0).await;
 
-    let mut guard = app.cleanup_guard();
-    guard.add(move |pool| async move {
-        super::helpers::delete_connection_data(&pool, s1).await;
-        super::helpers::delete_connection_data(&pool, s2).await;
-        super::helpers::delete_connection_data(&pool, s3).await;
-    });
-    guard.add(move |pool| async move {
-        super::helpers::delete_guild(&pool, guild_id).await;
-    });
-    guard.delete_user(user_id);
 
     // Request page: limit=1, offset=1
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions?limit=1&offset=1")
@@ -266,12 +232,11 @@ async fn test_sessions_pagination() {
         1,
         "Should return exactly 1 session"
     );
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_sessions_unauthenticated() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_sessions_unauthenticated(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")
         .body(Body::empty())
@@ -285,9 +250,9 @@ async fn test_sessions_unauthenticated() {
 // GET /api/me/connection/sessions/:id
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_session_detail() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_session_detail(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
     let guild_id = super::helpers::create_guild(&app.pool, user_id).await;
@@ -296,15 +261,7 @@ async fn test_session_detail() {
     // Insert session with 5 metrics (< 200, so no downsampling)
     let session_id = insert_test_session(&app.pool, user_id, channel_id, Some(guild_id), 5).await;
 
-    let mut guard = app.cleanup_guard();
-    let sid = session_id;
-    guard.add(move |pool| async move {
-        super::helpers::delete_connection_data(&pool, sid).await;
-    });
-    guard.add(move |pool| async move {
-        super::helpers::delete_guild(&pool, guild_id).await;
-    });
-    guard.delete_user(user_id);
+    let _sid = session_id;
 
     let url = format!("/api/me/connection/sessions/{session_id}");
     let req = TestApp::request(Method::GET, &url)
@@ -327,17 +284,14 @@ async fn test_session_detail() {
     assert!(metrics[0]["packet_loss"].is_number());
     assert!(metrics[0]["jitter_ms"].is_number());
     assert!(metrics[0]["quality"].is_number());
-    guard.cleanup().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_session_detail_not_found() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_session_detail_not_found(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
-    let mut guard = app.cleanup_guard();
-    guard.delete_user(user_id);
 
     let random_id = Uuid::new_v4();
     let url = format!("/api/me/connection/sessions/{random_id}");
@@ -348,16 +302,15 @@ async fn test_session_detail_not_found() {
 
     let resp = app.oneshot(req).await;
     assert_eq!(resp.status(), 404, "Non-existent session should return 404");
-    guard.cleanup().await;
 }
 
 // ============================================================================
 // RLS Isolation
 // ============================================================================
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_session_rls_isolation() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_session_rls_isolation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     // Create two users
     let (user_a, _) = create_test_user(&app.pool).await;
@@ -370,16 +323,7 @@ async fn test_session_rls_isolation() {
     // Insert a session for user A
     let session_a = insert_test_session(&app.pool, user_a, channel_id, Some(guild_id), 0).await;
 
-    let mut guard = app.cleanup_guard();
-    let sa = session_a;
-    guard.add(move |pool| async move {
-        super::helpers::delete_connection_data(&pool, sa).await;
-    });
-    guard.add(move |pool| async move {
-        super::helpers::delete_guild(&pool, guild_id).await;
-    });
-    guard.delete_user(user_a);
-    guard.delete_user(user_b);
+    let _sa = session_a;
 
     // User B should not see user A's sessions
     let req = TestApp::request(Method::GET, "/api/me/connection/sessions")
@@ -393,5 +337,4 @@ async fn test_session_rls_isolation() {
     let json = body_to_json(resp).await;
     assert_eq!(json["total"], 0, "User B should not see User A's sessions");
     assert!(json["sessions"].as_array().unwrap().is_empty());
-    guard.cleanup().await;
 }
