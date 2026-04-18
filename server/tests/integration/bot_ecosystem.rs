@@ -7,14 +7,15 @@ use axum::http::Method;
 use fred::interfaces::{ClientLike, EventInterface, KeysInterface, PubsubInterface};
 use http_body_util::BodyExt;
 use serde_json::json;
+use sqlx::PgPool;
 use vc_server::db;
 
-use super::helpers::{create_test_user, delete_user, generate_access_token, TestApp};
+use super::helpers::{create_test_user, generate_access_token, TestApp};
 
 /// Test creating a bot application.
-#[tokio::test]
-async fn test_create_bot_application() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_bot_application(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -40,13 +41,12 @@ async fn test_create_bot_application() {
     assert_eq!(app_response["description"], "A test bot application");
     assert!(app_response["id"].is_string());
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test creating application with invalid name.
-#[tokio::test]
-async fn test_create_bot_application_invalid_name() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_bot_application_invalid_name(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -65,13 +65,12 @@ async fn test_create_bot_application_invalid_name() {
     let response = app.oneshot(request).await;
     assert_eq!(response.status(), 400);
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test listing bot applications.
-#[tokio::test]
-async fn test_list_bot_applications() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_bot_applications(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -107,13 +106,12 @@ async fn test_list_bot_applications() {
     assert_eq!(apps[0]["name"], "Bot 2"); // Ordered by created_at DESC
     assert_eq!(apps[1]["name"], "Bot 1");
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test creating a bot user for an application.
-#[tokio::test]
-async fn test_create_bot_user() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_bot_user(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -164,13 +162,12 @@ async fn test_create_bot_user() {
     assert!(bot_user.is_bot);
     assert_eq!(bot_user.bot_owner_id, Some(user_id));
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test that creating bot user twice fails.
-#[tokio::test]
-async fn test_create_bot_user_twice_fails() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_create_bot_user_twice_fails(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -207,13 +204,12 @@ async fn test_create_bot_user_twice_fails() {
     let bot_resp2 = app.oneshot(bot_req2).await;
     assert_eq!(bot_resp2.status(), 409); // Conflict
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test resetting bot token.
-#[tokio::test]
-async fn test_reset_bot_token() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_reset_bot_token(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -261,13 +257,12 @@ async fn test_reset_bot_token() {
 
     assert_ne!(original_token, new_token);
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test deleting a bot application.
-#[tokio::test]
-async fn test_delete_bot_application() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_delete_bot_application(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -309,13 +304,12 @@ async fn test_delete_bot_application() {
 
     assert_eq!(apps.len(), 0);
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test registering slash commands.
-#[tokio::test]
-async fn test_register_slash_commands() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_register_slash_commands(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -375,13 +369,12 @@ async fn test_register_slash_commands() {
     assert_eq!(commands[0]["name"], "hello");
     assert_eq!(commands[1]["name"], "ping");
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test command name validation.
-#[tokio::test]
-async fn test_register_command_invalid_name() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_register_command_invalid_name(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -424,13 +417,12 @@ async fn test_register_command_invalid_name() {
     let register_resp = app.oneshot(register_req).await;
     assert_eq!(register_resp.status(), 400);
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test listing slash commands.
-#[tokio::test]
-async fn test_list_slash_commands() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_slash_commands(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -486,13 +478,12 @@ async fn test_list_slash_commands() {
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0]["name"], "test");
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test guild-scoped command operations stay isolated per application.
-#[tokio::test]
-async fn test_guild_scoped_commands_are_isolated_per_application() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_guild_scoped_commands_are_isolated_per_application(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -624,13 +615,12 @@ async fn test_guild_scoped_commands_are_isolated_per_application() {
     assert_eq!(commands_b.len(), 1);
     assert_eq!(commands_b[0]["name"], "beta");
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test deleting a slash command.
-#[tokio::test]
-async fn test_delete_slash_command() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_delete_slash_command(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -703,13 +693,12 @@ async fn test_delete_slash_command() {
 
     assert_eq!(commands.len(), 0);
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test that non-owners cannot access applications.
-#[tokio::test]
-async fn test_application_ownership() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_application_ownership(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (other_id, _) = create_test_user(&app.pool).await;
     let owner_token = generate_access_token(&app.config, owner_id);
@@ -740,15 +729,12 @@ async fn test_application_ownership() {
 
     let get_resp = app.oneshot(get_req).await;
     assert_eq!(get_resp.status(), 403); // Forbidden
-
-    delete_user(&app.pool, owner_id).await;
-    delete_user(&app.pool, other_id).await;
 }
 
 /// Test guild bot install endpoint requires guild management permissions.
-#[tokio::test]
-async fn test_add_bot_to_guild() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_add_bot_to_guild(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let owner_token = generate_access_token(&app.config, owner_id);
 
@@ -883,14 +869,12 @@ async fn test_add_bot_to_guild() {
     .execute(&app.pool)
     .await
     .unwrap();
-    delete_user(&app.pool, owner_id).await;
-    delete_user(&app.pool, other_user_id).await;
 }
 
 /// Test slash command routing publishes invocation to bot gateway channel.
-#[tokio::test]
-async fn test_slash_command_invocation_publishes_to_bot_channel() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_slash_command_invocation_publishes_to_bot_channel(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -1083,16 +1067,15 @@ async fn test_slash_command_invocation_publishes_to_bot_channel() {
         .execute(&app.pool)
         .await
         .unwrap();
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test that a duplicate command response is rejected (SET NX prevents overwrite).
 ///
 /// Verifies the single-response semantic: once `interaction:{id}:response` is set,
 /// a second SET NX returns false and the original response is preserved.
-#[tokio::test]
-async fn test_duplicate_command_response_rejected() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_duplicate_command_response_rejected(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
 
     let redis = db::create_redis_client(&app.config.redis_url)
         .await
@@ -1162,9 +1145,9 @@ async fn test_duplicate_command_response_rejected() {
 }
 
 /// Test slash command fails when multiple bots provide same command in same scope.
-#[tokio::test]
-async fn test_slash_command_invocation_ambiguous() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_slash_command_invocation_ambiguous(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -1329,13 +1312,12 @@ async fn test_slash_command_invocation_ambiguous() {
         .execute(&app.pool)
         .await
         .unwrap();
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test that registering commands with duplicate names in a single batch returns 409 Conflict.
-#[tokio::test]
-async fn test_register_commands_rejects_batch_duplicates() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_register_commands_rejects_batch_duplicates(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -1384,14 +1366,13 @@ async fn test_register_commands_rejects_batch_duplicates() {
         "Expected 409 Conflict for duplicate command names in batch"
     );
 
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test that listing guild commands shows entries from all installed bots (no deduplication)
 /// and marks ambiguous commands with `is_ambiguous: true`.
-#[tokio::test]
-async fn test_list_guild_commands_shows_all_providers() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_list_guild_commands_shows_all_providers(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -1516,13 +1497,12 @@ async fn test_list_guild_commands_shows_all_providers() {
         .execute(&app.pool)
         .await
         .unwrap();
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test that invoking an ambiguous command returns a 400 error containing the bot names.
-#[tokio::test]
-async fn test_ambiguity_error_includes_bot_names() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_ambiguity_error_includes_bot_names(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -1666,13 +1646,12 @@ async fn test_ambiguity_error_includes_bot_names() {
         .execute(&app.pool)
         .await
         .unwrap();
-    delete_user(&app.pool, user_id).await;
 }
 
 /// Test that the built-in /ping command returns a 200 OK with "Pong!" in the content.
-#[tokio::test]
-async fn test_builtin_ping_returns_pong() {
-    let app = TestApp::new().await;
+#[sqlx::test]
+async fn test_builtin_ping_returns_pong(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, user_id);
 
@@ -1767,5 +1746,4 @@ async fn test_builtin_ping_returns_pong() {
         .execute(&app.pool)
         .await
         .unwrap();
-    delete_user(&app.pool, user_id).await;
 }
