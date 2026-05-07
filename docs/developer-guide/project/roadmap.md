@@ -16,7 +16,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
 | **Expansion** | **Phase 5** | ✅ Complete | 100% (17/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
-| **Expansion** | **Phase 6** | 🔄 In Progress | 96% (19/20) | Personal workspaces, digital library, focus engine, custom status, session management, QA polish, multi-stream screen sharing, guild bans, PTT/PTM, channel pins, simulcast, desktop session persistence, dual-PC voice, unread tracking redesign, VAD noise gate. Remaining: mobile, desktop parity items (VP8 decode, VAD gating, metrics) |
+| **Expansion** | **Phase 6** | 🔄 Near complete | ~98% | Personal workspaces, digital library, focus engine, custom status, session management, QA polish, multi-stream screen sharing, guild bans, PTT/PTM, channel pins, simulcast, desktop session persistence, dual-PC voice, unread tracking redesign, VAD noise gate, VP8 desktop decode, RNNoise VAD + speaking indicator + noise suppression on Tauri. Remaining: mobile parity completion, desktop niceties (connection metrics, system tray, auto-update, output-device, WS reconnect refresh) |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing, live session toolkits |
 | **Scale and Trust** | **Phase 10** | 📋 Planned | 0% | SaaS scaling architecture |
@@ -641,18 +641,18 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - [x] **[Voice] Dual-PeerConnection Voice** ✅ (PR #491, #492)
   - Subscriber PC in Rust WebRTC backend. Remote audio: Opus decode per track → multi-user PCM mixer → CPAL playback. Video: decoder stub with track lifecycle events. Mixer pacing (20ms interval), buffer cap, callback safety fixes.
   - **Spec:** `docs/superpowers/specs/2026-03-25-tauri-dual-pc-voice-design.md`
-- [ ] **[Voice] VP8 Video Decoding** `Priority: High`
-  - Current stub reads RTP packets but does not decode VP8 frames. Needs: libvpx integration, VP8 depacketization, JPEG encoding, frame emission via Tauri events. TauriVideoFrame canvas component is ready to render. `client/src-tauri/src/voice/video_decoder.rs` has documented TODO steps.
-- [ ] **[Voice] VAD Gating in Tauri** `Priority: High`
-  - Browser adapter has full VAD (AnalyserNode, 300ms hold-open, PTT priority, cloned monitor track). Tauri adapter's `setVadConfig` is a no-op — UI toggle misleads desktop users. Needs: Rust-side audio level monitoring in capture pipeline + track gating.
-- [ ] **[Voice] Local Speaking Indicator** `Priority: Medium`
-  - `onSpeakingChange` never emitted from Tauri adapter. Rust capture pipeline should emit `voice:speaking` event based on audio level monitoring. Local user's speaking ring never animates on desktop.
+- [x] **[Voice] VP8 Video Decoding** ✅ (PR #532)
+  - libvpx integration, VP8 depacketization, JPEG encoding, frame emission via Tauri events. TauriVideoFrame canvas component renders remote screen shares. Built on the per-session seq/ts RTP protocol fix from PR #531.
+- [x] **[Voice] VAD Gating in Tauri** ✅ (PR #507)
+  - RNNoise (`nnnoiseless` pure-Rust port) integrated into capture pipeline. ML-based VAD with configurable threshold and 300ms hold-open. The previously-no-op `setVadConfig` now drives gating. Pipeline rewritten around 480-sample mono frames, `Arc<Mutex<Vec<f32>>>` removed in favor of in-closure processing.
+- [x] **[Voice] Local Speaking Indicator** ✅ (PR #507)
+  - `voice:speaking` Tauri events now emitted from the Rust capture pipeline based on RNNoise VAD probability. Local user's speaking ring animates on desktop.
 - [ ] **[Voice] Connection Metrics** `Priority: Medium`
   - `getConnectionMetrics()` always returns null on desktop. Needs Tauri command to fetch RTCStatsReport equivalent from webrtc-rs PeerConnections (latency, packet loss, jitter).
 - [ ] **[Voice] Output Device Selection** `Priority: Low`
   - `setOutputDevice()` Tauri command exists but implementation is unclear/untested. Needs verification and potential CPAL integration.
-- [ ] **[Voice] Noise Suppression Backend** `Priority: Low`
-  - Desktop accepts setting but backend logs "Noise suppression not implemented." Needs native audio processing (e.g., RNNoise integration in CPAL pipeline).
+- [x] **[Voice] Noise Suppression Backend** ✅ (PR #507)
+  - RNNoise denoises audio in real-time. The toggle now controls whether denoised or original audio is sent.
 - [ ] **[Client] WebSocket Reconnect Channel Refresh** `Priority: Low`
   - WebSocket reconnect doesn't re-fetch channel list metadata (`last_read_message_id`, `last_message_id`). Stale unread dots until guild switch. Add `loadChannelsForGuild` call on reconnect.
 - [ ] **[Client] System Tray** `Priority: Low`
@@ -742,6 +742,43 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 ---
 
 ## Recent Changes
+
+### 2026-05-07
+- **Beta deployment unblocked** — GHCR push 403 (failing main CI's Docker Build & Publish since 2026-04-16) was an orphaned-package ACL: `ghcr.io/detair/kaiku/server` had `repository.full_name: null`. Re-linked `detair/kaiku` with Write role via Manage Actions access; rerun pushed cleanly. Beta server (`efc09cc` / Phase 5) and matching client deployed to `kaiku.pmind.de`. Public smoke tests green: `/health`, fresh bundle hash served via Caddy.
+
+### 2026-04-18
+- **`#[sqlx::test]` Integration Migration** (PRs #541–#546) — Eliminates the 2-year cross-process Postgres deadlock flake (`40P01` on `FOR KEY SHARE OF users`) by moving 42+ integration tests off a shared `OnceCell`-backed `SHARED_POOL` to per-test databases. Phase 1 introduces `TestApp::with_pool` and a 2-file pilot; Phases 2–4 migrate batches A (voice/chat/media), B (auth/admin/governance), C (social/search/misc); Phase 5 deletes the legacy `shared_pool`/`SHARED_POOL`/`CleanupGuard`/`#[serial]`/`.config/nextest.toml` test-groups path entirely. Six legitimate `#[tokio::test]` carve-outs documented in `server/tests/AGENTS.md` (no-DB tests where per-test DB would be waste).
+
+### 2026-04-17
+- **Phase 1 voice/security PRs land on green CI** (#529 server security: self-mute, voice rate limiting, screen share slot leak; #530 web ICE candidate buffering; #531 Tauri RTP per-session seq/ts + VP8 payload_type; #532 Tauri native VP8 decode for remote screen shares). All four merged on honest-green main after the Block 1 CI drift fix.
+- **Android CoroutineScope-injection sweep** (#538 `@VoiceCoroutineScope` for `WebRtcManager`; #539 `@AuthCoroutineScope` for `AuthState`; #540 `@ChatCoroutineScope` for `ChatRepository`) — resolves the @Ignore'd voice test plus all 13 Cluster A/B failures triaged in #537. The Hilt-qualifier scope-injection pattern is now the canonical fix documented in `mobile/android/app/src/test/AGENTS.md`.
+
+### 2026-04-16
+- **Phase 2.5 Open-Topics Cleanup** (#535 spec + 4 block plans, #536 Block 1 CI drift fix, #537 Block 3 Android test triage) — closes the open items left behind by Phase 1's admin-merged PRs and Workstream A's scope carve-outs. Block 1 fixes nightly fmt drift, bumps `rustls-webpki` for RUSTSEC-2026-0099, routes Makefile fmt to nightly; Block 3 clusters 13 Android test failures into 2 root causes (both fixed in #539/#540).
+- **Android publisher PeerConnection** (#533) — Android client gains dual-PC parity for voice. Test infrastructure (`EglBaseProvider` DI seam) shipped in #534.
+
+### 2026-04-14
+- **Web responsive overhaul** (#528) — mobile drawer navigation across the web client.
+- **Android UI/architecture/auth/network hardening** (#525, #526, #527).
+
+### 2026-04-11 → 2026-04-12
+- **Codebase consistency standards** (#512) — canonical module structure across 9 phases. Spec at `docs/superpowers/specs/2026-04-10-codebase-consistency-standards-design.md`.
+- **Security audit follow-ups** (#513, #514) — advisory ignores cleanup, client devtime advisory clearance via transitive overrides (#517), `osv-scanner` CI job for OSV database coverage (#518).
+- **scap upstream tracking** (#522) — recorded re-check result for the periodic-recheck issue (#521).
+
+### 2026-04-07
+- **RNNoise VAD + noise suppression for desktop client** (#507) — `nnnoiseless` (pure-Rust RNNoise) integrated into the Tauri capture pipeline. Closes 3 desktop parity gaps in one PR: VAD gating (`setVadConfig` no longer a no-op), noise suppression (toggle now functional), and local speaking indicator (`voice:speaking` Tauri event emitted). Pipeline rewritten around 480-sample mono frames, `Arc<Mutex<Vec<f32>>>` sample buffer removed in favor of in-closure processing.
+
+### 2026-04-02
+- **TURN HMAC time-limited credentials** (#499, #500) — Voice infrastructure now uses HMAC shared-secret auth for coturn instead of static credentials. Time-limited TURN tokens issued per-session, eliminating credential persistence on the wire.
+- **Client UX/accessibility polish** (#502, #503) — batched fixes.
+- **Beta important fixes** (#497) — addresses 4 remaining beta-blocker issues; clears E2EE sessions on logout (#498).
+
+### 2026-03-25
+- **Discord-style unread message tracking** (#488) — Forward-only `last_read_message_id` cursor with atomic SQL enforcement. CTE-based unread counts, around-based pagination, "New Messages" divider, scroll-to-bottom ack with 3s debounce, dot indicator sidebar, Escape shortcut. Fixed DM unread aggregate bug (`channel_read_state` → `dm_read_state`).
+- **VAD noise gate fix** (#489) — Voice activity detection now actually gates the microphone — audio only transmitted when speech detected. 300ms hold-open timer, cloned monitor track for analysis, PTT priority over VAD, mic device change restart.
+- **Desktop session persistence** (#490) — OS keyring-based session restore (refresh token + server URL). Silent restore on success, toast on expired/network error.
+- **Tauri dual-PeerConnection voice** (#491, #492) — Subscriber PC in Rust WebRTC backend. Remote audio: Opus decode per track → multi-user PCM mixer → CPAL playback. Video: decoder stub with track lifecycle events. Mixer pacing (20ms interval), buffer cap, callback safety fixes.
 
 ### 2026-03-07
 - **Context-Aware Focus Engine** (PR #349) — Completes the Focus Engine by wiring `evaluateFocusPolicy()` into the notification pipeline via a unified `shouldNotify()` gate (DND + focus mode + channel level), adding native OS desktop notifications via `tauri-plugin-notification` with Web Notification API browser fallback, and custom app detection rules UI. New `sendOsNotification()` formats title/body by event type (DM, mention, thread, call) with privacy toggle and E2EE-safe generic bodies. Notification preferences (`os_enabled`, `show_content`, `flash_taskbar`) synced via existing preferences infrastructure. Desktop Notifications settings section with test button. Custom App Detection Rules section in Focus Settings for user-defined process-to-category mappings. 10 unit tests for notification formatting. Three code review rounds fixed guild lookup bug (`g.channels?.some()` → `g.id === channel?.guild_id`), test notification visibility bypass (`force` parameter), and missing CHANGELOG entries.

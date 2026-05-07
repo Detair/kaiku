@@ -24,15 +24,18 @@ ignore = [
     # would not remove the transitive 0.8.5 and would require breaking API
     # changes (thread_rng → rng, gen_range → random_range).
     "RUSTSEC-2026-0097",
-    # rustls-webpki 0.101.7 name-constraint handling bugs - pulled transitively
-    # via aws-smithy-http-client 1.1.12 → rustls 0.21.12 → rustls-webpki 0.101.7.
-    # Upstream fixes exist only in rustls-webpki >=0.103.12; no 0.101.x patch is
-    # available. Our modern rustls 0.23.x chain (Tauri, reqwest, sentry,
-    # rustls-native-certs, rustls-platform-verifier) is already on 0.103.12
-    # (see Cargo.lock). The 0.101.7 instance will remain until aws-smithy-http-client
-    # upgrades to rustls 0.23.x; revisit when that upgrade lands.
+    # rustls-webpki 0.101.7 vulnerabilities (name-constraint handling bugs and
+    # CRL parsing panic) - pulled transitively via aws-smithy-http-client 1.1.12
+    # → rustls 0.21.12 → rustls-webpki 0.101.7. Upstream fixes exist only in
+    # rustls-webpki >=0.103.13; no 0.101.x patch is available. Our modern
+    # rustls 0.23.x chain (Tauri, reqwest, sentry, rustls-native-certs,
+    # rustls-platform-verifier) is on 0.103.13 (see Cargo.lock). RUSTSEC-2026-0104
+    # specifically requires CRL parsing, which the AWS S3 client does not perform.
+    # The 0.101.7 instance will remain until aws-smithy-http-client upgrades to
+    # rustls 0.23.x; revisit when that upgrade lands.
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
 ]
 
 # =============================================================================
