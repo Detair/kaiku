@@ -1457,16 +1457,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e79769241dcd44edf79a732545e8b5cec84c247ac060f5252cd51885d093a8fc"
 
 [[package]]
-name = "borsh"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfd1e3f8955a5d7de9fab72fc8373fade9fb8a703968cb200ae3dc6cf08e185a"
-dependencies = [
- "bytes",
- "cfg_aliases",
-]
-
-[[package]]
 name = "brotli"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8491,16 +8481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smol_str"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aaa7368fcf4852a4c2dd92df0cace6a71f2091ca0a23391ce7f3a31833f1523"
-dependencies = [
- "borsh",
- "serde_core",
-]
-
-[[package]]
 name = "socket2"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10587,7 +10567,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "sha2",
- "smol_str 0.3.6",
+ "smol_str",
  "sysinfo 0.39.0",
  "tauri",
  "tauri-build",
@@ -11091,7 +11071,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "smol_str 0.2.2",
+ "smol_str",
  "stun",
  "thiserror 1.0.69",
  "time",
