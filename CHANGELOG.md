@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-muted users' audio is now actually dropped at the server rather than being forwarded to listeners
 - Voice signaling events are rate-limited per peer to prevent flooding
 - Removed legacy `rustls 0.21` / `rustls-webpki 0.101.7` from server dependencies by switching AWS SDK feature to `default-https-client`, fixing RUSTSEC-2026-0098, RUSTSEC-2026-0099, and RUSTSEC-2026-0104 (rustls-webpki name-constraint handling bugs and CRL parsing panic)
+- Frontend: bumped `dompurify` (XSS in HTML sanitization), `uuid` (buffer-bounds check via mermaid), and added transitive overrides for `postcss` (XSS) and `dompurify` (mermaid's nested copy). `bun audit` reduced from 12 → 6 advisories; the 6 remaining are vite dev-server paths via vitest, already accepted as dev-only exceptions per PR #517 and pending the vitest 4.x → 4.x compat work in Phase 6c of the dep-update sweep.
 
 ### Fixed
 - Android: `AuthState`'s `CoroutineScope` is now DI-provided via `@AuthCoroutineScope`, resolving 8 failing unit/integration tests (`AuthStateTest`, `AuthFlowTest`, `QrLoginFlowTest`) that previously read stale `StateFlow` values under `TestCoroutineScheduler`
