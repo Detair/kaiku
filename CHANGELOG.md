@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: TLS 1.3 provider failure now prompts users to update Play Services instead of failing silently on every network call
 - Self-muted users' audio is now actually dropped at the server rather than being forwarded to listeners
 - Voice signaling events are rate-limited per peer to prevent flooding
+- Removed legacy `rustls 0.21` / `rustls-webpki 0.101.7` from server dependencies by switching AWS SDK feature to `default-https-client`, fixing RUSTSEC-2026-0098, RUSTSEC-2026-0099, and RUSTSEC-2026-0104 (rustls-webpki name-constraint handling bugs and CRL parsing panic)
 
 ### Fixed
 - Android: `AuthState`'s `CoroutineScope` is now DI-provided via `@AuthCoroutineScope`, resolving 8 failing unit/integration tests (`AuthStateTest`, `AuthFlowTest`, `QrLoginFlowTest`) that previously read stale `StateFlow` values under `TestCoroutineScheduler`
