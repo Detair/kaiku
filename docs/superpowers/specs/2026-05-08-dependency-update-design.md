@@ -10,7 +10,11 @@
 
 `cargo audit` reports 4 errors (1 ignored — rsa Marvin Attack; 3 covered by an in-flight worktree — rustls-webpki 0.101.7) and 27 warnings (mostly transitive Tauri/GTK3 unmaintained chains). `bun audit` reports 12 advisories (4 high, 8 moderate), all attributable to a small number of fixable direct-dep gaps and one missing override.
 
-There is an in-flight worktree `fix/rustls-webpki-advisories` containing a single commit that drops the legacy rustls 0.21 chain by switching `aws-sdk-s3` to `default-https-client`. That fix lands as Phase 0 of this plan; the corresponding three RUSTSEC ignores are removed once it is on `main`.
+There is an in-flight worktree `fix/rustls-webpki-advisories` containing a single commit that drops the legacy rustls 0.21 chain by switching `aws-sdk-s3` and `aws-config` from feature `rustls` (legacy alias for the `legacy-rustls-ring` path that drags rustls 0.21.12 + rustls-webpki 0.101.7 + hyper 0.14 into the tree) to feature `default-https-client` (modern path on rustls 0.23.x via `rustls-aws-lc`). That fix lands as Phase 0 of this plan; the corresponding three RUSTSEC ignores are removed once it is on `main`.
+
+### Late-discovery finding: RustCrypto suite cannot bump in this round
+
+Pre-flight check on **2026-05-08** confirmed that `vodozemac 0.10.0` still pins `sha2 ^0.10.9`, `hkdf ^0.12.4`, and `hmac ^0.12.1` — identical to `vodozemac 0.9`. The RustCrypto ecosystem has not aligned on the 0.11/0.13 series. Bumping our workspace `sha1`/`sha2`/`hkdf`/`hmac` directly would either (a) fail to resolve because vodozemac requires `^0.10`, or (b) introduce dual-version compilation (sha2 0.10 + 0.11) of crypto primitives — which is precisely the surface we want to keep narrow. **The RustCrypto suite bump is moved out of scope for this round** and recorded under "Out of scope" for a follow-up plan.
 
 ## Decisions
 
@@ -57,33 +61,33 @@ Every phase MUST re-run the same registry lookups at PR-creation time and pin to
 
 | Crate | Current | Latest (2026-05-08) | Phase | Notes |
 |---|---|---|---|---|
-| `axum-tracing-opentelemetry` | 0.32 | 0.33.1 | 4 | minor (pre-1.0 breaking) |
+| `axum-tracing-opentelemetry` | 0.32 | 0.33.1 | 4a | minor (pre-1.0 breaking) |
 | `env-libvpx-sys` | 4 | 5.1.3 | 8 | libvpx FFI sub-crate |
-| `hkdf` | 0.12 | 0.13.0 | 5 | RustCrypto suite |
-| `hmac` | 0.12 | 0.13.0 | 5 | RustCrypto suite |
-| `infer` | 0.16 | 0.19.0 | 4 | 3 majors |
-| `init-tracing-opentelemetry` | 0.36 | 0.37.0 | 4 | minor (pre-1.0 breaking) |
+| `infer` | 0.16 | 0.19.0 | 4a | 3 majors; verify MIME signature paths |
+| `init-tracing-opentelemetry` | 0.36 | 0.37.0 | 4a | minor (pre-1.0 breaking) |
 | `keyring` | 2 | 4.0.0 | 9 | 2 majors; clears `derivative` warning |
-| `reqwest` (server) | 0.12 | 0.13.3 | 4 | align with vc-client (already 0.13) |
+| `reqwest` (server) | 0.12 | 0.13.3 | 4b | own PR — TLS feature surface reorganized |
 | `rusqlite` | 0.32 | 0.39.0 | 9 | 7 minor majors |
-| `sentry`, `sentry-tracing` | 0.47 | 0.48.1 | 4 | minor (pre-1.0 breaking) |
-| `sha1` | 0.10 | 0.11.0 | 5 | RustCrypto suite |
-| `sha2` | 0.10 | 0.11.0 | 5 | RustCrypto suite |
-| `smol_str` | 0.2 | 0.3.6 | 4 | shared workspace dep |
-| `sysinfo` | 0.38 | 0.39.0 | 4 | minor (pre-1.0 breaking) |
+| `sentry`, `sentry-tracing` | 0.47 | 0.48.1 | 4a | minor (pre-1.0 breaking) |
+| `smol_str` | 0.2 | 0.3.6 | 4a | `From<&str>` route changed |
+| `sysinfo` | 0.38 | 0.39.0 | 4a | minor (pre-1.0 breaking) |
 | `tauri` ecosystem | 2.10.x | 2.11.x | 3 | minor; aligns with npm `@tauri-apps/api` 2.11 |
-| `thiserror` (vp8-decoder) | 1 | 2.0.18 | 4 | align with workspace |
-| `tokio-tungstenite` | 0.28 | 0.29.0 | 4 | minor (pre-1.0 breaking) |
-| `vodozemac` | 0.9 | 0.10.0 | 7 | E2EE crypto |
+| `thiserror` (vp8-decoder) | 1 | 2.0.18 | 4a | align with workspace |
+| `tokio-tungstenite` | 0.28 | 0.29.0 | 4a | minor (pre-1.0 breaking) |
+| `vodozemac` | 0.9 | 0.10.0 | 7 | E2EE crypto; only `prost 0.13→0.14` + `base64ct 1.6→1.8` change vs 0.9 |
 | `vpx-encode` | 0.3 | 0.6.2 | 8 | client video |
 | `webrtc` | 0.11 | 0.17.1 | 8 | server + client + vp8-decoder |
-| `zip` | 2 | 8.6.0 | 4 | 6 majors |
+| `zip` | 2 | 8.6.0 | 4b | own PR — 6 majors, API rewritten |
+| ~~`hkdf` 0.12 → 0.13~~ | — | — | OUT | RustCrypto suite — vodozemac 0.10 still on 0.12 |
+| ~~`hmac` 0.12 → 0.13~~ | — | — | OUT | RustCrypto suite — vodozemac 0.10 still on 0.12 |
+| ~~`sha1` 0.10 → 0.11~~ | — | — | OUT | RustCrypto suite — vodozemac 0.10 still on 0.10 |
+| ~~`sha2` 0.10 → 0.11~~ | — | — | OUT | RustCrypto suite — vodozemac 0.10 still on 0.10 |
 
 ### Rust direct dependencies — already at latest major
 
-`aes-gcm 0.10`, `aho-corasick 1`, `anyhow 1`, `arboard 3`, `argon2 0.5`, `aws-config 1`, `aws-sdk-s3 1`, `aws-smithy-async 1`, `aws-smithy-types 1`, `axum 0.8`, `axum-extra 0.12`, `base64 0.22`, `bitflags 2`, `blurhash 0.2`, `bs58 0.5`, `bytes 1`, `chrono 0.4`, `cpal 0.17`, `dashmap 6`, `dotenvy 0.15`, `fred 10`, `futures 0.3`, `getrandom 0.2/0.4` (split — see below), `hex 0.4`, `http-body-util 0.1`, `image 0.25`, `jsonwebtoken 10`, `lazy_static 1`, `lettre 0.11`, `mime_guess 2`, `nnnoiseless 0.5`, `nokhwa 0.10`, `openidconnect 4`, `opentelemetry 0.31` (suite), `opus 0.3`, `pulldown-cmark 0.13`, `regex 1`, `rodio 0.22`, `rustls 0.23`, `serde 1`, `serde_bytes 0.11`, `serde_json 1`, `sqlx 0.8`, `tempfile 3`, `thiserror 2`, `time 0.3`, `tokio 1`, `tokio-test 0.4`, `tokio-util 0.7`, `totp-rs 5`, `tower 0.5`, `tower-http 0.6`, `tracing 0.1`, `tracing-opentelemetry 0.32`, `tracing-opentelemetry-instrumentation-sdk 0.32`, `tracing-subscriber 0.3`, `unicode-segmentation 1`, `url 2`, `utoipa 5`, `utoipa-swagger-ui 9`, `uuid 1`, `validator 0.20`, `woothee 0.13`, `zeroize 1`.
+`aes-gcm 0.10`, `aho-corasick 1`, `anyhow 1`, `arboard 3`, `argon2 0.5`, `aws-config 1`, `aws-sdk-s3 1`, `aws-smithy-async 1`, `aws-smithy-types 1`, `axum 0.8`, `axum-extra 0.12`, `base64 0.22`, `bitflags 2`, `blurhash 0.2`, `bs58 0.5`, `bytes 1`, `chrono 0.4`, `cpal 0.17`, `dashmap 6`, `dotenvy 0.15`, `fred 10`, `futures 0.3`, `hex 0.4`, `http-body-util 0.1`, `image 0.25`, `jsonwebtoken 10`, `lazy_static 1`, `lettre 0.11`, `mime_guess 2`, `nnnoiseless 0.5`, `nokhwa 0.10`, `openidconnect 4`, `opentelemetry 0.31` (suite), `opus 0.3`, `pulldown-cmark 0.13`, `regex 1`, `rodio 0.22`, `rustls 0.23`, `serde 1`, `serde_bytes 0.11`, `serde_json 1`, `sqlx 0.8`, `tempfile 3`, `thiserror 2`, `time 0.3`, `tokio 1`, `tokio-test 0.4`, `tokio-util 0.7`, `totp-rs 5`, `tower 0.5`, `tower-http 0.6`, `tracing 0.1`, `tracing-opentelemetry 0.32`, `tracing-opentelemetry-instrumentation-sdk 0.32`, `tracing-subscriber 0.3`, `unicode-segmentation 1`, `url 2`, `utoipa 5`, `utoipa-swagger-ui 9`, `uuid 1`, `validator 0.20`, `woothee 0.13`, `zeroize 1`.
 
-`getrandom` is at 0.2 in our workspace; latest is 0.4.2. Held: bumping our direct usage to 0.4 does not eliminate the 0.2/0.3 transitive copies pulled by Tauri/RustCrypto/quinn. Defer until a phase where it would actually compress the dep tree.
+`getrandom` is held at 0.2. Latest stable is 0.4.2, but bumping our direct usage to 0.4 would not eliminate the 0.2/0.3 transitive copies pulled by Tauri, vodozemac (which still consumes `getrandom ^0.2.15`), `quinn`, and the wider RustCrypto chain. The bump compresses nothing until those upstreams move. Defer to the same follow-up plan that addresses the RustCrypto suite.
 
 ### Frontend npm direct dependencies — bumps required
 
@@ -129,7 +133,7 @@ New overrides required in Phase 2:
 - `uuid ^11.1.1` — clears the buffer-bounds advisory pulled via mermaid.
 - `dompurify ^3.4.2` — direct bump in Phase 2 plus an override to ensure mermaid's transitive copy follows.
 
-The `brace-expansion` override should bump from `^1.1.13` to `^5.0.6` (or be split `^1.1.13 || ^5.0.6` if any consumer hard-pins to 1.x). The `lodash-es` override should bump to `^4.18.1`. These are mechanical; they belong in Phase 1.
+The `brace-expansion` override changes to a range union `^1.1.13 || ^5.0.6` (rather than dropping the 1.x bound), so any tool in the dev tree that hard-pins to 1.x still resolves. The `lodash-es` override bumps to `^4.18.1`. These are mechanical; they belong in Phase 1.
 
 ## Phase plan
 
@@ -150,8 +154,14 @@ Each phase = one PR. Each PR squash-merges to `main`. Branches follow the existi
 
 - Run `cargo update --workspace` (commit a refreshed `Cargo.lock` even if the diff is small — captures any registry-side patch movement since lock was last touched).
 - Run `bun update` (no `--latest`). Picks up: `@playwright/test 1.58.2→1.59.1`, `@tanstack/solid-virtual 3.13.23→3.13.24`, `@unocss/* 66.6.6→66.6.8`, `mermaid 11.13.0→11.14.0`, `prettier 3.8.1→3.8.3`, `solid-js 1.9.11→1.9.12`, `typescript-eslint 8.57.1→8.59.2`, `vite 8.0.0→8.0.11`, `vite-plugin-solid 2.11.11→2.11.12`, `vitest 4.1.0→4.1.5`.
-- Bump existing `overrides` to verified latest: `rollup 4.60.1→4.60.3`, `brace-expansion 1.1.13→5.0.6`, `lodash-es 4.17.24→4.18.1`, `defu 6.1.5→6.1.7`, `picomatch 4.0.4` (no change).
-- This phase is 100% mechanical; CI must stay green.
+- Bump existing `overrides` to verified latest:
+  - `rollup ^4.60.1 → ^4.60.3`
+  - `lodash-es ^4.17.24 → ^4.18.1`
+  - `defu ^6.1.5 → ^6.1.7`
+  - `picomatch ^4.0.4` (no change)
+  - `brace-expansion`: change to range union `^1.1.13 || ^5.0.6` rather than dropping the 1.x bound, so any tool in the dev tree that hard-pins to 1.x still resolves.
+- After `bun install`, run `bun audit` and confirm the 5 vulnerabilities tied to these overrides have cleared. The remaining 7 (dompurify ×4, vite ×3 occurrences worth of paths, postcss, uuid) are addressed in Phase 2.
+- This phase has zero `Cargo.toml`/`package.json` source-code edits beyond the override-version bumps; CI must stay green.
 
 ### Phase 2 — Frontend security advisories
 
@@ -168,10 +178,19 @@ Each phase = one PR. Each PR squash-merges to `main`. Branches follow the existi
 
 - Rust: tauri-related crates are already declared with caret semver; `cargo update -p tauri -p tauri-build -p tauri-plugin-shell -p tauri-plugin-notification -p tauri-plugin-global-shortcut` will pick up 2.11.
 - NPM: bump `@tauri-apps/api ^2.10.1 → ^2.11.0` and `@tauri-apps/cli ^2.10.1 → ^2.11.1` in `client/package.json`. Both Rust and npm sides move in this single PR so versions stay aligned.
-- Build the Tauri client and verify `bun run tauri dev` and `bun run tauri build` succeed.
-- Smoke test: window open, IPC invoke, plugin shell command, plugin notification permission prompt.
+- Build the Tauri client: `cd client && bun install && bun run build`, then `cargo build --release -p vc-client`. Both must succeed.
+- Smoke test (manual on a dev build of the desktop client):
+  1. Launch the client, log in to the dev server.
+  2. Trigger an IPC `invoke<T>` call from the frontend (any existing command — e.g. `get_current_user`).
+  3. Trigger a plugin-shell command (the existing "open in browser" link path).
+  4. Trigger the notification-permission prompt (incoming DM in a background channel).
+  Each must behave identically to the 2.10 baseline. If any of the four fails, revert.
 
-### Phase 4 — Rust low-risk minors batch
+### Phase 4 — Rust low-risk minors
+
+Phase 4 is split into two PRs because two of the original bumps (`reqwest 0.12 → 0.13`, `zip 2 → 8`) are not low-risk and deserve isolated review.
+
+#### Phase 4a — Genuinely low-risk minors batch
 
 **Branch:** `chore/rust-minors-batch`
 
@@ -180,60 +199,92 @@ Single PR bumping the workspace declarations:
 - `axum-tracing-opentelemetry 0.32 → 0.33.1`
 - `init-tracing-opentelemetry 0.36 → 0.37.0`
 - `infer 0.16 → 0.19.0`
-- `reqwest 0.12 → 0.13` in `server/Cargo.toml` (align with `vc-client`)
 - `sentry 0.47 → 0.48.1` and `sentry-tracing 0.47 → 0.48.1` in `client/src-tauri/Cargo.toml`
-- `smol_str 0.2 → 0.3.6`
+- `smol_str 0.2 → 0.3.6` (audit `From<&str>` and `&str → SmolStr` call sites)
 - `sysinfo 0.38 → 0.39.0`
-- `thiserror 1 → 2` in `client/src-tauri/vp8-decoder/Cargo.toml` (use the existing workspace `thiserror = "2"` instead of a direct version)
-- `tokio-tungstenite 0.28 → 0.29.0`
-- `zip 2 → 8.6.0`
+- `thiserror 1 → 2` in `client/src-tauri/vp8-decoder/Cargo.toml` (replace the literal `thiserror = "1"` with `thiserror.workspace = true`)
+- `tokio-tungstenite 0.28 → 0.29.0` (the `MaybeTlsStream` variant set widened — re-verify both server and client WS sites compile)
 - Hoist `tempfile = "3"` to `[workspace.dependencies]` and replace the literal `tempfile = "3"` declarations in `server/Cargo.toml` (main deps) and `client/src-tauri/Cargo.toml` (dev-deps) with `tempfile.workspace = true`.
 
 Per-bump concerns:
-- `reqwest 0.12 → 0.13`: TLS feature flags moved; verify `features = ["json"]` plus default `rustls`/`native-tls` resolution still works on server.
 - `sentry 0.48`: changelog notes the `tower` integration moved to a separate crate; verify our usage on Tauri client is unaffected (we use `sentry-tracing`, not the tower middleware).
-- `tokio-tungstenite 0.29`: the `MaybeTlsStream` variant set widened; check both server and client websocket code compiles.
-- `zip 2 → 8`: the API has been heavily restructured. We use it in the server media path. Verify `ZipWriter::start_file` / `finish` API is still used in our forms; this may be the largest single-file change in this phase.
-- `smol_str 0.2 → 0.3`: API mostly stable; the `From<&str>` route changed in 0.3. Audit call sites.
-- `infer 0.16 → 0.19`: signature database updated; verify our MIME detection paths still match expected types.
+- `infer 0.16 → 0.19`: signature database changed; verify our MIME detection paths still produce the types our handlers expect (run server upload tests).
 
-### Phase 5 — RustCrypto suite alignment
+#### Phase 4b — reqwest 0.12 → 0.13 (server)
 
-**Branch:** `chore/rustcrypto-suite-bump`
+**Branch:** `refactor/reqwest-0.13-server`
 
-- `sha1 0.10 → 0.11`
-- `sha2 0.10 → 0.11`
-- `hkdf 0.12 → 0.13`
-- `hmac 0.12 → 0.13`
-- Pre-flight check: confirm `aes-gcm 0.10` does not require an upstream-coordinated bump alongside sha2 0.11. If RustCrypto has released a synchronized `aes-gcm 0.11`, include it here.
-- Test crypto paths end-to-end: Argon2 password hash + verify, JWT sign + verify, HMAC media tokens, secure-storage encrypt/decrypt roundtrip.
+Own PR. Aligns server with vc-client (already on 0.13).
+
+- Bump `reqwest = { version = "0.13", features = ["json"] }` in `server/Cargo.toml`.
+- Audit all `reqwest::Client`/`ClientBuilder` construction sites — TLS feature flags moved between 0.12 and 0.13 (the default `native-tls`/`rustls-tls` selection and the `connect`/`pool` config surface changed).
+- Verify `cargo deny check licenses` is unchanged — reqwest 0.13 may pull a different default TLS chain than 0.12.
+- Run all server tests that use the HTTP client (lettre webhook callbacks, OIDC discovery, OTLP export over HTTP, S3 sidechannel).
+
+#### Phase 4c — zip 2 → 8 (server)
+
+**Branch:** `refactor/zip-8-server`
+
+Own PR. The crate was rewritten between 2.x and 3.x; subsequent majors continued to evolve the API.
+
+- Bump `zip = { version = "8", default-features = false, features = ["deflate"] }` in `[workspace.dependencies]`.
+- Audit every `ZipWriter` / `ZipArchive` call site in the server. Likely changes: `start_file`, `finish`, `write_all`, `extract`, `read_to_end`, the `FileOptions` builder.
+- Verify the deflate-only feature still produces archives our consumers can extract.
+- Run server media-path tests (any test that exports a `.zip`).
+
+(Skipped: phase formerly numbered 5 — RustCrypto suite — moved to Out of scope, see Context.)
 
 ### Phase 6 — Frontend major tooling
 
-**Branch:** `chore/frontend-tooling-majors`
+Phase 6 is split into four PRs. The original "all in one PR" approach packed eight major bumps into a single review surface; that's impractical even with a generous reviewer.
 
-Single PR. Each bump is mechanically small but each one needs to pass lint+typecheck+tests.
+#### Phase 6a — Lint + Type-checker tooling
 
-- `@types/node ^22.19.15 → ^24.12.3`
+**Branch:** `chore/eslint-10-bump`
+
 - `eslint ^9 → ^10.3.0`
-- `@eslint/js ^9 → ^10.0.1` (these two travel together)
-- `jsdom ^27.4.0 → ^29.1.1`
-- `marked ^17 → ^18.0.3`
-- `lucide-solid ^0.577.0 → ^1.14.0` (post-1.0; verify icon import paths haven't moved)
-- `@solidjs/router ^0.15.4 → ^0.16.1`
+- `@eslint/js ^9 → ^10.0.1` (travels with eslint)
+- (typescript-eslint patch was already taken in Phase 1)
+
+Run `bun run lint` and read the diagnostic delta. If a rule was renamed or removed, update `eslint.config.*` accordingly. Do not silently disable rules — if a rule must go, document why in the commit message.
+
+#### Phase 6b — TypeScript 6 (own PR)
+
+**Branch:** `chore/typescript-6-bump`
+
 - `typescript ^5.9.3 → ^6.0.3`
 
-Validation: `bun run lint`, `bun run test:run`, `bun run build`, `bun run test:e2e:frontend`.
+TypeScript 6 surfaces new strict diagnostics. Run `bun run build` (which calls `tsc && vite build`). If new type errors appear, fix the source — do not relax `tsconfig.json` strictness. If the diagnostic count is too large for a single PR, split out a precursor PR that fixes the easy diagnostics under TypeScript 5.9 first, then bump.
 
-If TypeScript 6 produces a flood of new diagnostics, split it into a follow-up commit on the same branch — but keep all bumps in this single PR for atomic review.
+#### Phase 6c — Test infrastructure majors
+
+**Branch:** `chore/jsdom-marked-types-node-bump`
+
+- `@types/node ^22.19.15 → ^24.12.3` (next-LTS-aligned)
+- `jsdom ^27.4.0 → ^29.1.1`
+- `marked ^17 → ^18.0.3`
+
+Run `bun run test:run` after the bump. jsdom 28→29 historically tightens Web API compliance — expect minor test fixes around DOMParser/CustomElements behavior. marked 18 changed renderer extension APIs — audit any custom marked extension we use in the chat-message renderer.
+
+#### Phase 6d — UI majors (icons + router)
+
+**Branch:** `chore/lucide-router-majors`
+
+- `lucide-solid ^0.577.0 → ^1.14.0`
+- `@solidjs/router ^0.15.4 → ^0.16.1`
+
+**Pre-flight gate (lucide):** before opening the PR, run a script that diffs the icon export list between 0.577.0 and 1.14.0 (e.g. `npm view lucide-solid@0.577.0 main` vs `@1.14.0 main` and `cd` into the `node_modules/lucide-solid` of each install to enumerate exports). For every icon name we import (`grep -roE "from 'lucide-solid'.*\\{[^}]*\\}" client/src`), verify the name still exists in 1.14. If any icon was renamed or removed, list each call site in the PR description and update.
+
+**Pre-flight gate (router):** read the `@solidjs/router` 0.16 release notes (or the changelog at the repo). The router has rotated APIs in past minor bumps (`useRoutes`, `Route` element vs route-config object). Compile-fail any unmigrated call sites.
 
 ### Phase 7 — E2EE crypto bump
 
 **Branch:** `chore/vodozemac-0.10`
 
 - `vodozemac 0.9 → 0.10` in `[workspace.dependencies]`.
-- Read the upstream `0.10` changelog for Olm/Megolm session-format compatibility. If serialized session blobs produced by 0.9 are not loadable in 0.10, this phase requires a one-off migration plan and gets postponed.
-- Test: full E2EE message roundtrip in DM, group DM, megolm session lifecycle.
+- Pre-flight check confirms `vodozemac 0.10` only changes `prost 0.13 → 0.14` and `base64ct 1.6 → 1.8` against 0.9. Crypto primitives (`sha2 ^0.10.9`, `hkdf ^0.12.4`, `hmac ^0.12.1`, `curve25519-dalek ^4.1.3`, `ed25519-dalek ^2.1.1`, `aes ^0.8.4`, `chacha20poly1305 ^0.10.1`, `x25519-dalek ^2.0.1`, `matrix-pickle ^0.2.1`) are unchanged. Olm/Megolm wire and serialization formats are therefore expected to be compatible.
+- **Compatibility test (must run before merge):** in a checkout with vodozemac 0.10, write an integration test that constructs an Olm session, serializes it (via the existing `vc-crypto` storage path), then loads the serialized form and decrypts a sample message. The session must round-trip. Skip the bump until this test passes.
+- Run the existing E2EE message roundtrip tests in DM, group DM, and Megolm group session lifecycle.
 
 ### Phase 8 — WebRTC stack
 
@@ -246,7 +297,9 @@ The single highest-risk phase.
 - `env-libvpx-sys 4 → 5.1.3`
 - Audit all `webrtc-rs` API call sites: `RTCPeerConnection`, `RTCRtpSender`, `RTCRtpReceiver`, `Interceptor`, `Track`, `Sample`. The crate has rotated breaking changes across 0.12 → 0.17.
 - **Open question to resolve in this phase:** in `webrtc 0.17`, does `write_rtcp` actually deliver PLI? If yes, the interval-PLI workaround in client code (documented in `feedback_webrtc_rs_rtcp.md` user memory) can be removed. If no, port the workaround forward.
-- Pre-merge: deploy the server image to the canary VPS. Run a 30-minute voice-call + screenshare canary with two real clients before merging Phase 8 to `main`.
+- **Mobile interaction (verified):** the Android client uses native Android WebRTC (Java/Kotlin) — it does not link `webrtc-rs`, so the bump does not break the Android build. However the wire protocol (SDP offer/answer shape, RTCP feedback messages, ICE candidates) the Android client observes is generated by `webrtc-rs` on the server. Any RTCP feedback semantics that change between 0.11 and 0.17 must be tested cross-platform: server bumped + Tauri client + Android client in a real call.
+- **scap fork (verified):** the `Detair/scap` fork has no `webrtc` dependency (`scap` Cargo.toml lists only `futures`, `sysinfo`, `thiserror` plus per-OS native deps). The webrtc bump does not break the fork.
+- Pre-merge: deploy the server image to the canary VPS. Run a 30-minute voice-call + screenshare canary with **three real clients (Tauri × 2 + Android × 1)** before merging Phase 8 to `main`.
 - Post-merge: re-run `cargo audit` — `bincode 1` warning may have cleared via `webrtc-dtls`'s upgrade.
 
 ### Phase 9 — Client storage and native deps
@@ -265,11 +318,33 @@ The single highest-risk phase.
 
 **Branch:** `chore/dep-update-cleanup`
 
-- Update `deny.toml` `RUSTSEC-2026-0097` ignore comment: rewrite to acknowledge that 0.7.3, 0.8.5, 0.9.2, and 0.10.0 are all flagged, not just 0.8.5. Reaffirm the justification (we use `tracing`, not the `log` facade).
-- Re-run `cargo audit`, `cargo deny check all`, `bun audit`. Document residual warnings in `LICENSE_COMPLIANCE.md` (transitive Tauri/GTK3 chain).
-- Recheck `CapSoftware/scap` upstream. If a release with the Linux Frame enum fix has shipped, drop the Detair fork in `client/src-tauri/Cargo.toml` and update CLAUDE.md memory `feedback_webrtc_rs_rtcp.md` accordingly. If not, update the inline comment's "Last re-check" date.
-- Refresh `THIRD_PARTY_NOTICES.md` if any new licenses appeared in the tree (run the existing `LICENSE_COMPLIANCE` regeneration script).
-- Update CLAUDE.md memory entries: `project_sqlx_test_migration.md` (no change), `project_webrtc_screen_share.md` (note webrtc 0.17 if Phase 8 landed), `feedback_webrtc_rs_rtcp.md` (revise if PLI workaround was removed).
+- Update `deny.toml` `RUSTSEC-2026-0097` ignore comment: rewrite to acknowledge that 0.7.3, 0.8.5, 0.9.2, and 0.10.0 are all flagged, not just 0.8.5. Reaffirm the justification (the exploit requires a `log::Log` implementation that calls `rand::thread_rng()` during logging; we use `tracing`, not the `log` facade, and this remains true regardless of the rand version in tree).
+- Re-run `cargo audit`, `cargo deny check all`, `bun audit`. Update `LICENSE_COMPLIANCE.md` to reflect any tree changes; the residual transitive Tauri/GTK3 chain warnings are expected and called out in that document.
+- Recheck `CapSoftware/scap` upstream. If a release with the Linux Frame enum fix has shipped, drop the Detair fork in `client/src-tauri/Cargo.toml` and update CLAUDE.md memory accordingly. If not, update the inline comment's "Last re-check" date in the same file.
+- `THIRD_PARTY_NOTICES.md` — there is no automation script in the repo today. If new licenses appeared in the dep tree, hand-edit the file (or out-of-scope: build a generation script in a follow-up). Diff the new tree against the old one with `cargo tree --workspace --target all --prefix none --no-default-features` before/after the plan to spot license category changes.
+- Update CLAUDE.md memory entries: `project_webrtc_screen_share.md` (note webrtc 0.17 if Phase 8 landed), `feedback_webrtc_rs_rtcp.md` (revise if PLI workaround was removed). Add a new memory entry summarizing this plan and its outcomes (which phases shipped, which were deferred).
+
+## Pre-flight gates
+
+These must run *before* a phase's PR is opened. Each gate's failure means the phase is held or its scope shrunk — do not "discover" these issues in CI.
+
+| Phase | Pre-flight gate |
+|---|---|
+| 0 | Verify the worktree commit's `cargo audit` shows `RUSTSEC-2026-0098/-0099/-0104` no longer fire on the new tree (already verified at design time; re-run before opening PR). |
+| 1 | Confirm `bun audit` count after `bun update` matches the expected residual (5 of the 12 advisories cleared via override bumps; 7 remain for Phase 2). |
+| 2 | Confirm overrides resolve: `bun install` then `bun pm ls vite` should show no `vite@7.x` entry; mermaid's `dompurify` should be `>=3.4.2`. |
+| 3 | Read the upstream Tauri 2.11 changelog for any breaking API surface in our usage (we use plugin-shell, plugin-notification, plugin-global-shortcut). |
+| 4a | None — bumps are independent within the batch. |
+| 4b | Read the `reqwest 0.13` migration guide (or release notes). Identify TLS-feature renames before opening the PR. |
+| 4c | Read the `zip 3` and `zip 4`+ release notes; map the API used in the server media path to the 8.x equivalents. |
+| 6a | Run `bun run lint` against the existing tree first to establish a baseline diagnostic count; then bump and compare. |
+| 6b | Run `bun run build` (TypeScript 5.9) baseline; bump TS to 6.0; compare diagnostics. |
+| 6c | Read jsdom 28 + 29 release notes (focus on DOM API tightening); read marked 18 release notes (renderer extension API). |
+| 6d | Generate icon-name diff between `lucide-solid` 0.577 and 1.14 vs. `grep -roE "from 'lucide-solid'.*\\{[^}]*\\}" client/src` import list. List renames in PR. Read `@solidjs/router` 0.16 release notes. |
+| 7 | Confirm vodozemac 0.10 dep deltas (already verified: only `prost 0.13→0.14` and `base64ct 1.6→1.8`). Run the Olm session round-trip compatibility test. |
+| 8 | Audit `webrtc-rs` 0.12, 0.13, 0.14, 0.15, 0.16, 0.17 release notes to catalog API breakage. Identify call sites in advance. |
+| 9 | Run `cargo deny check all` against a worktree with only the rusqlite bump applied; confirm no all-features resolution conflict between rusqlite 0.39 (libsqlite3-sys 0.37) and sqlx 0.8 (sqlx-sqlite → libsqlite3-sys 0.30). If it fails, switch `deny.toml`'s `[graph]` away from `all-features = true` to explicit features. |
+| 10 | None — cleanup phase. |
 
 ## Quality gates
 
@@ -282,7 +357,16 @@ Every phase must pass before merge:
 5. `cargo audit` — diff against the prior phase. The error count must be monotone-non-increasing; warning count may shift but must not introduce new direct-dep advisories.
 6. Frontend phases: `bun run lint`, `bun run test:run`, `bun run build`.
 7. Phases 3, 7, 8, 9: manual dev-build smoke test.
-8. **Phase 8 only:** beta-canary deploy on `kaiku.pmind.de` from a temp branch, 30-min voice + screenshare canary with two real clients before merge.
+8. **Phase 8 only:** beta-canary deploy on `kaiku.pmind.de` from a temp branch, 30-min voice + screenshare canary with **three** real clients (Tauri × 2 + Android × 1) before merge.
+
+## Merge cadence
+
+Phases ship sequentially:
+
+- A phase's PR opens only after the previous phase has merged to `main` and its CI is green.
+- After merging Phase N to `main`, the beta deploy (`kaiku.pmind.de`) takes the new build and runs for **at least 24 hours** (or until the next reasonable check) before Phase N+1's PR opens. This soak window is the failsafe for regressions that don't show up in CI (RAM leaks, voice latency drift, OIDC certificate quirks). Phase 0 doesn't need a soak — it's already a fix.
+- Phases 4a, 4b, 4c, 6a, 6b, 6c, 6d are all sequenced in order. They look like sub-phases but each is a separate PR with the same merge-and-soak rule.
+- Exception: if `cargo audit` introduces a new high-severity advisory mid-plan, halt the cadence and address it before continuing.
 
 ## Risk and rollback
 
@@ -292,36 +376,44 @@ Every phase must pass before merge:
 | 1 | Patch-level npm breakage | revert `bun.lock`/`package.json` |
 | 2 | Override pin breaks a transitive consumer | drop the offending override; reopen the advisory |
 | 3 | Tauri 2.11 IPC behavior change | revert PR; tauri 2.11 is small surface |
-| 4 | reqwest/zip/smol_str API change unhandled | revert PR; per-bump damage is isolated |
-| 5 | RustCrypto cross-version incompatibility | revert PR; downstream `argon2`, `vodozemac` consume sha2 — verify before merge |
-| 6 | TS6 / ESLint10 type or rule cascade | split TS6 into its own follow-up; keep eslint10 + jsdom29 + marked18 |
-| 7 | vodozemac 0.10 changes Olm session serialization format | revert PR; gate behind a session-format compatibility test before merge |
-| 8 | webrtc 0.17 breaks voice path on real clients | revert PR; this is why Phase 8 has a canary gate |
-| 9 | rusqlite 0.39 breaks bundled build, or `cargo deny --all-features` fails | revert PR; Phase 9 is isolated |
+| 4a | sentry/sysinfo/infer/smol_str/sentry-tracing/tokio-tungstenite API change | revert PR; per-bump damage is isolated |
+| 4b | reqwest 0.12 → 0.13 TLS feature mismatch | revert PR; isolated |
+| 4c | zip 2 → 8 archive output incompatible | revert PR; isolated |
+| 6a | ESLint 10 rule cascade | revert PR; isolated |
+| 6b | TypeScript 6 type-checker explosion | revert PR; isolated by design |
+| 6c | jsdom/marked/@types/node compat | revert PR; isolated |
+| 6d | Renamed lucide icon at runtime / router API change | revert PR; pre-flight gate should have caught this |
+| 7 | vodozemac 0.10 changes Olm session serialization format despite verified deps | revert PR; round-trip test should have caught this |
+| 8 | webrtc 0.17 breaks voice path on real clients (Tauri or Android) | revert PR; this is why Phase 8 has a canary gate |
+| 9 | rusqlite 0.39 breaks bundled build, or `cargo deny --all-features` fails | revert PR; pre-flight gate should have caught this |
 | 10 | Documentation/comment-only cleanup | revert PR (very low risk) |
 
 ## Verification rules
 
 - Every version listed in this document was queried live against `crates.io/api/v1/crates/<name>` or `registry.npmjs.org/<pkg>/latest` on **2026-05-08**. No version is assumed.
 - Each phase's implementing PR must re-run the same registry lookups at PR-creation time. Versions move between this design and the actual implementation; pin to whatever the registry returns then, not to the table above.
-- Pre-1.0 crates are treated as breaking on every minor bump (`smol_str`, `sentry`, `vodozemac`, `tokio-tungstenite`, `sysinfo`, `init-tracing-opentelemetry`, `axum-tracing-opentelemetry`, `webrtc`, `vpx-encode`, `keyring` is now post-1.0 but treated as breaking from 2 → 4, `rusqlite`, `infer`, `nokhwa`).
+- Pre-1.0 crates are treated as breaking on every minor bump (`smol_str`, `sentry`, `vodozemac`, `tokio-tungstenite`, `sysinfo`, `init-tracing-opentelemetry`, `axum-tracing-opentelemetry`, `webrtc`, `vpx-encode`, `rusqlite`, `infer`). `keyring` is post-1.0 but treated as breaking from 2 → 4.
 - All phase PRs must pass `cargo deny check`, including the licenses table. If a new dependency introduces a license not in the existing allow-list, escalate and discuss before merging.
 
 ## Open questions to resolve during execution
 
+These remain open after the design pass and are gated by the pre-flight checks in their respective phases.
+
 1. **Phase 8:** Does `webrtc 0.17` deliver a working `write_rtcp` / PLI path? Determines whether the interval-PLI workaround in the client can be removed.
 2. **Phase 9:** Does `cargo deny check` (all-features) still resolve once `rusqlite 0.39` and `sqlx 0.8.6` coexist in the lockfile? If not, switch `deny.toml`'s `[graph]` to explicit features.
-3. **Phase 5:** Does `aes-gcm 0.10` link cleanly against `sha2 0.11`? RustCrypto sometimes lags one cycle on aead crates. Verify before merging the suite bump; if not, hold sha2/sha1/hkdf/hmac and revisit.
-4. **Phase 7:** Is `vodozemac 0.9` → `0.10` Olm/Megolm session-blob compatible? If not, gate the bump behind a one-shot migration plan instead of merging here.
-5. **Phase 10:** Has `CapSoftware/scap` cut a release that fixes the Linux Frame enum? If yes, drop the Detair fork; if no, update the inline tracking comment.
+3. **Phase 7:** Is the `vodozemac 0.9` → `0.10` round-trip session-format compatible? Pre-flight verified the dep deltas are non-cryptographic (only `prost` and `base64ct`), but the round-trip test must still pass; if the serialization layer changed despite no crypto changes, postpone.
+4. **Phase 10:** Has `CapSoftware/scap` cut a release that fixes the Linux Frame enum? If yes, drop the Detair fork; if no, update the inline tracking comment's "Last re-check" date.
 
 ## Out of scope (recorded for follow-up plans)
 
+- **RustCrypto suite bump (sha1/sha2/hkdf/hmac → 0.11/0.13).** Blocked by `vodozemac 0.10`, which still pins `sha2 ^0.10.9`. Reopen as a follow-up plan once vodozemac (and likely also `jsonwebtoken`, `argon2`) ship versions on the new RustCrypto series.
+- **`getrandom` 0.2 → 0.4 in workspace.** Blocked by transitive consumers (vodozemac, Tauri, RustCrypto) still on 0.2. Reopen with the RustCrypto follow-up.
 - Tauri 2 → 3 migration (Tauri 3 is alpha as of 2026-05-08).
 - Replacing `keyring`'s `secret-service` chain (the source of `derivative` and `zbus` warnings) before keyring 4 ships.
 - Replacing `pulldown-cmark` or migrating server markdown rendering to `marked` parity.
 - Migrating the legacy `lazy_static` call sites to `std::sync::LazyLock`.
 - Updating Tauri's `wry`/`tao` GTK3 chain (blocked upstream).
+- Building a `THIRD_PARTY_NOTICES.md` regeneration script (does not exist today; out-of-scope cleanup task).
 
 ## Next step
 
