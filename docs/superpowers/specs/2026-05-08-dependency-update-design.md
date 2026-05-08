@@ -404,8 +404,28 @@ These remain open after the design pass and are gated by the pre-flight checks i
 3. **Phase 7:** Is the `vodozemac 0.9` → `0.10` round-trip session-format compatible? Pre-flight verified the dep deltas are non-cryptographic (only `prost` and `base64ct`), but the round-trip test must still pass; if the serialization layer changed despite no crypto changes, postpone.
 4. **Phase 10:** Has `CapSoftware/scap` cut a release that fixes the Linux Frame enum? If yes, drop the Detair fork; if no, update the inline tracking comment's "Last re-check" date.
 
+## Execution notes
+
+### 2026-05-09 — Phase 4b abandoned (reqwest 0.12 → 0.13 upstream-blocked)
+
+Discovered during Phase 4b execution: bumping `reqwest` to 0.13 is blocked by **multiple** upstream crates that still require `reqwest ^0.12`:
+
+| Crate | Version | Status | Notes |
+|---|---|---|---|
+| `opentelemetry-otlp` | 0.31.1 (latest) | requires `reqwest ^0.12` | Workaroundable: setting `default-features = false` and dropping `reqwest-blocking-client` from features removes the OTel-side reqwest pull. Our server uses `.with_tonic()` for all three OTLP exports (trace/metrics/logs), so the HTTP exporter path is dead code. This cleanup is worth doing on its own. |
+| `oauth2` | 5.0.0 (latest, stable since 2025-01-21) | requires `reqwest ^0.12` | **Hard block.** No `oauth2` 6.x or pre-release supports reqwest 0.13. Switching off reqwest would mean choosing one of `curl`/`ureq` and rewriting our OIDC token-exchange flow. |
+| `openidconnect` | 4.0.1 (latest) | inherits oauth2's reqwest requirement | Same hard block as oauth2. |
+
+Phase 4b was abandoned without a PR. Reopen once `oauth2` ships a version that supports reqwest 0.13 (track upstream).
+
+The opentelemetry-otlp feature-flag cleanup was extracted as a follow-up note (see Out of scope) — small, no-op when reqwest is already in tree via openidconnect, but worth doing once Phase 4b unblocks because it removes ~one MB of dead transitive wire-format code from the server binary.
+
+The bonus that motivated Phase 4b — eliminating the `openssl 0.10.x` cluster from the OSV scan via reqwest 0.13's default rustls — is also blocked. The openssl chain comes from `reqwest 0.12`'s `native-tls` default, which is reachable through openidconnect's reqwest pull. Until oauth2/openidconnect ship reqwest 0.13 support, the openssl cluster stays.
+
 ## Out of scope (recorded for follow-up plans)
 
+- **`reqwest 0.12 → 0.13` bump** (deferred from Phase 4b on 2026-05-09). Blocked by `oauth2 5.0.0` and `openidconnect 4.0.1`, both still pinning `reqwest ^0.12` with no upcoming release. Track upstream; reopen as a follow-up phase when oauth2 6.x (or whatever pins reqwest 0.13) ships. **Linked benefit:** eliminating the openssl 0.10.x cluster from `bun audit` / `cargo audit` will also unlock here.
+- **opentelemetry-otlp default-features cleanup.** Setting `default-features = false` and dropping `reqwest-blocking-client` removes a no-op transitive (we use only the `.with_tonic()` gRPC path). Defer to the same follow-up that lands reqwest 0.13.
 - **RustCrypto suite bump (sha1/sha2/hkdf/hmac → 0.11/0.13).** Blocked by `vodozemac 0.10`, which still pins `sha2 ^0.10.9`. Reopen as a follow-up plan once vodozemac (and likely also `jsonwebtoken`, `argon2`) ship versions on the new RustCrypto series.
 - **`getrandom` 0.2 → 0.4 in workspace.** Blocked by transitive consumers (vodozemac, Tauri, RustCrypto) still on 0.2. Reopen with the RustCrypto follow-up.
 - Tauri 2 → 3 migration (Tauri 3 is alpha as of 2026-05-08).
