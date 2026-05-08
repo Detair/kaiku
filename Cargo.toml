@@ -97,8 +97,8 @@ tracing-opentelemetry = { version = "0.32" }
 tracing-opentelemetry-instrumentation-sdk = { version = "0.32" }
 
 # S3
-aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client"] }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client"] }
 aws-smithy-async = { version = "1", features = ["rt-tokio"] }
 aws-smithy-types = { version = "1", features = ["rt-tokio"] }
 
