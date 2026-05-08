@@ -576,9 +576,9 @@ mod tests {
     #[test]
     fn error_rate_calculation() {
         // 5 errors out of 100 requests = 5%
-        let req: i64 = 100;
-        let err: i64 = 5;
-        let rate = err as f64 / req as f64 * 100.0;
+        let req: f64 = 100.0;
+        let err: f64 = 5.0;
+        let rate = err / req * 100.0;
         assert!((rate - 5.0).abs() < f64::EPSILON);
     }
 

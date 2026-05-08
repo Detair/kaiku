@@ -397,7 +397,6 @@ async fn test_invalid_variant_returns_validation_error(pool: PgPool) {
             .as_str()
             .unwrap_or_default()
             .contains("Invalid variant"),
-        "Unexpected validation message: {}",
-        error
+        "Unexpected validation message: {error}"
     );
 }

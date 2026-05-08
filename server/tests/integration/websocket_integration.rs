@@ -400,7 +400,7 @@ async fn test_websocket_subscribe_denied_without_permission(pool: PgPool) {
     );
 
     // Check that an error event was sent (1000ms timeout for CI robustness)
-    let event = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+    let event = tokio::time::timeout(tokio::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("Should receive error event")
         .expect("Channel should not be closed");
@@ -455,7 +455,7 @@ async fn test_websocket_subscribe_allowed_with_permission(pool: PgPool) {
     );
 
     // Check that a success event was sent (1000ms timeout for CI robustness)
-    let event = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+    let event = tokio::time::timeout(tokio::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("Should receive subscribed event")
         .expect("Channel should not be closed");
@@ -509,7 +509,7 @@ async fn test_websocket_subscribe_owner_bypass(pool: PgPool) {
     );
 
     // Check that a success event was sent (1000ms timeout for CI robustness)
-    let event = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+    let event = tokio::time::timeout(tokio::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("Should receive subscribed event")
         .expect("Channel should not be closed");

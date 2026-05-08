@@ -91,7 +91,7 @@ kaiku-vp8-decoder = { path = "vp8-decoder" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Process scanning
-sysinfo = "0.38"
+sysinfo = "0.39"
 
 # Clipboard
 arboard = "3"
@@ -114,11 +114,11 @@ anyhow.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
-sentry = { version = "0.47", features = ["tracing", "backtrace", "contexts", "panic"] }
-sentry-tracing = "0.47"
+sentry = { version = "0.48", features = ["tracing", "backtrace", "contexts", "panic"] }
+sentry-tracing = "0.48"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 [lints]
 workspace = true
