@@ -93,7 +93,7 @@ Three independent fixes, each on its own PR.
 
 For every color token used with an `/<alpha>` modifier in the codebase, add a sibling variable holding the **space-separated RGB triplet** (no `#`, no commas, no wrapper). The legacy hex variable stays.
 
-**Files:** `client/src/styles/themes.css`, `client/src/styles/themes-pixel.css`.
+**Files:** `client/src/styles/themes.css` (color tokens live here exclusively; `themes-pixel.css` is structural-only and consumes the tokens via `var(...)`).
 
 **Tokens that need `-rgb` variants** (each in every theme block — Nord Hybrid, Solarized Dark, Solarized Light, Pixel Cozy, etc.):
 
@@ -221,7 +221,7 @@ The signal accessors are now inside the `style` prop, so SolidJS subscribes the 
 
 | PR | Branch | Files | Risk | Visual change | Depends on |
 |---|---|---|---|---|---|
-| 1 | `fix/theme-rgb-channel-vars` | 2 (theme CSS files) | None | None | — |
+| 1 | `fix/theme-rgb-channel-vars` | 1 (`themes.css`) | None | None | — |
 | 2 | `fix/uno-alpha-modifier` | 1 (`uno.config.ts`) | Medium | App-wide tint softening | PR 1 |
 | 3 | `fix/emoji-picker-reactivity` | 1 (`PositionedEmojiPicker.tsx`) | None | Picker positions correctly | — |
 
@@ -280,7 +280,7 @@ The signal accessors are now inside the `style` prop, so SolidJS subscribes the 
 | 1 | Some token I migrate to `rgb(var(...) / <alpha-value>)` is also referenced by code that expects the legacy hex form | Low | Migrating only `uno.config.ts` color bindings, NOT changing `--color-X` definitions. Direct `style="background-color: var(--color-X)"` usages stay intact. |
 | 2 | A `bg-accent-primary` (no slash) usage breaks because `<alpha-value>` defaults differently than expected | Low | UnoCSS `<alpha-value>` defaults to `1` when no modifier; `rgb(... / 1)` is fully opaque, semantically identical to current. |
 | 3 | Some `/<N>` element was deliberately styled to *look* saturated (designer wanted the broken-alpha look) | Low | Visual review on beta after PR2 deploys; if any element looks wrong, fix at the call site (switch to non-alpha class or dark-text-on-saturated pattern like `Manage Users`). |
-| 4 | Other themes (Solarized Dark/Light, Pixel Cozy) break because a `-rgb` variant was missed | Low | Each theme block in `themes.css` / `themes-pixel.css` gets the same set of `-rgb` additions. Visual smoke includes theme switch. |
+| 4 | Other themes (Solarized Dark/Light, Pixel Cozy) break because a `-rgb` variant was missed | Low | Each of the 5 theme blocks in `themes.css` (focused-hybrid, solarized-dark, solarized-light, pixel-cozy, `:root` fallback) gets the same set of `-rgb` additions. Visual smoke includes theme switch. |
 | 5 | Emoji picker fix introduces new bug (over-eager re-render, scroll loop) | Very low | The fix removes a Solid reactivity bug; correctness of `floating-ui` integration was already there. |
 | 6 | `<alpha-value>` syntax is UnoCSS-version-specific and breaks on a future UnoCSS major | Very low | Documented since UnoCSS 0.50+; current beta uses 66.6.8. Tailwind 3+ uses identical syntax. |
 
