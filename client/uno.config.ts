@@ -29,26 +29,29 @@ export default defineConfig({
     },
     colors: {
       // Theme System - CSS Variables (supports runtime theme switching)
+      // Tokens with -rgb variants use rgb(var(...) / <alpha-value>) so UnoCSS
+      // alpha modifiers like /20, /25 actually inject alpha. Tokens used as
+      // solid colors only (border, error, on-accent) keep the legacy var() form.
       surface: {
-        base: "var(--color-surface-base)",
-        layer1: "var(--color-surface-layer1)",
-        layer2: "var(--color-surface-layer2)",
-        highlight: "var(--color-surface-highlight)",
+        base: "rgb(var(--color-surface-base-rgb) / <alpha-value>)",
+        layer1: "rgb(var(--color-surface-layer1-rgb) / <alpha-value>)",
+        layer2: "rgb(var(--color-surface-layer2-rgb) / <alpha-value>)",
+        highlight: "rgb(var(--color-surface-highlight-rgb) / <alpha-value>)",
       },
       text: {
-        primary: "var(--color-text-primary)",
-        secondary: "var(--color-text-secondary)",
-        muted: "var(--color-text-muted)",
-        input: "var(--color-text-input)",
+        primary: "rgb(var(--color-text-primary-rgb) / <alpha-value>)",
+        secondary: "rgb(var(--color-text-secondary-rgb) / <alpha-value>)",
+        muted: "rgb(var(--color-text-muted-rgb) / <alpha-value>)",
+        input: "rgb(var(--color-text-input-rgb) / <alpha-value>)",
       },
       "on-accent": "var(--color-text-on-accent)",
       "on-success": "var(--color-text-on-success)",
       "on-danger": "var(--color-text-on-danger)",
       accent: {
-        primary: "var(--color-accent-primary)",
-        danger: "var(--color-accent-danger)",
-        success: "var(--color-accent-success)",
-        warning: "var(--color-accent-warning)",
+        primary: "rgb(var(--color-accent-primary-rgb) / <alpha-value>)",
+        danger: "rgb(var(--color-accent-danger-rgb) / <alpha-value>)",
+        success: "rgb(var(--color-accent-success-rgb) / <alpha-value>)",
+        warning: "rgb(var(--color-accent-warning-rgb) / <alpha-value>)",
       },
       error: {
         bg: "var(--color-error-bg)",
@@ -62,22 +65,22 @@ export default defineConfig({
       },
       // Legacy compatibility (maps to new theme system)
       primary: {
-        DEFAULT: "var(--color-accent-primary)",
+        DEFAULT: "rgb(var(--color-accent-primary-rgb) / <alpha-value>)",
         hover: "var(--color-accent-primary-hover)",
       },
       background: {
-        primary: "var(--color-surface-layer1)",
-        secondary: "var(--color-surface-layer2)",
-        tertiary: "var(--color-surface-base)",
+        primary: "rgb(var(--color-surface-layer1-rgb) / <alpha-value>)",
+        secondary: "rgb(var(--color-surface-layer2-rgb) / <alpha-value>)",
+        tertiary: "rgb(var(--color-surface-base-rgb) / <alpha-value>)",
       },
-      success: "var(--color-accent-success)",
-      warning: "var(--color-accent-warning)",
-      danger: "var(--color-accent-danger)",
-      // Status colors for admin panels
+      success: "rgb(var(--color-accent-success-rgb) / <alpha-value>)",
+      warning: "rgb(var(--color-accent-warning-rgb) / <alpha-value>)",
+      danger: "rgb(var(--color-accent-danger-rgb) / <alpha-value>)",
+      // Status colors for admin panels (alias to accent tokens with same alpha behavior)
       status: {
-        success: "var(--color-accent-success)",
-        error: "var(--color-accent-danger)",
-        warning: "var(--color-accent-warning)",
+        success: "rgb(var(--color-accent-success-rgb) / <alpha-value>)",
+        error: "rgb(var(--color-accent-danger-rgb) / <alpha-value>)",
+        warning: "rgb(var(--color-accent-warning-rgb) / <alpha-value>)",
       },
     },
   },
