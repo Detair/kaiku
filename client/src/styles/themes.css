@@ -45,19 +45,31 @@
 /* Focused Hybrid - Nordic dark theme aligned with CachyOS */
 :root[data-theme="focused-hybrid"] {
   --color-surface-base: #242933;
+  --color-surface-base-rgb: 36 41 51;
   --color-surface-layer1: #2E3440;
+  --color-surface-layer1-rgb: 46 52 64;
   --color-surface-layer2: #3B4252;
+  --color-surface-layer2-rgb: 59 66 82;
   --color-surface-highlight: #434C5E;
+  --color-surface-highlight-rgb: 67 76 94;
   --color-text-primary: #eceff4;
+  --color-text-primary-rgb: 236 239 244;
   --color-text-secondary: #D8DEE9;
+  --color-text-secondary-rgb: 216 222 233;
   --color-text-muted: #7b88a0;
+  --color-text-muted-rgb: 123 136 160;
   --color-text-input: #eceff4;
+  --color-text-input-rgb: 236 239 244;
   --color-accent-primary: #88c0d0;
+  --color-accent-primary-rgb: 136 192 208;
   --color-accent-primary-hover: #7ab0c0;
   --color-text-on-accent: #2E3440;
   --color-accent-danger: #bf616a;
+  --color-accent-danger-rgb: 191 97 106;
   --color-accent-success: #a3be8c;
+  --color-accent-success-rgb: 163 190 140;
   --color-accent-warning: #ebcb8b;
+  --color-accent-warning-rgb: 235 203 139;
   --color-text-on-success: #2E3440;
   --color-text-on-danger: #ECEFF4;
   --color-border-subtle: rgba(216, 222, 233, 0.06);
@@ -83,19 +95,31 @@
 /* Solarized Dark - Precision colors for machines and people */
 :root[data-theme="solarized-dark"] {
   --color-surface-base: #002b36;
+  --color-surface-base-rgb: 0 43 54;
   --color-surface-layer1: #073642;
+  --color-surface-layer1-rgb: 7 54 66;
   --color-surface-layer2: #0e4c5a;
+  --color-surface-layer2-rgb: 14 76 90;
   --color-surface-highlight: #145766;
+  --color-surface-highlight-rgb: 20 87 102;
   --color-text-primary: #93a1a1;
+  --color-text-primary-rgb: 147 161 161;
   --color-text-secondary: #657b83;
+  --color-text-secondary-rgb: 101 123 131;
   --color-text-muted: #4f6068;
+  --color-text-muted-rgb: 79 96 104;
   --color-text-input: #fdf6e3;
+  --color-text-input-rgb: 253 246 227;
   --color-accent-primary: #268bd2;
+  --color-accent-primary-rgb: 38 139 210;
   --color-accent-primary-hover: #1a7dc4;
   --color-text-on-accent: #fdf6e3;
   --color-accent-danger: #dc322f;
+  --color-accent-danger-rgb: 220 50 47;
   --color-accent-success: #859900;
+  --color-accent-success-rgb: 133 153 0;
   --color-accent-warning: #b58900;
+  --color-accent-warning-rgb: 181 137 0;
   --color-text-on-success: #fdf6e3;
   --color-text-on-danger: #fdf6e3;
   --color-border-subtle: rgba(147, 161, 161, 0.1);
@@ -113,19 +137,31 @@
 /* Solarized Light - Warm light theme */
 :root[data-theme="solarized-light"] {
   --color-surface-base: #fdf6e3;
+  --color-surface-base-rgb: 253 246 227;
   --color-surface-layer1: #eee8d5;
+  --color-surface-layer1-rgb: 238 232 213;
   --color-surface-layer2: #e8e2cf;
+  --color-surface-layer2-rgb: 232 226 207;
   --color-surface-highlight: #ddd6c1;
+  --color-surface-highlight-rgb: 221 214 193;
   --color-text-primary: #586e75;
+  --color-text-primary-rgb: 88 110 117;
   --color-text-secondary: #93a1a1;
+  --color-text-secondary-rgb: 147 161 161;
   --color-text-muted: #b0b8b8;
+  --color-text-muted-rgb: 176 184 184;
   --color-text-input: #073642;
+  --color-text-input-rgb: 7 54 66;
   --color-accent-primary: #268bd2;
+  --color-accent-primary-rgb: 38 139 210;
   --color-accent-primary-hover: #1a7dc4;
   --color-text-on-accent: #fdf6e3;
   --color-accent-danger: #dc322f;
+  --color-accent-danger-rgb: 220 50 47;
   --color-accent-success: #859900;
+  --color-accent-success-rgb: 133 153 0;
   --color-accent-warning: #b58900;
+  --color-accent-warning-rgb: 181 137 0;
   --color-text-on-success: #002b36;
   --color-text-on-danger: #fdf6e3;
   --color-border-subtle: rgba(0, 43, 54, 0.1);
@@ -153,23 +189,35 @@
 :root[data-theme="pixel-cozy"] {
   /* Surfaces — warm parchment/wood tones */
   --color-surface-base: #2c2418;
+  --color-surface-base-rgb: 44 36 24;
   --color-surface-layer1: #3a3024;
+  --color-surface-layer1-rgb: 58 48 36;
   --color-surface-layer2: #4a3e30;
+  --color-surface-layer2-rgb: 74 62 48;
   --color-surface-highlight: #5c4e3e;
+  --color-surface-highlight-rgb: 92 78 62;
 
   /* Text — cream/ivory for readability */
   --color-text-primary: #e8d8c4;
+  --color-text-primary-rgb: 232 216 196;
   --color-text-secondary: #beb09a;
+  --color-text-secondary-rgb: 190 176 154;
   --color-text-muted: #8a7e6c;
+  --color-text-muted-rgb: 138 126 108;
   --color-text-input: #f5ede0;
+  --color-text-input-rgb: 245 237 224;
 
   /* Accents — muted jewel tones */
   --color-accent-primary: #7bae7f;
+  --color-accent-primary-rgb: 123 174 127;
   --color-accent-primary-hover: #6b9e6f;
   --color-text-on-accent: #2c2418;
   --color-accent-danger: #c06050;
+  --color-accent-danger-rgb: 192 96 80;
   --color-accent-success: #8db87e;
+  --color-accent-success-rgb: 141 184 126;
   --color-accent-warning: #d4a854;
+  --color-accent-warning-rgb: 212 168 84;
   --color-text-on-success: #2c2418;
   --color-text-on-danger: #f5e6d0;
 
@@ -191,19 +239,31 @@
 /* Default theme fallback (same as focused-hybrid) */
 :root {
   --color-surface-base: #242933;
+  --color-surface-base-rgb: 36 41 51;
   --color-surface-layer1: #2E3440;
+  --color-surface-layer1-rgb: 46 52 64;
   --color-surface-layer2: #3B4252;
+  --color-surface-layer2-rgb: 59 66 82;
   --color-surface-highlight: #434C5E;
+  --color-surface-highlight-rgb: 67 76 94;
   --color-text-primary: #eceff4;
+  --color-text-primary-rgb: 236 239 244;
   --color-text-secondary: #D8DEE9;
+  --color-text-secondary-rgb: 216 222 233;
   --color-text-muted: #7b88a0;
+  --color-text-muted-rgb: 123 136 160;
   --color-text-input: #eceff4;
+  --color-text-input-rgb: 236 239 244;
   --color-accent-primary: #88c0d0;
+  --color-accent-primary-rgb: 136 192 208;
   --color-accent-primary-hover: #7ab0c0;
   --color-text-on-accent: #2E3440;
   --color-accent-danger: #bf616a;
+  --color-accent-danger-rgb: 191 97 106;
   --color-accent-success: #a3be8c;
+  --color-accent-success-rgb: 163 190 140;
   --color-accent-warning: #ebcb8b;
+  --color-accent-warning-rgb: 235 203 139;
   --color-text-on-success: #2E3440;
   --color-text-on-danger: #ECEFF4;
   --color-border-subtle: rgba(216, 222, 233, 0.06);
