@@ -102,26 +102,23 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
     };
   });
 
-  const pos = position();
-  const height = maxHeight();
-
   return (
     <Portal>
       <div
         ref={pickerRef}
         style={{
           position: "fixed",
-          left: `${pos.x}px`,
-          top: `${pos.y}px`,
+          left: `${position().x}px`,
+          top: `${position().y}px`,
           "z-index": "9999",
-          ...(height ? { "max-height": `${height}px` } : {}),
+          ...(maxHeight() ? { "max-height": `${maxHeight()}px` } : {}),
         }}
       >
         <EmojiPicker
           onSelect={props.onSelect}
           onClose={props.onClose}
           guildId={props.guildId}
-          maxHeight={height}
+          maxHeight={maxHeight()}
         />
       </div>
     </Portal>
