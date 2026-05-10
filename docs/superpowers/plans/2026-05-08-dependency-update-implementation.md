@@ -12,6 +12,26 @@
 
 ---
 
+## Status (as of 2026-05-10)
+
+This document is the original plan, not a live tracker. Phase status reflects what has shipped to `main`:
+
+| Phase | Status | PR |
+|---|---|---|
+| 0  | Shipped 2026-05-08 | [#548](https://github.com/Detair/kaiku/pull/548) |
+| 1  | Shipped 2026-05-08 | [#549](https://github.com/Detair/kaiku/pull/549) |
+| 2  | Shipped 2026-05-08 | [#550](https://github.com/Detair/kaiku/pull/550) |
+| 3  | Shipped 2026-05-08 | [#551](https://github.com/Detair/kaiku/pull/551) |
+| 4a | Shipped 2026-05-09 | [#552](https://github.com/Detair/kaiku/pull/552) |
+| 4b | Abandoned (upstream-blocked) | — |
+| 4c | Shipped 2026-05-09 | [#553](https://github.com/Detair/kaiku/pull/553) |
+| 6a | Shipped 2026-05-09 | [#554](https://github.com/Detair/kaiku/pull/554) |
+| 6b, 6c, 6d, 7, 8, 9, 10 | Pending | — |
+
+Per-phase narration below is preserved as-written (TODO checkboxes, "create worktree" steps, etc.) so the historical reasoning stays intact. For execution of remaining phases, re-query versions and re-read the spec first — the registry has moved since 2026-05-08.
+
+---
+
 ## How to use this plan
 
 - **Plan owner workflow:** read the relevant phase, dispatch a subagent (or work inline) using the bite-sized tasks below.
