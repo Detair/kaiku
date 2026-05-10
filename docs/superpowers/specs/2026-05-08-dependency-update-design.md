@@ -100,7 +100,7 @@ Every phase MUST re-run the same registry lookups at PR-creation time and pin to
 | `@tanstack/solid-virtual` | 3.13.23 | 3.13.24 | 1 | patch |
 | `@tauri-apps/api` | 2.10.1 | 2.11.0 | 3 | align with Rust tauri 2.11 |
 | `@tauri-apps/cli` | 2.10.1 | 2.11.1 | 3 | align with Rust tauri 2.11 |
-| `@types/node` | 22.19.15 | 24.12.3 | 6 | LTS-aligned |
+| `@types/node` | 22.15.0 | 24.12.3 | 6 | LTS-aligned |
 | `@unocss/preset-icons` / `preset-uno` / `reset` | 66.6.6 | 66.6.8 | 1 | patch |
 | `@vitejs/plugin-basic-ssl` | 2.2.0 | 2.3.0 | 2 | minor |
 | `dompurify` | 3.3.3 | 3.4.2 | 2 | clears 4 XSS advisories |
