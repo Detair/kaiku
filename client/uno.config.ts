@@ -90,12 +90,10 @@ export default defineConfig({
     "btn-primary": "btn bg-accent-primary hover:bg-accent-primary/80 text-on-accent",
     "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-white",
 
-    // Input fields
-    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-lg text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
-
-    // Panels and Cards
-    "panel": "bg-surface-layer2 rounded-lg border border-white/5",
-    "card": "bg-surface-layer1 rounded-lg p-4 hover:bg-surface-highlight transition-colors",
+    // Input fields — uses arbitrary-value bg to bypass UnoCSS's trailing-digit
+    // parsing issue with `surface-layer2` inside shortcuts (the same class
+    // resolves correctly when written directly on an element).
+    "input-field": "w-full px-3 py-2 bg-[rgb(var(--color-surface-layer2-rgb))] rounded-lg text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
 
     // Interactive items
     "item-hover": "rounded-lg px-2 py-1 hover:bg-white/5 transition-colors cursor-pointer",
