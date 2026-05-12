@@ -532,6 +532,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                           {/* Content Preview with server-side highlighting */}
                           <p
                             class="text-sm text-text-secondary line-clamp-2 [&_mark]:bg-accent-primary/30 [&_mark]:text-text-primary [&_mark]:rounded [&_mark]:px-0.5"
+                            // eslint-disable-next-line solid/no-innerhtml -- sanitizeHeadline() runs DOMPurify with ALLOWED_TAGS: ["mark"] only; defined above
                             innerHTML={sanitizeHeadline(r().headline)}
                           />
                         </button>
