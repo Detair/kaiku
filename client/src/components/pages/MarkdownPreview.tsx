@@ -384,6 +384,7 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
       <div
         ref={containerRef}
         class="prose prose-invert prose-sm max-w-none"
+        // eslint-disable-next-line solid/no-innerhtml -- sanitized via DOMPurify with MARKDOWN_PURIFY_CONFIG, see setHtml call above
         innerHTML={html()}
       />
     </div>

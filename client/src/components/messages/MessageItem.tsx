@@ -737,7 +737,12 @@ const MessageItem: Component<MessageItemProps> = (props) => {
               {(block) => (
                 <Show
                   when={block.type === "code"}
-                  fallback={<div innerHTML={(block as TextBlock).html} />}
+                  fallback={
+                    <div
+                      // eslint-disable-next-line solid/no-innerhtml -- TextBlock.html is produced by sanitizeHtml() (DOMPurify with PURIFY_CONFIG); see contentBlocks createMemo above
+                      innerHTML={(block as TextBlock).html}
+                    />
+                  }
                 >
                   <CodeBlock language={(block as CodeBlockData).language}>
                     {(block as CodeBlockData).code}
