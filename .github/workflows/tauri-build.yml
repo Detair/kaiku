@@ -75,7 +75,9 @@ jobs:
             libasound2-dev \
             libvpx-dev \
             libpipewire-0.3-dev \
-            libssl-dev
+            libssl-dev \
+            clang \
+            libclang-dev
 
       - name: Setup MSYS2 (Windows libvpx)
         if: runner.os == 'Windows'

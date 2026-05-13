@@ -29,14 +29,16 @@ jobs:
           toolchain: ${{ matrix.check == 'fmt' && 'nightly' || 'stable' }}
           components: ${{ matrix.check == 'fmt' && 'rustfmt' || 'clippy' }}
 
-      - name: Install libvpx for env-libvpx-sys build script
+      - name: Install libvpx and bindgen prerequisites for env-libvpx-sys
         # Clippy compiles the workspace including the kaiku-vp8-decoder sub-crate,
         # whose env-libvpx-sys dep has a build.rs that calls pkg-config for the
-        # system `vpx` library. Skip on fmt since rustfmt never invokes build.rs.
+        # system `vpx` library and (with the `generate` feature) runs bindgen
+        # against the libvpx headers. Skip on fmt since rustfmt never invokes
+        # build.rs.
         if: matrix.check == 'clippy'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libvpx-dev
+          sudo apt-get install -y pkg-config libvpx-dev clang libclang-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -115,13 +117,18 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install libvpx for env-libvpx-sys build script
+      - name: Install libvpx and bindgen prerequisites for env-libvpx-sys
         # cargo nextest compiles the workspace (including the kaiku-vp8-decoder
         # sub-crate), whose env-libvpx-sys dep requires pkg-config + system
-        # libvpx at build time.
+        # libvpx at build time. The crate's `generate` feature (required
+        # against libvpx >= 1.14, which Ubuntu 24.04 ships) runs bindgen
+        # against the installed libvpx headers — that needs libclang plus a
+        # clang toolchain that can find C stdlib headers (stddef.h etc.).
+        # Without clang/libclang-dev, bindgen fails on `vpx_integer.h` →
+        # `<stddef.h>` resolution.
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libvpx-dev
+          sudo apt-get install -y pkg-config libvpx-dev clang libclang-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -375,7 +382,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev \
             libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf libasound2-dev libopus-dev libpipewire-0.3-dev libvpx-dev
+            librsvg2-dev patchelf libasound2-dev libopus-dev libpipewire-0.3-dev libvpx-dev \
+            clang libclang-dev
 
       - name: Install dependencies (Windows)
         if: matrix.platform == 'windows-latest'
