@@ -357,7 +357,8 @@ impl CryptoManager {
                 });
             };
 
-            let session = account.create_outbound_session(&recipient_identity_key, &one_time_key);
+            let session =
+                account.create_outbound_session(&recipient_identity_key, &one_time_key)?;
 
             // Save the updated account (one-time keys may have been consumed)
             store.save_account(&account)?;
@@ -366,7 +367,7 @@ impl CryptoManager {
         };
 
         // Encrypt the message
-        let ciphertext = session.encrypt(plaintext);
+        let ciphertext = session.encrypt(plaintext)?;
 
         // Save the updated session (ratchet has advanced)
         store.save_session(&session_key, &session)?;
