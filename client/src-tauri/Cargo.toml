@@ -71,9 +71,11 @@ nnnoiseless = { version = "0.5", default-features = false }
 # adapts the Linux backend to the new enum structure plus a Windows typo fix.
 #
 # Upstream tracking:
-# - CapSoftware/scap#178 — broader fix, open since 2025-10-26, no updates
-# - Last re-check 2026-04-12: upstream main HEAD still fails Linux build
-#   (see closed PR #520 for the test run)
+# - CapSoftware/scap#178 — broader fix, still open (last upstream update
+#   2025-10-26)
+# - Last re-check 2026-05-13: upstream latest release is still v0.1.0-beta.1
+#   (2025-08-04). No new releases or merged Linux Frame enum fixes.
+# - Previous re-check 2026-04-12: see closed PR #520 for the test run
 # - Issue #521 tracks periodic re-checks — drop this git dep when upstream
 #   publishes a new release with the Linux fix
 scap = { git = "https://github.com/Detair/scap.git", branch = "fix/linux-frame-enum" }
