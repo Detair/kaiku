@@ -9,14 +9,13 @@ import { createStore } from "solid-js/store";
 import {
   Plus,
   Trash2,
-  Github,
-  Chrome,
   KeyRound,
   AlertTriangle,
   Check,
   X,
   Loader2,
 } from "lucide-solid";
+import { Github, Chrome } from "@/components/icons/BrandIcons";
 import {
   adminGetAuthSettings,
   adminUpdateAuthSettings,

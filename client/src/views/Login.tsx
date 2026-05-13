@@ -9,7 +9,8 @@ import {
 } from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
-import { Github, Chrome, KeyRound, ShieldCheck } from "lucide-solid";
+import { KeyRound, ShieldCheck } from "lucide-solid";
+import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 
