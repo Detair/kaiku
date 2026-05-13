@@ -135,7 +135,7 @@ jobs:
         if: matrix.platform == 'ubuntu-latest'
         env:
           BUILD_TARGET: ${{ matrix.target }}
-        working-directory: client/src-tauri/target
+        working-directory: target
         run: |
           cd "$BUILD_TARGET/release/bundle"
           if [ -d "deb" ]; then
@@ -149,7 +149,7 @@ jobs:
         if: matrix.platform == 'windows-latest'
         env:
           BUILD_TARGET: ${{ matrix.target }}
-        working-directory: client/src-tauri/target
+        working-directory: target
         shell: pwsh
         run: |
           cd "$env:BUILD_TARGET/release/bundle"
@@ -170,7 +170,7 @@ jobs:
         if: matrix.platform == 'macos-latest'
         env:
           BUILD_TARGET: ${{ matrix.target }}
-        working-directory: client/src-tauri/target
+        working-directory: target
         run: |
           cd "$BUILD_TARGET/release/bundle"
           if [ -d "dmg" ]; then
@@ -182,7 +182,7 @@ jobs:
         with:
           name: tauri-${{ matrix.platform }}-${{ matrix.target }}-${{ matrix.bundle }}
           path: |
-            client/src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+            target/${{ matrix.target }}/release/bundle/**/*
           retention-days: 7
 
   # ===========================================================================
