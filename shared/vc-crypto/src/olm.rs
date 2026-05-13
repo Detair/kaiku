@@ -220,11 +220,7 @@ impl OlmAccount {
     ) -> Result<(OlmSession, String)> {
         let result = self
             .inner
-            .create_inbound_session(
-                SessionConfig::version_2(),
-                *sender_identity_key,
-                message,
-            )
+            .create_inbound_session(SessionConfig::version_2(), *sender_identity_key, message)
             .map_err(|e| CryptoError::Vodozemac(e.to_string()))?;
 
         let plaintext = String::from_utf8(result.plaintext)
