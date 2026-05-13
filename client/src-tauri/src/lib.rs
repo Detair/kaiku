@@ -69,6 +69,18 @@ pub fn run() {
 
             tracing::info!("Kaiku Client starting");
 
+            // Initialize keyring's default credential store. keyring 4 split into
+            // `keyring` (store selection) and `keyring-core` (Entry/Error), and
+            // requires explicit store selection before any Entry::new. Choosing
+            // the platform-native store (Keychain on macOS, Credential Manager on
+            // Windows, Secret Service on Linux, Keystore on Android). On Linux,
+            // `not_keyutils=true` picks Secret Service over the kernel keyutils
+            // store — keyutils evicts on session end which breaks refresh-token
+            // persistence across reboot.
+            if let Err(err) = keyring::use_native_store(true) {
+                tracing::error!(error = %err, "keyring native-store init failed; auth refresh-token persistence will not work this session");
+            }
+
             // Store app state
             app.manage(AppState::new());
 
