@@ -185,17 +185,25 @@ impl OlmAccount {
     ///
     /// Uses the recipient's identity key and one-time key to establish
     /// a new encrypted session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if vodozemac rejects the session config or keys
+    /// (e.g., a malformed one-time key).
     pub fn create_outbound_session(
         &mut self,
         recipient_identity_key: &Curve25519PublicKey,
         recipient_one_time_key: &Curve25519PublicKey,
-    ) -> OlmSession {
-        let session = self.inner.create_outbound_session(
-            SessionConfig::version_2(),
-            *recipient_identity_key,
-            *recipient_one_time_key,
-        );
-        OlmSession::new(session)
+    ) -> Result<OlmSession> {
+        let session = self
+            .inner
+            .create_outbound_session(
+                SessionConfig::version_2(),
+                *recipient_identity_key,
+                *recipient_one_time_key,
+            )
+            .map_err(|e| CryptoError::Vodozemac(e.to_string()))?;
+        Ok(OlmSession::new(session))
     }
 
     /// Create an inbound session from a prekey message.
@@ -212,7 +220,7 @@ impl OlmAccount {
     ) -> Result<(OlmSession, String)> {
         let result = self
             .inner
-            .create_inbound_session(*sender_identity_key, message)
+            .create_inbound_session(SessionConfig::version_2(), *sender_identity_key, message)
             .map_err(|e| CryptoError::Vodozemac(e.to_string()))?;
 
         let plaintext = String::from_utf8(result.plaintext)
@@ -244,9 +252,17 @@ impl OlmSession {
     /// Encrypt a message.
     ///
     /// Returns an `EncryptedMessage` that can be serialized and transmitted.
-    pub fn encrypt(&mut self, plaintext: &str) -> EncryptedMessage {
-        let olm_message = self.inner.encrypt(plaintext);
-        EncryptedMessage::from_olm_message(olm_message)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if vodozemac's sending ratchet fails (e.g., on
+    /// internal state corruption).
+    pub fn encrypt(&mut self, plaintext: &str) -> Result<EncryptedMessage> {
+        let olm_message = self
+            .inner
+            .encrypt(plaintext)
+            .map_err(|e| CryptoError::Vodozemac(e.to_string()))?;
+        Ok(EncryptedMessage::from_olm_message(olm_message))
     }
 
     /// Decrypt a message.
@@ -360,11 +376,13 @@ mod tests {
         let bob_otk_key = Curve25519PublicKey::from_base64(&bob_otk).unwrap();
 
         // Alice creates outbound session to Bob
-        let mut alice_session = alice.create_outbound_session(&bob.curve25519_key(), &bob_otk_key);
+        let mut alice_session = alice
+            .create_outbound_session(&bob.curve25519_key(), &bob_otk_key)
+            .unwrap();
 
         // Alice encrypts a message
         let plaintext = "Hello, Bob!";
-        let ciphertext = alice_session.encrypt(plaintext);
+        let ciphertext = alice_session.encrypt(plaintext).unwrap();
 
         // Verify it's a prekey message
         assert!(ciphertext.is_prekey());
@@ -380,7 +398,7 @@ mod tests {
 
         // Bob can now respond
         let response = "Hello, Alice!";
-        let response_ciphertext = bob_session.encrypt(response);
+        let response_ciphertext = bob_session.encrypt(response).unwrap();
 
         // Normal message (not prekey)
         assert!(!response_ciphertext.is_prekey());
@@ -399,13 +417,15 @@ mod tests {
             .expect("valid base64 key");
 
         let mut bob = OlmAccount::new();
-        let mut session = bob.create_outbound_session(&alice_identity_key, &alice_otk);
+        let mut session = bob
+            .create_outbound_session(&alice_identity_key, &alice_otk)
+            .unwrap();
 
         let encryption_key = [42u8; 32];
         let session_id = session.session_id();
 
         // Encrypt a message to advance ratchet state
-        let _ = session.encrypt("test message");
+        let _ = session.encrypt("test message").unwrap();
 
         let serialized = session.serialize(&encryption_key).unwrap();
         let restored = OlmSession::deserialize(&serialized, &encryption_key).unwrap();

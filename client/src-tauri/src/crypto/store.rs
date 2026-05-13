@@ -645,7 +645,9 @@ mod tests {
         let bob_otk = bob.one_time_keys().pop().unwrap().1;
         let bob_otk_key = Curve25519PublicKey::from_base64(&bob_otk).unwrap();
 
-        let session = alice.create_outbound_session(&bob.curve25519_key(), &bob_otk_key);
+        let session = alice
+            .create_outbound_session(&bob.curve25519_key(), &bob_otk_key)
+            .unwrap();
         let session_id = session.session_id();
 
         let session_key = SessionKey {
@@ -689,7 +691,9 @@ mod tests {
         bob.generate_one_time_keys(1);
         let bob_otk = bob.one_time_keys().pop().unwrap().1;
         let bob_otk_key = Curve25519PublicKey::from_base64(&bob_otk).unwrap();
-        let session = alice.create_outbound_session(&bob.curve25519_key(), &bob_otk_key);
+        let session = alice
+            .create_outbound_session(&bob.curve25519_key(), &bob_otk_key)
+            .unwrap();
         let session_id = session.session_id();
         let serialized = session.serialize(&key).unwrap();
 
@@ -865,7 +869,9 @@ mod tests {
         let bob_otk = bob.one_time_keys().pop().unwrap().1;
         let bob_otk_key = Curve25519PublicKey::from_base64(&bob_otk).unwrap();
 
-        let mut session = alice.create_outbound_session(&bob.curve25519_key(), &bob_otk_key);
+        let mut session = alice
+            .create_outbound_session(&bob.curve25519_key(), &bob_otk_key)
+            .unwrap();
         let session_id = session.session_id();
 
         let session_key = SessionKey {
@@ -877,7 +883,7 @@ mod tests {
         store.save_session(&session_key, &session).unwrap();
 
         // Advance the ratchet by encrypting a message
-        let _ciphertext = session.encrypt("test message");
+        let _ciphertext = session.encrypt("test message").unwrap();
 
         // Save updated session with the same SessionKey (should overwrite)
         store.save_session(&session_key, &session).unwrap();
