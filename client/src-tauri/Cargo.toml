@@ -84,7 +84,7 @@ scap = { git = "https://github.com/Detair/scap.git", branch = "fix/linux-frame-e
 nokhwa = { version = "0.10", features = ["input-native"] }
 
 # Video encoding
-vpx-encode = "0.3"
+vpx-encode = "0.6"
 # Native VP8 decode path lives in a sub-crate so unsafe FFI is isolated from
 # the workspace's `unsafe_code = "forbid"` policy. See client/src-tauri/vp8-decoder/.
 kaiku-vp8-decoder = { path = "vp8-decoder" }

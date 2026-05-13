@@ -400,14 +400,14 @@ impl SfuServer {
             ..Default::default()
         }];
 
-        // Add TURN server if configured
+        // Add TURN server if configured.
+        // webrtc-rs 0.17 removed `credential_type` from RTCIceServer; password is
+        // the only credential type now per the W3C RTCIceServer dictionary.
         if let Some(turn) = &self.config.turn_server {
             ice_servers.push(RTCIceServer {
                 urls: vec![turn.clone()],
                 username: self.config.turn_username.clone().unwrap_or_default(),
                 credential: self.config.turn_credential.clone().unwrap_or_default(),
-                credential_type:
-                    webrtc::ice_transport::ice_credential_type::RTCIceCredentialType::Password,
             });
         }
 
