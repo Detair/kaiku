@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Update `lettre` 0.11.19 → 0.11.22 to resolve RUSTSEC-2026-0141 (TLS hostname verification bypass in the `boring-tls` backend; Kaiku uses `native-tls` and was not exploitable, but the update clears the advisory and unblocks the weekly security audit)
 - Android: enforce TLS 1.3 on all network connections (HTTP and WebSocket)
 - Android: WebSocket authentication moved from header to post-connect frame, preventing token exposure in proxy logs
 - Android: OIDC login now uses PKCE and state nonce to prevent authorization code interception and CSRF
