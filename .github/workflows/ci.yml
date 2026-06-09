@@ -394,8 +394,11 @@ jobs:
           "VPX_VERSION=1.15.2" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VPX_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Set CMake policy floor (macOS)
-        if: matrix.platform == 'macos-latest'
+      # CMake 4.x (now on macOS and Windows runner images) removed compat
+      # with cmake_minimum_required < 3.5; audiopus_sys's bundled Opus needs this
+      - name: Set CMake policy floor (macOS/Windows)
+        if: matrix.platform == 'macos-latest' || matrix.platform == 'windows-latest'
+        shell: bash
         run: echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> "$GITHUB_ENV"
 
       - name: Install dependencies (macOS)
