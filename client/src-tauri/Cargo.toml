@@ -25,7 +25,9 @@ vc-common.workspace = true
 vc-crypto = { workspace = true, features = ["megolm"] }
 
 # Tauri
-tauri = { version = "2", features = [] }
+# tray-icon: system tray with menu (src/tray.rs); image-png: decode the
+# bundled PNG icons for the tray at runtime
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
