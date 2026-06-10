@@ -64,17 +64,23 @@ vi.mock("@/stores/channels", () => ({
   channelsState: { selectedChannelId: null },
   handleChannelReadEvent: vi.fn(),
   incrementUnreadCount: vi.fn(),
+  updateChannelLastMessageId: vi.fn(),
+  refreshChannelsForGuild: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/stores/guilds", () => ({
-  guildsState: { activeGuildId: null },
+  guildsState: { activeGuildId: null as string | null },
   getGuildIdForChannel: vi.fn(),
   incrementGuildUnread: vi.fn(),
+  DISCOVERY_SENTINEL: "__discovery__",
 }));
 
 vi.mock("@/stores/dms", () => ({
+  dmsState: { selectedDMId: null, isShowingFriends: false },
   handleDMReadEvent: vi.fn(),
   handleDMNameUpdated: vi.fn(),
+  updateDMLastMessage: vi.fn(),
+  loadDMs: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/sound", () => ({
@@ -95,7 +101,11 @@ import {
   getTypingUsers,
   isConnected,
   cleanupWebSocket,
+  refreshUnreadStateAfterReconnect,
 } from "../websocket";
+import { refreshChannelsForGuild } from "@/stores/channels";
+import { guildsState } from "@/stores/guilds";
+import { loadDMs } from "@/stores/dms";
 
 describe("websocket store", () => {
   beforeEach(() => {
@@ -255,6 +265,51 @@ describe("websocket store", () => {
   describe("cleanupWebSocket", () => {
     it("does not throw", async () => {
       await expect(cleanupWebSocket()).resolves.not.toThrow();
+    });
+  });
+
+  describe("refreshUnreadStateAfterReconnect", () => {
+    const mutableGuilds = guildsState as { activeGuildId: string | null };
+
+    beforeEach(() => {
+      mutableGuilds.activeGuildId = null;
+      vi.mocked(refreshChannelsForGuild).mockClear().mockResolvedValue();
+      vi.mocked(loadDMs).mockClear().mockResolvedValue();
+    });
+
+    it("refreshes the active guild's channels and the DM list", async () => {
+      mutableGuilds.activeGuildId = "g1";
+
+      await refreshUnreadStateAfterReconnect();
+
+      expect(refreshChannelsForGuild).toHaveBeenCalledWith("g1");
+      expect(loadDMs).toHaveBeenCalled();
+    });
+
+    it("skips guild refresh when on home (no active guild)", async () => {
+      await refreshUnreadStateAfterReconnect();
+
+      expect(refreshChannelsForGuild).not.toHaveBeenCalled();
+      expect(loadDMs).toHaveBeenCalled();
+    });
+
+    it("skips guild refresh on the discovery view", async () => {
+      mutableGuilds.activeGuildId = "__discovery__";
+
+      await refreshUnreadStateAfterReconnect();
+
+      expect(refreshChannelsForGuild).not.toHaveBeenCalled();
+      expect(loadDMs).toHaveBeenCalled();
+    });
+
+    it("does not reject when a refresh fails", async () => {
+      mutableGuilds.activeGuildId = "g1";
+      vi.mocked(refreshChannelsForGuild).mockRejectedValueOnce(
+        new Error("network"),
+      );
+      vi.mocked(loadDMs).mockRejectedValueOnce(new Error("network"));
+
+      await expect(refreshUnreadStateAfterReconnect()).resolves.toBeUndefined();
     });
   });
 });
