@@ -21,12 +21,6 @@ id = "RUSTSEC-2026-0097"
 # because we use tracing, not the log facade. Already ignored in deny.toml.
 reason = "Accepted via deny.toml; not exploitable in our configuration (we use tracing, not log facade)."
 
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0002"
-# lru 0.12.5 unmaintained. Pulled by a transitive dep; upgrade path blocked
-# upstream. Already ignored in deny.toml.
-reason = "Accepted via deny.toml; unmaintained, no runtime vuln."
-
 # ---------------------------------------------------------------------------
 # Tauri gtk-rs 0.18 family — Linux-only deps, all marked unmaintained by
 # RustSec because gtk-rs moved to 0.20+. Tauri pins 0.18. Not runtime-critical

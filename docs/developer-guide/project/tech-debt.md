@@ -27,18 +27,11 @@ This document catalogs all known tech debt across the Kaiku codebase, sourced fr
 
 ---
 
-### TD-03: Security advisory workaround (RUSTSEC-2026-0002)
+### TD-03: Security advisory workaround (RUSTSEC-2026-0002) ✅ RESOLVED
 
 **File:** `deny.toml:20`
 
-```toml
-# TODO(2026-Q2): Re-check if aws-sdk-s3 has updated lru to >= 0.16.3
-```
-
-Transitive dependency vulnerability from `aws-sdk-s3 → lru`. Scheduled review Q2 2026.
-
-**Risk:** Known CVE in dependency tree.
-**Fix:** Check upstream and bump when available.
+**Resolved:** 2026-06-10 (Q2 re-check as scheduled) — `cargo update -p aws-sdk-s3 --recursive` moved aws-sdk-s3 1.119 → 1.132, which requires `lru ^0.16.3`. The vulnerable `lru 0.12.5` is no longer in the dependency tree (only 0.16.4 remains). Removed the now-stale `RUSTSEC-2026-0002` ignores from `security.yml` and `.osv-scanner.toml` (the deny.toml entry had already been removed in an earlier sweep).
 
 ---
 
