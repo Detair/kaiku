@@ -35,7 +35,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip",
 tokio-tungstenite = "0.29"
 
 # WebRTC
-webrtc = "0.11"
+webrtc = "0.17"
 
 # String
 smol_str = "0.2"

@@ -9,10 +9,16 @@ description = "VP8 RTP depacketizer + native libvpx decoder for the Kaiku Tauri 
 publish = false
 
 [dependencies]
-# FFI to libvpx (published as env-libvpx-sys on crates.io, importable as vpx_sys)
-env-libvpx-sys = "4"
+# FFI to libvpx (published as env-libvpx-sys on crates.io, importable as vpx_sys).
+# The `generate` feature runs bindgen at build time against the installed libvpx
+# headers, instead of relying on the pre-generated bindings shipped with the
+# crate. Required because env-libvpx-sys 5.x ships bindings only up to libvpx
+# 1.13.x, but modern distros (Arch, Fedora 41+) ship libvpx 1.15+. bindgen is
+# already in the workspace's dep tree via other crates, so this adds no new
+# host-tooling requirement.
+env-libvpx-sys = { version = "5", features = ["generate"] }
 # RTP types (Packet) — match vc-client's webrtc version
-webrtc = "0.11"
+webrtc = "0.17"
 # Error wrapping
 thiserror.workspace = true
 # DecodedFrame carries binary plane data over Tauri Channel<T>; callers serialize
