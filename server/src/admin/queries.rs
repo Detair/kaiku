@@ -1048,7 +1048,7 @@ pub(super) async fn list_audit_log(
     });
 
     // Shared WHERE-clause builder used by both the count and main queries.
-    let push_filters = |builder: &mut QueryBuilder<'_, sqlx::Postgres>| {
+    let push_filters = |builder: &mut QueryBuilder<sqlx::Postgres>| {
         let mut has_condition = false;
         if let Some(ref pattern) = action_pattern {
             builder.push(" WHERE ");

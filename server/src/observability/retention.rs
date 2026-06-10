@@ -123,7 +123,7 @@ async fn purge_old_trace_index(pool: &PgPool) -> i64 {
 /// Deletes up to [`DELETE_BATCH_SIZE`] rows per iteration until no more rows
 /// match the retention cutoff. The SQL must accept `$1` (retention days) and
 /// `$2` (batch size limit).
-async fn purge_in_batches(pool: &PgPool, sql: &str, table_label: &str) -> i64 {
+async fn purge_in_batches(pool: &PgPool, sql: &'static str, table_label: &str) -> i64 {
     let mut total_deleted: i64 = 0;
     loop {
         match sqlx::query(sql)
