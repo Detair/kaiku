@@ -51,18 +51,21 @@ import {
   handleChannelReadEvent,
   incrementUnreadCount,
   updateChannelLastMessageId,
+  refreshChannelsForGuild,
 } from "../channels";
 import { currentUser } from "../auth";
 import {
   guildsState,
   getGuildIdForChannel,
   incrementGuildUnread,
+  DISCOVERY_SENTINEL,
 } from "../guilds";
 import {
   dmsState,
   handleDMReadEvent,
   handleDMNameUpdated,
   updateDMLastMessage,
+  loadDMs,
 } from "../dms";
 import { handlePinAdded, handlePinRemoved } from "../channelPins";
 
@@ -1428,6 +1431,37 @@ export async function reinitWebSocketListeners(): Promise<void> {
  * Handle post-reconnect recovery: re-subscribe channels, reload messages, dismiss toast.
  * Snapshots current subscribed channels before resetting state, then re-subscribes and reloads.
  */
+/**
+ * Refresh channel/DM unread metadata after a reconnect. Exported for tests.
+ *
+ * - Active guild: re-fetch its channel list (selection-preserving) so the
+ *   sidebar unread dots reflect what happened while offline.
+ * - DMs: reload the DM list, which carries per-conversation unread state.
+ *
+ * Failures are logged and swallowed — reconnect recovery must not abort
+ * because one refresh call failed.
+ */
+export async function refreshUnreadStateAfterReconnect(): Promise<void> {
+  const tasks: Promise<unknown>[] = [];
+
+  const guildId = guildsState.activeGuildId;
+  if (guildId && guildId !== DISCOVERY_SENTINEL) {
+    tasks.push(
+      refreshChannelsForGuild(guildId).catch((err) =>
+        console.error("[WS] Failed to refresh guild channels", guildId, err),
+      ),
+    );
+  }
+
+  tasks.push(
+    loadDMs().catch((err) =>
+      console.error("[WS] Failed to refresh DM list", err),
+    ),
+  );
+
+  await Promise.all(tasks);
+}
+
 async function handleReconnect(): Promise<void> {
   const channelsToResubscribe = [...wsState.subscribedChannels];
   const channelsToReload = Object.keys(messagesState.byChannel).filter(
@@ -1438,7 +1472,11 @@ async function handleReconnect(): Promise<void> {
   setWsState("subscribedChannels", new Set());
   setWsState({ status: "connected", reconnectAttempt: 0, error: null });
 
-  // Re-subscribe and reload in parallel
+  // Re-subscribe, reload messages, and refresh unread metadata in parallel.
+  // The metadata refresh is what clears stale unread dots: messages that
+  // arrived (or were read on another device) while disconnected changed
+  // last_read_message_id / last_message_id server-side, and no WS event
+  // replays them after reconnect.
   await Promise.all([
     Promise.all(
       channelsToResubscribe.map((id) =>
@@ -1454,6 +1492,7 @@ async function handleReconnect(): Promise<void> {
         ),
       ),
     ),
+    refreshUnreadStateAfterReconnect(),
   ]);
 
   console.info(

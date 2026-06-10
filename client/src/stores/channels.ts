@@ -144,6 +144,22 @@ export async function loadChannelsForGuild(guildId: string): Promise<void> {
 }
 
 /**
+ * Refresh the channel list for a guild WITHOUT touching the current
+ * selection or subscriptions.
+ *
+ * Used after a WebSocket reconnect to pick up unread metadata
+ * (`last_read_message_id`, `last_message_id`) that changed while offline —
+ * `loadChannelsForGuild` is unsuitable there because it auto-selects the
+ * first text channel, which would yank the user out of their current one.
+ *
+ * Errors propagate to the caller (reconnect recovery logs and continues).
+ */
+export async function refreshChannelsForGuild(guildId: string): Promise<void> {
+  const channels = await tauri.getGuildChannels(guildId);
+  setChannelsState({ channels });
+}
+
+/**
  * Load DM channels (for Home view).
  * Uses the dedicated /api/dm endpoint which returns DMListItem[].
  */

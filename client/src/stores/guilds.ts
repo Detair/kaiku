@@ -36,7 +36,7 @@ interface GuildStoreState {
 }
 
 // Sentinel value representing the discovery view in activeGuildId
-const DISCOVERY_SENTINEL = "__discovery__";
+export const DISCOVERY_SENTINEL = "__discovery__";
 
 // Create the store
 const [guildsState, setGuildsState] = createStore<GuildStoreState>({

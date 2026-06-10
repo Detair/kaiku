@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: bumped `dompurify` (XSS in HTML sanitization), `uuid` (buffer-bounds check via mermaid), and added transitive overrides for `postcss` (XSS) and `dompurify` (mermaid's nested copy). `bun audit` reduced from 12 → 6 advisories; the 6 remaining are vite dev-server paths via vitest, already accepted as dev-only exceptions per PR #517 and pending the vitest 4.x → 4.x compat work in Phase 6c of the dep-update sweep.
 
 ### Fixed
+- Unread indicators no longer go stale after a connection drop: reconnecting now refreshes channel and DM unread state, picking up messages that arrived (or were read on another device) while offline
 - Audio output device selection now actually works: the device chosen in settings is applied when joining voice (previously the system default was always used), switching devices mid-call moves audio to the new speaker immediately on desktop, and selections made in the voice panel are persisted across sessions
 - Browser client: output device selection (setSinkId) now reaches the remote-audio elements; previously the selection silently did nothing
 - Audio settings page now lists devices the voice stack can actually use on desktop (native device names instead of browser media ids)
