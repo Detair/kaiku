@@ -1,14 +1,13 @@
 //! System tray integration: tray icon with menu, unread badge, and
 //! minimize-to-tray behavior.
 //!
-//! - Left-clicking the tray icon (or the "Show Kaiku" menu item) restores
-//!   and focuses the main window.
-//! - Closing the main window hides it to the tray instead of quitting;
-//!   "Quit Kaiku" in the tray menu exits for real (see the window-event
-//!   handler in `lib.rs`).
-//! - The unread badge is driven by the frontend via the `tray_set_unread`
-//!   command: tooltip everywhere, plus a text badge next to the icon on
-//!   platforms that support tray titles (macOS, most Linux trays).
+//! - Left-clicking the tray icon (or the "Show Kaiku" menu item) restores and focuses the main
+//!   window.
+//! - Closing the main window hides it to the tray instead of quitting; "Quit Kaiku" in the tray
+//!   menu exits for real (see the window-event handler in `lib.rs`).
+//! - The unread badge is driven by the frontend via the `tray_set_unread` command: tooltip
+//!   everywhere, plus a text badge next to the icon on platforms that support tray titles (macOS,
+//!   most Linux trays).
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
