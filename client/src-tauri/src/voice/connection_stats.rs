@@ -181,8 +181,9 @@ impl ConnectionStatsRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     /// Packets arriving exactly on the 20 ms Opus frame cadence have zero
     /// transit variation → jitter must converge to (stay at) zero.
