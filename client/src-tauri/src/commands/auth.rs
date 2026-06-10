@@ -721,35 +721,35 @@ fn keyring_user(server_url: &str) -> String {
     format!("refresh_token:{server_url}")
 }
 
-fn store_refresh_token(server_url: &str, token: &str) -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
+fn store_refresh_token(server_url: &str, token: &str) -> Result<(), keyring_core::Error> {
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
     entry.set_password(token)
 }
 
-fn clear_refresh_token(server_url: &str) -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
-    entry.delete_password()
+fn clear_refresh_token(server_url: &str) -> Result<(), keyring_core::Error> {
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
+    entry.delete_credential()
 }
 
-fn store_server_url(server_url: &str) -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, "server_url")?;
+fn store_server_url(server_url: &str) -> Result<(), keyring_core::Error> {
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, "server_url")?;
     entry.set_password(server_url)
 }
 
-fn get_server_url() -> Result<Option<String>, keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, "server_url")?;
+fn get_server_url() -> Result<Option<String>, keyring_core::Error> {
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, "server_url")?;
     match entry.get_password() {
         Ok(url) => Ok(Some(url)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring_core::Error::NoEntry) => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-fn get_refresh_token(server_url: &str) -> Result<Option<String>, keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
+fn get_refresh_token(server_url: &str) -> Result<Option<String>, keyring_core::Error> {
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
     match entry.get_password() {
         Ok(token) => Ok(Some(token)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring_core::Error::NoEntry) => Ok(None),
         Err(e) => Err(e),
     }
 }
