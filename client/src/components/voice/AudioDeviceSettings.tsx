@@ -26,6 +26,7 @@ import { X, Mic, Headphones, Loader2 } from "lucide-solid";
 import { createVoiceAdapter } from "@/lib/webrtc";
 import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
+import { updateAudioSetting } from "@/stores/settings";
 import { showToast } from "@/components/ui/Toast";
 
 interface AudioDeviceSettingsProps {
@@ -239,6 +240,9 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
           duration: 8000,
         });
         console.error("Set input device failed:", result.error);
+      } else {
+        // Persist so the selection survives leave/rejoin and app restart
+        await updateAudioSetting("input_device", deviceId || null);
       }
     } catch (err) {
       console.error("Failed to set input device:", err);
@@ -268,6 +272,9 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
           duration: 8000,
         });
         console.error("Set output device failed:", result.error);
+      } else {
+        // Persist so the selection survives leave/rejoin and app restart
+        await updateAudioSetting("output_device", deviceId || null);
       }
     } catch (err) {
       console.error("Failed to set output device:", err);

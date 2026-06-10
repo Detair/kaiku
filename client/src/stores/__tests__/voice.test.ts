@@ -19,6 +19,8 @@ const mockAdapter = {
   handleSubscriberOffer: vi.fn(),
   handleIceCandidate: vi.fn(),
   setVadConfig: vi.fn(),
+  setInputDevice: vi.fn().mockResolvedValue({ ok: true }),
+  setOutputDevice: vi.fn().mockResolvedValue({ ok: true }),
 };
 
 vi.mock("@/lib/webrtc", () => ({
@@ -89,7 +91,10 @@ import {
   handleVoiceUserStats,
   updateVadFromSettings,
   isPttActive,
+  applyStoredAudioDevices,
 } from "../voice";
+import { appSettings } from "@/stores/settings";
+import type { VoiceAdapter } from "@/lib/webrtc/types";
 
 describe("voice store", () => {
   beforeEach(() => {
@@ -392,6 +397,75 @@ describe("voice store", () => {
 
     it("isPttActive returns false when no PTT controller", () => {
       expect(isPttActive()).toBe(false);
+    });
+  });
+
+  describe("applyStoredAudioDevices", () => {
+    const voiceSettings = {
+      push_to_talk: false,
+      push_to_talk_key: null,
+      push_to_talk_release_delay: 200,
+      push_to_mute: false,
+      push_to_mute_key: null,
+      push_to_mute_release_delay: 200,
+      voice_activity_detection: false,
+      vad_threshold: 0.5,
+    };
+
+    beforeEach(() => {
+      mockAdapter.setInputDevice.mockClear();
+      mockAdapter.setOutputDevice.mockClear();
+    });
+
+    it("applies stored input and output devices to the adapter", async () => {
+      vi.mocked(appSettings).mockReturnValueOnce({
+        voice: voiceSettings,
+        audio: { input_device: "Mic A", output_device: "Speakers B" },
+      } as unknown as ReturnType<typeof appSettings>);
+
+      await applyStoredAudioDevices(mockAdapter as unknown as VoiceAdapter);
+
+      expect(mockAdapter.setInputDevice).toHaveBeenCalledWith("Mic A");
+      expect(mockAdapter.setOutputDevice).toHaveBeenCalledWith("Speakers B");
+    });
+
+    it("skips adapter calls when no devices are stored (system default)", async () => {
+      vi.mocked(appSettings).mockReturnValueOnce({
+        voice: voiceSettings,
+        audio: { input_device: null, output_device: null },
+      } as unknown as ReturnType<typeof appSettings>);
+
+      await applyStoredAudioDevices(mockAdapter as unknown as VoiceAdapter);
+
+      expect(mockAdapter.setInputDevice).not.toHaveBeenCalled();
+      expect(mockAdapter.setOutputDevice).not.toHaveBeenCalled();
+    });
+
+    it("does not throw when applying a device fails", async () => {
+      vi.mocked(appSettings).mockReturnValueOnce({
+        voice: voiceSettings,
+        audio: { input_device: null, output_device: "Unplugged" },
+      } as unknown as ReturnType<typeof appSettings>);
+      mockAdapter.setOutputDevice.mockResolvedValueOnce({
+        ok: false,
+        error: { type: "device_not_found", message: "gone" },
+      });
+
+      await expect(
+        applyStoredAudioDevices(mockAdapter as unknown as VoiceAdapter),
+      ).resolves.toBeUndefined();
+    });
+
+    it("joinVoice applies stored devices after a successful join", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      vi.mocked(appSettings).mockReturnValue({
+        voice: voiceSettings,
+        audio: { input_device: null, output_device: "Headset" },
+      } as unknown as ReturnType<typeof appSettings>);
+
+      await joinVoice("ch-1");
+
+      expect(mockAdapter.setOutputDevice).toHaveBeenCalledWith("Headset");
     });
   });
 });
