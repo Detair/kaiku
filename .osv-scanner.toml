@@ -89,6 +89,17 @@ id = "RUSTSEC-2024-0370"
 reason = "proc-macro-error unmaintained; transitive, no runtime impact."
 
 [[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2 unmaintained; transitive, compile-time only, no runtime impact."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0150"
+# audiopus_sys wraps libopus for the desktop client's audio pipeline.
+# Unmaintained flag only (no vulnerability); replacing it means migrating
+# the Opus FFI layer — tracked as tech debt, not a CI blocker.
+reason = "audiopus_sys unmaintained; Opus FFI for vc-client audio, no runtime vuln, migration tracked separately."
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2024-0384"
 reason = "instant unmaintained; transitive, no runtime impact."
 
