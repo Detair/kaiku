@@ -19,7 +19,7 @@ import type {
   CaptureSource,
   RawConnectionStats,
 } from "./types";
-import { rawStatsToMetrics } from "./types";
+import { buildConnectionMetrics, deltaLossPercent } from "./types";
 import * as Sentry from "@sentry/browser";
 
 export class TauriVoiceAdapter implements VoiceAdapter {
@@ -29,6 +29,10 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   private deafened = false;
   private noiseSuppression = false;
   private webcamActive = false;
+
+  // Previous cumulative receive counters for interval packet-loss
+  // calculation (same pattern as the browser adapter's prevStats)
+  private prevStats: { lost: number; received: number } | null = null;
 
   // Screen share state (native Rust capture) — multi-stream
   private activeScreenShares: Map<
@@ -222,8 +226,33 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       const raw = await invoke<RawConnectionStats | null>(
         "voice_connection_stats",
       );
-      if (!raw) return null;
-      return rawStatsToMetrics(raw, Date.now());
+      if (!raw) {
+        this.prevStats = null;
+        return null;
+      }
+      // Nothing measured yet (no RTCP receiver report, no inbound audio):
+      // stay in the "unknown" state instead of fabricating 0ms / good.
+      if (raw.rtt_ms === null && raw.packets_received === 0) {
+        this.prevStats = null;
+        return null;
+      }
+
+      const packetLoss = deltaLossPercent(
+        this.prevStats,
+        raw.packets_lost,
+        raw.packets_received,
+      );
+      this.prevStats = {
+        lost: raw.packets_lost,
+        received: raw.packets_received,
+      };
+
+      return buildConnectionMetrics(
+        raw.rtt_ms ?? 0,
+        packetLoss,
+        raw.jitter_ms ?? 0,
+        Date.now(),
+      );
     } catch (err) {
       console.warn("[TauriVoiceAdapter] Failed to fetch native stats:", err);
       return null;

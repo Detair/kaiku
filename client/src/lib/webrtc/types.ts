@@ -178,11 +178,14 @@ export interface ConnectionMetrics {
 /**
  * Raw payload of the native `voice_connection_stats` Tauri command
  * (snake_case wire format, see ConnectionStatsPayload in commands/voice.rs).
+ * `null` fields mean "not measured yet"; the counters are cumulative —
+ * interval loss is computed from deltas between polls.
  */
 export interface RawConnectionStats {
-  rtt_ms: number;
-  loss_percent: number;
-  jitter_ms: number;
+  rtt_ms: number | null;
+  jitter_ms: number | null;
+  packets_lost: number;
+  packets_received: number;
 }
 
 /**
@@ -201,21 +204,39 @@ export function computeQualityLevel(
 }
 
 /**
- * Convert the native stats payload into the shared `ConnectionMetrics`
- * shape. Exported as a pure function so it can be unit-tested without a
- * Tauri runtime.
+ * Interval packet loss percentage from cumulative lost/received counters
+ * sampled at two points in time. Shared by both adapters (browser stats and
+ * the native Tauri payload expose the same cumulative-counter shape).
  */
-export function rawStatsToMetrics(
-  raw: RawConnectionStats,
+export function deltaLossPercent(
+  prev: { lost: number; received: number } | null,
+  lost: number,
+  received: number,
+): number {
+  if (!prev) return 0;
+  const deltaLost = lost - prev.lost;
+  const deltaReceived = received - prev.received;
+  const deltaTotal = deltaLost + deltaReceived;
+  return deltaTotal > 0 ? (deltaLost / deltaTotal) * 100 : 0;
+}
+
+/**
+ * Assemble a `ConnectionMetrics` from raw (unrounded) measurements.
+ * The quality tier is computed from the RAW values, then the displayed
+ * numbers are rounded — keeping browser and Tauri adapters identical at
+ * threshold boundaries. Exported as a pure function so it can be
+ * unit-tested without a WebRTC or Tauri runtime.
+ */
+export function buildConnectionMetrics(
+  latency: number,
+  packetLoss: number,
+  jitter: number,
   timestamp: number,
 ): ConnectionMetrics {
-  const latency = Math.round(raw.rtt_ms);
-  const packetLoss = Math.round(raw.loss_percent * 100) / 100;
-  const jitter = Math.round(raw.jitter_ms);
   return {
-    latency,
-    packetLoss,
-    jitter,
+    latency: Math.round(latency),
+    packetLoss: Math.round(packetLoss * 100) / 100,
+    jitter: Math.round(jitter),
     quality: computeQualityLevel(latency, packetLoss, jitter),
     timestamp,
   };

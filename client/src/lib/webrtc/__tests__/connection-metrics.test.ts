@@ -1,10 +1,14 @@
 /**
  * Tests for the shared connection-metrics helpers used by both voice
- * adapters: quality tier thresholds and the native (Tauri) stats payload
- * mapping (TD-16).
+ * adapters: quality tier thresholds, interval-loss calculation, and the
+ * metrics assembly shared by the browser and native (Tauri) paths (TD-16).
  */
 import { describe, it, expect } from "vitest";
-import { computeQualityLevel, rawStatsToMetrics } from "../types";
+import {
+  computeQualityLevel,
+  deltaLossPercent,
+  buildConnectionMetrics,
+} from "../types";
 
 describe("computeQualityLevel", () => {
   it("returns good for healthy connections", () => {
@@ -30,48 +34,56 @@ describe("computeQualityLevel", () => {
   });
 });
 
-describe("rawStatsToMetrics", () => {
-  it("maps the snake_case native payload to ConnectionMetrics", () => {
-    const metrics = rawStatsToMetrics(
-      { rtt_ms: 42.6, loss_percent: 1.234, jitter_ms: 7.4 },
-      1234567890,
-    );
+describe("deltaLossPercent", () => {
+  it("returns 0 on the first sample (no previous counters)", () => {
+    expect(deltaLossPercent(null, 10, 1000)).toBe(0);
+  });
+
+  it("computes loss from the interval delta, not cumulative totals", () => {
+    // 100 lost / 1000 received historically, but this interval: 1 lost, 99 received
+    const prev = { lost: 100, received: 1000 };
+    expect(deltaLossPercent(prev, 101, 1099)).toBeCloseTo(1.0);
+  });
+
+  it("returns 0 for an idle interval (no packets either way)", () => {
+    const prev = { lost: 5, received: 500 };
+    expect(deltaLossPercent(prev, 5, 500)).toBe(0);
+  });
+
+  it("returns 100 when every packet in the interval was lost", () => {
+    const prev = { lost: 0, received: 100 };
+    expect(deltaLossPercent(prev, 50, 100)).toBe(100);
+  });
+});
+
+describe("buildConnectionMetrics", () => {
+  it("rounds displayed values but computes quality from raw inputs", () => {
+    // 100.4ms raw latency is over the warning threshold (>100) even though
+    // it rounds to 100 — quality must be computed pre-rounding so browser
+    // and Tauri adapters agree at boundaries.
+    const metrics = buildConnectionMetrics(100.4, 0, 0, 42);
+    expect(metrics.latency).toBe(100);
+    expect(metrics.quality).toBe("warning");
+  });
+
+  it("maps measurements to the ConnectionMetrics shape", () => {
+    const metrics = buildConnectionMetrics(42.6, 1.234, 7.4, 1234567890);
     expect(metrics).toEqual({
       latency: 43, // rounded
       packetLoss: 1.23, // 2 decimal places
       jitter: 7, // rounded
-      quality: "warning", // loss 1.23 > 1
+      quality: "warning", // loss 1.234 > 1
       timestamp: 1234567890,
     });
   });
 
   it("produces a good quality tier for a clean connection", () => {
-    const metrics = rawStatsToMetrics(
-      { rtt_ms: 25, loss_percent: 0, jitter_ms: 2 },
-      0,
-    );
-    expect(metrics.quality).toBe("good");
+    expect(buildConnectionMetrics(25, 0, 2, 0).quality).toBe("good");
   });
 
   it("flags poor quality on high jitter alone", () => {
-    const metrics = rawStatsToMetrics(
-      { rtt_ms: 20, loss_percent: 0, jitter_ms: 80 },
-      0,
-    );
+    const metrics = buildConnectionMetrics(20, 0, 80, 0);
     expect(metrics.quality).toBe("poor");
     expect(metrics.jitter).toBe(80);
-  });
-
-  it("handles zeroed stats before the first RTCP receiver report", () => {
-    const metrics = rawStatsToMetrics(
-      { rtt_ms: 0, loss_percent: 0, jitter_ms: 0 },
-      0,
-    );
-    expect(metrics).toMatchObject({
-      latency: 0,
-      packetLoss: 0,
-      jitter: 0,
-      quality: "good",
-    });
   });
 });
