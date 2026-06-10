@@ -18,6 +18,7 @@ import type {
   ConnectionMetrics,
   QualityLevel,
 } from "./types";
+import { computeQualityLevel } from "./types";
 import * as Sentry from "@sentry/browser";
 
 /** Bitrate for the highest simulcast layer, keyed by screen-share quality. */
@@ -666,10 +667,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     loss: number,
     jitter: number,
   ): QualityLevel {
-    // Semantic quality levels: good > warning > poor > unknown
-    if (latency > 200 || loss > 3 || jitter > 50) return "poor";
-    if (latency > 100 || loss > 1 || jitter > 30) return "warning";
-    return "good";
+    return computeQualityLevel(latency, loss, jitter);
   }
 
   async getConnectionMetrics(): Promise<ConnectionMetrics | null> {

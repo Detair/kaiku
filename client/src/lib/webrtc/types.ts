@@ -176,6 +176,52 @@ export interface ConnectionMetrics {
 }
 
 /**
+ * Raw payload of the native `voice_connection_stats` Tauri command
+ * (snake_case wire format, see ConnectionStatsPayload in commands/voice.rs).
+ */
+export interface RawConnectionStats {
+  rtt_ms: number;
+  loss_percent: number;
+  jitter_ms: number;
+}
+
+/**
+ * Map latency/loss/jitter to a semantic quality tier.
+ * Shared by the browser and Tauri adapters so both report identical tiers.
+ */
+export function computeQualityLevel(
+  latency: number,
+  loss: number,
+  jitter: number,
+): QualityLevel {
+  // Semantic quality levels: good > warning > poor > unknown
+  if (latency > 200 || loss > 3 || jitter > 50) return "poor";
+  if (latency > 100 || loss > 1 || jitter > 30) return "warning";
+  return "good";
+}
+
+/**
+ * Convert the native stats payload into the shared `ConnectionMetrics`
+ * shape. Exported as a pure function so it can be unit-tested without a
+ * Tauri runtime.
+ */
+export function rawStatsToMetrics(
+  raw: RawConnectionStats,
+  timestamp: number,
+): ConnectionMetrics {
+  const latency = Math.round(raw.rtt_ms);
+  const packetLoss = Math.round(raw.loss_percent * 100) / 100;
+  const jitter = Math.round(raw.jitter_ms);
+  return {
+    latency,
+    packetLoss,
+    jitter,
+    quality: computeQualityLevel(latency, packetLoss, jitter),
+    timestamp,
+  };
+}
+
+/**
  * Per-participant connection metrics
  */
 export interface ParticipantMetrics {

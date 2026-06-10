@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Desktop client now reports live voice connection quality (latency, packet loss, jitter) in the quality indicator, matching the browser client — previously the desktop always showed "unknown"
 - Responsive mobile layout: sidebar and server rail collapse into a slide-out drawer below 768px viewport width
 - Mobile header bar with hamburger menu, guild name, and channel name
 - Swipe gestures: right from edge to open drawer, left to close

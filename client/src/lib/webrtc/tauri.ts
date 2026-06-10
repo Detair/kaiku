@@ -17,7 +17,9 @@ import type {
   WebcamOptions,
   ConnectionMetrics,
   CaptureSource,
+  RawConnectionStats,
 } from "./types";
+import { rawStatsToMetrics } from "./types";
 import * as Sentry from "@sentry/browser";
 
 export class TauriVoiceAdapter implements VoiceAdapter {
@@ -216,9 +218,16 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   }
 
   async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
-    // TODO: Add Tauri command to fetch native WebRTC connection stats
-    // Blocked on connectivity monitoring feature
-    return null;
+    try {
+      const raw = await invoke<RawConnectionStats | null>(
+        "voice_connection_stats",
+      );
+      if (!raw) return null;
+      return rawStatsToMetrics(raw, Date.now());
+    } catch (err) {
+      console.warn("[TauriVoiceAdapter] Failed to fetch native stats:", err);
+      return null;
+    }
   }
 
   setEventHandlers(handlers: Partial<VoiceAdapterEvents>): void {

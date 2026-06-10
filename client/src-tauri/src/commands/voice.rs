@@ -136,10 +136,13 @@ pub async fn join_voice(
                 let track_id = format!("{}:{}", user_id, source_type);
 
                 tokio::spawn(async move {
-                    // Get the mixer from voice state
-                    let mixer = {
+                    // Get the mixer and stats registry from voice state
+                    let (mixer, stats_registry) = {
                         let voice_guard = voice_arc.read().await;
-                        voice_guard.as_ref().and_then(|v| v.audio_mixer.clone())
+                        (
+                            voice_guard.as_ref().and_then(|v| v.audio_mixer.clone()),
+                            voice_guard.as_ref().map(|v| v.connection_stats.clone()),
+                        )
                     };
 
                     let Some(mixer) = mixer else {
@@ -169,9 +172,13 @@ pub async fn join_voice(
                     );
 
                     // Decode RTP → Opus → PCM loop
-                    decode_remote_audio_track(track, pcm_tx).await;
+                    decode_remote_audio_track(track, pcm_tx, &track_id, stats_registry.as_ref())
+                        .await;
 
-                    // Track ended — remove from mixer
+                    // Track ended — remove from mixer and stats registry
+                    if let Some(registry) = &stats_registry {
+                        registry.remove_track(&track_id);
+                    }
                     mixer.remove_track(track_id.clone()).await;
                     info!(track_id = %track_id, "Remote audio track ended");
 
@@ -492,6 +499,7 @@ pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
     voice_state.audio.stop_all().await;
     voice_state.audio_tx = None;
     voice_state.audio_mixer = None;
+    voice_state.connection_stats.clear();
 
     // Disconnect WebRTC
     voice_state
@@ -702,6 +710,49 @@ pub async fn is_in_voice(state: State<'_, AppState>) -> Result<bool, String> {
     }
 }
 
+/// Native connection quality stats, serialized to the frontend adapter.
+///
+/// Wire format (snake_case per project convention). The TS layer converts
+/// this into the shared `ConnectionMetrics` shape and computes the quality
+/// tier with the same thresholds as the browser adapter.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct ConnectionStatsPayload {
+    /// Round-trip time in milliseconds (publisher candidate pair / RTCP RR).
+    pub rtt_ms: f64,
+    /// Loss percentage 0–100 from the SFU's most recent receiver report.
+    pub loss_percent: f64,
+    /// Worst RFC 3550 receive jitter across inbound audio tracks, in ms.
+    pub jitter_ms: f64,
+}
+
+/// Fetch native WebRTC connection metrics (TD-16).
+///
+/// Returns `Ok(None)` when not connected to voice, so the frontend can keep
+/// showing the "unknown" quality state instead of treating it as an error.
+#[command]
+pub async fn voice_connection_stats(
+    state: State<'_, AppState>,
+) -> Result<Option<ConnectionStatsPayload>, String> {
+    let voice = state.voice.read().await;
+    let Some(voice_state) = voice.as_ref() else {
+        return Ok(None);
+    };
+    if voice_state.channel_id.is_none() {
+        return Ok(None);
+    }
+
+    let Some(stats) = voice_state.webrtc.publisher_stats().await else {
+        return Ok(None);
+    };
+    let jitter_ms = voice_state.connection_stats.max_jitter_ms().unwrap_or(0.0);
+
+    Ok(Some(ConnectionStatsPayload {
+        rtt_ms: stats.rtt_ms.unwrap_or(0.0),
+        loss_percent: stats.fraction_lost.unwrap_or(0.0) * 100.0,
+        jitter_ms,
+    }))
+}
+
 /// Get current voice channel ID.
 #[command]
 pub async fn get_voice_channel(state: State<'_, AppState>) -> Result<Option<String>, String> {
@@ -816,7 +867,16 @@ async fn send_audio_to_track(
 ///
 /// Runs in a spawned task per remote audio track. Each task owns its own
 /// Opus decoder instance (`opus::Decoder` is `Send` but not `Sync`).
-async fn decode_remote_audio_track(track: Arc<TrackRemote>, pcm_tx: mpsc::Sender<Vec<f32>>) {
+///
+/// Also feeds the per-track RFC 3550 jitter estimator: webrtc-rs does not
+/// expose receive jitter in `get_stats()`, so this loop is where we measure
+/// it (every inbound audio RTP packet already passes through here).
+async fn decode_remote_audio_track(
+    track: Arc<TrackRemote>,
+    pcm_tx: mpsc::Sender<Vec<f32>>,
+    track_id: &str,
+    stats_registry: Option<&voice::connection_stats::ConnectionStatsRegistry>,
+) {
     let mut decoder = match opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo) {
         Ok(dec) => dec,
         Err(e) => {
@@ -829,9 +889,15 @@ async fn decode_remote_audio_track(track: Arc<TrackRemote>, pcm_tx: mpsc::Sender
     let frame_samples = FRAME_SIZE * CHANNELS as usize;
     let mut pcm_f32 = vec![0.0f32; frame_samples];
 
+    let mut jitter = voice::connection_stats::JitterEstimator::new();
+
     loop {
         match track.read_rtp().await {
             Ok((rtp_packet, _attributes)) => {
+                if let Some(registry) = stats_registry {
+                    jitter.on_packet(rtp_packet.header.timestamp, std::time::Instant::now());
+                    registry.update_jitter(track_id, jitter.jitter_ms());
+                }
                 let payload = &rtp_packet.payload[..];
                 if payload.is_empty() {
                     continue;

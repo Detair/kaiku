@@ -21,6 +21,7 @@ use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
+use webrtc::stats::StatsReportType;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::{RTCPFeedback, RTCRtpEncodingParameters, RTCRtpTransceiverInit};
@@ -102,6 +103,16 @@ impl Default for IceServerConfig {
             credential: None,
         }
     }
+}
+
+/// Latency / packet-loss snapshot from the publisher peer connection's
+/// native stats. Field semantics follow the W3C stats those values mirror.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PublisherStats {
+    /// Round-trip time in milliseconds, if a measurement exists yet.
+    pub rtt_ms: Option<f64>,
+    /// Loss fraction (0.0–1.0) from the most recent RTCP receiver report.
+    pub fraction_lost: Option<f64>,
 }
 
 /// WebRTC client for voice chat and screen sharing
@@ -285,6 +296,49 @@ impl WebRtcClient {
     /// Get current channel ID
     pub async fn get_channel_id(&self) -> Option<String> {
         self.channel_id.read().await.clone()
+    }
+
+    /// Fetch latency and packet loss from the publisher peer connection's
+    /// native stats.
+    ///
+    /// Sources, mirroring the browser adapter's `getStats()` usage:
+    /// - `RemoteInboundRTP` (audio): the SFU's RTCP receiver reports about
+    ///   our published stream — `round_trip_time` and `fraction_lost`.
+    /// - `CandidatePair`: `current_round_trip_time` of the nominated pair,
+    ///   used as RTT fallback before the first receiver report arrives.
+    ///
+    /// Returns `None` when no publisher connection exists. Receive-side
+    /// jitter is not available from webrtc-rs stats (upstream TODO) and is
+    /// computed separately — see `voice::connection_stats`.
+    pub async fn publisher_stats(&self) -> Option<PublisherStats> {
+        let pc = self.peer_connection.read().await.clone()?;
+        let report = pc.get_stats().await;
+
+        let mut rtt_ms: Option<f64> = None;
+        let mut fraction_lost: Option<f64> = None;
+        let mut fallback_rtt_ms: Option<f64> = None;
+
+        for stats in report.reports.values() {
+            match stats {
+                StatsReportType::RemoteInboundRTP(remote) if remote.kind == "audio" => {
+                    if let Some(rtt) = remote.round_trip_time {
+                        rtt_ms = Some(rtt * 1000.0);
+                    }
+                    fraction_lost = Some(remote.fraction_lost.clamp(0.0, 1.0));
+                }
+                StatsReportType::CandidatePair(pair)
+                    if pair.nominated && pair.current_round_trip_time > 0.0 =>
+                {
+                    fallback_rtt_ms = Some(pair.current_round_trip_time * 1000.0);
+                }
+                _ => {}
+            }
+        }
+
+        Some(PublisherStats {
+            rtt_ms: rtt_ms.or(fallback_rtt_ms),
+            fraction_lost,
+        })
     }
 
     /// Create `RTCConfiguration` from ICE server config
