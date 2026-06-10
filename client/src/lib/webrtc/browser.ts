@@ -16,8 +16,8 @@ import type {
   ScreenShareQuality,
   WebcamOptions,
   ConnectionMetrics,
-  QualityLevel,
 } from "./types";
+import { buildConnectionMetrics, deltaLossPercent } from "./types";
 import * as Sentry from "@sentry/browser";
 
 /** Bitrate for the highest simulcast layer, keyed by screen-share quality. */
@@ -661,17 +661,6 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return this.noiseSuppression;
   }
 
-  private calculateQuality(
-    latency: number,
-    loss: number,
-    jitter: number,
-  ): QualityLevel {
-    // Semantic quality levels: good > warning > poor > unknown
-    if (latency > 200 || loss > 3 || jitter > 50) return "poor";
-    if (latency > 100 || loss > 1 || jitter > 30) return "warning";
-    return "good";
-  }
-
   async getConnectionMetrics(): Promise<ConnectionMetrics | null> {
     if (!this.publisherState) return null;
 
@@ -701,33 +690,19 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         });
       }
 
-      // Calculate delta packet loss since last sample
-      let packetLoss = 0;
       const now = Date.now();
-
-      if (this.prevStats) {
-        const deltaLost = totalLost - this.prevStats.lost;
-        const deltaReceived = totalReceived - this.prevStats.received;
-        const deltaTotal = deltaLost + deltaReceived;
-
-        if (deltaTotal > 0) {
-          packetLoss = (deltaLost / deltaTotal) * 100;
-        }
-      }
-
+      const packetLoss = deltaLossPercent(
+        this.prevStats,
+        totalLost,
+        totalReceived,
+      );
       this.prevStats = {
         lost: totalLost,
         received: totalReceived,
         timestamp: now,
       };
 
-      return {
-        latency: Math.round(latency),
-        packetLoss: Math.round(packetLoss * 100) / 100,
-        jitter: Math.round(jitter),
-        quality: this.calculateQuality(latency, packetLoss, jitter),
-        timestamp: now,
-      };
+      return buildConnectionMetrics(latency, packetLoss, jitter, now);
     } catch (err) {
       console.warn("Failed to extract metrics:", err);
       return null;

@@ -132,6 +132,7 @@ pub fn run() {
             commands::voice::set_output_device,
             commands::voice::is_in_voice,
             commands::voice::get_voice_channel,
+            commands::voice::voice_connection_stats,
             commands::voice::subscribe_video_frames,
             // Screen share commands
             commands::screen_share::enumerate_capture_sources,
@@ -339,6 +340,9 @@ pub struct VoiceState {
     /// and uses it to construct a `Vp8VideoDecoder`.
     pub video_frame_sinks:
         Arc<tokio::sync::Mutex<HashMap<String, voice::frame_buffer::FrameBuffer>>>,
+    /// Per-track receive jitter estimates, fed by audio decode tasks and read
+    /// by the `voice_connection_stats` command.
+    pub connection_stats: voice::connection_stats::ConnectionStatsRegistry,
 }
 
 impl VoiceState {
@@ -356,6 +360,7 @@ impl VoiceState {
             video_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             active_video_count: Arc::new(AtomicUsize::new(0)),
             video_frame_sinks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            connection_stats: voice::connection_stats::ConnectionStatsRegistry::new(),
         })
     }
 }
