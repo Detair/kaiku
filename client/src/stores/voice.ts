@@ -13,7 +13,11 @@ import {
   type ParticipantMetrics,
   type QualityLevel,
 } from "@/lib/webrtc";
-import type { ScreenShareInfo, ScreenShareQuality } from "@/lib/webrtc/types";
+import type {
+  ScreenShareInfo,
+  ScreenShareQuality,
+  VoiceAdapter,
+} from "@/lib/webrtc/types";
 import type { VoiceParticipant, WebcamServerInfo } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
 import { appSettings } from "@/stores/settings";
@@ -398,6 +402,37 @@ export async function cleanupVoice(): Promise<void> {
 /**
  * Join a voice channel.
  */
+/**
+ * Apply the input/output devices stored in settings to the voice adapter.
+ * Called on every voice join; failures are non-fatal (the system default
+ * device keeps working) but are logged for diagnosis. Exported for tests.
+ */
+export async function applyStoredAudioDevices(
+  adapter: VoiceAdapter,
+): Promise<void> {
+  const audio = appSettings()?.audio;
+  if (!audio) return;
+
+  if (audio.input_device) {
+    const result = await adapter.setInputDevice(audio.input_device);
+    if (!result.ok) {
+      console.warn(
+        "[Voice] Failed to apply stored input device:",
+        result.error,
+      );
+    }
+  }
+  if (audio.output_device) {
+    const result = await adapter.setOutputDevice(audio.output_device);
+    if (!result.ok) {
+      console.warn(
+        "[Voice] Failed to apply stored output device:",
+        result.error,
+      );
+    }
+  }
+}
+
 export async function joinVoice(channelId: string): Promise<void> {
   if (isJoining) {
     console.warn("[Voice] Join already in progress, ignoring duplicate call");
@@ -446,10 +481,24 @@ export async function joinVoice(channelId: string): Promise<void> {
         if (!remoteTrack.stream) return;
 
         console.log("[Voice] Remote audio track received:", remoteTrack.userId);
-        // Create an audio element to play the remote user's audio
+        // Create an audio element to play the remote user's audio.
+        // It must be in the DOM with data-stream-id so the browser
+        // adapter's setOutputDevice() can find it for setSinkId.
         const audio = new Audio();
         audio.srcObject = remoteTrack.stream;
         audio.autoplay = true;
+        audio.dataset.streamId = remoteTrack.stream.id;
+        audio.style.display = "none";
+        document.body.appendChild(audio);
+        // Route to the configured output device (default sink otherwise)
+        const outputDevice = appSettings()?.audio.output_device;
+        if (outputDevice && "setSinkId" in audio) {
+          (audio as HTMLAudioElement & { setSinkId(id: string): Promise<void> })
+            .setSinkId(outputDevice)
+            .catch((err) => {
+              console.warn("[Voice] Failed to set audio sink:", err);
+            });
+        }
         // Remove old element for this user if exists
         const old = remoteAudioElements.get(remoteTrack.userId);
         if (old) {
@@ -528,6 +577,11 @@ export async function joinVoice(channelId: string): Promise<void> {
       });
       throw new Error(getErrorMessage(result.error));
     }
+
+    // Apply the audio devices configured in settings — without this the
+    // stored selection never reaches the adapter and voice always uses
+    // the system default devices.
+    await applyStoredAudioDevices(adapter);
 
     // Start session tracking and metrics collection
     setVoiceState("sessionId", crypto.randomUUID());

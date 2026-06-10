@@ -693,7 +693,11 @@ pub async fn set_output_device(
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
-    voice_state.audio.set_output_device(device_id);
+    voice_state
+        .audio
+        .set_output_device(device_id)
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

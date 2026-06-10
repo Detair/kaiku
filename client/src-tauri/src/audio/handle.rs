@@ -63,6 +63,9 @@ enum CaptureControl {
 /// Control messages for playback task
 enum PlaybackControl {
     Stop,
+    /// Rebuild the output stream on a new device, keeping the same sample
+    /// buffer (mid-call speaker switching). Boxed: `cpal::Device` is large.
+    SwitchDevice(Box<Device>),
 }
 
 impl AudioHandle {
@@ -134,14 +137,36 @@ impl AudioHandle {
         Ok(AudioDeviceList { inputs, outputs })
     }
 
-    /// Set the input device by name
+    /// Set the input device by name.
+    ///
+    /// Takes effect when the next capture stream starts; an active capture
+    /// is not rebuilt (input switching mid-capture is not supported yet).
     pub fn set_input_device(&mut self, device_id: Option<String>) {
         self.input_device_name = device_id;
     }
 
-    /// Set the output device by name
-    pub fn set_output_device(&mut self, device_id: Option<String>) {
+    /// Set the output device by name.
+    ///
+    /// Stores the name for future playback starts AND live-switches any
+    /// running playback task: the task rebuilds its CPAL stream on the new
+    /// device while keeping the same sample buffer, so audio moves to the
+    /// new speaker mid-call without dropping frames.
+    ///
+    /// Errors if the named device doesn't exist (the stored name is still
+    /// updated, matching the lookup-or-default behavior at stream start).
+    pub async fn set_output_device(&mut self, device_id: Option<String>) -> Result<(), AudioError> {
         self.output_device_name = device_id;
+        if let Some(control) = &self.playback_control {
+            let device = self.get_device(self.output_device_name.as_deref(), false)?;
+            if control
+                .send(PlaybackControl::SwitchDevice(Box::new(device)))
+                .await
+                .is_err()
+            {
+                debug!("Playback task not running; output device applies on next start");
+            }
+        }
+        Ok(())
     }
 
     /// Get device by name
@@ -572,15 +597,6 @@ fn run_playback_task(
     mut input_rx: mpsc::Receiver<Vec<u8>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
 ) {
-    use cpal::traits::StreamTrait;
-    use cpal::{BufferSize, StreamConfig};
-
-    let config = StreamConfig {
-        channels: CHANNELS,
-        sample_rate: SAMPLE_RATE,
-        buffer_size: BufferSize::Default,
-    };
-
     let decoder = match Decoder::new(SAMPLE_RATE, OpusChannels::Stereo) {
         Ok(dec) => Arc::new(std::sync::Mutex::new(dec)),
         Err(e) => {
@@ -617,18 +633,43 @@ fn run_playback_task(
         }
     });
 
-    let playback_buffer_clone2 = playback_buffer;
-    let deafened_clone = deafened;
+    let Some(stream) = build_buffer_output_stream(&device, &deafened, &playback_buffer) else {
+        return;
+    };
+
+    playback_control_loop(stream, &deafened, &playback_buffer, control_rx);
+    info!("Playback task stopped");
+}
+
+/// Build and start a CPAL output stream that drains the shared sample
+/// buffer. Returns `None` (with the error logged) when the stream can't be
+/// created or started on the given device.
+fn build_buffer_output_stream(
+    device: &Device,
+    deafened: &Arc<AtomicBool>,
+    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+) -> Option<cpal::Stream> {
+    use cpal::traits::StreamTrait;
+    use cpal::{BufferSize, StreamConfig};
+
+    let config = StreamConfig {
+        channels: CHANNELS,
+        sample_rate: SAMPLE_RATE,
+        buffer_size: BufferSize::Default,
+    };
+
+    let playback_buffer = playback_buffer.clone();
+    let deafened = deafened.clone();
 
     let stream = match device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
-            if deafened_clone.load(Ordering::Relaxed) {
+            if deafened.load(Ordering::Relaxed) {
                 data.fill(0.0);
                 return;
             }
 
-            if let Ok(mut buffer) = playback_buffer_clone2.lock() {
+            if let Ok(mut buffer) = playback_buffer.lock() {
                 let available = buffer.len().min(data.len());
                 #[allow(clippy::needless_range_loop)]
                 for i in 0..available {
@@ -650,24 +691,45 @@ fn run_playback_task(
         Ok(s) => s,
         Err(e) => {
             error!("Failed to build playback stream: {}", e);
-            return;
+            return None;
         }
     };
 
     if let Err(e) = stream.play() {
         error!("Failed to start playback stream: {}", e);
-        return;
+        return None;
     }
 
-    // Block until stop signal
+    Some(stream)
+}
+
+/// Block on control messages until Stop, rebuilding the output stream in
+/// place on `SwitchDevice`. The new stream is built BEFORE the old one is
+/// dropped so a failed switch keeps audio on the previous device.
+fn playback_control_loop(
+    mut stream: cpal::Stream,
+    deafened: &Arc<AtomicBool>,
+    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    control_rx: &mut mpsc::Receiver<PlaybackControl>,
+) {
     while let Some(msg) = control_rx.blocking_recv() {
         match msg {
             PlaybackControl::Stop => break,
+            PlaybackControl::SwitchDevice(new_device) => {
+                match build_buffer_output_stream(&new_device, deafened, playback_buffer) {
+                    Some(new_stream) => {
+                        stream = new_stream;
+                        info!("Playback switched to new output device");
+                    }
+                    None => {
+                        warn!("Output device switch failed; keeping previous device");
+                    }
+                }
+            }
         }
     }
 
     drop(stream);
-    info!("Playback task stopped");
 }
 
 /// Run PCM playback task — receives pre-decoded f32 samples from the mixer.
@@ -680,15 +742,6 @@ fn run_pcm_playback_task(
     mut input_rx: mpsc::Receiver<Vec<f32>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
 ) {
-    use cpal::traits::StreamTrait;
-    use cpal::{BufferSize, StreamConfig};
-
-    let config = StreamConfig {
-        channels: CHANNELS,
-        sample_rate: SAMPLE_RATE,
-        buffer_size: BufferSize::Default,
-    };
-
     let playback_buffer = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
 
     // Spawn thread to receive PCM frames and push into the ring buffer.
@@ -710,56 +763,11 @@ fn run_pcm_playback_task(
         }
     });
 
-    let playback_buffer_clone2 = playback_buffer;
-    let deafened_clone = deafened;
-
-    let stream = match device.build_output_stream(
-        &config,
-        move |data: &mut [f32], _| {
-            if deafened_clone.load(Ordering::Relaxed) {
-                data.fill(0.0);
-                return;
-            }
-
-            if let Ok(mut buffer) = playback_buffer_clone2.lock() {
-                let available = buffer.len().min(data.len());
-                #[allow(clippy::needless_range_loop)]
-                for i in 0..available {
-                    data[i] = buffer.pop_front().unwrap();
-                }
-                #[allow(clippy::needless_range_loop)]
-                for i in available..data.len() {
-                    data[i] = 0.0;
-                }
-            } else {
-                data.fill(0.0);
-            }
-        },
-        |err| {
-            error!("PCM playback stream error: {}", err);
-        },
-        None,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Failed to build PCM playback stream: {}", e);
-            return;
-        }
+    let Some(stream) = build_buffer_output_stream(&device, &deafened, &playback_buffer) else {
+        return;
     };
 
-    if let Err(e) = stream.play() {
-        error!("Failed to start PCM playback stream: {}", e);
-        return;
-    }
-
-    // Block until stop signal
-    while let Some(msg) = control_rx.blocking_recv() {
-        match msg {
-            PlaybackControl::Stop => break,
-        }
-    }
-
-    drop(stream);
+    playback_control_loop(stream, &deafened, &playback_buffer, control_rx);
     info!("PCM playback task stopped");
 }
 

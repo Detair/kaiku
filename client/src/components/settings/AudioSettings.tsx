@@ -1,24 +1,52 @@
 import { Component, createSignal, onMount, For, Show } from "solid-js";
 import { appSettings, updateAudioSetting, isSettingsLoading } from "@/stores/settings";
+import { createVoiceAdapter, getVoiceAdapter } from "@/lib/webrtc";
+import type { AudioDevice } from "@/lib/webrtc";
 import { Mic, Volume2 } from "lucide-solid";
 
 const AudioSettings: Component = () => {
-    const [inputDevices, setInputDevices] = createSignal<MediaDeviceInfo[]>([]);
-    const [outputDevices, setOutputDevices] = createSignal<MediaDeviceInfo[]>([]);
+    const [inputDevices, setInputDevices] = createSignal<AudioDevice[]>([]);
+    const [outputDevices, setOutputDevices] = createSignal<AudioDevice[]>([]);
 
     onMount(async () => {
         try {
-            // Request permission so labels are populated
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach((track) => track.stop());
-
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            setInputDevices(devices.filter((d) => d.kind === "audioinput"));
-            setOutputDevices(devices.filter((d) => d.kind === "audiooutput"));
+            // Enumerate through the voice adapter so device ids match what
+            // the voice stack expects: CPAL device names on desktop,
+            // MediaDevices ids in the browser. (navigator.mediaDevices ids
+            // would be meaningless to the native audio backend.)
+            const adapter = await createVoiceAdapter();
+            const result = await adapter.getAudioDevices();
+            if (result.ok) {
+                setInputDevices(result.value.inputs);
+                setOutputDevices(result.value.outputs);
+            } else {
+                console.error("Failed to enumerate audio devices:", result.error);
+            }
         } catch (err) {
             console.error("Failed to enumerate audio devices:", err);
         }
     });
+
+    // Persist the selection and live-apply it to an active voice session.
+    const changeDevice = async (kind: "input" | "output", value: string) => {
+        const deviceId = value === "default" ? null : value;
+        await updateAudioSetting(
+            kind === "input" ? "input_device" : "output_device",
+            deviceId,
+        );
+        // Live-apply only for concrete devices; "default" takes effect on
+        // the next voice join (the adapter API has no "reset to default").
+        const adapter = getVoiceAdapter();
+        if (adapter && deviceId) {
+            const result =
+                kind === "input"
+                    ? await adapter.setInputDevice(deviceId)
+                    : await adapter.setOutputDevice(deviceId);
+            if (!result.ok) {
+                console.warn(`Failed to apply ${kind} device:`, result.error);
+            }
+        }
+    };
 
     return (
         <div class="space-y-6">
@@ -41,7 +69,7 @@ const AudioSettings: Component = () => {
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
                                     value={settings().audio.input_device || "default"}
-                                    onChange={(e) => updateAudioSetting("input_device", e.currentTarget.value === "default" ? null : e.currentTarget.value)}
+                                    onChange={(e) => changeDevice("input", e.currentTarget.value)}
                                 >
                                     <option value="default">Default Device</option>
                                     <For each={inputDevices()}>
@@ -78,7 +106,7 @@ const AudioSettings: Component = () => {
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
                                     value={settings().audio.output_device || "default"}
-                                    onChange={(e) => updateAudioSetting("output_device", e.currentTarget.value === "default" ? null : e.currentTarget.value)}
+                                    onChange={(e) => changeDevice("output", e.currentTarget.value)}
                                 >
                                     <option value="default">Default Device</option>
                                     <For each={outputDevices()}>
