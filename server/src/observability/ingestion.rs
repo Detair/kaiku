@@ -725,7 +725,7 @@ pub fn spawn_ingestion_workers(
                 }
             }
             // Flush batch
-            let mut qb: sqlx::QueryBuilder<'_, sqlx::Postgres> = sqlx::QueryBuilder::new(
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO telemetry_log_events \
                  (ts, level, service, domain, event, message, trace_id, span_id, attrs) ",
             );
@@ -761,7 +761,7 @@ pub fn spawn_ingestion_workers(
                     Err(_) => break,
                 }
             }
-            let mut qb: sqlx::QueryBuilder<'_, sqlx::Postgres> = sqlx::QueryBuilder::new(
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO telemetry_trace_index \
                  (trace_id, span_name, domain, route, status_code, duration_ms, ts, service) ",
             );
@@ -795,7 +795,7 @@ pub fn spawn_ingestion_workers(
                     Err(_) => break,
                 }
             }
-            let mut qb: sqlx::QueryBuilder<'_, sqlx::Postgres> = sqlx::QueryBuilder::new(
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO telemetry_metric_samples \
                  (ts, metric_name, scope, labels, value_count, value_sum, value_p50, value_p95, value_p99) ",
             );

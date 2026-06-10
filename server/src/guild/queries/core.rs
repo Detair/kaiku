@@ -197,7 +197,7 @@ pub async fn fetch_guild_owner_required(pool: &PgPool, guild_id: Uuid) -> Result
 /// the updated `Guild`.
 pub async fn update_guild_dynamic(
     pool: &PgPool,
-    mut builder: QueryBuilder<'_, Postgres>,
+    mut builder: QueryBuilder<Postgres>,
     guild_id: Uuid,
 ) -> Result<Guild, GuildError> {
     builder.push(" WHERE id = ");
@@ -478,7 +478,7 @@ pub async fn fetch_guild_settings(
 /// updated `(threads_enabled, discoverable, tags, banner_url)` tuple.
 pub async fn update_guild_settings_dynamic(
     pool: &PgPool,
-    mut builder: QueryBuilder<'_, Postgres>,
+    mut builder: QueryBuilder<Postgres>,
     guild_id: Uuid,
 ) -> Result<(bool, bool, Vec<String>, Option<String>), GuildError> {
     builder

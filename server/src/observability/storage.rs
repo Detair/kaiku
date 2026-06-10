@@ -433,7 +433,9 @@ pub async fn query_top_routes(
         format!("{BASE}{ORDER_BY_P95}")
     };
 
-    sqlx::query_as::<_, TopRouteEntry>(&sql)
+    // SQL is concatenated from two const fragments above; all user input is
+    // bound via $1..$3. AssertSqlSafe is required by sqlx 0.9's SqlSafeStr.
+    sqlx::query_as::<_, TopRouteEntry>(sqlx::AssertSqlSafe(sql))
         .bind(from)
         .bind(to)
         .bind(limit)
