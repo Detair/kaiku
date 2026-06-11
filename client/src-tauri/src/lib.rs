@@ -8,6 +8,7 @@ mod commands;
 mod crypto;
 mod network;
 mod presence;
+mod tray;
 mod video;
 mod voice;
 mod webrtc;
@@ -90,7 +91,23 @@ pub fn run() {
             // Start presence polling service
             presence::start_presence_service(app.handle().clone());
 
+            // System tray: icon, menu, unread badge target
+            if let Err(err) = tray::setup_tray(app.handle()) {
+                tracing::error!(error = %err, "Failed to set up system tray");
+            }
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Minimize-to-tray: closing the MAIN window hides it instead of
+            // quitting; "Quit Kaiku" in the tray menu exits for real. Other
+            // windows (screen-share pop-outs) must close normally.
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // Auth commands
@@ -134,6 +151,8 @@ pub fn run() {
             commands::voice::get_voice_channel,
             commands::voice::voice_connection_stats,
             commands::voice::subscribe_video_frames,
+            // Tray commands
+            commands::tray::tray_set_unread,
             // Screen share commands
             commands::screen_share::enumerate_capture_sources,
             commands::screen_share::start_screen_share,
