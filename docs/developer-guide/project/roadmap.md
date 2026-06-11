@@ -16,7 +16,7 @@ This roadmap outlines the development path from the current prototype to a produ
 | **Foundation** | **Phase 3** | ✅ Complete | 100% | Guild system, Friends, DMs, Home View, Rate Limiting, Permission System + UI, Information Pages, DM Voice Calls |
 | **Foundation** | **Phase 4** | ✅ Complete | 100% | E2EE DM Messaging, User Connectivity Monitor, Rich Presence, First User Setup, Context Menus, Emoji Picker Polish, Unread Aggregator, Content Spoilers, Forgot Password, SSO/OIDC, User Blocking & Reports |
 | **Expansion** | **Phase 5** | ✅ Complete | 100% (17/17) | E2E suite, CI hardening, bot platform, search upgrades, threads, multi-stream partial, slash command reliability, production-scale polish, content filters, webhooks, bulk read management, guild discovery & onboarding, guild resource limits, progressive image loading, data governance |
-| **Expansion** | **Phase 6** | 🔄 Near complete | ~98% | Personal workspaces, digital library, focus engine, custom status, session management, QA polish, multi-stream screen sharing, guild bans, PTT/PTM, channel pins, simulcast, desktop session persistence, dual-PC voice, unread tracking redesign, VAD noise gate, VP8 desktop decode, RNNoise VAD + speaking indicator + noise suppression on Tauri. Remaining: mobile parity completion, desktop niceties (connection metrics, system tray, auto-update, output-device, WS reconnect refresh) |
+| **Expansion** | **Phase 6** | ✅ Desktop complete | ~99% | Personal workspaces, digital library, focus engine, custom status, session management, QA polish, multi-stream screen sharing, guild bans, PTT/PTM, channel pins, simulcast (server side), desktop session persistence, dual-PC voice, unread tracking redesign, VAD noise gate, VP8 desktop decode, RNNoise VAD + speaking indicator + noise suppression on Tauri, connection metrics, output device selection, WS reconnect refresh, system tray, auto-update (PRs #575–#579, 2026-06-10/11). Remaining: mobile parity completion (native Android app exists in `mobile/android` — needs its own milestone definition) |
 | **Scale and Trust** | **Phase 7** | 📋 Planned | 0% | Billing, accessibility, identity trust, observability |
 | **Scale and Trust** | **Phase 8** | 📋 Planned | 0% | Performance budgets, chaos drills, upgrade safety, FinOps, isolation testing, live session toolkits |
 | **Scale and Trust** | **Phase 10** | 📋 Planned | 0% | SaaS scaling architecture |
@@ -647,18 +647,18 @@ This section is the canonical high-level roadmap view. Detailed implementation c
   - RNNoise (`nnnoiseless` pure-Rust port) integrated into capture pipeline. ML-based VAD with configurable threshold and 300ms hold-open. The previously-no-op `setVadConfig` now drives gating. Pipeline rewritten around 480-sample mono frames, `Arc<Mutex<Vec<f32>>>` removed in favor of in-closure processing.
 - [x] **[Voice] Local Speaking Indicator** ✅ (PR #507)
   - `voice:speaking` Tauri events now emitted from the Rust capture pipeline based on RNNoise VAD probability. Local user's speaking ring animates on desktop.
-- [ ] **[Voice] Connection Metrics** `Priority: Medium`
-  - `getConnectionMetrics()` always returns null on desktop. Needs Tauri command to fetch RTCStatsReport equivalent from webrtc-rs PeerConnections (latency, packet loss, jitter).
-- [ ] **[Voice] Output Device Selection** `Priority: Low`
-  - `setOutputDevice()` Tauri command exists but implementation is unclear/untested. Needs verification and potential CPAL integration.
+- [x] **[Voice] Connection Metrics** ✅ (PR #575, 2026-06-10)
+  - `voice_connection_stats` command: native RTT from publisher RTCP receiver reports (webrtc-rs reports ms, not W3C seconds), receive-side packet loss and RFC 3550 jitter measured in the audio decode loop (webrtc-rs `get_stats()` exposes neither). Quality thresholds shared between browser and Tauri adapters.
+- [x] **[Voice] Output Device Selection** ✅ (PR #576, 2026-06-10)
+  - The CPAL path worked but nothing connected it: stored setting now applied on join, mid-call switching rebuilds the playback stream in place (`PlaybackControl::SwitchDevice`), settings page enumerates via the adapter (native names), browser `setSinkId` path fixed (elements now in DOM with `data-stream-id`).
 - [x] **[Voice] Noise Suppression Backend** ✅ (PR #507)
   - RNNoise denoises audio in real-time. The toggle now controls whether denoised or original audio is sent.
-- [ ] **[Client] WebSocket Reconnect Channel Refresh** `Priority: Low`
-  - WebSocket reconnect doesn't re-fetch channel list metadata (`last_read_message_id`, `last_message_id`). Stale unread dots until guild switch. Add `loadChannelsForGuild` call on reconnect.
-- [ ] **[Client] System Tray** `Priority: Low`
-  - Minimize to tray, tray icon with unread badge. Uses `tauri-plugin-tray`.
-- [ ] **[Client] Auto-Update** `Priority: Low`
-  - Tauri updater plugin integration with server-side update endpoint.
+- [x] **[Client] WebSocket Reconnect Channel Refresh** ✅ (PR #577, 2026-06-10)
+  - Reconnect recovery now refreshes the active guild's channel metadata and the DM list in parallel with re-subscription. NB: implemented via a new selection-preserving `refreshChannelsForGuild()` — the originally suggested `loadChannelsForGuild` auto-selects the first text channel and must not be used for background refreshes.
+- [x] **[Client] System Tray** ✅ (PR #578, 2026-06-11)
+  - Tauri 2 core tray (`tray-icon` feature — `tauri-plugin-tray` doesn't exist in v2): Show/Quit menu, left-click restore, close-to-tray (main window only), unread badge (tooltip + `set_title` text badge) driven by a reactive guild+DM unread sum.
+- [x] **[Client] Auto-Update** ✅ (PR #579, 2026-06-11)
+  - `tauri-plugin-updater` against GitHub Releases (`latest.json` manifest assembled in release.yml with per-platform signed artifact URLs). Check 10s after startup, background download, "Restart now" toast. Release builds require `TAURI_SIGNING_PRIVATE_KEY` secrets. End-to-end verification pending first release tag after merge.
 
 ### Chat Improvements (Delivered 2026-03-25)
 
