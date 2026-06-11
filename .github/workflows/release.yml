@@ -129,6 +129,10 @@ jobs:
         working-directory: client
         env:
           BUILD_TARGET: ${{ matrix.target }}
+          # Required: bundle.createUpdaterArtifacts is enabled, so the build
+          # signs updater bundles. Builds fail if the key is missing.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: bun run tauri build -- --target "$BUILD_TARGET"
 
       - name: Generate checksums (Linux)
@@ -251,11 +255,71 @@ jobs:
           # Find and copy all built packages
           find artifacts -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" -o -name "*.dmg" \) -exec cp {} release-assets/ \;
 
+          # Updater signatures for Linux/Windows travel with their installers
+          find artifacts -type f \( -name "*.AppImage.sig" -o -name "*.exe.sig" -o -name "*.msi.sig" \) -exec cp {} release-assets/ \;
+
+          # macOS updater bundles are named identically for both
+          # architectures (Kaiku.app.tar.gz) — disambiguate by the build
+          # target found in the artifact path.
+          for arch in x86_64 aarch64; do
+            src=$(find artifacts -path "*${arch}-apple-darwin*" -name "*.app.tar.gz" | head -1)
+            if [ -n "$src" ]; then
+              name="$(basename "${src%.app.tar.gz}")-${arch}.app.tar.gz"
+              cp "$src" "release-assets/$name"
+              [ -f "${src}.sig" ] && cp "${src}.sig" "release-assets/${name}.sig"
+            fi
+          done
+
           # Find and consolidate checksums
           find artifacts -type f -name "checksums.txt" -exec cat {} \; > release-assets/checksums.txt || true
 
           # List what we're uploading
           ls -lah release-assets/
+
+      - name: Generate updater manifest (latest.json)
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          python3 - <<'EOF'
+          import datetime
+          import glob
+          import json
+          import os
+
+          tag = os.environ["VERSION"]
+          base = f"https://github.com/Detair/kaiku/releases/download/{tag}"
+          platforms = {}
+
+          def add(key, *patterns):
+              for pattern in patterns:
+                  for path in sorted(glob.glob(f"release-assets/{pattern}")):
+                      sig = path + ".sig"
+                      if os.path.exists(sig):
+                          with open(sig, encoding="utf-8") as f:
+                              platforms[key] = {
+                                  "signature": f.read().strip(),
+                                  "url": f"{base}/{os.path.basename(path)}",
+                              }
+                          return
+
+          add("linux-x86_64", "*.AppImage")
+          add("windows-x86_64", "*-setup.exe", "*.msi")
+          add("darwin-x86_64", "*x86_64.app.tar.gz")
+          add("darwin-aarch64", "*aarch64.app.tar.gz")
+
+          manifest = {
+              "version": tag.lstrip("v"),
+              "notes": f"See https://github.com/Detair/kaiku/releases/tag/{tag}",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc)
+                  .isoformat(timespec="seconds"),
+              "platforms": platforms,
+          }
+          with open("release-assets/latest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2)
+          print(json.dumps(manifest, indent=2))
+          if not platforms:
+              raise SystemExit("No signed updater artifacts found — check TAURI_SIGNING_PRIVATE_KEY")
+          EOF
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
