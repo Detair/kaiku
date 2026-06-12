@@ -682,7 +682,7 @@ async fn handle_voice_stats(
     pool: &PgPool,
     user_id: Uuid,
     channel_id: Uuid,
-    stats: VoiceStats,
+    mut stats: VoiceStats,
 ) -> Result<(), VoiceError> {
     // Rate limit check
     if sfu.check_stats_rate_limit(user_id).await.is_err() {
@@ -696,24 +696,33 @@ async fn handle_voice_stats(
         return Ok(());
     }
 
-    // Broadcast to room participants
-    let broadcast = ServerEvent::VoiceUserStats {
-        channel_id,
-        user_id,
-        latency: stats.latency,
-        packet_loss: stats.packet_loss,
-        jitter: stats.jitter,
-        quality: stats.quality,
+    // The peer must be in the room; bail before storing anything otherwise.
+    // We also take the SERVER-tracked session id from the peer rather than
+    // trusting the client-supplied `stats.session_id` — the client value is
+    // unauthenticated and a wrong/forged id would file metrics against a
+    // session that never gets finalized (or another user's session).
+    let Some(room) = sfu.get_room(channel_id).await else {
+        return Ok(());
     };
+    let Some(peer) = room.get_peer(user_id).await else {
+        warn!(user_id = %user_id, channel_id = %channel_id, "User sent voice stats for a room they are not in");
+        return Ok(());
+    };
+    stats.session_id = peer.session_id;
 
-    if let Some(room) = sfu.get_room(channel_id).await {
-        // Verify user is actually in the room before broadcasting
-        if room.get_peer(user_id).await.is_none() {
-            warn!(user_id = %user_id, channel_id = %channel_id, "User attempted to broadcast stats to a room they are not in");
-            return Ok(());
-        }
-        room.broadcast_except(user_id, broadcast).await;
-    }
+    // Broadcast to room participants
+    room.broadcast_except(
+        user_id,
+        ServerEvent::VoiceUserStats {
+            channel_id,
+            user_id,
+            latency: stats.latency,
+            packet_loss: stats.packet_loss,
+            jitter: stats.jitter,
+            quality: stats.quality,
+        },
+    )
+    .await;
 
     // Store in database (fire-and-forget)
     let guild_id = get_guild_id(pool, channel_id).await;

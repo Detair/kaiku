@@ -252,14 +252,15 @@ Password reset emails are plain text. HTML alternative with `lettre::message::Mu
 
 ---
 
-### TD-27: Connectivity monitor known gaps
+### TD-27: Connectivity monitor known gaps ✅ RESOLVED
 
 **Source:** `docs/developer-guide/plans/2026-01-19-user-connectivity-monitor-PR.md:139-144`
 
-- No integration tests for REST API endpoints
-- Session ID is client-generated, not validated server-side
-- Pagination replaces list instead of appending
-- No retry for session finalization on DB failure
+**Resolved:** 2026-06-12 — all four gaps closed:
+- **REST integration tests** — `server/tests/integration/connectivity_http.rs` (10 tests: summary, sessions list, pagination, session detail, auth required, RLS cross-user isolation) was added between the audit and now.
+- **Server-side session ID validation** — `handle_voice_stats` now overwrites the client-supplied `session_id` with the server-tracked `peer.session_id`, so metrics can't be filed against a forged or foreign session (`server/src/voice/ws_handler.rs`).
+- **Pagination append** — `SessionList.tsx` accumulates pages (createEffect appends each fetched page) instead of replacing on offset change; "Load more" grows the list.
+- **Finalization retry** — `finalize_session` is called inside a 3-attempt exponential-backoff loop (100/200/400 ms) in `ws_handler.rs`; this was already present.
 
 ---
 
@@ -290,12 +291,12 @@ Threads feature is complete but there's no guild-level setting to enable/disable
 
 | Status | Count |
 |--------|-------|
-| ✅ Resolved | 20 |
-| Open | 10 |
+| ✅ Resolved | 21 |
+| Open | 9 |
 | **Total** | 30 |
 
-**Resolved items:** TD-01, TD-02, TD-03, TD-04, TD-05, TD-06, TD-08, TD-09, TD-10, TD-11, TD-12, TD-13, TD-15, TD-16, TD-17, TD-20, TD-22, TD-25, TD-26, TD-30
-**Open items:** TD-07, TD-14, TD-18, TD-19, TD-21, TD-23, TD-24, TD-27, TD-28, TD-29 (rescoped)
+**Resolved items:** TD-01, TD-02, TD-03, TD-04, TD-05, TD-06, TD-08, TD-09, TD-10, TD-11, TD-12, TD-13, TD-15, TD-16, TD-17, TD-20, TD-22, TD-25, TD-26, TD-27, TD-30
+**Open items:** TD-07, TD-14, TD-18, TD-19, TD-21, TD-23, TD-24, TD-28, TD-29 (rescoped)
 
 ## Code Quality Summary
 
