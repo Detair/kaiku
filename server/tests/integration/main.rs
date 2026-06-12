@@ -36,6 +36,7 @@ mod setup;
 mod setup_concurrent_http;
 mod setup_http;
 mod setup_integration;
+mod tenancy_isolation;
 mod threads;
 mod upload_limits;
 mod uploads_http;
