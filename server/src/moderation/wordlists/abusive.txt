@@ -1,3 +1,25 @@
-# Abusive language word list — curated starter set
-# One keyword per line. Lines starting with # are comments.
-# Guilds should extend with custom patterns for their community.
+# Abusive language — curated baseline (TD-26, 2026-06-12)
+# Targets direct harassment: self-harm directives and personal threats.
+# Plain lines are keywords (SUBSTRING matched — phrases only, never short
+# tokens); "regex:" lines are compiled patterns (use \b for boundaries).
+#
+# Deliberately excludes general insults/profanity — those are community
+# policy, not a safe default. Operators extend per community:
+# Admin → Safety → Filters.
+
+# Self-harm directives
+kill yourself
+kill urself
+kys yourself
+neck yourself
+go hang yourself
+drink bleach and die
+# "kys" with spacing/punctuation evasion (k.y.s, k y s, k-y-s)
+regex:(?i)\bk[\s.\-_]{0,2}y[\s.\-_]{0,2}s\b
+regex:(?i)\bgo\s+(and\s+)?die\b
+regex:(?i)\bend\s+your\s*self\b
+
+# Direct threats of violence
+regex:(?i)\bi('?| wi)ll\s+(kill|murder|hurt)\s+you\b
+regex:(?i)\byou\s+(deserve|should)\s+to\s+die\b
+regex:(?i)\bi\s+hope\s+you\s+(die|get\s+cancer)\b

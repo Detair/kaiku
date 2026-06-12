@@ -1,3 +1,22 @@
-# Hate speech word list — curated starter set
-# One keyword per line. Lines starting with # are comments.
-# Guilds should extend with custom patterns for their community.
+# Hate speech — curated baseline (TD-26, 2026-06-12)
+# Targets explicit hate advocacy: extremist glorification and calls for
+# violence against groups. Plain lines are keywords (SUBSTRING matched —
+# phrases only); "regex:" lines are compiled patterns.
+#
+# Deliberately small and unambiguous: identity-term enumeration produces
+# false positives on reclaimed/contextual usage and belongs to per-guild
+# curation, not a shipped default. Operators extend per community:
+# Admin → Safety → Filters.
+
+# Nazi / extremist glorification
+heil hitler
+sieg heil
+# 1488 as a standalone token (boundary-anchored: bare keyword would
+# substring-match order numbers, prices, years)
+regex:\b1488\b
+regex:(?i)\bwhite\s+power\b
+regex:(?i)\bgas\s+the\s+\w+s\b
+
+# Calls for group violence
+regex:(?i)\bdeath\s+to\s+(all\s+)?\w+s\b
+regex:(?i)\b(exterminate|eradicate)\s+(all\s+)?(the\s+)?\w+s\b

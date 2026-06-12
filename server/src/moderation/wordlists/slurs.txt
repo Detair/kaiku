@@ -1,3 +1,22 @@
-# Slurs word list — curated starter set
-# One keyword per line. Lines starting with # are comments.
-# Guilds should extend with custom patterns for their community.
+# Slurs — curated baseline (TD-26, 2026-06-12)
+# A deliberately small set of the most severe, universally-condemned slurs,
+# boundary-anchored with basic character-substitution evasion handling.
+# "regex:" lines are compiled patterns; plain lines would be SUBSTRING
+# matched and are avoided here entirely (short slurs inside innocent words
+# — the Scunthorpe problem).
+#
+# This is a baseline, not a complete list: severity and reclamation are
+# community- and language-specific, so operators are expected to curate
+# per community (Admin → Safety → Filters). Established external lists
+# (e.g. LDNOOBW) are CC-BY licensed — incompatible with this repo's
+# MIT/Apache policy for embedding, but operators may import them into
+# their own guild filters at deploy time.
+
+regex:(?i)\bn[i1!|]gg[e3]r\b
+regex:(?i)\bn[i1!|]gg[a4]\b
+regex:(?i)\bf[a4]gg?[o0]t\b
+regex:(?i)\bk[i1!|]k[e3]\b
+regex:(?i)\btr[a4]nn(y|[i1!|][e3])s?\b
+regex:(?i)\bch[i1!|]nk\b
+regex:(?i)\bsp[i1!|]c\b
+regex:(?i)\bw[e3]tb[a4]ck\b
