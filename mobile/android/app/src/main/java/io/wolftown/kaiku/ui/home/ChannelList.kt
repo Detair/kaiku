@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Badge
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -102,12 +103,25 @@ private fun ChannelItem(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+        val hasUnread = channel.unreadCount > 0
         Text(
             text = channel.name,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+            // Unread channels read brighter and bolder, matching the desktop.
+            fontWeight = if (hasUnread) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (hasUnread) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
             modifier = Modifier.weight(1f)
         )
+
+        if (hasUnread) {
+            Badge {
+                Text(text = if (channel.unreadCount > 99) "99+" else channel.unreadCount.toString())
+            }
+        }
 
         if (channel.channelType == ChannelType.VOICE && channel.userLimit != null && channel.userLimit > 0) {
             Text(

@@ -19,5 +19,10 @@ data class Channel(
     val topic: String? = null,
     val userLimit: Int? = null,
     val position: Int = 0,
-    val createdAt: String = ""
+    val createdAt: String = "",
+    // Unread tracking (server sends these on the guild channels endpoint;
+    // defaulted so other channel responses that omit them still parse).
+    val unreadCount: Int = 0,
+    val lastMessageId: String? = null,
+    val lastReadMessageId: String? = null,
 )

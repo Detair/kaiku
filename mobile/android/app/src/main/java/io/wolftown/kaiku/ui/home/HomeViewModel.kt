@@ -73,6 +73,10 @@ class HomeViewModel @Inject constructor(
     }
 
     fun onChannelSelected(channelId: String, channelType: ChannelType) {
+        // Opening a text channel marks it read and clears its unread badge.
+        if (channelType == ChannelType.TEXT) {
+            guildRepository.setActiveChannel(channelId)
+        }
         val result = _navigateToChannel.trySend(ChannelNavEvent(channelId, channelType))
         if (result.isFailure) {
             logger.warning("navigateToChannel dropped (collector suspended or buffer full): $channelId")
