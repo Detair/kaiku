@@ -29,7 +29,7 @@ pub fn init_start_time() {
     START_TIME.get_or_init(Instant::now);
 }
 
-fn server_uptime_seconds() -> u64 {
+pub(super) fn server_uptime_seconds() -> u64 {
     START_TIME.get_or_init(Instant::now).elapsed().as_secs()
 }
 

@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     let admin_routes = Router::new()
         .route("/health", get(|| async { "admin ok" }))
         .route("/stats", get(system::get_admin_stats))
+        .route("/diagnostics", get(system::get_diagnostics))
         .route("/users", get(users::list_users))
         .route("/users/export", get(users::export_users_csv))
         .route("/users/{id}/details", get(users::get_user_details))

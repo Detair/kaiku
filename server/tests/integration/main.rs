@@ -1,5 +1,6 @@
 mod helpers;
 
+mod admin_diagnostics;
 mod admin_elevation;
 mod admin_reports;
 mod auth;
