@@ -619,7 +619,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 class="p-1 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
-                title="Test Microphone"
+                title="Test Microphone" aria-label="Test Microphone"
                 onClick={() => setShowMicTest(true)}
               >
                 <Mic class="w-4 h-4" />
@@ -627,7 +627,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
               <button
                 class="p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
                 data-testid="create-channel-button"
-                title="Create Channel"
+                title="Create Channel" aria-label="Create Channel"
                 onClick={() => openCreateModal("text", null)}
               >
                 <Plus class="w-4 h-4" />
@@ -652,7 +652,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
         <div class="flex items-center justify-center gap-2 py-4">
           <button
             class="p-2 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
-            title="Test Microphone"
+            title="Test Microphone" aria-label="Test Microphone"
             onClick={() => setShowMicTest(true)}
           >
             <Mic class="w-5 h-5" />
@@ -661,7 +661,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
             <button
               class="p-2 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
               data-testid="create-channel-button"
-              title="Create Channel"
+              title="Create Channel" aria-label="Create Channel"
               onClick={() => openCreateModal("text", null)}
             >
               <Plus class="w-5 h-5" />

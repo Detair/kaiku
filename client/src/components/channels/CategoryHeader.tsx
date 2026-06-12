@@ -88,7 +88,7 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
             <button
               class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
               onClick={props.onCreateChannel}
-              title="Create Channel"
+              title="Create Channel" aria-label="Create Channel"
             >
               <Plus class="w-3.5 h-3.5" />
             </button>
@@ -97,7 +97,7 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
             <button
               class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
               onClick={props.onSettings}
-              title="Category Settings"
+              title="Category Settings" aria-label="Category Settings"
             >
               <Settings class="w-3.5 h-3.5" />
             </button>

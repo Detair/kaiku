@@ -130,6 +130,9 @@ const UserPanel: Component = () => {
               title={
                 adminState.isElevated ? "Admin Panel (Elevated)" : "Admin Panel"
               }
+              aria-label={
+                adminState.isElevated ? "Admin Panel (Elevated)" : "Admin Panel"
+              }
               onClick={() => setShowAdmin(true)}
             >
               <Shield class="w-4 h-4" />
@@ -138,7 +141,7 @@ const UserPanel: Component = () => {
           <button
             class="p-1.5 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-all duration-200"
             data-testid="user-settings-button"
-            title="User Settings"
+            title="User Settings" aria-label="User Settings"
             onClick={() => setShowSettings(true)}
           >
             <Settings class="w-4 h-4" />
@@ -146,7 +149,7 @@ const UserPanel: Component = () => {
           <button
             data-testid="logout-button"
             class="p-1.5 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded-lg transition-all duration-200"
-            title="Logout"
+            title="Logout" aria-label="Logout"
             onClick={() => logout()}
           >
             <LogOut class="w-4 h-4" />
