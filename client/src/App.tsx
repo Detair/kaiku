@@ -51,6 +51,7 @@ import { onShowBlockConfirm, onShowReport } from "./lib/contextMenuBuilders";
 import { fetchUploadLimits } from "./lib/tauri";
 import { initDrafts } from "./stores/drafts";
 import { initTrayBadge } from "./lib/trayBadge";
+import { initUpdater } from "./lib/updater";
 
 // Global modal state
 const [blockTarget, setBlockTarget] = createSignal<{
@@ -82,6 +83,8 @@ const Layout: Component<ParentProps> = (props) => {
     initDrafts();
     // Sync total unread count to the system tray badge (desktop only)
     initTrayBadge();
+    // Check for app updates shortly after startup (desktop only)
+    initUpdater();
     // Fetch upload size limits from server (non-blocking)
     fetchUploadLimits().catch((err) =>
       console.warn("[App] Failed to fetch upload limits:", err),

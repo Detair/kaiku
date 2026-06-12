@@ -31,6 +31,9 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
+# Needed for relaunch() after an update is installed
+tauri-plugin-process = "2"
 
 # Async
 tokio.workspace = true
