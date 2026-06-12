@@ -569,8 +569,17 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 *Goal: Surpass industry leaders with unique utility and sovereignty features.*
 - Implementation coverage: [Mobile + Workspaces](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md), [Live Toolkit](../plans/2026-02-15-phase-6-sovereign-livekit-implementation.md), [Focus + Library](../plans/2026-02-15-phase-6-focus-library-implementation.md).
 
-- [ ] **[Client] Mobile Support** ([Design](../plans/2026-02-15-phase-6-mobile-workspaces-design.md), [Implementation](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md))
-  - Adapt Tauri frontend for mobile or begin Flutter/Native implementation.
+- [ ] **[Client] Mobile Support → Android Beta milestone** (defined 2026-06-12; original design: [Mobile + Workspaces](../plans/2026-02-15-phase-6-mobile-workspaces-design.md))
+  - A native Kotlin/Compose app exists in `mobile/android` (v0.1.0, signed-release config, 14 unit/integration test files) — further along than this roadmap previously acknowledged. Code-verified coverage as of 2026-06-12:
+  - **Solid (at or near parity):** auth (login/register/OIDC+PKCE/QR login/token refresh/EncryptedSharedPreferences persistence), TLS 1.3 enforcement, WebSocket client (25 server event types, heartbeat + backoff), guild/channel browsing, message send/receive/edit/delete with history pagination, typing indicators, voice join/leave/mute with dual PCs + foreground service, participants list.
+  - **Android Beta milestone (daily-driver text chat) — the 5 blocking gaps:**
+    1. Markdown rendering (messages are plain text today)
+    2. Attachment display (models exist, no UI rendering)
+    3. Unread indicators (no counts/badges on guilds or channels)
+    4. DM support (enum exists, no list/conversation UI)
+    5. Reaction emoji picker (API + events wired, picker UI is a stub)
+  - **Post-beta parity backlog:** MFA code-entry UI, mentions, search, attachment upload, reply composer, guild create/join/invites, push notifications (FCM), theme setting, deafen, speaking indicators, screen-share rendering, screen-share sending, E2EE (no vodozemac on Android yet), channel category grouping.
+  - **Exit criteria for the beta:** the 5 blockers shipped, an instrumented UI smoke-test suite added (currently zero), and one full week of daily use on the beta server without data-loss bugs.
 - [x] **[UX] Personal Workspaces (Favorites v2)** ([Design](../plans/2026-02-15-phase-6-mobile-workspaces-design.md), [Implementation](../plans/2026-02-15-phase-6-mobile-workspaces-implementation.md)) — (#250)
   - 9 REST endpoints, 7 WebSocket events, cross-guild channel aggregation with drag-and-drop reordering.
   - Configurable limits (`MAX_WORKSPACES_PER_USER`, `MAX_ENTRIES_PER_WORKSPACE`), atomic CTE for concurrency safety, 17 integration tests.
