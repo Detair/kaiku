@@ -524,3 +524,216 @@ async fn test_websocket_subscribe_owner_bypass(pool: PgPool) {
     ctx.cleanup().await;
     println!("✅ WebSocket Subscribe owner bypass test passed.");
 }
+
+// ============================================================================
+// Event-routing isolation (Phase 8, Goal 5 — tenancy verification)
+// ============================================================================
+//
+// Completes the isolation invariants started in `tenancy_isolation.rs`:
+// realtime events must respect the same boundaries as HTTP access.
+//
+// Cache-key namespace survey (2026-06-12, documented here per the design's
+// "cache key namespace checks" scope): every Redis/in-memory key is scoped
+// to its principal or resource by construction —
+//   - pubsub topics:    `channel_events(channel_id)` (per channel)
+//   - screen share:     `screenshare:limit:{channel_id}` (per channel)
+//   - rate limiting:    `ratelimit:{category}:{user|ip}` (per principal)
+//   - block cache:      `blocked_by:{user_id}` (per user)
+// There are no guild-level shared keys that could cross tenants; the tests
+// below verify the pubsub topic scoping behaviorally.
+
+/// A user who is not a member of the guild at all (cross-tenant outsider,
+/// stronger than `user_no_perm`, who is a member with zero permissions)
+/// must be denied WebSocket subscription to its channels.
+#[sqlx::test]
+async fn test_ws_subscribe_denied_for_foreign_guild_outsider(pool: PgPool) {
+    use tokio::sync::mpsc;
+
+    let ctx = PermissionTestContext::setup(pool).await;
+
+    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let outsider = db::create_user(
+        &ctx.db_pool,
+        &format!("ws_outsider_{test_id}"),
+        "Outsider",
+        None,
+        "hash",
+    )
+    .await
+    .expect("Create outsider failed");
+
+    let (tx, mut rx) = mpsc::channel(10);
+    let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let mut msg_state = vc_server::ws::ClientMessageState::default();
+
+    let subscribe_event = serde_json::json!({
+        "type": "subscribe",
+        "channel_id": ctx.channel.id.to_string()
+    });
+
+    let result = vc_server::ws::handle_client_message(
+        &subscribe_event.to_string(),
+        outsider.id,
+        &ctx.state,
+        &tx,
+        &subscribed_channels,
+        &admin_subscribed,
+        &mut msg_state,
+    )
+    .await;
+    assert!(result.is_ok(), "Handler should not crash");
+
+    assert!(
+        !subscribed_channels.read().await.contains(&ctx.channel.id),
+        "Outsider must NOT be subscribed to a foreign guild's channel"
+    );
+
+    let event = tokio::time::timeout(tokio::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("Should receive an error event")
+        .expect("Channel should not be closed");
+    match event {
+        OutboundMsg::Event(ServerEvent::Error { code, .. }) => {
+            assert_eq!(code, "forbidden");
+        }
+        _ => panic!("Expected Error event, got {event:?}"),
+    }
+
+    let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(outsider.id)
+        .execute(&ctx.db_pool)
+        .await;
+    ctx.cleanup().await;
+}
+
+/// Broadcasting to channel A must not produce anything on channel B's
+/// pubsub topic. Topics are channel-id-scoped, so the guild boundary
+/// follows directly from this property.
+#[sqlx::test]
+async fn test_broadcast_isolated_to_channel_topic(pool: PgPool) {
+    let ctx = PermissionTestContext::setup(pool).await;
+
+    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let other_channel = db::create_channel(
+        &ctx.db_pool,
+        db::CreateChannelParams {
+            name: &format!("ws-other-{test_id}"),
+            channel_type: &db::ChannelType::Text,
+            category_id: None,
+            guild_id: None,
+            topic: None,
+            icon_url: None,
+            user_limit: None,
+        },
+    )
+    .await
+    .expect("Create other channel failed");
+
+    // Subscribe to the OTHER channel's topic only
+    let subscriber = ctx.state.redis.clone_new();
+    let _ = subscriber.connect();
+    subscriber
+        .wait_for_connect()
+        .await
+        .expect("Redis subscriber connect failed");
+    let other_topic = vc_server::ws::channels::channel_events(other_channel.id);
+    let () = subscriber
+        .subscribe(other_topic)
+        .await
+        .expect("Subscribe failed");
+    let mut stream = subscriber.message_rx();
+
+    // Broadcast into ctx.channel (the channel we are NOT subscribed to)
+    let event = ServerEvent::TypingStart {
+        channel_id: ctx.channel.id,
+        user_id: ctx.owner.id,
+    };
+    let _: () = vc_server::ws::broadcast_to_channel(&ctx.state.redis, ctx.channel.id, &event)
+        .await
+        .expect("Broadcast failed");
+
+    // Nothing may arrive on the other channel's topic
+    let leaked = tokio::time::timeout(tokio::time::Duration::from_millis(800), stream.recv()).await;
+    assert!(
+        leaked.is_err(),
+        "Event broadcast to channel A leaked onto channel B's topic: {leaked:?}"
+    );
+
+    // Positive control: broadcasting to the subscribed channel DOES arrive
+    let control = ServerEvent::TypingStart {
+        channel_id: other_channel.id,
+        user_id: ctx.owner.id,
+    };
+    let _: () = vc_server::ws::broadcast_to_channel(&ctx.state.redis, other_channel.id, &control)
+        .await
+        .expect("Control broadcast failed");
+    let received = tokio::time::timeout(tokio::time::Duration::from_secs(2), stream.recv())
+        .await
+        .expect("Control event should arrive on its own topic")
+        .expect("Stream closed");
+    assert_eq!(
+        received.channel,
+        vc_server::ws::channels::channel_events(other_channel.id)
+    );
+
+    let _ = sqlx::query("DELETE FROM channels WHERE id = $1")
+        .bind(other_channel.id)
+        .execute(&ctx.db_pool)
+        .await;
+    ctx.cleanup().await;
+}
+
+/// Typing client-messages for a channel the connection never subscribed to
+/// (subscription being the permission gate) must be dropped silently —
+/// no broadcast reaches the channel's topic.
+#[sqlx::test]
+async fn test_typing_in_unsubscribed_channel_not_broadcast(pool: PgPool) {
+    use tokio::sync::mpsc;
+
+    let ctx = PermissionTestContext::setup(pool).await;
+
+    // Listen on the target channel's topic to catch any leaked broadcast
+    let subscriber = ctx.state.redis.clone_new();
+    let _ = subscriber.connect();
+    subscriber
+        .wait_for_connect()
+        .await
+        .expect("Redis subscriber connect failed");
+    let () = subscriber
+        .subscribe(vc_server::ws::channels::channel_events(ctx.channel.id))
+        .await
+        .expect("Subscribe failed");
+    let mut stream = subscriber.message_rx();
+
+    // user_no_perm has no subscription (and no VIEW_CHANNEL) — typing must
+    // be dropped before any broadcast happens.
+    let (tx, _rx) = mpsc::channel(10);
+    let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let mut msg_state = vc_server::ws::ClientMessageState::default();
+
+    let typing_event = serde_json::json!({
+        "type": "typing",
+        "channel_id": ctx.channel.id.to_string()
+    });
+    let result = vc_server::ws::handle_client_message(
+        &typing_event.to_string(),
+        ctx.user_no_perm.id,
+        &ctx.state,
+        &tx,
+        &subscribed_channels,
+        &admin_subscribed,
+        &mut msg_state,
+    )
+    .await;
+    assert!(result.is_ok(), "Handler should not crash");
+
+    let leaked = tokio::time::timeout(tokio::time::Duration::from_millis(800), stream.recv()).await;
+    assert!(
+        leaked.is_err(),
+        "Typing from an unsubscribed user leaked to the channel topic: {leaked:?}"
+    );
+
+    ctx.cleanup().await;
+}
