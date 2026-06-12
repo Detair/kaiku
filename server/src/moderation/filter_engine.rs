@@ -303,6 +303,95 @@ mod tests {
         assert!(result.blocked);
     }
 
+    // ------------------------------------------------------------------
+    // Baseline wordlist coverage (TD-26): every built-in category must
+    // compile, block its canonical cases, and pass innocent content.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn all_builtin_categories_compile_together() {
+        let configs: Vec<_> = [
+            FilterCategory::Slurs,
+            FilterCategory::HateSpeech,
+            FilterCategory::Spam,
+            FilterCategory::AbusiveLanguage,
+        ]
+        .into_iter()
+        .map(|c| make_config(c, FilterAction::Block, true))
+        .collect();
+        let engine = FilterEngine::build(&configs, &[]).unwrap();
+        assert!(!engine.is_empty(), "baseline lists must not be empty");
+    }
+
+    #[test]
+    fn builtin_spam_blocks_scams_and_flood() {
+        let config = make_config(FilterCategory::Spam, FilterAction::Block, true);
+        let engine = FilterEngine::build(&[config], &[]).unwrap();
+
+        for msg in [
+            "FREE NITRO just click bit.ly/abc123",
+            "double your crypto today",
+            "verify your account now or lose access",
+        ] {
+            assert!(engine.check(msg).blocked, "should block: {msg}");
+        }
+        assert!(!engine.check("let's play tonight at 8").blocked);
+    }
+
+    #[test]
+    fn builtin_abusive_blocks_harassment_and_evasion() {
+        let config = make_config(FilterCategory::AbusiveLanguage, FilterAction::Block, true);
+        let engine = FilterEngine::build(&[config], &[]).unwrap();
+
+        for msg in [
+            "just kill yourself already",
+            "k y s",
+            "k.y.s.",
+            "i'll kill you",
+            "you deserve to die",
+        ] {
+            assert!(engine.check(msg).blocked, "should block: {msg}");
+        }
+        // Innocent content containing risky substrings must pass
+        for msg in [
+            "the kyoto summit starts tomorrow", // contains k-y-s letters apart
+            "that boss fight nearly killed me",
+            "skys are clear tonight",
+        ] {
+            assert!(!engine.check(msg).blocked, "false positive on: {msg}");
+        }
+    }
+
+    #[test]
+    fn builtin_hate_speech_blocks_advocacy_not_numbers() {
+        let config = make_config(FilterCategory::HateSpeech, FilterAction::Block, true);
+        let engine = FilterEngine::build(&[config], &[]).unwrap();
+
+        assert!(engine.check("sieg heil").blocked);
+        assert!(engine.check("1488").blocked);
+        // boundary anchoring: 1488 inside a longer number must pass
+        assert!(!engine.check("order #314889 shipped").blocked);
+        assert!(!engine.check("the year 1487 was uneventful").blocked);
+    }
+
+    #[test]
+    fn builtin_slurs_block_with_evasion_but_not_scunthorpe() {
+        let config = make_config(FilterCategory::Slurs, FilterAction::Block, true);
+        let engine = FilterEngine::build(&[config], &[]).unwrap();
+
+        // Canonical and leetspeak forms (constructed in-test, not stored)
+        let canonical = ["n", "i", "g", "g", "e", "r"].concat();
+        let leet = ["n", "1", "g", "g", "3", "r"].concat();
+        let f_slur = ["f", "a", "g", "g", "o", "t"].concat();
+        for msg in [canonical, leet, f_slur] {
+            assert!(engine.check(&msg).blocked, "should block slur variant");
+        }
+        // Scunthorpe guards: innocent words containing risky substrings
+        for msg in ["the spice must flow", "chinking sound of coins"] {
+            assert!(!engine.check(msg).blocked, "false positive on: {msg}");
+        }
+    }
+
     #[test]
     fn disabled_config_skipped() {
         let config = make_config(FilterCategory::Spam, FilterAction::Block, false);

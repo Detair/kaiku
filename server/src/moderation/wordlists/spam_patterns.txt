@@ -1,8 +1,35 @@
-# Spam patterns — curated starter set
+# Spam patterns — curated baseline (TD-26, 2026-06-12)
 # Lines prefixed with "regex:" are compiled as regex patterns.
-# Other lines are plain keywords.
+# Other lines are plain keywords (Aho-Corasick SUBSTRING matching — only
+# use phrases that are unambiguous as substrings; boundary-sensitive
+# entries must be regex with \b).
 # Lines starting with # are comments.
+#
+# Operators should extend per community: Admin → Safety → Filters.
+
+# Commercial spam
 regex:(?i)buy\s+now\s+\d+%\s+off
 regex:(?i)free\s+(gift\s+)?cards?\b
 regex:(?i)click\s+here\s+to\s+(claim|win|get)
-regex:(?i)(bit\.ly|tinyurl\.com|t\.co)/\S+
+regex:(?i)limited\s+time\s+offer.{0,30}(click|buy|order)
+
+# Link shorteners commonly used to mask spam/phishing targets
+regex:(?i)\b(bit\.ly|tinyurl\.com|t\.co|goo\.gl|is\.gd|cutt\.ly)/\S+
+
+# Gaming-community scams (Discord-adjacent classics)
+regex:(?i)free\s+(discord\s+)?nitro\b
+regex:(?i)steam\s+(gift|wallet)\s*(card|code)s?\s+(free|giveaway)
+regex:(?i)(claim|get)\s+your\s+free\s+(skin|loot|robux|vbucks)
+
+# Crypto / financial scams
+regex:(?i)(double|triple)\s+your\s+(crypto|bitcoin|btc|eth|money)
+regex:(?i)(crypto|bitcoin|forex)\s+(giveaway|investment)\s*(dm|click|join)
+regex:(?i)dm\s+me\s+(to|for)\s+(earn|make)\s+(money|\$)
+
+# Phishing phrasing
+regex:(?i)(verify|confirm)\s+your\s+account\s+(now|here|immediately)
+regex:(?i)your\s+account\s+(will\s+be|has\s+been)\s+(suspended|deleted|banned).{0,40}(click|verify|here)
+
+# NOTE: no character-flood pattern here — Rust's regex crate has no
+# backreferences, so `(.)\1{11,}` cannot compile. Flood control is the
+# rate limiter's job (server/src/ratelimit).

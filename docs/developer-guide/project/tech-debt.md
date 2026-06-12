@@ -244,16 +244,11 @@ Password reset emails are plain text. HTML alternative with `lettre::message::Mu
 
 ---
 
-### TD-26: Moderation filter patterns are placeholders
+### TD-26: Moderation filter patterns are placeholders ✅ RESOLVED
 
 **Source:** `docs/developer-guide/plans/2026-01-29-moderation-safety-implementation-v2.md`
 
-Multiple TODOs in moderation implementation doc:
-- "Replace with real patterns before production" (3 occurrences)
-- "Add more harassment patterns"
-- "Consider fail-closed mode for critical filters"
-
-Note: Content filter feature itself is not yet implemented (Phase 5 open item). These are documented requirements for when it ships.
+**Resolved:** 2026-06-12 — three of four built-in wordlists shipped EMPTY (slurs, hate_speech, abusive had comments only; spam had 4 starter regexes). Replaced with curated baselines: spam (14 patterns: scams, phishing, shorteners), abusive (self-harm directives + threats with spacing-evasion regexes), hate speech (extremist glorification + group-violence patterns, boundary-anchored), slurs (severe-only, boundary-anchored regexes with leetspeak classes — never substring keywords, avoiding the Scunthorpe problem since Aho-Corasick matches substrings). 5 new engine tests cover block + false-positive cases per category. Operators still curate per community; external lists like LDNOOBW are CC-BY (incompatible with repo embedding) but importable per-guild. Fail-closed mode remains future work (noted in the plan doc).
 
 ---
 
@@ -295,12 +290,12 @@ Threads feature is complete but there's no guild-level setting to enable/disable
 
 | Status | Count |
 |--------|-------|
-| ✅ Resolved | 19 |
-| Open | 11 |
+| ✅ Resolved | 20 |
+| Open | 10 |
 | **Total** | 30 |
 
-**Resolved items:** TD-01, TD-02, TD-03, TD-04, TD-05, TD-06, TD-08, TD-09, TD-10, TD-11, TD-12, TD-13, TD-15, TD-16, TD-17, TD-20, TD-22, TD-25, TD-30
-**Open items:** TD-07, TD-14, TD-18, TD-19, TD-21, TD-23, TD-24, TD-26, TD-27, TD-28, TD-29 (rescoped)
+**Resolved items:** TD-01, TD-02, TD-03, TD-04, TD-05, TD-06, TD-08, TD-09, TD-10, TD-11, TD-12, TD-13, TD-15, TD-16, TD-17, TD-20, TD-22, TD-25, TD-26, TD-30
+**Open items:** TD-07, TD-14, TD-18, TD-19, TD-21, TD-23, TD-24, TD-27, TD-28, TD-29 (rescoped)
 
 ## Code Quality Summary
 
