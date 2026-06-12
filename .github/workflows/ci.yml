@@ -311,6 +311,10 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Bundle size budget
+        working-directory: .
+        run: python3 scripts/check_bundle_budget.py
+
   # ===========================================================================
   # Build Server Docker Image
   # ===========================================================================

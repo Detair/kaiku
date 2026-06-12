@@ -25,6 +25,7 @@ mod mention_permission;
 mod messages_http;
 mod oidc;
 mod pages;
+mod performance_budgets;
 mod ratelimit;
 mod ratelimit_http;
 mod reports;
