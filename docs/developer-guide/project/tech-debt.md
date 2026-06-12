@@ -1,7 +1,6 @@
 # Tech Debt Inventory
 
-**Last audited:** 2026-02-19
-**Branch:** `chore/tech-debt`
+**Last audited:** 2026-06-11 (code-verified sweep of all open items)
 
 This document catalogs all known tech debt across the Kaiku codebase, sourced from:
 - In-code markers (TODO, FIXME, HACK)
@@ -150,23 +149,19 @@ Three `#[ignore]` tests waiting on:
 
 ---
 
-### TD-15: Tauri native webcam capture not implemented
+### TD-15: Tauri native webcam capture not implemented ✅ RESOLVED
 
 **Source:** `docs/project/roadmap.md:418`
 
-Multi-stream works in browser but Tauri has no native webcam commands (`start_webcam`/`stop_webcam`).
+**Resolved:** before 2026-06-11 (entry was stale) — `client/src-tauri/src/commands/webcam.rs` implements `start_webcam`/`stop_webcam` with a native nokhwa capture pipeline (`WebcamPipeline`); both commands are registered in `lib.rs`.
 
 ---
 
-### TD-16: Tauri WebRTC connection metrics stub
+### TD-16: Tauri WebRTC connection metrics stub ✅ RESOLVED
 
 **File:** `client/src/lib/webrtc/tauri.ts:194`
 
-```typescript
-// TODO: Add Tauri command to fetch native WebRTC connection stats
-```
-
-`getConnectionMetrics()` returns null — connectivity monitor is broken in Tauri.
+**Resolved:** 2026-06-10 (PR #575) — `voice_connection_stats` command returns native RTT (publisher RTCP receiver reports; NB: webrtc-rs reports it in ms, not W3C seconds), receive-side packet loss and RFC 3550 jitter measured in the audio decode loop (webrtc-rs `get_stats()` exposes neither). The desktop quality indicator now shows live data.
 
 ---
 
@@ -241,11 +236,11 @@ Password reset emails are plain text. HTML alternative with `lettre::message::Mu
 
 ---
 
-### TD-25: Windows Tauri build broken
+### TD-25: Windows Tauri build broken ✅ RESOLVED
 
 **Source:** `docs/project/roadmap.md:397`
 
-`libvpx` not available via choco. CI job marked `continue-on-error: true`.
+**Resolved:** before 2026-06-10 (entry was stale) — Windows builds use `vcpkg install libvpx:x64-windows-static-md` (not choco) and pass in CI; PR #571 additionally fixed a CMake 4.x runner-image regression (`CMAKE_POLICY_VERSION_MINIMUM=3.5` now set on Windows). All Windows CI jobs (Build, Tauri) green as of PRs #571–#578.
 
 ---
 
@@ -281,11 +276,11 @@ Threads feature is complete but there's no guild-level setting to enable/disable
 
 ---
 
-### TD-29: Simulcast not implemented
+### TD-29: Simulcast not implemented (rescoped — server side is done)
 
 **Source:** `docs/project/roadmap.md:419`
 
-No quality tier switching for bandwidth management in voice/video streams.
+**Rescoped 2026-06-11 after code verification:** server-side layer negotiation is implemented — `server/src/voice/track_types.rs` defines `Layer`/`LayerPreference` with bitrate tiers (High 4 Mbps / Medium 800 kbps / Low 200 kbps) and `ws_handler.rs::handle_set_layer_preference` applies receiver preferences via the track router. What remains is the **publishing** side: webrtc-rs only annotates simulcast RIDs in SDP without producing actual multi-layer streams (see comment in `client/src-tauri/src/webrtc/mod.rs`), so desktop clients can't send multiple quality tiers. Blocked upstream on webrtc-rs; browser clients could implement true simulcast independently.
 
 ---
 
@@ -300,11 +295,12 @@ No quality tier switching for bandwidth management in voice/video streams.
 
 | Status | Count |
 |--------|-------|
-| ✅ Resolved | 16 |
-| Open | 14 |
+| ✅ Resolved | 19 |
+| Open | 11 |
 | **Total** | 30 |
 
-**Resolved items:** TD-01, TD-02, TD-04, TD-05, TD-06, TD-08, TD-09, TD-10, TD-11, TD-12, TD-13, TD-17, TD-20, TD-22, TD-30
+**Resolved items:** TD-01, TD-02, TD-03, TD-04, TD-05, TD-06, TD-08, TD-09, TD-10, TD-11, TD-12, TD-13, TD-15, TD-16, TD-17, TD-20, TD-22, TD-25, TD-30
+**Open items:** TD-07, TD-14, TD-18, TD-19, TD-21, TD-23, TD-24, TD-26, TD-27, TD-28, TD-29 (rescoped)
 
 ## Code Quality Summary
 
