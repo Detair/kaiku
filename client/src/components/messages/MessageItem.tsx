@@ -872,7 +872,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                         <button
                           type="button"
                           class="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded-lg text-white opacity-0 group-hover/attachment:opacity-100 transition-opacity backdrop-blur-sm cursor-pointer"
-                          title="Download original"
+                          title="Download original" aria-label="Download original"
                           onClick={async () => {
                             try {
                               const url = await fetchSignedUrl(attachment.id);

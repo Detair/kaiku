@@ -560,16 +560,16 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       <div class="relative flex flex-col rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors" style="background-color: var(--color-surface-layer2)">
         {/* Formatting toolbar */}
         <div class="flex items-center gap-1 px-2 py-1 border-b border-white/5">
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Bold (Ctrl+B)" onClick={() => insertFormatting("**", "**")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Bold (Ctrl+B)" aria-label="Bold (Ctrl+B)" onClick={() => insertFormatting("**", "**")}>
             <Bold class="w-4 h-4" />
           </button>
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Italic (Ctrl+I)" onClick={() => insertFormatting("*", "*")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Italic (Ctrl+I)" aria-label="Italic (Ctrl+I)" onClick={() => insertFormatting("*", "*")}>
             <Italic class="w-4 h-4" />
           </button>
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Code (Ctrl+E)" onClick={() => insertFormatting("`", "`")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Code (Ctrl+E)" aria-label="Code (Ctrl+E)" onClick={() => insertFormatting("`", "`")}>
             <Code class="w-4 h-4" />
           </button>
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Spoiler" onClick={() => insertFormatting("||", "||")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Spoiler" aria-label="Spoiler" onClick={() => insertFormatting("||", "||")}>
             <EyeOff class="w-4 h-4" />
           </button>
         </div>
@@ -579,7 +579,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           <button
             type="button"
             class="p-3 text-text-secondary hover:text-text-primary transition-colors"
-            title="Add files"
+            title="Add files" aria-label="Add files"
             onClick={handleFileSelect}
           >
             <PlusCircle class="w-5 h-5" />
@@ -608,7 +608,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
             ref={emojiButtonRef}
             type="button"
             class={`p-2 transition-colors ${showEmojiPicker() ? "text-accent-primary" : "text-text-secondary hover:text-text-primary"}`}
-            title="Add emoji"
+            title="Add emoji" aria-label="Add emoji"
             onClick={() => setShowEmojiPicker((prev) => !prev)}
           >
             <Smile class="w-5 h-5" />
@@ -638,6 +638,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
                 class="p-2 text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
                 disabled={isSending() || isOverLimit()}
                 title={pendingFiles().length > 0 ? `Send ${pendingFiles().length} file(s)` : "Send message"}
+                aria-label={pendingFiles().length > 0 ? `Send ${pendingFiles().length} file(s)` : "Send message"}
               >
                 <Send class="w-5 h-5" />
               </button>
