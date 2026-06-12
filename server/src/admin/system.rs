@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use axum::extract::{ConnectInfo, Path, State};
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
+use fred::interfaces::ClientLike;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
@@ -633,4 +634,125 @@ pub async fn delete_oidc_provider(
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Diagnostics (operator supportability pack — Phase 8)
+// ============================================================================
+
+/// Filesystem usage for the server's root mount, if measurable.
+#[derive(Debug, Serialize)]
+pub struct DiskDiagnostics {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+    pub used_percent: f64,
+}
+
+/// Database connectivity and pool pressure.
+#[derive(Debug, Serialize)]
+pub struct DatabaseDiagnostics {
+    pub ok: bool,
+    pub pool_size: u32,
+    pub pool_idle: usize,
+}
+
+/// One-call infrastructure snapshot for operator triage.
+#[derive(Debug, Serialize)]
+pub struct DiagnosticsResponse {
+    /// "ok" when both stores respond, "degraded" otherwise.
+    pub status: &'static str,
+    pub version: &'static str,
+    pub uptime_seconds: u64,
+    pub database: DatabaseDiagnostics,
+    pub valkey_ok: bool,
+    /// `None` when the host has no usable `df` (e.g. minimal containers).
+    pub disk: Option<DiskDiagnostics>,
+    /// Active voice sessions in the last 5 minutes (telemetry-derived).
+    pub voice_active_sessions: Option<i64>,
+    /// Active WebSocket connections in the last 5 minutes (telemetry-derived).
+    pub ws_active_connections: Option<i64>,
+    /// Server error events in the last 5 minutes (telemetry-derived).
+    pub errors_last_5m: Option<i64>,
+}
+
+/// Best-effort disk usage via `df` (no unsafe statvfs — the workspace
+/// forbids unsafe code). Returns `None` if `df` is unavailable or output
+/// is unparseable; diagnostics must degrade, not fail.
+async fn disk_usage() -> Option<DiskDiagnostics> {
+    let output = tokio::process::Command::new("df")
+        .args(["-B1", "--output=size,avail", "/"])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let line = text.lines().nth(1)?;
+    let mut parts = line.split_whitespace();
+    let total_bytes: u64 = parts.next()?.parse().ok()?;
+    let available_bytes: u64 = parts.next()?.parse().ok()?;
+    if total_bytes == 0 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let used_percent =
+        ((total_bytes - available_bytes) as f64 / total_bytes as f64 * 1000.0).round() / 10.0;
+    Some(DiskDiagnostics {
+        total_bytes,
+        available_bytes,
+        used_percent,
+    })
+}
+
+/// `GET /api/admin/diagnostics`
+///
+/// Operator triage snapshot: store connectivity, DB pool pressure, disk,
+/// and recent activity/error counts in a single call. Complements
+/// `/api/admin/observability/summary` (metrics-flavored) with the
+/// infrastructure-flavored view the ops runbooks reference.
+///
+/// Telemetry-derived fields are `null` when observability is disabled —
+/// connectivity checks always run.
+#[tracing::instrument(skip(state, _admin))]
+pub async fn get_diagnostics(
+    Extension(_admin): Extension<SystemAdminUser>,
+    State(state): State<AppState>,
+) -> Json<DiagnosticsResponse> {
+    let now = Utc::now();
+    let five_min_ago = now - chrono::Duration::minutes(5);
+
+    let db_ok = sqlx::query("SELECT 1").fetch_one(&state.db).await.is_ok();
+    let valkey_ok = state.redis.ping::<String>(None).await.is_ok();
+    let disk = disk_usage().await;
+
+    // Telemetry-derived counts are best-effort: a failure (e.g. telemetry
+    // tables absent) must not break the triage endpoint.
+    let voice_active_sessions = queries::summary_active_voice_sessions(&state.db, five_min_ago)
+        .await
+        .ok()
+        .flatten();
+    let ws_active_connections = queries::summary_active_ws_connections(&state.db, five_min_ago)
+        .await
+        .ok()
+        .flatten();
+    let errors_last_5m = queries::summary_recent_error_count(&state.db, five_min_ago)
+        .await
+        .ok();
+
+    Json(DiagnosticsResponse {
+        status: if db_ok && valkey_ok { "ok" } else { "degraded" },
+        version: env!("CARGO_PKG_VERSION"),
+        uptime_seconds: super::observability::server_uptime_seconds(),
+        database: DatabaseDiagnostics {
+            ok: db_ok,
+            pool_size: state.db.size(),
+            pool_idle: state.db.num_idle(),
+        },
+        valkey_ok,
+        disk,
+        voice_active_sessions,
+        ws_active_connections,
+        errors_last_5m,
+    })
 }
