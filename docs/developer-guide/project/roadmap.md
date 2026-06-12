@@ -695,9 +695,8 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - [ ] **[Infra] SaaS Observability & Telemetry** ([Design](../plans/2026-02-15-phase-7-a11y-observability-design.md), [Implementation](../plans/2026-02-15-phase-7-a11y-observability-implementation.md))
   - **Context:** Maintain uptime and catch bugs at scale.
   - **Strategy:** Integrate **Sentry** (error tracking) and **OpenTelemetry** for performance monitoring across the Rust backend and Tauri clients.
-- [ ] **[Ops] Admin Command Center (Native Observability Lite)** ([Design](../plans/2026-02-27-phase-7-admin-command-center-design.md), [Implementation](../plans/2026-02-27-phase-7-admin-command-center-implementation.md), [Task Plan](../plans/2026-02-27-phase-7-admin-command-center-task-plan.md))
-  - **Context:** Provide built-in operational visibility for self-hosted admins without requiring a full Grafana stack.
-  - **Strategy:** Ship a cluster-wide admin panel with 30-day native retention for curated metrics, trace indexes, and logs; keep deep forensics (full traces/log search, advanced alerting) in external Tempo/Loki/Prometheus/Grafana.
+- [x] **[Ops] Admin Command Center (Native Observability Lite)** ✅ (verified built 2026-06-12)
+  - **Built:** `server/src/admin/observability.rs` exposes 7 endpoints (summary, trends, top-routes, top-errors, logs, traces, external links); `client/src/components/admin/CommandCenterPanel.tsx` (1031 lines) renders a golden-signals dashboard + 30-day trends + logs/traces tables, wired into `AdminDashboard.tsx` with 30s polling. Native 30-day retention enforced by the hourly `spawn_retention_task` (TimescaleDB `drop_chunks` with batched-DELETE fallback). Alert-rule authoring UI was an explicit v1 non-goal (active-alert count is proxied by the 5-min error count); deep forensics stay in external Tempo/Loki/Grafana as designed.
 
 ---
 
@@ -705,15 +704,13 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 *Goal: Turn reliability, isolation, and operator workflows into enforceable release standards.*
 - Implementation coverage: [Phase 8 Reliability Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md).
 
-- [ ] **[Perf] Performance Budgets as CI Gates** ([Design](../plans/2026-02-15-performance-budgets-ci-gates-design.md), [Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md))
-  - **Context:** Prevent silent regressions in latency, memory, and CPU usage.
-  - **Strategy:** Add measurable performance budgets for voice/chat/client startup and enforce them in CI.
+- [x] **[Perf] Performance Budgets as CI Gates** ✅ (PR #585, 2026-06-12)
+  - Bundle-size budgets (initial JS ≤300KB / CSS ≤25KB / largest chunk ≤170KB gz — startup proxy) via `scripts/check_bundle_budget.py` in the Frontend job; server latency budgets (message history <500ms, guild search <750ms, best-of-3) in `performance_budgets.rs`. Budgets needing a real app documented as manual in `docs/developer-guide/development/performance-budgets.md`.
 - [ ] **[Infra] Chaos & Resilience Testing Program** ([Design](../plans/2026-02-15-chaos-resilience-testing-design.md), [Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md))
   - **Context:** Validate behavior under partial failure before incidents happen.
   - **Strategy:** Run controlled fault-injection drills for DB/Valkey/WebSocket/media paths with recovery evidence.
-- [ ] **[Ops] Self-Hosted Upgrade Safety Framework** ([Design](../plans/2026-02-15-self-hosted-upgrade-safety-design.md), [Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md))
-  - **Context:** Reduce operator risk during upgrades and migrations.
-  - **Strategy:** Provide preflight checks, compatibility matrix, rollback scripts, and documented safe-upgrade windows.
+- [x] **[Ops] Self-Hosted Upgrade Safety Framework** ✅ (PR #586, 2026-06-12)
+  - `infra/scripts/upgrade-preflight.sh` (health, disk, backup recency+integrity, migration delta, compose validity, rollback image-pin) + `docs/ops/upgrade-playbook.md` (lockstep compatibility matrix, safe windows, two-path rollback — schema rollback honestly = restore-from-backup since there are zero down-migrations).
 - [ ] **[SaaS] FinOps & Cost Observability Track** ([Design](../plans/2026-02-15-finops-cost-observability-design.md), [Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md))
   - **Context:** Keep storage/egress/telemetry costs predictable as media usage grows.
   - **Strategy:** Add cost dashboards, budget thresholds, and forecasting for major infrastructure spend categories.
@@ -723,12 +720,10 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - [ ] **[Security] Plugin/Bot Security Hardening Path** ([Design](../plans/2026-02-15-plugin-bot-security-hardening-design.md), [Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md))
   - **Context:** Ecosystem expansion increases trust-boundary and abuse risks.
   - **Strategy:** Define capability model, signing/verification, and runtime guardrails before broad plugin rollout.
-- [ ] **[Security] Tenancy & Isolation Verification** ([Design](../plans/2026-02-15-tenancy-isolation-verification-design.md), [Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md))
-  - **Context:** Multi-tenant correctness must be continuously proven.
-  - **Strategy:** Add isolation regression tests for data access, event routing, cache keys, and permission boundaries.
-- [ ] **[Ops] Operator Supportability Pack** ([Design](../plans/2026-02-15-operator-supportability-pack-design.md), [Implementation](../plans/2026-02-15-phase-8-reliability-implementation.md))
-  - **Context:** Faster triage and diagnosis reduce incident impact.
-  - **Strategy:** Ship standard diagnostics bundles, health endpoints, and runbook-indexed troubleshooting flows.
+- [x] **[Security] Tenancy & Isolation Verification** ✅ (PRs #583/#584, 2026-06-12)
+  - `tenancy_isolation.rs` (10 HTTP tests: enumeration, cross-guild message CRUD with DB verification, search leak checks, leave-revokes-access, positive control) + WS event-routing isolation in `websocket_integration.rs` (cross-tenant subscription denial, broadcast topic-scoping, typing gate). Cache-key namespace survey documented: all keys principal/resource-scoped by construction.
+- [x] **[Ops] Operator Supportability Pack** ✅ (PR #587, 2026-06-12)
+  - `GET /api/admin/diagnostics` (connectivity + DB pool pressure + disk + activity/error counts, telemetry fields degrade to null) + `docs/ops/README.md` runbook index with quick-triage order. Downloadable diagnostics bundle deferred to chaos/Phase-8 follow-up.
 - [ ] **[Infra] Self-Hosted STUN/TURN Server**
   - **Context:** The server currently defaults to Google's public STUN server (`stun.l.google.com`), which defeats the purpose of self-hosting — voice NAT traversal traffic passes through a third-party infrastructure.
   - **Strategy:** Bundle a `coturn` container in the default deployment stack (docker-compose and production infra). Make `STUN_SERVER` and `TURN_SERVER` required config with no third-party fallback. Document operator setup for TURN credentials and RTP port forwarding.
