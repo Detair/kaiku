@@ -98,13 +98,14 @@ fun MessageItem(
                     )
                 }
 
-                // Message content
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
+                // Message content (inline markdown: bold/italic/strike/code/spoiler)
+                CompositionLocalProvider(
+                    LocalTextStyle provides MaterialTheme.typography.bodyMedium.copy(
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                ) {
+                    MessageContent(content = message.content)
+                }
 
                 // Edited indicator
                 if (message.editedAt != null) {

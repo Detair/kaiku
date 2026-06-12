@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Android: messages now render inline markdown (bold, italic, strikethrough, inline code, and click-to-reveal spoilers) instead of plain text
 - Desktop auto-update: the app checks GitHub Releases for new signed builds shortly after startup, downloads updates in the background, and offers a one-click restart to apply — release artifacts are now cryptographically signed and ship with an updater manifest
 - Desktop system tray: Kaiku now lives in the tray with a Show/Quit menu, closing the window hides it to the tray instead of quitting (use the tray's "Quit Kaiku" to exit), and the tray shows your total unread count (tooltip everywhere, number badge on macOS and most Linux trays)
 - Desktop client now reports live voice connection quality (latency, packet loss, jitter) in the quality indicator, matching the browser client — previously the desktop always showed "unknown"
