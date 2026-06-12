@@ -5,7 +5,14 @@
  * Shows channel name, guild, time info, and basic metrics for each session.
  */
 
-import { Component, createResource, createSignal, Show, For } from "solid-js";
+import {
+  Component,
+  createResource,
+  createSignal,
+  createEffect,
+  Show,
+  For,
+} from "solid-js";
 import { fetchApi } from "../../lib/tauri";
 
 interface SessionSummary {
@@ -44,7 +51,20 @@ async function fetchSessions(offset: number): Promise<SessionSummary[]> {
 
 export const SessionList: Component = () => {
   const [offset, setOffset] = createSignal(0);
-  const [sessions] = createResource(offset, fetchSessions);
+  // Accumulate pages instead of replacing: each fetched page is appended so
+  // "Load more" grows the list rather than swapping to just the newest page.
+  const [allSessions, setAllSessions] = createSignal<SessionSummary[]>([]);
+  const [pageSize, setPageSize] = createSignal(0);
+  const [page] = createResource(offset, fetchSessions);
+
+  createEffect(() => {
+    const fetched = page();
+    if (!fetched) return;
+    setPageSize(fetched.length);
+    setAllSessions((prev) =>
+      offset() === 0 ? fetched : [...prev, ...fetched],
+    );
+  });
 
   const formatTime = (iso: string) => {
     const d = new Date(iso);
@@ -73,10 +93,10 @@ export const SessionList: Component = () => {
   return (
     <div class="space-y-2">
       <Show
-        when={!sessions.loading}
+        when={!page.loading || allSessions().length > 0}
         fallback={<div class="text-text-secondary text-sm">Loading...</div>}
       >
-        <For each={sessions()}>
+        <For each={allSessions()}>
           {(session) => (
             <div class="flex items-center gap-3 p-3 bg-surface-layer2 rounded-lg">
               <div
@@ -109,12 +129,13 @@ export const SessionList: Component = () => {
           )}
         </For>
 
-        <Show when={sessions()?.length === 10}>
+        <Show when={pageSize() === 10}>
           <button
             class="w-full py-2 text-sm text-text-secondary hover:text-text-primary"
+            disabled={page.loading}
             onClick={() => setOffset((o) => o + 10)}
           >
-            Load more...
+            {page.loading ? "Loading..." : "Load more..."}
           </button>
         </Show>
       </Show>
