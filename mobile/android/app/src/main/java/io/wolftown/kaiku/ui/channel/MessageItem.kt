@@ -107,6 +107,9 @@ fun MessageItem(
                     MessageContent(content = message.content)
                 }
 
+                // Attachments (image thumbnails + file chips)
+                MessageAttachments(attachments = message.attachments)
+
                 // Edited indicator
                 if (message.editedAt != null) {
                     Text(
