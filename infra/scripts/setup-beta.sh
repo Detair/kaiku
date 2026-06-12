@@ -146,11 +146,15 @@ if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     sed -i "s|GRAFANA_ADMIN_PASSWORD=CHANGEME|GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}|" "$ENV_FILE"
     sed -i "s|TURN_SHARED_SECRET=CHANGEME_TURN_SECRET|TURN_SHARED_SECRET=${TURN_SHARED_SECRET}|" "$ENV_FILE"
 
+    # Point STUN at the self-hosted coturn (serves STUN on the same 3478
+    # port) so client IP discovery does not leak to Google's public server.
+    sed -i "s|STUN_SERVER=stun:stun.l.google.com:19302|STUN_SERVER=stun:${DOMAIN}:3478|" "$ENV_FILE"
+
     # Detect public IP for WebRTC and TURN
     if [[ -n "$SERVER_IP" && "$SERVER_IP" != "unknown" ]]; then
         sed -i "s|PUBLIC_IP=CHANGEME|PUBLIC_IP=${SERVER_IP}|" "$ENV_FILE"
         sed -i "s|TURN_SERVER=CHANGEME_TURN|TURN_SERVER=turn:${DOMAIN}:3478|" "$ENV_FILE"
-        log "Set PUBLIC_IP=${SERVER_IP}, TURN_SERVER=turn:${DOMAIN}:3478"
+        log "Set PUBLIC_IP=${SERVER_IP}, STUN/TURN to self-hosted coturn (${DOMAIN}:3478)"
     else
         sed -i "s|TURN_SERVER=CHANGEME_TURN|TURN_SERVER=turn:${DOMAIN}:3478|" "$ENV_FILE"
         warn "PUBLIC_IP could not be detected. Set it manually in ${ENV_FILE} for TURN to work."

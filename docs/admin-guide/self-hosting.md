@@ -41,5 +41,31 @@ The fastest way to get a node online. We will provide a pre-configured `docker-c
 ### 2. The "Esports Org" (Kubernetes)
 For massive communities. Detailed Helm charts and documentation for deploying scalable replicas of the Signaling server behind a load balancer, with dedicated external TURN clusters.
 
+## <span style="color: #88C0D0;">Voice NAT Traversal & Sovereignty (STUN/TURN)</span>
+
+WebRTC needs a **STUN** server (to discover each client's public address) and,
+for clients behind strict NATs/firewalls, a **TURN** relay. The bundled
+`docker-compose.yml` runs a `coturn` instance that serves **both** on port
+`3478`.
+
+**Point STUN at your own coturn, not Google.** The server's default
+`STUN_SERVER` is Google's public server (`stun:stun.l.google.com:19302`) so
+voice works out of the box — but on a self-hosted node that still leaks every
+client's IP-discovery request to a third party, defeating the point of
+self-hosting. Set:
+
+```env
+STUN_SERVER=stun:<your-domain>:3478
+TURN_SERVER=turn:<your-domain>:3478
+TURN_SHARED_SECRET=<random 32+ byte hex>   # coturn use-auth-secret mode
+```
+
+`infra/scripts/setup-beta.sh` does this automatically (rewrites `STUN_SERVER`
+to your domain and generates the shared secret). If you configure TURN but
+leave STUN on Google, the server logs a startup **warning** flagging the leak.
+
+TURN credentials are issued per-request as HMAC-SHA1 time-limited tokens
+(RFC 5766), so no static password is stored client-side.
+
 ---
 *Documentation to be expanded as the implementation stabilizes.*

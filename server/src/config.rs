@@ -451,6 +451,21 @@ impl Config {
              browsers will reject the refresh cookie without the Secure flag"
         );
 
+        // Sovereignty check: a self-hosted deployment that runs its own TURN
+        // (coturn) but still points STUN at Google leaks every client's IP
+        // discovery to a third party — defeating the point of self-hosting.
+        // coturn serves STUN on the same host/port as TURN, so the operator
+        // can almost always point STUN at it. Warn loudly rather than fail,
+        // since some operators deliberately use a public STUN.
+        if stun_leaks_with_self_hosted_turn(&config.stun_server, config.turn_server.as_deref()) {
+            tracing::warn!(
+                stun_server = %config.stun_server,
+                "TURN is self-hosted but STUN still points at Google's public \
+                 server — client IP discovery is leaking to a third party. Set \
+                 STUN_SERVER to your coturn endpoint (e.g. stun:<your-domain>:3478)."
+            );
+        }
+
         Ok(config)
     }
 
@@ -576,3 +591,42 @@ const TEST_JWT_PUBLIC_KEY: &str = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRW
 /// Generated with: openssl rand -hex 32
 const TEST_MFA_ENCRYPTION_KEY: &str =
     "a4f8e2d1b7c9036f5e8d4a2b1c7f9e3d6a8b5c2d4e7f1a3b9c6d8e2f5a7b4c";
+
+/// Returns true when a self-hosted TURN server is configured but STUN still
+/// points at Google's public server — a sovereignty leak (client IP
+/// discovery goes to a third party). Pure helper so the condition is unit
+/// tested without a tracing subscriber.
+fn stun_leaks_with_self_hosted_turn(stun_server: &str, turn_server: Option<&str>) -> bool {
+    turn_server.is_some() && stun_server.contains("stun.l.google.com")
+}
+
+#[cfg(test)]
+mod stun_sovereignty_tests {
+    use super::stun_leaks_with_self_hosted_turn;
+
+    #[test]
+    fn google_stun_with_self_hosted_turn_leaks() {
+        assert!(stun_leaks_with_self_hosted_turn(
+            "stun:stun.l.google.com:19302",
+            Some("turn:chat.example.com:3478"),
+        ));
+    }
+
+    #[test]
+    fn self_hosted_stun_does_not_leak() {
+        assert!(!stun_leaks_with_self_hosted_turn(
+            "stun:chat.example.com:3478",
+            Some("turn:chat.example.com:3478"),
+        ));
+    }
+
+    #[test]
+    fn google_stun_without_turn_is_not_flagged() {
+        // No self-hosted TURN configured — using public STUN is a deliberate
+        // choice, not a leak to warn about.
+        assert!(!stun_leaks_with_self_hosted_turn(
+            "stun:stun.l.google.com:19302",
+            None,
+        ));
+    }
+}
