@@ -37,6 +37,9 @@ fun TextChannelScreen(
 
     val listState = rememberLazyListState()
 
+    // When set, the emoji picker is shown for this message id.
+    var reactionTargetId by remember { mutableStateOf<String?>(null) }
+
     // Auto-scroll to bottom only when a genuinely new message arrives
     // and the user is already near the bottom of the list.
     var lastMessageId by remember { mutableStateOf<String?>(null) }
@@ -127,7 +130,7 @@ fun TextChannelScreen(
                                     viewModel.onDeleteMessage(msgId)
                                 },
                                 onReact = { msgId ->
-                                    // In a full implementation, this would show an emoji picker.
+                                    reactionTargetId = msgId
                                 }
                             )
                         }
@@ -135,5 +138,15 @@ fun TextChannelScreen(
                 }
             }
         }
+    }
+
+    reactionTargetId?.let { messageId ->
+        EmojiPicker(
+            onEmojiSelected = { emoji ->
+                viewModel.onAddReaction(messageId, emoji)
+                reactionTargetId = null
+            },
+            onDismiss = { reactionTargetId = null }
+        )
     }
 }
