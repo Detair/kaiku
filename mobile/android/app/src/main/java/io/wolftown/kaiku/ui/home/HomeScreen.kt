@@ -2,6 +2,7 @@ package io.wolftown.kaiku.ui.home
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -20,6 +21,7 @@ fun HomeScreen(
     onNavigateToTextChannel: (channelId: String) -> Unit,
     onNavigateToVoiceChannel: (channelId: String) -> Unit,
     onNavigateToSettings: () -> Unit = {},
+    onNavigateToDms: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val guilds by viewModel.guilds.collectAsState()
@@ -70,6 +72,9 @@ fun HomeScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = onNavigateToDms) {
+                            Icon(Icons.Default.Email, contentDescription = "Direct messages")
+                        }
                         IconButton(onClick = { viewModel.refresh() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                         }
