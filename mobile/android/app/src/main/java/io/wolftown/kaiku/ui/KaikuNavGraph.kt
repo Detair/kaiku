@@ -23,6 +23,7 @@ import io.wolftown.kaiku.ui.auth.QrScannerScreen
 import io.wolftown.kaiku.ui.auth.RegisterScreen
 import io.wolftown.kaiku.ui.auth.ServerUrlScreen
 import io.wolftown.kaiku.ui.channel.TextChannelScreen
+import io.wolftown.kaiku.ui.dm.DmListScreen
 import io.wolftown.kaiku.ui.home.HomeScreen
 import io.wolftown.kaiku.ui.settings.SettingsScreen
 import io.wolftown.kaiku.ui.voice.VoiceChannelScreen
@@ -109,7 +110,19 @@ fun KaikuNavGraph(
                         },
                         onNavigateToSettings = {
                             navController.navigate("settings")
+                        },
+                        onNavigateToDms = {
+                            navController.navigate("dms")
                         }
+                    )
+                }
+
+                composable("dms") {
+                    DmListScreen(
+                        onOpenDm = { channelId ->
+                            navController.navigate("channel/$channelId")
+                        },
+                        onNavigateBack = { navController.popBackStack() }
                     )
                 }
 
