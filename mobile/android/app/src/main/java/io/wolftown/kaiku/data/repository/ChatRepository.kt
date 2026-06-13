@@ -36,6 +36,7 @@ class ChatRepository @Inject constructor(
     private val messageApi: MessageApi,
     private val webSocket: KaikuWebSocket,
     private val json: Json,
+    private val guildRepository: GuildRepository,
     @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     companion object {
@@ -181,6 +182,8 @@ class ChatRepository @Inject constructor(
             // Avoid duplicates (e.g., from optimistic send)
             if (current.none { it.id == message.id }) {
                 flow.value = current + message
+                // Raise the unread badge for non-active channels.
+                guildRepository.onMessageReceived(event.channelId)
             }
         } catch (e: Exception) {
             logger.log(Level.WARNING, "Failed to deserialize MessageNew payload", e)
