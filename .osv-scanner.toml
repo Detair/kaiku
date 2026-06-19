@@ -94,14 +94,6 @@ id = "RUSTSEC-2026-0150"
 reason = "audiopus_sys unmaintained; Opus FFI for vc-client audio, no runtime vuln, migration tracked separately."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2024-0384"
-reason = "instant unmaintained; transitive, no runtime impact."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0388"
-reason = "derivative unmaintained; transitive, no runtime impact."
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
 reason = "paste unmaintained; transitive, no runtime impact."
 
@@ -129,26 +121,38 @@ reason = "unic-ucd-version unmaintained; transitive."
 id = "RUSTSEC-2025-0100"
 reason = "unic-ucd-ident unmaintained; transitive."
 
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0141"
-reason = "bincode unmaintained; transitive."
-
 # ---------------------------------------------------------------------------
-# vite 7.3.1 / 8.0.0 — nested via vitest > @vitest/mocker
+# vite dev-server CVEs — the application's own vite is upgraded to 8.0.16
+# (patched). The only affected instance left is vite 7.3.1, nested under
+# vitest for the test runner. Every one of these advisories requires a
+# running `vite dev` server (file-serving / server.fs.deny bypass /
+# __open-in-editor), none of which vitest exposes. The fixes (vite 7.3.2 and
+# 7.3.5) cannot be adopted because the vite that vitest 4.1.x is compatible
+# with breaks vite-plugin-solid's JSX transform — the same nested-vite compat
+# wall first documented in PR #517 (the test config has no solid plugin and
+# relies on the nested vite's esbuild for the imported .tsx JSX, which
+# regresses on vite > 7.3.1). Re-evaluate when vitest ships a release whose
+# vite is ≥7.3.5 and JSX-compatible.
 # ---------------------------------------------------------------------------
-# These three CVEs are already documented in PR #517 as accepted dev-only
-# exceptions. vite 8.0.5 (the fix version) breaks vite-plugin-solid's JSX
-# parsing because @vitest/mocker's internal API is incompatible with vite
-# 8.x as the nested instance. See PR #517 for full analysis.
 
+# Fixed in vite 7.3.2 (originally accepted in PR #517):
 [[IgnoredVulns]]
 id = "GHSA-4w7w-66w2-5vf9"
-reason = "Accepted in PR #517; vite dev-server only, nested via vitest. Fix requires unblocking the @vitest/mocker/vite 8.x compat issue."
+reason = "Dev-server-only vite advisory. App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
 
 [[IgnoredVulns]]
 id = "GHSA-p9ff-h696-f583"
-reason = "Accepted in PR #517; vite dev-server only, nested via vitest."
+reason = "Dev-server-only vite advisory. App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
 
 [[IgnoredVulns]]
 id = "GHSA-v2wj-q39q-566r"
-reason = "Accepted in PR #517; vite dev-server only, nested via vitest."
+reason = "Dev-server-only vite advisory. App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
+
+# Fixed in vite 7.3.5 (newly disclosed 2026-06):
+[[IgnoredVulns]]
+id = "GHSA-fx2h-pf6j-xcff"
+reason = "Dev-server-only (CVE-2026-53571, server.fs.deny bypass via NTFS ADS on Windows). App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
+
+[[IgnoredVulns]]
+id = "GHSA-v6wh-96g9-6wx3"
+reason = "Dev-server-only (__open-in-editor NTLM hash leak on Windows). App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
