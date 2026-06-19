@@ -67,6 +67,15 @@ security checks.
 PRs; dependency sweep closed; every remaining advisory exception re-justified
 with a dated rationale.
 
+> **Keep-green maintenance 2026-06-20:** the scheduled Security Audit went red
+> (OSV Scanner) after the 06-14 run — a mix of three stale `.osv-scanner.toml`
+> ignores (instant/derivative/bincode, all dropped from the tree) plus newly
+> disclosed npm advisories: dompurify (8 XSS), undici (7), vite (5 dev-server),
+> @babel/core. Fixed by upgrading dompurify→3.4.11, vite→8.0.16,
+> undici→7.28.0, @babel/core→7.29.6, removing the stale ignores, and
+> re-justifying the test-only nested vite 7.3.1 dev-server CVEs (vitest JSX
+> compat blocks its bump). OSV green again.
+
 ## Goal 2 — Close Phase 6: desktop client parity (next)
 
 Five concrete items finish the phase (roadmap §Phase 6 remainder):
