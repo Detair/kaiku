@@ -101,6 +101,7 @@ where
     .bind(email)
     .fetch_one(executor)
     .await
+    .map_err(db_error!("insert_user_identity", user_id = %user_id, provider_slug = %provider_slug))
 }
 
 /// List all external identities linked to a user, oldest first.
@@ -112,15 +113,6 @@ pub async fn list_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
     .fetch_all(pool)
     .await
     .map_err(db_error!("list_user_identities", user_id = %user_id))
-}
-
-/// Count the external identities linked to a user.
-pub async fn count_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .map_err(db_error!("count_user_identities", user_id = %user_id))
 }
 
 /// Result of [`unlink_identity_guarded`].

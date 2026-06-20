@@ -138,9 +138,10 @@ async fn test_unlink_other_users_identity_is_404(pool: PgPool) {
     assert_eq!(unlink(&app, &attacker_token, victim_identity).await, 404);
     // And the identity is untouched.
     assert_eq!(
-        vc_server::db::count_user_identities(&app.pool, owner)
+        vc_server::db::list_user_identities(&app.pool, owner)
             .await
-            .unwrap(),
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -159,9 +160,10 @@ async fn test_unlink_last_identity_blocked_for_passwordless_user(pool: PgPool) {
     // Removing the sole login method of a passwordless account is refused (409).
     assert_eq!(unlink(&app, &token, id).await, 409);
     assert_eq!(
-        vc_server::db::count_user_identities(&app.pool, user_id)
+        vc_server::db::list_user_identities(&app.pool, user_id)
             .await
-            .unwrap(),
+            .unwrap()
+            .len(),
         1
     );
 }

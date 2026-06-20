@@ -14,6 +14,22 @@ export function getParticipantDisplayName(participant: {
 }
 
 /**
+ * Format a timestamp as a compact relative time ("just now", "5m ago", "3h ago",
+ * "2d ago"). Used by settings lists (sessions, linked accounts) where the longer
+ * `formatRelativeTime` ("5 minutes ago") would be too wide.
+ */
+export function formatRelativeTimeShort(isoString: string): string {
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+/**
  * Format a timestamp for display.
  * Shows time only for today, date and time for older messages.
  */

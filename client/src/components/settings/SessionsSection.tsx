@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, For, Show } from "solid-js";
 import { Monitor, Smartphone, LogOut } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
+import { formatRelativeTimeShort } from "@/lib/utils";
 import type { SessionInfo } from "@/lib/types";
 
 const SessionsSection: Component = () => {
@@ -46,19 +47,6 @@ const SessionsSection: Component = () => {
       return `${session.city}, ${session.country}`;
     if (session.country) return session.country;
     return "Unknown location";
-  };
-
-  const formatRelativeTime = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return "Just now";
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
   };
 
   const getDeviceIcon = (device: string) => {
@@ -127,7 +115,7 @@ const SessionsSection: Component = () => {
                       <span class="opacity-40">&middot;</span>
                       <span>{session.ip_address ?? "Unknown IP"}</span>
                       <span class="opacity-40">&middot;</span>
-                      <span>{formatRelativeTime(session.created_at)}</span>
+                      <span>{formatRelativeTimeShort(session.created_at)}</span>
                     </div>
                   </div>
                   <Show when={!session.is_current}>
