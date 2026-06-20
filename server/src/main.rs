@@ -311,6 +311,22 @@ async fn main() -> Result<()> {
                     tracing::info!(error = %e, "OIDC providers not loaded (optional)");
                 }
 
+                // Defensive: legacy OIDC users whose external_id lacks a ':'
+                // have no user_identities back-fill row and cannot be resolved
+                // by the (provider_slug, subject) login lookup. Should be zero.
+                match vc_server::db::count_unsplittable_oidc_external_ids(&db_pool).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::warn!(
+                        count = n,
+                        "Found OIDC users with a malformed external_id (no ':' separator) and no \
+                         user_identities row — these accounts cannot log in via OIDC until an \
+                         operator reconciles them"
+                    ),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Could not check for malformed OIDC external_ids");
+                    }
+                }
+
                 info!("OIDC provider manager initialized");
                 Some(manager)
             }
