@@ -52,18 +52,6 @@ pub async fn find_user_by_username(pool: &PgPool, username: &str) -> sqlx::Resul
         .map_err(db_error!("find_user_by_username", username = %username))
 }
 
-/// Find user by external ID (for OIDC).
-pub async fn find_user_by_external_id(
-    pool: &PgPool,
-    external_id: &str,
-) -> sqlx::Result<Option<User>> {
-    sqlx::query_as::<_, User>("SELECT * FROM users WHERE external_id = $1")
-        .bind(external_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(db_error!("find_user_by_external_id", external_id = %external_id))
-}
-
 // ============================================================================
 // External (OIDC/OAuth) identities
 // ============================================================================

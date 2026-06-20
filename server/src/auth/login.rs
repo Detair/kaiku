@@ -638,6 +638,12 @@ pub async fn oidc_callback(
     // Composite external_id: "{provider_slug}:{subject}". Retained as the
     // user's primary-identity marker; the authoritative lookup is the
     // user_identities table keyed by (provider_slug, subject).
+    //
+    // NOTE for the linking follow-up: users.external_id still carries a UNIQUE
+    // constraint and only ever holds the *first* identity. Once an account can
+    // attach additional identities, that constraint must not be treated as a
+    // uniqueness guarantee for the identity set (user_identities is) — and
+    // should likely be demoted to non-unique before multi-identity writes land.
     let external_id = format!("{}:{}", flow_state.slug, user_info.subject);
 
     // User resolution: resolve the external identity to an account.
@@ -763,10 +769,31 @@ pub async fn oidc_callback(
             }
         }
 
-        new_user.ok_or_else(|| {
-            tracing::error!(external_id = %external_id, "Failed to create OIDC user after 5 collision retries");
-            AuthError::Internal("Username generation failed after retries".to_string())
-        })?
+        match new_user {
+            Some(user) => user,
+            None => {
+                // The retry loop exhausted. The dominant cause is losing a
+                // concurrent first-login race for this same identity: another
+                // request created the account (and its identity row) between our
+                // pre-loop lookup and our insert, so insert_oidc_user kept hitting
+                // the users.external_id UNIQUE constraint (reported as a generic
+                // collision). Re-resolve the identity; if it now exists, log that
+                // account in instead of failing.
+                if let Some(user_id) =
+                    find_user_id_by_identity(&state.db, &flow_state.slug, &user_info.subject)
+                        .await?
+                {
+                    find_user_by_id(&state.db, user_id).await?.ok_or_else(|| {
+                        AuthError::Internal("Identity resolved to a missing user".to_string())
+                    })?
+                } else {
+                    tracing::error!(external_id = %external_id, "Failed to create OIDC user after 5 collision retries");
+                    return Err(AuthError::Internal(
+                        "Username generation failed after retries".to_string(),
+                    ));
+                }
+            }
+        }
     };
 
     // Generate JWT token pair
