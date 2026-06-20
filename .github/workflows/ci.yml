@@ -393,7 +393,9 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: |
           vcpkg install libvpx:x64-windows-static-md
-          choco install -y pkgconfiglite
+          # pkgconfiglite ships from SourceForge with no checksum; Chocolatey
+          # now blocks empty checksums on non-secure sources by default.
+          choco install -y pkgconfiglite --allow-empty-checksums
 
       - name: Configure pkg-config (Windows)
         if: matrix.platform == 'windows-latest'
