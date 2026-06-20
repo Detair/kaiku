@@ -78,6 +78,21 @@ export interface SessionListResponse {
   sessions: SessionInfo[];
 }
 
+// Linked external (OIDC) identities
+
+export interface IdentityInfo {
+  id: string;
+  provider_slug: string;
+  provider_name: string;
+  email: string | null;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface IdentityListResponse {
+  identities: IdentityInfo[];
+}
+
 export interface RevokeAllResponse {
   revoked_count: number;
 }

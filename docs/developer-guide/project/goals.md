@@ -262,7 +262,13 @@ the SaaS path is actually pursued:
        (authenticated link flow — the OIDC callback branches on a `link_user_id`
        carried in the encrypted flow state, attaching the identity instead of
        logging in; refuses identities already bound to another account).
-       Remaining: client "Linked Accounts" settings UI (PR3). NOTE: before any
+       **Client UI — view + unlink shipped 2026-06-20 (PR #603):** a "Linked
+       Accounts" section in account settings lists connected providers and
+       unlinks them (surfaces the last-login-method guard). Remaining: the
+       *link-a-new-identity* UI — deferred because it needs a native Tauri
+       command (the link-authorize endpoint requires a Bearer header a browser
+       popup can't send) plus a server tweak to redirect link *errors* to the
+       desktop localhost callback (success already does). NOTE: before any
        further multi-identity hardening, consider demoting `users.external_id`'s
        UNIQUE constraint (commented in login.rs) — linking does not write it, so
        it is not yet a problem.

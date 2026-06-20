@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Account settings now show your **linked accounts** — the external sign-in providers (e.g. Google, GitHub) connected to your profile — with the ability to unlink one. Removing the only login method of a password-less account is blocked so you can't lock yourself out.
 - Android: react to messages — long-pressing a message and choosing "React" now opens an emoji picker (16 common reactions) that adds your reaction, instead of doing nothing
 - Android: direct messages are now accessible — a new envelope button on the home screen opens a conversation list (avatar, name, last-message preview, unread badge); tapping a conversation opens it like any channel
 - Android: message attachments now display — images render as inline thumbnails, other files as a chip with name and size (previously attachments were invisible)
