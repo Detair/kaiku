@@ -814,3 +814,136 @@ async fn test_first_user_detection(pool: PgPool) {
         "setup_complete config row must exist for registration locking"
     );
 }
+
+// ============================================================================
+// External Identity Linking (user_identities table)
+// ============================================================================
+
+#[sqlx::test]
+async fn test_user_identity_insert_and_lookup(pool: PgPool) {
+    let user_id = create_test_user(&pool).await;
+
+    // No identity yet.
+    let none = vc_server::db::find_user_id_by_identity(&pool, "google", "sub-123")
+        .await
+        .expect("lookup should succeed");
+    assert_eq!(none, None);
+
+    // Insert an identity.
+    let identity = vc_server::db::insert_user_identity(
+        &pool,
+        user_id,
+        "google",
+        "sub-123",
+        Some("a@example.com"),
+    )
+    .await
+    .expect("insert should succeed");
+    assert_eq!(identity.user_id, user_id);
+    assert_eq!(identity.provider_slug, "google");
+    assert_eq!(identity.subject, "sub-123");
+    assert_eq!(identity.email.as_deref(), Some("a@example.com"));
+    assert!(identity.last_used_at.is_none());
+
+    // Now resolvable to the account.
+    let found = vc_server::db::find_user_id_by_identity(&pool, "google", "sub-123")
+        .await
+        .expect("lookup should succeed");
+    assert_eq!(found, Some(user_id));
+
+    // A different subject does not resolve.
+    let other = vc_server::db::find_user_id_by_identity(&pool, "google", "sub-999")
+        .await
+        .expect("lookup should succeed");
+    assert_eq!(other, None);
+}
+
+#[sqlx::test]
+async fn test_user_identity_list_multiple_providers(pool: PgPool) {
+    let user_id = create_test_user(&pool).await;
+
+    vc_server::db::insert_user_identity(&pool, user_id, "google", "g-1", None)
+        .await
+        .unwrap();
+    vc_server::db::insert_user_identity(&pool, user_id, "github", "gh-1", Some("u@example.com"))
+        .await
+        .unwrap();
+
+    let identities = vc_server::db::list_user_identities(&pool, user_id)
+        .await
+        .expect("list should succeed");
+    assert_eq!(identities.len(), 2);
+
+    // Both providers resolve back to the same account.
+    let g = vc_server::db::find_user_id_by_identity(&pool, "google", "g-1")
+        .await
+        .unwrap();
+    let gh = vc_server::db::find_user_id_by_identity(&pool, "github", "gh-1")
+        .await
+        .unwrap();
+    assert_eq!(g, Some(user_id));
+    assert_eq!(gh, Some(user_id));
+}
+
+#[sqlx::test]
+async fn test_user_identity_subject_unique_across_accounts(pool: PgPool) {
+    let user_a = create_test_user(&pool).await;
+    let user_b = create_test_user(&pool).await;
+
+    vc_server::db::insert_user_identity(&pool, user_a, "google", "shared-sub", None)
+        .await
+        .expect("first insert should succeed");
+
+    // The same (provider, subject) cannot be claimed by a second account.
+    let err = vc_server::db::insert_user_identity(&pool, user_b, "google", "shared-sub", None)
+        .await
+        .expect_err("duplicate (provider, subject) must be rejected");
+    match err {
+        sqlx::Error::Database(db_err) => assert!(db_err.is_unique_violation()),
+        other => panic!("expected unique violation, got {other:?}"),
+    }
+
+    // The identity still belongs to the original account.
+    let owner = vc_server::db::find_user_id_by_identity(&pool, "google", "shared-sub")
+        .await
+        .unwrap();
+    assert_eq!(owner, Some(user_a));
+}
+
+#[sqlx::test]
+async fn test_user_identity_one_per_provider_per_user(pool: PgPool) {
+    let user_id = create_test_user(&pool).await;
+
+    vc_server::db::insert_user_identity(&pool, user_id, "google", "sub-1", None)
+        .await
+        .expect("first insert should succeed");
+
+    // The same user cannot link a second identity for the same provider.
+    let err = vc_server::db::insert_user_identity(&pool, user_id, "google", "sub-2", None)
+        .await
+        .expect_err("second identity for same provider must be rejected");
+    match err {
+        sqlx::Error::Database(db_err) => assert!(db_err.is_unique_violation()),
+        other => panic!("expected unique violation, got {other:?}"),
+    }
+}
+
+#[sqlx::test]
+async fn test_user_identity_cascade_on_user_delete(pool: PgPool) {
+    let user_id = create_test_user(&pool).await;
+    vc_server::db::insert_user_identity(&pool, user_id, "google", "sub-del", None)
+        .await
+        .unwrap();
+
+    // Deleting the user cascades to its identities.
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("user delete should succeed");
+
+    let found = vc_server::db::find_user_id_by_identity(&pool, "google", "sub-del")
+        .await
+        .unwrap();
+    assert_eq!(found, None);
+}

@@ -248,9 +248,16 @@ the SaaS path is actually pursued:
        server OTel (Goal 4). *Only remaining: release source-map upload —
        needs an external Sentry account (operator infra), so out of scope
        here.* [Original "partially present" framing was stale.]
-4. [ ] **Identity trust / OAuth linking** — medium priority. (OIDC login
+4. [~] **Identity trust / OAuth linking** — medium priority. (OIDC login
        already exists; "linking" of multiple external identities to one
-       account is the new surface — verify before building.)
+       account is the new surface.) **Foundation shipped 2026-06-20 (PR #600):**
+       new `user_identities` table (authoritative `(provider_slug, subject)`
+       login lookup, back-fills the legacy single `users.external_id`); OIDC
+       login resolves and records identities through it. Verified: code review
+       found the model was one-identity-per-account by construction; no linking
+       existed. Remaining: (a) authenticated link/list/unlink endpoints +
+       link-intent OIDC flow; (b) client "Linked Accounts" settings UI. Both
+       build directly on this table.
 5. [ ] **Billing & subscriptions (Stripe)** — defer until a SaaS launch
        decision is made; do not build speculatively.
 

@@ -30,8 +30,8 @@ use super::{cookies, geoip, hash_token};
 use crate::api::AppState;
 use crate::db::{
     self, create_password_reset_token, create_session, delete_session_by_token_hash,
-    find_session_by_token_hash, find_user_by_email, find_user_by_external_id, find_user_by_id,
-    find_user_by_username, find_valid_reset_token, get_auth_methods_allowed,
+    find_session_by_token_hash, find_user_by_email, find_user_by_id, find_user_by_username,
+    find_user_id_by_identity, find_valid_reset_token, get_auth_methods_allowed,
     get_unused_mfa_backup_codes, invalidate_user_reset_tokens, is_setup_complete,
     mark_mfa_backup_code_used,
 };
@@ -635,11 +635,19 @@ pub async fn oidc_callback(
             AuthError::OidcCodeExchangeFailed(format!("Failed to extract user info: {e}"))
         })?;
 
-    // Composite external_id: "{provider_slug}:{subject}"
+    // Composite external_id: "{provider_slug}:{subject}". Retained as the
+    // user's primary-identity marker; the authoritative lookup is the
+    // user_identities table keyed by (provider_slug, subject).
     let external_id = format!("{}:{}", flow_state.slug, user_info.subject);
 
-    // User resolution
-    let user = if let Some(existing) = find_user_by_external_id(&state.db, &external_id).await? {
+    // User resolution: resolve the external identity to an account.
+    let existing_user =
+        match find_user_id_by_identity(&state.db, &flow_state.slug, &user_info.subject).await? {
+            Some(user_id) => find_user_by_id(&state.db, user_id).await?,
+            None => None,
+        };
+
+    let user = if let Some(existing) = existing_user {
         // Existing user — login
         existing
     } else {
@@ -711,6 +719,21 @@ pub async fn oidc_callback(
             .await?
             {
                 Some(user) => {
+                    // Record the external identity (authoritative login key) in
+                    // the same transaction as the user row.
+                    db::insert_user_identity(
+                        &mut *tx,
+                        user.id,
+                        &flow_state.slug,
+                        &user_info.subject,
+                        user_info.email.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = %e, user_id = %user.id, provider = %flow_state.slug, "Failed to record OIDC identity");
+                        AuthError::Database(e)
+                    })?;
+
                     // Grant admin to first user
                     if is_first_user {
                         queries::grant_first_user_admin(&mut tx, user.id)
