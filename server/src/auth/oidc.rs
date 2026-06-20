@@ -63,6 +63,11 @@ pub struct OidcFlowState {
     pub redirect_uri: String,
     /// When the state was created (for debugging).
     pub created_at: i64,
+    /// When set, this is a *link* flow: the resulting identity is attached to
+    /// this already-authenticated user instead of logging in / creating an
+    /// account. `None` (the default) is an ordinary login flow.
+    #[serde(default)]
+    pub link_user_id: Option<Uuid>,
 }
 
 /// Cached provider configuration with pre-built client.

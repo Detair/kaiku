@@ -19,7 +19,9 @@ use super::helpers::{extract_refresh_token, extract_user_agent, should_return_re
 use super::jwt::{generate_token_pair, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
-use super::oidc::{append_collision_suffix, generate_username_from_claims, OidcFlowState};
+use super::oidc::{
+    append_collision_suffix, generate_username_from_claims, OidcFlowState, OidcUserInfo,
+};
 use super::password::{hash_password, verify_password};
 use super::queries::{self, InsertSessionParams};
 use super::types::{
@@ -461,6 +463,21 @@ pub async fn oidc_authorize(
     Path(provider): Path<String>,
     axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
 ) -> Result<Response, AuthError> {
+    start_oidc_flow(&state, &provider, query.redirect_uri.as_deref(), None).await
+}
+
+/// Begin an OIDC authorization flow and redirect to the provider.
+///
+/// Shared by the public login flow (`link_user_id = None`) and the
+/// authenticated identity-link flow (`link_user_id = Some(current user)`); the
+/// only difference is what gets persisted in the encrypted Redis flow state, so
+/// the callback can tell a login apart from a link.
+pub async fn start_oidc_flow(
+    state: &AppState,
+    provider: &str,
+    redirect_uri: Option<&str>,
+    link_user_id: Option<Uuid>,
+) -> Result<Response, AuthError> {
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
     if !auth_methods.oidc {
         return Err(AuthError::AuthMethodDisabled);
@@ -472,12 +489,12 @@ pub async fn oidc_authorize(
         .ok_or(AuthError::OidcNotConfigured)?;
 
     // Verify provider exists
-    if oidc_manager.get_provider_row(&provider).await.is_none() {
+    if oidc_manager.get_provider_row(provider).await.is_none() {
         return Err(AuthError::OidcProviderNotFound);
     }
 
     // Determine callback URL
-    let callback_base = if let Some(ref redirect_uri) = query.redirect_uri {
+    let callback_base = if let Some(redirect_uri) = redirect_uri {
         // Tauri flow: validate the redirect URI is a localhost callback
         let parsed = openidconnect::url::Url::parse(redirect_uri)
             .map_err(|_| AuthError::Validation("Invalid redirect_uri".to_string()))?;
@@ -485,7 +502,7 @@ pub async fn oidc_authorize(
             (parsed.scheme(), parsed.host_str()),
             ("http", Some("localhost" | "127.0.0.1"))
         ) {
-            redirect_uri.clone()
+            redirect_uri.to_string()
         } else {
             tracing::warn!(redirect_uri = %redirect_uri, "Rejected non-localhost redirect_uri");
             return Err(AuthError::Validation(
@@ -502,7 +519,7 @@ pub async fn oidc_authorize(
     };
 
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
-        .generate_auth_url(&provider, &callback_base)
+        .generate_auth_url(provider, &callback_base)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
@@ -513,11 +530,12 @@ pub async fn oidc_authorize(
     let state_hash = hex::encode(Sha256::digest(csrf_state.as_bytes()));
     let redis_key = format!("oidc:state:{state_hash}");
     let flow_state = OidcFlowState {
-        slug: provider.clone(),
+        slug: provider.to_string(),
         pkce_verifier,
         nonce,
         redirect_uri: callback_base,
         created_at: Utc::now().timestamp(),
+        link_user_id,
     };
 
     let flow_json =
@@ -549,7 +567,7 @@ pub async fn oidc_authorize(
             AuthError::Internal("Failed to store OIDC state".to_string())
         })?;
 
-    tracing::info!(provider = %provider, "Redirecting to OIDC provider");
+    tracing::info!(provider = %provider, link = link_user_id.is_some(), "Redirecting to OIDC provider");
     Ok(Redirect::temporary(&auth_url).into_response())
 }
 
@@ -645,6 +663,12 @@ pub async fn oidc_callback(
     // uniqueness guarantee for the identity set (user_identities is) — and
     // should likely be demoted to non-unique before multi-identity writes land.
     let external_id = format!("{}:{}", flow_state.slug, user_info.subject);
+
+    // Link flow: attach this identity to the already-authenticated user instead
+    // of logging in or creating an account.
+    if let Some(link_user_id) = flow_state.link_user_id {
+        return handle_identity_link(&state, &flow_state, &user_info, link_user_id).await;
+    }
 
     // User resolution: resolve the external identity to an account.
     let existing_user =
@@ -796,6 +820,13 @@ pub async fn oidc_callback(
         }
     };
 
+    // Best-effort: record that this identity was just used to log in.
+    if let Err(e) =
+        db::touch_user_identity_last_used(&state.db, &flow_state.slug, &user_info.subject).await
+    {
+        tracing::warn!(error = %e, provider = %flow_state.slug, "Failed to update identity last_used_at");
+    }
+
     // Generate JWT token pair
     let tokens = generate_token_pair(
         user.id,
@@ -868,6 +899,84 @@ if (window.opener) {{
 </script></body></html>"#,
         );
         Ok((jar, axum::response::Html(html)).into_response())
+    }
+}
+
+/// Attach a freshly-authenticated external identity to an existing account
+/// (the OIDC *link* flow). Unlike login, this issues no tokens.
+///
+/// Refuses to steal an identity already bound to a different account. Linking
+/// the same identity again, or a second identity for a provider already linked
+/// to this account, are both surfaced as `IdentityAlreadyLinked`.
+async fn handle_identity_link(
+    state: &AppState,
+    flow_state: &OidcFlowState,
+    user_info: &OidcUserInfo,
+    link_user_id: Uuid,
+) -> Result<Response, AuthError> {
+    match find_user_id_by_identity(&state.db, &flow_state.slug, &user_info.subject).await? {
+        // Already linked to this account — idempotent success.
+        Some(existing) if existing == link_user_id => {
+            tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, "OIDC identity already linked to this account");
+        }
+        // Bound to someone else — refuse.
+        Some(_) => return Err(AuthError::IdentityAlreadyLinked),
+        None => {
+            match db::insert_user_identity(
+                &state.db,
+                link_user_id,
+                &flow_state.slug,
+                &user_info.subject,
+                user_info.email.as_deref(),
+            )
+            .await
+            {
+                Ok(_) => {
+                    tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, "Linked OIDC identity to account");
+                }
+                // Lost a race, or the account already has an identity for this
+                // provider (the (user_id, provider_slug) UNIQUE constraint).
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                    return Err(AuthError::IdentityAlreadyLinked);
+                }
+                Err(e) => return Err(AuthError::Database(e)),
+            }
+        }
+    }
+
+    // Token-less success response (mirrors the login callback's Tauri-vs-browser
+    // split, minus the session/cookie since the caller is already authenticated).
+    let parsed_redirect = openidconnect::url::Url::parse(&flow_state.redirect_uri)
+        .map_err(|e| AuthError::Internal(format!("Invalid redirect URI: {e}")))?;
+    let is_localhost = matches!(
+        (parsed_redirect.scheme(), parsed_redirect.host_str()),
+        ("http", Some("localhost" | "127.0.0.1"))
+    );
+
+    if is_localhost {
+        let mut redirect_url = parsed_redirect;
+        redirect_url
+            .query_pairs_mut()
+            .append_pair("linked", &flow_state.slug);
+        Ok(Redirect::temporary(redirect_url.as_str()).into_response())
+    } else {
+        let payload = serde_json::json!({
+            "type": "oidc-link-callback",
+            "success": true,
+            "provider_slug": flow_state.slug,
+        });
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html><body><script>
+if (window.opener) {{
+    window.opener.postMessage({payload}, window.location.origin);
+    window.close();
+}} else {{
+    document.body.innerText = "Account linked. You can close this window.";
+}}
+</script></body></html>"#,
+        );
+        Ok(axum::response::Html(html).into_response())
     }
 }
 

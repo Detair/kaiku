@@ -114,6 +114,61 @@ pub async fn list_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
     .map_err(db_error!("list_user_identities", user_id = %user_id))
 }
 
+/// Look up a single external identity by its row ID (does not enforce ownership).
+pub async fn find_user_identity_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> sqlx::Result<Option<UserIdentity>> {
+    sqlx::query_as::<_, UserIdentity>("SELECT * FROM user_identities WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_error!("find_user_identity_by_id", identity_id = %id))
+}
+
+/// Count the external identities linked to a user.
+pub async fn count_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .map_err(db_error!("count_user_identities", user_id = %user_id))
+}
+
+/// Delete an identity, enforcing ownership. Returns `true` if a row was removed.
+pub async fn delete_user_identity(
+    pool: &PgPool,
+    user_id: Uuid,
+    identity_id: Uuid,
+) -> sqlx::Result<bool> {
+    let result = sqlx::query("DELETE FROM user_identities WHERE id = $1 AND user_id = $2")
+        .bind(identity_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map_err(db_error!("delete_user_identity", identity_id = %identity_id))?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Mark an identity as just used for login. Best-effort; matches by
+/// `(provider_slug, subject)`. No-op if the row does not exist.
+pub async fn touch_user_identity_last_used(
+    pool: &PgPool,
+    provider_slug: &str,
+    subject: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE user_identities SET last_used_at = NOW()
+         WHERE provider_slug = $1 AND subject = $2",
+    )
+    .bind(provider_slug)
+    .bind(subject)
+    .execute(pool)
+    .await
+    .map_err(db_error!("touch_user_identity_last_used", provider_slug = %provider_slug))?;
+    Ok(())
+}
+
 /// Find user by email.
 pub async fn find_user_by_email(pool: &PgPool, email: &str) -> sqlx::Result<Option<User>> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")

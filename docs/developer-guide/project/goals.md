@@ -255,9 +255,17 @@ the SaaS path is actually pursued:
        login lookup, back-fills the legacy single `users.external_id`); OIDC
        login resolves and records identities through it. Verified: code review
        found the model was one-identity-per-account by construction; no linking
-       existed. Remaining: (a) authenticated link/list/unlink endpoints +
-       link-intent OIDC flow; (b) client "Linked Accounts" settings UI. Both
-       build directly on this table.
+       existed. **Endpoints + link flow shipped 2026-06-20 (PR #601):**
+       `GET /auth/me/identities` (list), `DELETE /auth/me/identities/{id}`
+       (unlink, ownership-checked, with a last-login-method guard for
+       passwordless accounts), and `GET /auth/me/identities/authorize/{provider}`
+       (authenticated link flow — the OIDC callback branches on a `link_user_id`
+       carried in the encrypted flow state, attaching the identity instead of
+       logging in; refuses identities already bound to another account).
+       Remaining: client "Linked Accounts" settings UI (PR3). NOTE: before any
+       further multi-identity hardening, consider demoting `users.external_id`'s
+       UNIQUE constraint (commented in login.rs) — linking does not write it, so
+       it is not yet a problem.
 5. [ ] **Billing & subscriptions (Stripe)** — defer until a SaaS launch
        decision is made; do not build speculatively.
 
