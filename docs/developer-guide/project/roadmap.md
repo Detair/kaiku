@@ -314,7 +314,12 @@ This section is the canonical high-level roadmap view. Detailed implementation c
 - [x] **[Auth] SSO / OIDC Integration** ✅ (PR #135)
   - Admin-configurable OIDC providers (Google, Microsoft, etc.) via `openidconnect`.
   - Dynamic provider discovery and registration through admin dashboard.
-  - Seamless login flow with automatic account linking.
+  - Seamless login flow with automatic provisioning of a local profile on first SSO login.
+- [x] **[Auth] Multi-identity linking** ✅ (PRs #600/#601/#603, 2026-06)
+  - `user_identities` table makes external identities first-class; OIDC login
+    resolves through `(provider_slug, subject)`, so one account can have several.
+  - Authenticated view + unlink of linked accounts in settings (last-login-method
+    guard). Link-add UI deferred (tech-debt TD-32).
 - [x] **[Voice] Screen Sharing** ✅
   - SFU handles multiple video tracks per room with per-channel limits.
   - Spotlight/PiP/Theater viewer modes with keyboard shortcuts (Escape/V/M/F).

@@ -7,14 +7,19 @@ SQLx database migrations for the Kaiku server. Defines the PostgreSQL schema evo
 
 ## Key Files
 
-| File | Purpose |
-|------|---------|
-| `20240101000000_initial_schema.sql` | Core tables: users, channels, messages, sessions |
-| `20240102000000_security_improvements.sql` | Security enhancements: indices, constraints, audit columns |
-| `20240201000000_guilds.sql` | Guild (server) system: guilds, memberships, roles |
-| `20260113000000_add_dm_read_state.sql` | Direct message read state tracking |
-| `20260113000001_permission_system.sql` | Fine-grained permission system |
-| `20260114000000_guild_invites.sql` | Guild invitation system |
+Migrations are timestamp-prefixed (`YYYYMMDDHHmmss_description.sql`) and
+self-documenting via their header comments. They are forward-only (no
+down-migrations). Rather than maintain a hand-curated list here (which drifts),
+discover them directly:
+
+```bash
+ls server/migrations/*.sql                  # all migrations, in apply order
+sqlx migrate info --source server/migrations # applied vs pending
+```
+
+Foundational ones to know: `20240101000000_initial_schema.sql` (core tables:
+users, channels, messages, sessions) and `20240201000000_guilds.sql` (guilds,
+memberships, roles).
 
 ## For AI Agents
 

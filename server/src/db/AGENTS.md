@@ -36,6 +36,7 @@ PostgreSQL connection pooling and Redis client setup. Data models and query func
 
 **Tables** (see `migrations/*.sql` for full DDL):
 - `users` — User accounts (id, username, email, password_hash, mfa_secret, status)
+- `user_identities` — Linked external OIDC identities (id, user_id, provider_slug, subject, email, last_used_at); authoritative `(provider_slug, subject)` login lookup
 - `sessions` — Refresh tokens (id, user_id, token_hash, expires_at)
 - `guilds` — Servers/workspaces (id, name, owner_id)
 - `guild_members` — Guild membership (guild_id, user_id, joined_at)

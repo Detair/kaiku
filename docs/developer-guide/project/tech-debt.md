@@ -174,6 +174,36 @@ Three `#[ignore]` tests waiting on:
 
 ## Priority: Low
 
+### TD-31: Demote `users.external_id` UNIQUE constraint
+
+**File:** `server/migrations/20260322000000_user_identities.sql`, `server/src/auth/login.rs`
+
+Since the OAuth identity-linking work (PRs #600/#601/#603), `user_identities`
+`(provider_slug, subject)` is the authoritative identity-set uniqueness
+guarantee. `users.external_id` is retained only as the primary-identity marker
+and to satisfy the `oidc_user_has_external_id` CHECK, but it still carries a
+UNIQUE constraint. Linking does not currently write `external_id`, so this is
+inert today — but a future change that does (e.g. promoting a linked identity to
+primary) could have a second-identity link blocked by the legacy constraint.
+Demote `users.external_id` to non-unique (new migration) before any such change.
+
+---
+
+### TD-32: Identity link-add UI deferred (desktop native command + server error-redirect)
+
+**Files:** `client/src-tauri/src/commands/auth.rs`, `server/src/auth/login.rs`, `client/src/components/settings/LinkedAccountsSection.tsx`
+
+View + unlink of linked identities shipped (#603). *Adding* a new identity is
+deferred: the `link_authorize` endpoint requires a `Bearer` header a browser
+popup can't send, so desktop linking needs a native Tauri command (mirroring
+`oidc_authorize`, sending the user's token and handling the `?linked=` callback),
+and the client needs an `oidc-link-callback` postMessage receiver + "Link
+account" buttons. The server side already reports link errors via the callback
+channel (`?link_error=` / postMessage) as of the #605 fix. Tracked as GitHub
+issue #605.
+
+---
+
 ### TD-18: Swagger UI not wired up
 
 **File:** `server/src/api/mod.rs:334`

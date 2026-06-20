@@ -248,8 +248,18 @@ flowchart TD
     end
     OIDC --> SSOProviders["Authentik, Keycloak, Azure AD, Okta, Google..."]
     Local --> UserStore
-    SSOProviders --> UserStore["Unified User Store"]
+    SSOProviders --> Identities["user_identities<br/>(provider_slug, subject) → account"]
+    Identities --> UserStore["Unified User Store"]
 ```
+
+An OIDC login resolves through the **`user_identities`** table, which maps each
+external identity `(provider_slug, subject)` to one Kaiku account — so a single
+account can have several linked external identities. (`users.external_id`
+remains the original/primary-identity marker but is no longer the authoritative
+lookup key.) Authenticated users manage linked identities via
+`GET /auth/me/identities`, `DELETE /auth/me/identities/{id}` (unlink, with a
+last-login-method guard), and `GET /auth/me/identities/authorize/{provider}`
+(link an additional identity).
 
 ---
 
