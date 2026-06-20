@@ -7,14 +7,14 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, QueryBuilder, Row};
+use sqlx::{Executor, PgPool, Postgres, QueryBuilder, Row};
 use tracing::{debug, error};
 use uuid::Uuid;
 
 use super::models::{
     AuthMethodsConfig, Channel, ChannelMember, ChannelType, ChannelUnread, FileAttachment,
     GuildUnreadSummary, Message, MfaBackupCode, OidcProviderRow, PasswordResetToken, Session,
-    UnreadAggregate, User,
+    UnreadAggregate, User, UserIdentity,
 };
 
 /// Log and return a database error with context.
@@ -52,16 +52,66 @@ pub async fn find_user_by_username(pool: &PgPool, username: &str) -> sqlx::Resul
         .map_err(db_error!("find_user_by_username", username = %username))
 }
 
-/// Find user by external ID (for OIDC).
-pub async fn find_user_by_external_id(
+// ============================================================================
+// External (OIDC/OAuth) identities
+// ============================================================================
+
+/// Resolve an external identity `(provider_slug, subject)` to its Kaiku account.
+///
+/// This is the authoritative lookup for an OIDC login: it supports accounts
+/// with multiple linked identities, unlike the legacy `users.external_id` key.
+pub async fn find_user_id_by_identity(
     pool: &PgPool,
-    external_id: &str,
-) -> sqlx::Result<Option<User>> {
-    sqlx::query_as::<_, User>("SELECT * FROM users WHERE external_id = $1")
-        .bind(external_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(db_error!("find_user_by_external_id", external_id = %external_id))
+    provider_slug: &str,
+    subject: &str,
+) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT user_id FROM user_identities WHERE provider_slug = $1 AND subject = $2",
+    )
+    .bind(provider_slug)
+    .bind(subject)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_error!("find_user_id_by_identity", provider_slug = %provider_slug))
+}
+
+/// Insert an external identity row, returning the created record.
+///
+/// Generic over the executor so it can run on a pool or inside the OIDC
+/// registration transaction. Surfaces a unique-violation error to the caller
+/// (the `(provider_slug, subject)` and `(user_id, provider_slug)` constraints).
+pub async fn insert_user_identity<'e, E>(
+    executor: E,
+    user_id: Uuid,
+    provider_slug: &str,
+    subject: &str,
+    email: Option<&str>,
+) -> sqlx::Result<UserIdentity>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    sqlx::query_as::<_, UserIdentity>(
+        "INSERT INTO user_identities (user_id, provider_slug, subject, email)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *",
+    )
+    .bind(user_id)
+    .bind(provider_slug)
+    .bind(subject)
+    .bind(email)
+    .fetch_one(executor)
+    .await
+}
+
+/// List all external identities linked to a user, oldest first.
+pub async fn list_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<UserIdentity>> {
+    sqlx::query_as::<_, UserIdentity>(
+        "SELECT * FROM user_identities WHERE user_id = $1 ORDER BY created_at ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_error!("list_user_identities", user_id = %user_id))
 }
 
 /// Find user by email.

@@ -52,6 +52,28 @@ pub enum AuthMethod {
     Oidc,
 }
 
+/// An external (OIDC/OAuth) identity linked to a user account.
+///
+/// One account may have several of these — the authoritative lookup key for an
+/// OIDC login is `(provider_slug, subject)`.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct UserIdentity {
+    /// Unique identity row ID.
+    pub id: Uuid,
+    /// The Kaiku account this identity belongs to.
+    pub user_id: Uuid,
+    /// Provider slug (mirrors `oidc_providers.slug`).
+    pub provider_slug: String,
+    /// Provider-specific subject (`sub`) claim.
+    pub subject: String,
+    /// Email reported by the provider at link time (informational).
+    pub email: Option<String>,
+    /// When the identity was linked.
+    pub created_at: DateTime<Utc>,
+    /// When the identity was last used to log in.
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
 /// User online status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
 #[sqlx(type_name = "user_status", rename_all = "lowercase")]
