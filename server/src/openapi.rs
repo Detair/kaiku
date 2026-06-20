@@ -81,6 +81,9 @@ use utoipa::{Modify, OpenApi};
         crate::auth::sessions::list_sessions,
         crate::auth::sessions::revoke_session,
         crate::auth::sessions::revoke_all_other_sessions,
+        crate::auth::identities::list_identities,
+        crate::auth::identities::link_authorize,
+        crate::auth::identities::unlink_identity,
         // Channels
         crate::chat::channels::create,
         crate::chat::channels::get,
@@ -349,6 +352,8 @@ use utoipa::{Modify, OpenApi};
         crate::auth::types::ResetPasswordRequest,
         crate::auth::types::SessionInfo,
         crate::auth::types::SessionListResponse,
+        crate::auth::types::IdentityInfo,
+        crate::auth::types::IdentityListResponse,
         crate::auth::types::RevokeAllResponse,
         crate::auth::error::ErrorResponse,
         // DB Models

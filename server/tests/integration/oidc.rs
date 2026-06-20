@@ -313,12 +313,14 @@ fn test_collision_suffix_respects_max_length() {
 
 #[test]
 fn test_flow_state_serialization_roundtrip() {
+    let link_user = uuid::Uuid::new_v4();
     let state = OidcFlowState {
         slug: "github".to_string(),
         pkce_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
         nonce: "abc123nonce".to_string(),
         redirect_uri: "http://127.0.0.1:12345/callback".to_string(),
         created_at: 1706745600,
+        link_user_id: Some(link_user),
     };
 
     let json = serde_json::to_string(&state).expect("Serialization should succeed");
@@ -330,6 +332,16 @@ fn test_flow_state_serialization_roundtrip() {
     assert_eq!(deserialized.nonce, "abc123nonce");
     assert_eq!(deserialized.redirect_uri, "http://127.0.0.1:12345/callback");
     assert_eq!(deserialized.created_at, 1706745600);
+    assert_eq!(deserialized.link_user_id, Some(link_user));
+}
+
+#[test]
+fn test_flow_state_link_user_id_defaults_to_none() {
+    // Old flow-state blobs (pre-linking) have no link_user_id field; #[serde(default)]
+    // must deserialize them as an ordinary login flow.
+    let legacy = r#"{"slug":"google","pkce_verifier":"v","nonce":"n","redirect_uri":"https://x/cb","created_at":0}"#;
+    let state: OidcFlowState = serde_json::from_str(legacy).expect("legacy state should parse");
+    assert_eq!(state.link_user_id, None);
 }
 
 #[test]
@@ -340,6 +352,7 @@ fn test_flow_state_json_format() {
         nonce: "nonce".to_string(),
         redirect_uri: "https://example.com/callback".to_string(),
         created_at: 0,
+        link_user_id: None,
     };
 
     let json: serde_json::Value = serde_json::to_value(&state).unwrap();

@@ -226,6 +226,31 @@ pub struct SessionListResponse {
     pub sessions: Vec<SessionInfo>,
 }
 
+/// A single external (OIDC/OAuth) identity linked to the account.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct IdentityInfo {
+    /// Identity row ID (used to unlink).
+    pub id: Uuid,
+    /// Provider slug (e.g. "google").
+    pub provider_slug: String,
+    /// Human-readable provider name, resolved from the provider config.
+    /// Falls back to the slug if the provider has since been removed.
+    pub provider_name: String,
+    /// Email reported by the provider at link time, if any.
+    pub email: Option<String>,
+    /// When the identity was linked.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// When the identity was last used to log in, if ever.
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Response containing the account's linked external identities.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct IdentityListResponse {
+    /// External identities linked to the authenticated account.
+    pub identities: Vec<IdentityInfo>,
+}
+
 /// Response for revoking all other sessions.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RevokeAllResponse {

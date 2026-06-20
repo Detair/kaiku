@@ -7,6 +7,7 @@ pub(crate) mod cookies;
 pub(crate) mod error;
 pub mod geoip;
 mod helpers;
+pub(crate) mod identities;
 pub mod jwt;
 pub(crate) mod login;
 pub(crate) mod mfa;
@@ -183,6 +184,12 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route(
             "/me/avatar",
             post(profile::upload_avatar).layer(DefaultBodyLimit::max(state.config.max_avatar_size)),
+        )
+        .route("/me/identities", get(identities::list_identities))
+        .route("/me/identities/{id}", delete(identities::unlink_identity))
+        .route(
+            "/me/identities/authorize/{provider}",
+            get(identities::link_authorize),
         )
         .route("/mfa/setup", post(mfa::mfa_setup))
         .route("/mfa/verify", post(mfa::mfa_verify))

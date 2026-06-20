@@ -21,6 +21,7 @@ mod global_search_http;
 mod governance;
 mod guild_invite;
 mod guild_limits;
+mod identities_http;
 mod media_processing;
 mod mention_permission;
 mod messages_http;
