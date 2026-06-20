@@ -179,3 +179,44 @@ async fn test_request_ids_are_unique(pool: PgPool) {
         }
     }
 }
+
+/// The authenticated identity link-authorize endpoint must be throttled the same
+/// way the public OIDC authorize route is — each call triggers an outbound
+/// provider request, so an authenticated user could otherwise loop it.
+///
+/// The rate-limit layer runs before `require_auth`, so unauthenticated probes
+/// (401) still count toward the per-IP `AuthOther` budget; the over-limit request
+/// returns 429 before reaching auth.
+#[sqlx::test]
+async fn test_link_authorize_is_rate_limited(pool: PgPool) {
+    let limits = RateLimits {
+        auth_other: LimitConfig {
+            requests: 3,
+            window_secs: 60,
+        },
+        ..RateLimits::default()
+    };
+
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
+    let client = reqwest::Client::new();
+    let url = format!("{}/auth/me/identities/authorize/google", server.url);
+
+    // First 3 are under the limit — they pass rate-limiting and hit require_auth (401).
+    for i in 0..3 {
+        let resp = client.get(&url).send().await.expect("Request failed");
+        assert_eq!(
+            resp.status(),
+            401,
+            "link-authorize request {} should pass the limiter and reach auth (401)",
+            i + 1
+        );
+    }
+
+    // 4th trips the per-IP AuthOther limit before auth runs.
+    let resp = client.get(&url).send().await.expect("Request failed");
+    assert_eq!(
+        resp.status(),
+        429,
+        "4th link-authorize request should be rate limited (429)"
+    );
+}

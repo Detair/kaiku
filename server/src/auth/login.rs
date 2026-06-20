@@ -905,47 +905,64 @@ if (window.opener) {{
 /// Attach a freshly-authenticated external identity to an existing account
 /// (the OIDC *link* flow). Unlike login, this issues no tokens.
 ///
-/// Refuses to steal an identity already bound to a different account. Linking
-/// the same identity again, or a second identity for a provider already linked
-/// to this account, are both surfaced as `IdentityAlreadyLinked`.
+/// Refuses to steal an identity already bound to a different account. A conflict
+/// (already bound elsewhere, or the provider already linked to this account) is
+/// reported back to the opener as a generic `IDENTITY_ALREADY_LINKED` code via
+/// the same redirect/postMessage channel — not as an HTTP error.
 async fn handle_identity_link(
     state: &AppState,
     flow_state: &OidcFlowState,
     user_info: &OidcUserInfo,
     link_user_id: Uuid,
 ) -> Result<Response, AuthError> {
-    match find_user_id_by_identity(&state.db, &flow_state.slug, &user_info.subject).await? {
+    // Determine the link outcome. Genuine server faults (DB errors) propagate as
+    // AuthError; a *conflict* instead becomes a generic error code carried back to
+    // the opener via the same redirect/postMessage channel, so the popup always
+    // closes rather than hanging on an HTTP error page. The code is intentionally
+    // ownerless — it never reveals which account holds the identity.
+    let error_code: Option<&'static str> = match find_user_id_by_identity(
+        &state.db,
+        &flow_state.slug,
+        &user_info.subject,
+    )
+    .await?
+    {
         // Already linked to this account — idempotent success.
         Some(existing) if existing == link_user_id => {
             tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, "OIDC identity already linked to this account");
+            None
         }
         // Bound to someone else — refuse.
-        Some(_) => return Err(AuthError::IdentityAlreadyLinked),
-        None => {
-            match db::insert_user_identity(
-                &state.db,
-                link_user_id,
-                &flow_state.slug,
-                &user_info.subject,
-                user_info.email.as_deref(),
-            )
-            .await
-            {
-                Ok(_) => {
-                    tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, "Linked OIDC identity to account");
-                }
-                // Lost a race, or the account already has an identity for this
-                // provider (the (user_id, provider_slug) UNIQUE constraint).
-                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                    return Err(AuthError::IdentityAlreadyLinked);
-                }
-                Err(e) => return Err(AuthError::Database(e)),
+        Some(_) => Some("IDENTITY_ALREADY_LINKED"),
+        None => match db::insert_user_identity(
+            &state.db,
+            link_user_id,
+            &flow_state.slug,
+            &user_info.subject,
+            user_info.email.as_deref(),
+        )
+        .await
+        {
+            Ok(_) => {
+                tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, "Linked OIDC identity to account");
+                None
             }
-        }
+            // Lost a race, or the account already has an identity for this
+            // provider (the (user_id, provider_slug) UNIQUE constraint).
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                Some("IDENTITY_ALREADY_LINKED")
+            }
+            Err(e) => return Err(AuthError::Database(e)),
+        },
+    };
+
+    if let Some(code) = error_code {
+        tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, error_code = code, "OIDC identity link rejected");
     }
 
-    // Token-less success response (mirrors the login callback's Tauri-vs-browser
+    // Token-less result response (mirrors the login callback's Tauri-vs-browser
     // split, minus the session/cookie since the caller is already authenticated).
+    // Always completes the handshake — success or a generic error code.
     let parsed_redirect = openidconnect::url::Url::parse(&flow_state.redirect_uri)
         .map_err(|e| AuthError::Internal(format!("Invalid redirect URI: {e}")))?;
     let is_localhost = matches!(
@@ -955,15 +972,21 @@ async fn handle_identity_link(
 
     if is_localhost {
         let mut redirect_url = parsed_redirect;
-        redirect_url
-            .query_pairs_mut()
-            .append_pair("linked", &flow_state.slug);
+        match error_code {
+            Some(code) => redirect_url
+                .query_pairs_mut()
+                .append_pair("link_error", code),
+            None => redirect_url
+                .query_pairs_mut()
+                .append_pair("linked", &flow_state.slug),
+        };
         Ok(Redirect::temporary(redirect_url.as_str()).into_response())
     } else {
         let payload = serde_json::json!({
             "type": "oidc-link-callback",
-            "success": true,
+            "success": error_code.is_none(),
             "provider_slug": flow_state.slug,
+            "error_code": error_code,
         });
         let html = format!(
             r#"<!DOCTYPE html>
@@ -972,7 +995,7 @@ if (window.opener) {{
     window.opener.postMessage({payload}, window.location.origin);
     window.close();
 }} else {{
-    document.body.innerText = "Account linked. You can close this window.";
+    document.body.innerText = "You can close this window.";
 }}
 </script></body></html>"#,
         );

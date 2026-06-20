@@ -187,17 +187,36 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/me/identities", get(identities::list_identities))
         .route("/me/identities/{id}", delete(identities::unlink_identity))
-        .route(
-            "/me/identities/authorize/{provider}",
-            get(identities::link_authorize),
-        )
         .route("/mfa/setup", post(mfa::mfa_setup))
         .route("/mfa/verify", post(mfa::mfa_verify))
         .route("/mfa/disable", post(mfa::mfa_disable))
         .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
         .route("/mfa/backup-codes/count", get(mfa::mfa_backup_code_count))
         .route("/qr/create", post(mfa::qr_create))
-        .layer(axum_middleware::from_fn_with_state(state, require_auth));
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            require_auth,
+        ));
 
-    public_routes.merge(protected_routes)
+    // Identity link-authorize: like the public OIDC authorize, each call triggers
+    // an outbound request to the provider + a Redis state write, so it needs the
+    // same per-IP throttle on top of auth (the rest of the protected block is
+    // cheap DB work and stays unthrottled to avoid breaking the settings UI).
+    let link_authorize_route = Router::new()
+        .route(
+            "/me/identities/authorize/{provider}",
+            get(identities::link_authorize),
+        )
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            require_auth,
+        ))
+        .layer(axum_middleware::from_fn_with_state(state, rate_limit_by_ip))
+        .layer(axum_middleware::from_fn(with_category(
+            RateLimitCategory::AuthOther,
+        )));
+
+    public_routes
+        .merge(protected_routes)
+        .merge(link_authorize_route)
 }

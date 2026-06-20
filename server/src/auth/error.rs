@@ -101,10 +101,6 @@ pub enum AuthError {
     #[error("This authentication method is disabled")]
     AuthMethodDisabled,
 
-    /// The external identity is already linked to another account.
-    #[error("This external account is already linked to another Kaiku account")]
-    IdentityAlreadyLinked,
-
     /// Refusing to unlink the account's only remaining login method.
     #[error("Cannot remove your only login method; set a password or link another account first")]
     CannotUnlinkLastIdentity,
@@ -149,7 +145,6 @@ impl IntoResponse for AuthError {
             Self::OidcCodeExchangeFailed(_) => (StatusCode::BAD_GATEWAY, "OIDC_EXCHANGE_FAILED"),
             Self::RegistrationDisabled => (StatusCode::FORBIDDEN, "REGISTRATION_DISABLED"),
             Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
-            Self::IdentityAlreadyLinked => (StatusCode::CONFLICT, "IDENTITY_ALREADY_LINKED"),
             Self::CannotUnlinkLastIdentity => (StatusCode::CONFLICT, "CANNOT_UNLINK_LAST_IDENTITY"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };

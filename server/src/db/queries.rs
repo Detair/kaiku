@@ -190,6 +190,22 @@ pub async fn unlink_identity_guarded(
     Ok(UnlinkOutcome::Deleted)
 }
 
+/// Count legacy OIDC users whose `external_id` has no `:` separator.
+///
+/// Such rows got no `user_identities` back-fill (the slug/subject split needs a
+/// colon), so the `(provider_slug, subject)` login lookup can't resolve them.
+/// Expected to be zero — the login flow always writes `{slug}:{subject}`. A
+/// positive count means an operator must reconcile those accounts.
+pub async fn count_unsplittable_oidc_external_ids(pool: &PgPool) -> sqlx::Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM users
+         WHERE auth_method = 'oidc' AND external_id IS NOT NULL
+           AND position(':' IN external_id) = 0",
+    )
+    .fetch_one(pool)
+    .await
+}
+
 /// Mark an identity as just used for login. Best-effort; matches by
 /// `(provider_slug, subject)`. No-op if the row does not exist.
 pub async fn touch_user_identity_last_used(
