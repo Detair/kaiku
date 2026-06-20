@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, For, Show } from "solid-js";
 import { KeyRound, Unlink } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
+import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo } from "@/lib/types";
 
 /**
@@ -45,19 +46,6 @@ const LinkedAccountsSection: Component = () => {
       // Surfaces the server's message, e.g. the last-login-method guard (409).
       setError(err instanceof Error ? err.message : String(err));
     }
-  };
-
-  const formatRelativeTime = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return "just now";
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
   };
 
   return (
@@ -105,8 +93,8 @@ const LinkedAccountsSection: Component = () => {
                       </Show>
                       <span>
                         {identity.last_used_at
-                          ? `last used ${formatRelativeTime(identity.last_used_at)}`
-                          : `linked ${formatRelativeTime(identity.created_at)}`}
+                          ? `last used ${formatRelativeTimeShort(identity.last_used_at)}`
+                          : `linked ${formatRelativeTimeShort(identity.created_at)}`}
                       </span>
                     </div>
                   </div>
