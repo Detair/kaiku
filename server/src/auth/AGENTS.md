@@ -20,6 +20,7 @@
 - `login.rs` — Login, logout, refresh, password reset, OIDC handlers
 - `mfa.rs` — MFA setup/verify/disable, backup codes, QR login handlers
 - `sessions.rs` — Session listing and revocation handlers
+- `identities.rs` — Linked external (OIDC) identity view/link/unlink handlers
 - `profile.rs` — Profile read/update, avatar upload, password change handlers
 - `helpers.rs` — Shared helpers (token extraction, user-agent parsing)
 - `jwt.rs` — JWT token creation, validation, and claims parsing
@@ -85,7 +86,7 @@ Config::default()  // Uses OWASP-recommended defaults
 3. Client sends second request with `totp_code` in login body
 4. `mfa_crypto::verify_totp()` checks code (30s window, ±1 step tolerance)
 
-**Backup Codes**: Not yet implemented. TODO: Generate 10 single-use backup codes on MFA setup.
+**Backup Codes**: Implemented (`backup_codes.rs`, `mfa::mfa_generate_backup_codes`) — single-use hashed codes accepted by the login MFA path.
 
 ### OIDC Integration
 
@@ -99,7 +100,7 @@ Config::default()  // Uses OWASP-recommended defaults
 
 **State Parameter**: Prevents CSRF. Generated as random UUID, stored in Redis with 10min TTL (`oidc:state:{uuid}` key).
 
-**User Linking**: If email matches existing user, link OIDC identity. Otherwise create new user with `oidc:{provider}:{sub}` as username.
+**Identity Resolution & Linking**: An OIDC login resolves the account via the `user_identities` table keyed by `(provider_slug, subject)` (the authoritative lookup; `users.external_id` is retained as the primary-identity marker only). A first-time login provisions a new account + identity row; a known identity logs in. Authenticated users can attach additional identities (`/auth/me/identities/authorize/{provider}` stamps `link_user_id` into the encrypted flow state; the callback's `handle_identity_link` binds the identity instead of logging in) and unlink them (`DELETE /auth/me/identities/{id}`, refused if it's the only login method of a passwordless account → `CANNOT_UNLINK_LAST_IDENTITY`). A conflict (identity already bound elsewhere) is reported as a generic `IDENTITY_ALREADY_LINKED` code.
 
 ### Rate Limiting Strategy
 

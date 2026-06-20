@@ -657,11 +657,12 @@ pub async fn oidc_callback(
     // user's primary-identity marker; the authoritative lookup is the
     // user_identities table keyed by (provider_slug, subject).
     //
-    // NOTE for the linking follow-up: users.external_id still carries a UNIQUE
-    // constraint and only ever holds the *first* identity. Once an account can
-    // attach additional identities, that constraint must not be treated as a
-    // uniqueness guarantee for the identity set (user_identities is) — and
-    // should likely be demoted to non-unique before multi-identity writes land.
+    // Accounts can now attach additional identities (see handle_identity_link),
+    // so users.external_id only ever holds the *first* identity — it is no
+    // longer the identity-set uniqueness guarantee (user_identities is). Its
+    // retained UNIQUE constraint is a latent footgun: a future change that
+    // writes external_id on link could be blocked by it. Demotion to non-unique
+    // is tracked in tech-debt (TD-31).
     let external_id = format!("{}:{}", flow_state.slug, user_info.subject);
 
     // Link flow: attach this identity to the already-authenticated user instead
