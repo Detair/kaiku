@@ -114,18 +114,6 @@ pub async fn list_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
     .map_err(db_error!("list_user_identities", user_id = %user_id))
 }
 
-/// Look up a single external identity by its row ID (does not enforce ownership).
-pub async fn find_user_identity_by_id(
-    pool: &PgPool,
-    id: Uuid,
-) -> sqlx::Result<Option<UserIdentity>> {
-    sqlx::query_as::<_, UserIdentity>("SELECT * FROM user_identities WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .map_err(db_error!("find_user_identity_by_id", identity_id = %id))
-}
-
 /// Count the external identities linked to a user.
 pub async fn count_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
@@ -135,19 +123,71 @@ pub async fn count_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result
         .map_err(db_error!("count_user_identities", user_id = %user_id))
 }
 
-/// Delete an identity, enforcing ownership. Returns `true` if a row was removed.
-pub async fn delete_user_identity(
+/// Result of [`unlink_identity_guarded`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum UnlinkOutcome {
+    /// The identity was removed.
+    Deleted,
+    /// No such identity, or it belongs to another user.
+    NotFound,
+    /// Removing it would leave a passwordless account with no way to log in.
+    WouldLockOut,
+}
+
+/// Unlink an identity atomically.
+///
+/// Runs the ownership check, the last-login-method guard, and the delete in a
+/// single transaction that locks the owning user row, so concurrent unlinks for
+/// the same account cannot race past the guard and strand a passwordless user
+/// with zero login methods.
+pub async fn unlink_identity_guarded(
     pool: &PgPool,
     user_id: Uuid,
     identity_id: Uuid,
-) -> sqlx::Result<bool> {
-    let result = sqlx::query("DELETE FROM user_identities WHERE id = $1 AND user_id = $2")
+) -> sqlx::Result<UnlinkOutcome> {
+    let mut tx = pool.begin().await?;
+
+    // Lock the user row to serialize concurrent unlinks for this account.
+    let password_hash: Option<Option<String>> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(password_hash) = password_hash else {
+        return Ok(UnlinkOutcome::NotFound);
+    };
+
+    // Ownership / existence: treat "not yours" as not-found (no probing).
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM user_identities WHERE id = $1 AND user_id = $2)",
+    )
+    .bind(identity_id)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !owned {
+        return Ok(UnlinkOutcome::NotFound);
+    }
+
+    // A passwordless account must keep at least one identity.
+    if password_hash.is_none() {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if count <= 1 {
+            return Ok(UnlinkOutcome::WouldLockOut);
+        }
+    }
+
+    sqlx::query("DELETE FROM user_identities WHERE id = $1 AND user_id = $2")
         .bind(identity_id)
         .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(db_error!("delete_user_identity", identity_id = %identity_id))?;
-    Ok(result.rows_affected() > 0)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(UnlinkOutcome::Deleted)
 }
 
 /// Mark an identity as just used for login. Best-effort; matches by

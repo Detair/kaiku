@@ -120,31 +120,15 @@ pub async fn unlink_identity(
     auth_user: AuthUser,
     Path(identity_id): Path<Uuid>,
 ) -> AuthResult<StatusCode> {
-    // Must exist and belong to the caller. Treat "not yours" as 404 so identity
-    // IDs of other accounts can't be probed.
-    let identity = db::find_user_identity_by_id(&state.db, identity_id)
-        .await?
-        .filter(|i| i.user_id == auth_user.id)
-        .ok_or_else(|| AuthError::NotFound("Identity not found".to_string()))?;
-
-    // Refuse to remove the account's only login method: a user with no password
-    // and a single linked identity would otherwise lock themselves out.
-    let user = db::find_user_by_id(&state.db, auth_user.id)
-        .await?
-        .ok_or(AuthError::UserNotFound)?;
-    if user.password_hash.is_none() {
-        let count = db::count_user_identities(&state.db, auth_user.id).await?;
-        if count <= 1 {
-            return Err(AuthError::CannotUnlinkLastIdentity);
+    // Ownership check, last-login-method guard, and delete run atomically under
+    // a user-row lock (see unlink_identity_guarded). Ownership failure is a 404
+    // so other accounts' identity IDs can't be probed.
+    match db::unlink_identity_guarded(&state.db, auth_user.id, identity_id).await? {
+        db::UnlinkOutcome::Deleted => {
+            tracing::info!(user_id = %auth_user.id, identity_id = %identity_id, "Unlinked OIDC identity");
+            Ok(StatusCode::NO_CONTENT)
         }
+        db::UnlinkOutcome::NotFound => Err(AuthError::NotFound("Identity not found".to_string())),
+        db::UnlinkOutcome::WouldLockOut => Err(AuthError::CannotUnlinkLastIdentity),
     }
-
-    let removed = db::delete_user_identity(&state.db, auth_user.id, identity.id).await?;
-    if !removed {
-        // Raced with another unlink of the same row.
-        return Err(AuthError::NotFound("Identity not found".to_string()));
-    }
-
-    tracing::info!(user_id = %auth_user.id, identity_id = %identity.id, provider = %identity.provider_slug, "Unlinked OIDC identity");
-    Ok(StatusCode::NO_CONTENT)
 }
