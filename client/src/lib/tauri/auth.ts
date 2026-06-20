@@ -4,6 +4,7 @@
  */
 
 import type {
+  IdentityListResponse,
   OidcLoginResult,
   RevokeAllResponse,
   ServerSettings,
@@ -313,6 +314,29 @@ export async function revokeSession(sessionId: string): Promise<void> {
  */
 export async function revokeAllOtherSessions(): Promise<RevokeAllResponse> {
   return fetchApi<RevokeAllResponse>("/auth/sessions", { method: "DELETE" });
+}
+
+// ============================================================================
+// Linked external (OIDC) identities
+// ============================================================================
+
+/**
+ * List the external identities linked to the current account.
+ */
+export async function listIdentities(): Promise<IdentityListResponse> {
+  return fetchApi<IdentityListResponse>("/auth/me/identities");
+}
+
+/**
+ * Unlink an external identity by ID.
+ *
+ * The server returns 409 when this would remove the only login method of a
+ * passwordless account; the caller surfaces that message to the user.
+ */
+export async function unlinkIdentity(identityId: string): Promise<void> {
+  await fetchApi<void>(`/auth/me/identities/${identityId}`, {
+    method: "DELETE",
+  });
 }
 
 // ============================================================================

@@ -6,6 +6,7 @@ import * as tauri from "@/lib/tauri";
 import { validateFileSize, getUploadLimitText } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
 import ChangePasswordModal from "./ChangePasswordModal";
+import LinkedAccountsSection from "./LinkedAccountsSection";
 import SessionsSection from "./SessionsSection";
 
 const AccountSettings: Component = () => {
@@ -159,6 +160,11 @@ const AccountSettings: Component = () => {
             Update your password to keep your account secure
           </div>
         </button>
+      </div>
+
+      {/* Linked accounts */}
+      <div class="pt-4 border-t border-white/5">
+        <LinkedAccountsSection />
       </div>
 
       {/* Sessions */}
