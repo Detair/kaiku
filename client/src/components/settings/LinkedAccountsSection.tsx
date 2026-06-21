@@ -1,25 +1,37 @@
 import { Component, createSignal, onMount, For, Show } from "solid-js";
-import { KeyRound, Unlink } from "lucide-solid";
+import { KeyRound, Unlink, Plus } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
 import { formatRelativeTimeShort } from "@/lib/utils";
-import type { IdentityInfo } from "@/lib/types";
+import type { IdentityInfo, OidcProvider } from "@/lib/types";
 
 /**
- * Lists the external (OIDC) identities linked to the account and lets the user
- * unlink them. Adding new identities is handled separately (the link flow needs
- * the desktop app's native callback handling).
+ * Lists the external (OIDC) identities linked to the account, and lets the user
+ * link an additional provider or unlink an existing one.
+ *
+ * Linking uses the native command on desktop (Tauri) and a popup + postMessage
+ * handshake in the browser — see `tauri.linkIdentity`.
  */
 const LinkedAccountsSection: Component = () => {
   const [identities, setIdentities] = createSignal<IdentityInfo[]>([]);
+  const [providers, setProviders] = createSignal<OidcProvider[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  // Slug currently being linked (disables its button / shows progress).
+  const [linking, setLinking] = createSignal<string | null>(null);
 
-  const loadIdentities = async () => {
+  const loadData = async () => {
     try {
-      setLoading(true);
       setError(null);
       const resp = await tauri.listIdentities();
       setIdentities(resp.identities);
+      // Available providers come from the public server settings; ignore
+      // failures here (linking just won't be offered).
+      try {
+        const settings = await tauri.fetchServerSettings(tauri.getServerUrl());
+        setProviders(settings.oidc_enabled ? settings.oidc_providers : []);
+      } catch {
+        setProviders([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -27,7 +39,13 @@ const LinkedAccountsSection: Component = () => {
     }
   };
 
-  onMount(loadIdentities);
+  onMount(loadData);
+
+  // Providers not already linked to this account.
+  const availableProviders = (): OidcProvider[] => {
+    const linkedSlugs = new Set(identities().map((i) => i.provider_slug));
+    return providers().filter((p) => !linkedSlugs.has(p.slug));
+  };
 
   const handleUnlink = async (identity: IdentityInfo) => {
     const label = identity.provider_name || identity.provider_slug;
@@ -45,6 +63,53 @@ const LinkedAccountsSection: Component = () => {
     } catch (err) {
       // Surfaces the server's message, e.g. the last-login-method guard (409).
       setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleLink = async (provider: OidcProvider) => {
+    setError(null);
+    setLinking(provider.slug);
+    try {
+      const result = await tauri.linkIdentity(provider.slug);
+
+      if (result.mode === "tauri") {
+        // Native command resolved on success; refresh the list.
+        await loadData();
+        setLinking(null);
+        return;
+      }
+
+      // Browser: open a popup and wait for the callback's postMessage.
+      const expectedOrigin = new URL(tauri.getServerUrl()).origin;
+      const messageHandler = (event: MessageEvent) => {
+        if (event.origin !== expectedOrigin) return;
+        if (event.data?.type !== "oidc-link-callback") return;
+        window.removeEventListener("message", messageHandler);
+        if (event.data.success) {
+          loadData().catch(() => {});
+        } else {
+          setError(
+            event.data.error_code === "IDENTITY_ALREADY_LINKED"
+              ? "That account is already linked to another Kaiku account."
+              : "Linking failed. Please try again.",
+          );
+        }
+        setLinking(null);
+      };
+      window.addEventListener("message", messageHandler);
+
+      const popup = window.open(result.authUrl, "oidc-link", "width=600,height=700");
+      // Stop waiting if the popup is closed without completing.
+      const checkClosed = setInterval(() => {
+        if (popup?.closed) {
+          clearInterval(checkClosed);
+          window.removeEventListener("message", messageHandler);
+          setLinking(null);
+        }
+      }, 500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setLinking(null);
     }
   };
 
@@ -70,7 +135,7 @@ const LinkedAccountsSection: Component = () => {
         <Show
           when={identities().length > 0}
           fallback={
-            <div class="text-sm text-text-secondary py-4 text-center">
+            <div class="text-sm text-text-secondary py-2">
               No external accounts are linked to your profile.
             </div>
           }
@@ -106,6 +171,25 @@ const LinkedAccountsSection: Component = () => {
                     <Unlink size={16} />
                   </button>
                 </div>
+              )}
+            </For>
+          </div>
+        </Show>
+
+        <Show when={availableProviders().length > 0}>
+          <div class="flex flex-wrap gap-2 pt-1">
+            <For each={availableProviders()}>
+              {(provider) => (
+                <button
+                  onClick={() => handleLink(provider)}
+                  disabled={linking() !== null}
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-surface-layer2 hover:bg-surface-highlight border border-white/5 text-text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Plus size={14} />
+                  {linking() === provider.slug
+                    ? "Linking..."
+                    : `Link ${provider.display_name}`}
+                </button>
               )}
             </For>
           </div>

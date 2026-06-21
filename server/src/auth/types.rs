@@ -286,6 +286,11 @@ pub struct OidcCallbackQuery {
 pub struct OidcAuthorizeQuery {
     /// Optional redirect URI override (for Tauri localhost callback).
     pub redirect_uri: Option<String>,
+    /// When `"json"`, return the provider authorization URL as a JSON body
+    /// (`{"url": ...}`) instead of a 307 redirect. Used by the browser link
+    /// flow, which calls this endpoint as an authenticated XHR (a top-level
+    /// popup can't send the Bearer header) and then opens the URL itself.
+    pub response: Option<String>,
 }
 
 /// Forgot password request.

@@ -248,9 +248,9 @@ the SaaS path is actually pursued:
        server OTel (Goal 4). *Only remaining: release source-map upload —
        needs an external Sentry account (operator infra), so out of scope
        here.* [Original "partially present" framing was stale.]
-4. [~] **Identity trust / OAuth linking** — medium priority. (OIDC login
-       already exists; "linking" of multiple external identities to one
-       account is the new surface.) **Foundation shipped 2026-06-20 (PR #600):**
+4. [x] **Identity trust / OAuth linking** — COMPLETE 2026-06-21. (OIDC login
+       already existed; "linking" of multiple external identities to one
+       account was the new surface.) **Foundation shipped 2026-06-20 (PR #600):**
        new `user_identities` table (authoritative `(provider_slug, subject)`
        login lookup, back-fills the legacy single `users.external_id`); OIDC
        login resolves and records identities through it. Verified: code review
@@ -262,16 +262,16 @@ the SaaS path is actually pursued:
        (authenticated link flow — the OIDC callback branches on a `link_user_id`
        carried in the encrypted flow state, attaching the identity instead of
        logging in; refuses identities already bound to another account).
-       **Client UI — view + unlink shipped 2026-06-20 (PR #603):** a "Linked
-       Accounts" section in account settings lists connected providers and
-       unlinks them (surfaces the last-login-method guard). Remaining: the
-       *link-a-new-identity* UI — deferred because it needs a native Tauri
-       command (the link-authorize endpoint requires a Bearer header a browser
-       popup can't send) plus a server tweak to redirect link *errors* to the
-       desktop localhost callback (success already does). NOTE: before any
-       further multi-identity hardening, consider demoting `users.external_id`'s
-       UNIQUE constraint (commented in login.rs) — linking does not write it, so
-       it is not yet a problem.
+       **Client UI shipped 2026-06-20/21:** a "Linked Accounts" section in
+       account settings (PR #603 view + unlink; the link-a-new-identity UI then
+       completed it). Linking uses the native Tauri command `oidc_link_identity`
+       on desktop and a popup + `oidc-link-callback` postMessage in the browser
+       (the link-authorize endpoint gained a `?response=json` mode so an
+       authenticated XHR can fetch the provider URL, since a popup can't send the
+       Bearer header). A full code review of the feature produced 9 follow-up
+       issues (#604–#612), all fixed. NOTE: before any change that writes
+       `users.external_id` on link, demote its UNIQUE constraint (tech-debt
+       TD-31) — linking does not write it today, so it is not yet a problem.
 5. [ ] **Billing & subscriptions (Stripe)** — defer until a SaaS launch
        decision is made; do not build speculatively.
 
