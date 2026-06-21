@@ -15,6 +15,7 @@ import {
   browserState,
   clearBrowserTokens,
   fetchApi,
+  getServerUrl,
   getUploadAuth,
   HttpError,
   httpRequest,
@@ -337,6 +338,32 @@ export async function unlinkIdentity(identityId: string): Promise<void> {
   await fetchApi<void>(`/auth/me/identities/${identityId}`, {
     method: "DELETE",
   });
+}
+
+/**
+ * Start linking an additional external identity to the current account.
+ *
+ * Tauri: the native command runs the full flow (opens the system browser, waits
+ * on a localhost callback) and resolves once the identity is linked.
+ *
+ * Browser: a top-level popup can't send the Bearer header the link-authorize
+ * endpoint requires, so we fetch the provider URL as an authenticated XHR and
+ * return it for the caller to open in a popup; the result then arrives via an
+ * `oidc-link-callback` postMessage from the server callback page.
+ */
+export async function linkIdentity(
+  providerSlug: string,
+): Promise<{ mode: "tauri" } | { mode: "browser"; authUrl: string }> {
+  const baseUrl = getServerUrl().replace(/\/+$/, "");
+  if (isTauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("oidc_link_identity", { serverUrl: baseUrl, providerSlug });
+    return { mode: "tauri" };
+  }
+  const resp = await fetchApi<{ url: string }>(
+    `/auth/me/identities/authorize/${encodeURIComponent(providerSlug)}?response=json`,
+  );
+  return { mode: "browser", authUrl: resp.url };
 }
 
 // ============================================================================

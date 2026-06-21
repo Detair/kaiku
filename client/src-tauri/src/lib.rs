@@ -119,6 +119,7 @@ pub fn run() {
             commands::auth::get_auth_info,
             commands::auth::register,
             commands::auth::oidc_authorize,
+            commands::auth::oidc_link_identity,
             commands::auth::mfa_setup,
             commands::auth::mfa_verify,
             commands::auth::mfa_disable,

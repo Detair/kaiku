@@ -189,18 +189,18 @@ Demote `users.external_id` to non-unique (new migration) before any such change.
 
 ---
 
-### TD-32: Identity link-add UI deferred (desktop native command + server error-redirect)
+### TD-32: Identity link-add UI ✅ RESOLVED
 
 **Files:** `client/src-tauri/src/commands/auth.rs`, `server/src/auth/login.rs`, `client/src/components/settings/LinkedAccountsSection.tsx`
 
-View + unlink of linked identities shipped (#603). *Adding* a new identity is
-deferred: the `link_authorize` endpoint requires a `Bearer` header a browser
-popup can't send, so desktop linking needs a native Tauri command (mirroring
-`oidc_authorize`, sending the user's token and handling the `?linked=` callback),
-and the client needs an `oidc-link-callback` postMessage receiver + "Link
-account" buttons. The server side already reports link errors via the callback
-channel (`?link_error=` / postMessage) as of the #605 fix. Tracked as GitHub
-issue #605.
+**Resolved 2026-06-21** — the link-a-new-identity UI shipped. Desktop uses the
+native `oidc_link_identity` Tauri command (mirrors `oidc_authorize`, sends the
+user's Bearer token, handles the `?linked=`/`?link_error=` localhost callback).
+Browser uses a popup + `oidc-link-callback` postMessage; the `link_authorize`
+endpoint gained a `?response=json` mode so an authenticated XHR can fetch the
+provider URL (a top-level popup can't send the Bearer header). The
+`LinkedAccountsSection` lists available providers (minus already-linked) with
+"Link" buttons. Goal 6 item 4 is complete.
 
 ---
 

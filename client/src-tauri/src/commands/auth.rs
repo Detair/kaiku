@@ -712,6 +712,158 @@ pub async fn oidc_authorize(
     })
 }
 
+/// Link an additional external (OIDC) identity to the signed-in account (desktop).
+///
+/// Mirrors `oidc_authorize`, but: (1) it sends the user's Bearer token to the
+/// authenticated link-authorize endpoint, and (2) the localhost callback carries
+/// `linked` / `link_error` instead of tokens. Returns `Ok(())` on success; an
+/// `Err(message)` (e.g. already-linked) is surfaced to the user.
+#[command]
+pub async fn oidc_link_identity(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    server_url: String,
+    provider_slug: String,
+) -> Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use url::Url;
+
+    info!(
+        "Starting OIDC identity link for provider: {}",
+        provider_slug
+    );
+
+    let server_url = server_url.trim_end_matches('/');
+
+    // The link-authorize endpoint requires authentication.
+    let access_token = {
+        let auth = state.auth.read().await;
+        auth.access_token.clone()
+    }
+    .ok_or("Not signed in")?;
+
+    // 1. Bind a temporary TCP listener on localhost for the callback
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Failed to bind localhost listener: {e}"))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {e}"))?;
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", local_addr.port());
+
+    // 2. Ask the server (authenticated) for the provider authorization URL. The server replies with
+    //    a 302 to the provider; capture the Location.
+    let mut authorize_parsed =
+        Url::parse(server_url).map_err(|e| format!("Invalid server URL: {e}"))?;
+    authorize_parsed
+        .path_segments_mut()
+        .map_err(|()| "Invalid server URL: cannot be a base")?
+        .extend(&["auth", "me", "identities", "authorize", &provider_slug]);
+    authorize_parsed
+        .query_pairs_mut()
+        .append_pair("redirect_uri", &redirect_uri);
+    let authorize_url = authorize_parsed.to_string();
+
+    let no_redirect_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    let redirect_response = no_redirect_client
+        .get(&authorize_url)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get authorize URL: {e}"))?;
+
+    let auth_url = if redirect_response.status().is_redirection() {
+        redirect_response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .ok_or("Server did not return a redirect URL")?
+            .to_string()
+    } else {
+        let status = redirect_response.status();
+        let body = redirect_response.text().await.unwrap_or_default();
+        return Err(format!("Link authorize failed ({status}): {body}"));
+    };
+
+    // 3. Open the authorize URL in the default browser
+    #[allow(deprecated)] // tauri-plugin-shell::open is deprecated in favor of tauri-plugin-opener
+    {
+        use tauri_plugin_shell::ShellExt;
+        app_handle
+            .shell()
+            .open(&auth_url, None)
+            .map_err(|e| format!("Failed to open browser: {e}"))?;
+    }
+
+    info!("Opened browser for OIDC link, waiting for callback...");
+
+    // 4. Wait for the callback (with timeout), ignoring favicon/other requests
+    let accept_future = async {
+        loop {
+            let (mut stream, _addr) = listener.accept().await?;
+            let mut buf = vec![0u8; 8192];
+            let n = stream.read(&mut buf).await?;
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or("");
+            let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+            if !path.starts_with("/callback") {
+                let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.flush().await;
+                continue;
+            }
+            let full_url = format!("http://localhost{path}");
+            let parsed = Url::parse(&full_url)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            let params: HashMap<String, String> = parsed
+                .query_pairs()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let html = if params.contains_key("linked") {
+                "<html><body><h2>Account linked!</h2><p>You can close this window and return to the app.</p><script>window.close()</script></body></html>"
+            } else {
+                "<html><body><h2>Linking failed</h2><p>You can close this window and return to the app.</p></body></html>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                html.len(),
+                html
+            );
+            stream.write_all(response.as_bytes()).await?;
+            stream.flush().await?;
+            return Ok::<HashMap<String, String>, std::io::Error>(params);
+        }
+    };
+
+    let params = tokio::time::timeout(std::time::Duration::from_secs(60), accept_future)
+        .await
+        .map_err(|_| "Linking timed out (60s). Please try again.".to_string())?
+        .map_err(|e| format!("Failed to receive link callback: {e}"))?;
+
+    // 5. Interpret the callback result
+    if params.contains_key("linked") {
+        info!("OIDC identity linked: {}", provider_slug);
+        Ok(())
+    } else if let Some(code) = params.get("link_error") {
+        match code.as_str() {
+            "IDENTITY_ALREADY_LINKED" => {
+                Err("This account is already linked to another Kaiku account.".to_string())
+            }
+            other => Err(format!("Linking failed: {other}")),
+        }
+    } else if let Some(error) = params.get("error") {
+        Err(format!("Linking failed: {error}"))
+    } else {
+        Err("Linking failed: no result in callback".to_string())
+    }
+}
+
 // Keyring helpers
 
 const KEYRING_SERVICE: &str = "voicechat";

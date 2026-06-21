@@ -90,11 +90,13 @@ pub async fn link_authorize(
     Path(provider): Path<String>,
     axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
 ) -> Result<Response, AuthError> {
+    let want_json = query.response.as_deref() == Some("json");
     start_oidc_flow(
         &state,
         &provider,
         query.redirect_uri.as_deref(),
         Some(auth_user.id),
+        want_json,
     )
     .await
 }

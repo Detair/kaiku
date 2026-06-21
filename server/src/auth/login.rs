@@ -463,7 +463,15 @@ pub async fn oidc_authorize(
     Path(provider): Path<String>,
     axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
 ) -> Result<Response, AuthError> {
-    start_oidc_flow(&state, &provider, query.redirect_uri.as_deref(), None).await
+    let want_json = query.response.as_deref() == Some("json");
+    start_oidc_flow(
+        &state,
+        &provider,
+        query.redirect_uri.as_deref(),
+        None,
+        want_json,
+    )
+    .await
 }
 
 /// Begin an OIDC authorization flow and redirect to the provider.
@@ -472,11 +480,16 @@ pub async fn oidc_authorize(
 /// authenticated identity-link flow (`link_user_id = Some(current user)`); the
 /// only difference is what gets persisted in the encrypted Redis flow state, so
 /// the callback can tell a login apart from a link.
+///
+/// When `want_json` is set, the provider authorization URL is returned as a JSON
+/// body (`{"url": ...}`) instead of a 307 redirect — for the browser link flow,
+/// which fetches this as an authenticated XHR and opens the URL itself.
 pub async fn start_oidc_flow(
     state: &AppState,
     provider: &str,
     redirect_uri: Option<&str>,
     link_user_id: Option<Uuid>,
+    want_json: bool,
 ) -> Result<Response, AuthError> {
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
     if !auth_methods.oidc {
@@ -567,8 +580,12 @@ pub async fn start_oidc_flow(
             AuthError::Internal("Failed to store OIDC state".to_string())
         })?;
 
-    tracing::info!(provider = %provider, link = link_user_id.is_some(), "Redirecting to OIDC provider");
-    Ok(Redirect::temporary(&auth_url).into_response())
+    tracing::info!(provider = %provider, link = link_user_id.is_some(), json = want_json, "Starting OIDC provider flow");
+    if want_json {
+        Ok(Json(serde_json::json!({ "url": auth_url })).into_response())
+    } else {
+        Ok(Redirect::temporary(&auth_url).into_response())
+    }
 }
 
 /// Handle OIDC callback.
