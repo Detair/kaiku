@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
-- Update `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, remote memory exhaustion via unbounded out-of-order stream reassembly; lockfile-only — quinn is an uncompiled optional reqwest HTTP/3 dependency) and `quick-xml` 0.37.5/0.38.4 → 0.41.0 via `tauri-winrt-notification` 0.7.3 (RUSTSEC-2026-0194/-0195; used only for desktop notification/bundle XML), restoring the weekly Security Audit to green
+- Update `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, remote memory exhaustion via unbounded out-of-order stream reassembly; lockfile-only — quinn is an uncompiled optional reqwest HTTP/3 dependency), `quick-xml` 0.37.5/0.38.4 → 0.41.0 via `tauri-winrt-notification` 0.7.3 (RUSTSEC-2026-0194/-0195; used only for desktop notification/bundle XML), and `anyhow` 1.0.102 → 1.0.103 (RUSTSEC-2026-0190, `downcast_mut` unsoundness), restoring the weekly Security Audit and License Compliance checks to green
 - Update `lettre` 0.11.19 → 0.11.22 to resolve RUSTSEC-2026-0141 (TLS hostname verification bypass in the `boring-tls` backend; Kaiku uses `native-tls` and was not exploitable, but the update clears the advisory and unblocks the weekly security audit)
 - Update `openssl` 0.10.76 → 0.10.80 (2026 OpenSSL CVE batch), `actix-http` 3.12.0 → 3.12.1 (GHSA-xhj4-vrgc-hr34; lockfile-only, never compiled), and `mermaid` 11.14.0 → 11.15.0 (four XSS-class CVEs), clearing all remaining OSV scanner findings
 - Android: enforce TLS 1.3 on all network connections (HTTP and WebSocket)
