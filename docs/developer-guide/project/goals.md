@@ -269,9 +269,9 @@ the SaaS path is actually pursued:
        (the link-authorize endpoint gained a `?response=json` mode so an
        authenticated XHR can fetch the provider URL, since a popup can't send the
        Bearer header). A full code review of the feature produced 9 follow-up
-       issues (#604–#612), all fixed. NOTE: before any change that writes
-       `users.external_id` on link, demote its UNIQUE constraint (tech-debt
-       TD-31) — linking does not write it today, so it is not yet a problem.
+       issues (#604–#612), all fixed. The legacy `users.external_id` UNIQUE
+       constraint has since been demoted (tech-debt TD-31, resolved
+       2026-07-04), so a future change may safely write it on link.
 5. [ ] **Billing & subscriptions (Stripe)** — defer until a SaaS launch
        decision is made; do not build speculatively.
 
