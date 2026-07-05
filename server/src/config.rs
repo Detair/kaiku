@@ -284,25 +284,25 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(604800),
-            s3_endpoint: env::var("S3_ENDPOINT").ok(),
+            s3_endpoint: env_opt("S3_ENDPOINT"),
             s3_bucket: env::var("S3_BUCKET").unwrap_or_else(|_| "voicechat".into()),
-            s3_public_url: env::var("S3_PUBLIC_URL").ok(),
+            s3_public_url: env_opt("S3_PUBLIC_URL"),
             s3_presign_expiry: env::var("S3_PRESIGN_EXPIRY")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3600) // 1 hour
                 .max(1),
-            s3_access_key: env::var("AWS_ACCESS_KEY_ID").ok(),
-            s3_secret_key: env::var("AWS_SECRET_ACCESS_KEY").ok(),
+            s3_access_key: env_opt("AWS_ACCESS_KEY_ID"),
+            s3_secret_key: env_opt("AWS_SECRET_ACCESS_KEY"),
             allowed_mime_types: env::var("ALLOWED_MIME_TYPES").ok().map(|s| {
                 s.split(',')
                     .map(|t| t.trim().to_string())
                     .filter(|t| !t.is_empty())
                     .collect()
             }),
-            oidc_issuer_url: env::var("OIDC_ISSUER_URL").ok(),
-            oidc_client_id: env::var("OIDC_CLIENT_ID").ok(),
-            oidc_client_secret: env::var("OIDC_CLIENT_SECRET").ok(),
+            oidc_issuer_url: env_opt("OIDC_ISSUER_URL"),
+            oidc_client_id: env_opt("OIDC_CLIENT_ID"),
+            oidc_client_secret: env_opt("OIDC_CLIENT_SECRET"),
             max_upload_size: env::var("MAX_UPLOAD_SIZE")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -327,8 +327,8 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600),
-            public_ip: env::var("PUBLIC_IP").ok(),
-            mfa_encryption_key: env::var("MFA_ENCRYPTION_KEY").ok(),
+            public_ip: env_opt("PUBLIC_IP"),
+            mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
                 .ok()
                 .map(|v| v.to_lowercase() == "true" || v == "1")
@@ -361,14 +361,14 @@ impl Config {
                 );
                 value
             },
-            smtp_host: env::var("SMTP_HOST").ok(),
+            smtp_host: env_opt("SMTP_HOST"),
             smtp_port: env::var("SMTP_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(587),
-            smtp_username: env::var("SMTP_USERNAME").ok(),
-            smtp_password: env::var("SMTP_PASSWORD").ok(),
-            smtp_from: env::var("SMTP_FROM").ok(),
+            smtp_username: env_opt("SMTP_USERNAME"),
+            smtp_password: env_opt("SMTP_PASSWORD"),
+            smtp_from: env_opt("SMTP_FROM"),
             smtp_tls: env::var("SMTP_TLS").unwrap_or_else(|_| "starttls".into()),
             enable_api_docs: env::var("ENABLE_API_DOCS")
                 .ok()
@@ -435,10 +435,10 @@ impl Config {
                 .max(1),
             observability: ObservabilityConfig::from_env(),
             environment: env::var("KAIKU_ENV").unwrap_or_else(|_| "production".into()),
-            grafana_url: env::var("GRAFANA_URL").ok(),
-            tempo_url: env::var("TEMPO_URL").ok(),
-            loki_url: env::var("LOKI_URL").ok(),
-            prometheus_url: env::var("PROMETHEUS_URL").ok(),
+            grafana_url: env_opt("GRAFANA_URL"),
+            tempo_url: env_opt("TEMPO_URL"),
+            loki_url: env_opt("LOKI_URL"),
+            prometheus_url: env_opt("PROMETHEUS_URL"),
             geoip_api_url: env::var("GEOIP_API_URL")
                 .ok()
                 .or_else(|| Some("http://ip-api.com/json/{ip}?fields=city,country".to_string())),
@@ -591,6 +591,37 @@ const TEST_JWT_PUBLIC_KEY: &str = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRW
 /// Generated with: openssl rand -hex 32
 const TEST_MFA_ENCRYPTION_KEY: &str =
     "a4f8e2d1b7c9036f5e8d4a2b1c7f9e3d6a8b5c2d4e7f1a3b9c6d8e2f5a7b4c";
+
+/// Read an optional env var, treating unset AND empty/whitespace as `None`.
+///
+/// Compose `.env` templates declare optional vars as `NAME=` (empty string);
+/// `env::var().ok()` surfaces that as `Some("")`, which downstream code takes
+/// as "configured" — e.g. OIDC env seeding created a broken provider with an
+/// empty issuer URL on the beta server.
+fn env_opt(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+#[cfg(test)]
+mod env_opt_tests {
+    use super::env_opt;
+
+    #[test]
+    fn unset_empty_and_whitespace_are_none() {
+        // Env mutation is process-global; keep all cases in one test to
+        // avoid parallel-test interference on the same variable.
+        let var = "KAIKU_TEST_ENV_OPT";
+        std::env::remove_var(var);
+        assert_eq!(env_opt(var), None);
+        std::env::set_var(var, "");
+        assert_eq!(env_opt(var), None);
+        std::env::set_var(var, "   ");
+        assert_eq!(env_opt(var), None);
+        std::env::set_var(var, "https://issuer.example.com");
+        assert_eq!(env_opt(var), Some("https://issuer.example.com".to_owned()));
+        std::env::remove_var(var);
+    }
+}
 
 /// Returns true when a self-hosted TURN server is configured but STUN still
 /// points at Google's public server — a sovereignty leak (client IP
