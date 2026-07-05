@@ -193,7 +193,7 @@ const Login: Component = () => {
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         {/* Left: Floki illustration */}
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={getThemeImage("floki_auth_welcome.png")} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="eager" />
+          <img src={getThemeImage("floki_auth_welcome.png")} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
         </div>
         {/* Right: Form */}
         <div class="w-full lg:w-1/2 p-8">

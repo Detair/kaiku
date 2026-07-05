@@ -52,7 +52,7 @@ import CreateChannelModal from "./CreateChannelModal";
 import ChannelSettingsModal from "./ChannelSettingsModal";
 import MicrophoneTest from "../voice/MicrophoneTest";
 import VoiceParticipants from "../voice/VoiceParticipants";
-import flokiHappy from "@/assets/emotes/floki_emote_1.png";
+import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
 import {
   dragState,
   startDrag,

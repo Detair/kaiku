@@ -14,7 +14,7 @@ import UserPanel from "@/components/layout/UserPanel";
 import AddFriend from "@/components/social/AddFriend";
 import SearchPanel from "@/components/search/SearchPanel";
 import { createVirtualizer } from "@/lib/virtualizer";
-import flokiThinking from "@/assets/emotes/floki_emote_2.png";
+import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
 
 const HomeSidebar: Component = () => {
   const [showNewMessage, setShowNewMessage] = createSignal(false);

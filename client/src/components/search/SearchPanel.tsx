@@ -45,7 +45,7 @@ import type {
 } from "@/lib/types";
 import Avatar from "@/components/ui/Avatar";
 import { formatTimestamp } from "@/lib/utils";
-import flokiThinking from "@/assets/emotes/floki_emote_2.png";
+import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
 import DOMPurify from "dompurify";
 import SearchSyntaxHelp from "./SearchSyntaxHelp";
 import { createVirtualizer } from "@/lib/virtualizer";
