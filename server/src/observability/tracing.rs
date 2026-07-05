@@ -119,11 +119,11 @@ where
         self.inner.export(batch).await
     }
 
-    fn shutdown(&mut self) -> OTelSdkResult {
+    fn shutdown(&self) -> OTelSdkResult {
         self.inner.shutdown()
     }
 
-    fn force_flush(&mut self) -> OTelSdkResult {
+    fn force_flush(&self) -> OTelSdkResult {
         self.inner.force_flush()
     }
 
