@@ -3,6 +3,13 @@
 }
 
 {$DOMAIN} {
+	# TLS 1.3 only (project security baseline — see CLAUDE.md); Caddy's
+	# default also allows TLS 1.2. All shipped clients (browsers, desktop
+	# rustls webview, Android with enforced TLS 1.3) negotiate 1.3.
+	tls {
+		protocols tls1.3
+	}
+
 	# API, auth, health, WebSocket — proxy to Rust backend
 	handle /api/* {
 		reverse_proxy server:8080
