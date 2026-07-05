@@ -87,14 +87,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # OpenTelemetry
-axum-tracing-opentelemetry = { version = "0.33" }
-init-tracing-opentelemetry = { version = "0.37" }
-opentelemetry = { version = "0.31", features = ["trace"] }
-opentelemetry-appender-tracing = { version = "0.31" }
-opentelemetry-otlp = { version = "0.31", features = ["tonic", "grpc-tonic", "metrics", "logs"] }
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "trace", "metrics", "logs"] }
-tracing-opentelemetry = { version = "0.32" }
-tracing-opentelemetry-instrumentation-sdk = { version = "0.32" }
+axum-tracing-opentelemetry = { version = "0.38" }
+init-tracing-opentelemetry = { version = "0.38" }
+opentelemetry = { version = "0.32", features = ["trace"] }
+opentelemetry-appender-tracing = { version = "0.32" }
+opentelemetry-otlp = { version = "0.32", features = ["tonic", "grpc-tonic", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace", "metrics", "logs"] }
+tracing-opentelemetry = { version = "0.33" }
+tracing-opentelemetry-instrumentation-sdk = { version = "0.38" }
 
 # S3
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client"] }

@@ -132,26 +132,31 @@ where
         let mut visitor = LogEventVisitor::default();
         event.record(&mut visitor);
 
-        // Extract trace context from the current span's OtelData.
+        // Extract trace context from the current span.
         //
-        // In tracing-opentelemetry 0.32+, OtelData exposes trace_id() and
-        // span_id() methods that return the IDs once the context is built.
+        // tracing-opentelemetry 0.33 made OtelData private; the public
+        // replacement is get_otel_context(span_id, dispatch), which yields an
+        // opentelemetry::Context carrying the span's trace/span IDs.
         let (trace_id, span_id) = ctx
             .current_span()
             .id()
-            .and_then(|id| ctx.span(id))
-            .map(|span| {
-                let extensions = span.extensions();
-                if let Some(otel_data) = extensions.get::<tracing_opentelemetry::OtelData>() {
-                    if let (Some(t), Some(s)) = (otel_data.trace_id(), otel_data.span_id()) {
-                        if t != opentelemetry::trace::TraceId::INVALID
-                            && s != opentelemetry::trace::SpanId::INVALID
-                        {
-                            return (Some(t.to_string()), Some(s.to_string()));
-                        }
-                    }
+            .and_then(|id| {
+                tracing::dispatcher::get_default(|dispatch| {
+                    tracing_opentelemetry::get_otel_context(id, dispatch)
+                })
+            })
+            .map(|otel_cx| {
+                use opentelemetry::trace::TraceContextExt;
+                let span = otel_cx.span();
+                let span_context = span.span_context();
+                if span_context.is_valid() {
+                    (
+                        Some(span_context.trace_id().to_string()),
+                        Some(span_context.span_id().to_string()),
+                    )
+                } else {
+                    (None, None)
                 }
-                (None, None)
             })
             .unwrap_or((None, None));
 
