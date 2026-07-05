@@ -505,7 +505,7 @@ async fn test_oidc_provider_crud(pool: PgPool) {
             client_id: "test-client-id",
             client_secret_encrypted: &encrypted_secret,
             scopes: "openid profile email",
-            created_by: user_id,
+            created_by: Some(user_id),
         },
     )
     .await
@@ -552,7 +552,7 @@ async fn test_auth_methods_config_crud(pool: PgPool) {
     // Update to enable OIDC
     let mut updated = methods.clone();
     updated.oidc = true;
-    vc_server::db::set_auth_methods_allowed(&pool, &updated, user_id)
+    vc_server::db::set_auth_methods_allowed(&pool, &updated, Some(user_id))
         .await
         .expect("Should update auth methods");
 
@@ -563,7 +563,7 @@ async fn test_auth_methods_config_crud(pool: PgPool) {
     assert!(read_back.oidc, "OIDC should now be enabled");
 
     // Restore original
-    vc_server::db::set_auth_methods_allowed(&pool, &methods, user_id)
+    vc_server::db::set_auth_methods_allowed(&pool, &methods, Some(user_id))
         .await
         .expect("Should restore auth methods");
 }
@@ -592,7 +592,7 @@ async fn test_load_providers_from_database(pool: PgPool) {
             client_id: "client-id",
             client_secret_encrypted: &encrypted_secret,
             scopes: "openid",
-            created_by: user_id,
+            created_by: Some(user_id),
         },
     )
     .await
@@ -762,7 +762,7 @@ async fn test_registration_policy_blocks_non_open(pool: PgPool) {
         &pool,
         "registration_policy",
         serde_json::json!("invite_only"),
-        user_id,
+        Some(user_id),
     )
     .await
     .expect("Should set policy");
@@ -777,7 +777,7 @@ async fn test_registration_policy_blocks_non_open(pool: PgPool) {
         &pool,
         "registration_policy",
         serde_json::json!("closed"),
-        user_id,
+        Some(user_id),
     )
     .await
     .expect("Should set policy");
@@ -792,7 +792,7 @@ async fn test_registration_policy_blocks_non_open(pool: PgPool) {
         &pool,
         "registration_policy",
         serde_json::json!("open"),
-        user_id,
+        Some(user_id),
     )
     .await
     .expect("Should restore policy");
@@ -959,4 +959,45 @@ async fn test_user_identity_cascade_on_user_delete(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(found, None);
+}
+
+#[sqlx::test]
+async fn test_system_seeded_provider_without_creator(pool: PgPool) {
+    // Regression: env-var seeding (seed_from_env) runs at startup on a fresh
+    // database with ZERO users and must insert with created_by = NULL. It
+    // previously passed Uuid::nil(), violating oidc_providers_created_by_fkey
+    // on every boot of a freshly provisioned server.
+    let key = test_encryption_key();
+    let manager = OidcProviderManager::new(key);
+    let encrypted_secret = manager.encrypt_secret("legacy-secret").unwrap();
+
+    let provider = vc_server::db::create_oidc_provider(
+        &pool,
+        vc_server::db::CreateOidcProviderParams {
+            slug: "legacy-oidc",
+            display_name: "SSO Login",
+            icon_hint: Some("key"),
+            provider_type: "custom",
+            issuer_url: Some("https://sso.example.com"),
+            authorization_url: None,
+            token_url: None,
+            userinfo_url: None,
+            client_id: "legacy-client",
+            client_secret_encrypted: &encrypted_secret,
+            scopes: "openid profile email",
+            created_by: None,
+        },
+    )
+    .await
+    .expect("system-seeded provider (no creator) must insert on a user-less DB");
+    assert_eq!(provider.slug, "legacy-oidc");
+
+    // The follow-up config write during seeding must also work without a user.
+    let mut methods = vc_server::db::get_auth_methods_allowed(&pool)
+        .await
+        .expect("read auth methods");
+    methods.oidc = true;
+    vc_server::db::set_auth_methods_allowed(&pool, &methods, None)
+        .await
+        .expect("auth methods update without updater must succeed");
 }

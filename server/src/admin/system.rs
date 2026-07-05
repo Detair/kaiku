@@ -407,7 +407,7 @@ pub async fn update_auth_settings(
     Json(body): Json<UpdateAuthSettingsRequest>,
 ) -> Result<Json<AuthSettingsResponse>, AdminError> {
     if let Some(ref methods) = body.auth_methods {
-        crate::db::set_auth_methods_allowed(&state.db, methods, admin.user_id).await?;
+        crate::db::set_auth_methods_allowed(&state.db, methods, Some(admin.user_id)).await?;
     }
 
     if let Some(ref policy) = body.registration_policy {
@@ -421,7 +421,7 @@ pub async fn update_auth_settings(
             &state.db,
             "registration_policy",
             serde_json::json!(policy),
-            admin.user_id,
+            Some(admin.user_id),
         )
         .await?;
     }
@@ -531,7 +531,7 @@ pub async fn create_oidc_provider(
             client_id: &body.client_id,
             client_secret_encrypted: &encrypted_secret,
             scopes: &scopes,
-            created_by: admin.user_id,
+            created_by: Some(admin.user_id),
         },
     )
     .await?;

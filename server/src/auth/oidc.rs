@@ -488,7 +488,7 @@ impl OidcProviderManager {
                 client_id,
                 client_secret_encrypted: &encrypted_secret,
                 scopes: "openid profile email",
-                created_by: Uuid::nil(),
+                created_by: None,
             },
         )
         .await?;
@@ -496,7 +496,7 @@ impl OidcProviderManager {
         // Enable OIDC in auth methods
         let mut methods = db::get_auth_methods_allowed(pool).await?;
         methods.oidc = true;
-        db::set_auth_methods_allowed(pool, &methods, Uuid::nil()).await?;
+        db::set_auth_methods_allowed(pool, &methods, None).await?;
 
         info!("Seeded legacy OIDC provider from environment variables");
         Ok(())
