@@ -272,15 +272,17 @@ the SaaS path is actually pursued:
        issues (#604–#612), all fixed. The legacy `users.external_id` UNIQUE
        constraint has since been demoted (tech-debt TD-31, resolved
        2026-07-04), so a future change may safely write it on link.
-5. [ ] **Billing & subscriptions (Stripe)** — defer until a SaaS launch
-       decision is made; do not build speculatively.
+5. [ ] **Billing & subscriptions (Stripe)** — **decided 2026-07-04: post-1.0**
+       (v1.0 is self-hosted-only, see `v1.0-definition.md`); do not build
+       speculatively.
 
 ## Goal 7 — Define and ship v1.0
 
 **A concrete v1.0 definition now exists: `v1.0-definition.md`** (written
 2026-06-12). It records what's already done, the buildable remainder
 (Android beta, operator drill, release dry-run), and the three product
-decisions that block v1.0 and need maintainer input (i18n, iOS, SaaS).
+decisions (i18n, iOS, SaaS) — **decided 2026-07-04**: v1.0 is self-hosted,
+desktop + Android beta, English-only; i18n / iOS / SaaS are post-1.0.
 
 Original proposed gate (kept for reference):
 
