@@ -280,8 +280,26 @@ export function scheduleTokenRefresh() {
  * Refresh the access token. Browser mode sends a credentialed request so the
  * server reads the HttpOnly cookie; Tauri mode sends the refresh token in the
  * request body.
+ *
+ * Single-flight: concurrent callers share one in-flight request. The server
+ * rotates the refresh token on every use, so two parallel refreshes race —
+ * the winner rotates the cookie and the loser's 401 used to clear the very
+ * session the winner just established (observed as pairs of
+ * "Token refresh failed: 401" and a bounce to /login on reload).
  */
-export async function refreshAccessToken(): Promise<boolean> {
+let refreshInFlight: Promise<boolean> | null = null;
+
+export function refreshAccessToken(): Promise<boolean> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+  refreshInFlight = doRefreshAccessToken().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+async function doRefreshAccessToken(): Promise<boolean> {
   try {
     console.log("[Auth] Refreshing access token...");
 
