@@ -65,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Browser client: reloading the page no longer randomly logs you out. Two token-refresh requests raced at startup; the loser's 401 wiped the session the winner had just established (refresh requests are now single-flight)
+- Voice channels were un-joinable on servers using coturn with a shared secret (`TURN_SHARED_SECRET`): the SFU handed WebRTC a TURN server with empty credentials ("turn server credentials required"). The SFU now derives the same time-limited HMAC credentials as clients, and skips TURN entirely when no credentials are derivable
 - Optional configuration environment variables declared but left empty (e.g. `OIDC_ISSUER_URL=` in a compose `.env` template) are now treated as unset instead of "configured with an empty value" — previously an empty OIDC trio seeded a broken "SSO Login" button on the login page
 - OIDC single sign-on configured via environment variables (`OIDC_ISSUER_URL` etc.) failed to initialize on every server start with a foreign-key error, leaving no login provider seeded; system-seeded providers now store no creator instead of a non-existent user
 - Unread indicators no longer go stale after a connection drop: reconnecting now refreshes channel and DM unread state, picking up messages that arrived (or were read on another device) while offline

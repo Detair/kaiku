@@ -400,15 +400,34 @@ impl SfuServer {
             ..Default::default()
         }];
 
-        // Add TURN server if configured.
+        // Add TURN server if credentials are actually derivable — webrtc-rs
+        // rejects a turn: URL with empty username/credential ("turn server
+        // credentials required"), which broke every voice join on servers
+        // configured with TURN_SHARED_SECRET only (the beta setup).
         // webrtc-rs 0.17 removed `credential_type` from RTCIceServer; password is
         // the only credential type now per the W3C RTCIceServer dictionary.
         if let Some(turn) = &self.config.turn_server {
-            ice_servers.push(RTCIceServer {
-                urls: vec![turn.clone()],
-                username: self.config.turn_username.clone().unwrap_or_default(),
-                credential: self.config.turn_credential.clone().unwrap_or_default(),
-            });
+            if let Some(secret) = &self.config.turn_shared_secret {
+                let (username, credential) =
+                    super::turn_rest_credentials(secret, self.config.turn_credential_ttl, "sfu");
+                ice_servers.push(RTCIceServer {
+                    urls: vec![turn.clone()],
+                    username,
+                    credential,
+                });
+            } else if let (Some(username), Some(credential)) = (
+                self.config.turn_username.clone(),
+                self.config.turn_credential.clone(),
+            ) {
+                ice_servers.push(RTCIceServer {
+                    urls: vec![turn.clone()],
+                    username,
+                    credential,
+                });
+            }
+            // No usable credentials: skip TURN rather than hand webrtc-rs an
+            // invalid server. The SFU runs on a public address and does not
+            // depend on a relay itself.
         }
 
         RTCConfiguration {

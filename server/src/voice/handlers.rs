@@ -3,15 +3,9 @@
 //! HTTP endpoints for voice-related operations.
 //! Voice signaling (join/leave/offer/answer/ice) is handled via WebSocket.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::extract::State;
 use axum::Json;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
-use hmac::{Hmac, Mac};
 use serde::Serialize;
-use sha1::Sha1;
 
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -65,17 +59,11 @@ pub async fn get_ice_servers(
     if let (Some(turn), Some(secret)) =
         (&state.config.turn_server, &state.config.turn_shared_secret)
     {
-        let expiry = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before UNIX epoch")
-            .as_secs()
-            + state.config.turn_credential_ttl;
-        let username = format!("{}:{}", expiry, auth_user.id);
-
-        let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes())
-            .expect("HMAC-SHA1 accepts any key length");
-        mac.update(username.as_bytes());
-        let credential = BASE64_STANDARD.encode(mac.finalize().into_bytes());
+        let (username, credential) = super::turn_rest_credentials(
+            secret,
+            state.config.turn_credential_ttl,
+            &auth_user.id.to_string(),
+        );
 
         servers.push(IceServer {
             urls: vec![turn.clone()],
