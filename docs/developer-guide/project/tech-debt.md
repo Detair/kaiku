@@ -174,18 +174,19 @@ Three `#[ignore]` tests waiting on:
 
 ## Priority: Low
 
-### TD-31: Demote `users.external_id` UNIQUE constraint
+### TD-31: Demote `users.external_id` UNIQUE constraint ✅ RESOLVED
 
-**File:** `server/migrations/20260322000000_user_identities.sql`, `server/src/auth/login.rs`
+**File:** `server/migrations/20260704000000_demote_external_id_unique.sql`, `server/src/auth/login.rs`
 
-Since the OAuth identity-linking work (PRs #600/#601/#603), `user_identities`
-`(provider_slug, subject)` is the authoritative identity-set uniqueness
-guarantee. `users.external_id` is retained only as the primary-identity marker
-and to satisfy the `oidc_user_has_external_id` CHECK, but it still carries a
-UNIQUE constraint. Linking does not currently write `external_id`, so this is
-inert today — but a future change that does (e.g. promoting a linked identity to
-primary) could have a second-identity link blocked by the legacy constraint.
-Demote `users.external_id` to non-unique (new migration) before any such change.
+**Resolved 2026-07-04** — migration drops `users_external_id_key`; the
+authoritative identity-set uniqueness guarantee is
+`user_identities(provider_slug, subject)` (lookups stay indexed via the
+non-unique `idx_users_external_id`). The OIDC registration retry loop, which
+relied on the external_id UNIQUE violation to detect a lost concurrent
+first-login race, now detects it via the `insert_user_identity` unique
+violation instead (same transaction, same graceful re-resolve). A future
+change may now safely write `external_id` on link (e.g. promoting a linked
+identity to primary).
 
 ---
 

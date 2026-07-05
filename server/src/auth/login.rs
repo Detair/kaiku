@@ -676,10 +676,8 @@ pub async fn oidc_callback(
     //
     // Accounts can now attach additional identities (see handle_identity_link),
     // so users.external_id only ever holds the *first* identity — it is no
-    // longer the identity-set uniqueness guarantee (user_identities is). Its
-    // retained UNIQUE constraint is a latent footgun: a future change that
-    // writes external_id on link could be blocked by it. Demotion to non-unique
-    // is tracked in tech-debt (TD-31).
+    // longer the identity-set uniqueness guarantee (user_identities is), and
+    // it carries no UNIQUE constraint (demoted in TD-31).
     let external_id = format!("{}:{}", flow_state.slug, user_info.subject);
 
     // Link flow: attach this identity to the already-authenticated user instead
@@ -769,7 +767,7 @@ pub async fn oidc_callback(
                 Some(user) => {
                     // Record the external identity (authoritative login key) in
                     // the same transaction as the user row.
-                    db::insert_user_identity(
+                    match db::insert_user_identity(
                         &mut *tx,
                         user.id,
                         &flow_state.slug,
@@ -777,10 +775,21 @@ pub async fn oidc_callback(
                         user_info.email.as_deref(),
                     )
                     .await
-                    .map_err(|e| {
-                        tracing::error!(error = %e, user_id = %user.id, provider = %flow_state.slug, "Failed to record OIDC identity");
-                        AuthError::Database(e)
-                    })?;
+                    {
+                        Ok(_) => {}
+                        // Lost a concurrent first-login race: another request
+                        // registered this identity between our pre-loop lookup
+                        // and here. Roll back and fall through to the post-loop
+                        // re-resolve, which logs that account in.
+                        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
+                            drop(tx);
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, user_id = %user.id, provider = %flow_state.slug, "Failed to record OIDC identity");
+                            return Err(AuthError::Database(e));
+                        }
+                    }
 
                     // Grant admin to first user
                     if is_first_user {
@@ -814,12 +823,10 @@ pub async fn oidc_callback(
         match new_user {
             Some(user) => user,
             None => {
-                // The retry loop exhausted. The dominant cause is losing a
-                // concurrent first-login race for this same identity: another
-                // request created the account (and its identity row) between our
-                // pre-loop lookup and our insert, so insert_oidc_user kept hitting
-                // the users.external_id UNIQUE constraint (reported as a generic
-                // collision). Re-resolve the identity; if it now exists, log that
+                // Either the username-retry loop exhausted, or we lost a
+                // concurrent first-login race for this same identity (the
+                // insert_user_identity unique violation broke out of the loop
+                // above). Re-resolve the identity; if it now exists, log that
                 // account in instead of failing.
                 if let Some(user_id) =
                     find_user_id_by_identity(&state.db, &flow_state.slug, &user_info.subject)
