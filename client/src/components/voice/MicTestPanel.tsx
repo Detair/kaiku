@@ -217,14 +217,23 @@ function MicTestPanel(props: MicTestPanelProps) {
         </select>
       </div>
 
-      {/* Level Meter */}
+      {/* Level Meter — empty track that fills left-to-right with the current
+          mic level (like Discord/TeamSpeak). The green→yellow→red gradient is
+          anchored to the full track, so a given position always maps to the
+          same colour (right edge = loud/clipping) and is revealed by a cover
+          overlay shrinking from the right as the level rises.
+          NB: the cover MUST use an opaque colour — the `bg-surface-layer2`
+          utility does not generate under this UnoCSS setup, so use the
+          rgb-var escape hatch (the same workaround as the `input-field`
+          shortcut). Without it the cover is transparent and the bar reads
+          full at every level. */}
       <div>
-        <div class="relative h-2 rounded-full overflow-hidden">
-          {/* Full-width gradient background */}
+        <div class="relative h-2 rounded-full overflow-hidden bg-[rgb(var(--color-surface-layer2-rgb))]">
+          {/* Full-width gradient, position-anchored */}
           <div class="absolute inset-0 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500" />
           {/* Cover overlay — hides the gradient beyond the current level */}
           <div
-            class="absolute top-0 right-0 h-full bg-surface-layer2 transition-all duration-100"
+            class="absolute top-0 right-0 h-full bg-[rgb(var(--color-surface-layer2-rgb))] transition-all duration-100"
             style={{ width: `${100 - micLevel()}%` }}
           />
         </div>
