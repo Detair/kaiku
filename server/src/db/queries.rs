@@ -1837,7 +1837,7 @@ pub async fn set_config_value(
     pool: &PgPool,
     key: &str,
     value: serde_json::Value,
-    updated_by: Uuid,
+    updated_by: Option<Uuid>,
 ) -> sqlx::Result<()> {
     let result = sqlx::query(
         "UPDATE server_config SET value = $2, updated_by = $3, updated_at = NOW()
@@ -1853,7 +1853,7 @@ pub async fn set_config_value(
             error = %e,
             error_debug = ?e,
             config_key = %key,
-            updated_by = %updated_by,
+            updated_by = ?updated_by,
             "Failed to execute config value update query"
         );
         e
@@ -1895,7 +1895,13 @@ pub async fn is_setup_complete(pool: &PgPool) -> sqlx::Result<bool> {
 
 /// Mark server setup as complete (irreversible).
 pub async fn mark_setup_complete(pool: &PgPool, updated_by: Uuid) -> sqlx::Result<()> {
-    set_config_value(pool, "setup_complete", serde_json::json!(true), updated_by).await
+    set_config_value(
+        pool,
+        "setup_complete",
+        serde_json::json!(true),
+        Some(updated_by),
+    )
+    .await
 }
 
 /// Count total number of users in the database.
@@ -2117,7 +2123,9 @@ pub struct CreateOidcProviderParams<'a> {
     pub client_id: &'a str,
     pub client_secret_encrypted: &'a str,
     pub scopes: &'a str,
-    pub created_by: Uuid,
+    /// `None` for system-seeded providers (the column is nullable; a nil
+    /// UUID would violate the FK to `users`).
+    pub created_by: Option<Uuid>,
 }
 
 /// Create a new OIDC provider.
@@ -2264,7 +2272,7 @@ pub async fn get_auth_methods_allowed(pool: &PgPool) -> sqlx::Result<AuthMethods
 pub async fn set_auth_methods_allowed(
     pool: &PgPool,
     config: &AuthMethodsConfig,
-    updated_by: Uuid,
+    updated_by: Option<Uuid>,
 ) -> sqlx::Result<()> {
     set_config_value(
         pool,
