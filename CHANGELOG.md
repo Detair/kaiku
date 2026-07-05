@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Faster first load: the Floki illustrations (login/onboarding/home) now ship as WebP instead of PNG (~15× smaller — the login hero dropped from 487 KB to 31 KB), and the login hero is preloaded before the app bundle parses so it paints sooner
 - Integration tests now use `#[sqlx::test]`'s per-test database isolation; the shared-pool model that produced sporadic Postgres deadlocks in CI is retired. Contributor-facing documentation is in `server/tests/AGENTS.md`.
 - Voice connections use dual PeerConnection architecture (publisher + subscriber) for reliable screen sharing and multi-user scalability
 - Screen sharing uses standard WebRTC `addTrack` negotiation instead of `replaceTrack` workarounds

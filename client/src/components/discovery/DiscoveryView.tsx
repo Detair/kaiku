@@ -14,7 +14,7 @@ import {
   onMount,
 } from "solid-js";
 import { Search, ChevronLeft, ChevronRight } from "lucide-solid";
-import flokiThinking from "@/assets/emotes/floki_emote_2.png";
+import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds } from "@/lib/tauri";
 import { guildsState } from "@/stores/guilds";

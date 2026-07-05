@@ -14,7 +14,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { Hash, CheckCheck } from "lucide-solid";
-import flokiParty from "@/assets/emotes/floki_emote_3.png";
+import flokiParty from "@/assets/emotes/floki_emote_3.webp";
 import {
   getUnreadAggregate,
   markAllGuildChannelsRead,

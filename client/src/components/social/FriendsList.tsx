@@ -23,9 +23,9 @@ import type { Friend } from "@/lib/types";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { ActivityIndicator } from "@/components/ui";
 import AddFriend from "./AddFriend";
-import flokiHappy from "@/assets/emotes/floki_emote_1.png";
-import flokiThinking from "@/assets/emotes/floki_emote_2.png";
-import flokiCool from "@/assets/emotes/floki_emote_4.png";
+import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
+import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
+import flokiCool from "@/assets/emotes/floki_emote_4.webp";
 
 type FriendsTab = "online" | "all" | "pending" | "blocked";
 

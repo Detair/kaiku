@@ -13,7 +13,7 @@ import {
   Trash2,
   ExternalLink,
 } from "lucide-solid";
-import flokiCool from "@/assets/emotes/floki_emote_4.png";
+import flokiCool from "@/assets/emotes/floki_emote_4.webp";
 import { pins, loadPins, createPin, deletePin, updatePin } from "@/stores/pins";
 import type { Pin as PinItem, PinType } from "@/lib/types";
 import CollapsibleModule from "./CollapsibleModule";

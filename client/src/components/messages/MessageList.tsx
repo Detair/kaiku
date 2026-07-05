@@ -18,7 +18,7 @@ import {
   MessageSquare,
   RefreshCw,
 } from "lucide-solid";
-import flokiHappy from "@/assets/emotes/floki_emote_1.png";
+import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
 import MessageItem, { MessageImageLightbox } from "./MessageItem";
 import {
   messagesState,
