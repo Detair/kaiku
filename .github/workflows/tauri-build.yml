@@ -54,10 +54,20 @@ jobs:
         with:
           bun-version: "1.3"
 
+      # macOS runner images rotate Xcode versions; build-script outputs cache
+      # absolute toolchain paths (e.g. -lclang_rt.osx with -L .../clang/<N>/
+      # lib/darwin), so a cargo cache built under one Xcode fails to link
+      # under another ("ld: library 'clang_rt.osx' not found"). Key the cache
+      # by Xcode version so image rollouts start a fresh cache.
+      - name: Compute Xcode cache key (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: echo "XCODE_CACHE_KEY=$(xcodebuild -version | tr -d ' \n')" >> "$GITHUB_ENV"
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: client/src-tauri
+          key: ${{ env.XCODE_CACHE_KEY }}
 
       # Linux dependencies
       - name: Install Linux dependencies
