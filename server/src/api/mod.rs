@@ -361,7 +361,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(app_routes)
         // Middleware
         .layer(from_fn(security_headers))
-        .layer(from_fn(http_error_counter))
+        .layer(from_fn(http_metrics))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(cors)
@@ -428,15 +428,15 @@ pub(crate) async fn health_check(
 }
 
 /// Middleware that counts HTTP error responses (4xx/5xx).
-async fn http_error_counter(
+async fn http_metrics(
     request: Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
+    let start = std::time::Instant::now();
     let response = next.run(request).await;
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
     let status = response.status().as_u16();
-    if status >= 400 {
-        crate::observability::metrics::record_http_error(status);
-    }
+    crate::observability::metrics::record_http_request(status, duration_ms);
     response
 }
 

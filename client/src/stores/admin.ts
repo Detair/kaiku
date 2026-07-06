@@ -1465,6 +1465,8 @@ const DEFAULT_OBS_METRICS = [
   "kaiku_http_errors_total",
   "kaiku_ws_connections_active",
   "kaiku_voice_sessions_active",
+  "kaiku_process_cpu_percent",
+  "kaiku_process_memory_bytes",
 ];
 
 export async function loadObsSummary(): Promise<void> {

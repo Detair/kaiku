@@ -678,7 +678,7 @@ pub struct DiagnosticsResponse {
 /// Best-effort disk usage via `df` (no unsafe statvfs — the workspace
 /// forbids unsafe code). Returns `None` if `df` is unavailable or output
 /// is unparseable; diagnostics must degrade, not fail.
-async fn disk_usage() -> Option<DiskDiagnostics> {
+pub(crate) async fn disk_usage() -> Option<DiskDiagnostics> {
     let output = tokio::process::Command::new("df")
         .args(["-B1", "--output=size,avail", "/"])
         .output()

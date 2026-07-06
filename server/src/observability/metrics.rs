@@ -305,6 +305,81 @@ pub fn register_process_memory_metric() {
         .build();
 }
 
+/// Register host/process system-statistic gauges.
+///
+/// CPU, memory, load, open FDs, and thread count. Each reads `/proc` on the
+/// metric-export cadence and feeds the native telemetry pipeline, so they
+/// appear as time series in the admin Command Center. No-ops silently on
+/// non-Linux hosts.
+pub fn register_system_metrics() {
+    use super::sysinfo;
+    let meter = meter("vc-server");
+
+    meter
+        .f64_observable_gauge("kaiku_process_cpu_percent")
+        .with_description("Process CPU usage percent (delta of utime+stime)")
+        .with_unit("percent")
+        .with_callback(|observer| {
+            // Samples and caches for the admin summary's point-in-time read.
+            if let Some(pct) = sysinfo::process_cpu_percent() {
+                observer.observe(pct, &[]);
+            }
+        })
+        .build();
+
+    meter
+        .u64_observable_gauge("kaiku_system_memory_used_bytes")
+        .with_description("System memory in use (MemTotal - MemAvailable)")
+        .with_unit("bytes")
+        .with_callback(|observer| {
+            if let Some((total, avail)) = sysinfo::system_memory_bytes() {
+                observer.observe(total.saturating_sub(avail), &[]);
+            }
+        })
+        .build();
+
+    meter
+        .u64_observable_gauge("kaiku_system_memory_total_bytes")
+        .with_description("Total system memory (MemTotal)")
+        .with_unit("bytes")
+        .with_callback(|observer| {
+            if let Some((total, _)) = sysinfo::system_memory_bytes() {
+                observer.observe(total, &[]);
+            }
+        })
+        .build();
+
+    meter
+        .f64_observable_gauge("kaiku_load_average_1m")
+        .with_description("1-minute system load average")
+        .with_callback(|observer| {
+            if let Some(load) = sysinfo::load_average_1m() {
+                observer.observe(load, &[]);
+            }
+        })
+        .build();
+
+    meter
+        .u64_observable_gauge("kaiku_process_open_fds")
+        .with_description("Open file descriptors held by the process")
+        .with_callback(|observer| {
+            if let Some(fds) = sysinfo::open_fds() {
+                observer.observe(fds, &[]);
+            }
+        })
+        .build();
+
+    meter
+        .u64_observable_gauge("kaiku_process_threads")
+        .with_description("OS thread count of the process")
+        .with_callback(|observer| {
+            if let Some(threads) = sysinfo::thread_count() {
+                observer.observe(threads, &[]);
+            }
+        })
+        .build();
+}
+
 // ============================================================================
 // Recording functions
 // ============================================================================
@@ -322,6 +397,25 @@ pub fn record_auth_login_attempt(success: bool) {
     let outcome = if success { "success" } else { "failure" };
     if let Some(counter) = AUTH_LOGIN_ATTEMPTS_TOTAL.get() {
         counter.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+}
+
+/// Record a completed HTTP request (count, latency, and error if >= 400).
+///
+/// Called for every request by the `http_metrics` middleware. Without this the
+/// `kaiku_http_requests_total` counter and `kaiku_http_request_duration_ms`
+/// histogram were declared but never fed, so the admin Command Center's
+/// latency-p95 and error-rate vital signs stayed empty even though the
+/// telemetry pipeline was running.
+pub fn record_http_request(status: u16, duration_ms: f64) {
+    if let Some(counter) = HTTP_REQUESTS_TOTAL.get() {
+        counter.add(1, &[]);
+    }
+    if let Some(hist) = HTTP_REQUEST_DURATION_MS.get() {
+        hist.record(duration_ms, &[]);
+    }
+    if status >= 400 {
+        record_http_error(status);
     }
 }
 
