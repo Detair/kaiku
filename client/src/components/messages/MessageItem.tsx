@@ -10,7 +10,7 @@ import {
   createResource,
 } from "solid-js";
 import { marked } from "marked";
-import DOMPurify from "dompurify";
+import { createIsolatedPurifier } from "@/lib/sanitizer";
 import {
   File,
   Download,
@@ -114,13 +114,17 @@ const PURIFY_CONFIG = {
   RETURN_TRUSTED_TYPE: false as const,
 };
 
+// Isolated DOMPurify instance (shared link-hardening hook pre-registered);
+// hooks below apply only to message sanitization, not other consumers.
+const purifier = createIsolatedPurifier();
+
 // Restrict class attribute values to prevent CSS-based UI spoofing
 const ALLOWED_CLASSES = new Set([
   "mention-everyone",
   "mention-user",
   "spoiler",
 ]);
-DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+purifier.addHook("uponSanitizeAttribute", (_node, data) => {
   if (data.attrName === "class") {
     const filtered = data.attrValue
       .split(/\s+/)
@@ -132,7 +136,7 @@ DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
 });
 
 const sanitizeHtml = (html: string): string => {
-  return DOMPurify.sanitize(html, PURIFY_CONFIG) as string;
+  return purifier.sanitize(html, PURIFY_CONFIG) as string;
 };
 
 /**
@@ -456,7 +460,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
     } catch (err) {
       console.error("Failed to parse message content:", err);
       // Fallback: render plain text safely
-      const safeText = DOMPurify.sanitize(content, {
+      const safeText = purifier.sanitize(content, {
         ALLOWED_TAGS: [],
         ALLOWED_ATTR: [],
       }) as string;
