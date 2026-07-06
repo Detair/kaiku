@@ -33,7 +33,7 @@ const SessionExpiredModal: Component = () => {
 
           <div
             class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style="background-color: var(--color-surface-layer1)"
+            style={{"background-color":"var(--color-surface-layer1)"}}
           >
             <div class="flex items-center gap-3 px-5 py-4 border-b border-white/10">
               <div class="w-9 h-9 rounded-lg bg-status-warning/20 flex items-center justify-center">

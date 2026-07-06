@@ -94,7 +94,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
       {/* Create Invite */}
       <div
         class="p-4 rounded-xl border border-white/10"
-        style="background-color: var(--color-surface-layer1)"
+        style={{"background-color":"var(--color-surface-layer1)"}}
       >
         <h3 class="text-sm font-semibold text-text-primary mb-3">
           Create New Invite
@@ -110,7 +110,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                 setExpiresIn(e.currentTarget.value as InviteExpiry)
               }
               class="w-full px-3 py-2 rounded-lg border border-white/10 text-text-primary"
-              style="background-color: var(--color-surface-layer2)"
+              style={{"background-color":"var(--color-surface-layer2)"}}
             >
               <For each={EXPIRY_OPTIONS}>
                 {(opt) => <option value={opt.value}>{opt.label}</option>}
@@ -148,7 +148,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
               {(invite) => (
                 <div
                   class="flex items-center justify-between p-3 rounded-lg border border-white/5"
-                  style="background-color: var(--color-surface-layer1)"
+                  style={{"background-color":"var(--color-surface-layer1)"}}
                 >
                   <div class="flex-1 min-w-0">
                     <code data-testid="invite-code" class="text-sm text-accent-primary font-mono truncate block">

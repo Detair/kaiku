@@ -344,7 +344,7 @@ export default function PageEditor(props: PageEditorProps) {
 
       {/* Toolbar */}
       <div class="px-4 py-2 flex items-center gap-1 border-b border-zinc-700">
-        {toolbarButtons.map((btn) => (
+        <For each={toolbarButtons}>{(btn) => (
           <button
             type="button"
             onClick={btn.action}
@@ -353,7 +353,7 @@ export default function PageEditor(props: PageEditorProps) {
           >
             <btn.icon class="w-4 h-4" />
           </button>
-        ))}
+        )}</For>
         <div class="flex-1" />
         <div class="text-xs text-zinc-500 mr-2">
           {contentSize().toLocaleString()} / {MAX_CONTENT_SIZE.toLocaleString()}{" "}

@@ -136,7 +136,7 @@ const ClipboardToast: Component<ClipboardToastProps> = (props) => {
     <Show when={currentStatus()?.has_sensitive_content}>
       <div
         class="fixed bottom-4 right-4 z-50 w-80 rounded-xl shadow-lg border border-white/10 overflow-hidden"
-        style="background-color: var(--color-surface-layer1)"
+        style={{"background-color":"var(--color-surface-layer1)"}}
       >
         {/* Header */}
         <div class="flex items-center justify-between px-4 py-3">
@@ -170,7 +170,7 @@ const ClipboardToast: Component<ClipboardToastProps> = (props) => {
             {/* Progress bar */}
             <div
               class="h-1.5 rounded-full overflow-hidden"
-              style="background-color: var(--color-surface-base)"
+              style={{"background-color":"var(--color-surface-base)"}}
             >
               <div
                 class="h-full rounded-full transition-all duration-1000"

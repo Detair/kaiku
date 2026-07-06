@@ -191,7 +191,7 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                     dropTargetId() === role.id,
                   "opacity-50": draggedRoleId() === role.id,
                 }}
-                style="background-color: var(--color-surface-layer1)"
+                style={{"background-color":"var(--color-surface-layer1)"}}
                 draggable={canManageRoles() && canReorderRole(role)}
                 onDragStart={(e) => handleDragStart(e, role.id)}
                 onDragOver={(e) => handleDragOver(e, role)}
@@ -253,7 +253,7 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                         <Show when={menuOpen() === role.id}>
                           <div
                             class="absolute right-0 top-full mt-1 py-1 rounded-lg border border-white/10 shadow-xl z-10 min-w-[160px]"
-                            style="background-color: var(--color-surface-layer2)"
+                            style={{"background-color":"var(--color-surface-layer2)"}}
                           >
                             <button
                               onClick={() => {

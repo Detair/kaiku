@@ -524,9 +524,9 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
           <Show when={error() && !isLoading()}>
             <div
               class="px-4 py-3 rounded-xl"
-              style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)"
+              style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
             >
-              <p class="text-sm" style="color: var(--color-error-text)">
+              <p class="text-sm" style={{"color":"var(--color-error-text)"}}>
                 {error()}
               </p>
             </div>

@@ -106,7 +106,7 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
         {/* Modal */}
         <div
           class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-          style="background-color: var(--color-surface-layer1)"
+          style={{"background-color":"var(--color-surface-layer1)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-5 py-4 border-b border-white/10">

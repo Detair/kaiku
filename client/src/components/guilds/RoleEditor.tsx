@@ -247,7 +247,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
             disabled={isEveryoneRole()}
             placeholder="Enter role name..."
             class="w-full px-3 py-2 rounded-lg border border-white/10 text-text-primary placeholder-text-secondary disabled:opacity-50"
-            style="background-color: var(--color-surface-layer1)"
+            style={{"background-color":"var(--color-surface-layer1)"}}
           />
         </div>
 
@@ -264,7 +264,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                 "border-accent-primary": color() === null,
                 "border-white/20": color() !== null,
               }}
-              style="background-color: var(--color-surface-layer1)"
+              style={{"background-color":"var(--color-surface-layer1)"}}
               title="No color"
             />
             <For each={colorPresets}>
@@ -321,7 +321,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                                   canEdit && handlePermissionToggle(perm.bit)
                                 }
                                 class="mt-1 w-4 h-4 rounded border-white/20 text-accent-primary focus:ring-accent-primary focus:ring-offset-0"
-                                style="background-color: var(--color-surface-layer1)"
+                                style={{"background-color":"var(--color-surface-layer1)"}}
                               />
                               <div class="flex-1">
                                 <div class="text-sm font-medium text-text-primary">
@@ -366,7 +366,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                 <Show when={showMemberPicker()}>
                   <div
                     class="absolute right-0 top-full mt-1 py-1 rounded-lg border border-white/10 shadow-xl z-10 w-64 max-h-48 overflow-y-auto"
-                    style="background-color: var(--color-surface-layer2)"
+                    style={{"background-color":"var(--color-surface-layer2)"}}
                   >
                     <Show
                       when={availableMembers().length > 0}

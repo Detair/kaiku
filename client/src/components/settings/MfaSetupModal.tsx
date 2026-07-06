@@ -195,7 +195,7 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
                 <Show when={error()}>
                   <div
                     class="p-3 rounded-md text-sm"
-                    style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+                    style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
                   >
                     {error()}
                   </div>
@@ -254,7 +254,7 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
                 <Show when={error()}>
                   <div
                     class="p-3 rounded-md text-sm"
-                    style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+                    style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
                   >
                     {error()}
                   </div>

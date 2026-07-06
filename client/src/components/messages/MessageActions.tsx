@@ -5,7 +5,7 @@
  * Appears at the top-right of messages.
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, Show, For } from "solid-js";
 import { SmilePlus, MoreHorizontal, MessageSquareMore, Pencil } from "lucide-solid";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 
@@ -47,7 +47,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
   return (
     <div data-testid="message-action-bar" class="absolute top-0 right-4 -translate-y-1/2 flex items-center gap-1 bg-surface-layer2 border border-white/10 rounded-lg shadow-xl px-1 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
       {/* Quick emoji reactions */}
-      {QUICK_EMOJIS.map((emoji) => (
+      <For each={QUICK_EMOJIS}>{(emoji) => (
         <button
           class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
           onClick={() => handleQuickReaction(emoji)}
@@ -56,7 +56,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
         >
           <span class="text-base leading-none">{emoji}</span>
         </button>
-      ))}
+      )}</For>
 
       {/* Emoji picker button */}
       <button

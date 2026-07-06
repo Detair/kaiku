@@ -72,7 +72,7 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
       <div class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
         <div
           class="border border-white/10 rounded-2xl w-[500px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-          style="background-color: var(--color-surface-layer1)"
+          style={{"background-color":"var(--color-surface-layer1)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">

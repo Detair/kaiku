@@ -15,7 +15,7 @@ function MicrophoneTest(props: Props) {
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div
         class="rounded-xl shadow-xl max-w-md w-full mx-4 border border-white/10"
-        style="background-color: var(--color-surface-layer2)"
+        style={{"background-color":"var(--color-surface-layer2)"}}
       >
         {/* Header */}
         <div class="flex items-center justify-between p-4 border-b border-white/5">

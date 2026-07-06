@@ -200,7 +200,7 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
         >
           <div
             class="border border-white/10 rounded-2xl w-[500px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style="background-color: var(--color-surface-layer1)"
+            style={{"background-color":"var(--color-surface-layer1)"}}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}

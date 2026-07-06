@@ -183,7 +183,7 @@ export async function addFavorite(
       message: "Could not add favorite. Please try again.",
       duration: 8000,
     });
-    throw new Error(message);
+    throw new Error(message, { cause: error });
   }
 }
 
@@ -202,7 +202,7 @@ export async function removeFavorite(channelId: string): Promise<boolean> {
       message: "Could not remove favorite. Please try again.",
       duration: 8000,
     });
-    throw new Error(message);
+    throw new Error(message, { cause: error });
   }
 }
 

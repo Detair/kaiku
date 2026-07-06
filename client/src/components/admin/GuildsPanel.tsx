@@ -794,7 +794,7 @@ const GuildsPanel: Component = () => {
           {/* Dialog */}
           <div
             class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style="background-color: var(--color-surface-layer1)"
+            style={{"background-color":"var(--color-surface-layer1)"}}
           >
             <div class="p-5 space-y-4">
               <h3 class="text-lg font-bold text-text-primary">Suspend Guild</h3>
@@ -855,7 +855,7 @@ const GuildsPanel: Component = () => {
           {/* Dialog */}
           <div
             class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style="background-color: var(--color-surface-layer1)"
+            style={{"background-color":"var(--color-surface-layer1)"}}
           >
             <div class="p-5 space-y-4">
               <h3 class="text-lg font-bold text-text-primary">
@@ -924,7 +924,7 @@ const GuildsPanel: Component = () => {
           {/* Dialog */}
           <div
             class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style="background-color: var(--color-surface-layer1)"
+            style={{"background-color":"var(--color-surface-layer1)"}}
           >
             <div class="p-5 space-y-4">
               <h3 class="text-lg font-bold text-status-error">Delete Guild</h3>

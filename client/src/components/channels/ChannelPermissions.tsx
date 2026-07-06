@@ -192,7 +192,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                   <div
                     data-testid="channel-permissions-role-picker"
                     class="absolute right-0 top-full mt-1 py-1 rounded-lg border border-white/10 shadow-xl z-10 w-48"
-                    style="background-color: var(--color-surface-layer2)"
+                    style={{"background-color":"var(--color-surface-layer2)"}}
                   >
                     <Show
                       when={rolesWithoutOverrides().length > 0}
@@ -249,7 +249,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                         data-role-id={role.id}
                         data-role-name={role.is_default ? "@everyone" : role.name}
                         class="flex items-center gap-3 p-3 rounded-lg border border-white/10 hover:bg-white/5 transition-colors group"
-                        style="background-color: var(--color-surface-layer1)"
+                        style={{"background-color":"var(--color-surface-layer1)"}}
                       >
                         <div
                           class="w-3 h-3 rounded-full flex-shrink-0"

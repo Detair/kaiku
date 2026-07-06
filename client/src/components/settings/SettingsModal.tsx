@@ -143,7 +143,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
       >
         <div
           class="border border-white/10 rounded-2xl w-[700px] max-h-[600px] flex flex-col shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-          style="background-color: var(--color-surface-layer1)"
+          style={{"background-color":"var(--color-surface-layer1)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">

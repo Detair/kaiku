@@ -212,6 +212,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           );
           throw new Error(
             "Failed to connect to server. Please refresh the page.",
+            { cause: err },
           );
         }
       }

@@ -403,7 +403,7 @@ const ReportsPanel: Component = () => {
           />
           <div
             class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl"
-            style="background-color: var(--color-surface-layer1)"
+            style={{"background-color":"var(--color-surface-layer1)"}}
           >
             <div class="flex items-center justify-between px-5 py-4 border-b border-white/10">
               <h3 class="text-lg font-bold text-text-primary">

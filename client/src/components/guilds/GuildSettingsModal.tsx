@@ -147,7 +147,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       >
         <div
           class="border border-white/10 rounded-2xl w-[90vw] max-w-[900px] overflow-x-hidden max-h-[85vh] flex flex-col shadow-2xl"
-          style="background-color: var(--color-surface-base)"
+          style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">

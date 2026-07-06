@@ -188,7 +188,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
       <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
         <div
           class="border border-white/10 rounded-2xl w-[480px] max-h-[640px] flex flex-col shadow-2xl"
-          style="background-color: var(--color-surface-base)"
+          style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
@@ -237,7 +237,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     onInput={(e) => setName(e.currentTarget.value)}
                     placeholder="My Awesome Server"
                     class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
-                    style="background-color: var(--color-surface-layer2)"
+                    style={{"background-color":"var(--color-surface-layer2)"}}
                     maxLength={100}
                     disabled={isCreating()}
                     autofocus
@@ -258,7 +258,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     onInput={(e) => setDescription(e.currentTarget.value)}
                     placeholder="Tell us about your server..."
                     class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent resize-none"
-                    style="background-color: var(--color-surface-layer2)"
+                    style={{"background-color":"var(--color-surface-layer2)"}}
                     rows={3}
                     maxLength={1000}
                     disabled={isCreating()}
@@ -272,9 +272,9 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 <Show when={error()}>
                   <div
                     class="p-3 rounded-lg"
-                    style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)"
+                    style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
                   >
-                    <p class="text-sm" style="color: var(--color-error-text)">
+                    <p class="text-sm" style={{"color":"var(--color-error-text)"}}>
                       {error()}
                     </p>
                   </div>
@@ -400,7 +400,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     </Show>
 
                     <Show when={tagError()}>
-                      <p class="text-xs mt-2" style="color: var(--color-error-text)">
+                      <p class="text-xs mt-2" style={{"color":"var(--color-error-text)"}}>
                         {tagError()}
                       </p>
                     </Show>
@@ -550,9 +550,9 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 <Show when={error()}>
                   <div
                     class="p-3 rounded-lg"
-                    style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)"
+                    style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
                   >
-                    <p class="text-sm" style="color: var(--color-error-text)">
+                    <p class="text-sm" style={{"color":"var(--color-error-text)"}}>
                       {error()}
                     </p>
                   </div>

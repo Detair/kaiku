@@ -172,8 +172,10 @@ function highlightMentions(text: string): string {
     },
   );
 
-  // Restore inline code spans
+  // Restore inline code spans. The \x00 sentinel is a deliberate,
+  // non-user-reachable placeholder (matches the protect step above).
   processed = processed.replace(
+    // eslint-disable-next-line no-control-regex
     /\x00CODE(\d+)\x00/g,
     (_, idx) => codeSpans[parseInt(idx)],
   );
@@ -768,7 +770,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         {/* Attachments */}
         <Show when={props.message.attachments?.length > 0}>
           <div class="mt-2 flex flex-wrap gap-3">
-            {props.message.attachments.map((attachment) => (
+            <For each={props.message.attachments}>{(attachment) => (
               <div class="group/attachment relative">
                 <Show
                   when={isImage(attachment.mime_type)}
@@ -899,7 +901,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                   })()}
                 </Show>
               </div>
-            ))}
+            )}</For>
           </div>
         </Show>
 

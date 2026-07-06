@@ -296,7 +296,7 @@ const AdminSettings: Component = () => {
         <Show when={state.error}>
           <div
             class="p-3 rounded-lg text-sm"
-            style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+            style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
           >
             {state.error}
           </div>

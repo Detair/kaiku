@@ -105,7 +105,7 @@ const KeyboardShortcutsDialog: Component<KeyboardShortcutsDialogProps> = (props)
     >
       <div
         class="w-[560px] max-h-[80vh] border border-white/10 shadow-2xl rounded-xl overflow-hidden flex flex-col"
-        style="background-color: var(--color-surface-layer2)"
+        style={{"background-color":"var(--color-surface-layer2)"}}
       >
         {/* Header */}
         <div class="px-6 py-4 border-b border-white/5 flex items-center justify-between">
