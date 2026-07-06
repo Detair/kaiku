@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod retention;
 pub mod sqlx_metrics;
 pub mod storage;
+pub mod sysinfo;
 pub mod tracing;
 pub mod voice;
 
@@ -65,6 +66,7 @@ pub fn init(
     // so metrics are always registered.
     metrics::register_metrics();
     metrics::register_process_memory_metric();
+    metrics::register_system_metrics();
     (
         guard,
         meter_provider,

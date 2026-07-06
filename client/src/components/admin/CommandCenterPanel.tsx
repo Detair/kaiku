@@ -26,6 +26,11 @@ import {
   ChevronDown,
   Search,
   Heart,
+  Cpu,
+  MemoryStick,
+  HardDrive,
+  Gauge,
+  Layers,
 } from "lucide-solid";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
@@ -68,6 +73,19 @@ function formatUptime(seconds: number): string {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${mins}m`;
   return `${mins}m`;
+}
+
+/** Human-readable bytes (e.g. 1.5 GB); "N/A" for null. */
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null) return "N/A";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = bytes;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return `${v.toFixed(u === 0 ? 0 : 1)} ${units[u]}`;
 }
 
 function formatTimestamp(iso: string): string {
@@ -447,6 +465,7 @@ const CommandCenterPanel: Component = () => {
   const summary = () => adminState.obsSummary;
   const vitals = () => summary()?.vital_signs;
   const meta = () => summary()?.server_metadata;
+  const sys = () => summary()?.system;
 
   return (
     <div class="flex-1 p-6 overflow-auto">
@@ -572,6 +591,80 @@ const CommandCenterPanel: Component = () => {
           </section>
         </Show>
 
+        {/* System Resources */}
+        <Show when={sys()}>
+          <section>
+            <h3 class="text-base font-semibold text-text-primary mb-3">
+              System
+            </h3>
+            <div class="grid grid-cols-3 md:grid-cols-6 gap-3">
+              <VitalCard
+                label="CPU"
+                value={
+                  sys()?.process_cpu_percent != null
+                    ? `${sys()!.process_cpu_percent!.toFixed(1)}%`
+                    : "N/A"
+                }
+                icon={Cpu}
+                color="#f97316"
+                loading={adminState.isObsSummaryLoading && !summary()}
+              />
+              <VitalCard
+                label="Process Mem"
+                value={formatBytes(sys()?.process_memory_bytes)}
+                icon={MemoryStick}
+                color="#22c55e"
+                loading={adminState.isObsSummaryLoading && !summary()}
+              />
+              <VitalCard
+                label="Sys Mem"
+                value={
+                  sys()?.system_memory_used_bytes != null &&
+                  sys()?.system_memory_total_bytes != null
+                    ? `${formatBytes(sys()!.system_memory_used_bytes)} / ${formatBytes(sys()!.system_memory_total_bytes)}`
+                    : "N/A"
+                }
+                icon={MemoryStick}
+                color="#14b8a6"
+                loading={adminState.isObsSummaryLoading && !summary()}
+              />
+              <VitalCard
+                label="Disk"
+                value={
+                  sys()?.disk_used_percent != null
+                    ? `${sys()!.disk_used_percent!.toFixed(0)}% (${formatBytes(sys()!.disk_used_bytes)}/${formatBytes(sys()!.disk_total_bytes)})`
+                    : "N/A"
+                }
+                icon={HardDrive}
+                color="#3b82f6"
+                loading={adminState.isObsSummaryLoading && !summary()}
+              />
+              <VitalCard
+                label="Load (1m)"
+                value={
+                  sys()?.load_average_1m != null
+                    ? sys()!.load_average_1m!.toFixed(2)
+                    : "N/A"
+                }
+                icon={Gauge}
+                color="#a855f7"
+                loading={adminState.isObsSummaryLoading && !summary()}
+              />
+              <VitalCard
+                label="Threads / FDs"
+                value={
+                  sys()?.thread_count != null || sys()?.open_file_descriptors != null
+                    ? `${sys()?.thread_count ?? "?"} / ${sys()?.open_file_descriptors ?? "?"}`
+                    : "N/A"
+                }
+                icon={Layers}
+                color="#64748b"
+                loading={adminState.isObsSummaryLoading && !summary()}
+              />
+            </div>
+          </section>
+        </Show>
+
         {/* Trends Section */}
         <section>
           <div class="flex items-center justify-between mb-4">
@@ -609,6 +702,20 @@ const CommandCenterPanel: Component = () => {
               dataKey="value_count"
               unit="sessions"
               color="#8b5cf6"
+            />
+            <TrendChart
+              title="CPU %"
+              metricName="kaiku_process_cpu_percent"
+              dataKey="value_count"
+              unit="%"
+              color="#f97316"
+            />
+            <TrendChart
+              title="Process Memory"
+              metricName="kaiku_process_memory_bytes"
+              dataKey="value_count"
+              unit="bytes"
+              color="#22c55e"
             />
           </div>
         </section>

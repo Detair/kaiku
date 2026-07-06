@@ -21,9 +21,23 @@ export interface ServerMetadata {
   guild_count: number;
 }
 
+export interface SystemStats {
+  process_memory_bytes: number | null;
+  process_cpu_percent: number | null;
+  system_memory_used_bytes: number | null;
+  system_memory_total_bytes: number | null;
+  load_average_1m: number | null;
+  open_file_descriptors: number | null;
+  thread_count: number | null;
+  disk_used_bytes: number | null;
+  disk_total_bytes: number | null;
+  disk_used_percent: number | null;
+}
+
 export interface ObservabilitySummary {
   vital_signs: VitalSigns;
   server_metadata: ServerMetadata;
+  system: SystemStats;
   voice_health_score: number | null;
   active_alert_count: number;
 }

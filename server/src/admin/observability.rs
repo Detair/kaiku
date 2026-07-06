@@ -156,8 +156,25 @@ pub struct TracesParams {
 pub struct SummaryResponse {
     pub vital_signs: VitalSigns,
     pub server_metadata: ServerMetadata,
+    pub system: SystemStats,
     pub voice_health_score: Option<f64>,
     pub active_alert_count: i64,
+}
+
+/// Live host/process resource usage, sampled at request time. Each field is
+/// `None` when unavailable (e.g. non-Linux host, or CPU not yet sampled).
+#[derive(Debug, Serialize)]
+pub struct SystemStats {
+    pub process_memory_bytes: Option<u64>,
+    pub process_cpu_percent: Option<f64>,
+    pub system_memory_used_bytes: Option<u64>,
+    pub system_memory_total_bytes: Option<u64>,
+    pub load_average_1m: Option<f64>,
+    pub open_file_descriptors: Option<u64>,
+    pub thread_count: Option<u64>,
+    pub disk_used_bytes: Option<u64>,
+    pub disk_total_bytes: Option<u64>,
+    pub disk_used_percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -289,6 +306,25 @@ pub async fn summary(
     // Voice health score (cached, refreshed every 10s — no DB query)
     let voice_health_score = crate::observability::voice::get_voice_health_score().await;
 
+    // Live system stats (cheap /proc reads + one `df`); missing pieces are None.
+    use crate::observability::sysinfo as sys;
+    let (mem_total, mem_avail) = sys::system_memory_bytes().unzip();
+    let disk = super::system::disk_usage().await;
+    let system = SystemStats {
+        process_memory_bytes: sys::process_rss_bytes(),
+        process_cpu_percent: sys::last_cpu_percent(),
+        system_memory_used_bytes: mem_total.zip(mem_avail).map(|(t, a)| t.saturating_sub(a)),
+        system_memory_total_bytes: mem_total,
+        load_average_1m: sys::load_average_1m(),
+        open_file_descriptors: sys::open_fds(),
+        thread_count: sys::thread_count(),
+        disk_used_bytes: disk
+            .as_ref()
+            .map(|d| d.total_bytes.saturating_sub(d.available_bytes)),
+        disk_total_bytes: disk.as_ref().map(|d| d.total_bytes),
+        disk_used_percent: disk.as_ref().map(|d| d.used_percent),
+    };
+
     Ok(Json(SummaryResponse {
         vital_signs: VitalSigns {
             latency_p95_ms: latency_p95,
@@ -303,6 +339,7 @@ pub async fn summary(
             active_user_count: user_count,
             guild_count,
         },
+        system,
         voice_health_score,
         active_alert_count,
     }))
