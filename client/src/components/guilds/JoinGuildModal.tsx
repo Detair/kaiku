@@ -75,7 +75,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
       <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
         <div
           class="border border-white/10 rounded-2xl w-[480px] max-h-[600px] flex flex-col shadow-2xl"
-          style="background-color: var(--color-surface-base)"
+          style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
@@ -106,7 +106,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
                   }}
                   placeholder="https://example.com/invite/aBcD1234 or aBcD1234"
                   class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
-                  style="background-color: var(--color-surface-layer2)"
+                  style={{"background-color":"var(--color-surface-layer2)"}}
                   disabled={isJoining()}
                   autofocus
                 />
@@ -119,9 +119,9 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
               <Show when={error()}>
                 <div
                   class="p-3 rounded-lg"
-                  style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border)"
+                  style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
                 >
-                  <p class="text-sm" style="color: var(--color-error-text)">
+                  <p class="text-sm" style={{"color":"var(--color-error-text)"}}>
                     {error()}
                   </p>
                 </div>

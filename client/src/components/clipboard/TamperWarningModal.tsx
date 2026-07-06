@@ -55,7 +55,7 @@ const TamperWarningModal: Component<TamperWarningModalProps> = (props) => {
       >
         <div
           class="border border-danger/30 rounded-2xl w-[450px] shadow-2xl"
-          style="background-color: var(--color-surface-layer1)"
+          style={{"background-color":"var(--color-surface-layer1)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
@@ -85,7 +85,7 @@ const TamperWarningModal: Component<TamperWarningModalProps> = (props) => {
 
             <div
               class="flex gap-3 p-3 rounded-lg"
-              style="background-color: var(--color-surface-base)"
+              style={{"background-color":"var(--color-surface-base)"}}
             >
               <div class="text-sm">
                 <p class="text-text-secondary">What you copied:</p>

@@ -125,7 +125,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
           <button
             onClick={() => setShowSearch(true)}
             class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5 hover:border-white/10 transition-colors"
-            style="background-color: var(--color-surface-base)"
+            style={{"background-color":"var(--color-surface-base)"}}
           >
             <Search class="w-4 h-4" />
             <span>Search messages...</span>
@@ -134,7 +134,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
         <Show when={!activeGuild()}>
           <div
             class="w-full px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5"
-            style="background-color: var(--color-surface-base)"
+            style={{"background-color":"var(--color-surface-base)"}}
           >
             Search...
           </div>

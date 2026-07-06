@@ -9,7 +9,7 @@
  * - Smooth hover transitions
  */
 
-import { Component, Show, createSignal, createMemo } from "solid-js";
+import { Component, Show, createSignal, createMemo, For } from "solid-js";
 import {
   Hash,
   Volume2,
@@ -320,13 +320,12 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
             {participantCount() === 1 ? "member" : "members"}
           </p>
           <div class="space-y-0.5">
-            {participants()
-              .slice(0, 5)
-              .map((participant) => (
+            <For each={participants()
+              .slice(0, 5)}>{(participant) => (
                 <p class="text-sm text-text-primary truncate">
                   {participant.user_id.slice(0, 8)}...
                 </p>
-              ))}
+              )}</For>
             <Show when={participantCount() > 5}>
               <p class="text-xs text-text-secondary italic">
                 +{participantCount() - 5} more

@@ -147,7 +147,7 @@ const ResetPassword: Component = () => {
               <div
                 role="alert"
                 class="p-3 rounded-md text-sm"
-                style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+                style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
               >
                 {error()}
               </div>
@@ -182,7 +182,7 @@ const ResetPassword: Component = () => {
         <Show when={success()}>
           <div
             class="p-4 rounded-md text-sm mb-4"
-            style="background-color: var(--color-success-bg, rgba(34,197,94,0.1)); border: 1px solid var(--color-success-border, rgba(34,197,94,0.3)); color: var(--color-success-text, #22c55e)"
+            style={{"background-color":"var(--color-success-bg, rgba(34,197,94,0.1))","border":"1px solid var(--color-success-border, rgba(34,197,94,0.3))","color":"var(--color-success-text, #22c55e)"}}
           >
             Password has been reset successfully. You can now log in with your
             new password.

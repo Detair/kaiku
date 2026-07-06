@@ -372,8 +372,8 @@ const ChannelList: Component<ChannelListProps> = (props) => {
       style={{ height: props.active ? "8px" : "0px" }}
     >
       <div class="flex items-center h-full px-1">
-        <div class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: var(--color-accent-primary)" />
-        <div class="flex-1 rounded-full" style="height: 3px; background-color: var(--color-accent-primary)" />
+        <div class="w-2.5 h-2.5 rounded-full shrink-0" style={{"background-color":"var(--color-accent-primary)"}} />
+        <div class="flex-1 rounded-full" style={{"height":"3px","background-color":"var(--color-accent-primary)"}} />
       </div>
     </div>
   );
@@ -690,7 +690,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
       <Show when={channelsState.error}>
         <div
           class="px-2 py-4 text-center text-sm"
-          style="color: var(--color-error-text)"
+          style={{"color":"var(--color-error-text)"}}
         >
           {channelsState.error}
         </div>

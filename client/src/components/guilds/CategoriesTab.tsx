@@ -225,7 +225,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
           disabled={isCreating()}
         />
         <div class="flex rounded-lg border border-white/10 overflow-hidden shrink-0">
-          {(["mixed", "text", "voice"] as const).map((t) => (
+          <For each={["mixed", "text", "voice"] as const}>{(t) => (
             <button
               onClick={() => setNewCategoryType(t)}
               class="px-2 py-2 text-xs transition-colors"
@@ -237,7 +237,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
             >
               {typeIcon(t)}
             </button>
-          ))}
+          )}</For>
         </div>
         <button
           onClick={handleCreate}

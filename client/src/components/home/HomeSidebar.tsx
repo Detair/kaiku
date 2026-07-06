@@ -53,7 +53,7 @@ const HomeSidebar: Component = () => {
         <button
           onClick={() => setShowDMSearch(true)}
           class="w-full px-3 py-2 rounded-xl text-sm text-text-muted text-left outline-none border border-white/5"
-          style="background-color: var(--color-surface-base)"
+          style={{"background-color":"var(--color-surface-base)"}}
         >
           Find conversation...
         </button>

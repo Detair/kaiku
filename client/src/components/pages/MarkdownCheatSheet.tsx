@@ -4,7 +4,7 @@
  * Quick reference panel for markdown syntax.
  */
 
-import { Show, createSignal } from "solid-js";
+import { Show, createSignal, For } from "solid-js";
 import { ChevronDown, ChevronUp } from "lucide-solid";
 
 interface MarkdownCheatSheetProps {
@@ -89,23 +89,23 @@ export default function MarkdownCheatSheet(props: MarkdownCheatSheetProps) {
 
       <Show when={isExpanded()}>
         <div class="px-4 pb-4 space-y-4">
-          {sections.map((section) => (
+          <For each={sections}>{(section) => (
             <div>
               <h4 class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-2">
                 {section.title}
               </h4>
               <div class="space-y-1">
-                {section.items.map((item) => (
+                <For each={section.items}>{(item) => (
                   <div class="flex items-start gap-3 text-xs">
                     <code class="bg-zinc-900 px-1.5 py-0.5 rounded text-emerald-400 font-mono whitespace-pre">
                       {item.syntax}
                     </code>
                     <span class="text-zinc-400">{item.description}</span>
                   </div>
-                ))}
+                )}</For>
               </div>
             </div>
-          ))}
+          )}</For>
         </div>
       </Show>
     </div>

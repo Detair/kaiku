@@ -305,6 +305,9 @@ jobs:
       - name: Type check
         run: bunx tsc --noEmit
 
+      - name: Lint (fails on errors; warnings allowed)
+        run: bun run lint
+
       - name: Run tests
         run: bun run test:run
 

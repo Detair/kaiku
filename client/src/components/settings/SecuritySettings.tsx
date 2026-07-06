@@ -472,7 +472,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
               <Show when={disableError()}>
                 <div
                   class="p-2 mb-3 rounded-md text-sm"
-                  style="background-color: var(--color-error-bg); border: 1px solid var(--color-error-border); color: var(--color-error-text)"
+                  style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
                 >
                   {disableError()}
                 </div>

@@ -607,8 +607,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                 >
                   {(() => {
                     const data = item();
-                    return data ? (
-                      <>
+                    return <Show when={data}><>
                         <Show when={data.isFirstUnread}>
                           <div class="flex items-center gap-2 px-4 py-1 my-1">
                             <div class="flex-1 h-px bg-accent-danger" />
@@ -624,8 +623,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                           guildId={props.guildId}
                           threadsEnabled={areThreadsEnabled(props.guildId)}
                         />
-                      </>
-                    ) : null;
+                      </></Show>;
                   })()}
                 </div>
               );

@@ -280,7 +280,7 @@ const OnboardingWizard: Component = () => {
         <div
           ref={dialogRef}
           class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden"
-          style="background-color: var(--color-surface-layer2)"
+          style={{"background-color":"var(--color-surface-layer2)"}}
         >
           {/* Progress dots */}
           <div

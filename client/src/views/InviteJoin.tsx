@@ -41,11 +41,11 @@ const InviteJoin: Component = () => {
   return (
     <div
       class="h-screen flex items-center justify-center"
-      style="background-color: var(--color-surface-base)"
+      style={{"background-color":"var(--color-surface-base)"}}
     >
       <div
         class="text-center p-8 rounded-2xl border border-white/10 max-w-md"
-        style="background-color: var(--color-surface-layer1)"
+        style={{"background-color":"var(--color-surface-layer1)"}}
       >
         <Show when={status() === "loading"}>
           <div class="text-text-primary text-lg mb-2">Joining guild...</div>

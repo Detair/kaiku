@@ -84,7 +84,7 @@ export async function uploadDMAvatar(
       "[uploadDMAvatar] Failed to parse success response:",
       parseError,
     );
-    throw new Error("Server returned invalid response");
+    throw new Error("Server returned invalid response", { cause: parseError });
   }
 }
 

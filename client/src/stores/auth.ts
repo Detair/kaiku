@@ -261,11 +261,11 @@ export async function login(
         mfaRequired: true,
         serverUrl,
       });
-      throw new Error("MFA_REQUIRED");
+      throw new Error("MFA_REQUIRED", { cause: err });
     }
 
     setAuthState({ isLoading: false, error });
-    throw new Error(error);
+    throw new Error(error, { cause: err });
   }
 }
 
@@ -321,7 +321,7 @@ export async function register(
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });
-    throw new Error(error);
+    throw new Error(error, { cause: err });
   }
 }
 
@@ -384,7 +384,7 @@ export async function loginWithOidc(
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });
-    throw new Error(error);
+    throw new Error(error, { cause: err });
   }
 }
 

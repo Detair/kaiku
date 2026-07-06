@@ -256,7 +256,7 @@ export async function uploadFile(messageId: string, file: File): Promise<any> {
     return await response.json();
   } catch (parseError) {
     console.error("[uploadFile] Failed to parse success response:", parseError);
-    throw new Error("Server returned invalid response");
+    throw new Error("Server returned invalid response", { cause: parseError });
   }
 }
 
@@ -330,7 +330,7 @@ export async function uploadMessageWithFile(
       "[uploadMessageWithFile] Failed to parse success response:",
       parseError,
     );
-    throw new Error("Server returned invalid response");
+    throw new Error("Server returned invalid response", { cause: parseError });
   }
 }
 

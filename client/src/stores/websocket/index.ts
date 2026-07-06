@@ -1357,7 +1357,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       }
       break;
 
-    case "command_response_timeout":
+    case "command_response_timeout": {
       console.warn("[WebSocket] Command response timeout:", event.command_name);
       const { showToast } = await import("@/components/ui/Toast");
       showToast({
@@ -1368,6 +1368,7 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
         id: `cmd-timeout-${event.command_name}`,
       });
       break;
+    }
 
     default:
       console.log("Unhandled server event:", event.type);

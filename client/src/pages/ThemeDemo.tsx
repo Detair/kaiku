@@ -1,4 +1,4 @@
-import { Component } from "solid-js";
+import { Component, For } from "solid-js";
 import { availableThemes, theme as currentTheme, setTheme } from "@/stores/theme";
 import CodeBlock from "@/components/ui/CodeBlock";
 
@@ -44,7 +44,7 @@ print(calculate_fibonacci(10))`,
           </p>
 
           <div class="space-y-3">
-            {availableThemes.map((theme) => (
+            <For each={availableThemes}>{(theme) => (
               <button
                 onClick={() => setTheme(theme.id)}
                 class="w-full text-left p-4 rounded-xl border-2 transition-all"
@@ -84,7 +84,7 @@ print(calculate_fibonacci(10))`,
                   </div>
                 </div>
               </button>
-            ))}
+            )}</For>
           </div>
         </div>
 

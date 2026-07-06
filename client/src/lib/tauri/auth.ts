@@ -515,7 +515,7 @@ export async function uploadAvatar(file: File): Promise<User> {
       "[uploadAvatar] Failed to parse success response:",
       parseError,
     );
-    throw new Error("Server returned invalid response");
+    throw new Error("Server returned invalid response", { cause: parseError });
   }
 }
 

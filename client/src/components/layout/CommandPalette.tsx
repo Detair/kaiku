@@ -153,13 +153,14 @@ const CommandPalette: Component = () => {
         setSelectedIndex((prev) => (prev > 0 ? prev - 1 : prev));
         break;
 
-      case "Enter":
+      case "Enter": {
         e.preventDefault();
         const selected = filteredItems()[selectedIndex()];
         if (selected) {
           selected.action();
         }
         break;
+      }
     }
   };
 
@@ -193,7 +194,7 @@ const CommandPalette: Component = () => {
         <div
           data-testid="command-palette"
           class="w-[600px] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up"
-          style="background-color: var(--color-surface-layer2)"
+          style={{"background-color":"var(--color-surface-layer2)"}}
         >
           {/* Input */}
           <div class="border-b border-white/5">

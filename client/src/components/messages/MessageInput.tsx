@@ -557,7 +557,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         </div>
       </Show>
 
-      <div class="relative flex flex-col rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors" style="background-color: var(--color-surface-layer2)">
+      <div class="relative flex flex-col rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors" style={{"background-color":"var(--color-surface-layer2)"}}>
         {/* Formatting toolbar */}
         <div class="flex items-center gap-1 px-2 py-1 border-b border-white/5">
           <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Bold (Ctrl+B)" aria-label="Bold (Ctrl+B)" onClick={() => insertFormatting("**", "**")}>
@@ -649,7 +649,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
       {/* Error display */}
       <Show when={messagesState.error}>
-        <div class="mt-2 text-sm" style="color: var(--color-error-text)">
+        <div class="mt-2 text-sm" style={{"color":"var(--color-error-text)"}}>
           Failed to send: {messagesState.error}
         </div>
       </Show>

@@ -64,7 +64,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
       >
         <div
           class="border border-white/10 rounded-2xl w-[550px] max-h-[80vh] flex flex-col shadow-2xl"
-          style="background-color: var(--color-surface-base)"
+          style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
@@ -129,7 +129,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
                   </label>
                   <div
                     class="px-3 py-2 rounded-lg border border-white/10 text-text-primary"
-                    style="background-color: var(--color-surface-layer1)"
+                    style={{"background-color":"var(--color-surface-layer1)"}}
                   >
                     {channel()?.name}
                   </div>

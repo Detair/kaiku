@@ -64,12 +64,15 @@ async function fetchSetupConfig(): Promise<SetupConfig> {
   } catch (parseError) {
     // Distinguish between JSON syntax errors and other unexpected errors
     if (parseError instanceof SyntaxError) {
-      throw new Error(`Server returned invalid JSON: ${parseError.message}`);
+      throw new Error(`Server returned invalid JSON: ${parseError.message}`, {
+        cause: parseError,
+      });
     } else {
       // Unexpected error (OOM, extension interference, etc.)
       console.error("[SetupWizard] Unexpected error parsing JSON:", parseError);
       throw new Error(
         `Failed to parse server response: ${parseError instanceof Error ? parseError.message : "Unknown error"}`,
+        { cause: parseError },
       );
     }
   }
@@ -80,7 +83,7 @@ async function completeSetup(config: SetupConfig): Promise<void> {
   const serverUrl = getServerUrl();
 
   // Get access token
-  let accessToken: string | null = null;
+  let accessToken: string | null;
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     accessToken = await invoke<string>("get_access_token");
@@ -295,7 +298,7 @@ const SetupWizard: Component = () => {
           {/* Loading state */}
           <Show when={isLoadingConfig()}>
             <div class="flex items-center justify-center p-8">
-              <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary"></div>
+              <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary" />
             </div>
           </Show>
 

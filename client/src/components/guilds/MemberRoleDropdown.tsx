@@ -116,7 +116,7 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
         <div
           data-testid="member-role-dropdown"
           class="absolute right-0 top-full mt-1 py-1 rounded-lg border border-white/10 shadow-xl z-20 min-w-[200px]"
-          style="background-color: var(--color-surface-layer2)"
+          style={{"background-color":"var(--color-surface-layer2)"}}
         >
           <Show when={canManageRolesPermission()}>
             <>

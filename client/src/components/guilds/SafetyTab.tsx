@@ -280,7 +280,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       {/* Section Tabs */}
       <div
         class="flex gap-1 p-1 rounded-lg"
-        style="background-color: var(--color-surface-raised)"
+        style={{"background-color":"var(--color-surface-raised)"}}
       >
         <button
           onClick={() => setActiveSection("categories")}
@@ -353,7 +353,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                 return (
                   <div
                     class="flex items-center justify-between p-4 rounded-xl border border-white/10"
-                    style="background-color: var(--color-surface-raised)"
+                    style={{"background-color":"var(--color-surface-raised)"}}
                   >
                     <div class="flex-1">
                       <div class="flex items-center gap-2">
@@ -446,7 +446,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
             <Show when={showAddPattern()}>
               <div
                 class="p-4 rounded-xl border border-accent-primary/30 space-y-3"
-                style="background-color: var(--color-surface-raised)"
+                style={{"background-color":"var(--color-surface-raised)"}}
               >
                 <div>
                   <label class="text-sm text-text-secondary block mb-1">
@@ -511,7 +511,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
               {(pattern) => (
                 <div
                   class="flex items-center justify-between p-3 rounded-lg border border-white/5"
-                  style="background-color: var(--color-surface-raised)"
+                  style={{"background-color":"var(--color-surface-raised)"}}
                 >
                   <div class="flex-1 min-w-0">
                     <div class="flex items-center gap-2">
@@ -655,7 +655,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
               {(entry) => (
                 <div
                   class="p-3 rounded-lg border border-white/5 space-y-1"
-                  style="background-color: var(--color-surface-raised)"
+                  style={{"background-color":"var(--color-surface-raised)"}}
                 >
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">

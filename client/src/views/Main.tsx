@@ -167,7 +167,7 @@ const Main: Component = () => {
           />
           <div
             class="relative w-[640px] h-[70vh] rounded-xl border border-white/10 shadow-2xl overflow-hidden"
-            style="background-color: var(--color-surface-layer2)"
+            style={{"background-color":"var(--color-surface-layer2)"}}
           >
             <SearchPanel
               mode="global"
