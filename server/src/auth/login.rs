@@ -86,32 +86,31 @@ pub async fn login(
         };
     }
 
-    // Find user by username
-    let user = if let Some(u) = find_user_by_username(&state.db, &body.username).await? {
-        u
-    } else {
-        record_failed_auth!();
-        crate::observability::metrics::record_auth_login_attempt(false);
-        return Err(AuthError::InvalidCredentials);
+    // Look up the user, then ALWAYS run a password verification — against the
+    // real hash if the account exists with a local password, otherwise against
+    // a dummy hash of identical Argon2 cost. This keeps the response time the
+    // same whether the username exists or not, closing the timing side-channel
+    // that would otherwise reveal valid usernames (enumeration).
+    let user_opt = find_user_by_username(&state.db, &body.username).await?;
+    let stored_hash = user_opt
+        .as_ref()
+        .and_then(|u| u.password_hash.as_deref())
+        .unwrap_or_else(|| super::password::DUMMY_PASSWORD_HASH.as_str());
+    // A malformed stored hash (verify error) is treated as a non-match rather
+    // than a distinct 500, so it cannot be used as an oracle either.
+    let password_valid = verify_password(&body.password, stored_hash).unwrap_or(false);
+
+    let user = match user_opt {
+        // Local account whose password matched.
+        Some(u) if u.password_hash.is_some() && password_valid => u,
+        // Missing user, non-local (OIDC) account, or wrong password — all
+        // indistinguishable to the caller.
+        _ => {
+            record_failed_auth!();
+            crate::observability::metrics::record_auth_login_attempt(false);
+            return Err(AuthError::InvalidCredentials);
+        }
     };
-
-    // Verify password (only for local auth)
-    let password_hash = if let Some(h) = user.password_hash.as_ref() {
-        h
-    } else {
-        record_failed_auth!();
-        crate::observability::metrics::record_auth_login_attempt(false);
-        return Err(AuthError::InvalidCredentials);
-    };
-
-    let valid =
-        verify_password(&body.password, password_hash).map_err(|_| AuthError::PasswordHash)?;
-
-    if !valid {
-        record_failed_auth!();
-        crate::observability::metrics::record_auth_login_attempt(false);
-        return Err(AuthError::InvalidCredentials);
-    }
 
     // Check MFA if enabled
     if let Some(ref encrypted_secret) = user.mfa_secret {

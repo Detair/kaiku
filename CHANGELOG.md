@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Hardened login against username enumeration: a login attempt now performs the same Argon2 password verification whether or not the account exists, so response timing no longer reveals valid usernames
+- CORS with `CORS_ALLOWED_ORIGINS=*` no longer sends `Access-Control-Allow-Credentials`; mirroring the Origin with credentials would have let any website make credentialed cross-origin requests. Same-origin app traffic is unaffected; set explicit origins for trusted credentialed cross-origin access
+- The web client's HTML sanitizers (chat messages and wiki pages) now use isolated DOMPurify instances instead of sharing one with global hooks, and wiki pages no longer allow arbitrary CSS `class` attributes (prevents cross-context sanitizer drift and CSS-based UI redressing)
 - The bundled Caddy reverse-proxy config now pins TLS to 1.3 only (Caddy's default also accepted TLS 1.2); all supported clients already negotiate TLS 1.3
 - Update `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, remote memory exhaustion via unbounded out-of-order stream reassembly; lockfile-only — quinn is an uncompiled optional reqwest HTTP/3 dependency), `quick-xml` 0.37.5/0.38.4 → 0.41.0 via `tauri-winrt-notification` 0.7.3 (RUSTSEC-2026-0194/-0195; used only for desktop notification/bundle XML), and `anyhow` 1.0.102 → 1.0.103 (RUSTSEC-2026-0190, `downcast_mut` unsoundness), restoring the weekly Security Audit and License Compliance checks to green
 - Update `lettre` 0.11.19 → 0.11.22 to resolve RUSTSEC-2026-0141 (TLS hostname verification bypass in the `boring-tls` backend; Kaiku uses `native-tls` and was not exploitable, but the update clears the advisory and unblocks the weekly security audit)

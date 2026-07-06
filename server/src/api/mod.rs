@@ -131,16 +131,24 @@ pub fn create_router(state: AppState) -> Router {
         ];
 
         if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
-            // Wildcard `*` is incompatible with `allow_credentials(true)` per the
-            // CORS spec, so mirror the request Origin header instead.
+            // Wildcard `*` mirrors the request Origin, but credentials MUST be
+            // disabled in that mode. Mirroring the Origin *with* credentials
+            // would let any website make credentialed cross-origin calls (e.g.
+            // POST /auth/refresh with the victim's HttpOnly cookie) and read the
+            // response — a full session-hijack primitive. Same-origin requests
+            // (the actual app) are unaffected: CORS never gates same-origin, so
+            // cookies still flow there. Cross-origin callers simply get no
+            // credentials. Configure CORS_ALLOWED_ORIGINS explicitly to allow
+            // trusted cross-origin credentialed access.
             tracing::warn!(
-                "CORS wildcard mirrors Origin header; set CORS_ALLOWED_ORIGINS explicitly in production"
+                "CORS_ALLOWED_ORIGINS='*' mirrors the Origin header with credentials DISABLED; \
+                 set explicit origins to enable credentialed cross-origin requests"
             );
             CorsLayer::new()
                 .allow_origin(AllowOrigin::mirror_request())
                 .allow_methods(allowed_methods)
                 .allow_headers(allowed_headers)
-                .allow_credentials(true)
+                .allow_credentials(false)
         } else {
             // Production mode: restrict to configured origins
             let origins: Vec<_> = state

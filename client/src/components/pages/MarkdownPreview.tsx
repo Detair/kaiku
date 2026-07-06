@@ -10,7 +10,7 @@
 
 import { createSignal, createEffect, onMount, Show } from "solid-js";
 import { Marked } from "marked";
-import DOMPurify from "dompurify";
+import { createIsolatedPurifier } from "@/lib/sanitizer";
 // Mermaid is loaded dynamically to avoid bundling ~1.8MB in the main chunk.
 // It's only needed when the Pages feature is actually used.
 let mermaidModule: Awaited<typeof import("mermaid")> | undefined;
@@ -88,7 +88,10 @@ const ALLOWED_ATTR = [
   "src",
   "alt",
   "title",
-  "class",
+  // `class` intentionally omitted: arbitrary classes on user-authored page
+  // content could pull in utility CSS (e.g. `fixed inset-0 z-50`) for
+  // clickjacking / UI-redress. Code-fence `language-*` hints are cosmetic and
+  // not currently styled, so nothing user-facing is lost.
   "id",
   "target",
   "rel",
@@ -169,18 +172,15 @@ const MARKDOWN_PURIFY_CONFIG = {
   ADD_ATTR: ["target"],
 };
 
-// Global hook: opens external links in new tab with noopener.
-// Intentionally global — this behavior is desirable for all sanitized contexts.
-DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-  if (node.tagName === "A") {
-    const href = node.getAttribute("href") || "";
-    // External links open in new tab
-    if (href.startsWith("http://") || href.startsWith("https://")) {
-      node.setAttribute("target", "_blank");
-      node.setAttribute("rel", "noopener noreferrer");
-    }
-  }
-});
+// Isolated DOMPurify instance. The shared external-link hardening hook
+// (target=_blank + rel=noopener) is pre-registered by createIsolatedPurifier;
+// hooks added here do not leak into other sanitization contexts (e.g. the
+// message renderer) and vice-versa. Note `class` is intentionally absent from
+// MARKDOWN_PURIFY_CONFIG's ALLOWED_ATTR below, so user-authored pages cannot
+// carry arbitrary classes (which could pull in utility CSS like `fixed inset-0`
+// for clickjacking/UI-redress). The separate MERMAID_SVG_CONFIG still allows
+// `class` for diagram theming.
+const purifier = createIsolatedPurifier();
 
 // SVG-specific sanitization for mermaid diagrams — explicit allowlist (not additive).
 // foreignObject, script, and style are excluded as XSS/CSS-injection vectors.
@@ -298,7 +298,7 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
       }
 
       // Sanitize HTML using DOMPurify with inline config (not global setConfig)
-      const sanitizedHtml = DOMPurify.sanitize(rawHtml, MARKDOWN_PURIFY_CONFIG);
+      const sanitizedHtml = purifier.sanitize(rawHtml, MARKDOWN_PURIFY_CONFIG);
       setHtml(sanitizedHtml);
       setError(null);
     } catch (err) {
@@ -342,7 +342,7 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
         const wrapper = document.createElement("div");
         wrapper.className = "mermaid-diagram";
         // Security: SVG is sanitized through DOMPurify with strict SVG-only allowlist
-        wrapper.innerHTML = DOMPurify.sanitize(svg, MERMAID_SVG_CONFIG);
+        wrapper.innerHTML = purifier.sanitize(svg, MERMAID_SVG_CONFIG);
         pre.replaceWith(wrapper);
       } catch (err) {
         // Only show error if this is still the current render
