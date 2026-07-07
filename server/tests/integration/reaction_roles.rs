@@ -165,6 +165,51 @@ async fn non_manager_cannot_create_binding(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn reaction_does_not_grant_role_escalated_after_binding(pool: PgPool) {
+    // TOCTOU guard: a role that was safe when bound but has since gained a
+    // dangerous permission must NOT be self-grantable by reacting.
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(
+        &pool,
+        owner,
+        GuildPermissions::ADD_REACTIONS | GuildPermissions::VIEW_CHANNEL,
+    )
+    .await;
+    let (member, _) = create_test_user(&pool).await;
+    add_guild_member(&pool, guild, member).await;
+    let channel = create_channel(&pool, guild, "general").await;
+    let msg = insert_message(&pool, channel, owner, "react").await;
+    // Bound while safe.
+    let role = insert_role(&pool, guild, GuildPermissions::SEND_MESSAGES, 5).await;
+    insert_binding_row(&pool, guild, channel, msg, "🎨", role, "toggle", None).await;
+
+    // Later escalated to carry a dangerous permission.
+    sqlx::query("UPDATE guild_roles SET permissions = $1 WHERE id = $2")
+        .bind(GuildPermissions::MANAGE_GUILD.bits() as i64)
+        .bind(role)
+        .execute(&pool)
+        .await
+        .expect("escalate role");
+
+    let token = token_for(&app, member);
+    let put = TestApp::request(
+        Method::PUT,
+        &format!("/api/channels/{channel}/messages/{msg}/reactions"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header("Content-Type", "application/json")
+    .body(Body::from(json!({ "emoji": "🎨" }).to_string()))
+    .unwrap();
+    // Reaction itself succeeds, but the role is NOT granted.
+    let _ = app.oneshot(put).await;
+    assert!(
+        !has_role(&pool, guild, member, role).await,
+        "escalated role must not be self-granted"
+    );
+}
+
+#[sqlx::test]
 async fn toggle_reaction_grants_and_revokes_role(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;

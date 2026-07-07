@@ -222,6 +222,19 @@ pub async fn tx_member_role_ids(
     Ok(rows.into_iter().map(|(r,)| r).collect())
 }
 
+/// A role's current permission bits (transaction variant, reaction-time guard).
+/// `None` if the role no longer exists.
+pub async fn tx_role_permissions(
+    tx: &mut Transaction<'_, Postgres>,
+    role_id: Uuid,
+) -> Result<Option<i64>, ReactionRoleError> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT permissions FROM guild_roles WHERE id = $1")
+        .bind(role_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.map(|(p,)| p))
+}
+
 /// Whether the user is a member of the guild (transaction variant, hook guard).
 pub async fn is_member(
     tx: &mut Transaction<'_, Postgres>,
