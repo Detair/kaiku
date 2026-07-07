@@ -29,6 +29,7 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import ThreadSidebar from "@/components/messages/ThreadSidebar";
 import VoiceChannelView from "@/components/voice/VoiceChannelView";
+import ForumView from "@/components/channels/ForumView";
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";
@@ -271,13 +272,22 @@ const Main: Component = () => {
                       />
                     }
                   >
-                    <MessageList channelId={channel()!.id} />
-                    <TypingIndicator channelId={channel()!.id} />
-                    <MessageInput
-                      channelId={channel()!.id}
-                      channelName={channel()!.name}
-                      guildId={guildsState.activeGuildId ?? undefined}
-                    />
+                    <Show
+                      when={channel()?.channel_type === "forum"}
+                      fallback={
+                        <>
+                          <MessageList channelId={channel()!.id} />
+                          <TypingIndicator channelId={channel()!.id} />
+                          <MessageInput
+                            channelId={channel()!.id}
+                            channelName={channel()!.name}
+                            guildId={guildsState.activeGuildId ?? undefined}
+                          />
+                        </>
+                      }
+                    >
+                      <ForumView channelId={channel()!.id} />
+                    </Show>
                   </Show>
                 </div>
 

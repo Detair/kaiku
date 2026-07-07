@@ -706,6 +706,18 @@ pub async fn create(
     response.nonce = message.nonce;
 
     if let Some(parent_id) = body.parent_id {
+        // If this reply is on a forum post's root message, bump its activity so
+        // the forum card list re-sorts by recency (no-op for non-forum threads).
+        if let Err(e) = sqlx::query(
+            "UPDATE forum_posts SET last_activity_at = NOW() WHERE root_message_id = $1",
+        )
+        .bind(parent_id)
+        .execute(&state.db)
+        .await
+        {
+            tracing::warn!("Failed to bump forum post activity: {e}");
+        }
+
         // Thread reply: broadcast ThreadReplyNew with updated thread info
         let thread_info = build_thread_info(&state.db, parent_id).await;
         let thread_info_json = serde_json::to_value(&thread_info).unwrap_or_default();

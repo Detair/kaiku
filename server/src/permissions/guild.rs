@@ -90,6 +90,10 @@ bitflags! {
         // === Pins (bit 25) ===
         /// Permission to pin and unpin messages in channels
         const PIN_MESSAGES       = 1 << 25;
+
+        // === Forum (bit 26) ===
+        /// Permission to moderate forum posts (pin/lock/delete others' posts, manage tags)
+        const MANAGE_POSTS       = 1 << 26;
     }
 }
 

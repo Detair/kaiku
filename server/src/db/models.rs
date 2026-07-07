@@ -134,6 +134,10 @@ pub enum ChannelType {
     Voice,
     /// Direct message channel.
     Dm,
+    /// Forum channel: contains posts (thread starters).
+    Forum,
+    /// Announcement channel: write-restricted, followable.
+    Announcement,
 }
 
 /// Message model.

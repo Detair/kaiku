@@ -378,6 +378,20 @@ pub enum ServerEvent {
         /// The member's full role-ID set after the change (idempotent).
         role_ids: Vec<Uuid>,
     },
+    /// A forum post was created in a forum channel.
+    ForumPostCreated {
+        /// Forum channel ID.
+        channel_id: Uuid,
+        /// The created post (serialized `ForumPostResponse`).
+        post: serde_json::Value,
+    },
+    /// A forum post was updated (pinned/locked/activity).
+    ForumPostUpdated {
+        /// Forum channel ID.
+        channel_id: Uuid,
+        /// The updated post (serialized `ForumPostResponse`).
+        post: serde_json::Value,
+    },
     /// Guild custom emojis updated
     GuildEmojiUpdated {
         /// Guild ID.

@@ -10,6 +10,7 @@ pub mod dm_search;
 pub mod embeds;
 pub mod error;
 pub mod files;
+pub mod forum;
 pub(crate) mod media_processing;
 pub(crate) mod messages;
 pub mod overrides;
@@ -51,6 +52,21 @@ pub fn channels_router() -> Router<AppState> {
         .route("/{id}/screenshare/check", post(screenshare::check))
         .route("/{id}/screenshare/start", post(screenshare::start))
         .route("/{id}/screenshare/stop", post(screenshare::stop))
+        // Forum posts + tags (channel-scoped)
+        .route(
+            "/{id}/posts",
+            get(forum::list_posts).post(forum::create_post),
+        )
+        .route("/{id}/tags", get(forum::list_tags).post(forum::create_tag))
+        .route("/{id}/tags/{tag_id}", delete(forum::delete_tag))
+}
+
+/// Forum post moderation router (mounted at `/api/forum`).
+pub fn forum_router() -> Router<AppState> {
+    Router::new().route(
+        "/posts/{post_id}",
+        patch(forum::update_post).delete(forum::delete_post),
+    )
 }
 
 /// Create messages router (protected routes).
