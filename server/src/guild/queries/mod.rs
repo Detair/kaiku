@@ -21,5 +21,6 @@ pub mod core;
 pub mod emojis;
 pub mod invites;
 pub mod limits;
+pub mod reaction_roles;
 pub mod roles;
 pub mod search;

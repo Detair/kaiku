@@ -71,6 +71,15 @@ pub fn router() -> Router<AppState> {
             "/{id}/members/{user_id}/roles/{role_id}",
             post(roles::assign_role).delete(roles::remove_role),
         )
+        // Reaction-role routes
+        .route(
+            "/{id}/reaction-roles",
+            get(reaction_roles::list_reaction_roles).post(reaction_roles::create_reaction_role),
+        )
+        .route(
+            "/{id}/reaction-roles/{binding_id}",
+            delete(reaction_roles::delete_reaction_role),
+        )
         // Invite routes
         .route(
             "/{id}/invites",
