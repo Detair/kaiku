@@ -110,3 +110,56 @@ async fn plain_message_has_no_embeds(pool: PgPool) {
     let j = body_to_json(res).await;
     assert!(j.get("embeds").is_none() || j["embeds"].is_null());
 }
+
+#[sqlx::test]
+async fn bot_can_post_components(pool: PgPool) {
+    let (app, owner, channel) = setup(&pool).await;
+    make_bot(&pool, owner).await;
+    let token = generate_access_token(&app.config, owner);
+
+    let body = json!({
+        "content": "pick one",
+        "encrypted": false,
+        "components": [{
+            "components": [
+                { "type": "button", "style": "primary", "label": "Yes", "custom_id": "vote_yes" },
+                { "type": "button", "style": "link", "label": "Docs", "url": "https://example.com" }
+            ]
+        }]
+    });
+    let res = app.oneshot(post_message(&token, channel, body)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let j = body_to_json(res).await;
+    assert_eq!(j["components"][0]["components"][0]["custom_id"], "vote_yes");
+    assert_eq!(j["components"][0]["components"][1]["type"], "button");
+}
+
+#[sqlx::test]
+async fn human_cannot_post_components(pool: PgPool) {
+    let (app, owner, channel) = setup(&pool).await;
+    let token = generate_access_token(&app.config, owner); // NOT a bot
+
+    let body = json!({
+        "content": "x",
+        "encrypted": false,
+        "components": [{ "components": [{ "type": "button", "style": "primary", "custom_id": "x" }] }]
+    });
+    let res = app.oneshot(post_message(&token, channel, body)).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn invalid_component_rejected(pool: PgPool) {
+    let (app, owner, channel) = setup(&pool).await;
+    make_bot(&pool, owner).await;
+    let token = generate_access_token(&app.config, owner);
+
+    // Non-link button without custom_id is invalid.
+    let body = json!({
+        "content": "x",
+        "encrypted": false,
+        "components": [{ "components": [{ "type": "button", "style": "primary", "label": "no id" }] }]
+    });
+    let res = app.oneshot(post_message(&token, channel, body)).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

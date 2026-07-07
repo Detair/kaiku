@@ -783,10 +783,131 @@ pub async fn handle_client_message(
             debug!("Admin {} unsubscribed from admin events", user_id);
         }
 
+        ClientEvent::ComponentInteraction {
+            message_id,
+            custom_id,
+            values,
+        } => {
+            handle_component_interaction(state, tx, user_id, message_id, &custom_id, values)
+                .await?;
+        }
+
         ClientEvent::Authenticate { .. } => {
             // Already authenticated — ignore duplicate
         }
     }
+
+    Ok(())
+}
+
+/// Route a component click to the bot that authored the message. Mints an
+/// interaction (reusing the slash-command registry: Redis owner+context keys
+/// with a short TTL) and publishes `ComponentInvoked` to the owning bot. The
+/// bot replies over its gateway using the existing interaction-response path.
+async fn handle_component_interaction(
+    state: &AppState,
+    tx: &mpsc::Sender<OutboundMsg>,
+    user_id: Uuid,
+    message_id: Uuid,
+    custom_id: &str,
+    values: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let send_err = |code: &'static str, msg: &'static str| {
+        let ev = ServerEvent::Error {
+            code: code.to_string(),
+            message: msg.to_string(),
+        };
+        async move { tx.send(OutboundMsg::Event(ev)).await }
+    };
+
+    // The message must exist and the user must be able to view its channel.
+    let Some(message) = db::find_message_by_id(&state.db, message_id).await? else {
+        send_err("message_not_found", "Message not found").await?;
+        return Ok(());
+    };
+    if crate::permissions::require_channel_access(&state.db, user_id, message.channel_id)
+        .await
+        .is_err()
+    {
+        send_err("forbidden", "You cannot interact with this message").await?;
+        return Ok(());
+    }
+
+    // The message must actually carry a component with this custom_id.
+    let rows: Vec<crate::chat::components::ActionRow> = message
+        .components
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    if !crate::chat::components::custom_id_present(&rows, custom_id) {
+        send_err("component_not_found", "No such component on this message").await?;
+        return Ok(());
+    }
+
+    // The owning bot is the message author; it must be a bot.
+    let Some(bot_id) = message.user_id else {
+        send_err("component_not_found", "Message has no author").await?;
+        return Ok(());
+    };
+    let is_bot = db::find_user_by_id(&state.db, bot_id)
+        .await?
+        .map(|u| u.is_bot)
+        .unwrap_or(false);
+    if !is_bot {
+        send_err("component_not_found", "Message is not bot-authored").await?;
+        return Ok(());
+    }
+
+    let guild_id = db::find_channel_by_id(&state.db, message.channel_id)
+        .await?
+        .and_then(|c| c.guild_id);
+
+    // Mint the interaction (owner + context) with a short TTL, then publish.
+    let interaction_id = Uuid::new_v4();
+    let owner_key = format!("interaction:{interaction_id}:owner");
+    let context_key = format!("interaction:{interaction_id}:context");
+    let context = serde_json::json!({
+        "user_id": user_id,
+        "channel_id": message.channel_id,
+        "guild_id": guild_id,
+        "message_id": message_id,
+        "command_name": format!("component:{custom_id}"),
+    });
+    state
+        .redis
+        .set::<(), _, _>(
+            &owner_key,
+            bot_id.to_string(),
+            Some(fred::types::Expiration::EX(300)),
+            None,
+            false,
+        )
+        .await?;
+    state
+        .redis
+        .set::<(), _, _>(
+            &context_key,
+            context.to_string(),
+            Some(fred::types::Expiration::EX(300)),
+            None,
+            false,
+        )
+        .await?;
+
+    let event = crate::ws::bot_gateway::BotServerEvent::ComponentInvoked {
+        interaction_id,
+        custom_id: custom_id.to_string(),
+        message_id,
+        guild_id,
+        channel_id: message.channel_id,
+        user_id,
+        values,
+    };
+    let payload = serde_json::to_string(&event)?;
+    state
+        .redis
+        .publish::<(), _, _>(format!("bot:{bot_id}"), payload)
+        .await?;
 
     Ok(())
 }

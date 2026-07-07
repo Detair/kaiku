@@ -216,6 +216,17 @@ pub enum ClientEvent {
     AdminSubscribe,
     /// Unsubscribe from admin events.
     AdminUnsubscribe,
+
+    /// A user clicked a button / picked a select option on a bot message.
+    ComponentInteraction {
+        /// Message carrying the component.
+        message_id: Uuid,
+        /// The clicked component's `custom_id`.
+        custom_id: String,
+        /// Selected values (for select menus); empty for buttons.
+        #[serde(default)]
+        values: Vec<String>,
+    },
 }
 
 impl ClientEvent {
@@ -246,6 +257,7 @@ impl ClientEvent {
             Self::SetCustomStatus { .. } => "set_custom_status",
             Self::AdminSubscribe => "admin_subscribe",
             Self::AdminUnsubscribe => "admin_unsubscribe",
+            Self::ComponentInteraction { .. } => "component_interaction",
         }
     }
 }

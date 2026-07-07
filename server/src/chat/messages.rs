@@ -339,6 +339,7 @@ pub async fn create(
                         message_type: "user".to_string(),
                         nonce: None,
                         embeds: None,
+                        components: None,
                     };
 
                     let message_json = serde_json::to_value(&response).unwrap_or_default();
@@ -557,6 +558,7 @@ pub async fn create(
                             message_type: "user".to_string(),
                             nonce: body.nonce.clone(),
                             embeds: None,
+                            components: None,
                         };
 
                         return Ok((StatusCode::ACCEPTED, Json(accepted)));
@@ -653,6 +655,20 @@ pub async fn create(
         None
     };
 
+    // Interactive components: bot-authored only, same gating + validation.
+    let components_json = if let Some(components) = body.components.clone() {
+        if !author_is_bot {
+            return Err(ChatError::Forbidden);
+        }
+        crate::chat::components::validate_components(&components)
+            .map_err(|e| ChatError::Validation(e.to_string()))?;
+        let json = serde_json::to_value(&components).unwrap_or(serde_json::Value::Null);
+        db::set_message_components(&state.db, message.id, Some(&json)).await?;
+        Some(components)
+    } else {
+        None
+    };
+
     // Detect mentions (skip for encrypted messages)
     let mention_type = if message.encrypted {
         None
@@ -680,6 +696,7 @@ pub async fn create(
         message_type: message.message_type,
         nonce: None,
         embeds: embeds_json.clone(),
+        components: components_json.clone(),
     };
 
     // Broadcast via Redis pub-sub (nonce excluded — it's only for the sender)
@@ -897,6 +914,10 @@ pub async fn update(
         nonce: None,
         embeds: message
             .embeds
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        components: message
+            .components
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
     };
@@ -1146,6 +1167,10 @@ pub async fn build_message_responses(
                 nonce: None,
                 embeds: msg
                     .embeds
+                    .as_ref()
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                components: msg
+                    .components
                     .as_ref()
                     .and_then(|v| serde_json::from_value(v.clone()).ok()),
             }

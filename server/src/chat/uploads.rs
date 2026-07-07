@@ -604,6 +604,10 @@ pub async fn upload_message_with_file(
             .embeds
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        components: message
+            .components
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     };
 
     // Broadcast new message via Redis pub-sub (nonce excluded — it's only for the sender)

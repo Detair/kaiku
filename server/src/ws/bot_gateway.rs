@@ -60,6 +60,23 @@ pub enum BotServerEvent {
         /// Command options/arguments.
         options: serde_json::Value,
     },
+    /// A user interacted with a message component (button / select) owned by this bot.
+    ComponentInvoked {
+        /// Unique interaction ID for this click.
+        interaction_id: Uuid,
+        /// The component's bot-defined routing key.
+        custom_id: String,
+        /// Message carrying the component.
+        message_id: Uuid,
+        /// Guild where the interaction happened (null for DMs).
+        guild_id: Option<Uuid>,
+        /// Channel where the interaction happened.
+        channel_id: Uuid,
+        /// User who clicked.
+        user_id: Uuid,
+        /// Selected values (select menus); empty for buttons.
+        values: Vec<String>,
+    },
     /// A message was created in a channel the bot has access to.
     MessageCreated {
         /// Message ID.
@@ -236,6 +253,8 @@ fn intent_permits_event(intents: &[String], event: &BotServerEvent) -> bool {
     match event {
         // Commands are always forwarded (default intent)
         BotServerEvent::CommandInvoked { .. } => true,
+        // Component interactions require the "components" intent
+        BotServerEvent::ComponentInvoked { .. } => intents.iter().any(|i| i == "components"),
         // Messages require "messages" intent
         BotServerEvent::MessageCreated { .. } => intents.iter().any(|i| i == "messages"),
         // Member events require "members" intent

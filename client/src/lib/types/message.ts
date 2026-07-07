@@ -44,7 +44,35 @@ export interface Message {
   message_type: string; // "user" | "system"
   nonce?: string | null;
   embeds?: MessageEmbed[];
+  components?: MessageActionRow[];
 }
+
+/** A row of interactive components (bot-authored). */
+export interface MessageActionRow {
+  components: MessageComponent[];
+}
+
+export type MessageComponent =
+  | {
+      type: "button";
+      style: "primary" | "secondary" | "success" | "danger" | "link";
+      label?: string;
+      custom_id?: string;
+      url?: string;
+      disabled?: boolean;
+    }
+  | {
+      type: "select_menu";
+      custom_id: string;
+      placeholder?: string;
+      disabled?: boolean;
+      options: {
+        label: string;
+        value: string;
+        description?: string;
+        default?: boolean;
+      }[];
+    };
 
 /** A rich embed card (bot-authored). Mirrors the server `Embed` shape. */
 export interface MessageEmbed {

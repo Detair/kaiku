@@ -1068,6 +1068,20 @@ pub async fn set_message_embeds(
     Ok(())
 }
 
+/// Store validated components JSON on a message (bot-authored). `None` clears.
+pub async fn set_message_components(
+    pool: &PgPool,
+    message_id: Uuid,
+    components: Option<&serde_json::Value>,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE messages SET components = $1 WHERE id = $2")
+        .bind(components)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Update a message (edit).
 pub async fn update_message(
     pool: &PgPool,
