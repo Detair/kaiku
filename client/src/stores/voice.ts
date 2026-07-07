@@ -21,6 +21,7 @@ import type {
 import type { VoiceParticipant, WebcamServerInfo } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
 import { appSettings } from "@/stores/settings";
+import { currentUser } from "@/stores/auth";
 import * as tauri from "@/lib/tauri";
 import { showToast, dismissToast } from "@/components/ui/Toast";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
@@ -860,6 +861,24 @@ export async function startScreenShare(
     return { ok: false, error: "Failed to notify server" };
   }
 
+  // Register our own capture track for self-preview. The SFU forwards our track
+  // to OTHER subscribers, never back to us, so our own tile would otherwise have
+  // no track and render blank. The browser adapter exposes the local track; the
+  // native adapter returns null (it renders its own preview), so this is a no-op
+  // there.
+  const localTrack = adapter.getScreenShareTrack(streamId);
+  if (localTrack) {
+    const me = currentUser();
+    const { addAvailableTrack } = await import("@/stores/screenShareViewer");
+    addAvailableTrack(
+      streamId,
+      localTrack,
+      me?.id ?? "self",
+      me?.display_name || me?.username || "You",
+      sourceLabel,
+    );
+  }
+
   setVoiceState({ screenSharing: true });
   return { ok: true };
 }
@@ -873,12 +892,17 @@ export async function stopScreenShare(streamId?: string): Promise<void> {
   const channelId = voiceState.channelId;
   const adapter = await createVoiceAdapter();
 
+  // Remove our own self-preview track(s) from the viewer. Stopping a track
+  // programmatically doesn't reliably fire `onended`, so clear it explicitly.
+  const { removeAvailableTrack } = await import("@/stores/screenShareViewer");
+
   if (streamId) {
     // Stop a specific stream
     const result = await adapter.stopScreenShare(streamId);
     if (!result.ok) {
       console.error("Failed to stop screen share:", result.error);
     }
+    removeAvailableTrack(streamId);
 
     // Notify server about this specific stream stop
     if (channelId) {
@@ -907,6 +931,7 @@ export async function stopScreenShare(streamId?: string): Promise<void> {
     if (!result.ok) {
       console.error("Failed to stop all screen shares:", result.error);
     }
+    for (const info of allInfo) removeAvailableTrack(info.streamId);
 
     // Notify server about each stream stop
     if (channelId) {
