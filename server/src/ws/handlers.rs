@@ -820,6 +820,21 @@ async fn handle_component_interaction(
         async move { tx.send(OutboundMsg::Event(ev)).await }
     };
 
+    // Rate-limit clicks per user — each interaction does Redis writes + a
+    // publish + DB reads, so spammed clicks must not flood a bot or Redis.
+    if let Some(rate_limiter) = &state.rate_limiter {
+        let identifier = format!("component_interaction:{user_id}");
+        let allowed = rate_limiter
+            .check(crate::ratelimit::RateLimitCategory::WsMessage, &identifier)
+            .await
+            .map(|r| r.allowed)
+            .unwrap_or(true); // fail-open on limiter error (availability)
+        if !allowed {
+            send_err("rate_limited", "You're interacting too quickly").await?;
+            return Ok(());
+        }
+    }
+
     // The message must exist and the user must be able to view its channel.
     let Some(message) = db::find_message_by_id(&state.db, message_id).await? else {
         send_err("message_not_found", "Message not found").await?;
