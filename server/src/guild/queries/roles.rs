@@ -242,7 +242,7 @@ pub async fn assign_role_to_member(
     Ok(())
 }
 
-/// Fetch a member's full role-ID set (for MemberRolesUpdated broadcasts).
+/// Fetch a member's full role-ID set (for `MemberRolesUpdated` broadcasts).
 pub async fn member_role_ids(
     pool: &PgPool,
     guild_id: Uuid,

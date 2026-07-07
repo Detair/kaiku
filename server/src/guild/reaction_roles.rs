@@ -29,7 +29,7 @@ use crate::permissions::{
 ///
 /// Returns `true` if the role is safe to make self-assignable.
 #[must_use]
-pub fn is_role_self_assignable(role_permissions: GuildPermissions) -> bool {
+pub const fn is_role_self_assignable(role_permissions: GuildPermissions) -> bool {
     !role_permissions.intersects(GuildPermissions::EVERYONE_FORBIDDEN)
 }
 
@@ -312,13 +312,13 @@ pub struct HookOutcome {
     /// The member's full role set after the change.
     pub role_ids: Vec<Uuid>,
     /// Sibling emojis whose reaction rows were cleared (unique swap) — the
-    /// caller broadcasts a ReactionRemove for each so other clients update.
+    /// caller broadcasts a `ReactionRemove` for each so other clients update.
     pub cleared_emojis: Vec<String>,
 }
 
 /// Apply reaction-role effects for an added reaction, inside `tx`.
 ///
-/// Returns `None` if there is no binding for (message_id, emoji) or the user
+/// Returns `None` if there is no binding for (`message_id`, emoji) or the user
 /// is not a guild member.
 pub async fn apply_on_reaction_add(
     tx: &mut Transaction<'_, Postgres>,

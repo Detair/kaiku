@@ -57,6 +57,7 @@ async fn has_role(pool: &PgPool, guild_id: Uuid, user_id: Uuid, role_id: Uuid) -
     row.is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn insert_binding_row(
     pool: &PgPool,
     guild_id: Uuid,

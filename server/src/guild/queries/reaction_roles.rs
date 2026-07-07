@@ -34,7 +34,7 @@ fn to_response(r: BindingRow) -> ReactionRoleResponse {
 }
 
 /// Insert a binding. Returns the created row. Unique-violation on
-/// (message_id, emoji) surfaces as `sqlx::Error` for the handler to map.
+/// (`message_id`, emoji) surfaces as `sqlx::Error` for the handler to map.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_binding(
     pool: &PgPool,
@@ -106,7 +106,7 @@ pub struct HookBinding {
     pub group_key: Option<String>,
 }
 
-/// Look up the binding for (message_id, emoji), if any.
+/// Look up the binding for (`message_id`, emoji), if any.
 pub async fn find_binding_for_reaction(
     tx: &mut Transaction<'_, Postgres>,
     message_id: Uuid,
@@ -128,7 +128,7 @@ pub async fn find_binding_for_reaction(
 }
 
 /// Sibling bindings in the same group on the same message (excludes `emoji`).
-/// Returns (emoji, role_id) pairs for the `unique` swap.
+/// Returns (emoji, `role_id`) pairs for the `unique` swap.
 pub async fn sibling_bindings_in_group(
     tx: &mut Transaction<'_, Postgres>,
     message_id: Uuid,
@@ -202,7 +202,7 @@ pub async fn tx_remove_user_reaction(
     Ok(())
 }
 
-/// The member's full set of role IDs (for the MemberRolesUpdated payload).
+/// The member's full set of role IDs (for the `MemberRolesUpdated` payload).
 pub async fn tx_member_role_ids(
     tx: &mut Transaction<'_, Postgres>,
     guild_id: Uuid,
@@ -233,7 +233,7 @@ pub async fn is_member(
     Ok(row.is_some())
 }
 
-/// Fetch a role's (position, permissions, is_default) for the creation guard.
+/// Fetch a role's (position, permissions, `is_default`) for the creation guard.
 pub async fn fetch_role_guard_state(
     pool: &PgPool,
     guild_id: Uuid,
