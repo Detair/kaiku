@@ -129,6 +129,8 @@ impl From<WorkspaceEntryRow> for WorkspaceEntryResponse {
                 ChannelType::Text => "text".to_string(),
                 ChannelType::Voice => "voice".to_string(),
                 ChannelType::Dm => "dm".to_string(),
+                ChannelType::Forum => "forum".to_string(),
+                ChannelType::Announcement => "announcement".to_string(),
             },
             created_at: row.created_at,
         }

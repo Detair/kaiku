@@ -44,6 +44,8 @@ impl From<db::Channel> for ChannelResponse {
                 ChannelType::Text => "text".to_string(),
                 ChannelType::Voice => "voice".to_string(),
                 ChannelType::Dm => "dm".to_string(),
+                ChannelType::Forum => "forum".to_string(),
+                ChannelType::Announcement => "announcement".to_string(),
             },
             category_id: ch.category_id,
             guild_id: ch.guild_id,

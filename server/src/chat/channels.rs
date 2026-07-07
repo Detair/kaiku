@@ -46,6 +46,8 @@ pub async fn create(
         "text" => ChannelType::Text,
         "voice" => ChannelType::Voice,
         "dm" => ChannelType::Dm,
+        "forum" => ChannelType::Forum,
+        "announcement" => ChannelType::Announcement,
         _ => return Err(ChatError::Validation("Invalid channel type".to_string())),
     };
 
@@ -92,6 +94,8 @@ pub async fn create(
                     db::ChannelType::Text => "text",
                     db::ChannelType::Voice => "voice",
                     db::ChannelType::Dm => "dm",
+                    db::ChannelType::Forum => "forum",
+                    db::ChannelType::Announcement => "announcement",
                 };
                 if (cat_type == "text" && channel_type_str != "text")
                     || (cat_type == "voice" && channel_type_str != "voice")
