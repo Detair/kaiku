@@ -2,6 +2,7 @@
 //!
 //! Handles channels, messages, and file uploads.
 
+pub mod announcements;
 pub(crate) mod channel_pins;
 pub(crate) mod channels;
 pub mod components;
@@ -59,6 +60,13 @@ pub fn channels_router() -> Router<AppState> {
         )
         .route("/{id}/tags", get(forum::list_tags).post(forum::create_tag))
         .route("/{id}/tags/{tag_id}", delete(forum::delete_tag))
+        // Announcement follow (target-side) + followers (source-side)
+        .route("/{id}/follow", post(announcements::follow_channel))
+        .route(
+            "/{id}/follow/{follow_id}",
+            delete(announcements::unfollow_channel),
+        )
+        .route("/{id}/followers", get(announcements::list_followers))
 }
 
 /// Forum post moderation router (mounted at `/api/forum`).

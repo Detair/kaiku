@@ -160,6 +160,14 @@ pub async fn create(
         return Err(ChatError::Forbidden);
     }
 
+    // Announcement channels require SEND_ANNOUNCEMENTS to publish (a distinct,
+    // more restricted right than SEND_MESSAGES).
+    if channel.channel_type == db::ChannelType::Announcement
+        && !ctx.has_permission(GuildPermissions::SEND_ANNOUNCEMENTS)
+    {
+        return Err(ChatError::Forbidden);
+    }
+
     // For DM channels, check if any participant has blocked the other
     if channel.channel_type == db::ChannelType::Dm {
         let participants = queries::list_dm_participant_ids(&state.db, channel_id).await?;
@@ -749,6 +757,15 @@ pub async fn create(
         .await
         {
             warn!(channel_id = %channel_id, error = %e, "Failed to broadcast new message event");
+        }
+
+        // Announcement publish → fan out to follower channels (async, loop-guarded).
+        if channel.channel_type == db::ChannelType::Announcement && !message.is_crosspost {
+            crate::chat::announcements::spawn_crosspost(
+                state.clone(),
+                channel_id,
+                body.content.clone(),
+            );
         }
     }
 
