@@ -6,6 +6,7 @@ pub(crate) mod channel_pins;
 pub(crate) mod channels;
 pub mod dm;
 pub mod dm_search;
+pub mod embeds;
 pub mod error;
 pub mod files;
 pub(crate) mod media_processing;
