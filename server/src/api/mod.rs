@@ -198,6 +198,7 @@ pub fn create_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .nest("/api/channels", chat::channels_router())
         .nest("/api/messages", chat::messages_router())
+        .nest("/api/forum", chat::forum_router())
         .nest("/api/guilds", guild::router())
         .nest(
             "/api/guilds/{id}/filters",
