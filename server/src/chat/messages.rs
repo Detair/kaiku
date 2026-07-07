@@ -628,13 +628,15 @@ pub async fn create(
     // Get author profile for response (capture the bot flag before converting).
     let author_user = db::find_user_by_id(&state.db, auth_user.id).await?;
     let author_is_bot = author_user.as_ref().map(|u| u.is_bot).unwrap_or(false);
-    let author = author_user.map(AuthorProfile::from).unwrap_or_else(|| AuthorProfile {
-        id: auth_user.id,
-        username: "unknown".to_string(),
-        display_name: "Unknown User".to_string(),
-        avatar_url: None,
-        status: "offline".to_string(),
-    });
+    let author = author_user
+        .map(AuthorProfile::from)
+        .unwrap_or_else(|| AuthorProfile {
+            id: auth_user.id,
+            username: "unknown".to_string(),
+            display_name: "Unknown User".to_string(),
+            avatar_url: None,
+            status: "offline".to_string(),
+        });
 
     // Rich embeds: bot-authored only. Validate against size/URL caps, persist,
     // and reflect on the response. A human user sending embeds is rejected.
