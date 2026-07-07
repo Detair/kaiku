@@ -33,14 +33,21 @@ mechanism, the only genuinely new machinery here.
 
 ## Data Model
 
-```sql
--- migration: 20260707000002_forum_announcement_channels.sql
+`channel_type` is a **Postgres ENUM** (`CREATE TYPE channel_type AS ENUM
+('text','voice','dm')`), not a VARCHAR — so new variants are added with
+`ALTER TYPE … ADD VALUE`. Caveat: `ALTER TYPE … ADD VALUE` **cannot run in the
+same transaction that uses the new value**, and sqlx runs each migration in a
+transaction. So the enum extension is its **own** migration, committed before any
+migration/code references `'forum'`/`'announcement'`:
 
--- Extend the channel type. channel_type is a VARCHAR mapped in code, plus a
--- CHECK; add the two values.
-ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_type_check;
-ALTER TABLE channels ADD  CONSTRAINT channels_type_check
-    CHECK (channel_type IN ('text','voice','forum','announcement'));
+```sql
+-- migration: 20260707000002a_channel_type_forum_announcement.sql  (enum only)
+ALTER TYPE channel_type ADD VALUE IF NOT EXISTS 'forum';
+ALTER TYPE channel_type ADD VALUE IF NOT EXISTS 'announcement';
+```
+
+```sql
+-- migration: 20260707000002b_forum_announcement_channels.sql  (tables)
 
 -- Forum posts. The post's root message lives in `messages` (parent_id NULL,
 -- channel_id = the forum channel); thread replies hang off it as today.
@@ -86,7 +93,17 @@ CREATE TABLE announcement_follows (
 `last_activity_at` bumps on new replies so the card list can sort by recent
 activity without scanning messages.
 
+**Rust-side code changes:** the sqlx-derived `db::ChannelType` enum gains
+`Forum` and `Announcement` variants, and the string mapping in
+`chat/channels.rs` (`"text" => Text`, `"voice" => Voice`, and the reverse) gains
+the two new cases. The existing `Voice`-specific branch in channel creation
+stays; `Forum` gets its own post-creation branch.
+
 ## Permissions
+
+Verified against `permissions/guild.rs`: `GuildPermissions` is a `u64` bitflags
+with bits 0–25 in use, so the new bits below take **1<<26** (`MANAGE_POSTS`) and
+**1<<27** (`SEND_ANNOUNCEMENTS`) — no collisions.
 
 - New permission bit **`MANAGE_POSTS`** (forum moderation: pin/lock/delete
   others' posts, manage tags). Creating a post needs `SEND_MESSAGES` in the

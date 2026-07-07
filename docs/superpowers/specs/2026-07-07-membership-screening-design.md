@@ -71,8 +71,12 @@ guard in `permissions::helpers::get_member_permission_context`, so every existin
 `require_*` check inherits it — no per-endpoint changes. The only things a
 pending member can do: fetch the guild's rules and `POST` acceptance.
 
-Because permission context is not cached (verified this session), acceptance
-takes effect immediately on the next request/WS check.
+**WS coverage is automatic (verified):** the user WebSocket channel-subscribe
+handler calls `permissions::require_channel_access` (`ws/handlers.rs:528`), which
+resolves through `get_member_permission_context` — so the same short-circuit
+blocks a pending member from subscribing to guild channels; no separate WS gate
+is needed. And because permission context is **not cached** (verified this
+session), acceptance takes effect immediately on the next request/WS check.
 
 ## Acceptance & Approval
 
@@ -86,9 +90,15 @@ takes effect immediately on the next request/WS check.
 ## Real-Time (WS)
 
 New `MemberUpdated { guild_id, user_id, membership_state }` broadcast to the
-guild so admin member lists reflect pending→active live. (Complements the
-`MemberRolesUpdated` event from the reaction-roles spec — together they make the
-member list fully live.)
+guild so admin member lists reflect pending→active live.
+
+**Cross-spec coordination:** the reaction-roles spec introduces
+`MemberRolesUpdated { guild_id, user_id, role_ids }` for the same "member
+changed, update the list" purpose. Whichever ships **second** should extend the
+first's event into a single `MemberUpdated { guild_id, user_id, role_ids?,
+membership_state? }` (optional fields, full-value not delta) rather than add a
+parallel event — one reducer on the client, no overlap. This spec assumes that
+unification if reaction-roles landed first.
 
 ## API Surface
 

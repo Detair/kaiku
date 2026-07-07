@@ -61,9 +61,12 @@ CREATE TABLE guild_event_rsvps (
 
 ## Permissions
 
-- Create/edit/cancel needs a new **`MANAGE_EVENTS`** bit (falls back to
+- Create/edit/cancel needs a new **`MANAGE_EVENTS`** bit (verified free:
+  `GuildPermissions` `u64` uses bits 0–25, so this takes **1<<28**; falls back to
   `MANAGE_GUILD` if we choose not to add a bit — but a dedicated bit is cleaner
-  and matches the granular model).
+  and matches the granular model). Coordinate the exact bit with the forum spec
+  (`MANAGE_POSTS` 1<<26, `SEND_ANNOUNCEMENTS` 1<<27) so whichever ships first
+  claims sequential bits.
 - Any member with `VIEW_CHANNEL`/guild membership can view and RSVP.
 
 ## Behavior

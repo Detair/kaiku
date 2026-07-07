@@ -79,12 +79,16 @@ account deletion.
 
 ## Permissions & Safety
 
-All enforcement is at **binding-creation** time; self-assign at reaction time is
-intentionally unprivileged (that is the feature).
+All *binding* enforcement is at **creation** time; self-assign at reaction time
+is intentionally unprivileged (that is the feature). One existing gate still
+applies to self-assign, though: reacting already requires the **`ADD_REACTIONS`**
+permission (verified `permissions/guild.rs`, bit 1<<4) in that channel — a member
+who can't react in the channel can't self-assign, which is the correct behavior
+and needs no new code.
 
-Creating or editing a binding requires `MANAGE_ROLES` and reuses the existing
-`permissions::resolver::can_manage_role(actor_perms, actor_highest_position,
-target_role_position, None)`:
+Creating or editing a binding requires `MANAGE_ROLES` (existing bit 1<<15) and
+reuses the existing `permissions::resolver::can_manage_role(actor_perms,
+actor_highest_position, target_role_position, None)` (signature verified):
 
 1. Actor must hold `MANAGE_ROLES`.
 2. **Role-hierarchy guard** — the target role must be strictly below the actor's

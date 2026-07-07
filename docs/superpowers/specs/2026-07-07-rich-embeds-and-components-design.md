@@ -72,6 +72,20 @@ Only **bots** and (later) incoming webhooks may set `components` — a human use
 message cannot carry buttons (prevents impersonating bot UIs). Embeds from bots
 only in v1.
 
+**Note on the existing `EMBED_LINKS` permission (verified `permissions/guild.rs`
+bit 1<<1):** that bit governs *user link-unfurling* (auto-previewing pasted
+URLs) and is unrelated to bot-authored rich embeds. Bot rich embeds need **no
+new permission** — bot identity + the channel's `SEND_MESSAGES` suffice. This
+spec does not touch `EMBED_LINKS`, and the distinction should be called out in
+docs so it isn't conflated.
+
+**Interaction model reuse (verified `ws/bot_gateway.rs`):** the gateway already
+has `BotServerEvent::CommandInvoked { interaction_id, … }`, a bot `respond`
+path keyed by `interaction_id` with ownership + expiry guards, and an
+intent filter (`intent_permits_event`, intents `messages`/`members`/`commands`).
+Components add exactly one server event (`ComponentInvoked`) and one intent
+(`components`) to that machinery — no new interaction subsystem.
+
 ## Interaction Loop (components)
 
 Reuses the slash-command machinery:
