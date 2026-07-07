@@ -208,6 +208,13 @@ export type ServerEvent =
   | { type: "channel_pin_removed"; channel_id: string; message_id: string }
   // Guild emoji events
   | { type: "guild_emoji_updated"; guild_id: string; emojis: GuildEmoji[] }
+  // Member role changes (reaction-roles + admin assign/remove)
+  | {
+      type: "member_roles_updated";
+      guild_id: string;
+      user_id: string;
+      role_ids: string[];
+    }
   // Friend events
   | {
       type: "friend_request_received";

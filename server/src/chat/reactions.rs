@@ -138,7 +138,9 @@ pub async fn add_reaction(
         return Err(ReactionsError::MessageNotFound);
     }
 
-    // Insert reaction (ignore if already exists)
+    // Insert reaction + apply reaction-role effects atomically.
+    let mut tx = state.db.begin().await?;
+
     let result = sqlx::query(
         r"
         INSERT INTO message_reactions (message_id, user_id, emoji)
@@ -149,10 +151,33 @@ pub async fn add_reaction(
     .bind(message_id)
     .bind(auth_user.id)
     .bind(&req.emoji)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
-    // Get updated count
+    // Reaction-role hook (only for guild channels, only when newly inserted).
+    let mut hook_outcome = None;
+    if result.rows_affected() > 0 {
+        let channel = db::find_channel_by_id(&state.db, channel_id)
+            .await?
+            .ok_or(ReactionsError::ChannelNotFound)?;
+        if let Some(guild_id) = channel.guild_id {
+            hook_outcome = crate::guild::reaction_roles::apply_on_reaction_add(
+                &mut tx,
+                guild_id,
+                message_id,
+                auth_user.id,
+                &req.emoji,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "reaction-role hook (add) failed");
+                ReactionsError::Database(sqlx::Error::Protocol("reaction-role hook".into()))
+            })?
+            .map(|o| (guild_id, o));
+        }
+    }
+
+    // Get updated count inside the same transaction.
     let count: (i64,) = sqlx::query_as(
         r"
         SELECT COUNT(*) FROM message_reactions
@@ -161,10 +186,12 @@ pub async fn add_reaction(
     )
     .bind(message_id)
     .bind(&req.emoji)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
 
-    // Only broadcast if a row was actually inserted
+    tx.commit().await?;
+
+    // Broadcast after commit.
     if result.rows_affected() > 0 {
         if let Err(e) = broadcast_to_channel(
             &state.redis,
@@ -179,6 +206,40 @@ pub async fn add_reaction(
         .await
         {
             tracing::warn!("Failed to broadcast reaction_add event: {}", e);
+        }
+    }
+
+    if let Some((guild_id, outcome)) = hook_outcome {
+        // Roles changed → members/admins update live.
+        if let Err(e) = crate::ws::broadcast_to_guild(
+            &state.redis,
+            guild_id,
+            &ServerEvent::MemberRolesUpdated {
+                guild_id,
+                user_id: auth_user.id,
+                role_ids: outcome.role_ids,
+            },
+        )
+        .await
+        {
+            tracing::warn!("Failed to broadcast member_roles_updated: {}", e);
+        }
+        // Cleared sibling reactions (unique swap) → tell clients to drop them.
+        for cleared in outcome.cleared_emojis {
+            if let Err(e) = broadcast_to_channel(
+                &state.redis,
+                channel_id,
+                &ServerEvent::ReactionRemove {
+                    channel_id,
+                    message_id,
+                    user_id: auth_user.id,
+                    emoji: cleared,
+                },
+            )
+            .await
+            {
+                tracing::warn!("Failed to broadcast cleared reaction: {}", e);
+            }
         }
     }
 
@@ -238,6 +299,7 @@ pub async fn remove_reaction(
         return Err(ReactionsError::MessageNotFound);
     }
 
+    let mut tx = state.db.begin().await?;
     let result = sqlx::query(
         r"
         DELETE FROM message_reactions
@@ -247,8 +309,32 @@ pub async fn remove_reaction(
     .bind(message_id)
     .bind(auth_user.id)
     .bind(&emoji)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+
+    let mut hook_outcome = None;
+    if result.rows_affected() > 0 {
+        if let Some(guild_id) = db::find_channel_by_id(&state.db, channel_id)
+            .await?
+            .and_then(|c| c.guild_id)
+        {
+            hook_outcome = crate::guild::reaction_roles::apply_on_reaction_remove(
+                &mut tx,
+                guild_id,
+                message_id,
+                auth_user.id,
+                &emoji,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "reaction-role hook (remove) failed");
+                ReactionsError::Database(sqlx::Error::Protocol("reaction-role hook".into()))
+            })?
+            .map(|o| (guild_id, o));
+        }
+    }
+
+    tx.commit().await?;
 
     // Only broadcast if a row was actually deleted
     if result.rows_affected() > 0 {
@@ -259,12 +345,28 @@ pub async fn remove_reaction(
                 channel_id,
                 message_id,
                 user_id: auth_user.id,
-                emoji,
+                emoji: emoji.clone(),
             },
         )
         .await
         {
             tracing::warn!("Failed to broadcast reaction_remove event: {}", e);
+        }
+    }
+
+    if let Some((guild_id, outcome)) = hook_outcome {
+        if let Err(e) = crate::ws::broadcast_to_guild(
+            &state.redis,
+            guild_id,
+            &ServerEvent::MemberRolesUpdated {
+                guild_id,
+                user_id: auth_user.id,
+                role_ids: outcome.role_ids,
+            },
+        )
+        .await
+        {
+            tracing::warn!("Failed to broadcast member_roles_updated: {}", e);
         }
     }
 

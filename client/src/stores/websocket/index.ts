@@ -534,6 +534,22 @@ export async function initWebSocket(): Promise<void> {
       }),
     );
 
+    // Member role changes (reaction-roles + admin assign/remove)
+    pending.push(
+      listen<{ guild_id: string; user_id: string; role_ids: string[] }>(
+        "ws:member_roles_updated",
+        (event) => {
+          void import("@/stores/members").then(({ applyMemberRoles }) =>
+            applyMemberRoles(
+              event.payload.guild_id,
+              event.payload.user_id,
+              event.payload.role_ids,
+            ),
+          );
+        },
+      ),
+    );
+
     // Read sync events (Tauri → frontend parity with browser mode)
     pending.push(
       listen<{ channel_id: string; last_read_message_id?: string }>("ws:channel_read", (event) => {
@@ -1248,6 +1264,13 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "guild_emoji_updated":
       handleGuildEmojiUpdated(event.guild_id, event.emojis);
       break;
+
+    case "member_roles_updated": {
+      void import("@/stores/members").then(({ applyMemberRoles }) =>
+        applyMemberRoles(event.guild_id, event.user_id, event.role_ids),
+      );
+      break;
+    }
 
     // Friend events
     case "friend_request_received":

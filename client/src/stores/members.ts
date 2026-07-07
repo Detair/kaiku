@@ -68,6 +68,25 @@ export function patchMember(
 }
 
 /**
+ * Replace a cached member's full role set (from a MemberRolesUpdated event).
+ * Idempotent: the server always sends the complete set.
+ */
+export function applyMemberRoles(
+  guildId: string,
+  userId: string,
+  roleIds: string[],
+): void {
+  const members = guildsState.members[guildId];
+  if (!members) return;
+  const memberIndex = members.findIndex((m) => m.user_id === userId);
+  if (memberIndex === -1) return;
+  setGuildsState("members", guildId, memberIndex, (prev) => ({
+    ...prev,
+    role_ids: roleIds,
+  }));
+}
+
+/**
  * Get members for a guild (re-export from guilds store).
  */
 export function getMembers(guildId: string): GuildMember[] {

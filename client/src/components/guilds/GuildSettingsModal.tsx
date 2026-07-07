@@ -13,6 +13,7 @@ import {
   Shield,
   ShieldAlert,
   Smile,
+  SmilePlus,
   Bot,
   Settings,
   BarChart3,
@@ -24,6 +25,7 @@ import GeneralTab from "./GeneralTab";
 import InvitesTab from "./InvitesTab";
 import MembersTab from "./MembersTab";
 import RolesTab from "./RolesTab";
+import ReactionRolesTab from "./ReactionRolesTab";
 import EmojisTab from "./EmojisTab";
 import BotsTab from "./BotsTab";
 import SafetyTab from "./SafetyTab";
@@ -45,6 +47,7 @@ type TabId =
   | "members"
   | "categories"
   | "roles"
+  | "reaction-roles"
   | "emojis"
   | "bots"
   | "safety"
@@ -210,6 +213,14 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               <Show when={canManageRoles()}>
                 {navItem("roles", Shield, "Roles", "guild-settings-tab-roles")}
               </Show>
+              <Show when={canManageRoles()}>
+                {navItem(
+                  "reaction-roles",
+                  SmilePlus,
+                  "Reaction Roles",
+                  "guild-settings-tab-reaction-roles",
+                )}
+              </Show>
             </nav>
 
             {/* Content */}
@@ -262,6 +273,9 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                   }}
                 />
               </Show>
+            </Show>
+            <Show when={activeTab() === "reaction-roles" && canManageRoles()}>
+              <ReactionRolesTab guildId={props.guildId} />
             </Show>
             </div>
           </div>

@@ -357,6 +357,15 @@ pub enum ServerEvent {
         /// Message that was unpinned.
         message_id: Uuid,
     },
+    /// A member's role set changed (self-assign or admin assign/remove).
+    MemberRolesUpdated {
+        /// Guild the member belongs to.
+        guild_id: Uuid,
+        /// The member whose roles changed.
+        user_id: Uuid,
+        /// The member's full role-ID set after the change (idempotent).
+        role_ids: Vec<Uuid>,
+    },
     /// Guild custom emojis updated
     GuildEmojiUpdated {
         /// Guild ID.
@@ -952,6 +961,21 @@ pub async fn broadcast_to_channel(
         .publish::<(), _, _>(channels::channel_events(channel_id), payload)
         .await?;
 
+    Ok(())
+}
+
+/// Broadcast a server event to all of a guild's subscribers via Redis.
+#[tracing::instrument(skip(redis, event), fields(guild_id = %guild_id))]
+pub async fn broadcast_to_guild(
+    redis: &Client,
+    guild_id: Uuid,
+    event: &ServerEvent,
+) -> Result<(), Error> {
+    let payload = serde_json::to_string(event)
+        .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
+    redis
+        .publish::<(), _, _>(channels::guild_events(guild_id), payload)
+        .await?;
     Ok(())
 }
 

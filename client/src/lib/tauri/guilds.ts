@@ -732,3 +732,60 @@ export async function uploadGuildBanner(
 
   return response.json();
 }
+
+// ============================================================================
+// Reaction Roles
+// ============================================================================
+
+/** A reaction-role binding as returned by the API. */
+export interface ReactionRole {
+  id: string;
+  guild_id: string;
+  channel_id: string;
+  message_id: string;
+  emoji: string;
+  role_id: string;
+  group_key: string | null;
+  mode: string;
+  created_at: string;
+}
+
+/** List reaction-role bindings for a guild. */
+export async function listReactionRoles(
+  guildId: string,
+): Promise<ReactionRole[]> {
+  return httpRequest<ReactionRole[]>(
+    "GET",
+    `/api/guilds/${guildId}/reaction-roles`,
+  );
+}
+
+/** Create a reaction-role binding. */
+export async function createReactionRole(
+  guildId: string,
+  body: {
+    channel_id: string;
+    message_id: string;
+    emoji: string;
+    role_id: string;
+    mode: string;
+    group_key?: string;
+  },
+): Promise<ReactionRole> {
+  return httpRequest<ReactionRole>(
+    "POST",
+    `/api/guilds/${guildId}/reaction-roles`,
+    body,
+  );
+}
+
+/** Delete a reaction-role binding. */
+export async function deleteReactionRole(
+  guildId: string,
+  bindingId: string,
+): Promise<void> {
+  return httpRequest<void>(
+    "DELETE",
+    `/api/guilds/${guildId}/reaction-roles/${bindingId}`,
+  );
+}
