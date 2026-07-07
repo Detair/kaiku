@@ -330,6 +330,21 @@ pub async fn apply_on_reaction_add(
         return Ok(None);
     }
 
+    // Defense-in-depth: re-check the role's CURRENT permissions at grant time,
+    // not just at binding creation. If the role has since been escalated to
+    // carry a privileged permission, refuse to self-grant it — a member must
+    // never gain moderator power by reacting, even if an admin later made a
+    // bound role dangerous. Skips silently: the binding is inert until the role
+    // is made safe again.
+    match queries::tx_role_permissions(tx, binding.role_id).await? {
+        Some(bits) => {
+            if !is_role_self_assignable(GuildPermissions::from_bits_truncate(bits as u64)) {
+                return Ok(None);
+            }
+        }
+        None => return Ok(None), // role deleted mid-flight
+    }
+
     queries::tx_assign_role(tx, guild_id, user_id, binding.role_id, user_id).await?;
 
     let mut cleared_emojis = Vec::new();
