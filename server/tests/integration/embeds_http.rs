@@ -13,7 +13,7 @@ use crate::helpers::{
     generate_access_token, TestApp,
 };
 
-/// Make an existing user a bot (sets is_bot + bot_owner_id, which a CHECK
+/// Make an existing user a bot (sets `is_bot` + `bot_owner_id`, which a CHECK
 /// constraint requires). The bot owns itself for test simplicity.
 async fn make_bot(pool: &PgPool, user_id: Uuid) {
     sqlx::query("UPDATE users SET is_bot = true, bot_owner_id = $1 WHERE id = $1")

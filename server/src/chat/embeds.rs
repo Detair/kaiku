@@ -11,7 +11,7 @@ pub const MAX_EMBEDS: usize = 10;
 /// Combined character budget across one embed's text fields.
 pub const MAX_EMBED_TOTAL_CHARS: usize = 6000;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct Embed {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -37,7 +37,7 @@ pub struct Embed {
     pub timestamp: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct EmbedField {
     pub name: String,
     pub value: String,
@@ -45,7 +45,7 @@ pub struct EmbedField {
     pub inline: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct EmbedAuthor {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +54,7 @@ pub struct EmbedAuthor {
     pub icon_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct EmbedFooter {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,7 +95,7 @@ impl std::fmt::Display for EmbedError {
     }
 }
 
-fn check_https(u: &Option<String>, field: &'static str) -> Result<(), EmbedError> {
+fn check_https(u: Option<&str>, field: &'static str) -> Result<(), EmbedError> {
     if let Some(u) = u {
         if !u.is_empty() && !u.starts_with("https://") {
             return Err(EmbedError::NonHttpsUrl(field));
@@ -151,15 +151,15 @@ pub fn validate_embeds(embeds: &mut [Embed]) -> Result<(), EmbedError> {
         if total > MAX_EMBED_TOTAL_CHARS {
             return Err(EmbedError::TotalTooLong);
         }
-        check_https(&e.url, "url")?;
-        check_https(&e.image, "image")?;
-        check_https(&e.thumbnail, "thumbnail")?;
+        check_https(e.url.as_deref(), "url")?;
+        check_https(e.image.as_deref(), "image")?;
+        check_https(e.thumbnail.as_deref(), "thumbnail")?;
         if let Some(a) = &e.author {
-            check_https(&a.url, "author.url")?;
-            check_https(&a.icon_url, "author.icon_url")?;
+            check_https(a.url.as_deref(), "author.url")?;
+            check_https(a.icon_url.as_deref(), "author.icon_url")?;
         }
         if let Some(fo) = &e.footer {
-            check_https(&fo.icon_url, "footer.icon_url")?;
+            check_https(fo.icon_url.as_deref(), "footer.icon_url")?;
         }
         if let Some(c) = e.color {
             e.color = Some(c & 0x00FF_FFFF);
