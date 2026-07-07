@@ -10,6 +10,7 @@ pub mod error;
 pub mod invites;
 pub mod members;
 pub mod queries;
+pub mod reaction_roles;
 pub mod roles;
 pub mod search;
 pub mod settings;
