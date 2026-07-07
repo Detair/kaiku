@@ -5,7 +5,7 @@
  */
 
 import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
-import { X, Hash, Mic } from "lucide-solid";
+import { X, Hash, Mic, MessagesSquare } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
 import { getCategory } from "@/stores/categories";
 import { Portal } from "solid-js/web";
@@ -38,7 +38,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
   };
 
   const [name, setName] = createSignal("");
-  const [channelType, setChannelType] = createSignal<"text" | "voice">(
+  const [channelType, setChannelType] = createSignal<"text" | "voice" | "forum">(
     categoryTypeRestriction() ?? props.initialType ?? "text",
   );
   const [isCreating, setIsCreating] = createSignal(false);
@@ -168,6 +168,32 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                       </div>
                     </div>
                   </button>
+                  <Show when={!isTypeLocked()}>
+                    <button
+                      type="button"
+                      onClick={() => setChannelType("forum")}
+                      class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
+                      classList={{
+                        "border-accent-primary bg-accent-primary/10":
+                          channelType() === "forum",
+                        "border-white/10 hover:border-white/20":
+                          channelType() !== "forum",
+                      }}
+                    >
+                      <div
+                        class="w-10 h-10 rounded-lg flex items-center justify-center"
+                        style={{ "background-color": "var(--color-surface-layer2)" }}
+                      >
+                        <MessagesSquare size={20} class="text-text-primary" />
+                      </div>
+                      <div class="text-left">
+                        <div class="font-semibold text-text-primary">Forum</div>
+                        <div class="text-xs text-text-secondary">
+                          Organized posts
+                        </div>
+                      </div>
+                    </button>
+                  </Show>
                 </div>
               </div>
 

@@ -20,7 +20,7 @@ export async function getChannels(): Promise<Channel[]> {
 
 export async function createChannel(
   name: string,
-  channelType: "text" | "voice",
+  channelType: "text" | "voice" | "forum" | "announcement",
   guildId?: string,
   topic?: string,
   categoryId?: string,

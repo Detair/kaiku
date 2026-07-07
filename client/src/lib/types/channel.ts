@@ -2,7 +2,7 @@
  * Channel, category, and channel override types.
  */
 
-export type ChannelType = "text" | "voice" | "dm";
+export type ChannelType = "text" | "voice" | "dm" | "forum" | "announcement";
 
 export interface Channel {
   id: string;
