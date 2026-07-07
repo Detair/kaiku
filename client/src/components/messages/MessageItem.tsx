@@ -8,6 +8,7 @@ import {
   onCleanup,
   createSignal,
   createResource,
+  lazy,
 } from "solid-js";
 import { marked } from "marked";
 import { createIsolatedPurifier } from "@/lib/sanitizer";
@@ -31,8 +32,10 @@ import BlurhashPlaceholder from "@/components/ui/BlurhashPlaceholder";
 import ImageLightbox from "@/components/ui/ImageLightbox";
 import ReactionBar from "./ReactionBar";
 import ThreadIndicator from "./ThreadIndicator";
-import MessageEmbeds from "./MessageEmbeds";
-import MessageComponents from "./MessageComponents";
+// Embeds/components only render on bot messages — lazy-load so they stay out of
+// the startup-critical entry chunk.
+const MessageEmbeds = lazy(() => import("./MessageEmbeds"));
+const MessageComponents = lazy(() => import("./MessageComponents"));
 import MessageActions, { QUICK_EMOJIS } from "./MessageActions";
 import {
   addReaction,
