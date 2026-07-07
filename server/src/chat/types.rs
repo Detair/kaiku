@@ -231,6 +231,9 @@ pub struct MessageResponse {
     /// Rich embeds (bot-authored). Omitted for plain messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embeds: Option<Vec<crate::chat::embeds::Embed>>,
+    /// Interactive components (bot-authored). Omitted for plain messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<Vec<crate::chat::components::ActionRow>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -288,6 +291,9 @@ pub struct CreateMessageRequest {
     /// Rich embeds — accepted from bot authors only.
     #[serde(default)]
     pub embeds: Option<Vec<crate::chat::embeds::Embed>>,
+    /// Interactive components — accepted from bot authors only.
+    #[serde(default)]
+    pub components: Option<Vec<crate::chat::components::ActionRow>>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
