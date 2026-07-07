@@ -1054,6 +1054,20 @@ pub async fn create_message(
     .await
 }
 
+/// Store validated embeds JSON on a message (bot-authored). Pass `None` to clear.
+pub async fn set_message_embeds(
+    pool: &PgPool,
+    message_id: Uuid,
+    embeds: Option<&serde_json::Value>,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE messages SET embeds = $1 WHERE id = $2")
+        .bind(embeds)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Update a message (edit).
 pub async fn update_message(
     pool: &PgPool,

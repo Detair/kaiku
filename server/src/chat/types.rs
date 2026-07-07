@@ -228,6 +228,9 @@ pub struct MessageResponse {
     /// Client-generated nonce for optimistic message matching.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// Rich embeds (bot-authored). Omitted for plain messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeds: Option<Vec<crate::chat::embeds::Embed>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -282,6 +285,9 @@ pub struct CreateMessageRequest {
     pub nonce: Option<String>,
     pub reply_to: Option<Uuid>,
     pub parent_id: Option<Uuid>,
+    /// Rich embeds — accepted from bot authors only.
+    #[serde(default)]
+    pub embeds: Option<Vec<crate::chat::embeds::Embed>>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]

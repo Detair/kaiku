@@ -338,6 +338,7 @@ pub async fn create(
                         pinned: false,
                         message_type: "user".to_string(),
                         nonce: None,
+                        embeds: None,
                     };
 
                     let message_json = serde_json::to_value(&response).unwrap_or_default();
@@ -555,6 +556,7 @@ pub async fn create(
                             pinned: false,
                             message_type: "user".to_string(),
                             nonce: body.nonce.clone(),
+                            embeds: None,
                         };
 
                         return Ok((StatusCode::ACCEPTED, Json(accepted)));
@@ -623,17 +625,31 @@ pub async fn create(
         .await?
     };
 
-    // Get author profile for response
-    let author = db::find_user_by_id(&state.db, auth_user.id)
-        .await?
-        .map(AuthorProfile::from)
-        .unwrap_or_else(|| AuthorProfile {
-            id: auth_user.id,
-            username: "unknown".to_string(),
-            display_name: "Unknown User".to_string(),
-            avatar_url: None,
-            status: "offline".to_string(),
-        });
+    // Get author profile for response (capture the bot flag before converting).
+    let author_user = db::find_user_by_id(&state.db, auth_user.id).await?;
+    let author_is_bot = author_user.as_ref().map(|u| u.is_bot).unwrap_or(false);
+    let author = author_user.map(AuthorProfile::from).unwrap_or_else(|| AuthorProfile {
+        id: auth_user.id,
+        username: "unknown".to_string(),
+        display_name: "Unknown User".to_string(),
+        avatar_url: None,
+        status: "offline".to_string(),
+    });
+
+    // Rich embeds: bot-authored only. Validate against size/URL caps, persist,
+    // and reflect on the response. A human user sending embeds is rejected.
+    let embeds_json = if let Some(mut embeds) = body.embeds.clone() {
+        if !author_is_bot {
+            return Err(ChatError::Forbidden);
+        }
+        crate::chat::embeds::validate_embeds(&mut embeds)
+            .map_err(|e| ChatError::Validation(e.to_string()))?;
+        let json = serde_json::to_value(&embeds).unwrap_or(serde_json::Value::Null);
+        db::set_message_embeds(&state.db, message.id, Some(&json)).await?;
+        Some(embeds)
+    } else {
+        None
+    };
 
     // Detect mentions (skip for encrypted messages)
     let mention_type = if message.encrypted {
@@ -661,6 +677,7 @@ pub async fn create(
         pinned: false,
         message_type: message.message_type,
         nonce: None,
+        embeds: embeds_json.clone(),
     };
 
     // Broadcast via Redis pub-sub (nonce excluded — it's only for the sender)
@@ -876,6 +893,10 @@ pub async fn update(
             .unwrap_or(false),
         message_type: message.message_type.clone(),
         nonce: None,
+        embeds: message
+            .embeds
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     };
 
     // Broadcast edit via Redis pub-sub
@@ -1121,6 +1142,10 @@ pub async fn build_message_responses(
                 pinned: pinned_ids.contains(&msg.id),
                 message_type: msg.message_type.clone(),
                 nonce: None,
+                embeds: msg
+                    .embeds
+                    .as_ref()
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
             }
         })
         .collect();

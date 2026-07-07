@@ -168,6 +168,12 @@ pub struct Message {
     /// Message type: "user" for regular, "system" for system events.
     #[serde(default = "default_message_type")]
     pub message_type: String,
+    /// Rich embeds (bot-authored), JSONB. Populated by `RETURNING *` / `SELECT *`.
+    #[serde(default)]
+    pub embeds: Option<serde_json::Value>,
+    /// Interactive components (bot-authored), JSONB. Wired in a later increment.
+    #[serde(default)]
+    pub components: Option<serde_json::Value>,
     /// When the message was created.
     pub created_at: DateTime<Utc>,
 }
