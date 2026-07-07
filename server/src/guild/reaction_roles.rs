@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::{Postgres, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 use validator::Validate;
@@ -300,6 +301,80 @@ pub async fn delete_reaction_role(
         return Err(ReactionRoleError::NotFound);
     }
     Ok(Json(serde_json::json!({ "deleted": true, "id": binding_id })))
+}
+
+// ============================================================================
+// Reaction-time hook
+// ============================================================================
+
+/// Outcome of a reaction-role hook: what to broadcast after commit.
+pub struct HookOutcome {
+    /// The member's full role set after the change.
+    pub role_ids: Vec<Uuid>,
+    /// Sibling emojis whose reaction rows were cleared (unique swap) — the
+    /// caller broadcasts a ReactionRemove for each so other clients update.
+    pub cleared_emojis: Vec<String>,
+}
+
+/// Apply reaction-role effects for an added reaction, inside `tx`.
+///
+/// Returns `None` if there is no binding for (message_id, emoji) or the user
+/// is not a guild member.
+pub async fn apply_on_reaction_add(
+    tx: &mut Transaction<'_, Postgres>,
+    guild_id: Uuid,
+    message_id: Uuid,
+    user_id: Uuid,
+    emoji: &str,
+) -> Result<Option<HookOutcome>, ReactionRoleError> {
+    let Some(binding) = queries::find_binding_for_reaction(tx, message_id, emoji).await? else {
+        return Ok(None);
+    };
+    if !queries::is_member(tx, guild_id, user_id).await? {
+        return Ok(None);
+    }
+
+    queries::tx_assign_role(tx, guild_id, user_id, binding.role_id, user_id).await?;
+
+    let mut cleared_emojis = Vec::new();
+    if binding.mode == "unique" {
+        if let Some(group) = binding.group_key.as_deref() {
+            let siblings = queries::sibling_bindings_in_group(tx, message_id, group, emoji).await?;
+            for (sib_emoji, sib_role) in siblings {
+                queries::tx_remove_role(tx, guild_id, user_id, sib_role).await?;
+                queries::tx_remove_user_reaction(tx, message_id, user_id, &sib_emoji).await?;
+                cleared_emojis.push(sib_emoji);
+            }
+        }
+    }
+
+    let role_ids = queries::tx_member_role_ids(tx, guild_id, user_id).await?;
+    Ok(Some(HookOutcome {
+        role_ids,
+        cleared_emojis,
+    }))
+}
+
+/// Apply reaction-role effects for a removed reaction, inside `tx`.
+pub async fn apply_on_reaction_remove(
+    tx: &mut Transaction<'_, Postgres>,
+    guild_id: Uuid,
+    message_id: Uuid,
+    user_id: Uuid,
+    emoji: &str,
+) -> Result<Option<HookOutcome>, ReactionRoleError> {
+    let Some(binding) = queries::find_binding_for_reaction(tx, message_id, emoji).await? else {
+        return Ok(None);
+    };
+    if !queries::is_member(tx, guild_id, user_id).await? {
+        return Ok(None);
+    }
+    queries::tx_remove_role(tx, guild_id, user_id, binding.role_id).await?;
+    let role_ids = queries::tx_member_role_ids(tx, guild_id, user_id).await?;
+    Ok(Some(HookOutcome {
+        role_ids,
+        cleared_emojis: Vec::new(),
+    }))
 }
 
 #[cfg(test)]

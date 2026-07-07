@@ -22,12 +22,14 @@ async fn insert_role(
     position: i32,
 ) -> Uuid {
     let id = Uuid::now_v7();
+    let name = format!("role_{id}");
     sqlx::query(
         "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
-         VALUES ($1, $2, 'role', $3, $4, false)",
+         VALUES ($1, $2, $3, $4, $5, false)",
     )
     .bind(id)
     .bind(guild_id)
+    .bind(&name)
     .bind(perms.bits() as i64)
     .bind(position)
     .execute(pool)
