@@ -178,6 +178,10 @@ pub struct Message {
     /// Interactive components (bot-authored), JSONB. Wired in a later increment.
     #[serde(default)]
     pub components: Option<serde_json::Value>,
+    /// True if this message was produced by an announcement crosspost fan-out
+    /// (loop guard — a crosspost is never itself re-crossposted).
+    #[serde(default)]
+    pub is_crosspost: bool,
     /// When the message was created.
     pub created_at: DateTime<Utc>,
 }

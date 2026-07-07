@@ -94,6 +94,10 @@ bitflags! {
         // === Forum (bit 26) ===
         /// Permission to moderate forum posts (pin/lock/delete others' posts, manage tags)
         const MANAGE_POSTS       = 1 << 26;
+
+        // === Announcements (bit 27) ===
+        /// Permission to publish in an announcement channel (distinct from SEND_MESSAGES)
+        const SEND_ANNOUNCEMENTS = 1 << 27;
     }
 }
 
