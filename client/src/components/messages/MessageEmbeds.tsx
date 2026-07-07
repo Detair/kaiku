@@ -44,11 +44,8 @@ const MessageEmbeds: Component<{ embeds: MessageEmbed[] }> = (props) => {
               </div>
             </Show>
             <Show when={e.description}>
-              {/* eslint-disable-next-line solid/no-innerhtml */}
-              <div
-                class="text-text-primary mt-1 break-words"
-                innerHTML={renderRich(e.description!)}
-              />
+              {/* eslint-disable-next-line solid/no-innerhtml -- renderRich() runs marked + an isolated DOMPurify with a strict allowlist (see lib/embedSanitize.ts) */}
+              <div class="text-text-primary mt-1 break-words" innerHTML={renderRich(e.description!)} />
             </Show>
             <Show when={e.fields && e.fields.length > 0}>
               <div class="grid grid-cols-2 gap-2 mt-2">
@@ -58,11 +55,8 @@ const MessageEmbeds: Component<{ embeds: MessageEmbed[] }> = (props) => {
                       <div class="text-text-primary font-medium text-xs">
                         {f.name}
                       </div>
-                      {/* eslint-disable-next-line solid/no-innerhtml */}
-                      <div
-                        class="text-text-secondary text-xs break-words"
-                        innerHTML={renderRich(f.value)}
-                      />
+                      {/* eslint-disable-next-line solid/no-innerhtml -- renderRich() sanitizes via isolated DOMPurify (see lib/embedSanitize.ts) */}
+                      <div class="text-text-secondary text-xs break-words" innerHTML={renderRich(f.value)} />
                     </div>
                   )}
                 </For>
