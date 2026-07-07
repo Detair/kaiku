@@ -242,6 +242,22 @@ pub async fn assign_role_to_member(
     Ok(())
 }
 
+/// Fetch a member's full role-ID set (for MemberRolesUpdated broadcasts).
+pub async fn member_role_ids(
+    pool: &PgPool,
+    guild_id: Uuid,
+    user_id: Uuid,
+) -> Result<Vec<Uuid>, RoleError> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT role_id FROM guild_member_roles WHERE guild_id = $1 AND user_id = $2",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(r,)| r).collect())
+}
+
 /// Remove a role from a member. Returns the number of rows affected.
 pub async fn remove_role_from_member(
     pool: &PgPool,

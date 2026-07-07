@@ -465,6 +465,22 @@ pub async fn assign_role(
     // Assign role (ignore if already assigned)
     queries::assign_role_to_member(&state.db, guild_id, user_id, role_id, auth.id).await?;
 
+    // Broadcast the member's new role set so clients update live.
+    let role_ids = queries::member_role_ids(&state.db, guild_id, user_id).await?;
+    if let Err(e) = crate::ws::broadcast_to_guild(
+        &state.redis,
+        guild_id,
+        &crate::ws::ServerEvent::MemberRolesUpdated {
+            guild_id,
+            user_id,
+            role_ids,
+        },
+    )
+    .await
+    {
+        tracing::warn!("Failed to broadcast member_roles_updated (assign): {}", e);
+    }
+
     Ok(Json(
         serde_json::json!({"assigned": true, "user_id": user_id, "role_id": role_id}),
     ))
@@ -517,6 +533,22 @@ pub async fn remove_role(
 
     if rows_affected == 0 {
         return Err(RoleError::NotFound);
+    }
+
+    // Broadcast the member's new role set so clients update live.
+    let role_ids = queries::member_role_ids(&state.db, guild_id, user_id).await?;
+    if let Err(e) = crate::ws::broadcast_to_guild(
+        &state.redis,
+        guild_id,
+        &crate::ws::ServerEvent::MemberRolesUpdated {
+            guild_id,
+            user_id,
+            role_ids,
+        },
+    )
+    .await
+    {
+        tracing::warn!("Failed to broadcast member_roles_updated (remove): {}", e);
     }
 
     Ok(Json(
