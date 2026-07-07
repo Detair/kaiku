@@ -73,6 +73,7 @@ export interface GuildMember {
   joined_at: string;
   status: "online" | "idle" | "offline";
   last_seen_at: string | null;
+  role_ids?: string[];
 }
 
 export interface GuildInvite {
