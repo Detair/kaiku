@@ -5,6 +5,11 @@
 //! a "not dangerous" guard; reaction-time self-assign is intentionally
 //! unprivileged (that is the feature).
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use validator::Validate;
+
 use crate::permissions::GuildPermissions;
 
 /// Reject binding a role that carries any permission a member must never be
@@ -15,6 +20,48 @@ use crate::permissions::GuildPermissions;
 #[must_use]
 pub fn is_role_self_assignable(role_permissions: GuildPermissions) -> bool {
     !role_permissions.intersects(GuildPermissions::EVERYONE_FORBIDDEN)
+}
+
+/// Body for `POST /api/guilds/{id}/reaction-roles`.
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
+pub struct CreateReactionRoleRequest {
+    pub channel_id: Uuid,
+    pub message_id: Uuid,
+    #[validate(length(min = 1, max = 128))]
+    pub emoji: String,
+    pub role_id: Uuid,
+    /// "toggle" (default) or "unique".
+    #[serde(default = "default_mode")]
+    #[validate(custom(function = "validate_mode"))]
+    pub mode: String,
+    #[validate(length(max = 64))]
+    pub group_key: Option<String>,
+}
+
+fn default_mode() -> String {
+    "toggle".to_string()
+}
+
+fn validate_mode(mode: &str) -> Result<(), validator::ValidationError> {
+    if mode == "toggle" || mode == "unique" {
+        Ok(())
+    } else {
+        Err(validator::ValidationError::new("invalid_mode"))
+    }
+}
+
+/// A reaction-role binding as returned by the API.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReactionRoleResponse {
+    pub id: Uuid,
+    pub guild_id: Uuid,
+    pub channel_id: Uuid,
+    pub message_id: Uuid,
+    pub emoji: String,
+    pub role_id: Uuid,
+    pub group_key: Option<String>,
+    pub mode: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[cfg(test)]
