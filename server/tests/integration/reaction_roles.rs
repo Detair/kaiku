@@ -194,7 +194,10 @@ async fn toggle_reaction_grants_and_revokes_role(pool: PgPool) {
     .body(Body::from(json!({ "emoji": "🎨" }).to_string()))
     .unwrap();
     assert_eq!(app.oneshot(put).await.status(), StatusCode::CREATED);
-    assert!(has_role(&pool, guild, member, role).await, "role granted on react");
+    assert!(
+        has_role(&pool, guild, member, role).await,
+        "role granted on react"
+    );
 
     // Un-react → role revoked.
     let del = TestApp::request(
@@ -227,8 +230,28 @@ async fn unique_group_swaps_roles(pool: PgPool) {
     let msg = insert_message(&pool, channel, owner, "pick a color").await;
     let red = insert_role(&pool, guild, GuildPermissions::empty(), 5).await;
     let blue = insert_role(&pool, guild, GuildPermissions::empty(), 6).await;
-    insert_binding_row(&pool, guild, channel, msg, "🔴", red, "unique", Some("color")).await;
-    insert_binding_row(&pool, guild, channel, msg, "🔵", blue, "unique", Some("color")).await;
+    insert_binding_row(
+        &pool,
+        guild,
+        channel,
+        msg,
+        "🔴",
+        red,
+        "unique",
+        Some("color"),
+    )
+    .await;
+    insert_binding_row(
+        &pool,
+        guild,
+        channel,
+        msg,
+        "🔵",
+        blue,
+        "unique",
+        Some("color"),
+    )
+    .await;
 
     let token = token_for(&app, member);
     let react = |emoji: &str| {

@@ -35,8 +35,7 @@ pub mod handlers;
 pub use events::{
     broadcast_admin_event, broadcast_guild_patch, broadcast_member_patch, broadcast_to_channel,
     broadcast_to_guild, broadcast_to_user, broadcast_user_patch, channels, ActivityState,
-    ClientEvent,
-    ClientMessageState, CustomStatusState, OutboundMsg, ServerEvent, VoiceParticipant,
+    ClientEvent, ClientMessageState, CustomStatusState, OutboundMsg, ServerEvent, VoiceParticipant,
 };
 pub use handlers::{handle_client_message, handler, spawn_custom_status_sweep};
 

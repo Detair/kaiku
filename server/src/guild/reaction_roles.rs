@@ -114,12 +114,8 @@ impl IntoResponse for ReactionRoleError {
             Self::NotFound => (StatusCode::NOT_FOUND, "BINDING_NOT_FOUND", self.to_string()),
             Self::NotMember => (StatusCode::FORBIDDEN, "NOT_MEMBER", self.to_string()),
             Self::RoleNotFound => (StatusCode::NOT_FOUND, "ROLE_NOT_FOUND", self.to_string()),
-            Self::MessageNotFound => {
-                (StatusCode::NOT_FOUND, "MESSAGE_NOT_FOUND", self.to_string())
-            }
-            Self::ChannelNotFound => {
-                (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", self.to_string())
-            }
+            Self::MessageNotFound => (StatusCode::NOT_FOUND, "MESSAGE_NOT_FOUND", self.to_string()),
+            Self::ChannelNotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", self.to_string()),
             Self::RoleNotSelfAssignable => (
                 StatusCode::FORBIDDEN,
                 "ROLE_NOT_SELF_ASSIGNABLE",
@@ -130,15 +126,13 @@ impl IntoResponse for ReactionRoleError {
                 "DEFAULT_ROLE_NOT_BINDABLE",
                 self.to_string(),
             ),
-            Self::DuplicateBinding => {
-                (StatusCode::CONFLICT, "DUPLICATE_BINDING", self.to_string())
-            }
-            Self::Permission(_) => {
-                (StatusCode::FORBIDDEN, "PERMISSION_DENIED", self.to_string())
-            }
-            Self::Validation(_) => {
-                (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", self.to_string())
-            }
+            Self::DuplicateBinding => (StatusCode::CONFLICT, "DUPLICATE_BINDING", self.to_string()),
+            Self::Permission(_) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", self.to_string()),
+            Self::Validation(_) => (
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                self.to_string(),
+            ),
             Self::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
@@ -300,7 +294,9 @@ pub async fn delete_reaction_role(
     if affected == 0 {
         return Err(ReactionRoleError::NotFound);
     }
-    Ok(Json(serde_json::json!({ "deleted": true, "id": binding_id })))
+    Ok(Json(
+        serde_json::json!({ "deleted": true, "id": binding_id }),
+    ))
 }
 
 // ============================================================================

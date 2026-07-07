@@ -176,12 +176,14 @@ pub async fn tx_remove_role(
     user_id: Uuid,
     role_id: Uuid,
 ) -> Result<(), ReactionRoleError> {
-    sqlx::query("DELETE FROM guild_member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3")
-        .bind(guild_id)
-        .bind(user_id)
-        .bind(role_id)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "DELETE FROM guild_member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(role_id)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -193,12 +195,14 @@ pub async fn tx_remove_user_reaction(
     user_id: Uuid,
     emoji: &str,
 ) -> Result<(), ReactionRoleError> {
-    sqlx::query("DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3")
-        .bind(message_id)
-        .bind(user_id)
-        .bind(emoji)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3",
+    )
+    .bind(message_id)
+    .bind(user_id)
+    .bind(emoji)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
