@@ -4,6 +4,7 @@
 
 pub(crate) mod channel_pins;
 pub(crate) mod channels;
+pub mod components;
 pub mod dm;
 pub mod dm_search;
 pub mod embeds;
