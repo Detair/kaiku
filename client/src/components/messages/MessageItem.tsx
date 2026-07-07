@@ -31,6 +31,7 @@ import BlurhashPlaceholder from "@/components/ui/BlurhashPlaceholder";
 import ImageLightbox from "@/components/ui/ImageLightbox";
 import ReactionBar from "./ReactionBar";
 import ThreadIndicator from "./ThreadIndicator";
+import MessageEmbeds from "./MessageEmbeds";
 import MessageActions, { QUICK_EMOJIS } from "./MessageActions";
 import {
   addReaction,
@@ -765,6 +766,11 @@ const MessageItem: Component<MessageItemProps> = (props) => {
               </span>
             </Show>
           </div>
+        </Show>
+
+        {/* Rich embeds (bot-authored) */}
+        <Show when={props.message.embeds && props.message.embeds.length > 0}>
+          <MessageEmbeds embeds={props.message.embeds!} />
         </Show>
 
         {/* Attachments */}

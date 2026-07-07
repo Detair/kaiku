@@ -43,6 +43,21 @@ export interface Message {
   pinned: boolean;
   message_type: string; // "user" | "system"
   nonce?: string | null;
+  embeds?: MessageEmbed[];
+}
+
+/** A rich embed card (bot-authored). Mirrors the server `Embed` shape. */
+export interface MessageEmbed {
+  title?: string;
+  description?: string;
+  url?: string;
+  color?: number;
+  author?: { name: string; url?: string; icon_url?: string };
+  fields?: { name: string; value: string; inline?: boolean }[];
+  image?: string;
+  thumbnail?: string;
+  footer?: { text: string; icon_url?: string };
+  timestamp?: string;
 }
 
 export interface ChannelPin {
