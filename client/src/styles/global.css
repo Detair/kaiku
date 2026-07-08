@@ -150,11 +150,37 @@ textarea.bg-transparent {
   );
 }
 
-/* Suppress mention styling inside unrevealed spoilers */
+/* Links in rendered message / markdown content. Drawn from the theme's link
+   token (--color-accent-primary) so every theme recolors them for free. A soft
+   40% underline keeps them clearly a link without shouting; it goes solid on
+   hover. */
+.prose a {
+  color: var(--color-accent-primary);
+  text-decoration: underline;
+  text-decoration-color: color-mix(
+    in srgb,
+    var(--color-accent-primary) 40%,
+    transparent
+  );
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  transition:
+    color 0.12s ease,
+    text-decoration-color 0.12s ease;
+}
+
+.prose a:hover {
+  color: var(--color-accent-primary-hover);
+  text-decoration-color: var(--color-accent-primary-hover);
+}
+
+/* Suppress mention/link styling inside unrevealed spoilers */
 .spoiler:not(.revealed) .mention-everyone,
-.spoiler:not(.revealed) .mention-user {
+.spoiler:not(.revealed) .mention-user,
+.spoiler:not(.revealed) a {
   background-color: inherit;
   color: inherit;
+  text-decoration: none;
 }
 
 /* Inline code (single backticks) — Slack-style */
