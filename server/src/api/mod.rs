@@ -234,6 +234,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .nest("/api/me/favorites", favorites::router())
         .nest("/api/me/workspaces", workspaces::router())
+        .nest("/api/me/push-subscriptions", crate::push::router())
         .route("/api/me/unread", get(chat::unread::get_unread_aggregate))
         .route("/api/me/read-all", post(chat::unread::mark_all_read))
         .nest("/api/keys", crypto::router())
