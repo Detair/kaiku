@@ -24,6 +24,7 @@ pub mod pages;
 pub mod permissions;
 pub mod preferences;
 pub mod presence;
+pub mod push;
 pub mod ratelimit;
 pub mod search;
 pub mod settings;
