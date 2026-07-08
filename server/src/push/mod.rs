@@ -311,3 +311,32 @@ pub fn router() -> axum::Router<AppState> {
         .route("/", get(list_subscriptions).post(create_subscription))
         .route("/{id}", delete(delete_subscription))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wake_signal_is_content_free() {
+        let sig = WakeSignal::dm(Uuid::nil(), 3);
+        let v = serde_json::to_value(&sig).unwrap();
+        assert_eq!(v["t"], "dm");
+        assert_eq!(v["count"], 3);
+        assert!(v.get("channel_id").is_some());
+        let obj = v.as_object().unwrap();
+        assert_eq!(
+            obj.len(),
+            3,
+            "wake signal must carry ONLY t/channel_id/count"
+        );
+        assert!(obj.get("content").is_none());
+        assert!(obj.get("body").is_none());
+        assert!(obj.get("sender").is_none());
+    }
+
+    #[test]
+    fn wake_signal_kinds() {
+        assert_eq!(WakeSignal::mention(Uuid::nil(), 2).t, "mention");
+        assert_eq!(WakeSignal::call(Uuid::nil()).t, "call");
+    }
+}
