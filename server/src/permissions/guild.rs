@@ -98,6 +98,10 @@ bitflags! {
         // === Announcements (bit 27) ===
         /// Permission to publish in an announcement channel (distinct from SEND_MESSAGES)
         const SEND_ANNOUNCEMENTS = 1 << 27;
+
+        // === Events (bit 28) ===
+        /// Permission to create, edit, and cancel scheduled guild events
+        const MANAGE_EVENTS      = 1 << 28;
     }
 }
 
