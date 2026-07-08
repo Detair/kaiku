@@ -3,6 +3,7 @@ mod helpers;
 mod admin_diagnostics;
 mod admin_elevation;
 mod admin_reports;
+mod announcements_http;
 mod auth;
 mod blocking;
 mod bot_ecosystem;

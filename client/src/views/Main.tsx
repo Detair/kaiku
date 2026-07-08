@@ -29,7 +29,9 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import ThreadSidebar from "@/components/messages/ThreadSidebar";
 import VoiceChannelView from "@/components/voice/VoiceChannelView";
-import ForumView from "@/components/channels/ForumView";
+// Forum view is only needed for forum channels — lazy-load it so it stays out
+// of the startup-critical entry chunk (keeps the bundle budget honest).
+const ForumView = lazy(() => import("@/components/channels/ForumView"));
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";

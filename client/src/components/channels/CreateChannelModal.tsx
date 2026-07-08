@@ -5,7 +5,7 @@
  */
 
 import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
-import { X, Hash, Mic, MessagesSquare } from "lucide-solid";
+import { X, Hash, Mic, MessagesSquare, Megaphone } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
 import { getCategory } from "@/stores/categories";
 import { Portal } from "solid-js/web";
@@ -38,9 +38,9 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
   };
 
   const [name, setName] = createSignal("");
-  const [channelType, setChannelType] = createSignal<"text" | "voice" | "forum">(
-    categoryTypeRestriction() ?? props.initialType ?? "text",
-  );
+  const [channelType, setChannelType] = createSignal<
+    "text" | "voice" | "forum" | "announcement"
+  >(categoryTypeRestriction() ?? props.initialType ?? "text");
   const [isCreating, setIsCreating] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -190,6 +190,34 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                         <div class="font-semibold text-text-primary">Forum</div>
                         <div class="text-xs text-text-secondary">
                           Organized posts
+                        </div>
+                      </div>
+                    </button>
+                  </Show>
+                  <Show when={!isTypeLocked()}>
+                    <button
+                      type="button"
+                      onClick={() => setChannelType("announcement")}
+                      class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
+                      classList={{
+                        "border-accent-primary bg-accent-primary/10":
+                          channelType() === "announcement",
+                        "border-white/10 hover:border-white/20":
+                          channelType() !== "announcement",
+                      }}
+                    >
+                      <div
+                        class="w-10 h-10 rounded-lg flex items-center justify-center"
+                        style={{ "background-color": "var(--color-surface-layer2)" }}
+                      >
+                        <Megaphone size={20} class="text-text-primary" />
+                      </div>
+                      <div class="text-left">
+                        <div class="font-semibold text-text-primary">
+                          Announcement
+                        </div>
+                        <div class="text-xs text-text-secondary">
+                          Broadcast + follow
                         </div>
                       </div>
                     </button>
