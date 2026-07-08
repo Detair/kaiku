@@ -13,6 +13,7 @@ pub mod members;
 pub mod queries;
 pub mod reaction_roles;
 pub mod roles;
+pub mod screening;
 pub mod search;
 pub mod settings;
 pub mod types;
@@ -72,6 +73,12 @@ pub fn router() -> Router<AppState> {
             "/{id}/members/{user_id}/roles/{role_id}",
             post(roles::assign_role).delete(roles::remove_role),
         )
+        // Membership screening routes
+        .route(
+            "/{id}/screening",
+            get(screening::get_screening).put(screening::update_screening),
+        )
+        .route("/{id}/screening/accept", post(screening::accept_screening))
         // Scheduled event routes
         .route(
             "/{id}/events",

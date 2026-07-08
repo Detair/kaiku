@@ -212,7 +212,12 @@ pub async fn insert_guild_member_ignore_conflict(
     user_id: Uuid,
 ) -> Result<u64, DiscoveryError> {
     let result = sqlx::query(
-        "INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        // Screening-enabled guilds place new joiners in 'pending' until they
+        // accept the rules; otherwise 'active'.
+        "INSERT INTO guild_members (guild_id, user_id, membership_state)
+         VALUES ($1, $2, CASE WHEN (SELECT screening_enabled FROM guilds WHERE id = $1)
+                              THEN 'pending' ELSE 'active' END)
+         ON CONFLICT DO NOTHING",
     )
     .bind(guild_id)
     .bind(user_id)

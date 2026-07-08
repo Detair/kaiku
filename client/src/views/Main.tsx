@@ -32,6 +32,9 @@ import VoiceChannelView from "@/components/voice/VoiceChannelView";
 // Forum view is only needed for forum channels — lazy-load it so it stays out
 // of the startup-critical entry chunk (keeps the bundle budget honest).
 const ForumView = lazy(() => import("@/components/channels/ForumView"));
+const ScreeningGate = lazy(
+  () => import("@/components/guilds/ScreeningGate"),
+);
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";
@@ -204,6 +207,10 @@ const Main: Component = () => {
 
         {/* Main Content Area */}
         <Show when={!isDiscoveryActive()}>
+          {/* Screening gate overlays the content (not the rail) when pending */}
+          <Show when={guildsState.activeGuildId}>
+            <ScreeningGate guildId={guildsState.activeGuildId!} />
+          </Show>
           <Switch>
             {/* Home View - No guild selected */}
             <Match when={guildsState.activeGuildId === null}>

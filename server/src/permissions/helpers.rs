@@ -87,7 +87,7 @@ pub async fn get_member_permission_context(
     // First, verify the user is a member of the guild and get guild info
     let guild_info: Option<GuildInfo> = sqlx::query_as(
         r"
-        SELECT g.owner_id as guild_owner_id
+        SELECT g.owner_id as guild_owner_id, gm.membership_state
         FROM guilds g
         INNER JOIN guild_members gm ON gm.guild_id = g.id
         WHERE g.id = $1 AND gm.user_id = $2
@@ -103,6 +103,22 @@ pub async fn get_member_permission_context(
     };
 
     let is_owner = guild_info.guild_owner_id == user_id;
+
+    // Screening short-circuit: a `pending` member (hasn't accepted the rules)
+    // has NO permissions regardless of roles — no VIEW_CHANNEL, no send, no
+    // voice, and (since WS subscribe resolves through here) no channel subscribe.
+    // The owner is never pending, but guard anyway.
+    if guild_info.membership_state == "pending" && !is_owner {
+        return Ok(Some(MemberPermissionContext {
+            guild_owner_id: guild_info.guild_owner_id,
+            everyone_permissions: GuildPermissions::empty(),
+            everyone_role_id: None,
+            member_roles: Vec::new(),
+            computed_permissions: GuildPermissions::empty(),
+            highest_role_position: None,
+            is_owner: false,
+        }));
+    }
 
     // Get @everyone role permissions
     let everyone_role: Option<GuildRole> = sqlx::query_as(
@@ -366,6 +382,7 @@ pub async fn filter_accessible_channels(
 #[derive(Debug, sqlx::FromRow)]
 struct GuildInfo {
     guild_owner_id: Uuid,
+    membership_state: String,
 }
 
 #[cfg(test)]

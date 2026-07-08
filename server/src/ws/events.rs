@@ -369,6 +369,15 @@ pub enum ServerEvent {
         /// Message that was unpinned.
         message_id: Uuid,
     },
+    /// A member's guild membership state changed (e.g. screening pending→active).
+    MemberUpdated {
+        /// Guild the member belongs to.
+        guild_id: Uuid,
+        /// The member whose state changed.
+        user_id: Uuid,
+        /// New membership state ('active' | 'pending').
+        membership_state: String,
+    },
     /// A member's role set changed (self-assign or admin assign/remove).
     MemberRolesUpdated {
         /// Guild the member belongs to.
