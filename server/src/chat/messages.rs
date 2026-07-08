@@ -767,6 +767,20 @@ pub async fn create(
                 body.content.clone(),
             );
         }
+
+        // DM message → content-free mobile push to the other participant(s). The
+        // signal carries no text (E2EE-safe); the app wakes and syncs locally.
+        if channel.channel_type == db::ChannelType::Dm {
+            if let Ok(participants) = queries::list_dm_participant_ids(&state.db, channel_id).await
+            {
+                let signal = crate::push::WakeSignal::dm(channel_id, 1);
+                for pid in participants {
+                    if pid != auth_user.id {
+                        crate::push::spawn_dispatch(state.clone(), pid, signal.clone());
+                    }
+                }
+            }
+        }
     }
 
     // Dispatch to bot ecosystem (non-blocking, fire-and-forget)
