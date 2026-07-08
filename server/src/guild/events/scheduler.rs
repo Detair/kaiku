@@ -28,7 +28,8 @@ pub fn spawn(db: PgPool, redis: Client) {
     });
 }
 
-async fn run_tick(db: &PgPool, redis: &Client) -> Result<(), sqlx::Error> {
+/// One scheduler pass. Exposed for integration tests.
+pub async fn run_tick(db: &PgPool, redis: &Client) -> Result<(), sqlx::Error> {
     let now = Utc::now();
 
     // scheduled → active once start time has passed.

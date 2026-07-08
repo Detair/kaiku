@@ -17,6 +17,7 @@ mod dm_http;
 mod e2ee_keys;
 mod e2ee_settings;
 mod embeds_http;
+mod events_http;
 mod favorites;
 mod filters_http;
 mod forum_http;
