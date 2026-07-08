@@ -102,6 +102,7 @@ export * from "./messages";
 export * from "./guilds";
 export * from "./forum";
 export * from "./events";
+export * from "./screening";
 export * from "./voice";
 export * from "./social";
 export * from "./admin";
