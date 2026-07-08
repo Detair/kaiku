@@ -378,6 +378,36 @@ pub enum ServerEvent {
         /// The member's full role-ID set after the change (idempotent).
         role_ids: Vec<Uuid>,
     },
+    /// A scheduled guild event was created.
+    GuildEventCreated {
+        /// Guild ID.
+        guild_id: Uuid,
+        /// The created event (serialized `EventResponse`).
+        event: serde_json::Value,
+    },
+    /// A scheduled guild event was updated (edit, status, or RSVP counts).
+    GuildEventUpdated {
+        /// Guild ID.
+        guild_id: Uuid,
+        /// The updated event (serialized `EventResponse`).
+        event: serde_json::Value,
+    },
+    /// A scheduled guild event was cancelled.
+    GuildEventCancelled {
+        /// Guild ID.
+        guild_id: Uuid,
+        /// Cancelled event ID.
+        event_id: Uuid,
+    },
+    /// A reminder that an RSVP'd event is starting soon (delivered per-user).
+    GuildEventReminder {
+        /// Guild ID.
+        guild_id: Uuid,
+        /// Event ID.
+        event_id: Uuid,
+        /// Event name (for the reminder toast).
+        name: String,
+    },
     /// A forum post was created in a forum channel.
     ForumPostCreated {
         /// Forum channel ID.

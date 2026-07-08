@@ -19,8 +19,11 @@ import {
   Suspense,
 } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { Settings, Search, BookOpen } from "lucide-solid";
-import { getActiveGuild } from "@/stores/guilds";
+import { Settings, Search, BookOpen, Calendar } from "lucide-solid";
+import { getActiveGuild, isGuildOwner } from "@/stores/guilds";
+import { authState } from "@/stores/auth";
+import { memberHasPermission } from "@/stores/permissions";
+import { PermissionBits } from "@/lib/permissionConstants";
 import { loadFavorites } from "@/stores/favorites";
 import { clearSearch } from "@/stores/search";
 import FavoritesSection from "./FavoritesSection";
@@ -40,6 +43,7 @@ import type { PageListItem } from "@/lib/types";
 const GuildSettingsModal = lazy(
   () => import("@/components/guilds/GuildSettingsModal"),
 );
+const EventsModal = lazy(() => import("@/components/guilds/EventsModal"));
 
 interface SidebarProps {
   /** Called after a navigation action (e.g. channel selected). Used by AppShell to close the mobile drawer. */
@@ -49,6 +53,14 @@ interface SidebarProps {
 const Sidebar: Component<SidebarProps> = (props) => {
   const navigate = useNavigate();
   const [showGuildSettings, setShowGuildSettings] = createSignal(false);
+  const [showEvents, setShowEvents] = createSignal(false);
+  const canManageEvents = () => {
+    const g = activeGuild();
+    const uid = authState.user?.id;
+    if (!g || !uid) return false;
+    const owner = isGuildOwner(g.id, uid);
+    return owner || memberHasPermission(g.id, uid, owner, PermissionBits.MANAGE_EVENTS);
+  };
   const [selectedPageId, setSelectedPageId] = createSignal<string | null>(null);
   const [pagesExpanded, setPagesExpanded] = createSignal(true);
   const [showSearch, setShowSearch] = createSignal(false);
@@ -106,16 +118,25 @@ const Sidebar: Component<SidebarProps> = (props) => {
           </h1>
         </div>
 
-        {/* Settings gear - only show when in a guild */}
+        {/* Events + Settings - only show when in a guild */}
         <Show when={activeGuild()}>
-          <button
-            data-testid="guild-settings-button"
-            onClick={() => setShowGuildSettings(true)}
-            class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
-            title="Server Settings"
-          >
-            <Settings class="w-4 h-4" />
-          </button>
+          <div class="flex items-center gap-0.5">
+            <button
+              onClick={() => setShowEvents(true)}
+              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              title="Events"
+            >
+              <Calendar class="w-4 h-4" />
+            </button>
+            <button
+              data-testid="guild-settings-button"
+              onClick={() => setShowGuildSettings(true)}
+              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              title="Server Settings"
+            >
+              <Settings class="w-4 h-4" />
+            </button>
+          </div>
         </Show>
       </header>
 
@@ -180,6 +201,19 @@ const Sidebar: Component<SidebarProps> = (props) => {
 
       {/* User Panel (Bottom) */}
       <UserPanel />
+
+      {/* Events Modal */}
+      <Show when={showEvents() && activeGuild()}>
+        <LazyErrorBoundary name="EventsModal">
+          <Suspense fallback={<ModalFallback />}>
+            <EventsModal
+              guildId={activeGuild()!.id}
+              canManage={canManageEvents()}
+              onClose={() => setShowEvents(false)}
+            />
+          </Suspense>
+        </LazyErrorBoundary>
+      </Show>
 
       {/* Guild Settings Modal */}
       <Show when={showGuildSettings() && activeGuild()}>

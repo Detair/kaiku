@@ -101,6 +101,7 @@ export * from "./channels";
 export * from "./messages";
 export * from "./guilds";
 export * from "./forum";
+export * from "./events";
 export * from "./voice";
 export * from "./social";
 export * from "./admin";

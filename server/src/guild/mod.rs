@@ -7,6 +7,7 @@ pub mod categories;
 pub mod core;
 pub mod emojis;
 pub mod error;
+pub mod events;
 pub mod invites;
 pub mod members;
 pub mod queries;
@@ -18,7 +19,7 @@ pub mod types;
 
 // Re-export `limits` from `queries::limits` so existing call sites
 // (`guild::limits::*`) keep working without churn.
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 pub use error::GuildError;
 pub use queries::limits;
@@ -70,6 +71,19 @@ pub fn router() -> Router<AppState> {
         .route(
             "/{id}/members/{user_id}/roles/{role_id}",
             post(roles::assign_role).delete(roles::remove_role),
+        )
+        // Scheduled event routes
+        .route(
+            "/{id}/events",
+            get(events::list_events).post(events::create_event),
+        )
+        .route(
+            "/{id}/events/{event_id}",
+            patch(events::update_event).delete(events::delete_event),
+        )
+        .route(
+            "/{id}/events/{event_id}/rsvp",
+            put(events::set_rsvp).delete(events::clear_rsvp),
         )
         // Reaction-role routes
         .route(

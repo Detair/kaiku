@@ -50,6 +50,13 @@ export const PermissionBits = {
 
   // Pins (bit 25)
   PIN_MESSAGES: 1 << 25,
+
+  // Forum (bit 26)
+  MANAGE_POSTS: 1 << 26,
+  // Announcements (bit 27)
+  SEND_ANNOUNCEMENTS: 1 << 27,
+  // Events (bit 28)
+  MANAGE_EVENTS: 1 << 28,
 } as const;
 
 export type PermissionBit =

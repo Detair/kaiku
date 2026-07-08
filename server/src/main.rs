@@ -264,6 +264,9 @@ async fn main() -> Result<()> {
     let custom_status_sweep_handle =
         vc_server::ws::spawn_custom_status_sweep(db_pool.clone(), redis.clone());
 
+    // Start the scheduled-event reminder/status task (every 60 seconds)
+    vc_server::guild::events::scheduler::spawn(db_pool.clone(), redis.clone());
+
     info!("Voice SFU server initialized");
 
     // Initialize email service (optional - password reset will be disabled if not configured)

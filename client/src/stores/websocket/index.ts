@@ -1272,6 +1272,26 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
     }
 
+    case "guild_event_reminder": {
+      const { name } = event;
+      void import("@/components/ui/Toast").then(({ showToast }) =>
+        showToast({
+          type: "info",
+          title: "Event starting soon",
+          message: name,
+          duration: 8000,
+          id: `event-reminder-${event.event_id}`,
+        }),
+      );
+      break;
+    }
+
+    // Event list refreshes when the Events modal is (re)opened.
+    case "guild_event_created":
+    case "guild_event_updated":
+    case "guild_event_cancelled":
+      break;
+
     // Friend events
     case "friend_request_received":
       // New incoming friend request — refresh pending list
