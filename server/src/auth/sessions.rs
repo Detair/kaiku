@@ -106,6 +106,19 @@ pub async fn revoke_session(
 
     queries::delete_session_by_id(&state.db, session_id).await?;
 
+    // Revoke the access token issued with this session (its `sid` claim equals
+    // the session id) so it stops working immediately rather than lingering
+    // until expiry.
+    if let Err(e) = super::revocation::revoke_session(
+        &state.redis,
+        &session_id.to_string(),
+        state.config.jwt_access_expiry,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, session_id = %session_id, "Failed to denylist access token on session revoke");
+    }
+
     tracing::info!(user_id = %auth_user.id, session_id = %session_id, "Session revoked");
 
     Ok(StatusCode::NO_CONTENT)

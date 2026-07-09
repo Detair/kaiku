@@ -28,6 +28,11 @@ pub struct Claims {
     /// JWT ID for refresh token revocation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
+    /// Session ID (set on access tokens) linking the token to the session it
+    /// was issued with, so logging out or revoking that session can invalidate
+    /// the still-valid stateless access token via a short-lived denylist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
 }
 
 /// Token type discriminator.
@@ -81,13 +86,16 @@ pub fn generate_token_pair(
     let encoding_key = EncodingKey::from_ed_pem(&key_bytes)
         .map_err(|e| AuthError::Internal(format!("Invalid Ed25519 private key: {e}")))?;
 
-    // Access token
+    // Access token. Carries `sid` = the refresh session's id so the token can
+    // be revoked when that session is logged out or revoked. The matching
+    // session row is stored under the same id (see `create_session`).
     let access_claims = Claims {
         sub: user_id.to_string(),
         exp: (now + Duration::seconds(access_expiry_seconds)).timestamp(),
         iat: now.timestamp(),
         typ: TokenType::Access,
         jti: None,
+        sid: Some(refresh_token_id.to_string()),
     };
 
     let access_token = encode(
@@ -103,6 +111,7 @@ pub fn generate_token_pair(
         iat: now.timestamp(),
         typ: TokenType::Refresh,
         jti: Some(refresh_token_id.to_string()),
+        sid: None,
     };
 
     let refresh_token = encode(
@@ -243,6 +252,25 @@ mod tests {
         let result = validate_refresh_token(&tokens.access_token, TEST_PUBLIC_KEY);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_access_token_sid_matches_refresh_jti() {
+        // The access token's `sid` must equal the refresh token's `jti` so that
+        // logging out / revoking the session (keyed on that id) invalidates the
+        // paired access token via the denylist.
+        let user_id = Uuid::now_v7();
+
+        let tokens = generate_token_pair(user_id, TEST_PRIVATE_KEY, 900, 604800).unwrap();
+        let access = validate_access_token(&tokens.access_token, TEST_PUBLIC_KEY).unwrap();
+        let refresh = validate_refresh_token(&tokens.refresh_token, TEST_PUBLIC_KEY).unwrap();
+
+        assert_eq!(
+            access.sid.as_deref(),
+            Some(tokens.refresh_token_id.to_string().as_str())
+        );
+        assert_eq!(access.sid, refresh.jti);
+        assert!(access.jti.is_none(), "access token must not carry a jti");
     }
 
     #[test]

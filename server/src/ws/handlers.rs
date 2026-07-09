@@ -96,6 +96,13 @@ pub async fn handler(
             }
         };
 
+        // Reject access tokens whose session was logged out or revoked.
+        if let Some(sid) = claims.sid.as_deref() {
+            if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
+                return error_response(401, "Session revoked");
+            }
+        }
+
         let user_id = match Uuid::parse_str(&claims.sub) {
             Ok(id) => id,
             Err(_) => {
@@ -178,6 +185,14 @@ async fn wait_for_auth_frame(
                 Ok(ClientEvent::Authenticate { token }) => {
                     let claims = jwt::validate_access_token(&token, &state.config.jwt_public_key)
                         .map_err(|e| format!("Invalid token: {e}"))?;
+
+                    // Reject access tokens whose session was logged out or revoked.
+                    if let Some(sid) = claims.sid.as_deref() {
+                        if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
+                            return Err("Session revoked".to_string());
+                        }
+                    }
+
                     let user_id = Uuid::parse_str(&claims.sub)
                         .map_err(|_| "Invalid user ID in token".to_string())?;
 
