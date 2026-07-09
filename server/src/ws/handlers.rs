@@ -520,6 +520,16 @@ pub async fn handle_client_message(
     let event: ClientEvent = serde_json::from_str(text)?;
     crate::observability::metrics::record_ws_message(event.variant_name());
 
+    // Per-connection flood ceiling across every message type. Most events
+    // (typing, subscribe, presence/status, voice signaling) have no other
+    // per-message limit, so a single spamming connection is bounded here.
+    // Excess messages are dropped silently — replying with an error per dropped
+    // message would turn the flood into an outbound amplifier.
+    if !msg_state.flood.allow() {
+        debug!("Dropping WS message from user={user_id} over per-connection flood limit");
+        return Ok(());
+    }
+
     match event {
         ClientEvent::Ping => {
             tx.send(OutboundMsg::Event(ServerEvent::Pong)).await?;

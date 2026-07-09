@@ -41,6 +41,56 @@ pub struct CustomStatusState {
     pub(super) last_custom_status: Option<Option<crate::presence::CustomStatus>>,
 }
 
+/// Per-connection flood ceiling applied to **every** inbound message type.
+///
+/// A continuously-refilling token bucket. It is deliberately set far above any
+/// legitimate client's message rate (including voice-signaling bursts at call
+/// setup) and exists purely to bound a single connection that spams the socket.
+/// Most client message types — typing, subscribe/unsubscribe, presence/status
+/// updates, voice signaling — have no other per-message server-side limit, so
+/// without this a compromised or buggy client could flood the dispatcher.
+pub struct FloodBucket {
+    /// Available tokens (fractional; one is consumed per message).
+    tokens: f64,
+    /// Last time tokens were refilled.
+    last_refill: Instant,
+}
+
+impl FloodBucket {
+    /// Burst capacity (messages that can be sent back-to-back).
+    const CAPACITY: f64 = 120.0;
+    /// Sustained refill rate in tokens per second.
+    const REFILL_PER_SEC: f64 = 60.0;
+
+    /// Consume one token. Returns `false` when the bucket is empty, meaning the
+    /// message should be dropped.
+    pub(super) fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now
+            .saturating_duration_since(self.last_refill)
+            .as_secs_f64();
+        self.last_refill = now;
+        self.tokens = elapsed
+            .mul_add(Self::REFILL_PER_SEC, self.tokens)
+            .min(Self::CAPACITY);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for FloodBucket {
+    fn default() -> Self {
+        Self {
+            tokens: Self::CAPACITY,
+            last_refill: Instant::now(),
+        }
+    }
+}
+
 /// Bundled per-connection mutable state for client message handling.
 ///
 /// **Internal:** Exposed for integration tests only.
@@ -52,6 +102,8 @@ pub struct ClientMessageState {
     pub custom_status: CustomStatusState,
     /// Per-channel typing throttle (`channel_id` → last typing broadcast time).
     pub last_typing: HashMap<Uuid, Instant>,
+    /// Per-connection flood ceiling across all inbound message types.
+    pub flood: FloodBucket,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.
@@ -1184,4 +1236,38 @@ pub async fn broadcast_member_patch(
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod flood_tests {
+    use std::time::{Duration, Instant};
+
+    use super::FloodBucket;
+
+    #[test]
+    fn allows_a_full_burst_then_blocks() {
+        let mut bucket = FloodBucket::default();
+        // The whole burst capacity is allowed back-to-back...
+        for i in 0..FloodBucket::CAPACITY as usize {
+            assert!(bucket.allow(), "message {i} within burst should be allowed");
+        }
+        // ...and the next message (bucket empty) is dropped.
+        assert!(
+            !bucket.allow(),
+            "message past burst capacity should be blocked"
+        );
+    }
+
+    #[test]
+    fn refills_over_time() {
+        let mut bucket = FloodBucket::default();
+        for _ in 0..FloodBucket::CAPACITY as usize {
+            assert!(bucket.allow());
+        }
+        assert!(!bucket.allow(), "bucket should be empty");
+
+        // Simulate one second elapsing; ~REFILL_PER_SEC tokens return.
+        bucket.last_refill = Instant::now() - Duration::from_secs(1);
+        assert!(bucket.allow(), "bucket should have refilled after a second");
+    }
 }
