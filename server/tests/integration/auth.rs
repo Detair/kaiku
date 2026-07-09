@@ -178,8 +178,10 @@ async fn test_session_creation_and_lookup(pool: PgPool) {
     let token_hash = vc_server::auth::hash_token(token);
     let expires_at = chrono::Utc::now() + chrono::Duration::hours(24);
 
+    let session_id = uuid::Uuid::now_v7();
     let session = vc_server::db::create_session(
         &pool,
+        session_id,
         user.id,
         &token_hash,
         expires_at,
@@ -191,6 +193,10 @@ async fn test_session_creation_and_lookup(pool: PgPool) {
     .await
     .expect("Session creation should succeed");
 
+    assert_eq!(
+        session.id, session_id,
+        "session must be stored under the id we supplied"
+    );
     assert_eq!(session.user_id, user.id);
     assert_eq!(session.token_hash, token_hash);
 
@@ -219,6 +225,7 @@ async fn test_session_revocation(pool: PgPool) {
 
     vc_server::db::create_session(
         &pool,
+        uuid::Uuid::now_v7(),
         user.id,
         &token1_hash,
         expires_at,
@@ -232,6 +239,7 @@ async fn test_session_revocation(pool: PgPool) {
 
     vc_server::db::create_session(
         &pool,
+        uuid::Uuid::now_v7(),
         user.id,
         &token2_hash,
         expires_at,

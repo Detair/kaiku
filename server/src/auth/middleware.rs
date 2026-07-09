@@ -80,6 +80,15 @@ pub async fn require_auth(
     // Validate JWT
     let claims = validate_access_token(token, &state.config.jwt_public_key)?;
 
+    // Reject tokens whose session has been logged out or revoked. Access tokens
+    // are stateless, so without this check a token keeps working until it
+    // expires even after the user logs out.
+    if let Some(sid) = claims.sid.as_deref() {
+        if super::revocation::is_session_revoked(&state.redis, sid).await {
+            return Err(AuthError::InvalidToken);
+        }
+    }
+
     // Parse user ID from claims
     let user_id: Uuid = claims.sub.parse().map_err(|_| AuthError::InvalidToken)?;
 

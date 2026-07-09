@@ -371,6 +371,7 @@ pub async fn set_mfa_secret(
 #[allow(clippy::too_many_arguments)]
 pub async fn create_session(
     pool: &PgPool,
+    id: Uuid,
     user_id: Uuid,
     token_hash: &str,
     expires_at: DateTime<Utc>,
@@ -381,11 +382,12 @@ pub async fn create_session(
 ) -> sqlx::Result<Session> {
     sqlx::query_as::<_, Session>(
         r"
-        INSERT INTO sessions (user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-        VALUES ($1, $2, $3, $4::inet, $5, $6, $7)
+        INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent, city, country)
+        VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8)
         RETURNING id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, city, country, created_at
         ",
     )
+    .bind(id)
     .bind(user_id)
     .bind(token_hash)
     .bind(expires_at)

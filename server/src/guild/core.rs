@@ -88,9 +88,7 @@ pub async fn create_guild(
         .tags
         .map(|t| t.into_iter().map(|s| s.to_lowercase()).collect())
         .unwrap_or_default();
-    let banner_url: Option<String> =
-        body.banner_url
-            .and_then(|u| if u.is_empty() { None } else { Some(u) });
+    let banner_url: Option<String> = body.banner_url.filter(|u| !u.is_empty());
 
     // Insert guild with discovery fields
     let guild_id = Uuid::now_v7();

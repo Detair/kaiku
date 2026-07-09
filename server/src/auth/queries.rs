@@ -116,6 +116,7 @@ pub async fn insert_oidc_user(
 
 /// Parameters for inserting a new session row.
 pub struct InsertSessionParams<'a> {
+    pub id: Uuid,
     pub user_id: Uuid,
     pub token_hash: &'a str,
     pub expires_at: DateTime<Utc>,
@@ -131,9 +132,10 @@ pub async fn insert_session_tx(
     params: &InsertSessionParams<'_>,
 ) -> Result<(), AuthError> {
     sqlx::query(
-        r"INSERT INTO sessions (user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-          VALUES ($1, $2, $3, $4::inet, $5, $6, $7)",
+        r"INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent, city, country)
+          VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8)",
     )
+    .bind(params.id)
     .bind(params.user_id)
     .bind(params.token_hash)
     .bind(params.expires_at)

@@ -209,6 +209,7 @@ pub async fn register(
     queries::insert_session_tx(
         &mut tx,
         &InsertSessionParams {
+            id: tokens.refresh_token_id,
             user_id: user.id,
             token_hash: &token_hash,
             expires_at,
