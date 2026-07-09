@@ -166,6 +166,7 @@ mod postgres_tests {
         // Create session
         let session = create_session(
             &pool,
+            uuid::Uuid::now_v7(),
             user.id,
             token_hash,
             expires_at,
@@ -213,15 +214,45 @@ mod postgres_tests {
         let expires_at = Utc::now() + Duration::hours(1);
 
         // Create multiple sessions
-        create_session(&pool, user.id, "token1", expires_at, None, None, None, None)
-            .await
-            .expect("Failed to create session 1");
-        create_session(&pool, user.id, "token2", expires_at, None, None, None, None)
-            .await
-            .expect("Failed to create session 2");
-        create_session(&pool, user.id, "token3", expires_at, None, None, None, None)
-            .await
-            .expect("Failed to create session 3");
+        create_session(
+            &pool,
+            uuid::Uuid::now_v7(),
+            user.id,
+            "token1",
+            expires_at,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to create session 1");
+        create_session(
+            &pool,
+            uuid::Uuid::now_v7(),
+            user.id,
+            "token2",
+            expires_at,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to create session 2");
+        create_session(
+            &pool,
+            uuid::Uuid::now_v7(),
+            user.id,
+            "token3",
+            expires_at,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to create session 3");
 
         // Delete all sessions for user
         let deleted_count = delete_all_user_sessions(&pool, user.id)
@@ -273,6 +304,7 @@ mod postgres_tests {
         let valid_time = Utc::now() + Duration::hours(1);
         create_session(
             &pool,
+            uuid::Uuid::now_v7(),
             user.id,
             "valid_token",
             valid_time,

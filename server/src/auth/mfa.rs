@@ -495,6 +495,7 @@ pub async fn qr_redeem(
     let user_agent = extract_user_agent(&headers);
     create_session(
         &state.db,
+        tokens.refresh_token_id,
         user_id,
         &token_hash,
         expires_at,

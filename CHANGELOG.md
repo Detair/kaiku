@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Logging out (or revoking a session from account settings) now immediately invalidates that session's access token. Previously the stateless access token kept working for up to its 15-minute lifetime after logout, so a captured token stayed usable on a shared or compromised device even after the user signed out. Access tokens now carry the session id and are checked against a short-lived server-side revocation list on every request and WebSocket connection
 - Update `crossbeam-epoch` 0.9.18 → 0.9.20 (RUSTSEC-2026-0204, invalid pointer dereference in a `fmt::Pointer` impl; transitive, lockfile-only), restoring the Security Audit / License Compliance checks to green
 - Hardened login against username enumeration: a login attempt now performs the same Argon2 password verification whether or not the account exists, so response timing no longer reveals valid usernames
 - CORS with `CORS_ALLOWED_ORIGINS=*` no longer sends `Access-Control-Allow-Credentials`; mirroring the Origin with credentials would have let any website make credentialed cross-origin requests. Same-origin app traffic is unaffected; set explicit origins for trusted credentialed cross-origin access

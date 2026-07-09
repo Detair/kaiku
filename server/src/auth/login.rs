@@ -198,6 +198,7 @@ pub async fn login(
 
     create_session(
         &state.db,
+        tokens.refresh_token_id,
         user.id,
         &token_hash,
         expires_at,
@@ -325,6 +326,7 @@ pub async fn refresh_token(
     queries::insert_session_tx(
         &mut tx,
         &InsertSessionParams {
+            id: new_tokens.refresh_token_id,
             user_id,
             token_hash: &new_token_hash,
             expires_at,
@@ -399,6 +401,20 @@ pub async fn logout(
     }
 
     delete_session_by_token_hash(&state.db, &token_hash).await?;
+
+    // Deleting the refresh session kills future refreshes, but the current
+    // stateless access token would otherwise stay valid until it expires.
+    // Add its session id (== the access token's `sid` claim) to the revocation
+    // denylist for the access-token lifetime so it stops working immediately.
+    if let Err(e) = super::revocation::revoke_session(
+        &state.redis,
+        &session.id.to_string(),
+        state.config.jwt_access_expiry,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, user_id = %auth_user.id, "Failed to denylist access token on logout");
+    }
 
     tracing::info!(user_id = %auth_user.id, "User logged out");
 
@@ -864,6 +880,7 @@ pub async fn oidc_callback(
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
     create_session(
         &state.db,
+        tokens.refresh_token_id,
         user.id,
         &token_hash,
         expires_at,
