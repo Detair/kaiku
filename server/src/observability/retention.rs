@@ -148,9 +148,14 @@ async fn purge_in_batches(pool: &PgPool, sql: &'static str, table_label: &str) -
     total_deleted
 }
 
-/// Refresh the trend rollups materialized view concurrently.
+/// Refresh the trend rollups materialized view.
 ///
-/// `CONCURRENTLY` allows reads during refresh (requires the unique index).
+/// Prefers `CONCURRENTLY` (allows reads during refresh), which requires a
+/// plain-column unique index and the view to have been populated at least once.
+/// If that precondition isn't met the concurrent refresh errors out; rather than
+/// leave the rollups silently stale we fall back to a blocking refresh, which has
+/// no such requirement. The blocking refresh briefly locks the view, but that is
+/// far better than the charts never updating.
 async fn refresh_trend_rollups(pool: &PgPool) {
     let start = Instant::now();
     match sqlx::query("REFRESH MATERIALIZED VIEW CONCURRENTLY telemetry_trend_rollups")
@@ -161,6 +166,25 @@ async fn refresh_trend_rollups(pool: &PgPool) {
             tracing::debug!(
                 elapsed_ms = start.elapsed().as_millis() as u64,
                 "Refreshed telemetry_trend_rollups"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Concurrent rollup refresh failed; retrying without CONCURRENTLY"
+            );
+        }
+    }
+
+    match sqlx::query("REFRESH MATERIALIZED VIEW telemetry_trend_rollups")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => {
+            tracing::debug!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "Refreshed telemetry_trend_rollups (non-concurrent fallback)"
             );
         }
         Err(e) => {
