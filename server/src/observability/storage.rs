@@ -411,11 +411,11 @@ pub async fn query_top_routes(
     const BASE: &str = "\
         SELECT \
              labels->>'http.route' AS route, \
-             SUM(value_count) AS request_count, \
+             SUM(value_count)::bigint AS request_count, \
              SUM(CASE \
                  WHEN labels->>'http.response.status_code' ~ '^\\d+$' \
                       AND (labels->>'http.response.status_code')::int >= 500 \
-                 THEN value_count ELSE 0 END) AS error_count, \
+                 THEN value_count ELSE 0 END)::bigint AS error_count, \
              AVG(value_p95) AS avg_p95, \
              MAX(value_p95) AS max_p95 \
          FROM telemetry_metric_samples \
@@ -457,8 +457,8 @@ pub async fn query_top_errors(
     sqlx::query_as::<_, TopRouteEntry>(
         "SELECT \
              labels->>'error.type' AS route, \
-             SUM(value_count) AS request_count, \
-             SUM(value_count) AS error_count, \
+             SUM(value_count)::bigint AS request_count, \
+             SUM(value_count)::bigint AS error_count, \
              AVG(value_p95) AS avg_p95, \
              MAX(value_p95) AS max_p95 \
          FROM telemetry_metric_samples \

@@ -22,13 +22,15 @@ SELECT
     COUNT(*)                            AS sample_count,
     AVG(value_p95)                      AS avg_p95,
     MAX(value_p95)                      AS max_p95,
-    SUM(value_count)                    AS total_count,
+    -- SUM() over a bigint column yields NUMERIC; cast back to bigint so the
+    -- trend query decodes total_count/error_count into i64.
+    SUM(value_count)::bigint            AS total_count,
     SUM(CASE
         WHEN labels->>'http.response.status_code' ~ '^\d+$'
              AND (labels->>'http.response.status_code')::int >= 500
         THEN value_count
         ELSE 0
-    END) AS error_count
+    END)::bigint AS error_count
 FROM telemetry_metric_samples
 GROUP BY 1, 2, 3, 4;
 

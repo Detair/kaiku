@@ -7,8 +7,12 @@
 
 use std::time::Instant;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::{Extension, Json};
+// `axum_extra`'s Query (serde_html_form) supports repeated keys like
+// `?metric=a&metric=b` into a `Vec`; axum's built-in Query (serde_urlencoded)
+// does not and would 400 on the trends endpoint's multiple `metric` params.
+use axum_extra::extract::Query;
 use chrono::{DateTime, Duration, Utc};
 use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
