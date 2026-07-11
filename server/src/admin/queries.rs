@@ -949,10 +949,12 @@ pub async fn summary_error_and_request_counts(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Option<(Option<i64>, Option<i64>)>, sqlx::Error> {
+    // SUM() over a bigint column returns NUMERIC in PostgreSQL; cast back to
+    // bigint so it decodes into i64 (the sums are small request counts).
     sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
         "SELECT \
-             SUM(CASE WHEN metric_name = 'kaiku_http_errors_total' THEN value_count ELSE 0 END), \
-             SUM(CASE WHEN metric_name = 'kaiku_http_requests_total' THEN value_count ELSE 0 END) \
+             SUM(CASE WHEN metric_name = 'kaiku_http_errors_total' THEN value_count ELSE 0 END)::bigint, \
+             SUM(CASE WHEN metric_name = 'kaiku_http_requests_total' THEN value_count ELSE 0 END)::bigint \
          FROM telemetry_metric_samples \
          WHERE metric_name IN ('kaiku_http_errors_total', 'kaiku_http_requests_total') \
          AND ts >= $1 AND ts <= $2",

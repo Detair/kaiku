@@ -26,7 +26,7 @@ futures = "0.3"
 
 # Web Framework
 axum = { version = "0.8", features = ["ws", "multipart", "macros"] }
-axum-extra = { version = "0.12", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie", "query"] }
 time = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "request-id", "util"] }

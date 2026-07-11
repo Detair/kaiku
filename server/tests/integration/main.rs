@@ -29,6 +29,7 @@ mod identities_http;
 mod media_processing;
 mod mention_permission;
 mod messages_http;
+mod observability_queries;
 mod oidc;
 mod pages;
 mod performance_budgets;
