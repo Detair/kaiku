@@ -348,6 +348,7 @@ pub async fn create(
                         nonce: None,
                         embeds: None,
                         components: None,
+                        webhook_id: None,
                     };
 
                     let message_json = serde_json::to_value(&response).unwrap_or_default();
@@ -567,6 +568,7 @@ pub async fn create(
                             nonce: body.nonce.clone(),
                             embeds: None,
                             components: None,
+                            webhook_id: None,
                         };
 
                         return Ok((StatusCode::ACCEPTED, Json(accepted)));
@@ -705,6 +707,7 @@ pub async fn create(
         nonce: None,
         embeds: embeds_json.clone(),
         components: components_json.clone(),
+        webhook_id: None,
     };
 
     // Broadcast via Redis pub-sub (nonce excluded — it's only for the sender)
@@ -963,6 +966,7 @@ pub async fn update(
             .components
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        webhook_id: message.webhook_id,
     };
 
     // Broadcast edit via Redis pub-sub
@@ -1171,12 +1175,31 @@ pub async fn build_message_responses(
                 .user_id
                 .and_then(|uid| user_map.get(&uid))
                 .map(|u| AuthorProfile::from(u.clone()))
-                .unwrap_or_else(|| AuthorProfile {
-                    id: msg.user_id.unwrap_or(Uuid::nil()),
-                    username: "deleted".to_string(),
-                    display_name: "Deleted User".to_string(),
-                    avatar_url: None,
-                    status: "offline".to_string(),
+                .unwrap_or_else(|| {
+                    // Webhook messages carry an author snapshot (survives
+                    // webhook rename/deletion); everything else authorless
+                    // renders as a deleted user.
+                    if let Some(webhook_id) = msg.webhook_id {
+                        let name = msg
+                            .webhook_username
+                            .clone()
+                            .unwrap_or_else(|| "Webhook".to_string());
+                        AuthorProfile {
+                            id: webhook_id,
+                            username: name.clone(),
+                            display_name: name,
+                            avatar_url: msg.webhook_avatar_url.clone(),
+                            status: "offline".to_string(),
+                        }
+                    } else {
+                        AuthorProfile {
+                            id: msg.user_id.unwrap_or(Uuid::nil()),
+                            username: "deleted".to_string(),
+                            display_name: "Deleted User".to_string(),
+                            avatar_url: None,
+                            status: "offline".to_string(),
+                        }
+                    }
                 });
 
             let attachments = attachment_map.remove(&msg.id).unwrap_or_default();
@@ -1216,6 +1239,7 @@ pub async fn build_message_responses(
                     .components
                     .as_ref()
                     .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                webhook_id: msg.webhook_id,
             }
         })
         .collect();
@@ -1228,7 +1252,7 @@ pub async fn build_message_responses(
 // ============================================================================
 
 /// Build thread info for a parent message (participants + counters).
-async fn build_thread_info(pool: &sqlx::PgPool, parent_id: Uuid) -> ThreadInfoResponse {
+pub async fn build_thread_info(pool: &sqlx::PgPool, parent_id: Uuid) -> ThreadInfoResponse {
     let participant_ids = db::get_thread_participants(pool, parent_id, 5)
         .await
         .unwrap_or_default();

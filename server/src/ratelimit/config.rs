@@ -46,6 +46,8 @@ pub struct RateLimits {
     pub search: LimitConfig,
     /// Data governance operations (export, deletion)
     pub data_governance: LimitConfig,
+    /// Incoming webhook execution (per-webhook-id)
+    pub webhook_execute: LimitConfig,
     /// Failed authentication tracking
     pub failed_auth: FailedAuthConfig,
     /// Failed auth as `LimitConfig` (for consistency in `get_limit_config`)
@@ -144,6 +146,11 @@ impl Default for RateLimits {
                 requests: 2,
                 window_secs: 60,
             },
+            // Discord parity: ~5 executions per 2 seconds per webhook
+            webhook_execute: LimitConfig {
+                requests: 5,
+                window_secs: 2,
+            },
             failed_auth_as_limit: LimitConfig {
                 requests: failed_auth.max_failures,
                 window_secs: failed_auth.window_secs,
@@ -172,6 +179,7 @@ impl RateLimitConfig {
     /// - `RATE_LIMIT_WS_CONNECT`: WebSocket connect limit as "`requests,window_secs`"
     /// - `RATE_LIMIT_WS_MESSAGE`: WebSocket message limit as "`requests,window_secs`"
     /// - `RATE_LIMIT_SEARCH`: Search limit as "`requests,window_secs`"
+    /// - `RATE_LIMIT_WEBHOOK_EXECUTE`: Incoming webhook execution limit as "`requests,window_secs`"
     /// - `RATE_LIMIT_FAILED_AUTH`: Failed auth as "`max_failures,block_duration_secs,window_secs`"
     pub fn from_env() -> Self {
         let mut config = Self::default();
@@ -246,6 +254,11 @@ impl RateLimitConfig {
         if let Ok(val) = std::env::var("RATE_LIMIT_SEARCH") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.search = limit;
+            }
+        }
+        if let Ok(val) = std::env::var("RATE_LIMIT_WEBHOOK_EXECUTE") {
+            if let Some(limit) = parse_limit_config(&val) {
+                config.limits.webhook_execute = limit;
             }
         }
         if let Ok(val) = std::env::var("RATE_LIMIT_FAILED_AUTH") {

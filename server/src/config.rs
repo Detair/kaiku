@@ -144,6 +144,11 @@ pub struct Config {
     /// advertise the reachable IP instead of the container-internal IP.
     pub public_ip: Option<String>,
 
+    /// Public base URL of this instance (e.g. "<https://kaiku.example.com>").
+    /// Used to build absolute URLs handed to external services (incoming
+    /// webhook execute URLs). Falls back to request Host headers when unset.
+    pub public_base_url: Option<String>,
+
     /// MFA secret encryption key (32-byte hex string)
     pub mfa_encryption_key: Option<String>,
 
@@ -328,6 +333,7 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600),
             public_ip: env_opt("PUBLIC_IP"),
+            public_base_url: env_opt("PUBLIC_BASE_URL"),
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
                 .ok()
@@ -533,6 +539,7 @@ impl Config {
             turn_shared_secret: None,
             turn_credential_ttl: 3600,
             public_ip: None,
+            public_base_url: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
             block_check_fail_open: false,

@@ -78,6 +78,10 @@ async fn create_test_limiter(redis: fred::clients::Client) -> RateLimiter {
                 requests: 2,
                 window_secs: 60,
             },
+            webhook_execute: LimitConfig {
+                requests: 5,
+                window_secs: 2,
+            },
             failed_auth: FailedAuthConfig {
                 max_failures: 3,
                 block_duration_secs: 60,

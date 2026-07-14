@@ -11966,6 +11966,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sha1 0.10.6",
  "sha2 0.10.9",
  "sqlx",
