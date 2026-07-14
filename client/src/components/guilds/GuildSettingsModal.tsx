@@ -18,6 +18,7 @@ import {
   Settings,
   BarChart3,
   LayoutList,
+  Webhook,
 } from "lucide-solid";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
@@ -28,6 +29,7 @@ import RolesTab from "./RolesTab";
 import ReactionRolesTab from "./ReactionRolesTab";
 import EmojisTab from "./EmojisTab";
 import BotsTab from "./BotsTab";
+import WebhooksTab from "./WebhooksTab";
 import SafetyTab from "./SafetyTab";
 import UsageTab from "./UsageTab";
 import CategoriesTab from "./CategoriesTab";
@@ -50,6 +52,7 @@ type TabId =
   | "reaction-roles"
   | "emojis"
   | "bots"
+  | "webhooks"
   | "safety"
   | "usage";
 
@@ -103,6 +106,15 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
     );
 
   const canManageBots = () => canManageGuild();
+
+  const canManageWebhooks = () =>
+    isOwner() ||
+    memberHasPermission(
+      props.guildId,
+      authState.user?.id || "",
+      isOwner(),
+      PermissionBits.MANAGE_WEBHOOKS,
+    );
 
   const canManageChannels = () =>
     isOwner() ||
@@ -207,6 +219,14 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               <Show when={canManageBots()}>
                 {navItem("bots", Bot, "Bots")}
               </Show>
+              <Show when={canManageWebhooks()}>
+                {navItem(
+                  "webhooks",
+                  Webhook,
+                  "Webhooks",
+                  "guild-settings-tab-webhooks",
+                )}
+              </Show>
               <Show when={canManageGuild()}>
                 {navItem("safety", ShieldAlert, "Safety")}
               </Show>
@@ -245,6 +265,9 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </Show>
             <Show when={activeTab() === "bots" && canManageBots()}>
               <BotsTab guildId={props.guildId} />
+            </Show>
+            <Show when={activeTab() === "webhooks" && canManageWebhooks()}>
+              <WebhooksTab guildId={props.guildId} />
             </Show>
             <Show when={activeTab() === "safety" && canManageGuild()}>
               <SafetyTab guildId={props.guildId} />
