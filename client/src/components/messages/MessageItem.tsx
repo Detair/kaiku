@@ -639,7 +639,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
               // parent message row — prevents triple-stacking native + message + user menus.
               longPress.onContextMenu(e);
               e.stopPropagation();
-              if (!e.defaultPrevented) {
+              // Webhook authors are not users — no profile menu.
+              if (!e.defaultPrevented && !props.message.webhook_id) {
                 showUserContextMenu(e, {
                   id: author().id,
                   username: author().username,
@@ -691,7 +692,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                 // Suppress native context menu if long-press fired on parent row.
                 longPress.onContextMenu(e);
                 e.stopPropagation();
-                if (!e.defaultPrevented) {
+                // Webhook authors are not users — no profile menu.
+                if (!e.defaultPrevented && !props.message.webhook_id) {
                   showUserContextMenu(e, {
                     id: author().id,
                     username: author().username,
@@ -702,6 +704,15 @@ const MessageItem: Component<MessageItemProps> = (props) => {
             >
               {author().display_name}
             </span>
+            <Show when={props.message.webhook_id}>
+              <span
+                data-testid="webhook-app-badge"
+                class="px-1 py-px rounded text-[10px] font-bold uppercase bg-accent-primary/20 text-text-primary leading-4"
+                title="Posted by an incoming webhook"
+              >
+                App
+              </span>
+            </Show>
             <span class="text-xs text-text-secondary">
               {formatTimestamp(props.message.created_at)}
             </span>

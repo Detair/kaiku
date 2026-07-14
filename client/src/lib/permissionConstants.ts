@@ -57,6 +57,8 @@ export const PermissionBits = {
   SEND_ANNOUNCEMENTS: 1 << 27,
   // Events (bit 28)
   MANAGE_EVENTS: 1 << 28,
+  // Webhooks (bit 29)
+  MANAGE_WEBHOOKS: 1 << 29,
 } as const;
 
 export type PermissionBit =
@@ -319,6 +321,14 @@ export const PERMISSIONS: PermissionDefinition[] = [
     name: "Pin Messages",
     description: "Allows pinning and unpinning messages in channels",
     category: "moderation",
+    forbiddenForEveryone: true,
+  },
+  {
+    key: "MANAGE_WEBHOOKS",
+    bit: PermissionBits.MANAGE_WEBHOOKS,
+    name: "Manage Webhooks",
+    description: "Allows creating, editing, and deleting incoming webhooks",
+    category: "guild_management",
     forbiddenForEveryone: true,
   },
 ];

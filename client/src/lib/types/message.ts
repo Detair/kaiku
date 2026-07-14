@@ -45,6 +45,8 @@ export interface Message {
   nonce?: string | null;
   embeds?: MessageEmbed[];
   components?: MessageActionRow[];
+  /** Incoming webhook that authored this message (renders an APP badge). */
+  webhook_id?: string | null;
 }
 
 /** A row of interactive components (bot-authored). */
