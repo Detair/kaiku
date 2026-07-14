@@ -33,8 +33,8 @@ use crate::ratelimit::{
 use crate::voice::{ScreenShareLimiter, SfuServer};
 use crate::{
     admin, auth, bots, chat, connectivity, crypto, discovery, favorites, governance, guild,
-    moderation, pages, preferences, search, settings, setup, social, voice, webhooks, workspaces,
-    ws,
+    incoming_webhooks, moderation, pages, preferences, search, settings, setup, social, voice,
+    webhooks, workspaces, ws,
 };
 
 /// Shared application state.
@@ -241,6 +241,8 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/users/{user_id}/keys", crypto::user_keys_router())
         // Bot management routes (bots + slash commands + gateway intents)
         .nest("/api/applications", bots::router())
+        // Incoming (Discord-compatible) webhook management
+        .merge(incoming_webhooks::management_router())
         // Webhooks
         .route(
             "/api/applications/{app_id}/webhooks",
@@ -341,6 +343,13 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/auth", auth::router(state.clone()))
         // Protected chat and voice routes
         .merge(protected_routes)
+        // Incoming webhook execution (token in the URL is the credential;
+        // Discord-compatible). IP rate limited + failed-auth blocked.
+        .merge(
+            incoming_webhooks::public_router()
+                .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
+                .layer(from_fn(with_category(RateLimitCategory::Write))),
+        )
         // Public file redirect (presigned S3 URLs)
         .route("/api/files/{*key}", get(chat::files::serve))
         // Public message routes (download handles its own auth via query param)

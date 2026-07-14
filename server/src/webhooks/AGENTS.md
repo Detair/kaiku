@@ -4,6 +4,8 @@
 ## Purpose
 HTTP POST delivery of platform events to bot endpoints. Covers the full lifecycle: CRUD management, event dispatch, HMAC-signed delivery with exponential backoff, and dead-letter handling.
 
+> **Not to be confused with** `server/src/incoming_webhooks/` — the Discord-compatible *incoming* webhooks (external services POST to `/api/webhooks/{id}/{token}` to create channel messages). This module is *outgoing* only.
+
 ## Key Files
 
 - `types.rs` — Core structs. `Webhook` includes `signing_secret` (encrypted at rest). `WebhookResponse` omits it. `WebhookCreatedResponse` returns it once at creation. `WebhookDeliveryItem` is the Redis queue payload — signing secret is intentionally absent (fetched from DB at delivery time).

@@ -102,6 +102,10 @@ bitflags! {
         // === Events (bit 28) ===
         /// Permission to create, edit, and cancel scheduled guild events
         const MANAGE_EVENTS      = 1 << 28;
+
+        // === Webhooks (bit 29) ===
+        /// Permission to create, edit, and delete incoming webhooks
+        const MANAGE_WEBHOOKS    = 1 << 29;
     }
 }
 
@@ -304,6 +308,11 @@ mod tests {
     #[test]
     fn test_pin_messages_permission_bits() {
         assert_eq!(GuildPermissions::PIN_MESSAGES.bits(), 1 << 25);
+    }
+
+    #[test]
+    fn test_manage_webhooks_permission_bits() {
+        assert_eq!(GuildPermissions::MANAGE_WEBHOOKS.bits(), 1 << 29);
     }
 
     // === Preset Tests ===
