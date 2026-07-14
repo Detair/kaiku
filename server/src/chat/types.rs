@@ -236,6 +236,10 @@ pub struct MessageResponse {
     /// Interactive components (bot-authored). Omitted for plain messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<Vec<crate::chat::components::ActionRow>>,
+    /// Incoming webhook that authored this message (clients render an APP
+    /// badge and skip the profile popup). Omitted for user messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]

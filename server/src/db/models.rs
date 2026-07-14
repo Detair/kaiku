@@ -182,6 +182,16 @@ pub struct Message {
     /// (loop guard — a crosspost is never itself re-crossposted).
     #[serde(default)]
     pub is_crosspost: bool,
+    /// Incoming webhook that created this message (kept after webhook
+    /// deletion — plain UUID, no FK — so clients keep badging it).
+    #[serde(default)]
+    pub webhook_id: Option<Uuid>,
+    /// Author name snapshot for webhook messages (effective value at post time).
+    #[serde(default)]
+    pub webhook_username: Option<String>,
+    /// Author avatar snapshot for webhook messages.
+    #[serde(default)]
+    pub webhook_avatar_url: Option<String>,
     /// When the message was created.
     pub created_at: DateTime<Utc>,
 }

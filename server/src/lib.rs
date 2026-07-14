@@ -17,6 +17,7 @@ pub mod email;
 pub mod favorites;
 pub mod governance;
 pub mod guild;
+pub mod incoming_webhooks;
 pub mod moderation;
 pub mod observability;
 pub mod openapi;

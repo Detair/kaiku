@@ -31,6 +31,8 @@ pub enum RateLimitCategory {
     Search,
     /// Data governance operations (export, deletion)
     DataGovernance,
+    /// Incoming webhook execution (per-webhook-id)
+    WebhookExecute,
 }
 
 impl RateLimitCategory {
@@ -50,6 +52,7 @@ impl RateLimitCategory {
             Self::VoiceJoin => "voice_join",
             Self::Search => "search",
             Self::DataGovernance => "data_governance",
+            Self::WebhookExecute => "webhook_execute",
         }
     }
 
@@ -68,6 +71,7 @@ impl RateLimitCategory {
             Self::VoiceJoin,
             Self::Search,
             Self::DataGovernance,
+            Self::WebhookExecute,
         ]
     }
 }
