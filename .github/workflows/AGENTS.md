@@ -3,7 +3,7 @@
 
 ## Purpose
 
-CI/CD pipeline definitions for the VoiceChat project. Handles automated testing, building, security scanning, and releases.
+CI/CD pipeline definitions for the Kaiku project. Handles automated testing, building, security scanning, and releases.
 
 ## Key Files
 
@@ -19,60 +19,60 @@ CI/CD pipeline definitions for the VoiceChat project. Handles automated testing,
 | File | Purpose |
 |------|---------|
 | `PRIORITY_2_IMPROVEMENTS.md` | Planned CI/CD improvements |
-| `RELEASE_WORKFLOW_FIX.md` | Release workflow troubleshooting guide |
+| `RELEASE_WORKFLOW_FIX.md` | Historical; points to the release runbook |
+
+Release process, maintainer setup and troubleshooting: `docs/ops/release-runbook.md`.
 
 ## For AI Agents
 
 ### Workflow Triggers
 
-**`ci.yml`** - Runs on:
-- Push to `main` branch
-- All pull requests
-- Manual trigger
+**`ci.yml`** - push to `main` and pull requests.
 
-**`release.yml`** - Runs on:
-- Tag push (`v*`)
-- Manual trigger with version input
+**`release.yml`** - runs on:
+- Tag push `v*.*.*`: publish run (creates a draft release).
+- Manual `workflow_dispatch` with inputs `tag` and `dry_run` (default `true`).
+  `dry_run=true` builds unsigned and publishes nothing. `dry_run=false`
+  publishes, and only passes the tag check when dispatched with `--ref <tag>`.
 
-**`security.yml`** - Runs on:
-- Schedule (weekly)
-- Push to `main`
-- Manual trigger
+**`security.yml`** - schedule (weekly), push, manual trigger.
 
-**`tauri-build.yml`** - Runs on:
-- Release workflow completion
-- Manual trigger
+**`tauri-build.yml`** - push to `main`/`develop`, pull requests to `main`,
+manual trigger. CI-only desktop build; it never publishes.
+
+**`release-notes-on-merge.yml`** - pull request merged into `main`.
+
+Shared setup: `.github/actions/setup-native-deps` installs the native Tauri
+dependencies for `ci.yml`, `tauri-build.yml` and `release.yml`.
 
 ### CI Pipeline (`ci.yml`)
 
-Jobs:
-1. **lint** - `cargo fmt --check`, `cargo clippy`
-2. **test-server** - `cargo test -p vc-server`
-3. **test-shared** - `cargo test -p vc-common -p vc-crypto`
-4. **test-client** - `bun run test:run` (frontend unit tests, vitest)
-5. **build** - Verify compilation succeeds
+Jobs: `rust-lint`, `docs-governance`, `rust-test`, `licenses`, `secrets`,
+`observability-contract`, `frontend`, `docker`, `tauri`, `android`.
 
 ### Release Pipeline (`release.yml`)
 
-1. Validate version tag
-2. Run full test suite
-3. Build server Docker image
-4. Build Tauri clients (via `tauri-build.yml`)
-5. Create GitHub release
-6. Upload artifacts
+1. `prepare-release` - parse the tag (`scripts/release_version.py parse`),
+   decide publish vs dry run, on publish verify version files and that the tag
+   is the checked-out commit, generate release notes.
+2. `build-tauri` - Linux (AppImage, deb), Windows (NSIS), macOS x86_64 and
+   aarch64 (app, dmg). Updater signing; optional macOS/Windows signing hooks.
+3. `build-docker` - build, smoke-test, push `ghcr.io/detair/kaiku-server:<ver>`
+   (`latest` only for finals). Pushes only on publish runs.
+4. `build-android` - signed `Kaiku-<ver>.apk`, verified by
+   `scripts/android_verify_apk.sh`.
+5. `publish-release` - publish runs only: collect assets, generate
+   `latest.json` (all 4 platforms or fail), create the draft GitHub release.
+
+Secret gating: on a publish run a missing secret is an `::error::` and the run
+fails; on a dry run it is a `::notice::` and the build continues unsigned
+(`scripts/require_secrets.py`). Never print secret values; never create
+secrets, Environments, tags on `main` or published releases as an agent.
 
 ### Security Pipeline (`security.yml`)
 
-1. `cargo audit` - Check for vulnerable dependencies
-2. `cargo deny` - License compliance check
-3. SAST scanning (if configured)
-
-### Tauri Build (`tauri-build.yml`)
-
-Matrix build for:
-- Linux (x86_64) - AppImage
-- macOS (x86_64, aarch64) - DMG
-- Windows (x86_64) - MSI/EXE
+Jobs: `rust-audit`, `dependencies`, `bun-audit`, `secrets-scan`, `codeql`,
+`osv-scan`.
 
 ### Adding New Workflows
 
@@ -95,12 +95,19 @@ jobs:
         run: cargo test
 ```
 
-### Secrets Required
+### Secrets and Variables
 
-| Secret | Purpose |
-|--------|---------|
-| `GITHUB_TOKEN` | Automatic (for releases) |
-| `CARGO_REGISTRY_TOKEN` | (if publishing crates) |
+Secrets live in the GitHub Environment `release` (publish runs only).
+
+| Name | Kind | Purpose |
+|------|------|---------|
+| `GITHUB_TOKEN` | automatic | Release and GHCR push |
+| `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | secrets | Android APK signing (required to publish) |
+| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | secrets | Updater bundle signing (required to publish; empty password = no password) |
+| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | secrets | macOS signing, only if `MACOS_SIGNING_ENABLED` is `true` |
+| `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` | secrets | Windows signing, only if `WINDOWS_SIGNING_ENABLED` is `true` |
+| `MACOS_SIGNING_ENABLED`, `WINDOWS_SIGNING_ENABLED` | variables | Switch the signing hooks on |
+| `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_ACCOUNT`, `AZURE_TRUSTED_SIGNING_PROFILE` | variables | Windows Trusted Signing target |
 
 ### Common Issues
 
@@ -110,8 +117,8 @@ jobs:
 - Check for platform-specific issues in matrix builds
 
 **Release failures:**
-- Verify tag matches version in `Cargo.toml`
-- Check signing certificates (macOS/Windows)
+- Version files out of sync with the tag: `python3 scripts/release_version.py check --tag <tag>`
+- Missing signing secret: the log names it; see `docs/ops/release-runbook.md`
 - Validate artifact paths
 
 ### Local Testing
