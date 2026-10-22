@@ -45,3 +45,7 @@ directory. Briefs live in `docs/developer-guide/agents/experts/`.
   verification passes.
 - Headless `agy` auto-denies shell commands; prompts must tell Gemini to use
   its built-in read/search tools only.
+- Gemini via `agy` has an individual quota: the 2026-10-22 lane review (6 large
+  runs) plus experts exhausted it for ~137 h. Use OpenCode Go models (Kimi K3
+  first) as the external reviewer while Gemini/Codex are limited; reserve
+  Gemini for whole-codebase sweeps where its context length matters.
