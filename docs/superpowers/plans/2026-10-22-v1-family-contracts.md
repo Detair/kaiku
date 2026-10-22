@@ -122,3 +122,11 @@ current ephemeral behaviour for dev), applied via the webrtc-rs
 NAT 1:1 announcement if not already present. Documented per C9. Server
 stream: add as **Task 13** (after Task 6), with a test that a peer
 connection's local candidates use ports inside the range.
+
+## C14 — Multiple TURN URLs (server → athene, OPTIONAL, post-1.0 unless needed)
+
+To enable the prepared TURNS-on-443 component, the server must hand out
+several ICE/TURN URLs (`turn:…:3478?transport=udp`, `…?transport=tcp`,
+`turns:turn.kaiku.pmind.de:443?transport=tcp`) from one config value
+(e.g. comma-separated `TURN_URLS`). Not in Phase 1; pick up if a family
+member cannot join voice from a restrictive network.
