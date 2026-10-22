@@ -10,6 +10,7 @@ Build, development, and utility scripts for the project.
 - `check_docs_governance.py` - Validates roadmap/changelog/lifecycle consistency
 - `generate_release_notes.py` - Builds standardized milestone release notes
 - `release_version.py` - Single source of the release version (parse/bump/check/android-code); CI runs `check`
+- `verify_updater_signatures.py` - Publish gate: verifies every `latest.json` signature against `plugins.updater.pubkey` (needs `minisign`)
 - `bump-version.sh` - Bumps the version in all version files: `scripts/bump-version.sh X.Y.Z[-rc.N]`
 - `tests/` - stdlib `unittest` tests for scripts (`python3 -m unittest discover -s scripts/tests -v`)
 
