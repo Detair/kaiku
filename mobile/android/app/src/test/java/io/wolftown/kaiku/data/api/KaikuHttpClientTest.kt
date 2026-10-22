@@ -4,9 +4,17 @@ import io.ktor.client.engine.mock.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.mockk.*
+import io.wolftown.kaiku.data.KaikuJson
+import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -375,5 +383,185 @@ class KaikuHttpClientTest {
 
         val response = client.activeClient().get("/api/test")
         assertEquals(HttpStatusCode.OK, response.status)
+    }
+
+    // ========================================================================
+    // TokenRefresher: refresh goes through the configured pipeline
+    // ========================================================================
+
+    private fun MockRequestHandleScope.refreshOk(accessToken: String = "new-access-token") = respond(
+        content = """{
+            "access_token": "$accessToken",
+            "refresh_token": "new-refresh-token",
+            "expires_in": 900,
+            "token_type": "Bearer",
+            "setup_required": false
+        }""",
+        status = HttpStatusCode.OK,
+        headers = headersOf(HttpHeaders.ContentType, "application/json")
+    )
+
+    /** Mutable token state backing the relaxed TokenStorage mock. */
+    private fun stubTokenState(initialAccessToken: String, expiresAtMillis: Long) {
+        var currentAccessToken: String? = initialAccessToken
+        every { tokenStorage.getAccessToken() } answers { currentAccessToken }
+        every { tokenStorage.getAccessTokenExpiresAtMillis() } returns expiresAtMillis
+        every { tokenStorage.getRefreshToken() } returns "valid-refresh-token"
+        every { tokenStorage.getUserId() } returns "user-123"
+        every { tokenStorage.saveTokens(any(), any(), any(), any()) } answers {
+            currentAccessToken = firstArg()
+        }
+    }
+
+    @Test
+    fun `refresh request is sent to configured server host`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+        var refreshRequests = 0
+
+        val mockEngine = MockEngine { request ->
+            refreshRequests++
+            assertEquals(URLProtocol.HTTPS, request.url.protocol)
+            assertEquals("kaiku.example.com", request.url.host)
+            assertEquals("/auth/refresh", request.url.encodedPath)
+            assertEquals(HttpMethod.Post, request.method)
+            assertNull(
+                "Refresh request must not carry the access token",
+                request.headers[HttpHeaders.Authorization]
+            )
+            val body = KaikuJson.parseToJsonElement(
+                request.body.toByteArray().decodeToString()
+            ).jsonObject
+            assertEquals("valid-refresh-token", body["refresh_token"]?.jsonPrimitive?.content)
+            refreshOk()
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.SUCCESS, client.forceRefresh())
+        assertEquals(1, refreshRequests)
+    }
+
+    @Test
+    fun `ensureFresh skips network when token valid long enough`() = runTest {
+        stubTokenState("valid-token", expiresAtMillis = System.currentTimeMillis() + 10 * 60_000L)
+        var requestCount = 0
+
+        val mockEngine = MockEngine {
+            requestCount++
+            refreshOk()
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.SUCCESS, client.ensureFresh())
+        assertEquals(0, requestCount)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `ensureFresh refreshes when token expires within lead time`() = runTest {
+        stubTokenState("almost-expired-token", expiresAtMillis = System.currentTimeMillis() + 30_000L)
+        var refreshRequests = 0
+
+        val mockEngine = MockEngine { request ->
+            assertEquals("/auth/refresh", request.url.encodedPath)
+            refreshRequests++
+            refreshOk()
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.SUCCESS, client.ensureFresh(minValidityMs = 60_000))
+        assertEquals(1, refreshRequests)
+        verify {
+            tokenStorage.saveTokens(
+                accessToken = "new-access-token",
+                refreshToken = "new-refresh-token",
+                expiresIn = 900,
+                userId = "user-123"
+            )
+        }
+    }
+
+    @Test
+    fun `forceRefresh with rejected refresh token logs out`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+
+        val mockEngine = MockEngine {
+            respond(
+                content = """{"error": "invalid refresh token"}""",
+                status = HttpStatusCode.Unauthorized,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.AUTH_REJECTED, client.forceRefresh())
+        verify { authState.setLoggedOut() }
+        verify { tokenStorage.clear() }
+    }
+
+    @Test
+    fun `forceRefresh network failure keeps session`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+
+        val mockEngine = MockEngine { throw IOException("network unreachable") }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.NETWORK_ERROR, client.forceRefresh())
+        verify(exactly = 0) { authState.setLoggedOut() }
+        verify(exactly = 0) { tokenStorage.clear() }
+    }
+
+    @Test
+    fun `concurrent 401s trigger a single refresh`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+        val refreshRequests = AtomicInteger(0)
+        val expiredArrivals = AtomicInteger(0)
+        val bothSentWithExpiredToken = CompletableDeferred<Unit>()
+
+        val mockEngine = MockEngine { request ->
+            when {
+                request.url.encodedPath == "/auth/refresh" -> {
+                    refreshRequests.incrementAndGet()
+                    refreshOk()
+                }
+                request.headers[HttpHeaders.Authorization] == "Bearer expired-token" -> {
+                    // Hold both 401s until both requests were sent with the old token,
+                    // so they genuinely race for the refresh.
+                    if (expiredArrivals.incrementAndGet() == 2) {
+                        bothSentWithExpiredToken.complete(Unit)
+                    }
+                    bothSentWithExpiredToken.await()
+                    respond(
+                        content = """{"error": "unauthorized"}""",
+                        status = HttpStatusCode.Unauthorized,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json")
+                    )
+                }
+                else -> {
+                    assertEquals(
+                        "Bearer new-access-token",
+                        request.headers[HttpHeaders.Authorization]
+                    )
+                    respond(
+                        content = """{"status": "ok"}""",
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json")
+                    )
+                }
+            }
+        }
+
+        val client = createClient(mockEngine)
+
+        val first = async { client.activeClient().get("/api/test1") }
+        val second = async { client.activeClient().get("/api/test2") }
+
+        assertEquals(HttpStatusCode.OK, first.await().status)
+        assertEquals(HttpStatusCode.OK, second.await().status)
+        assertEquals("Exactly one refresh request", 1, refreshRequests.get())
     }
 }

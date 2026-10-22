@@ -60,6 +60,9 @@ class TokenStorage @Inject constructor(
         }
     }
 
+    /** Epoch millis at which the stored access token expires, or 0 when none is stored. */
+    fun getAccessTokenExpiresAtMillis(): Long = prefs.getLong(KEY_EXPIRES_AT, 0L)
+
     fun isAccessTokenExpired(): Boolean {
         val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
         return System.currentTimeMillis() >= expiresAt

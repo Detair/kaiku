@@ -8,19 +8,18 @@ import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.http.*
-import io.ktor.http.content.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.util.*
 import io.wolftown.kaiku.data.KaikuJson
+import io.wolftown.kaiku.data.auth.RefreshResult
+import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.model.AuthResponse
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import okhttp3.ConnectionSpec
-import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -37,13 +36,17 @@ internal data class RefreshRequest(val refreshToken: String)
  * - Automatic Bearer token injection
  * - Transparent 401 -> refresh -> retry flow
  * - Mutex-guarded refresh to prevent concurrent refresh storms
+ * - [TokenRefresher] for proactive refreshes (shares the same mutex)
+ *
+ * The refresh request itself is issued through [activeClient] (with
+ * [SkipAuthInterceptor] set), so it uses the configured server URL and JSON
+ * content type from `defaultRequest`.
  */
 class KaikuHttpClient @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val authState: AuthState,
     private val tls13Spec: ConnectionSpec
-) {
-    private enum class RefreshResult { SUCCESS, AUTH_REJECTED, NETWORK_ERROR }
+) : TokenRefresher {
 
     internal companion object {
         private val logger = Logger.getLogger("KaikuHttpClient")
@@ -112,31 +115,21 @@ class KaikuHttpClient @Inject constructor(
                 return@intercept originalCall
             }
 
-            // 401 received -- attempt token refresh
-            val refreshToken = tokenStorage.getRefreshToken()
-            if (refreshToken == null) {
-                authState.setLoggedOut()
-                return@intercept originalCall
-            }
-
+            // 401 received -- attempt token refresh (skipped if another caller
+            // already rotated the token this request was sent with)
             val tokenUsedInRequest =
                 request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")
 
             val refreshResult = refreshMutex.withLock {
-                // Double-check: another coroutine may have already refreshed
                 val currentToken = tokenStorage.getAccessToken()
                 if (currentToken != null && currentToken != tokenUsedInRequest) {
-                    // Token was already refreshed by another coroutine
                     RefreshResult.SUCCESS
                 } else {
-                    performRefresh(refreshToken)
+                    refreshLocked()
                 }
             }
 
             if (refreshResult != RefreshResult.SUCCESS) {
-                if (refreshResult == RefreshResult.AUTH_REJECTED) {
-                    authState.setLoggedOut()
-                }
                 return@intercept originalCall
             }
 
@@ -149,36 +142,84 @@ class KaikuHttpClient @Inject constructor(
         return client
     }
 
+    override suspend fun ensureFresh(minValidityMs: Long): RefreshResult {
+        if (isValidFor(minValidityMs)) return RefreshResult.SUCCESS
+        return refreshMutex.withLock {
+            // Double-check: another caller may have refreshed while we waited
+            if (isValidFor(minValidityMs)) RefreshResult.SUCCESS else refreshLocked()
+        }
+    }
+
+    override suspend fun forceRefresh(): RefreshResult {
+        val tokenBefore = tokenStorage.getAccessToken()
+        return refreshMutex.withLock {
+            // Double-check: another caller may have rotated the token while we waited
+            val currentToken = tokenStorage.getAccessToken()
+            if (currentToken != null && currentToken != tokenBefore) {
+                RefreshResult.SUCCESS
+            } else {
+                refreshLocked()
+            }
+        }
+    }
+
+    private fun isValidFor(minValidityMs: Long): Boolean {
+        if (tokenStorage.getAccessToken() == null) return false
+        val remaining = tokenStorage.getAccessTokenExpiresAtMillis() - System.currentTimeMillis()
+        return remaining >= minValidityMs
+    }
+
     /**
-     * Performs the token refresh request.
+     * Refreshes the tokens. Must be called while holding [refreshMutex].
+     *
+     * Ends the session (logout + clear stored tokens) on
+     * [RefreshResult.AUTH_REJECTED] and [RefreshResult.NO_SESSION].
+     */
+    private suspend fun refreshLocked(): RefreshResult {
+        val refreshToken = tokenStorage.getRefreshToken()
+        val result = if (refreshToken == null) {
+            RefreshResult.NO_SESSION
+        } else {
+            performRefresh(refreshToken)
+        }
+        if (result == RefreshResult.AUTH_REJECTED || result == RefreshResult.NO_SESSION) {
+            authState.setLoggedOut()
+            tokenStorage.clear()
+        }
+        return result
+    }
+
+    /**
+     * Performs the token refresh request through the configured client.
      *
      * Returns [RefreshResult.SUCCESS] when tokens were saved,
-     * [RefreshResult.AUTH_REJECTED] on 401/403 (invalid refresh token), or
-     * [RefreshResult.NETWORK_ERROR] for transient failures that should not log the user out.
+     * [RefreshResult.AUTH_REJECTED] on 400/401/403 (invalid refresh token), or
+     * [RefreshResult.NETWORK_ERROR] for transient failures (I/O, 5xx, other
+     * non-success statuses) that should not log the user out.
      */
-    private suspend fun Sender.performRefresh(refreshToken: String): RefreshResult {
+    private suspend fun performRefresh(refreshToken: String): RefreshResult {
         return try {
-            val body = KaikuJson.encodeToString(RefreshRequest(refreshToken))
-            val refreshRequest = HttpRequestBuilder().apply {
-                method = HttpMethod.Post
-                url.encodedPath = "/auth/refresh"
-                contentType(ContentType.Application.Json)
-                setBody(TextContent(body, ContentType.Application.Json))
-                // Mark this request to skip the auth interceptor
+            val response = activeClient().post("/auth/refresh") {
+                // Skip the auth interceptor: no Bearer header, no 401 recursion
                 attributes.put(SkipAuthInterceptor, true)
+                contentType(ContentType.Application.Json)
+                setBody(RefreshRequest(refreshToken))
             }
-            val refreshCall = execute(refreshRequest)
-            val status = refreshCall.response.status
+            val status = response.status
 
-            if (status == HttpStatusCode.Unauthorized || status == HttpStatusCode.Forbidden) {
+            if (status == HttpStatusCode.BadRequest ||
+                status == HttpStatusCode.Unauthorized ||
+                status == HttpStatusCode.Forbidden
+            ) {
                 return RefreshResult.AUTH_REJECTED
             }
 
             if (!status.isSuccess()) {
+                logger.warning("Token refresh failed with HTTP ${status.value}")
                 return RefreshResult.NETWORK_ERROR
             }
 
-            val authResponse = refreshCall.response.body<AuthResponse>()
+            val authResponse = response.body<AuthResponse>()
 
             // Use existing userId since the refresh response does not include it
             val userId = tokenStorage.getUserId() ?: return RefreshResult.NETWORK_ERROR
@@ -193,7 +234,9 @@ class KaikuHttpClient @Inject constructor(
         } catch (e: kotlin.coroutines.cancellation.CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.log(Level.WARNING, "Token refresh failed", e)
+            // Log the exception type only: decoding errors can echo the response
+            // body, which contains tokens.
+            logger.warning("Token refresh failed: ${e.javaClass.simpleName}")
             RefreshResult.NETWORK_ERROR
         }
     }
