@@ -9,6 +9,14 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val versionPropsFile = rootProject.file("version.properties")
+val versionProps = Properties().apply {
+    if (versionPropsFile.exists()) versionPropsFile.inputStream().use { load(it) }
+}
+if (versionProps["versionName"] == null || versionProps["versionCode"] == null) {
+    throw GradleException("mobile/android/version.properties missing versionName/versionCode")
+}
+
 android {
     namespace = "io.wolftown.kaiku"
     compileSdk = 35
@@ -17,8 +25,8 @@ android {
         applicationId = "io.wolftown.kaiku"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = versionProps["versionCode"].toString().toInt()
+        versionName = versionProps["versionName"].toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

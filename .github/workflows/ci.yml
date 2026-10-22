@@ -73,6 +73,15 @@ jobs:
       - name: Validate CI guardrails
         run: python3 scripts/check_ci_guardrails.py
 
+      - name: Install script test dependencies
+        run: python3 -m pip install --user pyyaml==6.0.2
+
+      - name: Run script unit tests
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Validate release version consistency
+        run: python3 scripts/release_version.py check
+
   # ===========================================================================
   # Rust Tests (with database services)
   # ===========================================================================

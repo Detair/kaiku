@@ -1,0 +1,151 @@
+"""Tests for scripts/release_version.py (single source of release version)."""
+from __future__ import annotations
+
+import difflib
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = SCRIPTS_DIR.parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+from release_version import (  # noqa: E402
+    VersionError,
+    check_consistency,
+    parse_version,
+    read_versions,
+    write_version,
+)
+
+CLI = SCRIPTS_DIR / "release_version.py"
+COPIED_FILES = (
+    "client/src-tauri/tauri.conf.json",
+    "Cargo.toml",
+    "client/package.json",
+    "mobile/android/version.properties",
+    "Cargo.lock",
+)
+
+
+def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(CLI), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+
+
+class ReleaseVersionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        for rel in COPIED_FILES:
+            dst = self.tmp / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO_ROOT / rel, dst)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_parse_final(self):
+        v = parse_version("v1.0.0")
+        self.assertEqual((v.major, v.minor, v.patch, v.rc), (1, 0, 0, None))
+        self.assertEqual(v.semver, "1.0.0")
+        self.assertFalse(v.is_prerelease)
+
+    def test_parse_rc(self):
+        v = parse_version("1.0.0-rc.3")
+        self.assertEqual(v.rc, 3)
+        self.assertEqual(v.tag, "v1.0.0-rc.3")
+        self.assertTrue(v.is_prerelease)
+
+    def test_parse_rejects_out_of_range(self):
+        for bad in [
+            "1.0",
+            "v1.0.0-beta.1",
+            "v1.0.0-rc.0",
+            "v1.0.0-rc.99",
+            "v1.100.0",
+            "v1.0.100",
+            "v1.0.0-rc.1+meta",
+            " v1.0.0",
+            "v01.0.0",
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(VersionError):
+                parse_version(bad)
+
+    def test_android_code_values(self):
+        self.assertEqual(parse_version("1.0.0").android_version_code, 1_000_099)
+        self.assertEqual(parse_version("1.0.0-rc.1").android_version_code, 1_000_001)
+        self.assertEqual(parse_version("0.1.0").android_version_code, 10_099)
+
+    def test_android_code_ordering(self):
+        order = ["0.9.0-rc.1", "1.0.0-rc.1", "1.0.0-rc.98", "1.0.0", "1.0.1-rc.1", "1.0.1", "1.1.0-rc.1"]
+        codes = [parse_version(s).android_version_code for s in order]
+        self.assertEqual(codes, sorted(codes))
+        self.assertEqual(len(set(codes)), len(codes))
+
+    def test_repo_is_consistent(self):
+        # Guards against version drift on main.
+        self.assertEqual(check_consistency(REPO_ROOT, None), [])
+
+    def test_bump_rewrites_only_version_lines(self):
+        before = {rel: (self.tmp / rel).read_text(encoding="utf-8").splitlines() for rel in COPIED_FILES}
+        write_version(self.tmp, parse_version("1.0.0-rc.1"))
+        versions = read_versions(self.tmp)
+        for label, value in versions.items():
+            expected = "1000001" if label.endswith(":versionCode") else "1.0.0-rc.1"
+            self.assertEqual(value, expected, label)
+        expected_changes = {
+            "client/src-tauri/tauri.conf.json": 1,
+            "Cargo.toml": 1,
+            "client/package.json": 1,
+            "mobile/android/version.properties": 2,
+            "Cargo.lock": 5,
+        }
+        for rel, count in expected_changes.items():
+            after = (self.tmp / rel).read_text(encoding="utf-8").splitlines()
+            removed = [
+                line
+                for line in difflib.unified_diff(before[rel], after, lineterm="", n=0)
+                if line.startswith("-") and not line.startswith("---")
+            ]
+            self.assertEqual(len(after), len(before[rel]), rel)
+            self.assertEqual(len(removed), count, rel)
+
+    def test_check_detects_mismatch(self):
+        pkg = self.tmp / "client/package.json"
+        pkg.write_text(
+            pkg.read_text(encoding="utf-8").replace('  "version": "0.1.0",', '  "version": "9.9.9",', 1),
+            encoding="utf-8",
+        )
+        errs = check_consistency(self.tmp, None)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("client/package.json", errs[0])
+
+    def test_check_tag_mismatch_lists_each_file(self):
+        write_version(self.tmp, parse_version("0.1.0"))
+        errs = check_consistency(self.tmp, parse_version("v1.0.0-rc.1"))
+        self.assertEqual(len(errs), 5, errs)
+        self.assertTrue(all("expected 1.0.0-rc.1" in e or "expected 1000001" in e for e in errs), errs)
+
+    def test_cli_parse_outputs_github_output_lines(self):
+        result = run_cli("parse", "v1.0.0-rc.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["version=1.0.0-rc.2", "tag=v1.0.0-rc.2", "is_prerelease=true", "android_version_code=1000002"],
+        )
+
+    def test_cli_invalid_exit_2(self):
+        self.assertEqual(run_cli("parse", "v1.0").returncode, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
