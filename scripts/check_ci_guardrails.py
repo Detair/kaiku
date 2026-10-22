@@ -17,6 +17,9 @@ NATIVE_DEPS_ACTION = ROOT / ".github/actions/setup-native-deps/action.yml"
 NATIVE_DEPS_ACTION_REF = "./.github/actions/setup-native-deps"
 SETUP_INTEGRATION = ROOT / "server/tests/integration/setup_integration.rs"
 UPLOADS_HTTP = ROOT / "server/tests/integration/uploads_http.rs"
+CONFIG_RS = ROOT / "server/src/config.rs"
+ENV_DOC = ROOT / "docs/admin-guide/configuration/environment.md"
+SERVER_IMAGE = "ghcr.io/detair/kaiku-server"
 
 WINDOWS_LIBVPX_TOKENS = [
     "vcpkg install libvpx:x64-windows-static-md",
@@ -264,6 +267,47 @@ def check_release_hygiene(release_text: str, release: dict, errors: list[str]) -
         errors.append(f"{label}: publish-release must run only if {PUBLISH_GATE}")
 
 
+ENV_READ_RE = re.compile(r'\b(?:env::var|env_opt)\(\s*"([A-Z][A-Z0-9_]*)"')
+
+
+def check_env_doc(config_rs: str, doc: str, errors: list[str]) -> None:
+    """Every env var read in config.rs must appear as `NAME` in environment.md."""
+    for name in sorted(set(ENV_READ_RE.findall(config_rs))):
+        if f"`{name}`" not in doc:
+            errors.append(
+                f"environment.md: config.rs reads {name} but the doc does not list `{name}` "
+                "(document new env vars in docs/admin-guide/configuration/environment.md)"
+            )
+
+
+def check_server_image(workflow: dict, label: str, errors: list[str]) -> None:
+    """docker/metadata-action must target the GHCR server image; release latest needs is_prerelease."""
+    env = workflow.get("env") or {}
+    found = False
+    for job in (workflow.get("jobs") or {}).values():
+        for step in _job_steps(job):
+            if not str(step.get("uses", "")).startswith("docker/metadata-action"):
+                continue
+            found = True
+            with_ = step.get("with") or {}
+            images = str(with_.get("images", ""))
+            images = re.sub(
+                r"\$\{\{\s*env\.(\w+)\s*\}\}", lambda m: str(env.get(m.group(1), m.group(0))), images
+            )
+            if images.strip() != SERVER_IMAGE:
+                errors.append(f"{label}: metadata images must be {SERVER_IMAGE}, got {images.strip()!r}")
+            for line in str(with_.get("tags", "")).splitlines():
+                if "value=latest" in line and "is_prerelease" not in line:
+                    errors.append(f"{label}: latest tag must be enabled only when is_prerelease == 'false': {line.strip()}")
+    if not found:
+        errors.append(f"{label}: no docker/metadata-action step found for the server image")
+
+
+def check_ci_never_tags_latest(ci_text: str, errors: list[str]) -> None:
+    if re.search(r"value=latest", ci_text):
+        errors.append("ci.yml: main builds must never tag latest (latest = newest final release)")
+
+
 def check_no_signing_key_in_pr_workflows(workflows: dict[str, str], errors: list[str]) -> None:
     for name, text in workflows.items():
         if SIGNING_KEY_TOKEN in text:
@@ -342,6 +386,19 @@ def main() -> int:
             check_release_workflow(release, ROOT, errors)
             check_release_secret_scoping(release, errors)
             check_release_hygiene(release_text, release, errors)
+            check_server_image(release, "release.yml", errors)
+    if ci_text:
+        try:
+            ci = yaml.safe_load(ci_text) or {}
+        except yaml.YAMLError as exc:
+            errors.append(f"ci.yml: invalid YAML: {exc}")
+        else:
+            check_server_image(ci, "ci.yml", errors)
+        check_ci_never_tags_latest(ci_text, errors)
+    config_text = read_text(CONFIG_RS, errors)
+    env_doc_text = read_text(ENV_DOC, errors)
+    if config_text and env_doc_text:
+        check_env_doc(config_text, env_doc_text, errors)
     if setup_integration_text:
         check_setup_integration_guardrails(setup_integration_text, errors)
     if uploads_http_text:

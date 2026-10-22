@@ -15,11 +15,14 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import check_ci_guardrails as guardrails  # noqa: E402
 from check_ci_guardrails import (  # noqa: E402
+    check_ci_never_tags_latest,
+    check_env_doc,
     check_native_deps_usage,
     check_no_signing_key_in_pr_workflows,
     check_release_hygiene,
     check_release_secret_scoping,
     check_release_workflow,
+    check_server_image,
     check_windows_libvpx_guardrails,
 )
 
@@ -291,6 +294,86 @@ class SigningKeyTest(unittest.TestCase):
     def test_clean_pr_workflow_passes(self):
         errors: list[str] = []
         check_no_signing_key_in_pr_workflows({"ci.yml": "jobs: {}\n"}, errors)
+        self.assertEqual(errors, [])
+
+
+CONFIG_FIXTURE = """
+database_url: env::var("FOO").context("FOO must be set")?,
+s3_bucket: env_opt("BAR_BAZ"),
+other: std::env::var("FOO").ok(),
+"""
+
+IMAGE_WORKFLOW = """
+env:
+  SERVER_IMAGE: ghcr.io/detair/kaiku-server
+jobs:
+  build-docker:
+    steps:
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: %s
+          tags: |
+            type=raw,value=${{ needs.prepare-release.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare-release.outputs.is_prerelease == 'false' }}
+"""
+
+
+class EnvDocTest(unittest.TestCase):
+    def test_env_doc_lists_every_config_var(self):
+        errors: list[str] = []
+        check_env_doc(CONFIG_FIXTURE, "| `BAR_BAZ` | unset | bucket |\n", errors)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("FOO", errors[0])
+
+    def test_documented_vars_pass(self):
+        errors: list[str] = []
+        check_env_doc(CONFIG_FIXTURE, "`FOO` and `BAR_BAZ`", errors)
+        self.assertEqual(errors, [])
+
+    def test_bare_mention_is_not_documentation(self):
+        errors: list[str] = []
+        check_env_doc(CONFIG_FIXTURE, "FOO BAR_BAZ", errors)
+        self.assertEqual(len(errors), 2, errors)
+
+
+class ServerImageTest(unittest.TestCase):
+    def check(self, images: str) -> list[str]:
+        errors: list[str] = []
+        check_server_image(yaml.safe_load(IMAGE_WORKFLOW % images), "release.yml", errors)
+        return errors
+
+    def test_server_image_name(self):
+        errors = self.check("ghcr.io/${{ github.repository }}/server")
+        self.assertTrue(any("ghcr.io/detair/kaiku-server" in e for e in errors), errors)
+
+    def test_env_reference_resolves(self):
+        self.assertEqual(self.check("${{ env.SERVER_IMAGE }}"), [])
+
+    def test_literal_name_passes(self):
+        self.assertEqual(self.check("ghcr.io/detair/kaiku-server"), [])
+
+    def test_no_metadata_step_is_an_error(self):
+        errors: list[str] = []
+        check_server_image({"jobs": {"a": {"steps": [{"run": "true"}]}}}, "release.yml", errors)
+        self.assertTrue(errors)
+
+    def test_latest_must_depend_on_prerelease(self):
+        wf = yaml.safe_load(IMAGE_WORKFLOW % "${{ env.SERVER_IMAGE }}")
+        step = wf["jobs"]["build-docker"]["steps"][0]
+        step["with"]["tags"] = "type=raw,value=latest\n"
+        errors: list[str] = []
+        check_server_image(wf, "release.yml", errors)
+        self.assertTrue(any("latest" in e and "is_prerelease" in e for e in errors), errors)
+
+    def test_ci_main_never_tags_latest(self):
+        errors: list[str] = []
+        check_ci_never_tags_latest("tags: |\n  type=raw,value=latest,enable={{is_default_branch}}\n", errors)
+        self.assertTrue(any("latest" in e for e in errors), errors)
+
+    def test_ci_without_latest_passes(self):
+        errors: list[str] = []
+        check_ci_never_tags_latest("tags: |\n  type=ref,event=branch\n  type=sha\n", errors)
         self.assertEqual(errors, [])
 
 

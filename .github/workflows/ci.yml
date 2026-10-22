@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  SERVER_IMAGE: ghcr.io/detair/kaiku-server
 
 jobs:
   # ===========================================================================
@@ -355,10 +356,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/server
+          images: ${{ env.SERVER_IMAGE }}
+          # Never latest: latest means the newest final release (see release.yml).
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
+            type=raw,value=main,enable={{is_default_branch}}
+            type=sha,prefix=sha-
 
       - name: Build and push
         uses: docker/build-push-action@v5

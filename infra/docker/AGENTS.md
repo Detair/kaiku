@@ -28,34 +28,21 @@ Database initialization scripts mounted into PostgreSQL container. Run automatic
 1. **builder** — Compile Rust binary with optimizations
 2. **runtime** — Minimal runtime image with only binary and dependencies
 
-**Current structure:**
-```dockerfile
-# Stage 1: Build
-FROM rust:1.75-slim AS builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release --bin vc-server
+**Current structure:** see `Dockerfile` (builder `rust:1.95-bookworm`, runtime `bitnami/minideb:bookworm`, runs as UID 1001). The runtime image contains exactly `/app/vc-server` and `/app/migrations`; configuration is environment variables only (see `docs/admin-guide/configuration/environment.md`).
 
-# Stage 2: Runtime
-FROM debian:bookworm-slim
-COPY --from=builder /app/target/release/vc-server /usr/local/bin/
-ENTRYPOINT ["vc-server"]
-```
+### Published image
+
+- **Image:** `ghcr.io/detair/kaiku-server` (amd64).
+- **Release tags:** `<version>` without leading `v` (release candidates included). `latest` moves only for final releases, never for `-rc.N`.
+- **`main` builds** (`ci.yml`) push `main` and `sha-<short>` and never `latest`.
+- **Publish rule:** only the Release workflow publishes versioned tags, and only on a tag push or a dispatch with `dry_run` unticked. Dry runs and PRs build and smoke-test but do not push.
+- `release.yml` smoke-tests the built image before pushing (binary runs, `/app` contents, version label).
 
 ### Building the image
 
 **Local build:**
 ```bash
-docker build -f infra/docker/Dockerfile -t voicechat-server:latest .
-```
-
-**With build args:**
-```bash
-docker build \
-  --build-arg RUST_VERSION=1.75 \
-  -f infra/docker/Dockerfile \
-  -t voicechat-server:latest \
-  .
+docker build -f infra/docker/Dockerfile -t kaiku-server:latest .
 ```
 
 **Multi-platform build:**
@@ -63,14 +50,13 @@ docker build \
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -f infra/docker/Dockerfile \
-  -t voicechat-server:latest \
+  -t kaiku-server:latest \
   .
 ```
 
 ### Runtime image
 
-**Base:** `debian:bookworm-slim`
-- Minimal Debian (smaller than Ubuntu)
+**Base:** `bitnami/minideb:bookworm` (minimal Debian)
 - Includes libc and basic utilities
 - Missing: Postgres client, development tools
 
@@ -99,21 +85,6 @@ FROM alpine:3.19 AS runtime
 
 # Strip debug symbols from binary
 RUN strip /usr/local/bin/vc-server
-
-# Use cargo-chef for dependency caching (speeds up rebuilds)
-FROM rust:1.75-slim AS planner
-WORKDIR /app
-RUN cargo install cargo-chef
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM rust:1.75-slim AS builder
-WORKDIR /app
-RUN cargo install cargo-chef
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-COPY . .
-RUN cargo build --release --bin vc-server
 ```
 
 **Build speed optimizations:**
@@ -153,19 +124,19 @@ ENTRYPOINT ["vc-server"]
 **Required environment variables:**
 ```env
 DATABASE_URL=postgresql://user:pass@host:5432/db
-REDIS_URL=redis://host:6379
-JWT_SECRET=<secret>
-PORT=8080
+JWT_PRIVATE_KEY=<base64 PEM>
+JWT_PUBLIC_KEY=<base64 PEM>
+# Optional: REDIS_URL, BIND_ADDRESS, ... (full list in environment.md)
 ```
 
 **Pass via docker run:**
 ```bash
-docker run -e DATABASE_URL=... -e REDIS_URL=... voicechat-server:latest
+docker run -e DATABASE_URL=... -e REDIS_URL=... kaiku-server:latest
 ```
 
 **Pass via .env file:**
 ```bash
-docker run --env-file .env voicechat-server:latest
+docker run --env-file .env kaiku-server:latest
 ```
 
 ### Health checks
@@ -228,7 +199,7 @@ EOSQL
 **Build and run locally:**
 ```bash
 # Build
-docker build -f infra/docker/Dockerfile -t voicechat-server:test .
+docker build -f infra/docker/Dockerfile -t kaiku-server:test .
 
 # Run with compose services
 cd infra/compose
@@ -239,9 +210,9 @@ docker run --rm \
   --network compose_default \
   -e DATABASE_URL=postgresql://voicechat:devpassword@postgres:5432/voicechat \
   -e REDIS_URL=redis://redis:6379 \
-  -e JWT_SECRET=test-secret \
+  -e JWT_PRIVATE_KEY=... -e JWT_PUBLIC_KEY=... \
   -p 8080:8080 \
-  voicechat-server:test
+  kaiku-server:test
 ```
 
 ### CI/CD integration
@@ -249,12 +220,12 @@ docker run --rm \
 **Build in GitHub Actions:**
 ```yaml
 - name: Build Docker image
-  run: docker build -f infra/docker/Dockerfile -t voicechat-server:${{ github.sha }} .
+  run: docker build -f infra/docker/Dockerfile -t kaiku-server:${{ github.sha }} .
 
 - name: Push to registry
   run: |
-    docker tag voicechat-server:${{ github.sha }} ghcr.io/user/voicechat-server:latest
-    docker push ghcr.io/user/voicechat-server:latest
+    docker tag kaiku-server:${{ github.sha }} ghcr.io/detair/kaiku-server:<version>
+    docker push ghcr.io/detair/kaiku-server:<version>
 ```
 
 **Use buildx for multi-platform:**
@@ -269,7 +240,7 @@ docker run --rm \
     file: infra/docker/Dockerfile
     platforms: linux/amd64,linux/arm64
     push: true
-    tags: ghcr.io/user/voicechat-server:latest
+    tags: ghcr.io/detair/kaiku-server:<version>
 ```
 
 ### Troubleshooting
@@ -316,16 +287,16 @@ See `../../DEPLOY.md` for production deployment guide.
 **Update base images regularly:**
 ```bash
 # Pull latest base
-docker pull rust:1.75-slim
-docker pull debian:bookworm-slim
+docker pull rust:1.95-bookworm
+docker pull bitnami/minideb:bookworm
 
 # Rebuild
-docker build -f infra/docker/Dockerfile -t voicechat-server:latest .
+docker build -f infra/docker/Dockerfile -t kaiku-server:latest .
 ```
 
 **Scan for vulnerabilities:**
 ```bash
-docker scan voicechat-server:latest
+docker scan kaiku-server:latest
 # Or use trivy
-trivy image voicechat-server:latest
+trivy image kaiku-server:latest
 ```

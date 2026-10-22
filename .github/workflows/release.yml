@@ -22,6 +22,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  SERVER_IMAGE: ghcr.io/detair/kaiku-server
 
 jobs:
   # ===========================================================================
@@ -329,6 +330,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
+        # Only publish runs push; dry runs never need registry credentials.
+        if: needs.prepare-release.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -339,14 +342,55 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/server
+          images: ${{ env.SERVER_IMAGE }}
+          # latest only for final releases (R-08); release candidates get only their version.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.prepare-release.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare-release.outputs.is_prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare-release.outputs.version }}
+            org.opencontainers.image.source=https://github.com/Detair/kaiku
 
-      - name: Build and push
+      # Build once into the local daemon and smoke-test it before anything is pushed.
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile
+          load: true
+          push: false
+          tags: kaiku-server:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test - binary runs and no config is baked in
+        run: |
+          set -euo pipefail
+          # Without env vars the server must fail on the first required variable.
+          # `docker run` exits non-zero here, so capture the output instead of piping.
+          out="$(docker run --rm kaiku-server:smoke 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q "DATABASE_URL must be set"
+
+      - name: Smoke test - image contents
+        run: |
+          set -euo pipefail
+          listing="$(docker run --rm --entrypoint /bin/sh kaiku-server:smoke -c 'ls -A /app')"
+          echo "$listing"
+          test "$listing" = "$(printf 'migrations\nvc-server')"
+
+      - name: Smoke test - version label
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          label="$(docker image inspect kaiku-server:smoke \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          echo "version label: $label"
+          test "$label" = "$VERSION"
+
+      - name: Push image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -443,7 +487,7 @@ jobs:
             ```
 
             ## Server Deployment
-            Docker images are available at: `ghcr.io/${{ github.repository }}/server:${{ needs.prepare-release.outputs.version }}`
+            Server image: `${{ env.SERVER_IMAGE }}:${{ needs.prepare-release.outputs.version }}`
           draft: true
           prerelease: ${{ needs.prepare-release.outputs.is_prerelease == 'true' }}
           files: |
