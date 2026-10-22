@@ -19,6 +19,7 @@ import {
 } from "lucide-solid";
 import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
+import { isE2EEEnabled } from "@/lib/featureFlags";
 import AccountSettings from "./AccountSettings";
 import AppearanceSettings from "./AppearanceSettings";
 import NotificationSettings from "./NotificationSettings";
@@ -71,6 +72,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
   const [isBackingUp, setIsBackingUp] = createSignal(false);
 
   const handleViewRecoveryKey = async () => {
+    if (!isE2EEEnabled()) return;
     setBackupError(null);
     try {
       const key = await invoke<{ full_key: string; chunks: string[] }>(
@@ -225,7 +227,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
         </div>
 
         {/* Recovery Key Modal */}
-        <Show when={showRecoveryKey() && recoveryKey()}>
+        <Show when={isE2EEEnabled() && showRecoveryKey() && recoveryKey()}>
           <RecoveryKeyModal
             keyChunks={recoveryKey()!.chunks}
             fullKey={recoveryKey()!.fullKey}

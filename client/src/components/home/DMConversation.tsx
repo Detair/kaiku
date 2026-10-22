@@ -9,8 +9,8 @@ import {
   Show,
   createSignal,
 } from "solid-js";
-import { Phone, Lock, Unlock, Check, X } from "lucide-solid";
-import { e2eeStatus } from "@/stores/e2ee";
+import { Phone, Check, X } from "lucide-solid";
+import { t } from "@/i18n";
 import { getSelectedDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
@@ -31,13 +31,9 @@ import {
 const DMConversation: Component = () => {
   const dm = () => getSelectedDM();
   const [isStartingCall, setIsStartingCall] = createSignal(false);
-  const [showEncryptionTooltip, setShowEncryptionTooltip] = createSignal(false);
   const [isEditingName, setIsEditingName] = createSignal(false);
   const [editName, setEditName] = createSignal("");
   const [uploadError, setUploadError] = createSignal<string | null>(null);
-
-  // E2EE status for encryption indicator
-  const isEncrypted = () => e2eeStatus().initialized;
 
   const handleStartCall = async () => {
     const currentDM = dm();
@@ -89,7 +85,7 @@ const DMConversation: Component = () => {
     // For 1:1 DMs, show the other participant's display name
     const others = otherParticipants();
     if (others.length === 0) {
-      return currentDM.participants[0]?.display_name ?? "Unknown";
+      return currentDM.participants[0]?.display_name ?? t("dm.header.unknownUser");
     }
     return others[0].display_name;
   };
@@ -115,7 +111,7 @@ const DMConversation: Component = () => {
       console.error("Failed to update DM name:", err);
       showToast({
         type: "error",
-        title: "Could not rename conversation. Please try again.",
+        title: t("dm.header.renameFailed"),
         duration: 5000,
       });
       setIsEditingName(false);
@@ -131,7 +127,7 @@ const DMConversation: Component = () => {
       when={dm()}
       fallback={
         <div class="flex-1 flex items-center justify-center bg-surface-layer1">
-          <p class="text-text-secondary">Select a conversation</p>
+          <p class="text-text-secondary">{t("dm.header.selectConversation")}</p>
         </div>
       }
     >
@@ -166,7 +162,7 @@ const DMConversation: Component = () => {
                     })
                     .catch((err) => {
                       console.error("Failed to upload icon", err);
-                      setUploadError("Failed to upload icon");
+                      setUploadError(t("dm.header.uploadIconFailed"));
                       setTimeout(() => setUploadError(null), 3000);
                     })
                     .finally(() => {
@@ -184,7 +180,7 @@ const DMConversation: Component = () => {
               "bg-accent-primary": !dm()?.icon_url,
               "bg-surface-layer2": !!dm()?.icon_url,
             }}
-            title={`Change icon (Max ${getUploadLimitText("avatar")})`}
+            title={t("dm.header.changeIcon", { limit: getUploadLimitText("avatar") })}
           >
             <Show
               when={dm()?.icon_url}
@@ -200,7 +196,7 @@ const DMConversation: Component = () => {
             >
               <img
                 src={dm()!.icon_url!}
-                alt="DM Icon"
+                alt={t("dm.header.iconAlt")}
                 class="w-full h-full object-cover"
               />
             </Show>
@@ -236,7 +232,7 @@ const DMConversation: Component = () => {
                 class="font-semibold text-text-primary"
                 classList={{ "cursor-pointer hover:underline": isGroupDM() }}
                 onClick={() => isGroupDM() && startEditingName()}
-                title={isGroupDM() ? "Click to rename" : undefined}
+                title={isGroupDM() ? t("dm.header.clickToRename") : undefined}
               >
                 {displayName()}
               </span>
@@ -258,73 +254,23 @@ const DMConversation: Component = () => {
               <button
                 onClick={saveEditedName}
                 class="p-1 rounded hover:bg-white/10 text-accent-success transition-colors"
-                title="Save"
+                title={t("common.save")}
               >
                 <Check class="w-4 h-4" />
               </button>
               <button
                 onClick={cancelEditingName}
                 class="p-1 rounded hover:bg-white/10 text-text-secondary transition-colors"
-                title="Cancel"
+                title={t("common.cancel")}
               >
                 <X class="w-4 h-4" />
               </button>
             </div>
           </Show>
 
-          {/* Encryption Indicator */}
-          <div
-            class="relative"
-            onMouseEnter={() => setShowEncryptionTooltip(true)}
-            onMouseLeave={() => setShowEncryptionTooltip(false)}
-          >
-            <Show
-              when={isEncrypted()}
-              fallback={
-                <Unlock
-                  class="w-4 h-4 text-text-muted cursor-help"
-                  aria-label="End-to-end encryption not active"
-                />
-              }
-            >
-              <Lock
-                class="w-4 h-4 text-accent-primary cursor-help"
-                aria-label="End-to-end encryption active"
-              />
-            </Show>
-
-            {/* Encryption Status Tooltip */}
-            <Show when={showEncryptionTooltip()}>
-              <div class="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-50 px-3 py-2 bg-surface-base border border-white/10 rounded-lg shadow-xl min-w-[200px] text-center">
-                <Show
-                  when={isEncrypted()}
-                  fallback={
-                    <>
-                      <p class="text-sm font-medium text-text-secondary">
-                        Not Encrypted
-                      </p>
-                      <p class="text-xs text-text-muted mt-1">
-                        E2EE is not set up. Messages are not end-to-end
-                        encrypted.
-                      </p>
-                    </>
-                  }
-                >
-                  <p class="text-sm font-medium text-accent-primary">
-                    End-to-End Encrypted
-                  </p>
-                  <p class="text-xs text-text-muted mt-1">
-                    Messages are secured with end-to-end encryption. Only you
-                    and the recipient can read them.
-                  </p>
-                </Show>
-              </div>
-            </Show>
-          </div>
-
           <Show when={isGroupDM()}>
             <span class="text-sm text-text-secondary">
-              {dm()?.participants.length} members
+              {t("dm.header.members", { count: dm()?.participants.length ?? 0 })}
             </span>
           </Show>
 
@@ -335,9 +281,15 @@ const DMConversation: Component = () => {
           <button
             onClick={handleStartCall}
             disabled={!canStartCall() || isStartingCall()}
-            title={canStartCall() ? "Start voice call" : "Call in progress"}
+            title={
+              canStartCall()
+                ? t("dm.header.startCall")
+                : t("dm.header.callInProgress")
+            }
             aria-label={
-              canStartCall() ? "Start voice call" : "Call in progress"
+              canStartCall()
+                ? t("dm.header.startCall")
+                : t("dm.header.callInProgress")
             }
             class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-layer2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -354,7 +306,6 @@ const DMConversation: Component = () => {
               <MessageInput
                 channelId={channelId()}
                 channelName={displayName()}
-                isE2EE={isEncrypted()}
                 dmParticipants={
                   dm()?.participants.map((p) => ({
                     user_id: p.user_id,

@@ -26,6 +26,17 @@ export const en = {
   "qr.noServer": "Can't create a login code because the server address is unknown. Sign out and sign in again.",
   "qr.failedTitle": "QR Code Failed",
   "qr.failedMessage": "Could not generate QR login code.",
+  "chat.encryptedPlaceholder": "Encrypted message — it can't be shown on this device.",
+  "dm.header.selectConversation": "Select a conversation",
+  "dm.header.unknownUser": "Unknown",
+  "dm.header.changeIcon": "Change icon (Max {{limit}})",
+  "dm.header.iconAlt": "DM Icon",
+  "dm.header.uploadIconFailed": "Failed to upload icon",
+  "dm.header.clickToRename": "Click to rename",
+  "dm.header.renameFailed": "Could not rename conversation. Please try again.",
+  "dm.header.members": "{{count}} members",
+  "dm.header.startCall": "Start voice call",
+  "dm.header.callInProgress": "Call in progress",
 } as const;
 
 export type MessageKey = keyof typeof en;

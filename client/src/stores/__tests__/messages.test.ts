@@ -23,6 +23,7 @@ vi.mock("@/components/ui/Toast", () => ({
 }));
 
 import * as tauri from "@/lib/tauri";
+import { t } from "@/i18n";
 import { showToast } from "@/components/ui/Toast";
 import type { Message, PaginatedMessages } from "@/lib/types";
 import {
@@ -318,7 +319,24 @@ describe("messages store", () => {
       msg.encrypted = true;
       msg.content = "ciphertext-blob";
       const result = await decryptMessageIfNeeded(msg);
-      expect(result.content).toContain("[");
+      expect(result.content).toBe(t("chat.encryptedPlaceholder"));
+    });
+
+    it("encrypted messages render the placeholder when E2EE is off", async () => {
+      const msg = createMessage("m2");
+      msg.encrypted = true;
+      msg.content = '{"sender_key":"k","recipients":{}}';
+      const result = await decryptMessageIfNeeded(msg);
+      expect(result.content).toBe(
+        "Encrypted message — it can't be shown on this device.",
+      );
+    });
+
+    it("no encrypted DM send path is exported", async () => {
+      const keys = Object.keys(await import("../messages"));
+      expect(keys).not.toContain("sendDMMessage");
+      expect(keys).not.toContain("sendEncryptedDM");
+      expect(keys).not.toContain("sendEncryptedGroupDM");
     });
   });
 

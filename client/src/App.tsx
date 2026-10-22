@@ -37,6 +37,7 @@ import AcceptanceManager from "./components/pages/AcceptanceManager";
 import { ToastContainer } from "./components/ui/Toast";
 import { ContextMenuContainer } from "./components/ui/ContextMenu";
 import E2EESetupPrompt from "./components/E2EESetupPrompt";
+import { isE2EEEnabled } from "./lib/featureFlags";
 import { PageFallback, LazyErrorBoundary } from "./components/ui/LazyFallback";
 import SetupWizard from "./components/SetupWizard";
 import OnboardingWizard from "./components/OnboardingWizard";
@@ -133,7 +134,9 @@ const Layout: Component<ParentProps> = (props) => {
 const ProtectedMain: Component = () => (
   <AuthGuard>
     <SetupWizard />
-    <E2EESetupPrompt />
+    <Show when={isE2EEEnabled()}>
+      <E2EESetupPrompt />
+    </Show>
     <OnboardingWizard />
     <AcceptanceManager />
     <Main />
