@@ -24,9 +24,10 @@ users until you publish the draft.
 Tags are `vX.Y.Z` (final) or `vX.Y.Z-rc.N` (release candidate). Each number is
 0 to 99 and `N` is 1 to 98. `rc.99` is reserved and rejected.
 
-The version lives in five places that must agree. `bump-version.sh` rewrites
-all of them (plus the workspace entries in `Cargo.lock`); never edit them by
-hand:
+The version lives in four files that must agree (five fields: `versionName`
+and `versionCode` are both in `version.properties`). `bump-version.sh`
+rewrites all of them, plus the workspace crate entries in `Cargo.lock`; never
+edit them by hand:
 
 - `client/src-tauri/tauri.conf.json`
 - `Cargo.toml` (`[workspace.package]`)
@@ -75,7 +76,7 @@ keytool -genkeypair -v -keystore kaiku-release.jks -alias kaiku \
 base64 -w0 kaiku-release.jks > kaiku-release.jks.b64
 ```
 
-Store four repository secrets, in Environment `release` (see M3):
+Store four Environment secrets in `release` (see M3):
 
 | Secret | Content |
 |---|---|
@@ -259,20 +260,39 @@ sha256sum -c checksums.txt
       `docker pull ghcr.io/detair/kaiku-server:1.0.0-rc.1`, and
       `docker image inspect ... --format '{{ index .Config.Labels "org.opencontainers.image.version" }}'`
       prints `1.0.0-rc.1`. `latest` must **not** have moved.
-- [ ] An older build offers the update (M7): install the previous release,
-      start it, check for updates. Caveat: the updater endpoint is
-      `releases/latest/download/latest.json`, and GitHub's "latest" skips
-      drafts and pre-releases. An RC therefore is not offered to anyone until
-      a final is published. To test an RC before then, point a test build at
-      `https://github.com/Detair/kaiku/releases/download/v1.0.0-rc.1/latest.json`.
-- [ ] Install the APK over the previous APK on a phone: upgrades in place, no
-      uninstall.
+- [ ] The APK is the right one (version and signer, above). The in-app
+      update test (M7) comes after publishing, see below.
 
 Then publish the draft (this is the point of no return for users):
 
 ```sh
 gh release edit v1.0.0-rc.1 --draft=false
 ```
+
+After publishing (the RC is a prerelease):
+
+- [ ] Install the APK over the previous APK on a phone: upgrades in place, no
+      uninstall.
+- [ ] An older desktop build offers the update (M7). The updater endpoint is
+      `releases/latest/download/latest.json`, and GitHub's "latest" skips
+      drafts and pre-releases, so a published RC is still not offered to
+      anyone. Test it with a build pointed at the RC's own manifest, reachable
+      once the release is published:
+      `https://github.com/Detair/kaiku/releases/download/v1.0.0-rc.1/latest.json`.
+
+To check the manifest before publishing (that URL is a 404 while the release
+is a draft), fetch it from the draft and serve it locally:
+
+```sh
+mkdir -p /tmp/rc-updater && cd /tmp/rc-updater
+gh release download v1.0.0-rc.1 --pattern latest.json --clobber
+python3 -m http.server 8099 --bind 127.0.0.1
+```
+
+Point a test build's updater endpoint at `http://127.0.0.1:8099/latest.json`.
+The `url` fields inside still point at draft assets that only a signed-in
+maintainer can download, so this proves the manifest is read and a version is
+offered, not the full download. Do the full test after publishing.
 
 ## 6. Cut the final
 
