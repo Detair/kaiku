@@ -57,12 +57,19 @@ Jobs: `rust-lint`, `docs-governance`, `rust-test`, `licenses`, `secrets`,
    is the checked-out commit, generate release notes.
 2. `build-tauri` - Linux (AppImage, deb), Windows (NSIS), macOS x86_64 and
    aarch64 (app, dmg). Updater signing; optional macOS/Windows signing hooks.
-3. `build-docker` - build, smoke-test, push `ghcr.io/detair/kaiku-server:<ver>`
-   (`latest` only for finals). Pushes only on publish runs.
+3. `build-docker` - build, smoke-test and export the server image as the
+   `server-image` artifact. Never pushes.
 4. `build-android` - signed `Kaiku-<ver>.apk`, verified by
    `scripts/android_verify_apk.sh`.
 5. `publish-release` - publish runs only: collect assets, generate
-   `latest.json` (all 4 platforms or fail), create the draft GitHub release.
+   `latest.json` (all 4 platforms or fail), verify every updater signature
+   against `plugins.updater.pubkey` (`scripts/verify_updater_signatures.py`),
+   create the draft GitHub release.
+6. `push-image` - publish runs only, after all of the above: push the
+   smoke-tested image as `ghcr.io/detair/kaiku-server:<ver>` (`latest` only
+   for finals).
+
+Runs are serialised per tag (`concurrency`, never cancelled).
 
 Secret gating: on a publish run a missing secret is an `::error::` and the run
 fails; on a dry run it is a `::notice::` and the build continues unsigned

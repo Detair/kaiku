@@ -324,6 +324,60 @@ def check_release_hygiene(release_text: str, release: dict, errors: list[str]) -
         errors.append(f"{label}: publish-release must run only if {PUBLISH_GATE}")
 
 
+IMAGE_PUSH_NEEDS = ("prepare-release", "build-tauri", "build-docker", "build-android", "publish-release")
+
+
+def check_release_publish_order(release: dict, errors: list[str]) -> None:
+    """Nothing public (image, `latest`) before every build and the release assembly succeeded."""
+    label = "release.yml"
+    jobs = release.get("jobs") or {}
+
+    concurrency = release.get("concurrency")
+    if not isinstance(concurrency, dict) or "inputs.tag" not in str(concurrency.get("group", "")) \
+            or "github.ref_name" not in str(concurrency.get("group", "")):
+        errors.append(f"{label}: top-level concurrency.group must be keyed by the tag (inputs.tag / github.ref_name)")
+    elif concurrency.get("cancel-in-progress") is not False:
+        errors.append(f"{label}: concurrency.cancel-in-progress must be false (never cancel a publish run)")
+
+    docker = jobs.get("build-docker")
+    docker_steps = _job_steps(docker)
+    for step in docker_steps:
+        uses = str(step.get("uses", ""))
+        if uses.startswith("docker/login-action@"):
+            errors.append(f"{label}: build-docker must not log in to a registry (push happens in a later job)")
+        if uses.startswith("docker/build-push-action@") and (step.get("with") or {}).get("push") not in (None, False):
+            errors.append(f"{label}: build-docker must build with push: false (push only after all builds)")
+    if isinstance(docker, dict) and not any("docker save" in str(s.get("run", "")) for s in docker_steps):
+        errors.append(f"{label}: build-docker must export the smoke-tested image with docker save")
+
+    pushers = [
+        name for name, job in jobs.items()
+        if any(
+            "docker push" in str(s.get("run", ""))
+            or (str(s.get("uses", "")).startswith("docker/build-push-action@")
+                and (s.get("with") or {}).get("push") not in (None, False))
+            for s in _job_steps(job)
+        )
+    ]
+    if not pushers:
+        errors.append(f"{label}: no job pushes the server image")
+    for name in pushers:
+        job = jobs[name]
+        missing = [need for need in IMAGE_PUSH_NEEDS if need not in _needs(job)]
+        if missing:
+            errors.append(f"{label}: job '{name}' pushes the image but does not need: {', '.join(missing)}")
+        if PUBLISH_GATE not in str(job.get("if", "")):
+            errors.append(f"{label}: job '{name}' pushes the image but is not gated on {PUBLISH_GATE}")
+
+    publish_runs = [str(s.get("run", "")) for s in _job_steps(jobs.get("publish-release"))]
+    manifest = next((i for i, run in enumerate(publish_runs) if "generate_updater_manifest.py" in run), None)
+    verify = next((i for i, run in enumerate(publish_runs) if "verify_updater_signatures.py" in run), None)
+    if verify is None:
+        errors.append(f"{label}: publish-release must verify updater signatures with verify_updater_signatures.py")
+    elif manifest is not None and verify < manifest:
+        errors.append(f"{label}: publish-release must verify signatures after generating latest.json")
+
+
 ENV_READ_RE = re.compile(r'\b(?:env::var|env_opt)\(\s*"([A-Z][A-Z0-9_]*)"')
 
 
@@ -444,6 +498,7 @@ def main() -> int:
             check_release_secret_scoping(release, errors)
             check_release_hygiene(release_text, release, errors)
             check_release_android(release, errors)
+            check_release_publish_order(release, errors)
             check_server_image(release, "release.yml", errors)
     if ci_text:
         try:

@@ -20,6 +20,13 @@ on:
 permissions:
   contents: read
 
+# One run per tag at a time; a second run for the same tag (tag push and a
+# dispatch, or a re-dispatch) waits. Never cancel: a cancelled publish run
+# could leave a draft release whose server image was never pushed.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   SERVER_IMAGE: ghcr.io/detair/kaiku-server
@@ -316,27 +323,22 @@ jobs:
   # ===========================================================================
   # Build Server Docker Image
   # ===========================================================================
+  # Builds and smoke-tests the image, then exports exactly that image as an
+  # artifact. Nothing is pushed here: push-image publishes it only after every
+  # platform build and the release assembly succeeded.
   build-docker:
-    name: Build and Push Docker Image
+    name: Build and Smoke-test Docker Image
     needs: prepare-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        # Only publish runs push; dry runs never need registry credentials.
-        if: needs.prepare-release.outputs.publish == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -390,17 +392,20 @@ jobs:
           echo "version label: $label"
           test "$label" = "$VERSION"
 
-      - name: Push image
-        uses: docker/build-push-action@v5
+      # Dry runs export too, so the hand-off to push-image is exercised.
+      - name: Export smoke-tested image
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/server-image"
+          docker save kaiku-server:smoke | gzip > "$RUNNER_TEMP/server-image/kaiku-server.tar.gz"
+          ls -lh "$RUNNER_TEMP/server-image"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
         with:
-          context: .
-          file: infra/docker/Dockerfile
-          # Only publish runs push; a dry run (even dispatched on a tag ref) just builds.
-          push: ${{ needs.prepare-release.outputs.publish == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          name: server-image
+          path: ${{ runner.temp }}/server-image/kaiku-server.tar.gz
+          retention-days: 1
 
   # ===========================================================================
   # Build Android APK
@@ -492,7 +497,6 @@ jobs:
           if [ "$SIGNING" != true ]; then
             expect+=(--expect-unsigned)
           fi
-          # No pipe: without pipefail a pipe would mask the verifier's exit code.
           ../../scripts/android_verify_apk.sh "${apks[0]}" "$VERSION" "$ANDROID_VERSION_CODE" "${expect[@]}" > "$RUNNER_TEMP/verify.txt"
           cat "$RUNNER_TEMP/verify.txt"
 
@@ -536,10 +540,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      # Client artifacts only; the server image tarball is push-image's.
+      - name: Download Tauri artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: tauri-*
           path: artifacts
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: artifacts/android-apk
 
       - name: Prepare release assets
         run: |
@@ -581,6 +593,18 @@ jobs:
           python3 scripts/generate_updater_manifest.py --assets-dir release-assets \
             --tag "$TAG" --repo Detair/kaiku --mode publish --output release-assets/latest.json
 
+      # A TAURI_SIGNING_PRIVATE_KEY that does not belong to the pubkey baked
+      # into tauri.conf.json would ship updates no installed client accepts.
+      - name: Install minisign
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q minisign
+
+      - name: Verify updater signatures against the configured pubkey
+        run: |
+          python3 scripts/verify_updater_signatures.py --manifest release-assets/latest.json \
+            --assets-dir release-assets --mode publish
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
@@ -620,3 +644,62 @@ jobs:
           files: |
             release-assets/*
           fail_on_unmatched_files: false
+
+  # ===========================================================================
+  # Push Server Image
+  # ===========================================================================
+  # Last step of a publish run: the smoke-tested image from build-docker is
+  # pushed (and `latest` moved for a final release) only once all client
+  # builds succeeded and the draft release exists, so a failed platform never
+  # leaves a published image without a release.
+  push-image:
+    name: Push Server Image
+    needs: [prepare-release, build-tauri, build-docker, build-android, publish-release]
+    if: needs.prepare-release.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server-image
+          path: ${{ runner.temp }}/server-image
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load, check and push image
+        env:
+          TAGS: ${{ needs.build-docker.outputs.tags }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gunzip -c "$RUNNER_TEMP/server-image/kaiku-server.tar.gz" | docker load
+          label="$(docker image inspect kaiku-server:smoke \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          if [ "$label" != "$VERSION" ]; then
+            echo "::error::Image version label '$label' does not match release version '$VERSION'"
+            exit 1
+          fi
+          pushed=0
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            case "$tag" in
+              "$SERVER_IMAGE":*) ;;
+              *) echo "::error::Refusing to push unexpected tag $tag"; exit 1 ;;
+            esac
+            docker tag kaiku-server:smoke "$tag"
+            docker push "$tag"
+            echo "pushed $tag"
+            pushed=$((pushed + 1))
+          done <<< "$TAGS"
+          if [ "$pushed" -eq 0 ]; then
+            echo "::error::No image tags to push"
+            exit 1
+          fi

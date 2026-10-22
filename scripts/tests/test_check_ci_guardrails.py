@@ -21,6 +21,7 @@ from check_ci_guardrails import (  # noqa: E402
     check_no_signing_key_in_pr_workflows,
     check_release_android,
     check_release_hygiene,
+    check_release_publish_order,
     check_release_secret_scoping,
     check_release_workflow,
     check_server_image,
@@ -33,6 +34,9 @@ VALID_RELEASE = """
 on:
   push:
     tags: ['v*.*.*']
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
@@ -76,8 +80,11 @@ jobs:
         with:
           context: .
           file: infra/docker/Dockerfile
+          load: true
+          push: false
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: docker save kaiku-server:smoke | gzip > image.tar.gz
   build-android:
     needs: prepare-release
     environment: ${{ needs.prepare-release.outputs.publish == 'true' && 'release' || '' }}
@@ -105,6 +112,14 @@ jobs:
     steps:
       - run: python3 scripts/generate_updater_manifest.py --mode publish
       - run: cp artifacts/android-apk/Kaiku-*.apk release-assets/
+      - run: python3 scripts/verify_updater_signatures.py --mode publish
+  push-image:
+    needs: [prepare-release, build-tauri, build-docker, build-android, publish-release]
+    if: needs.prepare-release.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+      - run: docker push "$TAG"
 """
 
 TAURI_JOB_TEMPLATE = """
@@ -320,6 +335,76 @@ class ReleaseHygieneTest(unittest.TestCase):
         text = VALID_RELEASE.replace("    if: needs.prepare-release.outputs.publish == 'true'\n", "")
         errors = self.check(text)
         self.assertTrue(any("publish-release" in e for e in errors), errors)
+
+
+class ReleasePublishOrderTest(unittest.TestCase):
+    def check(self, release: dict) -> list[str]:
+        errors: list[str] = []
+        check_release_publish_order(release, errors)
+        return errors
+
+    def test_valid_fixture_passes(self):
+        self.assertEqual(self.check(load_release()), [])
+
+    def test_image_push_needs_all_builds(self):
+        for need in ("build-tauri", "build-android", "build-docker", "publish-release"):
+            release = load_release()
+            release["jobs"]["push-image"]["needs"].remove(need)
+            errors = self.check(release)
+            self.assertTrue(any("push-image" in e and need in e for e in errors), (need, errors))
+
+    def test_image_push_gated_on_publish(self):
+        release = load_release()
+        del release["jobs"]["push-image"]["if"]
+        errors = self.check(release)
+        self.assertTrue(any("push-image" in e and "gated" in e for e in errors), errors)
+
+    def test_build_docker_must_not_push(self):
+        release = load_release()
+        release["jobs"]["build-docker"]["steps"][0]["with"]["push"] = "${{ needs.prepare-release.outputs.publish == 'true' }}"
+        errors = self.check(release)
+        self.assertTrue(any("push: false" in e for e in errors), errors)
+        # The pushing build-docker job is also caught by the needs check.
+        self.assertTrue(any("'build-docker' pushes" in e for e in errors), errors)
+
+    def test_build_docker_must_not_login(self):
+        release = load_release()
+        release["jobs"]["build-docker"]["steps"].insert(0, {"uses": "docker/login-action@v3"})
+        errors = self.check(release)
+        self.assertTrue(any("log in" in e for e in errors), errors)
+
+    def test_build_docker_must_export_image(self):
+        release = load_release()
+        release["jobs"]["build-docker"]["steps"].pop()
+        errors = self.check(release)
+        self.assertTrue(any("docker save" in e for e in errors), errors)
+
+    def test_some_job_must_push(self):
+        release = load_release()
+        del release["jobs"]["push-image"]
+        errors = self.check(release)
+        self.assertTrue(any("no job pushes" in e for e in errors), errors)
+
+    def test_concurrency_keyed_by_tag_and_never_cancels(self):
+        release = load_release()
+        del release["concurrency"]
+        self.assertTrue(any("concurrency" in e for e in self.check(release)))
+        release = load_release()
+        release["concurrency"]["group"] = "release"
+        self.assertTrue(any("concurrency.group" in e for e in self.check(release)))
+        release = load_release()
+        release["concurrency"]["cancel-in-progress"] = True
+        self.assertTrue(any("cancel-in-progress" in e for e in self.check(release)))
+
+    def test_publish_verifies_updater_signatures_after_manifest(self):
+        release = load_release()
+        steps = release["jobs"]["publish-release"]["steps"]
+        steps.pop(2)
+        self.assertTrue(any("verify_updater_signatures.py" in e for e in self.check(release)))
+        release = load_release()
+        steps = release["jobs"]["publish-release"]["steps"]
+        steps[0], steps[2] = steps[2], steps[0]
+        self.assertTrue(any("after generating" in e for e in self.check(release)))
 
 
 class NativeDepsUsageTest(unittest.TestCase):
