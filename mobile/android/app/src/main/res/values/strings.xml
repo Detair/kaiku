@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Kaiku</string>
+
+    <!-- Common -->
+    <string name="common_back">Back</string>
+
+    <!-- Chat -->
+    <string name="chat_load_earlier">Load earlier messages</string>
+    <string name="chat_empty">No messages yet. Start the conversation!</string>
 </resources>

@@ -10,16 +10,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.wolftown.kaiku.R
 
 /**
  * Full-screen text channel view.
  *
  * Layout:
  * - Top app bar with channel name and back button
- * - LazyColumn of messages (reversed — newest at bottom, auto-scroll)
- * - Pull-to-load-more at the top for pagination
+ * - LazyColumn of messages, oldest at the top and newest at the bottom
+ *   (opens scrolled to the newest message, auto-scrolls on new ones)
+ * - "Load earlier messages" at the top while the server reports more history
  * - MessageInput at the bottom with typing indicators
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -33,6 +36,7 @@ fun TextChannelScreen(
     val messages by viewModel.messages.collectAsState()
     val typingUsers by viewModel.typingUsers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val canLoadMore by viewModel.canLoadMore.collectAsState()
     val messageInput by viewModel.messageInput.collectAsState()
 
     val listState = rememberLazyListState()
@@ -40,17 +44,28 @@ fun TextChannelScreen(
     // When set, the emoji picker is shown for this message id.
     var reactionTargetId by remember { mutableStateOf<String?>(null) }
 
-    // Auto-scroll to bottom only when a genuinely new message arrives
-    // and the user is already near the bottom of the list.
+    // Jump to the newest message on the first non-empty load; afterwards
+    // auto-scroll only when a genuinely new message arrives and the user is
+    // already near the bottom of the list. Loading older messages does not
+    // change the last id, so it never scrolls.
     var lastMessageId by remember { mutableStateOf<String?>(null) }
+    var initialScrollDone by remember { mutableStateOf(false) }
 
     LaunchedEffect(messages.lastOrNull()?.id) {
-        val newLastId = messages.lastOrNull()?.id
-        if (newLastId != null && newLastId != lastMessageId) {
-            lastMessageId = newLastId
+        val newLastId = messages.lastOrNull()?.id ?: return@LaunchedEffect
+        if (newLastId == lastMessageId) return@LaunchedEffect
+        lastMessageId = newLastId
+
+        // The "load-more" item always sits at index 0, so the last message
+        // is at index messages.size.
+        val lastIndex = messages.size
+        if (!initialScrollDone) {
+            initialScrollDone = true
+            listState.scrollToItem(lastIndex)
+        } else {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            if (lastVisible >= messages.size - 4) {
-                listState.animateScrollToItem(messages.size - 1)
+            if (lastVisible >= lastIndex - 4) {
+                listState.animateScrollToItem(lastIndex)
             }
         }
     }
@@ -63,7 +78,7 @@ fun TextChannelScreen(
                     IconButton(onClick = onNavigateBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = stringResource(R.string.common_back)
                         )
                     }
                 }
@@ -93,7 +108,7 @@ fun TextChannelScreen(
 
                 messages.isEmpty() && !isLoading -> {
                     Text(
-                        text = "No messages yet. Start the conversation!",
+                        text = stringResource(R.string.chat_empty),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.Center)
@@ -106,15 +121,18 @@ fun TextChannelScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(vertical = 8.dp)
                     ) {
-                        // Load more button at the top
+                        // Index 0 is always this item (empty when there is
+                        // no older history) so message indices stay stable.
                         item(key = "load-more") {
-                            TextButton(
-                                onClick = { viewModel.onLoadMore() },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(8.dp)
-                            ) {
-                                Text("Load earlier messages")
+                            if (canLoadMore) {
+                                TextButton(
+                                    onClick = { viewModel.onLoadMore() },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp)
+                                ) {
+                                    Text(stringResource(R.string.chat_load_earlier))
+                                }
                             }
                         }
 

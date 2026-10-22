@@ -42,6 +42,10 @@ class TextChannelViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    /** True while the server reports older history (`has_more`) for this channel. */
+    private val _canLoadMore = MutableStateFlow(false)
+    val canLoadMore: StateFlow<Boolean> = _canLoadMore.asStateFlow()
+
     private val _messageInput = MutableStateFlow("")
     val messageInput: StateFlow<String> = _messageInput.asStateFlow()
 
@@ -132,10 +136,11 @@ class TextChannelViewModel @Inject constructor(
     }
 
     fun onLoadMore() {
+        if (!_canLoadMore.value) return
         val oldestMessage = messages.value.firstOrNull() ?: return
         viewModelScope.launch {
             try {
-                chatRepository.loadMessages(channelId, before = oldestMessage.id)
+                _canLoadMore.value = chatRepository.loadMessages(channelId, before = oldestMessage.id)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -158,7 +163,7 @@ class TextChannelViewModel @Inject constructor(
         _isLoading.value = true
         viewModelScope.launch {
             try {
-                chatRepository.loadMessages(channelId)
+                _canLoadMore.value = chatRepository.loadMessages(channelId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

@@ -5,12 +5,14 @@ import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.ChatCoroutineScope
+import io.wolftown.kaiku.domain.MessageOrdering
 import io.wolftown.kaiku.domain.model.Message
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -66,29 +68,33 @@ class ChatRepository @Inject constructor(
         return getOrCreateMessagesFlow(channelId).asStateFlow()
     }
 
-    suspend fun loadMessages(channelId: String, before: String? = null) {
-        val messages = messageApi.getMessages(channelId, before)
+    /**
+     * Loads one page of history for [channelId] and returns whether older
+     * messages exist on the server (`has_more`).
+     *
+     * Without [before] the page replaces the current list (initial load).
+     * With [before] the older page is merged into the current list.
+     * Either way the list ends up oldest-to-newest (see [MessageOrdering]).
+     */
+    suspend fun loadMessages(channelId: String, before: String? = null): Boolean {
+        val page = messageApi.getMessages(channelId, before = before)
         val flow = getOrCreateMessagesFlow(channelId)
 
         if (before != null) {
-            // Pagination: prepend older messages
-            val existing = flow.value
-            val existingIds = existing.map { it.id }.toSet()
-            val newMessages = messages.filter { it.id !in existingIds }
-            flow.value = newMessages + existing
+            flow.update { existing -> MessageOrdering.merge(existing, page.items) }
         } else {
-            flow.value = messages
+            flow.value = MessageOrdering.merge(emptyList(), page.items)
         }
+        return page.hasMore
     }
 
     suspend fun sendMessage(channelId: String, content: String) {
         val sentMessage = messageApi.sendMessage(channelId, content)
 
-        // Optimistic update: add the message immediately
-        val flow = getOrCreateMessagesFlow(channelId)
-        val current = flow.value
-        if (current.none { it.id == sentMessage.id }) {
-            flow.value = current + sentMessage
+        // Optimistic update: add the message immediately. A WebSocket echo
+        // with the same id is deduplicated by MessageOrdering.merge.
+        getOrCreateMessagesFlow(channelId).update { current ->
+            MessageOrdering.merge(current, listOf(sentMessage))
         }
     }
 
@@ -177,11 +183,12 @@ class ChatRepository @Inject constructor(
         try {
             val message = json.decodeFromJsonElement<Message>(event.message)
             val flow = getOrCreateMessagesFlow(event.channelId)
-            val current = flow.value
+            // Avoid double-counting unread for duplicates (e.g., from optimistic send)
+            val isNew = flow.value.none { it.id == message.id }
 
-            // Avoid duplicates (e.g., from optimistic send)
-            if (current.none { it.id == message.id }) {
-                flow.value = current + message
+            flow.update { current -> MessageOrdering.merge(current, listOf(message)) }
+
+            if (isNew) {
                 // Raise the unread badge for non-active channels.
                 guildRepository.onMessageReceived(event.channelId)
             }

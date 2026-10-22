@@ -80,6 +80,7 @@ class TextChannelViewModelTest {
     fun `loads message history on init`() = runTest {
         coEvery { chatRepository.loadMessages("ch-1", null) } coAnswers {
             messagesFlow.value = sampleMessages
+            false
         }
 
         viewModel = createViewModel()
@@ -95,7 +96,7 @@ class TextChannelViewModelTest {
 
     @Test
     fun `subscribes to channel on init`() = runTest {
-        coEvery { chatRepository.loadMessages(any(), any()) } just Runs
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
 
         viewModel = createViewModel()
         advanceUntilIdle()
@@ -111,6 +112,7 @@ class TextChannelViewModelTest {
     fun `new WebSocket message appends to list`() = runTest {
         coEvery { chatRepository.loadMessages(any(), any()) } coAnswers {
             messagesFlow.value = sampleMessages
+            false
         }
 
         viewModel = createViewModel()
@@ -139,7 +141,7 @@ class TextChannelViewModelTest {
 
     @Test
     fun `sending message calls repository and clears input`() = runTest {
-        coEvery { chatRepository.loadMessages(any(), any()) } just Runs
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
         coEvery { chatRepository.sendMessage("ch-1", "Hello!") } just Runs
 
         viewModel = createViewModel()
@@ -163,6 +165,7 @@ class TextChannelViewModelTest {
     fun `edit message calls repository`() = runTest {
         coEvery { chatRepository.loadMessages(any(), any()) } coAnswers {
             messagesFlow.value = sampleMessages
+            false
         }
         coEvery { chatRepository.editMessage("msg-1", "Updated content") } just Runs
 
@@ -179,6 +182,7 @@ class TextChannelViewModelTest {
     fun `delete message calls repository`() = runTest {
         coEvery { chatRepository.loadMessages(any(), any()) } coAnswers {
             messagesFlow.value = sampleMessages
+            false
         }
         coEvery { chatRepository.deleteMessage("ch-1", "msg-1") } just Runs
 
@@ -199,6 +203,7 @@ class TextChannelViewModelTest {
     fun `loading state during initial load`() = runTest {
         coEvery { chatRepository.loadMessages(any(), any()) } coAnswers {
             messagesFlow.value = sampleMessages
+            false
         }
 
         viewModel = createViewModel()
@@ -222,7 +227,7 @@ class TextChannelViewModelTest {
 
     @Test
     fun `unsubscribes on ViewModel cleared`() = runTest {
-        coEvery { chatRepository.loadMessages(any(), any()) } just Runs
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
 
         viewModel = createViewModel()
         advanceUntilIdle()
@@ -238,7 +243,7 @@ class TextChannelViewModelTest {
 
     @Test
     fun `add reaction calls repository`() = runTest {
-        coEvery { chatRepository.loadMessages(any(), any()) } just Runs
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
         coEvery { chatRepository.addReaction("ch-1", "msg-1", "thumbs_up") } just Runs
 
         viewModel = createViewModel()
@@ -252,7 +257,7 @@ class TextChannelViewModelTest {
 
     @Test
     fun `remove reaction calls repository`() = runTest {
-        coEvery { chatRepository.loadMessages(any(), any()) } just Runs
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
         coEvery { chatRepository.removeReaction("ch-1", "msg-1", "thumbs_up") } just Runs
 
         viewModel = createViewModel()
@@ -272,8 +277,9 @@ class TextChannelViewModelTest {
     fun `load more calls repository with oldest message id`() = runTest {
         coEvery { chatRepository.loadMessages("ch-1", null) } coAnswers {
             messagesFlow.value = sampleMessages
+            true
         }
-        coEvery { chatRepository.loadMessages("ch-1", "msg-1") } just Runs
+        coEvery { chatRepository.loadMessages("ch-1", "msg-1") } returns false
 
         viewModel = createViewModel()
         advanceUntilIdle()
@@ -284,13 +290,47 @@ class TextChannelViewModelTest {
         coVerify { chatRepository.loadMessages("ch-1", "msg-1") }
     }
 
+    @Test
+    fun `canLoadMore follows hasMore from repository`() = runTest {
+        coEvery { chatRepository.loadMessages("ch-1", null) } coAnswers {
+            messagesFlow.value = sampleMessages
+            true
+        }
+        coEvery { chatRepository.loadMessages("ch-1", "msg-1") } returns false
+
+        viewModel = createViewModel()
+        assertFalse(viewModel.canLoadMore.value)
+        advanceUntilIdle()
+        assertTrue(viewModel.canLoadMore.value)
+
+        viewModel.onLoadMore()
+        advanceUntilIdle()
+        assertFalse(viewModel.canLoadMore.value)
+    }
+
+    @Test
+    fun `load more does nothing when server has no older messages`() = runTest {
+        coEvery { chatRepository.loadMessages("ch-1", null) } coAnswers {
+            messagesFlow.value = sampleMessages
+            false
+        }
+
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onLoadMore()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { chatRepository.loadMessages("ch-1", "msg-1") }
+    }
+
     // ========================================================================
     // Additional: typing indicator
     // ========================================================================
 
     @Test
     fun `typing users are exposed from repository`() = runTest {
-        coEvery { chatRepository.loadMessages(any(), any()) } just Runs
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
 
         viewModel = createViewModel()
         advanceUntilIdle()
@@ -303,7 +343,7 @@ class TextChannelViewModelTest {
 
     @Test
     fun `input change triggers typing indicator`() = runTest {
-        coEvery { chatRepository.loadMessages(any(), any()) } just Runs
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
 
         viewModel = createViewModel()
         advanceUntilIdle()
