@@ -42,6 +42,9 @@ jobs:
           --ignore RUSTSEC-2025-0008
           --ignore RUSTSEC-2023-0071
           --ignore RUSTSEC-2026-0009
+          --ignore RUSTSEC-2026-0367
+          --ignore RUSTSEC-2026-0368
+          --ignore RUSTSEC-2026-0369
 
       - name: Check for yanked crates
         run: >-
@@ -49,6 +52,9 @@ jobs:
           --ignore RUSTSEC-2025-0008
           --ignore RUSTSEC-2023-0071
           --ignore RUSTSEC-2026-0009
+          --ignore RUSTSEC-2026-0367
+          --ignore RUSTSEC-2026-0368
+          --ignore RUSTSEC-2026-0369
 
   # ===========================================================================
   # Dependency Vulnerability Scan
@@ -170,7 +176,7 @@ jobs:
         with:
           # Gates on ANY unignored vulnerability via exit code.
           # .osv-scanner.toml at the repo root contains the ignore list
-          # (cargo-deny/rust-audit ignores + PR #517 vite exceptions).
+          # (cargo-deny/rust-audit ignores + justified transitive exceptions).
           # osv-scanner v2.3.5 does NOT support --skip-git or
           # --severity — both were invalid flags in the first attempt.
           scan-args: |-

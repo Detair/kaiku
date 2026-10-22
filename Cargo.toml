@@ -131,7 +131,7 @@ blurhash = "0.2"
 aho-corasick = "1"
 
 # Archive
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 tempfile = "3"
 
 # Lock-free concurrent data structures

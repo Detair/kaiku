@@ -21,6 +21,23 @@ id = "RUSTSEC-2026-0097"
 # because we use tracing, not the log facade. Already ignored in deny.toml.
 reason = "Accepted via deny.toml; not exploitable in our configuration (we use tracing, not log facade)."
 
+# zip <9.0.0 extraction flaws (2026-10-22). Server's own zip is 9.x (fixed,
+# write-only); remaining copies are utoipa-swagger-ui 9's build-dep (trusted
+# build-time Swagger UI archive, own enclosed_name loop) and
+# tauri-plugin-updater 2.x (Windows-only, signature-verified bundles).
+# Already ignored in deny.toml with full rationale.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0367"
+reason = "Accepted via deny.toml; zip <9 only in utoipa-swagger-ui build-dep (trusted input) and Windows-only signature-verified tauri updater."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0368"
+reason = "Accepted via deny.toml; zip <9 only in utoipa-swagger-ui build-dep (trusted input) and Windows-only signature-verified tauri updater."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0369"
+reason = "Accepted via deny.toml; zip <9 only in utoipa-swagger-ui build-dep (trusted input) and Windows-only signature-verified tauri updater."
+
 # ---------------------------------------------------------------------------
 # Tauri gtk-rs 0.18 family — Linux-only deps, all marked unmaintained by
 # RustSec because gtk-rs moved to 0.20+. Tauri pins 0.18. Not runtime-critical
@@ -122,37 +139,40 @@ id = "RUSTSEC-2025-0100"
 reason = "unic-ucd-ident unmaintained; transitive."
 
 # ---------------------------------------------------------------------------
-# vite dev-server CVEs — the application's own vite is upgraded to 8.0.16
-# (patched). The only affected instance left is vite 7.3.1, nested under
-# vitest for the test runner. Every one of these advisories requires a
-# running `vite dev` server (file-serving / server.fs.deny bypass /
-# __open-in-editor), none of which vitest exposes. The fixes (vite 7.3.2 and
-# 7.3.5) cannot be adopted because the vite that vitest 4.1.x is compatible
-# with breaks vite-plugin-solid's JSX transform — the same nested-vite compat
-# wall first documented in PR #517 (the test config has no solid plugin and
-# relies on the nested vite's esbuild for the imported .tsx JSX, which
-# regresses on vite > 7.3.1). Re-evaluate when vitest ships a release whose
-# vite is ≥7.3.5 and JSX-compatible.
+# Keep-green 2026-10-22. (The nested test-only vite 7.3.1 and its five
+# dev-server ignores are gone: vitest 4.1.12 now shares the app's patched
+# vite 8.3.x, with vite-plugin-solid added to vitest.config.ts for JSX.)
 # ---------------------------------------------------------------------------
 
-# Fixed in vite 7.3.2 (originally accepted in PR #517):
 [[IgnoredVulns]]
-id = "GHSA-4w7w-66w2-5vf9"
-reason = "Dev-server-only vite advisory. App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
+id = "RUSTSEC-2026-0253"
+# lru 0.16.4 LruCache::pop() panic-safety UAF (fix: lru 0.18.2). Pulled via
+# aws-sdk-s3 1.132 (S3 Express identity cache) and tantivy 0.26 (via
+# turso_core <- keyring, desktop only). Neither caller uses LruCache::pop().
+# cargo-audit reports it as an "unsound" warning only; cargo-deny does not
+# gate it. Re-check when aws-sdk-s3 >=1.155 / turso_core bumps are adopted.
+reason = "lru unsound (pop panic safety); transitive via aws-sdk-s3 and tantivy, neither calls LruCache::pop()."
 
 [[IgnoredVulns]]
-id = "GHSA-p9ff-h696-f583"
-reason = "Dev-server-only vite advisory. App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
+id = "RUSTSEC-2026-0370"
+# zvariant/zvariant_derive/zbus_names: unmaintained flag only — merged into
+# zbus 6. Pulled via zbus 5 (notify-rust, secret-service) for the Linux
+# desktop client; migration blocked on tauri-plugin-notification/keyring.
+reason = "zvariant unmaintained (merged into zbus 6); Linux-only Tauri/keyring transitive, no vuln."
 
 [[IgnoredVulns]]
-id = "GHSA-v2wj-q39q-566r"
-reason = "Dev-server-only vite advisory. App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
-
-# Fixed in vite 7.3.5 (newly disclosed 2026-06):
-[[IgnoredVulns]]
-id = "GHSA-fx2h-pf6j-xcff"
-reason = "Dev-server-only (CVE-2026-53571, server.fs.deny bypass via NTFS ADS on Windows). App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
+id = "RUSTSEC-2026-0371"
+reason = "zbus_names unmaintained (merged into zbus 6); Linux-only Tauri/keyring transitive, no vuln."
 
 [[IgnoredVulns]]
-id = "GHSA-v6wh-96g9-6wx3"
-reason = "Dev-server-only (__open-in-editor NTLM hash leak on Windows). App vite is 8.0.16 (patched); only the test-only nested vite 7.3.1 under vitest remains, which exposes no dev server. Fix blocked by vitest's vite/JSX compat (cf. PR #517)."
+id = "RUSTSEC-2026-0372"
+reason = "zvariant_derive unmaintained (merged into zbus 6); Linux-only Tauri/keyring transitive, no vuln."
+
+[[IgnoredVulns]]
+id = "GHSA-238p-pmpm-9mq7"
+# KaTeX: an *already existing* prototype pollution can bypass trust
+# restrictions (fix only in 0.18.2). katex is a transitive dep of mermaid,
+# which pins ^0.16 (mermaid 11.17.2 -> katex 0.16.47). Exploitation needs a
+# separate prototype-pollution primitive first; none known in the client.
+# Re-evaluate when mermaid moves to katex 0.18.
+reason = "katex 0.16.x via mermaid (pins ^0.16); requires a pre-existing prototype pollution, fix only in 0.18.2."

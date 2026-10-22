@@ -27,6 +27,22 @@ ignore = [
     # version-agnostic because the rationale (no log facade in our code) is
     # invariant across rand majors.
     "RUSTSEC-2026-0097",
+    # zip <9.0.0 extraction flaws (2026-10-22): SUID/SGID bits preserved
+    # (0367), symlinks escaping the destination (0368), Unix permissions
+    # applied through symlinks (0369). Our own server dep is on zip 9 (fixed)
+    # and only *writes* archives (governance export). The remaining copies
+    # cannot be bumped without a major migration:
+    # - zip 3 is a build-dependency of utoipa-swagger-ui 9 (10.x needs
+    #   utoipa 6). Its build.rs uses its own enclosed_name() loop, not
+    #   ZipArchive::extract, on the pinned Swagger UI dist archive — trusted,
+    #   build-time input only.
+    # - zip 4 is used by tauri-plugin-updater 2.x (all 2.x pin zip ^4) on
+    #   Windows only, extracting update bundles after minisign signature
+    #   verification. Windows has no SUID/SGID or Unix-mode semantics.
+    # Re-check when tauri-plugin-updater 3 is stable / utoipa 6 migration.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
 
 # =============================================================================
