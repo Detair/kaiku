@@ -48,6 +48,14 @@ const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Close code: server-side event pipeline failed; reconnect and catch up.
 const CLOSE_INTERNAL_ERROR: u16 = 1011;
 
+/// Close code: client too slow, try again later; reconnect and catch up.
+const CLOSE_TRY_AGAIN_LATER: u16 = 1013;
+
+/// How long the pub/sub forwarder waits for room in a full outbound queue
+/// before treating the client as too slow (close 1013). Short bursts such as
+/// the presence snapshot drain well within this.
+const SLOW_CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Close reason sent with 1011/1013: the client should reconnect and resync.
 const CLOSE_REASON_RESYNC: &str = "resync";
 
@@ -360,6 +368,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
     // Spawn task to handle Redis pub/sub
     let (ready_tx, ready_rx) = oneshot::channel();
+    let (start_tx, start_rx) = oneshot::channel();
     let mut pubsub_handle: tokio::task::JoinHandle<PubsubExit> = tokio::spawn(handle_pubsub(
         state.redis.clone(),
         HandlePubsubParams {
@@ -372,6 +381,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
             guild_ids,
         },
         ready_tx,
+        start_rx,
     ));
 
     // `Ready` promises that the socket's subscriptions are live, so wait for
@@ -389,10 +399,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     };
 
     if pubsub_ready {
-        // Send ready event, then the friends' presence snapshot
+        // `Ready` is the first frame: queue it, then let the pub/sub task start
+        // forwarding (events published meanwhile wait in its receiver).
         let _ = tx
             .send(OutboundMsg::Event(ServerEvent::Ready { user_id }))
             .await;
+        let _ = start_tx.send(());
         send_presence_snapshot(&state, user_id, &tx).await;
 
         // Per-connection mutable state for rate limiting and deduplication
@@ -1069,10 +1081,10 @@ impl PubsubExit {
     /// pipeline failed. Both mean "reconnect and catch up".
     pub(crate) const fn close_code(self) -> Option<u16> {
         match self {
-            Self::SlowClient => Some(1013),
+            Self::SlowClient => Some(CLOSE_TRY_AGAIN_LATER),
             Self::ClientGone => None,
             Self::ConnectFailed | Self::SubscribeFailed | Self::StreamEnded | Self::Lagged => {
-                Some(1011)
+                Some(CLOSE_INTERNAL_ERROR)
             }
         }
     }
@@ -1081,12 +1093,14 @@ impl PubsubExit {
 /// Handle Redis pub/sub messages.
 ///
 /// Fires `ready` once the `channel:*` pattern subscription and all per-user
-/// subscriptions have returned, then forwards messages until the pipeline
-/// stops. The returned [`PubsubExit`] says why.
+/// subscriptions have returned, then waits for `start` (sent by the socket
+/// after it queued `Ready`) and forwards messages until the pipeline stops.
+/// The returned [`PubsubExit`] says why.
 async fn handle_pubsub(
     redis: Client,
     params: HandlePubsubParams,
     ready: oneshot::Sender<()>,
+    start: oneshot::Receiver<()>,
 ) -> PubsubExit {
     // Create a subscriber client
     let subscriber = redis.clone_new();
@@ -1114,11 +1128,12 @@ async fn handle_pubsub(
 
     // Subscribe to user's own events channel (for preferences sync, etc.)
     let user_channel = channels::user_events(params.user_id);
+    // Cross-device sync depends on this channel, so a failure ends the pipeline.
     if let Err(e) = subscriber.subscribe(&user_channel).await {
-        warn!("Failed to subscribe to user events channel: {}", e);
-    } else {
-        debug!("Subscribed to user events channel: {}", user_channel);
+        error!("Failed to subscribe to user events channel: {}", e);
+        return PubsubExit::SubscribeFailed;
     }
+    debug!("Subscribed to user events channel: {}", user_channel);
 
     // Subscribe to admin events channel
     if let Err(e) = subscriber.subscribe(channels::ADMIN_EVENTS).await {
@@ -1156,7 +1171,24 @@ async fn handle_pubsub(
     // Subscriptions are live: the socket may now announce `Ready`.
     let _ = ready.send(());
 
-    forward_until_reconnect(pubsub_stream, reconnect_rx, &params).await
+    forward_after_start(start, pubsub_stream, reconnect_rx, &params).await
+}
+
+/// Wait for `start` (the socket has queued `Ready`), then forward messages.
+///
+/// Messages published before `start` stay buffered in `rx`, so `Ready` is
+/// always the socket's first frame and nothing is lost. If `start` is dropped
+/// the socket closed during setup and [`PubsubExit::ClientGone`] is returned.
+async fn forward_after_start(
+    start: oneshot::Receiver<()>,
+    rx: tokio::sync::broadcast::Receiver<fred::types::Message>,
+    reconnect_rx: tokio::sync::broadcast::Receiver<fred::types::config::Server>,
+    params: &HandlePubsubParams,
+) -> PubsubExit {
+    if start.await.is_err() {
+        return PubsubExit::ClientGone;
+    }
+    forward_until_reconnect(rx, reconnect_rx, params).await
 }
 
 /// Run [`forward_pubsub_messages`] until it stops or the subscriber connection
@@ -1194,28 +1226,33 @@ async fn forward_until_reconnect(
 /// Forward pub/sub messages to the socket's outbound queue until the pipeline
 /// stops, and report why it stopped.
 ///
-/// Never drops an event silently: a lagging receiver or a full outbound queue
-/// ends forwarding so the socket can be closed and the client can resync.
+/// Never drops an event silently: a lagging receiver, or an outbound queue that
+/// stays full for [`SLOW_CLIENT_SEND_TIMEOUT`], ends forwarding so the socket
+/// can be closed and the client can resync.
 pub(crate) async fn forward_pubsub_messages(
     mut rx: tokio::sync::broadcast::Receiver<fred::types::Message>,
     params: &HandlePubsubParams,
 ) -> PubsubExit {
     use tokio::sync::broadcast::error::RecvError;
-    use tokio::sync::mpsc::error::TrySendError;
 
     macro_rules! try_forward {
         ($event:expr) => {
-            match params.tx.try_send(OutboundMsg::Event($event)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
+            match tokio::time::timeout(
+                SLOW_CLIENT_SEND_TIMEOUT,
+                params.tx.send(OutboundMsg::Event($event)),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(_closed)) => {
+                    return PubsubExit::ClientGone;
+                }
+                Err(_elapsed) => {
                     warn!(
-                        "Closing slow WebSocket client (user {}): outbound queue full",
-                        params.user_id
+                        "Closing slow WebSocket client (user {}): outbound queue full for {:?}",
+                        params.user_id, SLOW_CLIENT_SEND_TIMEOUT
                     );
                     return PubsubExit::SlowClient;
-                }
-                Err(TrySendError::Closed(_)) => {
-                    return PubsubExit::ClientGone;
                 }
             }
         };
@@ -1543,18 +1580,48 @@ mod pubsub_tests {
         ));
     }
 
-    #[tokio::test]
-    async fn forward_returns_slow_client_on_first_full_send() {
+    #[tokio::test(start_paused = true)]
+    async fn forward_returns_slow_client_when_send_times_out() {
         let (btx, brx) = tokio::sync::broadcast::channel(8);
         let (params, _rx_never_drained) = test_params(1); // outbound capacity 1
         params.subscribed_channels.write().await.insert(CHANNEL);
         for _ in 0..2 {
             btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
         }
+        let started = tokio::time::Instant::now();
         assert!(matches!(
             forward_pubsub_messages(brx, &params).await,
             PubsubExit::SlowClient
         ));
+        assert!(started.elapsed() >= SLOW_CLIENT_SEND_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_waits_for_briefly_full_queue_instead_of_closing() {
+        // A burst (e.g. the presence snapshot) can fill the queue; as long as
+        // the client drains it within the timeout, nothing is dropped and the
+        // socket stays open.
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, mut rx) = test_params(1);
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        for _ in 0..3 {
+            btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        }
+        let forward = forward_pubsub_messages(brx, &params);
+        tokio::pin!(forward);
+        let drain = async {
+            for _ in 0..3 {
+                tokio::time::sleep(SLOW_CLIENT_SEND_TIMEOUT / 2).await;
+                assert!(matches!(
+                    rx.recv().await,
+                    Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+                ));
+            }
+        };
+        tokio::select! {
+            exit = &mut forward => panic!("forwarding stopped early: {exit:?}"),
+            () = drain => {}
+        }
     }
 
     #[tokio::test]
@@ -1617,6 +1684,62 @@ mod pubsub_tests {
                 Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
             )),
         }
+    }
+
+    #[tokio::test]
+    async fn forwarding_waits_for_start_so_ready_is_first() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
+        let (_reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
+        let (start_tx, start_rx) = oneshot::channel();
+        let (params, mut rx) = test_params(16);
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        let user_id = params.user_id;
+        let tx = params.tx.clone();
+
+        // Subscriptions are live; an event arrives before the socket queued Ready.
+        btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+
+        let forward = forward_after_start(start_rx, brx, reconnect_rx, &params);
+        tokio::pin!(forward);
+        // Give the forwarder every chance to run: it must not forward yet.
+        tokio::select! {
+            biased;
+            exit = &mut forward => panic!("forwarding stopped early: {exit:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        assert!(rx.try_recv().is_err(), "event forwarded before start");
+
+        tx.send(OutboundMsg::Event(ServerEvent::Ready { user_id }))
+            .await
+            .unwrap();
+        start_tx.send(()).unwrap();
+
+        tokio::select! {
+            exit = &mut forward => panic!("forwarding stopped early: {exit:?}"),
+            () = async {
+                assert!(matches!(
+                    rx.recv().await,
+                    Some(OutboundMsg::Event(ServerEvent::Ready { .. }))
+                ));
+                assert!(matches!(
+                    rx.recv().await,
+                    Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+                ));
+            } => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarding_returns_client_gone_when_start_never_comes() {
+        let (_btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
+        let (_reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
+        let (start_tx, start_rx) = oneshot::channel::<()>();
+        let (params, _rx) = test_params(16);
+        drop(start_tx);
+        assert!(matches!(
+            forward_after_start(start_rx, brx, reconnect_rx, &params).await,
+            PubsubExit::ClientGone
+        ));
     }
 
     #[test]
