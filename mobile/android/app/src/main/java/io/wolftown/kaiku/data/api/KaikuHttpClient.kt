@@ -183,8 +183,9 @@ class KaikuHttpClient @Inject constructor(
             performRefresh(refreshToken)
         }
         if (result == RefreshResult.AUTH_REJECTED || result == RefreshResult.NO_SESSION) {
-            authState.setLoggedOut()
+            // Clear first so no LoggedOut observer can read live tokens.
             tokenStorage.clear()
+            authState.setLoggedOut()
         }
         return result
     }
@@ -193,9 +194,13 @@ class KaikuHttpClient @Inject constructor(
      * Performs the token refresh request through the configured client.
      *
      * Returns [RefreshResult.SUCCESS] when tokens were saved,
-     * [RefreshResult.AUTH_REJECTED] on 400/401/403 (invalid refresh token), or
+     * [RefreshResult.AUTH_REJECTED] on 401/403 (invalid refresh token), or
      * [RefreshResult.NETWORK_ERROR] for transient failures (I/O, 5xx, other
-     * non-success statuses) that should not log the user out.
+     * non-success statuses including 400) that should not log the user out.
+     *
+     * If the stored refresh token changed while the request was in flight
+     * (logout cleared it, or a new login replaced it), the response is
+     * discarded so a logged-out session is never resurrected.
      */
     private suspend fun performRefresh(refreshToken: String): RefreshResult {
         return try {
@@ -207,10 +212,7 @@ class KaikuHttpClient @Inject constructor(
             }
             val status = response.status
 
-            if (status == HttpStatusCode.BadRequest ||
-                status == HttpStatusCode.Unauthorized ||
-                status == HttpStatusCode.Forbidden
-            ) {
+            if (status == HttpStatusCode.Unauthorized || status == HttpStatusCode.Forbidden) {
                 return RefreshResult.AUTH_REJECTED
             }
 
@@ -220,6 +222,14 @@ class KaikuHttpClient @Inject constructor(
             }
 
             val authResponse = response.body<AuthResponse>()
+
+            // Re-check: logout (clear) or a new login may have happened while
+            // the request was in flight. Never overwrite either.
+            when (tokenStorage.getRefreshToken()) {
+                null -> return RefreshResult.NO_SESSION
+                refreshToken -> Unit
+                else -> return RefreshResult.SUCCESS
+            }
 
             // Use existing userId since the refresh response does not include it
             val userId = tokenStorage.getUserId() ?: return RefreshResult.NETWORK_ERROR

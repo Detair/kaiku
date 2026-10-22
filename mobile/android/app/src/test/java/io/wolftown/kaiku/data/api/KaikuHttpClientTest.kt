@@ -258,6 +258,7 @@ class KaikuHttpClientTest {
 
         // Should still logout since we got a 401 with no refresh token
         verify { authState.setLoggedOut() }
+        verify { tokenStorage.clear() }
     }
 
     // ========================================================================
@@ -563,5 +564,103 @@ class KaikuHttpClientTest {
         assertEquals(HttpStatusCode.OK, first.await().status)
         assertEquals(HttpStatusCode.OK, second.await().status)
         assertEquals("Exactly one refresh request", 1, refreshRequests.get())
+    }
+
+    @Test
+    fun `forceRefresh server error keeps session`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+
+        val mockEngine = MockEngine {
+            respond(
+                content = """{"error": "internal"}""",
+                status = HttpStatusCode.ServiceUnavailable,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.NETWORK_ERROR, client.forceRefresh())
+        verify(exactly = 0) { authState.setLoggedOut() }
+        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `forceRefresh with malformed request 400 keeps session`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+
+        val mockEngine = MockEngine {
+            respond(
+                content = """{"error": "bad request"}""",
+                status = HttpStatusCode.BadRequest,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.NETWORK_ERROR, client.forceRefresh())
+        verify(exactly = 0) { authState.setLoggedOut() }
+        verify(exactly = 0) { tokenStorage.clear() }
+    }
+
+    @Test
+    fun `logout during in-flight refresh does not resurrect session`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+        var storedRefreshToken: String? = "valid-refresh-token"
+        every { tokenStorage.getRefreshToken() } answers { storedRefreshToken }
+        every { tokenStorage.clear() } answers { storedRefreshToken = null }
+
+        val mockEngine = MockEngine {
+            // User logs out while the refresh request is in flight
+            tokenStorage.clear()
+            refreshOk()
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.NO_SESSION, client.forceRefresh())
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `new login during in-flight refresh is not clobbered`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+        var storedRefreshToken: String? = "valid-refresh-token"
+        every { tokenStorage.getRefreshToken() } answers { storedRefreshToken }
+
+        val mockEngine = MockEngine {
+            // A new login stores a different refresh token while the request is in flight
+            storedRefreshToken = "fresh-login-refresh-token"
+            refreshOk()
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.SUCCESS, client.forceRefresh())
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        verify(exactly = 0) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `rejected refresh clears storage before logging out`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+
+        val mockEngine = MockEngine {
+            respond(
+                content = """{"error": "invalid refresh token"}""",
+                status = HttpStatusCode.Unauthorized,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val client = createClient(mockEngine)
+
+        assertEquals(RefreshResult.AUTH_REJECTED, client.forceRefresh())
+        verifyOrder {
+            tokenStorage.clear()
+            authState.setLoggedOut()
+        }
     }
 }
