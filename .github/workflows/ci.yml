@@ -476,6 +476,37 @@ jobs:
         run: ./gradlew testDebugUnitTest --no-daemon
         continue-on-error: true  # Some tests require native WebRTC libs unavailable in CI
 
+      - name: Signing is enforced when required
+        run: |
+          if ./gradlew help -Pkaiku.requireReleaseSigning=true --no-daemon 2> err.txt; then
+            echo "gradle succeeded without a keystore" >&2
+            exit 1
+          fi
+          grep -q "Release signing required" err.txt
+
+      - name: Release build (R8, ephemeral key)
+        run: |
+          P=$(openssl rand -hex 16)
+          echo "::add-mask::$P"
+          keytool -genkeypair -keystore "$RUNNER_TEMP/ci.jks" -alias ci \
+            -keyalg RSA -keysize 2048 -validity 2 -dname "CN=Kaiku CI" \
+            -storepass "$P" -keypass "$P" >/dev/null 2>&1
+          export KAIKU_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/ci.jks"
+          export KAIKU_ANDROID_KEYSTORE_PASSWORD="$P"
+          export KAIKU_ANDROID_KEY_ALIAS=ci
+          export KAIKU_ANDROID_KEY_PASSWORD="$P"
+          ./gradlew assembleRelease -Pkaiku.requireReleaseSigning=true --no-daemon
+          NAME=$(sed -n 's/^versionName=//p' version.properties)
+          CODE=$(sed -n 's/^versionCode=//p' version.properties)
+          ../../scripts/android_verify_apk.sh app/build/outputs/apk/release/app-release.apk "$NAME" "$CODE"
+
+      - name: Verifier rejects the debug APK
+        run: |
+          if ../../scripts/android_verify_apk.sh app/build/outputs/apk/debug/app-debug.apk 0.1.0 10099; then
+            echo "verifier accepted the debug APK" >&2
+            exit 1
+          fi
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

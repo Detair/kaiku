@@ -31,11 +31,39 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Release signing sources, in priority order:
+    //   1. KAIKU_ANDROID_KEYSTORE_PATH/_PASSWORD, KAIKU_ANDROID_KEY_ALIAS/_PASSWORD (all four non-empty)
+    //   2. keystore.properties (local development)
+    //   3. none -> unsigned release; fails when -Pkaiku.requireReleaseSigning=true
+    val releaseEnvKeys = listOf(
+        "KAIKU_ANDROID_KEYSTORE_PATH",
+        "KAIKU_ANDROID_KEYSTORE_PASSWORD",
+        "KAIKU_ANDROID_KEY_ALIAS",
+        "KAIKU_ANDROID_KEY_PASSWORD",
+    )
+    val releaseEnvSigning = releaseEnvKeys.all { !System.getenv(it).isNullOrEmpty() }
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    val releaseSigningAvailable = releaseEnvSigning || keystorePropertiesFile.exists()
+    val requireReleaseSigning =
+        providers.gradleProperty("kaiku.requireReleaseSigning").orNull == "true"
+    if (requireReleaseSigning && !releaseSigningAvailable) {
+        throw GradleException(
+            "Release signing required but no keystore configured: " +
+                "set KAIKU_ANDROID_KEYSTORE_PATH/_PASSWORD, KAIKU_ANDROID_KEY_ALIAS/_PASSWORD"
+        )
+    }
+
     signingConfigs {
-        val keystorePropertiesFile = rootProject.file("keystore.properties")
-        if (keystorePropertiesFile.exists()) {
+        if (releaseEnvSigning) {
+            create("release") {
+                storeFile = file(System.getenv("KAIKU_ANDROID_KEYSTORE_PATH"))
+                storePassword = System.getenv("KAIKU_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KAIKU_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("KAIKU_ANDROID_KEY_PASSWORD")
+            }
+        } else if (keystorePropertiesFile.exists()) {
             val keystoreProperties = Properties().apply {
-                load(keystorePropertiesFile.inputStream())
+                keystorePropertiesFile.inputStream().use { load(it) }
             }
             create("release") {
                 storeFile = file(keystoreProperties["storeFile"] as String)
@@ -54,9 +82,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            val keystorePropertiesFile = rootProject.file("keystore.properties")
-            if (keystorePropertiesFile.exists()) {
+            if (releaseSigningAvailable) {
                 signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn("Kaiku: release APK is UNSIGNED (no keystore configured)")
             }
         }
     }
