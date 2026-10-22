@@ -124,6 +124,7 @@ export async function initAuth(): Promise<void> {
     if (result.user) {
       setAuthState({
         user: result.user,
+        serverUrl: tauri.getServerUrl() || null,
         isLoading: false,
         isInitialized: true,
       });

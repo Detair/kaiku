@@ -620,8 +620,16 @@ export async function getUploadAuth(): Promise<{
 // Server URL / token accessors
 // ============================================================================
 
+/**
+ * Server base URL. In browser mode this falls back to the page origin; in
+ * native mode `window.location.origin` is `tauri://…` and must never be used.
+ */
 export function getServerUrl(): string {
-  return browserState.serverUrl;
+  const stored = browserState.serverUrl;
+  if (isTauri) {
+    return /^https?:\/\//i.test(stored) ? stored : "";
+  }
+  return stored || (typeof window !== "undefined" ? window.location.origin : "");
 }
 
 /**

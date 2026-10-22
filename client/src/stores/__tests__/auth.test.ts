@@ -7,6 +7,8 @@ vi.mock("@/lib/tauri", () => ({
   logout: vi.fn(),
   oidcCompleteLogin: vi.fn(),
   refreshAccessToken: vi.fn(),
+  // Mirrors the real fallback: the stored server address survives a restart.
+  getServerUrl: vi.fn(() => localStorage.getItem("serverUrl") ?? ""),
 }));
 
 vi.mock("@/stores/websocket", () => ({
@@ -147,6 +149,22 @@ describe("auth store", () => {
       expect(wsConnect).toHaveBeenCalled();
       expect(initPreferences).toHaveBeenCalled();
       expect(initIdleDetection).toHaveBeenCalled();
+    });
+
+    it("initAuth restores serverUrl from the stored server address", async () => {
+      localStorage.setItem("serverUrl", "https://kaiku.example");
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(initWebSocket).mockResolvedValue(undefined);
+      vi.mocked(initPresence).mockResolvedValue(undefined);
+      vi.mocked(wsConnect).mockResolvedValue(undefined);
+      vi.mocked(initPreferences).mockResolvedValue(undefined);
+
+      try {
+        await initAuth();
+        expect(authState.serverUrl).toBe("https://kaiku.example");
+      } finally {
+        localStorage.removeItem("serverUrl");
+      }
     });
 
     it("handles no session gracefully", async () => {
