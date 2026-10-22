@@ -13,6 +13,9 @@ export const en = {
   "common.copied": "Copied",
   "connection.attempt.one": "Attempt {{count}}",
   "connection.attempt.other": "Attempt {{count}}",
+  "connection.reconnecting": "Reconnecting…",
+  "connection.offline": "You're offline. New messages will appear when you're back online.",
+  "connection.retryNow": "Retry now",
 } as const;
 
 export type MessageKey = keyof typeof en;

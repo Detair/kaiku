@@ -451,6 +451,19 @@ describe("auth store", () => {
       expect(authState.user).not.toBeNull();
     });
 
+    it("restarts the WebSocket after a silent session recovery", async () => {
+      setAuthState({ user: createUser(), isInitialized: true });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(true);
+      vi.mocked(wsConnect).mockResolvedValue(undefined);
+
+      window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+
+      await vi.waitFor(() => {
+        expect(wsConnect).toHaveBeenCalledTimes(1);
+      });
+      expect(authState.sessionExpired).toBe(false);
+    });
+
     it("sets sessionExpired and cleans up when retry fails", async () => {
       setAuthState({ user: createUser(), isInitialized: true });
       vi.mocked(tauri.refreshAccessToken).mockResolvedValue(false);

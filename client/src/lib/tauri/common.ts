@@ -375,6 +375,31 @@ async function doRefreshAccessToken(): Promise<boolean> {
   }
 }
 
+/**
+ * Make sure the access token is valid for at least `minValidityMs` more,
+ * refreshing it if not. Used before a WebSocket reconnect (the socket
+ * authenticates with the access token, which may have expired during sleep).
+ *
+ * Returns `false` only when the session is gone (the refresh was rejected and
+ * the tokens were cleared). A refresh that failed for transient reasons
+ * (offline, server restarting) returns `true`: the reconnect attempt then
+ * fails and backs off, and the next attempt refreshes again.
+ */
+export async function ensureFreshAccessToken(
+  minValidityMs = 60_000,
+): Promise<boolean> {
+  const expiresAt = browserState.tokenExpiresAt;
+  if (
+    browserState.accessToken &&
+    expiresAt !== null &&
+    expiresAt - Date.now() >= minValidityMs
+  ) {
+    return true;
+  }
+  if (await refreshAccessToken()) return true;
+  return browserState.accessToken !== null;
+}
+
 // On browser load, attempt to restore session from HttpOnly cookie.
 // The cookie is sent automatically; the server returns a fresh access token.
 if (!isTauri && !browserState.accessToken) {

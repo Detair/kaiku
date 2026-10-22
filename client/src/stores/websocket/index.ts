@@ -28,7 +28,6 @@ import {
   messagesState,
   loadInitialMessages,
 } from "../messages";
-import { showToast, dismissToast } from "@/components/ui/Toast";
 import { handlePreferencesUpdated } from "../preferences";
 import {
   receiveIncomingCall,
@@ -126,18 +125,19 @@ export {
 };
 
 import * as Sentry from "@sentry/browser";
+import {
+  createConnectionSupervisor,
+  type ConnectionDriver,
+  type ConnectionState,
+  type ConnectionSupervisor,
+} from "./connection";
+
+export type { ConnectionState } from "./connection";
 // Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 // Type for unlisten function
 type UnlistenFn = () => void;
-
-// Connection state
-type ConnectionState =
-  | "disconnected"
-  | "connecting"
-  | "connected"
-  | "reconnecting";
 
 interface WebSocketState {
   status: ConnectionState;
@@ -173,6 +173,11 @@ const TYPING_TIMEOUT = 5000; // 5 seconds
 
 // Track connection start time for WS connect duration
 let connectStartTime = 0;
+
+// Browser mode: reconnect supervisor and the one message handler attached to
+// the current socket.
+let browserSupervisor: ConnectionSupervisor | null = null;
+let detachBrowserMessageHandler: (() => void) | null = null;
 
 /**
  * Initialize WebSocket event listeners.
@@ -210,20 +215,13 @@ export async function initWebSocket(): Promise<void> {
     pending.push(
       listen("ws:disconnected", () => {
         setWsState({ status: "disconnected" });
-        dismissToast("ws-reconnect");
       }),
     );
 
+    // The ConnectionIndicator renders this state (replaces the old toast).
     pending.push(
       listen<number>("ws:reconnecting", (event) => {
         setWsState({ status: "reconnecting", reconnectAttempt: event.payload });
-        showToast({
-          type: "warning",
-          title: "Reconnecting...",
-          message: `Attempt ${event.payload}`,
-          id: "ws-reconnect",
-          duration: 0,
-        });
       }),
     );
 
@@ -903,53 +901,43 @@ export async function initWebSocket(): Promise<void> {
 
     unlisteners.push(...await Promise.all(pending));
   } else {
-    // Browser mode - use browser WebSocket events
-    const attachMessageHandler = () => {
-      const ws = tauri.getBrowserWebSocket();
-      if (ws) {
-        console.log("[WebSocket] Attaching message handler to WebSocket");
-        const messageHandler = async (event: MessageEvent) => {
-          try {
-            const data = JSON.parse(event.data) as ServerEvent;
-            await handleServerEvent(data);
-          } catch (err) {
-            console.error("Failed to parse WebSocket message:", err);
-          }
-        };
-        ws.addEventListener("message", messageHandler);
-        unlisteners.push(() =>
-          ws.removeEventListener("message", messageHandler),
-        );
-      } else {
-        console.warn("[WebSocket] No WebSocket instance found");
-      }
-    };
-
-    // Attach initially
-    attachMessageHandler();
-
-    // Re-attach on reconnection
-    const reconnectHandler = () => {
-      console.log(
-        "[WebSocket] Received ws-reconnected event, re-attaching message handler",
-      );
-      // Use setTimeout to ensure WebSocket is fully ready
-      setTimeout(() => {
-        attachMessageHandler();
-      }, 100);
-    };
-    window.addEventListener("ws-reconnected", reconnectHandler);
-    unlisteners.push(() =>
-      window.removeEventListener("ws-reconnected", reconnectHandler),
-    );
+    // Browser mode: the handler is (re-)attached on every open by the
+    // reconnect supervisor's driver; attach now if a socket already exists.
+    if (tauri.getBrowserWebSocket()) attachBrowserMessageHandler();
   }
+}
+
+/**
+ * Attach the server-event handler to the current browser socket, removing the
+ * one attached to any previous socket. Exactly one handler exists at a time.
+ */
+function attachBrowserMessageHandler(): void {
+  detachBrowserMessageHandler?.();
+  detachBrowserMessageHandler = null;
+
+  const ws = tauri.getBrowserWebSocket();
+  if (!ws) {
+    console.warn("[WebSocket] No WebSocket instance found");
+    return;
+  }
+  const messageHandler = async (event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as ServerEvent;
+      await handleServerEvent(data);
+    } catch (err) {
+      console.error("Failed to parse WebSocket message:", err);
+    }
+  };
+  ws.addEventListener("message", messageHandler);
+  detachBrowserMessageHandler = () =>
+    ws.removeEventListener("message", messageHandler);
 }
 
 /**
  * Handle server events in browser mode.
  * IMPORTANT: Voice events are handled asynchronously to ensure proper ICE candidate processing.
  */
-async function handleServerEvent(event: ServerEvent): Promise<void> {
+export async function handleServerEvent(event: ServerEvent): Promise<void> {
   console.log("[WebSocket] Received event:", event.type);
 
   switch (event.type) {
@@ -1413,6 +1401,10 @@ async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
     }
 
+    case "pong":
+      // Watchdog ping reply; liveness is tracked by the socket hooks.
+      break;
+
     default:
       console.log("Unhandled server event:", event.type);
   }
@@ -1426,6 +1418,8 @@ export async function cleanupWebSocket(): Promise<void> {
     unlisten();
   }
   unlisteners = [];
+  detachBrowserMessageHandler?.();
+  detachBrowserMessageHandler = null;
 
   // Clear typing timers
   for (const timer of Object.values(typingTimers)) {
@@ -1434,45 +1428,7 @@ export async function cleanupWebSocket(): Promise<void> {
 }
 
 /**
- * Re-initialize WebSocket listeners after reconnection (browser mode only).
- */
-export async function reinitWebSocketListeners(): Promise<void> {
-  if (isTauri) return;
-
-  console.log("[WebSocket] Reinitializing WebSocket listeners");
-
-  const ws = tauri.getBrowserWebSocket();
-  if (!ws) {
-    console.warn(
-      "[WebSocket] No WebSocket instance available for reinitialization",
-    );
-    return;
-  }
-
-  // Remove old listener if it exists (prevent duplicates)
-  const oldListeners = unlisteners.filter((ul) =>
-    ul.toString().includes("message"),
-  );
-  oldListeners.forEach((ul) => ul());
-
-  // Attach new message handler
-  const messageHandler = (event: MessageEvent) => {
-    try {
-      const data = JSON.parse(event.data) as ServerEvent;
-      handleServerEvent(data);
-    } catch (err) {
-      console.error("Failed to parse WebSocket message:", err);
-    }
-  };
-
-  ws.addEventListener("message", messageHandler);
-  unlisteners.push(() => ws.removeEventListener("message", messageHandler));
-
-  console.log("[WebSocket] Message handler attached to WebSocket instance");
-}
-
-/**
- * Handle post-reconnect recovery: re-subscribe channels, reload messages, dismiss toast.
+ * Handle post-reconnect recovery: re-subscribe channels, reload messages.
  * Snapshots current subscribed channels before resetting state, then re-subscribes and reloads.
  */
 /**
@@ -1545,29 +1501,88 @@ async function handleReconnect(): Promise<void> {
 
   // Signal connection ready after subscriptions are restored
   window.dispatchEvent(new Event("ws-connected"));
-  dismissToast("ws-reconnect");
+}
+
+/** Browser transport for the reconnect supervisor. */
+const browserDriver: ConnectionDriver = {
+  async open() {
+    connectStartTime = Date.now();
+    await tauri.wsConnect();
+    attachBrowserMessageHandler();
+  },
+  close() {
+    tauri.wsDisconnect().catch((err) =>
+      console.error("[WS] Failed to close socket:", err),
+    );
+  },
+  sendPing() {
+    tauri.wsPing().catch((err) => console.warn("[WS] Ping failed:", err));
+  },
+};
+
+function getBrowserSupervisor(): ConnectionSupervisor {
+  browserSupervisor ??= createConnectionSupervisor({
+    driver: browserDriver,
+    mode: "managed",
+    onStatus: (status, attempt) => {
+      setWsState({
+        status,
+        reconnectAttempt: attempt,
+        ...(status === "connected" ? { error: null } : {}),
+      });
+    },
+    onRecovered: handleReconnect,
+    ensureFreshToken: () => tauri.ensureFreshAccessToken(),
+  });
+  return browserSupervisor;
+}
+
+/**
+ * Retry the connection immediately (ConnectionIndicator "Retry now").
+ * Native mode has no supervisor yet; its Rust client retries on its own.
+ */
+export function retryConnectionNow(): void {
+  browserSupervisor?.triggerNow("user");
+}
+
+/** Whether "Retry now" can do anything in this runtime (browser only, for now). */
+export function canRetryConnectionNow(): boolean {
+  return !isTauri;
 }
 
 /**
  * Connect to the WebSocket server.
  */
 export async function connect(): Promise<void> {
+  if (isTauri) {
+    // Tauri mode updates state via the ws:* event listeners.
+    try {
+      setWsState({ status: "connecting", error: null });
+      connectStartTime = Date.now();
+      await tauri.wsConnect();
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      setWsState({ status: "disconnected", error });
+      throw err;
+    }
+    return;
+  }
+
+  // Browser mode: the supervisor opens the socket and keeps it alive.
   try {
-    setWsState({ status: "connecting", error: null });
-    connectStartTime = Date.now();
-    await tauri.wsConnect();
-    // In browser mode, wsConnect resolves after onopen; update store state here
-    // (Tauri mode updates via the ws:connected event listener instead)
-    if (!isTauri) {
-      if (wsState.subscribedChannels.size > 0) {
-        await handleReconnect();
-      } else {
-        setWsState({ status: "connected", reconnectAttempt: 0, error: null });
-      }
+    setWsState({ error: null });
+    tauri.setBrowserSocketHooks({
+      onClose: (intentional) => browserSupervisor?.notifyClosed(intentional),
+      onFrame: () => browserSupervisor?.notifyFrame(),
+    });
+    await getBrowserSupervisor().start();
+    if (wsState.subscribedChannels.size > 0) {
+      await handleReconnect();
     }
   } catch (err) {
+    // Status stays as the supervisor set it ("reconnecting": it retries).
     const error = err instanceof Error ? err.message : String(err);
-    setWsState({ status: "disconnected", error });
+    setWsState({ error });
     throw err;
   }
 }
@@ -1597,7 +1612,10 @@ export function waitForConnection(timeoutMs = 5000): Promise<boolean> {
  */
 export async function disconnect(): Promise<void> {
   try {
+    browserSupervisor?.stop();
     await tauri.wsDisconnect();
+    detachBrowserMessageHandler?.();
+    detachBrowserMessageHandler = null;
     setWsState({ status: "disconnected", subscribedChannels: new Set() });
   } catch (err) {
     console.error("Failed to disconnect:", err);

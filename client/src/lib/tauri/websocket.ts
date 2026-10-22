@@ -23,6 +23,20 @@ export type ConnectionStatus =
 let browserWs: WebSocket | null = null;
 let browserWsStatus: ConnectionStatus = { type: "disconnected" };
 
+/** Lifecycle callbacks for the current browser socket (reconnect supervisor). */
+export interface BrowserSocketHooks {
+  /** The live socket closed; `intentional` is true only for wsDisconnect(). */
+  onClose(intentional: boolean): void;
+  /** Any inbound frame arrived (watchdog liveness). */
+  onFrame(): void;
+}
+
+let socketHooks: BrowserSocketHooks | null = null;
+
+export function setBrowserSocketHooks(hooks: BrowserSocketHooks): void {
+  socketHooks = hooks;
+}
+
 // ============================================================================
 // Connection lifecycle
 // ============================================================================
@@ -48,20 +62,20 @@ export async function wsConnect(): Promise<void> {
   const wsTokenProtocol = `access_token.${browserState.accessToken}`;
 
   return new Promise((resolve, reject) => {
-    browserWs = new WebSocket(wsUrl, [wsTokenProtocol, "access_token"]);
+    const ws = new WebSocket(wsUrl, [wsTokenProtocol, "access_token"]);
+    browserWs = ws;
+    // Events of a socket that is no longer `browserWs` (replaced, or closed
+    // via wsDisconnect) are ignored so a late close can't hit a newer socket.
+    const isCurrent = () => browserWs === ws;
 
-    browserWs.onopen = async () => {
+    ws.onopen = () => {
+      if (!isCurrent()) {
+        ws.close();
+        reject(new Error("WebSocket connection was cancelled"));
+        return;
+      }
       browserWsStatus = { type: "connected" };
       console.log("[WebSocket] Connected to server");
-
-      // Re-initialize WebSocket event listeners
-      try {
-        const { reinitWebSocketListeners } = await import("@/stores/websocket");
-        await reinitWebSocketListeners();
-        console.log("[WebSocket] Event listeners reinitialized");
-      } catch (err) {
-        console.error("[WebSocket] Failed to reinitialize listeners:", err);
-      }
 
       // Dispatch ws-connected event so waitForConnection() resolves in browser mode
       window.dispatchEvent(new Event("ws-connected"));
@@ -69,28 +83,43 @@ export async function wsConnect(): Promise<void> {
       resolve();
     };
 
-    browserWs.onerror = (err) => {
-      browserWsStatus = { type: "disconnected" };
+    ws.addEventListener("message", () => {
+      if (isCurrent()) socketHooks?.onFrame();
+    });
+
+    ws.onerror = (err) => {
+      if (isCurrent()) browserWsStatus = { type: "disconnected" };
       console.error("[WebSocket] Connection error:", err);
       reject(err);
     };
 
-    browserWs.onclose = () => {
+    ws.onclose = () => {
+      if (!isCurrent()) return;
+      browserWs = null;
       browserWsStatus = { type: "disconnected" };
       console.log("[WebSocket] Connection closed");
+      // No-op if the socket had opened; settles a handshake that closed early.
+      reject(new Error("WebSocket closed before it opened"));
+      socketHooks?.onClose(false);
     };
   });
 }
 
+/** Close the socket on purpose (logout, session end); never auto-reconnects. */
 export async function wsDisconnect(): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_disconnect");
   }
 
-  browserWs?.close();
+  const ws = browserWs;
+  // Detach first: the socket's own onclose then sees it is no longer current.
   browserWs = null;
   browserWsStatus = { type: "disconnected" };
+  if (ws) {
+    ws.close();
+    socketHooks?.onClose(true);
+  }
 }
 
 export async function wsStatus(): Promise<ConnectionStatus> {
