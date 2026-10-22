@@ -4,8 +4,20 @@
 
     <!-- Common -->
     <string name="common_back">Back</string>
+    <string name="common_retry">Retry</string>
 
     <!-- Chat -->
     <string name="chat_load_earlier">Load earlier messages</string>
     <string name="chat_empty">No messages yet. Start the conversation!</string>
+
+    <!-- Home -->
+    <string name="home_open_servers">Open servers</string>
+    <string name="home_direct_messages">Direct messages</string>
+    <string name="home_refresh">Refresh</string>
+    <string name="home_settings">Settings</string>
+    <string name="home_select_server">Select a server to get started</string>
+    <string name="home_open_server_list">Open server list</string>
+    <string name="home_no_servers">No servers yet</string>
+    <string name="home_servers_load_failed">Couldn\'t load your servers.</string>
+    <string name="home_channels_load_failed">Couldn\'t load this server\'s channels.</string>
 </resources>

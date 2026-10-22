@@ -4,6 +4,8 @@ import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.WsJson
 import io.wolftown.kaiku.domain.model.AuthResponse
+import io.wolftown.kaiku.domain.model.Channel
+import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.CursorPage
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.UserStatus
@@ -62,5 +64,18 @@ class GoldenContractTest {
         assertEquals(900, auth.expiresIn)
         assertEquals("Bearer", auth.tokenType)
         assertFalse(auth.setupRequired)
+    }
+
+    @Test
+    fun `guild channels fixture decodes with forum and announcement`() {
+        val channels = KaikuJson.decodeFromString<List<Channel>>(Golden.load("guild_channels.json"))
+
+        assertEquals(4, channels.size)
+        assertEquals(
+            listOf(ChannelType.TEXT, ChannelType.VOICE, ChannelType.UNKNOWN, ChannelType.UNKNOWN),
+            channels.map { it.channelType }
+        )
+        assertEquals(2, channels.count { it.channelType == ChannelType.UNKNOWN })
+        assertEquals(3, channels[0].unreadCount)
     }
 }

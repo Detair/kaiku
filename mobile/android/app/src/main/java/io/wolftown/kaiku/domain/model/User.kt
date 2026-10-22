@@ -1,15 +1,31 @@
 package io.wolftown.kaiku.domain.model
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-@Serializable
+/** Presence states. Values from a newer server decode to [UNKNOWN]. */
+@Serializable(with = UserStatusSerializer::class)
 enum class UserStatus {
-    @SerialName("online") ONLINE,
-    @SerialName("away") IDLE,
-    @SerialName("busy") DND,
-    @SerialName("offline") OFFLINE;
+    ONLINE,
+    IDLE,
+    DND,
+    OFFLINE,
+    UNKNOWN;
 }
+
+object UserStatusSerializer : LenientEnumSerializer<UserStatus>(
+    serialName = "UserStatus",
+    values = UserStatus.values(),
+    unknown = UserStatus.UNKNOWN,
+    wireName = { status ->
+        when (status) {
+            UserStatus.ONLINE -> "online"
+            UserStatus.IDLE -> "away"
+            UserStatus.DND -> "busy"
+            UserStatus.OFFLINE -> "offline"
+            UserStatus.UNKNOWN -> "unknown"
+        }
+    },
+)
 
 @Serializable
 data class User(
