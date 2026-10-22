@@ -343,6 +343,9 @@ pub enum ServerEvent {
     Ready {
         /// Authenticated user ID.
         user_id: Uuid,
+        /// Server clock when `Ready` was built (RFC 3339 UTC); clients use it
+        /// as the reconnect catch-up watermark.
+        server_time: chrono::DateTime<chrono::Utc>,
     },
     /// Pong response
     Pong,

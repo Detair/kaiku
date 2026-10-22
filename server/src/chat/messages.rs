@@ -35,6 +35,8 @@ use crate::ws::{broadcast_admin_event, broadcast_to_channel, broadcast_to_user, 
 ///
 /// Returns cursor-based pagination with `has_more` indicator.
 /// Use the `next_cursor` value as `before` parameter to fetch the next page.
+/// With `after=<message_id>` the page is returned oldest first (catch-up); pass
+/// `next_cursor` as the next `after`. `after` cannot be combined with `before`/`around`.
 #[utoipa::path(
     get,
     path = "/api/messages/channel/{channel_id}",
@@ -62,6 +64,12 @@ pub async fn list(
         .await
         .map_err(|_| ChatError::Forbidden)?;
 
+    if query.after.is_some() && (query.before.is_some() || query.around.is_some()) {
+        return Err(ChatError::Validation(
+            "`after` cannot be combined with `before` or `around`".to_string(),
+        ));
+    }
+
     // Load combined block set for filtering
     let blocked_ids = block_cache::load_blocked_users(&state.db, &state.redis, auth_user.id)
         .await
@@ -82,7 +90,17 @@ pub async fn list(
     let limit = query.limit.clamp(1, 100);
 
     // Fetch messages — either around a specific message or before-based pagination
-    let (mut messages, has_more) = if let Some(around_id) = query.around {
+    let (mut messages, has_more) = if let Some(after_id) = query.after {
+        // Catch-up: ascending page; fetch one extra to determine if there are more
+        let mut msgs = db::list_messages_after(&state.db, channel_id, after_id, limit + 1)
+            .await?
+            .ok_or_else(|| ChatError::Validation("Unknown cursor".to_string()))?;
+        let has_more = msgs.len() as i64 > limit;
+        if has_more {
+            msgs.pop();
+        }
+        (msgs, has_more)
+    } else if let Some(around_id) = query.around {
         let msgs = db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
         let has_more = msgs.len() as i64 >= limit;
         (msgs, has_more)
@@ -107,7 +125,8 @@ pub async fn list(
     // Build response with author info, attachments, and reactions
     let response = build_message_responses(&state.db, auth_user.id, messages).await?;
 
-    // Get the cursor for the next page (oldest message ID)
+    // Cursor for the next page: the last item in response order (oldest for
+    // `before` pages, newest for `after` pages).
     let next_cursor = if has_more {
         response.last().map(|m| m.id)
     } else {
@@ -1859,6 +1878,7 @@ mod tests {
         let query = ListMessagesQuery {
             before: None,
             around: None,
+            after: None,
             limit: 50,
         };
 
@@ -1972,6 +1992,7 @@ mod tests {
         let query = ListMessagesQuery {
             before: None,
             around: None,
+            after: None,
             limit: 50,
         };
 
@@ -2051,6 +2072,7 @@ mod tests {
         let query1 = ListMessagesQuery {
             before: None,
             around: None,
+            after: None,
             limit: 3,
         };
 
@@ -2083,6 +2105,7 @@ mod tests {
         let query2 = ListMessagesQuery {
             before: Some(oldest_from_page1),
             around: None,
+            after: None,
             limit: 3,
         };
 
@@ -2112,6 +2135,7 @@ mod tests {
         let query_all = ListMessagesQuery {
             before: None,
             around: None,
+            after: None,
             limit: 100,
         };
 
@@ -2170,6 +2194,7 @@ mod tests {
         let query = ListMessagesQuery {
             before: None,
             around: None,
+            after: None,
             limit: 50,
         };
 
@@ -2269,6 +2294,7 @@ mod tests {
         let query_zero = ListMessagesQuery {
             before: None,
             around: None,
+            after: None,
             limit: 0,
         };
 
@@ -2288,6 +2314,7 @@ mod tests {
         let query_large = ListMessagesQuery {
             before: None,
             around: None,
+            after: None,
             limit: 200,
         };
 

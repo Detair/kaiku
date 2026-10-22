@@ -979,6 +979,47 @@ pub async fn list_messages(
     }
 }
 
+/// List messages newer than `after`, oldest first (catch-up after being offline).
+///
+/// Returns `None` when `after` is not a message of this channel (soft-deleted
+/// anchors of the channel are valid). Otherwise returns top-level, non-deleted
+/// messages strictly after the anchor by `(created_at, id)`.
+pub async fn list_messages_after(
+    pool: &PgPool,
+    channel_id: Uuid,
+    after: Uuid,
+    limit: i64,
+) -> sqlx::Result<Option<Vec<Message>>> {
+    let anchor: Option<(chrono::DateTime<chrono::Utc>,)> =
+        sqlx::query_as("SELECT created_at FROM messages WHERE id = $1 AND channel_id = $2")
+            .bind(after)
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await?;
+    let Some((anchor_created_at,)) = anchor else {
+        return Ok(None);
+    };
+
+    let rows = sqlx::query_as::<_, Message>(
+        r"
+        SELECT * FROM messages
+        WHERE channel_id = $1
+          AND deleted_at IS NULL
+          AND parent_id IS NULL
+          AND (created_at, id) > ($2, $3)
+        ORDER BY created_at ASC, id ASC
+        LIMIT $4
+        ",
+    )
+    .bind(channel_id)
+    .bind(anchor_created_at)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(rows))
+}
+
 /// Fetch messages around a specific message ID.
 /// Returns up to `limit` messages centered on `around_id`.
 /// If `around_id` is deleted or doesn't exist, returns empty vec (caller should fallback).

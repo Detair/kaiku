@@ -409,7 +409,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         // `Ready` is the first frame: queue it, then let the pub/sub task start
         // forwarding (events published meanwhile wait in its receiver).
         let _ = tx
-            .send(OutboundMsg::Event(ServerEvent::Ready { user_id }))
+            .send(OutboundMsg::Event(ServerEvent::Ready {
+                user_id,
+                server_time: chrono::Utc::now(),
+            }))
             .await;
         let _ = start_tx.send(());
         send_presence_snapshot(&state, user_id, &tx).await;
@@ -1730,9 +1733,12 @@ mod pubsub_tests {
         }
         assert!(rx.try_recv().is_err(), "event forwarded before start");
 
-        tx.send(OutboundMsg::Event(ServerEvent::Ready { user_id }))
-            .await
-            .unwrap();
+        tx.send(OutboundMsg::Event(ServerEvent::Ready {
+            user_id,
+            server_time: chrono::Utc::now(),
+        }))
+        .await
+        .unwrap();
         start_tx.send(()).unwrap();
 
         tokio::select! {

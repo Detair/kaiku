@@ -31,7 +31,7 @@
 5. Load friends, guild IDs and block sets
 6. Spawn the Redis pub/sub task (`handle_pubsub`); it fires a `ready` oneshot once `psubscribe("channel:*")` and all per-user `subscribe` calls have returned (a failed `psubscribe` or `user:{id}` subscribe ends the pipeline with `SubscribeFailed`)
 7. Wait for that `ready` signal (max 5 s; on timeout or early failure the socket is closed with **1011**)
-8. Queue `Ready { user_id }` — so `Ready` always means "subscriptions are live" — then send the `start` oneshot; only then does the pub/sub task begin forwarding (events published in between wait in its broadcast receiver), so `Ready` is always the first frame. Then the friends' presence snapshot
+8. Queue `Ready { user_id, server_time }` (server_time = RFC 3339 UTC, taken when Ready is built; clients use it as the catch-up watermark) — so `Ready` always means "subscriptions are live" — then send the `start` oneshot; only then does the pub/sub task begin forwarding (events published in between wait in its broadcast receiver), so `Ready` is always the first frame. Then the friends' presence snapshot
 9. Main loop (`select!`): client messages, server heartbeat, and the pub/sub task's exit
 10. On disconnect: Abort background tasks, set presence to `offline`
 
@@ -74,7 +74,7 @@ VoiceUnmute { channel_id }
 
 **Server → Client** (`ServerEvent` enum):
 ```rust
-Ready { user_id }                            // Connection authenticated
+Ready { user_id, server_time }               // Connection authenticated
 Pong                                         // Keepalive response
 Subscribed { channel_id }                    // Subscription confirmed
 Unsubscribed { channel_id }                  // Unsubscription confirmed

@@ -255,6 +255,10 @@ pub struct ListMessagesQuery {
     pub before: Option<Uuid>,
     #[serde(default)]
     pub around: Option<Uuid>,
+    /// Catch-up cursor: return messages newer than this one, oldest first.
+    /// Cannot be combined with `before` or `around`.
+    #[serde(default)]
+    pub after: Option<Uuid>,
     #[serde(default = "default_message_limit")]
     pub limit: i64,
 }

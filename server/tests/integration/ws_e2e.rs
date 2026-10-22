@@ -138,3 +138,21 @@ async fn ws_ready_is_first_frame_while_events_are_published(pool: PgPool) {
     publisher.abort();
     redis.quit().await.expect("quit test Valkey client");
 }
+
+#[sqlx::test]
+async fn ws_ready_carries_server_time(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+
+    let mut ws = ws_connect(&server, &token).await;
+    let ready = next_ws_event(&mut ws, "ready", Duration::from_secs(5)).await;
+    let t = chrono::DateTime::parse_from_rfc3339(ready["server_time"].as_str().unwrap()).unwrap();
+    assert!(
+        (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+            .num_seconds()
+            .abs()
+            < 5
+    );
+}

@@ -11,7 +11,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
-use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
+use super::helpers::{
+    body_to_json, create_test_user, generate_access_token, insert_deleted_message,
+    insert_message_at, TestApp,
+};
 
 // ============================================================================
 // Test Helpers
@@ -296,4 +299,133 @@ async fn test_create_message_nonexistent_channel(pool: PgPool) {
         404,
         "Posting to nonexistent channel should return 404"
     );
+}
+
+// ============================================================================
+// Catch-up (`after` cursor)
+// ============================================================================
+
+/// Set up a user, guild and channel; returns `(user_id, token, channel_id)`.
+async fn catchup_setup(app: &TestApp, name: &str) -> (Uuid, String, Uuid) {
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
+    let channel_id = super::helpers::create_channel(&app.pool, guild_id, name).await;
+    (user_id, token, channel_id)
+}
+
+fn ids(items: &serde_json::Value) -> Vec<String> {
+    items
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn get_status(
+    app: &TestApp,
+    channel_id: Uuid,
+    token: &str,
+    qs: &str,
+) -> (u16, serde_json::Value) {
+    let req = TestApp::request(
+        Method::GET,
+        &format!("/api/messages/channel/{channel_id}?{qs}"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status().as_u16();
+    (status, body_to_json(resp).await)
+}
+
+#[sqlx::test]
+async fn test_list_messages_after_returns_ascending_page(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "after-page").await;
+    let mut m = Vec::new();
+    for i in 1..=5 {
+        let t = format!("2026-01-01T00:00:0{i}Z");
+        m.push(insert_message_at(&app.pool, channel_id, user_id, &format!("m{i}"), &t).await);
+    }
+
+    let page = list_messages(&app, channel_id, &token, &format!("after={}&limit=2", m[1])).await;
+    assert_eq!(
+        ids(&page["items"]),
+        vec![m[2].to_string(), m[3].to_string()]
+    );
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page["next_cursor"], m[3].to_string());
+
+    let page = list_messages(&app, channel_id, &token, &format!("after={}&limit=2", m[3])).await;
+    assert_eq!(ids(&page["items"]), vec![m[4].to_string()]);
+    assert_eq!(page["has_more"], false);
+    assert!(page["next_cursor"].is_null());
+}
+
+#[sqlx::test]
+async fn test_list_messages_after_excludes_deleted_and_thread_replies(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "after-filter").await;
+    let m1 = insert_message_at(&app.pool, channel_id, user_id, "m1", "2026-01-01T00:00:01Z").await;
+    let _deleted = insert_deleted_message(&app.pool, channel_id, user_id, "gone").await;
+    let reply = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, user_id, content, parent_id, created_at) VALUES ($1, $2, $3, 'reply', $4, NOW())",
+    )
+    .bind(reply)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(m1)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let m3 = insert_message_at(&app.pool, channel_id, user_id, "m3", "2099-01-01T00:00:00Z").await;
+
+    let page = list_messages(&app, channel_id, &token, &format!("after={m1}")).await;
+    assert_eq!(ids(&page["items"]), vec![m3.to_string()]);
+}
+
+#[sqlx::test]
+async fn test_list_messages_after_and_before_is_400(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "after-before").await;
+    let m1 = insert_message_at(&app.pool, channel_id, user_id, "m1", "2026-01-01T00:00:01Z").await;
+    for other in ["before", "around"] {
+        let (status, body) = get_status(
+            &app,
+            channel_id,
+            &token,
+            &format!("after={m1}&{other}={m1}"),
+        )
+        .await;
+        assert_eq!(status, 400, "after+{other}");
+        assert_eq!(body["error"], "VALIDATION_ERROR");
+    }
+}
+
+#[sqlx::test]
+async fn test_list_messages_after_foreign_or_unknown_anchor_is_400(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "after-own").await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild2 = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
+    let other_channel = super::helpers::create_channel(&app.pool, guild2, "after-other").await;
+    let foreign = insert_message_at(
+        &app.pool,
+        other_channel,
+        user_id,
+        "x",
+        "2026-01-01T00:00:01Z",
+    )
+    .await;
+
+    for anchor in [foreign, Uuid::now_v7()] {
+        let (status, body) = get_status(&app, channel_id, &token, &format!("after={anchor}")).await;
+        assert_eq!(status, 400);
+        assert_eq!(body["error"], "VALIDATION_ERROR");
+    }
 }
