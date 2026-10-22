@@ -226,6 +226,63 @@ def check_release_secret_scoping(release: dict, errors: list[str]) -> None:
                 )
 
 
+ANDROID_SECRETS = [
+    "ANDROID_KEYSTORE_BASE64",
+    "ANDROID_KEYSTORE_PASSWORD",
+    "ANDROID_KEY_ALIAS",
+    "ANDROID_KEY_PASSWORD",
+]
+ANDROID_SIGNING_FLAG = "-Pkaiku.requireReleaseSigning=true"
+
+
+def check_release_android(release: dict, errors: list[str]) -> None:
+    label = "release.yml"
+    jobs = release.get("jobs") or {}
+    job = jobs.get("build-android")
+    if not isinstance(job, dict):
+        errors.append(f"{label}: missing job 'build-android'")
+        return
+    if "prepare-release" not in _needs(job):
+        errors.append(f"{label}: job 'build-android' must have needs: prepare-release")
+    env = job.get("environment")
+    if not isinstance(env, str) or "release" not in env or PUBLISH_GATE not in env:
+        errors.append(
+            f"{label}: job 'build-android' environment must be 'release' only on publish "
+            f"(expression with {PUBLISH_GATE}), got {env!r}"
+        )
+
+    runs = [str(step.get("run", "")) for step in _job_steps(job)]
+    gate = [run for run in runs if "require_secrets.py" in run]
+    if not gate:
+        errors.append(f"{label}: build-android must gate signing with require_secrets.py")
+    else:
+        for name in ANDROID_SECRETS:
+            if not any(name in run for run in gate):
+                errors.append(f"{label}: build-android require_secrets.py must name {name}")
+
+    gradle = [run for run in runs if "assembleRelease" in run]
+    if not gradle:
+        errors.append(f"{label}: build-android must run gradlew assembleRelease")
+    elif not any(ANDROID_SIGNING_FLAG in run for run in gradle):
+        errors.append(f"{label}: build-android must pass {ANDROID_SIGNING_FLAG} on publish runs")
+    elif any(
+        ANDROID_SIGNING_FLAG in line and "publish" not in line.lower()
+        and not any("publish" in prev.lower() for prev in run.splitlines()[max(0, i - 3):i])
+        for run in gradle for i, line in enumerate(run.splitlines())
+    ):
+        errors.append(f"{label}: build-android {ANDROID_SIGNING_FLAG} must be gated on publish")
+
+    if not any("android_verify_apk.sh" in run for run in runs):
+        errors.append(f"{label}: build-android must verify the APK with android_verify_apk.sh")
+
+    publish = jobs.get("publish-release")
+    if isinstance(publish, dict):
+        if "build-android" not in _needs(publish):
+            errors.append(f"{label}: publish-release must need build-android")
+        if not any("Kaiku-*.apk" in run for run in (str(s.get("run", "")) for s in _job_steps(publish))):
+            errors.append(f"{label}: publish-release must collect Kaiku-*.apk into release assets")
+
+
 def check_release_hygiene(release_text: str, release: dict, errors: list[str]) -> None:
     label = "release.yml"
     permissions = release.get("permissions")
@@ -386,6 +443,7 @@ def main() -> int:
             check_release_workflow(release, ROOT, errors)
             check_release_secret_scoping(release, errors)
             check_release_hygiene(release_text, release, errors)
+            check_release_android(release, errors)
             check_server_image(release, "release.yml", errors)
     if ci_text:
         try:

@@ -19,6 +19,7 @@ from check_ci_guardrails import (  # noqa: E402
     check_env_doc,
     check_native_deps_usage,
     check_no_signing_key_in_pr_workflows,
+    check_release_android,
     check_release_hygiene,
     check_release_secret_scoping,
     check_release_workflow,
@@ -77,14 +78,33 @@ jobs:
           file: infra/docker/Dockerfile
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  build-android:
+    needs: prepare-release
+    environment: ${{ needs.prepare-release.outputs.publish == 'true' && 'release' || '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: python3 scripts/require_secrets.py --mode dry-run --output signing ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD
+      - run: |
+          flags=()
+          if [ "$PUBLISH" = true ]; then flags+=(-Pkaiku.requireReleaseSigning=true); fi
+          ./gradlew assembleRelease "${flags[@]}"
+          scripts/android_verify_apk.sh app.apk 1 2
   publish-release:
-    needs: [prepare-release, build-tauri, build-docker]
+    needs: [prepare-release, build-tauri, build-docker, build-android]
     if: needs.prepare-release.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - run: python3 scripts/generate_updater_manifest.py --mode publish
+      - run: cp artifacts/android-apk/Kaiku-*.apk release-assets/
 """
 
 TAURI_JOB_TEMPLATE = """
@@ -192,6 +212,64 @@ class ReleaseSecretScopingTest(unittest.TestCase):
         release = load_release()
         self.assertNotIn("environment", release["jobs"]["build-docker"])
         self.assertEqual(self.check(release), [])
+
+
+class ReleaseAndroidJobTest(unittest.TestCase):
+    def check(self, release: dict) -> list[str]:
+        errors: list[str] = []
+        check_release_android(release, errors)
+        return errors
+
+    def test_valid_fixture_passes(self):
+        self.assertEqual(self.check(load_release()), [])
+
+    def test_release_android_job_contract(self):
+        release = load_release()
+        del release["jobs"]["build-android"]
+        self.assertTrue(any("build-android" in e for e in self.check(release)))
+
+        release = load_release()
+        del release["jobs"]["build-android"]["needs"]
+        self.assertTrue(any("prepare-release" in e for e in self.check(release)))
+
+        release = load_release()
+        release["jobs"]["build-android"]["environment"] = "release"
+        self.assertTrue(any("environment" in e for e in self.check(release)))
+
+        release = load_release()
+        step = release["jobs"]["build-android"]["steps"][1]
+        step["run"] = step["run"].replace(" ANDROID_KEY_PASSWORD", "")
+        self.assertTrue(any("ANDROID_KEY_PASSWORD" in e for e in self.check(release)))
+
+        release = load_release()
+        step = release["jobs"]["build-android"]["steps"][1]
+        step["run"] = step["run"].replace("scripts/require_secrets.py", "true")
+        self.assertTrue(any("require_secrets" in e for e in self.check(release)))
+
+        release = load_release()
+        step = release["jobs"]["build-android"]["steps"][2]
+        step["run"] = step["run"].replace("-Pkaiku.requireReleaseSigning=true", "")
+        self.assertTrue(any("requireReleaseSigning" in e for e in self.check(release)))
+
+        release = load_release()
+        step = release["jobs"]["build-android"]["steps"][2]
+        step["run"] = step["run"].replace("android_verify_apk.sh", "true")
+        self.assertTrue(any("android_verify_apk" in e for e in self.check(release)))
+
+        release = load_release()
+        pub = release["jobs"]["publish-release"]
+        pub["steps"][1]["run"] = "true"
+        self.assertTrue(any("Kaiku-*.apk" in e for e in self.check(release)))
+
+        release = load_release()
+        release["jobs"]["publish-release"]["needs"].remove("build-android")
+        self.assertTrue(any("publish-release" in e and "build-android" in e for e in self.check(release)))
+
+    def test_requires_signing_must_be_publish_gated(self):
+        release = load_release()
+        step = release["jobs"]["build-android"]["steps"][2]
+        step["run"] = '''./gradlew assembleRelease -Pkaiku.requireReleaseSigning=true\nscripts/android_verify_apk.sh a 1 2\n'''
+        self.assertTrue(any("publish" in e for e in self.check(release)))
 
 
 class ReleaseHygieneTest(unittest.TestCase):

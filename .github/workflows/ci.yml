@@ -502,10 +502,16 @@ jobs:
 
       - name: Verifier rejects the debug APK
         run: |
-          if ../../scripts/android_verify_apk.sh app/build/outputs/apk/debug/app-debug.apk 0.1.0 10099; then
+          if ../../scripts/android_verify_apk.sh app/build/outputs/apk/debug/app-debug.apk 0.1.0 10099 2> verify-err.txt; then
             echo "verifier accepted the debug APK" >&2
             exit 1
           fi
+          cat verify-err.txt
+          grep -qF "signer is not the Android debug key" verify-err.txt
+
+      - name: Remove ephemeral keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ci.jks"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
