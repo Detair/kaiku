@@ -138,6 +138,30 @@ describe("websocket store", () => {
       // Status is set to "connecting" before await
     });
 
+    it("connect() while the supervisor is already running does not run recovery", async () => {
+      vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
+      await connect();
+      setWsState("subscribedChannels", new Set(["ch-1"]));
+
+      await connect();
+
+      expect(tauri.wsConnect).toHaveBeenCalledTimes(1);
+      expect(tauri.wsSubscribe).not.toHaveBeenCalled();
+      expect(loadDMs).not.toHaveBeenCalled();
+    });
+
+    it("connect() while a retry is pending does not fake a connection", async () => {
+      vi.mocked(tauri.wsConnect).mockRejectedValueOnce(new Error("down"));
+      await expect(connect()).rejects.toThrow("down");
+      expect(wsState.status).toBe("reconnecting");
+      setWsState("subscribedChannels", new Set(["ch-1"]));
+
+      await connect();
+
+      expect(wsState.status).toBe("reconnecting");
+      expect(tauri.wsSubscribe).not.toHaveBeenCalled();
+    });
+
     it("sets error on failure", async () => {
       vi.mocked(tauri.wsConnect).mockRejectedValue(
         new Error("Connection failed"),

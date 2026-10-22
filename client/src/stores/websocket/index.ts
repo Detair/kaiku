@@ -1575,8 +1575,11 @@ export async function connect(): Promise<void> {
       onClose: (intentional) => browserSupervisor?.notifyClosed(intentional),
       onFrame: () => browserSupervisor?.notifyFrame(),
     });
-    await getBrowserSupervisor().start();
-    if (wsState.subscribedChannels.size > 0) {
+    const opened = await getBrowserSupervisor().start();
+    // Only after this call opened a fresh socket. When the supervisor was
+    // already running (connected, or retrying) it owns recovery itself;
+    // running it here would fake "connected" on a socket that isn't open.
+    if (opened && wsState.subscribedChannels.size > 0) {
       await handleReconnect();
     }
   } catch (err) {

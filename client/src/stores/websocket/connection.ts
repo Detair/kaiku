@@ -37,7 +37,13 @@ export interface SupervisorOptions {
 }
 
 export interface ConnectionSupervisor {
-  start(): Promise<void>;
+  /**
+   * Open the connection. Resolves `true` when this call opened it, `false`
+   * when the supervisor was already running (opening, open or waiting to
+   * retry) or the run was cancelled. Rejects when the first open fails (a
+   * retry is then scheduled).
+   */
+  start(): Promise<boolean>;
   stop(): void;
   notifyOpened(): void;
   notifyClosed(intentional: boolean): void;
@@ -173,7 +179,8 @@ export function createConnectionSupervisor(
     }
   }
 
-  async function attemptOpen(): Promise<void> {
+  /** Resolves `true` only when this attempt ended in an open connection. */
+  async function attemptOpen(): Promise<boolean> {
     clearRetry();
     const gen = generation;
     phase = "opening";
@@ -189,11 +196,11 @@ export function createConnectionSupervisor(
         if (gen === generation) connectionLost();
         throw err;
       }
-      if (gen !== generation) return;
+      if (gen !== generation) return false;
       if (!fresh) {
         stop();
         window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
-        return;
+        return false;
       }
     }
 
@@ -207,9 +214,10 @@ export function createConnectionSupervisor(
     if (gen !== generation) {
       // Stopped while the open was in flight: don't keep a stray connection.
       driver.close();
-      return;
+      return false;
     }
     await opened();
+    return true;
   }
 
   // --- wake / network triggers -------------------------------------------
@@ -237,12 +245,14 @@ export function createConnectionSupervisor(
 
   // --- public API ---------------------------------------------------------
 
-  async function start(): Promise<void> {
-    if (phase === "opening" || phase === "open" || phase === "waiting") return;
+  async function start(): Promise<boolean> {
+    if (phase === "opening" || phase === "open" || phase === "waiting") {
+      return false;
+    }
     generation += 1;
     attempt = 0;
     addListeners();
-    await attemptOpen();
+    return attemptOpen();
   }
 
   function stop(): void {

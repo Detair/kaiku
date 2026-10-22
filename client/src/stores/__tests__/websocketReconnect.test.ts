@@ -73,6 +73,18 @@ describe("connection supervisor", () => {
     expect(opts.onRecovered).toHaveBeenCalledTimes(1);
   });
 
+  it("start() reports whether it opened the connection", async () => {
+    const { supervisor, driver } = makeSupervisor();
+    active = supervisor;
+
+    expect(await supervisor.start()).toBe(true);
+    expect(await supervisor.start()).toBe(false);
+
+    supervisor.notifyClosed(false);
+    expect(await supervisor.start()).toBe(false);
+    expect(driver.open).toHaveBeenCalledTimes(1);
+  });
+
   it("does not reconnect after an intentional close", async () => {
     const { supervisor, driver } = makeSupervisor();
     active = supervisor;

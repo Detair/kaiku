@@ -328,7 +328,12 @@ async function doRefreshAccessToken(): Promise<boolean> {
 
     if (!response.ok) {
       console.error("[Auth] Token refresh failed:", response.status);
-      clearBrowserTokens();
+      // Only an explicit rejection ends the session. Other statuses (e.g. a
+      // 502/503 from a proxy while the server restarts) are transient, like a
+      // network error: keep the tokens so the caller can retry later.
+      if (response.status === 401 || response.status === 403) {
+        clearBrowserTokens();
+      }
       return false;
     }
 
@@ -380,10 +385,11 @@ async function doRefreshAccessToken(): Promise<boolean> {
  * refreshing it if not. Used before a WebSocket reconnect (the socket
  * authenticates with the access token, which may have expired during sleep).
  *
- * Returns `false` only when the session is gone (the refresh was rejected and
- * the tokens were cleared). A refresh that failed for transient reasons
- * (offline, server restarting) returns `true`: the reconnect attempt then
- * fails and backs off, and the next attempt refreshes again.
+ * Returns `false` only when the session is gone (the refresh was rejected
+ * with 401/403 and the tokens were cleared). A refresh that failed for
+ * transient reasons (offline, 5xx while the server restarts) returns `true`:
+ * the reconnect attempt then fails and backs off, and the next attempt
+ * refreshes again.
  */
 export async function ensureFreshAccessToken(
   minValidityMs = 60_000,
