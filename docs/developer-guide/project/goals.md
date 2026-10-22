@@ -1,6 +1,6 @@
 # Kaiku — Project Goals
 
-> Status snapshot: 2026-06-09. Synthesized from `roadmap.md`, `tech-debt.md`,
+> Status snapshot: 2026-06-09; Goal 8 added 2026-10-22. Synthesized from `roadmap.md`, `tech-debt.md`,
 > the beta checklist/stabilization plans, open issues/PRs, and a code-level
 > verification pass. Complements `roadmap.md` (phase detail lives there);
 > this document defines the *goals* and their ordering.
@@ -115,6 +115,11 @@ Five concrete items finish the phase (roadmap §Phase 6 remainder):
       configured. Private key: ~/.tauri/kaiku.key — USER MUST BACK IT UP
       (losing it permanently bricks auto-update for installed clients). E2E
       verification at the next release tag.*
+
+> **Reality check 2026-10-22:** these items were implemented and tested,
+> but the packaged desktop app never runs in native (Tauri) mode —
+> `withGlobalTauri:false` vs. `"__TAURI__" in window` detection — so none of
+> them reached users. Re-opened under Goal 8 (review finding D-01).
 
 **GOAL 2 COMPLETE (2026-06-12).** All five Phase 6 desktop items shipped
 (PRs #575–#579); roadmap Phase 6 marked desktop-complete in PR #580.
@@ -297,6 +302,53 @@ Original proposed gate (kept for reference):
 upgrade playbook, and a public changelog.
 
 ---
+
+## Goal 8 — v1.0 Family Release by Christmas 2026 (current)
+
+> Defined 2026-10-22. Spec:
+> `docs/superpowers/specs/2026-10-20-v1-family-release-goal-design.md`.
+> Review: `docs/reviews/2026-10-22-v1-family-release-readiness.md`.
+> Supersedes Goal 7's gate (see `v1.0-definition.md`, revised section).
+
+**Who:** the maintainer's family and friends — evening PC voice (Windows,
+Linux, macOS), daytime Android chat; one app, non-technical users.
+**Decision:** keep building Kaiku (Stoat, Matrix/Element X and Mumble were
+evaluated and rejected for this use case — see spec).
+**How:** agents build (Opus 5.5) and review (Fable 5.1 + at least one
+external model: Gemini 4 Argon / GPT-6-Astra / OpenCode Go models), see
+`docs/developer-guide/agents/multi-model-workflow.md`. Infrastructure changes
+need the maintainer's OK.
+
+Phases (dates are targets):
+
+- [ ] **0 · Secure & observe (Oct 23–26)** — security hotfix S-01/S-08
+      deployed; VPS read-only checks; packaged-desktop login test; infra
+      decisions (Firebase, keystore, signing, alerting, off-host backups).
+- [ ] **1 · Make the clients work (Oct 27–Nov 9)** — four parallel streams:
+      server realtime (B-01..B-05, catch-up API, `DmCreated`, admin
+      create-user), desktop native Option A (D-01..D-06, U-01..U-03),
+      Android core (A-01..A-04, refresh, reconnect + catch-up, errors),
+      release pipeline + ops scripts (R-01..R-04, B-06).
+- [ ] **2 · Family features (Nov 10–23)** — FCM push (+ UnifiedPush) for DMs,
+      @mentions, photos; i18n foundation + ~300 core strings; Before-rollout
+      items; alerting; restore drill.
+- [ ] **3 · RC (Nov 24–30)** — `v1.0.0-rc.1` from CI; multi-model re-review.
+- [ ] **4 · Household week (Dec 1–7)**.
+- [ ] **5 · Release (Dec 8–14)** — `v1.0.0`.
+- [ ] **6 · Family rollout (Dec 15–23)**.
+
+Cut order and freeze rules: see the review's Recommendation section.
+
+## Post-1.0 track
+
+1. **Community release** — public self-hosting polish, CONTRIBUTING, open
+   onboarding, store/F-Droid distribution.
+2. **Android E2EE** (vodozemac + key backup), then E2EE on by default.
+3. **German UI** (i18n framework from Goal 8), further languages.
+4. **iOS client.**
+5. **Voice-stack risk review** — webrtc-rs is largely in maintenance mode
+   upstream; evaluate LiveKit or an alternative SFU before it bites.
+6. SaaS/billing (only if pursued), federation (not planned).
 
 ## Suggested sequencing
 

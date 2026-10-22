@@ -64,7 +64,11 @@ Accepted trade-off: single-maintainer burden and custom WebRTC stack
    and nothing refreshes/reconnects (`KaikuWebSocket.kt` ~143–147, 215–222) —
    after doze or >15 min offline, live updates stop until app restart. Add
    catch-up of missed messages and a reconnecting indicator.
-3. **E2EE off for v1.0, DMs must always work.** Today a desktop user with E2EE
+3. **E2EE off for v1.0, DMs must always work.** *(Review correction
+   2026-10-22: `sendDMMessage`/`sendEncryptedDM` have no caller — DMs are
+   always sent in plaintext today, so desktop→Android DMs work. Remaining
+   work: gate the E2EE setup prompt, remove the misleading padlock, and the
+   Android placeholder for any legacy encrypted message.)* Today a desktop user with E2EE
    set up cannot DM an Android-only user at all (`sendEncryptedDM` throws "No
    recipients" and never falls back, `client/src/stores/messages.ts` ~571–601),
    and Android renders encrypted DMs as raw JSON. For v1.0: E2EE setup is not
@@ -153,6 +157,12 @@ re-verified against the code before it is reported.
 | 4 | **Android readiness** | `mobile/android` | Beyond the known gaps above: lifecycle/doze, token refresh, voice on Android, crash risks, test state, what FCM/UnifiedPush integration needs architecturally |
 | 5 | **UI consistency** | web/desktop UI + Android visual parity | Design tokens & contrast rules, component reuse vs. one-offs (July UIs vs. established patterns), empty/error/loading states, wording, a11y basics, first-run flow for a non-technical user (code-based) |
 | 6 | **Release & ops readiness** | `docs/ops`, `scripts`, `release.yml`, `tauri-build.yml`, Android build | Can `v1.0.0-rc` ship: updater pipeline, APK signing in CI, backup/restore, #623, monitoring that reaches the maintainer; Windows SmartScreen/macOS Gatekeeper impact |
+
+## Review outcome (2026-10-22)
+
+Done — see `docs/reviews/2026-10-22-v1-family-release-readiness.md`:
+24 Blockers, desktop architecture decided (native, Option A), phased plan
+to Christmas in `goals.md` Goal 8.
 
 ## Deliverables
 
