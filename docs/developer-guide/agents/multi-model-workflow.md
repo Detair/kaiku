@@ -19,6 +19,20 @@ provider's strongest model: `gemini-4-argon-high`, `gpt-6-astra` at `max`
 (`ultra` adds autonomous delegation — avoid for controlled reviews). Findings agreed by both carry more
 weight; disagreements are resolved by re-reading the code, not by vote.
 
+## Model efficiency (maintainer rule, 2026-10-22)
+
+Pick the cheapest Claude model that fits the role:
+
+| Work | Model |
+|---|---|
+| Mechanical implementation (plan gives files, signatures, tests; 1–3 files; CI/scripts) | Sonnet 5.5 |
+| Integration/design implementation (multi-file, architecture, concurrency, security code) | Opus 5.5 |
+| Task review of small/medium diffs, every scoped re-review | Sonnet 5.5 |
+| Review of security/concurrency code, large diffs, final whole-branch review per stream | Fable 5.1 |
+| Fix-loop escalation (round 4–5) | one tier above the stuck implementer |
+
+The external-model pass stays mandatory for every task review.
+
 ## Experts (consultable by any agent)
 
 Experts answer focused questions; they do not review whole diffs. Ask one
