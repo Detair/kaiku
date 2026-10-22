@@ -58,3 +58,4 @@ mod voice_sfu;
 mod webhooks;
 mod websocket_integration;
 mod workspaces;
+mod ws_e2e;

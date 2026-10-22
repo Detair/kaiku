@@ -770,3 +770,66 @@ pub async fn delete_bot_application(pool: &PgPool, app_id: Uuid) {
         .await
         .ok();
 }
+
+// ============================================================================
+// WebSocket client harness
+// ============================================================================
+
+/// WebSocket client connected to a [`TestServer`].
+pub type WsClient =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connect to `ws://{addr}/ws` and authenticate with a post-connect
+/// `{"type":"authenticate","token":…}` frame.
+///
+/// Does not wait for `ready`; use [`next_ws_event`] with `"ready"` for that.
+pub async fn ws_connect(server: &TestServer, token: &str) -> WsClient {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let url = format!("ws://{}/ws", server.addr);
+    let (mut ws, _response) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("WebSocket connect failed");
+    let auth = serde_json::json!({ "type": "authenticate", "token": token }).to_string();
+    ws.send(Message::Text(auth.into()))
+        .await
+        .expect("Failed to send authenticate frame");
+    ws
+}
+
+/// Wait for the next server event whose `type` equals `event_type`.
+///
+/// Other events and control frames are skipped. Panics if the socket closes
+/// or no matching event arrives within `timeout`.
+pub async fn next_ws_event(
+    ws: &mut WsClient,
+    event_type: &str,
+    timeout: Duration,
+) -> serde_json::Value {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let wait = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&text).expect("server sent invalid JSON");
+                    if value["type"] == event_type {
+                        return value;
+                    }
+                }
+                Some(Ok(Message::Close(frame))) => {
+                    panic!("WebSocket closed while waiting for {event_type:?}: {frame:?}")
+                }
+                Some(Ok(_)) => {}
+                Some(Err(e)) => panic!("WebSocket error while waiting for {event_type:?}: {e}"),
+                None => panic!("WebSocket stream ended while waiting for {event_type:?}"),
+            }
+        }
+    };
+    tokio::time::timeout(timeout, wait)
+        .await
+        .unwrap_or_else(|_| panic!("timed out after {timeout:?} waiting for {event_type:?}"))
+}

@@ -27,13 +27,20 @@
 1. Client connects to `GET /ws?token={jwt_access_token}`
 2. Server validates JWT in query param (before WebSocket upgrade)
 3. Upgrade to WebSocket protocol
-4. Server sends `Ready { user_id }` event
-5. Server updates user presence to `online`
-6. Spawn two concurrent tasks:
-   - Redis pub/sub listener (forwards channel events to client)
-   - Message sender (drains mpsc channel, sends to WebSocket)
-7. Main loop: Receive client messages, route to handlers
-8. On disconnect: Abort background tasks, set presence to `offline`
+4. Server updates user presence to `online` and spawns the message sender task (drains the outbound mpsc, writes to the WebSocket)
+5. Load friends, guild IDs and block sets
+6. Spawn the Redis pub/sub task (`handle_pubsub`); it fires a `ready` oneshot once `psubscribe("channel:*")` and all per-user `subscribe` calls have returned
+7. Wait for that `ready` signal (max 5 s; on timeout or early failure the socket is closed with **1011**)
+8. Send `Ready { user_id }` — so `Ready` always means "subscriptions are live" — then the friends' presence snapshot
+9. Main loop (`select!`): client messages, server heartbeat, and the pub/sub task's exit
+10. On disconnect: Abort background tasks, set presence to `offline`
+
+**Pub/sub pipeline failure** (`PubsubExit`): the pub/sub task returns why it stopped. Every reason except `ClientGone` closes the socket with a Close frame (reason `"resync"`), giving the sender task at most 1 s to flush it:
+- `ConnectFailed`, `SubscribeFailed`, `StreamEnded`, `Lagged` → **1011** (server-side event pipeline failed). A subscriber reconnect counts as `StreamEnded`, because a plain fred client does not restore its subscriptions.
+- `SlowClient` → **1013** (client too slow; first full outbound queue, no silent drops)
+- `ClientGone` → no Close frame (the socket is already going away)
+
+Clients treat 1011/1013 as "reconnect with backoff, then catch up" via the REST history endpoints. 1008 stays reserved for auth rejection.
 
 **Authentication**:
 ```rust
@@ -197,7 +204,7 @@ while let Some(msg) = ws_receiver.next().await {
 }
 ```
 
-**Backpressure**: `mpsc::channel(100)` buffer. If client cannot keep up (slow network), buffer fills. On full buffer, `send()` blocks (applies backpressure to Redis pub/sub task). Consider: Disconnect slow clients after sustained backpressure.
+**Backpressure**: `mpsc::channel(256)` outbound buffer. The pub/sub forwarder uses `try_send`; the first `Full` ends forwarding with `PubsubExit::SlowClient` and the socket is closed with 1013 so the client reconnects and catches up (events are never dropped silently).
 
 ### Typing Indicators
 

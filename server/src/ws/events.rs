@@ -1025,11 +1025,16 @@ pub enum ServerEvent {
 }
 
 /// Internal outbound message envelope for the WebSocket sender task.
-/// Separates serializable server events from raw WS control frames (Ping).
+/// Separates serializable server events from raw WS control frames (Ping, Close).
 #[derive(Debug)]
 pub enum OutboundMsg {
     Event(ServerEvent),
     Ping,
+    /// Send a Close frame with this code and reason, then stop the sender task.
+    Close {
+        code: u16,
+        reason: &'static str,
+    },
 }
 
 /// Redis pub/sub channels.
