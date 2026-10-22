@@ -7,9 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., v0.1.0)'
+        description: 'Tag to release (e.g., v1.0.0-rc.1)'
         required: true
         type: string
+      dry_run:
+        description: 'Dry run: build unsigned, publish nothing'
+        required: false
+        type: boolean
+        default: true
+
+# Read-only by default; jobs that write get their own grants.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,58 +31,76 @@ jobs:
     name: Prepare Release
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get_version.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      android_version_code: ${{ steps.version.outputs.android_version_code }}
+      publish: ${{ steps.mode.outputs.publish }}
       release_notes: ${{ steps.release_notes.outputs.release_notes }}
-      is_prerelease: ${{ steps.check_prerelease.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get version from tag
-        id: get_version
+      # Exit 2 on an invalid tag fails the run before anything is built.
+      - name: Parse version from tag
+        id: version
         env:
-          INPUT_TAG: ${{ inputs.tag }}
-          GITHUB_REF_VALUE: ${{ github.ref }}
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="$INPUT_TAG"
-          else
-            VERSION="${GITHUB_REF_VALUE#refs/tags/}"
-          fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Version: ${VERSION}"
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: python3 scripts/release_version.py parse "$TAG" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Check if prerelease
-        id: check_prerelease
+      # Publish on a tag push, or on a dispatch with dry_run unticked.
+      - name: Decide publish or dry run
+        id: mode
         env:
-          VERSION: ${{ steps.get_version.outputs.version }}
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [[ "$VERSION" == *"alpha"* ]] || [[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"rc"* ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          publish=false
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
+            publish=true
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
+            publish=true
           fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish"
 
-      - name: Validate docs governance consistency
-        run: python3 scripts/check_docs_governance.py
+      - name: Verify version files and tag commit
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          python3 scripts/release_version.py check --tag "$TAG"
+          tag_commit=$(git rev-parse "$TAG^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "::error::Tag $TAG points at $tag_commit but the run checked out $head_commit"
+            exit 1
+          fi
 
       - name: Generate standardized release notes
         id: release_notes
         env:
-          VERSION: ${{ steps.get_version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python3 scripts/generate_release_notes.py --version "$VERSION" --output /tmp/release-notes.md
-          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
-          cat /tmp/release-notes.md >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          python3 scripts/generate_release_notes.py --version "$VERSION" --output "$RUNNER_TEMP/release-notes.md"
+          delim="NOTES_$(openssl rand -hex 8)"
+          {
+            echo "release_notes<<$delim"
+            cat "$RUNNER_TEMP/release-notes.md"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
 
   # ===========================================================================
   # Build Tauri Client (Multi-platform)
   # ===========================================================================
+  # Secrets live in Environment 'release' and are only read on publish runs;
+  # a dry run gets no environment, so every secret expression below is ''.
   build-tauri:
     name: Build Tauri (${{ matrix.target }})
     needs: prepare-release
+    environment: ${{ needs.prepare-release.outputs.publish == 'true' && 'release' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,8 +124,26 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      MODE: ${{ needs.prepare-release.outputs.publish == 'true' && 'publish' || 'dry-run' }}
+      VERSION: ${{ needs.prepare-release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      # The repo scripts call python3; Windows runners only ship `python`.
+      - name: Provide python3 (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir -p "$RUNNER_TEMP/python3-shim"
+          printf '#!/bin/sh\nexec python "$@"\n' > "$RUNNER_TEMP/python3-shim/python3"
+          chmod +x "$RUNNER_TEMP/python3-shim/python3"
+          echo "$RUNNER_TEMP/python3-shim" >> "$GITHUB_PATH"
+
+      # Dry runs build an untagged commit; stamp the requested version so the
+      # artifacts are named and report it exactly like a real release would.
+      - name: Stamp dry-run version
+        if: needs.prepare-release.outputs.publish != 'true'
+        run: sh scripts/bump-version.sh "$VERSION"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -123,16 +168,113 @@ jobs:
         working-directory: client
         run: bun install --frozen-lockfile || (sleep 5 && bun install --frozen-lockfile)
 
+      # Updater signing: required on publish, skipped (tauri.ci.conf.json
+      # turns createUpdaterArtifacts off) on a dry run.
+      - name: Check updater signing key
+        id: updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+        run: python3 scripts/require_secrets.py --mode "$MODE" --output updater --step "updater signing" TAURI_SIGNING_PRIVATE_KEY
+
+      # macOS signing hook (off until MACOS_SIGNING_ENABLED == 'true').
+      # Disabled: ad-hoc signing (identity "-"), which Apple Silicon needs to
+      # launch at all. Enabled: Tauri reads the APPLE_* variables natively.
+      - name: macOS signing hook
+        id: macsign
+        if: runner.os == 'macOS'
+        env:
+          ENABLED: ${{ vars.MACOS_SIGNING_ENABLED == 'true' }}
+          APPLE_CERTIFICATE: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          if [ "$ENABLED" = true ]; then
+            python3 scripts/require_secrets.py --mode "$MODE" --output macsign --step "macOS signing" \
+              APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          else
+            echo "macsign=false" >> "$GITHUB_OUTPUT"
+          fi
+          if ! grep -qx 'macsign=true' "$GITHUB_OUTPUT"; then
+            echo "::notice::macOS build is ad-hoc signed; Gatekeeper will warn (set MACOS_SIGNING_ENABLED, see docs/ops/release-runbook.md)"
+          fi
+
+      # Windows signing hook (off until WINDOWS_SIGNING_ENABLED == 'true').
+      # The enabled path signs through Azure Trusted Signing and is not yet
+      # exercised by any run.
+      - name: Windows signing hook
+        id: winsign
+        if: runner.os == 'Windows'
+        env:
+          ENABLED: ${{ vars.WINDOWS_SIGNING_ENABLED == 'true' }}
+          AZURE_CLIENT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.WINDOWS_SIGNING_ENABLED == 'true' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ needs.prepare-release.outputs.publish == 'true' && vars.WINDOWS_SIGNING_ENABLED == 'true' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TENANT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.WINDOWS_SIGNING_ENABLED == 'true' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_PROFILE }}
+        run: |
+          if [ "$ENABLED" = true ]; then
+            python3 scripts/require_secrets.py --mode "$MODE" --output winsign --step "Windows signing" \
+              AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID \
+              AZURE_TRUSTED_SIGNING_ENDPOINT AZURE_TRUSTED_SIGNING_ACCOUNT AZURE_TRUSTED_SIGNING_PROFILE
+          else
+            echo "winsign=false" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -qx 'winsign=true' "$GITHUB_OUTPUT"; then
+            python3 - <<'EOF'
+          import json, os, pathlib
+          cmd = "trusted-signing-cli -e {} -a {} -c {} -d Kaiku %1".format(
+              os.environ["AZURE_TRUSTED_SIGNING_ENDPOINT"],
+              os.environ["AZURE_TRUSTED_SIGNING_ACCOUNT"],
+              os.environ["AZURE_TRUSTED_SIGNING_PROFILE"],
+          )
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "tauri-winsign.json"
+          path.write_text(json.dumps({"bundle": {"windows": {"signCommand": cmd}}}), encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"config={path}\n")
+          EOF
+          else
+            echo "::notice::Windows installer is unsigned; SmartScreen will warn"
+          fi
+
+      - name: Install trusted-signing-cli
+        if: steps.winsign.outputs.winsign == 'true'
+        env:
+          # Latest on crates.io at implementation time (2026-10-22).
+          TRUSTED_SIGNING_CLI_VERSION: "0.11.0"
+        run: cargo install trusted-signing-cli --locked --version "$TRUSTED_SIGNING_CLI_VERSION"
+
       - name: Build Tauri app
         working-directory: client
         env:
           BUILD_TARGET: ${{ matrix.target }}
           BUNDLES: ${{ matrix.bundles }}
-          # Required: bundle.createUpdaterArtifacts is enabled, so the build
-          # signs updater bundles. Builds fail if the key is missing.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-        run: bun run tauri build --target "$BUILD_TARGET" --bundles "$BUNDLES"
+          UPDATER: ${{ steps.updater.outputs.updater }}
+          WINSIGN_CONFIG: ${{ steps.winsign.outputs.config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.prepare-release.outputs.publish == 'true' && steps.updater.outputs.updater == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.updater.outputs.updater == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          APPLE_CERTIFICATE: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          # "-" = ad-hoc signature on macOS when the signing hook is off.
+          APPLE_SIGNING_IDENTITY: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_SIGNING_IDENTITY || (runner.os == 'macOS' && '-' || '') }}
+          AZURE_CLIENT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TENANT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_TENANT_ID || '' }}
+        run: |
+          config=()
+          if [ "$UPDATER" != true ]; then
+            config+=(--config src-tauri/tauri.ci.conf.json)
+          fi
+          if [ -n "$WINSIGN_CONFIG" ]; then
+            config+=(--config "$WINSIGN_CONFIG")
+          fi
+          bun run tauri build --target "$BUILD_TARGET" --bundles "$BUNDLES" "${config[@]}"
 
       - name: Generate checksums
         env:
@@ -150,6 +292,8 @@ jobs:
             echo "::error::No installer bundles found for $BUILD_TARGET"
             exit 1
           fi
+          # Bare file names: checksums.txt is checked against the downloaded
+          # release assets, which sit flat in one directory.
           : > checksums.txt
           for f in "${files[@]}"; do
             (cd "$(dirname "$f")" && sha256 "$(basename "$f")") >> checksums.txt
@@ -203,8 +347,8 @@ jobs:
         with:
           context: .
           file: infra/docker/Dockerfile
-          # Only tag pushes publish; a workflow_dispatch run just builds.
-          push: ${{ github.ref_type == 'tag' }}
+          # Only publish runs push; a dry run (even dispatched on a tag ref) just builds.
+          push: ${{ needs.prepare-release.outputs.publish == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -216,8 +360,8 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: [prepare-release, build-tauri, build-docker]
-    # Only tag pushes publish; a workflow_dispatch run stops after the builds.
-    if: github.ref_type == 'tag'
+    # Only publish runs (tag push, or dispatch with dry_run unticked) publish.
+    if: needs.prepare-release.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -234,10 +378,10 @@ jobs:
           mkdir -p release-assets
 
           # Find and copy all built packages
-          find artifacts -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" -o -name "*.dmg" \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.exe" -o -name "*.dmg" \) -exec cp {} release-assets/ \;
 
           # Updater signatures for Linux/Windows travel with their installers
-          find artifacts -type f \( -name "*.AppImage.sig" -o -name "*.exe.sig" -o -name "*.msi.sig" \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.AppImage.sig" -o -name "*.exe.sig" \) -exec cp {} release-assets/ \;
 
           # macOS updater bundles are named identically for both
           # architectures (Kaiku.app.tar.gz) — disambiguate by the build
@@ -251,74 +395,36 @@ jobs:
             fi
           done
 
-          # Find and consolidate checksums
-          find artifacts -type f -name "checksums.txt" -exec cat {} \; > release-assets/checksums.txt || true
+          # Consolidate the per-target checksums (installers only)
+          find artifacts -type f -name "checksums.txt" -exec cat {} \; > release-assets/checksums.txt
 
           # List what we're uploading
           ls -lah release-assets/
 
+      # Fails the release if any platform lacks a signed updater bundle.
       - name: Generate updater manifest (latest.json)
         env:
-          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
-          python3 - <<'EOF'
-          import datetime
-          import glob
-          import json
-          import os
-
-          tag = os.environ["VERSION"]
-          base = f"https://github.com/Detair/kaiku/releases/download/{tag}"
-          platforms = {}
-
-          def add(key, *patterns):
-              for pattern in patterns:
-                  for path in sorted(glob.glob(f"release-assets/{pattern}")):
-                      sig = path + ".sig"
-                      if os.path.exists(sig):
-                          with open(sig, encoding="utf-8") as f:
-                              platforms[key] = {
-                                  "signature": f.read().strip(),
-                                  "url": f"{base}/{os.path.basename(path)}",
-                              }
-                          return
-
-          add("linux-x86_64", "*.AppImage")
-          add("windows-x86_64", "*-setup.exe", "*.msi")
-          add("darwin-x86_64", "*x86_64.app.tar.gz")
-          add("darwin-aarch64", "*aarch64.app.tar.gz")
-
-          manifest = {
-              "version": tag.lstrip("v"),
-              "notes": f"See https://github.com/Detair/kaiku/releases/tag/{tag}",
-              "pub_date": datetime.datetime.now(datetime.timezone.utc)
-                  .isoformat(timespec="seconds"),
-              "platforms": platforms,
-          }
-          with open("release-assets/latest.json", "w", encoding="utf-8") as f:
-              json.dump(manifest, f, indent=2)
-          print(json.dumps(manifest, indent=2))
-          if not platforms:
-              raise SystemExit("No signed updater artifacts found — check TAURI_SIGNING_PRIVATE_KEY")
-          EOF
+          python3 scripts/generate_updater_manifest.py --assets-dir release-assets \
+            --tag "$TAG" --repo Detair/kaiku --mode publish --output release-assets/latest.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.prepare-release.outputs.version }}
-          IS_PRERELEASE: ${{ needs.prepare-release.outputs.is_prerelease }}
         with:
-          tag_name: ${{ needs.prepare-release.outputs.version }}
-          name: Release ${{ needs.prepare-release.outputs.version }}
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          name: Release ${{ needs.prepare-release.outputs.tag }}
           body: |
             ${{ needs.prepare-release.outputs.release_notes }}
 
             ## Installation
 
             ### Linux
-            - **Debian/Ubuntu**: Download the `.deb` file and install with `sudo dpkg -i canis_*.deb`
+            - **Debian/Ubuntu**: Download the `.deb` file and install with `sudo dpkg -i Kaiku_*_amd64.deb`
             - **Other distros**: Download the `.AppImage` file, make it executable, and run it
+            - Linux: use the AppImage for auto-updates
 
             ### Windows
             - **Installer**: Download the `-setup.exe` file for automatic installation

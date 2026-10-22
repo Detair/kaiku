@@ -17,6 +17,8 @@ import check_ci_guardrails as guardrails  # noqa: E402
 from check_ci_guardrails import (  # noqa: E402
     check_native_deps_usage,
     check_no_signing_key_in_pr_workflows,
+    check_release_hygiene,
+    check_release_secret_scoping,
     check_release_workflow,
     check_windows_libvpx_guardrails,
 )
@@ -27,6 +29,8 @@ VALID_RELEASE = """
 on:
   push:
     tags: ['v*.*.*']
+permissions:
+  contents: read
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
@@ -45,9 +49,13 @@ jobs:
           - {os: macos-15-intel, target: x86_64-apple-darwin, bundles: 'app,dmg'}
           - {os: macos-latest, target: aarch64-apple-darwin, bundles: 'app,dmg'}
     runs-on: ${{ matrix.os }}
+    environment: ${{ needs.prepare-release.outputs.publish == 'true' && 'release' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-native-deps
+      - run: bun run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
   build-docker:
     needs: prepare-release
     runs-on: ubuntu-latest
@@ -56,6 +64,16 @@ jobs:
         with:
           context: .
           file: infra/docker/Dockerfile
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  publish-release:
+    needs: [prepare-release, build-tauri, build-docker]
+    if: needs.prepare-release.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: python3 scripts/generate_updater_manifest.py --mode publish
 """
 
 TAURI_JOB_TEMPLATE = """
@@ -126,6 +144,73 @@ class ReleaseWorkflowTest(unittest.TestCase):
                 del release["jobs"][job]["needs"]
                 errors = self.check(release)
                 self.assertTrue(any(job in e and "prepare-release" in e for e in errors), errors)
+
+
+class ReleaseSecretScopingTest(unittest.TestCase):
+    def check(self, release: dict) -> list[str]:
+        errors: list[str] = []
+        check_release_secret_scoping(release, errors)
+        return errors
+
+    def test_valid_fixture_passes(self):
+        self.assertEqual(self.check(load_release()), [])
+
+    def test_release_signing_env_only_in_publish(self):
+        release = load_release()
+        del release["jobs"]["build-tauri"]["environment"]
+        errors = self.check(release)
+        self.assertTrue(any("build-tauri" in e and "environment" in e for e in errors), errors)
+
+        release = load_release()
+        release["jobs"]["build-tauri"]["environment"] = "release"
+        errors = self.check(release)
+        self.assertTrue(any("build-tauri" in e and "publish" in e for e in errors), errors)
+
+        release = load_release()
+        step = release["jobs"]["build-tauri"]["steps"][2]
+        step["env"]["TAURI_SIGNING_PRIVATE_KEY"] = "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+        errors = self.check(release)
+        self.assertTrue(any("TAURI_SIGNING_PRIVATE_KEY" in e for e in errors), errors)
+
+    def test_script_names_are_not_secret_refs(self):
+        release = load_release()
+        release["jobs"]["build-docker"]["steps"].append({"run": "python3 scripts/require_secrets.py --mode dry-run"})
+        self.assertEqual(self.check(release), [])
+
+    def test_github_token_needs_no_environment(self):
+        release = load_release()
+        self.assertNotIn("environment", release["jobs"]["build-docker"])
+        self.assertEqual(self.check(release), [])
+
+
+class ReleaseHygieneTest(unittest.TestCase):
+    def check(self, text: str) -> list[str]:
+        errors: list[str] = []
+        check_release_hygiene(text, yaml.safe_load(text), errors)
+        return errors
+
+    def test_valid_fixture_passes(self):
+        self.assertEqual(self.check(VALID_RELEASE), [])
+
+    def test_release_declares_permissions(self):
+        text = VALID_RELEASE.replace("permissions:\n  contents: read\njobs:", "jobs:")
+        errors = self.check(text)
+        self.assertTrue(any("permissions" in e for e in errors), errors)
+
+    def test_release_top_level_permissions_read_only(self):
+        text = VALID_RELEASE.replace("permissions:\n  contents: read\njobs:", "permissions:\n  contents: write\njobs:")
+        errors = self.check(text)
+        self.assertTrue(any("permissions" in e for e in errors), errors)
+
+    def test_release_has_no_docs_governance_step(self):
+        text = VALID_RELEASE + "      - run: python3 scripts/check_docs_governance.py\n"
+        errors = self.check(text)
+        self.assertTrue(any("check_docs_governance.py" in e for e in errors), errors)
+
+    def test_publish_release_gated_on_publish(self):
+        text = VALID_RELEASE.replace("    if: needs.prepare-release.outputs.publish == 'true'\n", "")
+        errors = self.check(text)
+        self.assertTrue(any("publish-release" in e for e in errors), errors)
 
 
 class NativeDepsUsageTest(unittest.TestCase):

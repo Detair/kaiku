@@ -70,6 +70,12 @@ MACOS_RUNNER_TARGETS = {
 
 SIGNING_KEY_TOKEN = "TAURI_SIGNING_PRIVATE_KEY"
 
+# Every non-GITHUB_TOKEN secret in release.yml lives in Environment 'release'
+# and may only be read on a publish run.
+EXPRESSION_RE = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
+SECRET_REF_RE = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
+PUBLISH_GATE = "needs.prepare-release.outputs.publish == 'true'"
+
 
 def check_windows_libvpx_guardrails(action_text: str, errors: list[str]) -> None:
     for token in WINDOWS_LIBVPX_TOKENS:
@@ -174,6 +180,67 @@ def check_release_workflow(release: dict, repo_root: Path, errors: list[str]) ->
                 errors.append(f"{label}: build-docker Dockerfile not found: {dockerfile}")
 
 
+def _strings(node: Any):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
+def _secret_names(text: str) -> set[str]:
+    """Secrets referenced inside ${{ }} expressions, minus GITHUB_TOKEN."""
+    names = {name for expr in EXPRESSION_RE.findall(text) for name in SECRET_REF_RE.findall(expr)}
+    return names - {"GITHUB_TOKEN"}
+
+
+def check_release_secret_scoping(release: dict, errors: list[str]) -> None:
+    label = "release.yml"
+    for job_name, job in (release.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        refs = [text for text in _strings(job) if _secret_names(text)]
+        if not refs:
+            continue
+        env = job.get("environment")
+        if isinstance(env, dict):
+            env = env.get("name")
+        if not isinstance(env, str):
+            errors.append(f"{label}: job '{job_name}' reads release secrets but sets no environment")
+        elif "release" not in env or PUBLISH_GATE not in env:
+            errors.append(
+                f"{label}: job '{job_name}' environment must be 'release' only on publish "
+                f"(expression with {PUBLISH_GATE}), got {env!r}"
+            )
+        for text in refs:
+            if PUBLISH_GATE not in text:
+                names = sorted(_secret_names(text))
+                errors.append(
+                    f"{label}: job '{job_name}' reads {', '.join(names)} without the publish gate ({PUBLISH_GATE})"
+                )
+
+
+def check_release_hygiene(release_text: str, release: dict, errors: list[str]) -> None:
+    label = "release.yml"
+    permissions = release.get("permissions")
+    if not isinstance(permissions, dict):
+        errors.append(f"{label}: top-level permissions must be declared (contents: read)")
+    elif any(value == "write" for value in permissions.values()):
+        errors.append(f"{label}: top-level permissions must be read-only; grant write per job")
+
+    if "check_docs_governance.py" in release_text:
+        errors.append(f"{label}: must not run check_docs_governance.py (CI gate, not a release gate)")
+
+    publish = (release.get("jobs") or {}).get("publish-release")
+    if not isinstance(publish, dict):
+        errors.append(f"{label}: missing job 'publish-release'")
+    elif "needs.prepare-release.outputs.publish == 'true'" not in str(publish.get("if", "")):
+        errors.append(f"{label}: publish-release must run only if {PUBLISH_GATE}")
+
+
 def check_no_signing_key_in_pr_workflows(workflows: dict[str, str], errors: list[str]) -> None:
     for name, text in workflows.items():
         if SIGNING_KEY_TOKEN in text:
@@ -250,6 +317,8 @@ def main() -> int:
             errors.append(f"release.yml: invalid YAML: {exc}")
         else:
             check_release_workflow(release, ROOT, errors)
+            check_release_secret_scoping(release, errors)
+            check_release_hygiene(release_text, release, errors)
     if setup_integration_text:
         check_setup_integration_guardrails(setup_integration_text, errors)
     if uploads_http_text:

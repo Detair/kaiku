@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate standardized milestone release notes from CHANGELOG Unreleased."""
+"""Generate standardized milestone release notes from CHANGELOG.md.
+
+Uses the curated `## [<version>]` section when it exists (final release)
+and falls back to `[Unreleased]` otherwise (release candidates, CI).
+"""
 
 from __future__ import annotations
 
@@ -27,6 +31,16 @@ def extract_unreleased(changelog: str) -> str:
     if not match:
         raise ValueError("CHANGELOG.md is missing a [Unreleased] section")
     return match.group("body")
+
+
+def extract_section(changelog: str, version: str) -> str | None:
+    """Return the body of `## [<version>]` (without the heading) or None."""
+    match = re.search(
+        rf"^## \[{re.escape(version)}\][^\n]*\n(?P<body>.*?)(?=^## \[|\Z)",
+        changelog,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group("body") if match else None
 
 
 def parse_roadmap_metadata(roadmap: str) -> tuple[str, str]:
@@ -68,6 +82,7 @@ def render_release_notes(
     roadmap_phase: str,
     roadmap_last_updated: str,
     section_items: dict[str, list[str]],
+    source: str = "[Unreleased]",
 ) -> str:
     lines: list[str] = []
     lines.append("## Milestone")
@@ -76,7 +91,7 @@ def render_release_notes(
     lines.append(f"- Roadmap last updated: {roadmap_last_updated}")
     lines.append("")
     lines.append("## Release Summary")
-    lines.append("- Notes generated from `CHANGELOG.md` `[Unreleased]` entries.")
+    lines.append(f"- Notes generated from `CHANGELOG.md` `{source}` entries.")
     lines.append("- Sections follow Keep a Changelog categories.")
     lines.append("")
 
@@ -113,14 +128,20 @@ def main() -> int:
     try:
         changelog = read_text(Path(args.changelog))
         roadmap = read_text(Path(args.roadmap))
-        unreleased = extract_unreleased(changelog)
+        semver = args.version.removeprefix("v")
+        body = extract_section(changelog, semver)
+        source = f"[{semver}]"
+        if body is None:
+            body = extract_unreleased(changelog)
+            source = "[Unreleased]"
         roadmap_phase, roadmap_last_updated = parse_roadmap_metadata(roadmap)
-        section_items = collect_section_items(unreleased)
+        section_items = collect_section_items(body)
         output = render_release_notes(
             args.version,
             roadmap_phase,
             roadmap_last_updated,
             section_items,
+            source,
         )
         output_path = Path(args.output)
         output_path.write_text(output, encoding="utf-8")
