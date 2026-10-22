@@ -9,11 +9,14 @@ Decided 2026-10-22 for the v1.0 Family Release
 |------|-------|------|
 | **Builder** | Claude Opus 5.5 | Implementation, planning, consolidating findings |
 | **Primary reviewer** | Claude Fable 5.1 | Deepest reasoning: adversarial security, concurrency/correctness, final verification of every Blocker |
-| **External reviewer (mandatory)** | Gemini 4 Argon (high) via `agy` | Independent second opinion from a different model family; very long context → whole-codebase sweeps (UI consistency, hardcoded strings, cross-file drift); Google-stack depth (Android, Kotlin/Compose, FCM/Firebase) |
-| **External reviewer (planned)** | OpenAI Codex | Not installed yet; add when available |
+| **External reviewer (mandatory)** | Gemini 4 Argon (`gemini-4-argon-high`) via `agy` (Antigravity CLI) | Independent second opinion from a different model family; very long context → whole-codebase sweeps (UI consistency, hardcoded strings, cross-file drift); Google-stack depth (Android, Kotlin/Compose, FCM/Firebase) |
+| **External reviewer (mandatory)** | GPT-6-Astra (`gpt-6-astra`, effort `max`) via `codex exec -s read-only` | OpenAI's frontier model; read-only sandbox can run grep/git, so it verifies claims against the tree; third independent model family |
+| **External reviewer (optional)** | Kimi K3 / Qwen 3.8 Max / GLM 5.3 via `opencode run --agent plan` (OpenCode Go subscription) | Further model families for cheap cross-checks (e.g. Blocker verification) and fallback when Codex hits its usage limit. DeepSeek V4 Pro needs the "Global regions" workspace setting (maintainer's call) |
 
 **Rule:** every review — lane review or PR review — gets at least one
-external-model pass in addition to Fable. Findings agreed by both carry more
+external-model pass (Gemini or Codex) in addition to Fable. Always use each
+provider's strongest model: `gemini-4-argon-high`, `gpt-6-astra` at `max`
+(`ultra` adds autonomous delegation — avoid for controlled reviews). Findings agreed by both carry more
 weight; disagreements are resolved by re-reading the code, not by vote.
 
 ## Experts (consultable by any agent)
@@ -27,7 +30,18 @@ when a decision depends on deep domain knowledge.
 | `expert-webrtc-voice` | Fable | webrtc-rs SFU, dual PeerConnection, Opus/VP8, TURN/ICE, cpal audio | Agent tool: `subagent_type: expert-webrtc-voice` |
 | `expert-rust-backend` | Opus | axum/tokio/sqlx/Valkey patterns, migrations, Kaiku module standards | Agent tool: `subagent_type: expert-rust-backend` |
 | `android-push` | Gemini Argon | Android lifecycle/doze, FCM + UnifiedPush, Compose, Play Services | `scripts/agents/ask-gemini-expert.sh android-push "<question>"` |
+| `release-ci` | GPT-6-Astra | GitHub Actions, Tauri signing/updater, Authenticode/notarization, Android release builds | `scripts/agents/ask-codex-expert.sh release-ci "<question>"` |
 | `ui-design-system` | Gemini Argon | Kaiku design tokens/contrast rules, Solid.js component consistency, i18n readiness | `scripts/agents/ask-gemini-expert.sh ui-design-system "<question>"` |
 
-Gemini experts run read-only (`--mode plan`) with the repo as working
+Any brief can be asked through any script (`ask-gemini-expert.sh`,
+`ask-codex-expert.sh`, `ask-opencode-expert.sh`) for a second opinion. Gemini experts run read-only (`--mode plan`, no shell) with the repo as working
 directory. Briefs live in `docs/developer-guide/agents/experts/`.
+
+## Quota notes
+
+- Codex (ChatGPT plan) is shared with `openai/*` models in OpenCode. Six
+  parallel `gpt-6-astra`/`max` lane reviews exhausted it in one go
+  (2026-10-22) — run Codex lanes sequentially and reserve `max` for
+  verification passes.
+- Headless `agy` auto-denies shell commands; prompts must tell Gemini to use
+  its built-in read/search tools only.

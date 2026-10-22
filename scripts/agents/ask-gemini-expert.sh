@@ -13,7 +13,11 @@ brief="$repo_root/docs/developer-guide/agents/experts/$expert.md"
 [[ -f "$brief" ]] || { echo "unknown expert: $expert" >&2; exit 2; }
 
 cd "$repo_root"
+# Headless agy auto-denies shell commands, so steer it to built-in tools.
 prompt="$(cat "$brief")
+
+Tooling: shell commands are unavailable (auto-denied); use only built-in
+file read, list and search tools.
 
 Question:
 $question"
