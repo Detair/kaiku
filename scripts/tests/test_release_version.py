@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -121,6 +122,38 @@ class ReleaseVersionTest(unittest.TestCase):
             ]
             self.assertEqual(len(after), len(before[rel]), rel)
             self.assertEqual(len(removed), count, rel)
+
+    def test_bump_preserves_line_endings(self):
+        # Windows runners would otherwise rewrite LF files with CRLF (and the
+        # universal-newline read would turn CRLF files into LF everywhere).
+        crlf = "mobile/android/version.properties"
+        crlf_path = self.tmp / crlf
+        crlf_path.write_bytes(crlf_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        write_version(self.tmp, parse_version("1.0.0-rc.1"))
+        for rel in COPIED_FILES:
+            data = (self.tmp / rel).read_bytes()
+            if rel == crlf:
+                self.assertNotIn(b"\n", data.replace(b"\r\n", b""), rel)
+                self.assertIn(b"versionName=1.0.0-rc.1\r\n", data, rel)
+            else:
+                self.assertNotIn(b"\r\n", data, rel)
+
+    def test_write_uses_no_newline_translation(self):
+        # On Windows text-mode writes translate "\n"; the writer must disable that.
+        import release_version
+
+        calls = []
+        real_open = Path.open
+
+        def spy(path, mode="r", *args, **kwargs):
+            calls.append((path.name, mode, kwargs.get("newline")))
+            return real_open(path, mode, *args, **kwargs)
+
+        with unittest.mock.patch.object(Path, "open", spy):
+            release_version.write_version(self.tmp, parse_version("2.0.0"))
+        writes = [c for c in calls if "w" in c[1]]
+        self.assertTrue(writes)
+        self.assertTrue(all(newline == "" for _, _, newline in calls), calls)
 
     def test_check_detects_mismatch(self):
         pkg = self.tmp / "client/package.json"

@@ -98,11 +98,23 @@ def parse_version(text: str) -> ReleaseVersion:
 # ---------------------------------------------------------------------------
 
 
+def _read_raw(path: Path) -> str:
+    """File text with line endings untouched (no universal-newline translation)."""
+    with path.open(encoding="utf-8", newline="") as fh:
+        return fh.read()
+
+
+def _write_raw(path: Path, text: str) -> None:
+    """Write text verbatim: no LF -> CRLF translation on Windows."""
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+
+
 def _read_lines(root: Path, rel: str) -> list[str]:
     path = root / rel
     if not path.exists():
         raise VersionError(f"{rel}: file missing")
-    return path.read_text(encoding="utf-8").splitlines(keepends=True)
+    return _read_raw(path).splitlines(keepends=True)
 
 
 def _split_eol(line: str) -> tuple[str, str]:
@@ -220,8 +232,8 @@ def write_version(root: Path, v: ReleaseVersion) -> list[Path]:
     for rel, new_lines in planned.items():
         path = root / rel
         new_text = "".join(new_lines)
-        if path.read_text(encoding="utf-8") != new_text:
-            path.write_text(new_text, encoding="utf-8")
+        if _read_raw(path) != new_text:
+            _write_raw(path, new_text)
             changed.append(path)
     return changed
 
