@@ -23,6 +23,8 @@ use vc_server::auth::types::AuthResponse;
 use vc_server::chat::types::{
     AttachmentInfo, AuthorProfile, CursorPaginatedResponse, MessageResponse,
 };
+use vc_server::db::{Channel, ChannelType};
+use vc_server::guild::settings::ChannelWithUnread;
 use vc_server::ws::ServerEvent;
 
 /// Environment variable that switches [`check_golden`] from compare to write mode.
@@ -189,5 +191,56 @@ fn android_golden_auth_response() {
     check_golden(
         "auth_response.json",
         serde_json::to_value(&response).expect("serialize auth response"),
+    );
+}
+
+const GUILD_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_b001);
+
+fn channel_with_unread(
+    id: u128,
+    name: &str,
+    channel_type: ChannelType,
+    position: i32,
+) -> ChannelWithUnread {
+    ChannelWithUnread {
+        channel: Channel {
+            id: Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0000 + id),
+            name: name.to_string(),
+            channel_type,
+            category_id: None,
+            guild_id: Some(GUILD_ID),
+            topic: None,
+            icon_url: None,
+            user_limit: None,
+            position,
+            max_screen_shares: 1,
+            created_at: ts("2026-03-12T09:00:00Z"),
+            updated_at: ts("2026-03-12T09:00:00Z"),
+        },
+        unread_count: 0,
+        last_read_message_id: None,
+        last_message_id: None,
+    }
+}
+
+/// `GET /api/guilds/{id}/channels`: includes forum and announcement channels
+/// that the Android client does not know and must hide instead of failing.
+#[test]
+fn android_golden_guild_channels() {
+    let mut text = channel_with_unread(0xd001, "general", ChannelType::Text, 0);
+    text.unread_count = 3;
+    text.last_message_id = Some(NEWER_MESSAGE_ID);
+    text.last_read_message_id = Some(OLDER_MESSAGE_ID);
+
+    let mut voice = channel_with_unread(0xd002, "lounge", ChannelType::Voice, 1);
+    voice.channel.user_limit = Some(10);
+
+    let forum = channel_with_unread(0xd003, "ideas", ChannelType::Forum, 2);
+    let announcement = channel_with_unread(0xd004, "news", ChannelType::Announcement, 3);
+
+    let channels = vec![text, voice, forum, announcement];
+    check_golden(
+        "guild_channels.json",
+        serde_json::to_value(&channels).expect("serialize guild channels"),
     );
 }
