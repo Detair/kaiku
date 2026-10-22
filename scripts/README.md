@@ -56,7 +56,7 @@ python3 scripts/check_docs_governance.py
 
 Validates CI anti-regression rules derived from previous CI breakages:
 
-1. Windows libvpx setup stays aligned across CI workflows
+1. Native deps come from `.github/actions/setup-native-deps` (incl. Windows libvpx), PR workflows never reference the updater signing key, and `release.yml` keeps a buildable matrix/Dockerfile
 2. Setup integration tests keep DB-isolated strict assertions
 3. Attachment anti-enumeration tests keep deterministic 403 behavior
 

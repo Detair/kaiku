@@ -4,11 +4,17 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 TAURI_WORKFLOW = ROOT / ".github/workflows/tauri-build.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
+NATIVE_DEPS_ACTION = ROOT / ".github/actions/setup-native-deps/action.yml"
+NATIVE_DEPS_ACTION_REF = "./.github/actions/setup-native-deps"
 SETUP_INTEGRATION = ROOT / "server/tests/integration/setup_integration.rs"
 UPLOADS_HTTP = ROOT / "server/tests/integration/uploads_http.rs"
 
@@ -39,12 +45,139 @@ def forbid_pattern(content: str, pattern: str, label: str, errors: list[str]) ->
         errors.append(f"{label}: forbidden pattern matched: {pattern}")
 
 
-def check_windows_libvpx_guardrails(ci_text: str, tauri_text: str, errors: list[str]) -> None:
-    for token in WINDOWS_LIBVPX_TOKENS:
-        require_token(ci_text, token, "ci.yml", errors)
-        require_token(tauri_text, token, "tauri-build.yml", errors)
+# Workflow file name -> job that builds the Tauri client and must use the shared action.
+NATIVE_DEPS_JOBS = {
+    "ci.yml": "tauri",
+    "tauri-build.yml": "build",
+    "release.yml": "build-tauri",
+}
 
-    forbid_pattern(ci_text, r"PKG_CONFIG=.*pkg-config|PKG_CONFIG=.*pkgconf", "ci.yml", errors)
+# Tokens that only belong in the composite action; inlining them again means drift.
+INLINE_NATIVE_DEPS_TOKENS = [
+    "vcpkg install libvpx",
+    "choco install -y pkgconfiglite",
+    "brew install pkg-config libvpx",
+]
+
+# Runner image -> the only Apple target it may build (Intel vs. Apple Silicon).
+MACOS_RUNNER_TARGETS = {
+    "macos-15-intel": "x86_64-apple-darwin",
+    "macos-13": "x86_64-apple-darwin",
+    "macos-latest": "aarch64-apple-darwin",
+    "macos-14": "aarch64-apple-darwin",
+    "macos-15": "aarch64-apple-darwin",
+}
+
+SIGNING_KEY_TOKEN = "TAURI_SIGNING_PRIVATE_KEY"
+
+
+def check_windows_libvpx_guardrails(action_text: str, errors: list[str]) -> None:
+    for token in WINDOWS_LIBVPX_TOKENS:
+        require_token(action_text, token, "action.yml", errors)
+
+    forbid_pattern(action_text, r"PKG_CONFIG=.*pkg-config|PKG_CONFIG=.*pkgconf", "action.yml", errors)
+
+
+def _job_steps(job: Any) -> list[dict]:
+    if not isinstance(job, dict):
+        return []
+    steps = job.get("steps") or []
+    return [step for step in steps if isinstance(step, dict)]
+
+
+def _needs(job: dict) -> list[str]:
+    needs = job.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def check_native_deps_usage(workflows: dict[str, str], errors: list[str]) -> None:
+    for name, text in workflows.items():
+        for token in INLINE_NATIVE_DEPS_TOKENS:
+            if token in text:
+                errors.append(
+                    f"{name}: inline native dependency install found ({token}); "
+                    f"use {NATIVE_DEPS_ACTION_REF} instead"
+                )
+
+        job_name = NATIVE_DEPS_JOBS.get(name)
+        if job_name is None:
+            continue
+        try:
+            parsed = yaml.safe_load(text) or {}
+        except yaml.YAMLError as exc:
+            errors.append(f"{name}: invalid YAML: {exc}")
+            continue
+        job = (parsed.get("jobs") or {}).get(job_name)
+        if job is None:
+            errors.append(f"{name}: missing job '{job_name}'")
+            continue
+
+        uses = [step.get("uses", "") for step in _job_steps(job)]
+        if NATIVE_DEPS_ACTION_REF not in uses:
+            errors.append(f"{name}: job '{job_name}' must use: {NATIVE_DEPS_ACTION_REF}")
+            continue
+        checkout = next((i for i, u in enumerate(uses) if u.startswith("actions/checkout@")), None)
+        if checkout is None or checkout > uses.index(NATIVE_DEPS_ACTION_REF):
+            errors.append(f"{name}: job '{job_name}' must run actions/checkout before {NATIVE_DEPS_ACTION_REF}")
+
+
+def check_release_workflow(release: dict, repo_root: Path, errors: list[str]) -> None:
+    label = "release.yml"
+    jobs = release.get("jobs") or {}
+
+    for job_name in ("build-tauri", "build-docker"):
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            errors.append(f"{label}: missing job '{job_name}'")
+            continue
+        if "prepare-release" not in _needs(job):
+            errors.append(f"{label}: job '{job_name}' must have needs: prepare-release")
+
+    tauri = jobs.get("build-tauri")
+    if isinstance(tauri, dict):
+        shell = ((tauri.get("defaults") or {}).get("run") or {}).get("shell")
+        if shell != "bash":
+            errors.append(f"{label}: build-tauri must set defaults.run.shell: bash (got {shell!r})")
+
+        rows = ((tauri.get("strategy") or {}).get("matrix") or {}).get("include") or []
+        if not rows:
+            errors.append(f"{label}: build-tauri matrix.include is empty")
+        seen: set[str] = set()
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                errors.append(f"{label}: build-tauri matrix row {index} is not a mapping")
+                continue
+            for key in ("os", "target", "bundles"):
+                if not row.get(key):
+                    errors.append(f"{label}: build-tauri matrix row {index} missing '{key}'")
+            target = row.get("target")
+            os_name = row.get("os")
+            if target in seen:
+                errors.append(f"{label}: build-tauri matrix has duplicate target {target}")
+            if target:
+                seen.add(target)
+            if isinstance(target, str) and target.endswith("-apple-darwin"):
+                expected = MACOS_RUNNER_TARGETS.get(os_name)
+                if expected != target:
+                    runner = "macos-15-intel" if target.startswith("x86_64") else "macos-latest"
+                    errors.append(
+                        f"{label}: target {target} must build on {runner} (got os {os_name!r})"
+                    )
+
+    docker = jobs.get("build-docker")
+    for step in _job_steps(docker):
+        if str(step.get("uses", "")).startswith("docker/build-push-action@"):
+            dockerfile = (step.get("with") or {}).get("file")
+            if not dockerfile:
+                errors.append(f"{label}: build-docker build-push step must set an explicit Dockerfile 'file'")
+            elif not (repo_root / dockerfile).is_file():
+                errors.append(f"{label}: build-docker Dockerfile not found: {dockerfile}")
+
+
+def check_no_signing_key_in_pr_workflows(workflows: dict[str, str], errors: list[str]) -> None:
+    for name, text in workflows.items():
+        if SIGNING_KEY_TOKEN in text:
+            errors.append(f"{name}: PR workflows must not reference {SIGNING_KEY_TOKEN}")
 
 
 def check_setup_integration_guardrails(content: str, errors: list[str]) -> None:
@@ -95,13 +228,28 @@ def check_uploads_guardrails(content: str, errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
 
+    action_text = read_text(NATIVE_DEPS_ACTION, errors)
     ci_text = read_text(CI_WORKFLOW, errors)
     tauri_text = read_text(TAURI_WORKFLOW, errors)
+    release_text = read_text(RELEASE_WORKFLOW, errors)
     setup_integration_text = read_text(SETUP_INTEGRATION, errors)
     uploads_http_text = read_text(UPLOADS_HTTP, errors)
 
-    if ci_text and tauri_text:
-        check_windows_libvpx_guardrails(ci_text, tauri_text, errors)
+    if action_text:
+        check_windows_libvpx_guardrails(action_text, errors)
+    if ci_text and tauri_text and release_text:
+        check_native_deps_usage(
+            {"ci.yml": ci_text, "tauri-build.yml": tauri_text, "release.yml": release_text},
+            errors,
+        )
+        check_no_signing_key_in_pr_workflows({"ci.yml": ci_text, "tauri-build.yml": tauri_text}, errors)
+    if release_text:
+        try:
+            release = yaml.safe_load(release_text) or {}
+        except yaml.YAMLError as exc:
+            errors.append(f"release.yml: invalid YAML: {exc}")
+        else:
+            check_release_workflow(release, ROOT, errors)
     if setup_integration_text:
         check_setup_integration_guardrails(setup_integration_text, errors)
     if uploads_http_text:

@@ -1,0 +1,193 @@
+"""Tests for scripts/check_ci_guardrails.py (release/native-deps guardrails)."""
+from __future__ import annotations
+
+import contextlib
+import io
+import sys
+import unittest
+from pathlib import Path
+
+import yaml
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = SCRIPTS_DIR.parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+import check_ci_guardrails as guardrails  # noqa: E402
+from check_ci_guardrails import (  # noqa: E402
+    check_native_deps_usage,
+    check_no_signing_key_in_pr_workflows,
+    check_release_workflow,
+    check_windows_libvpx_guardrails,
+)
+
+NATIVE_DEPS_USES = "uses: ./.github/actions/setup-native-deps"
+
+VALID_RELEASE = """
+on:
+  push:
+    tags: ['v*.*.*']
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  build-tauri:
+    needs: prepare-release
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      matrix:
+        include:
+          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, bundles: 'appimage,deb'}
+          - {os: windows-latest, target: x86_64-pc-windows-msvc, bundles: nsis}
+          - {os: macos-15-intel, target: x86_64-apple-darwin, bundles: 'app,dmg'}
+          - {os: macos-latest, target: aarch64-apple-darwin, bundles: 'app,dmg'}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-native-deps
+  build-docker:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile
+"""
+
+TAURI_JOB_TEMPLATE = """
+jobs:
+  {job}:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+{extra}
+      - run: bun run tauri build
+"""
+
+
+def load_release() -> dict:
+    return yaml.safe_load(VALID_RELEASE)
+
+
+def workflow_with_job(job: str, with_action: bool) -> str:
+    extra = "      - uses: ./.github/actions/setup-native-deps" if with_action else ""
+    return TAURI_JOB_TEMPLATE.format(job=job, extra=extra)
+
+
+class ReleaseWorkflowTest(unittest.TestCase):
+    def check(self, release: dict) -> list[str]:
+        errors: list[str] = []
+        check_release_workflow(release, REPO_ROOT, errors)
+        return errors
+
+    def test_valid_fixture_passes(self):
+        self.assertEqual(self.check(load_release()), [])
+
+    def test_release_dockerfile_must_exist(self):
+        release = load_release()
+        release["jobs"]["build-docker"]["steps"][0]["with"]["file"] = "infra/docker/server.Dockerfile"
+        errors = self.check(release)
+        self.assertTrue(any("Dockerfile" in e for e in errors), errors)
+
+    def test_release_rejects_intel_target_on_arm_runner(self):
+        release = load_release()
+        rows = release["jobs"]["build-tauri"]["strategy"]["matrix"]["include"]
+        rows[2]["os"] = "macos-latest"
+        errors = self.check(release)
+        self.assertTrue(any("macos-15-intel" in e for e in errors), errors)
+
+    def test_release_one_row_per_target(self):
+        release = load_release()
+        rows = release["jobs"]["build-tauri"]["strategy"]["matrix"]["include"]
+        rows.append({"os": "ubuntu-24.04", "target": "x86_64-unknown-linux-gnu", "bundles": "deb"})
+        errors = self.check(release)
+        self.assertTrue(any("duplicate target" in e for e in errors), errors)
+
+    def test_release_rows_need_bundles(self):
+        release = load_release()
+        del release["jobs"]["build-tauri"]["strategy"]["matrix"]["include"][1]["bundles"]
+        errors = self.check(release)
+        self.assertTrue(any("bundles" in e for e in errors), errors)
+
+    def test_release_build_shell_is_bash(self):
+        release = load_release()
+        del release["jobs"]["build-tauri"]["defaults"]
+        errors = self.check(release)
+        self.assertTrue(any("shell" in e for e in errors), errors)
+
+    def test_release_builds_need_prepare(self):
+        for job in ("build-tauri", "build-docker"):
+            with self.subTest(job=job):
+                release = load_release()
+                del release["jobs"][job]["needs"]
+                errors = self.check(release)
+                self.assertTrue(any(job in e and "prepare-release" in e for e in errors), errors)
+
+
+class NativeDepsUsageTest(unittest.TestCase):
+    def test_native_deps_action_used_everywhere(self):
+        workflows = {
+            "ci.yml": workflow_with_job("tauri", with_action=False),
+            "tauri-build.yml": workflow_with_job("build", with_action=True),
+            "release.yml": workflow_with_job("build-tauri", with_action=True),
+        }
+        errors: list[str] = []
+        check_native_deps_usage(workflows, errors)
+        self.assertTrue(any("ci.yml" in e for e in errors), errors)
+        self.assertFalse(any("tauri-build.yml" in e or "release.yml" in e for e in errors), errors)
+
+    def test_native_deps_all_present_passes(self):
+        workflows = {
+            "ci.yml": workflow_with_job("tauri", with_action=True),
+            "tauri-build.yml": workflow_with_job("build", with_action=True),
+            "release.yml": workflow_with_job("build-tauri", with_action=True),
+        }
+        errors: list[str] = []
+        check_native_deps_usage(workflows, errors)
+        self.assertEqual(errors, [])
+
+    def test_inline_libvpx_install_rejected(self):
+        text = workflow_with_job("tauri", with_action=True) + "      - run: vcpkg install libvpx:x64-windows-static-md\n"
+        errors: list[str] = []
+        check_native_deps_usage({"ci.yml": text}, errors)
+        self.assertTrue(any("ci.yml" in e for e in errors), errors)
+
+
+class LibvpxActionTest(unittest.TestCase):
+    def test_libvpx_tokens_checked_in_action(self):
+        action_text = (REPO_ROOT / ".github/actions/setup-native-deps/action.yml").read_text(encoding="utf-8")
+        self.assertIn("VPX_STATIC=1", action_text)
+        errors: list[str] = []
+        check_windows_libvpx_guardrails(action_text.replace("VPX_STATIC=1", ""), errors)
+        self.assertTrue(any("action.yml" in e and "VPX_STATIC=1" in e for e in errors), errors)
+
+
+class SigningKeyTest(unittest.TestCase):
+    def test_pr_workflows_never_reference_signing_key(self):
+        for name in ("ci.yml", "tauri-build.yml"):
+            with self.subTest(workflow=name):
+                errors: list[str] = []
+                text = "env:\n  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}\n"
+                check_no_signing_key_in_pr_workflows({name: text}, errors)
+                self.assertTrue(any(name in e for e in errors), errors)
+
+    def test_clean_pr_workflow_passes(self):
+        errors: list[str] = []
+        check_no_signing_key_in_pr_workflows({"ci.yml": "jobs: {}\n"}, errors)
+        self.assertEqual(errors, [])
+
+
+class RepoTest(unittest.TestCase):
+    def test_repo_passes(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = guardrails.main()
+        self.assertEqual(rc, 0, out.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
