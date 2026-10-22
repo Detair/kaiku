@@ -542,10 +542,10 @@ impl NativeMetricExporter {
 }
 
 impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for NativeMetricExporter {
-    async fn export(
+    fn export(
         &self,
         metrics: &opentelemetry_sdk::metrics::data::ResourceMetrics,
-    ) -> opentelemetry_sdk::error::OTelSdkResult {
+    ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
         let mut cardinality: HashMap<String, usize> = HashMap::new();
 
         for scope_metrics in metrics.scope_metrics() {
@@ -554,7 +554,7 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for NativeMetricEx
             }
         }
 
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
     fn force_flush(&self) -> opentelemetry_sdk::error::OTelSdkResult {
