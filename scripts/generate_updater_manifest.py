@@ -27,21 +27,27 @@ PLATFORMS: dict[str, str] = {
 }
 
 
+def _signature(asset: Path) -> str:
+    """Contents of the sibling .sig, or '' if it is absent or blank."""
+    sig = asset.with_name(asset.name + ".sig")
+    return sig.read_text(encoding="utf-8").strip() if sig.is_file() else ""
+
+
 def find_platforms(assets_dir: Path, tag: str, repo: str) -> tuple[dict[str, dict[str, str]], list[str]]:
     base = f"https://github.com/{repo}/releases/download/{tag}"
     platforms: dict[str, dict[str, str]] = {}
     problems: list[str] = []
     for key, pattern in PLATFORMS.items():
-        signed = [p for p in sorted(assets_dir.glob(pattern)) if p.with_name(p.name + ".sig").is_file()]
+        signed = [p for p in sorted(assets_dir.glob(pattern)) if _signature(p)]
         if not signed:
-            problems.append(f"{key}: no signed asset matching {pattern} (needs a sibling .sig)")
+            problems.append(f"{key}: no signed asset matching {pattern} (needs a non-empty sibling .sig)")
             continue
         if len(signed) > 1:
             names = ", ".join(p.name for p in signed)
             problems.append(f"{key}: ambiguous, several signed assets match {pattern}: {names}")
             continue
         asset = signed[0]
-        signature = asset.with_name(asset.name + ".sig").read_text(encoding="utf-8").strip()
+        signature = _signature(asset)
         platforms[key] = {"signature": signature, "url": f"{base}/{asset.name}"}
     return platforms, problems
 

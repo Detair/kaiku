@@ -74,6 +74,21 @@ class UpdaterManifestTest(unittest.TestCase):
         self.assertIn("darwin-x86_64", proc.stderr)
         self.assertFalse(self.output.exists())
 
+    def test_empty_sig_counts_as_missing(self):
+        self.add_assets()
+        (self.assets / (ASSETS["windows-x86_64"] + ".sig")).write_text("  \n", encoding="utf-8")
+        proc = self.run_cli("publish")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("windows-x86_64", proc.stderr)
+        self.assertFalse(self.output.exists())
+
+        proc = self.run_cli("dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("::warning::", proc.stderr)
+        self.assertIn("windows-x86_64", proc.stderr)
+        manifest = json.loads(self.output.read_text(encoding="utf-8"))
+        self.assertNotIn("windows-x86_64", manifest["platforms"])
+
     def test_dry_run_tolerates_missing(self):
         proc = self.run_cli("dry-run")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)

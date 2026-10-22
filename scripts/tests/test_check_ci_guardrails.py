@@ -36,6 +36,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - id: version
+        run: |
+          python3 scripts/release_version.py parse "$TAG" > "$RUNNER_TEMP/version.env"
+          cat "$RUNNER_TEMP/version.env" >> "$GITHUB_OUTPUT"
   build-tauri:
     needs: prepare-release
     defaults:
@@ -53,7 +57,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-native-deps
-      - run: bun run tauri build
+      - run: |
+          for var in APPLE_CERTIFICATE APPLE_SIGNING_IDENTITY; do
+            [ -n "${!var}" ] || unset "$var"
+          done
+          bun run tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
   build-docker:
@@ -206,6 +214,26 @@ class ReleaseHygieneTest(unittest.TestCase):
         text = VALID_RELEASE + "      - run: python3 scripts/check_docs_governance.py\n"
         errors = self.check(text)
         self.assertTrue(any("check_docs_governance.py" in e for e in errors), errors)
+
+    def test_prepare_parse_cannot_mask_exit_code(self):
+        piped = 'python3 scripts/release_version.py parse "$TAG" | tee -a "$GITHUB_OUTPUT"\n'
+        release = yaml.safe_load(VALID_RELEASE)
+        release["jobs"]["prepare-release"]["steps"][1]["run"] = piped
+        errors: list[str] = []
+        check_release_hygiene(VALID_RELEASE, release, errors)
+        self.assertTrue(any("release_version.py parse" in e for e in errors), errors)
+
+        release["jobs"]["prepare-release"]["steps"].pop(1)
+        errors = []
+        check_release_hygiene(VALID_RELEASE, release, errors)
+        self.assertTrue(any("release_version.py parse" in e for e in errors), errors)
+
+    def test_build_unsets_empty_signing_env(self):
+        release = yaml.safe_load(VALID_RELEASE)
+        release["jobs"]["build-tauri"]["steps"][2]["run"] = "bun run tauri build\n"
+        errors: list[str] = []
+        check_release_hygiene(VALID_RELEASE, release, errors)
+        self.assertTrue(any("unset" in e for e in errors), errors)
 
     def test_publish_release_gated_on_publish(self):
         text = VALID_RELEASE.replace("    if: needs.prepare-release.outputs.publish == 'true'\n", "")

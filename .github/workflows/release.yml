@@ -47,7 +47,11 @@ jobs:
         id: version
         env:
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: python3 scripts/release_version.py parse "$TAG" | tee -a "$GITHUB_OUTPUT"
+        # No pipe: the default shell has no pipefail, so `| tee` would mask exit 2.
+        run: |
+          python3 scripts/release_version.py parse "$TAG" > "$RUNNER_TEMP/version.env"
+          cat "$RUNNER_TEMP/version.env"
+          cat "$RUNNER_TEMP/version.env" >> "$GITHUB_OUTPUT"
 
       # Publish on a tag push, or on a dispatch with dry_run unticked.
       - name: Decide publish or dry run
@@ -224,18 +228,8 @@ jobs:
             echo "winsign=false" >> "$GITHUB_OUTPUT"
           fi
           if grep -qx 'winsign=true' "$GITHUB_OUTPUT"; then
-            python3 - <<'EOF'
-          import json, os, pathlib
-          cmd = "trusted-signing-cli -e {} -a {} -c {} -d Kaiku %1".format(
-              os.environ["AZURE_TRUSTED_SIGNING_ENDPOINT"],
-              os.environ["AZURE_TRUSTED_SIGNING_ACCOUNT"],
-              os.environ["AZURE_TRUSTED_SIGNING_PROFILE"],
-          )
-          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "tauri-winsign.json"
-          path.write_text(json.dumps({"bundle": {"windows": {"signCommand": cmd}}}), encoding="utf-8")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"config={path}\n")
-          EOF
+            python3 scripts/write_winsign_config.py --output "$RUNNER_TEMP/tauri-winsign.json"
+            echo "config=$RUNNER_TEMP/tauri-winsign.json" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::Windows installer is unsigned; SmartScreen will warn"
           fi
@@ -267,6 +261,16 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_CLIENT_SECRET || '' }}
           AZURE_TENANT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_TENANT_ID || '' }}
         run: |
+          # tauri-bundler checks these for presence, not content: an empty
+          # APPLE_CERTIFICATE would trigger a keychain import of nothing and
+          # defeat ad-hoc signing. Unset every empty optional signing var.
+          # (TAURI_SIGNING_PRIVATE_KEY_PASSWORD stays: empty = no password.)
+          for var in TAURI_SIGNING_PRIVATE_KEY \
+              APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+              APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+              AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID; do
+            [ -n "${!var}" ] || unset "$var"
+          done
           config=()
           if [ "$UPDATER" != true ]; then
             config+=(--config src-tauri/tauri.ci.conf.json)

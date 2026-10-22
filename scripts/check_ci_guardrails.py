@@ -234,7 +234,30 @@ def check_release_hygiene(release_text: str, release: dict, errors: list[str]) -
     if "check_docs_governance.py" in release_text:
         errors.append(f"{label}: must not run check_docs_governance.py (CI gate, not a release gate)")
 
-    publish = (release.get("jobs") or {}).get("publish-release")
+    jobs = release.get("jobs") or {}
+    parse_steps = [
+        str(step.get("run", "")) for step in _job_steps(jobs.get("prepare-release"))
+        if "release_version.py parse" in str(step.get("run", ""))
+    ]
+    if not parse_steps:
+        errors.append(f"{label}: prepare-release must run release_version.py parse on the tag")
+    elif any("|" in run for run in parse_steps):
+        errors.append(
+            f"{label}: prepare-release must not pipe release_version.py parse "
+            "(no pipefail: a pipe masks the invalid-tag exit code)"
+        )
+
+    builds = [
+        str(step.get("run", "")) for step in _job_steps(jobs.get("build-tauri"))
+        if "tauri build" in str(step.get("run", ""))
+    ]
+    if not builds or any('unset "$var"' not in run for run in builds):
+        errors.append(
+            f"{label}: build-tauri must unset empty signing env vars before tauri build "
+            "(tauri-bundler checks presence, not content)"
+        )
+
+    publish = jobs.get("publish-release")
     if not isinstance(publish, dict):
         errors.append(f"{label}: missing job 'publish-release'")
     elif "needs.prepare-release.outputs.publish == 'true'" not in str(publish.get("if", "")):

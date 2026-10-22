@@ -44,7 +44,7 @@ class RequireSecretsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("signing=false", output)
         self.assertIn("::notice::", proc.stdout)
-        self.assertIn("B", proc.stdout)
+        self.assertIn("::notice::B not set — signing skipped (dry run)", proc.stdout)
         self.assertNotIn(SECRET_VALUE, proc.stdout + proc.stderr + output)
 
     def test_all_present_true(self):
