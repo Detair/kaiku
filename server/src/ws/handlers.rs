@@ -56,6 +56,13 @@ const CLOSE_TRY_AGAIN_LATER: u16 = 1013;
 /// the presence snapshot drain well within this.
 const SLOW_CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Broadcast buffer of each socket's own pub/sub subscriber client (fred's
+/// default is 32). The subscriber sees every `channel:*` message server-wide,
+/// so the buffer must absorb ordinary traffic while the forwarder waits up to
+/// [`SLOW_CLIENT_SEND_TIMEOUT`] for a busy client; overflowing it ends the
+/// pipeline with `Lagged` (close 1011).
+const SUBSCRIBER_BROADCAST_CAPACITY: usize = 1024;
+
 /// Close reason sent with 1011/1013: the client should reconnect and resync.
 const CLOSE_REASON_RESYNC: &str = "resync";
 
@@ -1103,7 +1110,7 @@ async fn handle_pubsub(
     start: oneshot::Receiver<()>,
 ) -> PubsubExit {
     // Create a subscriber client
-    let subscriber = redis.clone_new();
+    let subscriber = new_subscriber_client(&redis);
 
     // Connect (fred 8.x returns JoinHandle)
     let _connect_handle = subscriber.connect();
@@ -1172,6 +1179,20 @@ async fn handle_pubsub(
     let _ = ready.send(());
 
     forward_after_start(start, pubsub_stream, reconnect_rx, &params).await
+}
+
+/// Create the per-socket subscriber client: same connection settings and
+/// reconnect policy as `redis`, but with a [`SUBSCRIBER_BROADCAST_CAPACITY`]
+/// pub/sub buffer. The shared client is not modified.
+fn new_subscriber_client(redis: &Client) -> Client {
+    let mut perf = redis.perf_config();
+    perf.broadcast_channel_capacity = SUBSCRIBER_BROADCAST_CAPACITY;
+    Client::new(
+        redis.client_config(),
+        Some(perf),
+        Some(redis.connection_config().clone()),
+        redis.client_reconnect_policy(),
+    )
 }
 
 /// Wait for `start` (the socket has queued `Ready`), then forward messages.
@@ -1740,6 +1761,26 @@ mod pubsub_tests {
             forward_after_start(start_rx, brx, reconnect_rx, &params).await,
             PubsubExit::ClientGone
         ));
+    }
+
+    #[test]
+    fn subscriber_client_gets_larger_broadcast_capacity() {
+        let base = Client::new(
+            fred::types::config::Config::default(),
+            None,
+            None,
+            Some(ReconnectPolicy::new_constant(0, 100)),
+        );
+        assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
+
+        let subscriber = new_subscriber_client(&base);
+        assert_eq!(
+            subscriber.perf_config().broadcast_channel_capacity,
+            SUBSCRIBER_BROADCAST_CAPACITY
+        );
+        assert!(subscriber.has_reconnect_policy());
+        // The shared base client is left untouched.
+        assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
     }
 
     #[test]
