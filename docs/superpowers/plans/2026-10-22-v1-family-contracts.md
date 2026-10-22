@@ -111,3 +111,14 @@ tree — the server stream must not create a conflicting file of that name.
   required by the desktop.
 - **Shared files:** `ci.yml` is edited by release Tasks 1/2/4/5 and desktop
   Tasks 9/10 — the later-merging stream rebases; never reformat unrelated jobs.
+
+## C13 — Fixed SFU UDP port range (server → athene deployment) — added 2026-10-22
+
+The SFU (webrtc-rs) must bind ICE/media only within a configurable UDP port
+range so the host firewall can open exactly that range:
+`VOICE_UDP_PORT_MIN` / `VOICE_UDP_PORT_MAX` (both required together; unset =
+current ephemeral behaviour for dev), applied via the webrtc-rs
+`SettingEngine` ephemeral UDP port range; optional `VOICE_PUBLIC_IP` for
+NAT 1:1 announcement if not already present. Documented per C9. Server
+stream: add as **Task 13** (after Task 6), with a test that a peer
+connection's local candidates use ports inside the range.

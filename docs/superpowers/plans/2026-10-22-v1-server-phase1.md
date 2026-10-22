@@ -665,3 +665,24 @@ Expected: FAIL (current script calls `pg_dump` without `PGPASSWORD`, shim exits 
 - **C3 clarification:** `channel` = one element of the `GET /api/dm` array (`DMListResponse`: flattened channel + `participants` + `last_message` + `unread_count`), computed per recipient; also sent to the creator's other sessions.
 - **C4 clarifications:** WS connections of pending users are refused (`error` event `PASSWORD_CHANGE_REQUIRED`, close 1008); restored sessions detect the state via 403 `PASSWORD_CHANGE_REQUIRED` on `GET /auth/me`; `POST /auth/refresh` stays allowed and its response also carries `password_change_required`.
 - **New shared rule (proposed C11):** server close codes 1011/1013 mean "reconnect + catch-up"; 1008 remains auth rejection.
+
+---
+
+### Task 13: Fixed SFU UDP port range (contract C13) — added by coordinator 2026-10-22
+
+**Why:** the athene deployment (host firewall, hostNetwork) can only open a
+fixed UDP range; today the SFU uses ephemeral ports.
+
+**Files:** `server/src/config.rs` (two new env vars), `server/src/voice/sfu.rs`
+(SettingEngine port range where the API/peer connections are built),
+`docs/admin-guide/configuration/environment.md` (C9), CHANGELOG `### Added`
+("Operators can pin voice media to a UDP port range").
+
+**Interfaces:** `VOICE_UDP_PORT_MIN: Option<u16>`, `VOICE_UDP_PORT_MAX:
+Option<u16>` in `Config`; both-or-neither, `min <= max`, else startup error
+`"VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max"`.
+
+- [ ] Test `config_rejects_half_set_udp_range` and `config_rejects_inverted_udp_range`.
+- [ ] Test `sfu_candidates_use_configured_port_range`: build the SFU API with range 50000–50010, create a peer connection, gather host candidates, assert every UDP candidate port ∈ [50000, 50010].
+- [ ] Implement via `SettingEngine::set_udp_network(UDPNetwork::Ephemeral(EphemeralUDP::new(min, max)?))` (or the webrtc-rs 0.17 equivalent — verify in the crate source).
+- [ ] Verify: `cargo test -p vc-server voice::` + clippy; commit `feat(voice): allow pinning SFU media to a UDP port range`.
