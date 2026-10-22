@@ -292,3 +292,7 @@ const handleClick = () => handle(id);
 ```
 
 Or use inline handlers only for rare UI events (not per-item in lists).
+
+## User-facing strings (i18n)
+
+New UI strings go through `t()` from `@/i18n` (keys live in `src/i18n/en.ts`, convention `area.screen.purpose`, whole sentences, `{{name}}` placeholders; use `plural()` for counts). Files whose UI is fully migrated are listed in `eslint.i18n.mjs` (`I18N_GUARDED_FILES`), where JSX text and `placeholder`/`title`/`aria-label`/`alt`/`label` literals fail lint.

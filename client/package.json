@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@floating-ui/dom": "^1.7.6",
+    "@solid-primitives/i18n": "^2",
     "@solidjs/router": "^0.16.1",
     "@tanstack/solid-virtual": "^3.13.24",
     "@tauri-apps/api": "^2.11.0",
