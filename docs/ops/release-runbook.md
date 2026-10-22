@@ -10,11 +10,20 @@ server image `ghcr.io/detair/kaiku-server:<version>` and the updater manifest
 `latest.json`, then creates a **draft** GitHub release. Nothing is visible to
 users until you publish the draft.
 
+Job order on a publish run: `prepare-release`, then the builds in parallel
+(`build-tauri` x4, `build-docker`, `build-android`), then `publish-release`
+(collects assets, writes and verifies `latest.json`, creates the draft), and
+only then `push-image` pushes the smoke-tested server image (and moves
+`latest` for a final release). A failed build therefore never leaves a pushed
+image behind. Runs for the same tag are queued, never run in parallel or
+cancelled.
+
 | Piece | Where it comes from |
 |---|---|
 | Version in every file | `scripts/release_version.py`, `scripts/bump-version.sh` |
 | Missing-secret gating | `scripts/require_secrets.py` |
 | Updater manifest | `scripts/generate_updater_manifest.py` |
+| Updater key matches `tauri.conf.json` | `scripts/verify_updater_signatures.py` |
 | Windows signing overlay | `scripts/write_winsign_config.py` |
 | APK check (signature, version, cert) | `scripts/android_verify_apk.sh` |
 | Release notes | `scripts/generate_release_notes.py` (reads `CHANGELOG.md`) |
@@ -61,6 +70,10 @@ python3 scripts/release_version.py check --tag v1.0.0-rc.1    # exit 0 = files a
 ```
 
 ## 2. One-time maintainer setup (M1 to M5)
+
+This runbook's numbering is authoritative. Plan mapping: plan M1 = runbook
+M3 + M2 secrets, plan M2 = M1, plan M3 = M4, plan M4/M5 = M5 (section 8),
+plan M6 = section 4, plan M7 = updater test in section 5.
 
 Agents never create secrets, Environments, variables or keystores. Do these
 yourself. Until they are done, dry runs work and publish runs fail with
@@ -111,6 +124,12 @@ Set two secrets in Environment `release`:
 Back it up like the keystore: two offline copies, one off-site, not on the
 server.
 
+Every publish run checks this: `publish-release` verifies each platform's
+`.sig` in `latest.json` against `plugins.updater.pubkey` with `minisign`
+(`scripts/verify_updater_signatures.py`). A private key that does not belong
+to that public key fails the run with `::error::` naming the platform and the
+two key ids, before the draft is created and before any image is pushed.
+
 ### M3. Environment `release`
 
 GitHub, Settings, Environments, New environment `release`:
@@ -149,12 +168,14 @@ gh run watch
 its own checkout, so the tag does not have to exist yet. Check:
 
 - All jobs green: `prepare-release`, `build-tauri` (4 targets),
-  `build-docker`, `build-android`. `publish-release` is skipped.
+  `build-docker` (build, smoke tests, image export), `build-android`.
+  `publish-release` and `push-image` are skipped.
 - Job summary of `build-android`: "Unsigned dry-run build".
 - Log of each `build-tauri` job contains the `::notice::` lines "updater
   signing" skipped and, per OS, "ad-hoc signed" (macOS) or "unsigned"
   (Windows). They are expected.
-- The `tauri-*` and `android-apk` artifacts are attached to the run (7 days).
+- The `tauri-*` and `android-apk` artifacts are attached to the run (7 days),
+  plus `server-image` (the exported image, 1 day; only `push-image` uses it).
 
 ## 4. Rehearsal (M6)
 
@@ -233,7 +254,8 @@ A publish via `workflow_dispatch` with `dry_run=false` passes the
 
    The workflow refuses to publish if the version files do not match the tag
    or the tag is not the checked-out commit.
-5. Approve the Environment gate (if set) and watch: `gh run watch`.
+5. Approve the Environment gate (if set) and watch: `gh run watch`. The
+   image is pushed last (`push-image`), after the draft release exists.
 
 ### Verification checklist (on the draft release)
 
@@ -325,8 +347,19 @@ offered, not the full download. Do the full test after publishing.
   (`git push --delete origin <tag>`; `git tag -d <tag>`) and retag the right
   commit if no release or image was published for it. If anything was
   published, the version is spent: bump to the next `rc.N`.
-- **Half-published run** (image pushed, release missing): delete the draft and
-  the GHCR version as in section 4, then use the next version.
+- **`push-image` failed** (draft exists, image missing): fix the cause (e.g.
+  GHCR permissions, M4) and `gh run rerun <run-id> --failed`; the image
+  artifact is kept for 1 day. Do not publish the draft before the image is
+  pushed. Past that day, delete the draft and use the next version.
+- **Updater signature check failed** (`publish-release`,
+  `::error::updater signature check: <platform>: ...`):
+  `TAURI_SIGNING_PRIVATE_KEY` is not the key for the configured pubkey. Put
+  the right key into Environment `release` (M2) and re-run the **whole** run
+  (`gh run rerun <run-id>`): the bundles were signed with the wrong key.
+  Nothing was published.
+- **Half-published run** (something public but the run failed afterwards,
+  e.g. a manual image push): delete the draft and the GHCR version as in
+  section 4, then use the next version.
 - **Lost Android keystore.** No recovery: Android treats an APK signed with a
   different key as a different app, so **every relative must uninstall and
   reinstall** (losing local app data) to get any future build. Back up as in
