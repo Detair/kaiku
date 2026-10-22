@@ -4,6 +4,7 @@ mod admin_create_user;
 mod admin_diagnostics;
 mod admin_elevation;
 mod admin_reports;
+mod android_contract_fixtures;
 mod announcements_http;
 mod auth;
 mod blocking;

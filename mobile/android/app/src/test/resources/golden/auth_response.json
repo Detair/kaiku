@@ -1,0 +1,7 @@
+{
+  "access_token": "fixture-access-token",
+  "expires_in": 900,
+  "refresh_token": "fixture-refresh-token",
+  "setup_required": false,
+  "token_type": "Bearer"
+}
