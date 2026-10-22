@@ -29,6 +29,7 @@ COPIED_FILES = (
     "mobile/android/version.properties",
     "Cargo.lock",
 )
+BASELINE = parse_version("0.1.0")
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -49,6 +50,8 @@ class ReleaseVersionTest(unittest.TestCase):
             dst = self.tmp / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPO_ROOT / rel, dst)
+        # Normalise to a fixed baseline so the tests do not depend on the repo's current version.
+        write_version(self.tmp, BASELINE)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -121,16 +124,16 @@ class ReleaseVersionTest(unittest.TestCase):
 
     def test_check_detects_mismatch(self):
         pkg = self.tmp / "client/package.json"
-        pkg.write_text(
-            pkg.read_text(encoding="utf-8").replace('  "version": "0.1.0",', '  "version": "9.9.9",', 1),
-            encoding="utf-8",
-        )
+        current = read_versions(self.tmp)["client/package.json"]
+        original = pkg.read_text(encoding="utf-8")
+        edited = original.replace(f'  "version": "{current}",', '  "version": "9.9.9",', 1)
+        self.assertNotEqual(edited, original, "mismatch edit did not change package.json")
+        pkg.write_text(edited, encoding="utf-8")
         errs = check_consistency(self.tmp, None)
         self.assertEqual(len(errs), 1, errs)
         self.assertIn("client/package.json", errs[0])
 
     def test_check_tag_mismatch_lists_each_file(self):
-        write_version(self.tmp, parse_version("0.1.0"))
         errs = check_consistency(self.tmp, parse_version("v1.0.0-rc.1"))
         self.assertEqual(len(errs), 5, errs)
         self.assertTrue(all("expected 1.0.0-rc.1" in e or "expected 1000001" in e for e in errs), errs)

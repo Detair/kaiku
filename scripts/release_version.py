@@ -151,8 +151,10 @@ def _cargo_lock_indices(lines: list[str], rel: str) -> list[int]:
 
 
 def _value(line: str, pattern: re.Pattern[str]) -> str:
-    match = pattern.match(_split_eol(line)[0])
-    assert match is not None
+    body = _split_eol(line)[0]
+    match = pattern.match(body)
+    if match is None:
+        raise VersionError(f"malformed version line: {body!r}")
     return match.group(2)
 
 

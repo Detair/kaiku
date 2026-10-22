@@ -74,7 +74,7 @@ jobs:
         run: python3 scripts/check_ci_guardrails.py
 
       - name: Install script test dependencies
-        run: python3 -m pip install --user pyyaml==6.0.2
+        run: python3 -m pip install --user pyyaml==6.0.2 || python3 -m pip install --user --break-system-packages pyyaml==6.0.2
 
       - name: Run script unit tests
         run: python3 -m unittest discover -s scripts/tests -v
