@@ -161,3 +161,32 @@ async fn test_create_push_subscription_rejects_http_and_private(pool: PgPool) {
         assert_eq!(resp.status(), expected, "endpoint {endpoint}");
     }
 }
+
+#[sqlx::test]
+async fn test_create_push_subscription_rejects_unknown_provider(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+
+    for provider in ["fcm", "apns", "UnifiedPush", "other"] {
+        let resp = app
+            .oneshot(req(
+                Method::POST,
+                "/api/me/push-subscriptions",
+                &token,
+                Some(json!({ "provider": provider, "endpoint": "https://push.example/x" })),
+            ))
+            .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "provider {provider}"
+        );
+    }
+
+    // Nothing was stored.
+    let list = app
+        .oneshot(req(Method::GET, "/api/me/push-subscriptions", &token, None))
+        .await;
+    assert!(body_to_json(list).await.as_array().unwrap().is_empty());
+}

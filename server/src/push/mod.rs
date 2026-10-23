@@ -259,16 +259,18 @@ pub async fn create_subscription(
     body.validate()
         .map_err(|e| PushError::Validation(crate::validation::format_validation_errors(&e)))?;
 
-    if body.provider == "unifiedpush" {
-        let parsed = reqwest::Url::parse(&body.endpoint)
-            .map_err(|_| PushError::Validation("endpoint must be a valid URL".into()))?;
-        if parsed.scheme() != "https" {
-            return Err(PushError::Validation("endpoint must use https".into()));
-        }
-        match parsed.host_str() {
-            Some(h) if !crate::webhooks::ssrf::is_blocked_host(h) => {}
-            _ => return Err(PushError::Validation("endpoint host is not allowed".into())),
-        }
+    // Only providers that `send_one` can deliver to are accepted.
+    if body.provider != "unifiedpush" {
+        return Err(PushError::Validation("unsupported push provider".into()));
+    }
+    let parsed = reqwest::Url::parse(&body.endpoint)
+        .map_err(|_| PushError::Validation("endpoint must be a valid URL".into()))?;
+    if parsed.scheme() != "https" {
+        return Err(PushError::Validation("endpoint must use https".into()));
+    }
+    match parsed.host_str() {
+        Some(h) if !crate::webhooks::ssrf::is_blocked_host(h) => {}
+        _ => return Err(PushError::Validation("endpoint host is not allowed".into())),
     }
 
     let sub: PushSubscription = sqlx::query_as(
