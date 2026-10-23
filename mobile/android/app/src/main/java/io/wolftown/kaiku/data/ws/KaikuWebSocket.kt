@@ -42,6 +42,8 @@ class KaikuWebSocket @Inject constructor(
         /** WebSocket close code 1008 (Policy Violation): the server rejected authentication. */
         internal const val AUTH_REJECTED_CLOSE_CODE = 1008
         private const val NORMAL_CLOSURE = 1000
+        private const val HTTP_UNAUTHORIZED = 401
+        private const val HTTP_FORBIDDEN = 403
     }
 
     private val lock = Any()
@@ -118,7 +120,10 @@ class KaikuWebSocket @Inject constructor(
         .replace("http://", "ws://")
         .trimEnd('/') + "/ws"
 
-    /** Marks [socket] closed with [code] if it is still the current socket. */
+    /**
+     * Marks [socket] closed with [code] if it is still the current socket.
+     * [AUTH_REJECTED_CLOSE_CODE] (close 1008, or a handshake 401/403) maps to AuthRejected.
+     */
     private fun handleClosed(socket: WebSocket, code: Int?) {
         synchronized(lock) {
             if (webSocket !== socket) return
@@ -180,8 +185,12 @@ class KaikuWebSocket @Inject constructor(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            logger.warning("socket failure: ${t.javaClass.simpleName}")
-            handleClosed(webSocket, null)
+            // Contract C11: a 401/403 answer to the upgrade request is an auth rejection,
+            // same as close 1008. Only the status code is read (OkHttp closes the response).
+            val httpCode = response?.code
+            logger.warning("socket failure: ${t.javaClass.simpleName}" + (httpCode?.let { " http=$it" } ?: ""))
+            val authRejected = httpCode == HTTP_UNAUTHORIZED || httpCode == HTTP_FORBIDDEN
+            handleClosed(webSocket, if (authRejected) AUTH_REJECTED_CLOSE_CODE else null)
         }
     }
 }

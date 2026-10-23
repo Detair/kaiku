@@ -358,6 +358,46 @@ class KaikuWebSocketTest {
         }
     }
 
+    @Test
+    fun `handshake 401 reports AuthRejected`() = runTest {
+        assertHandshakeStatusReportsAuthRejected(401)
+    }
+
+    @Test
+    fun `handshake 403 reports AuthRejected`() = runTest {
+        assertHandshakeStatusReportsAuthRejected(403)
+    }
+
+    @Test
+    fun `handshake 500 reports Disconnected`() = runTest {
+        mockServer.enqueue(MockResponse().setResponseCode(500))
+
+        ws.connectionState.test(timeout = 10.seconds) {
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(ConnectionState.Connecting, awaitItem())
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    private suspend fun assertHandshakeStatusReportsAuthRejected(code: Int) {
+        // The server refuses the upgrade request itself with an HTTP status.
+        mockServer.enqueue(MockResponse().setResponseCode(code))
+
+        ws.connectionState.test(timeout = 10.seconds) {
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(ConnectionState.Connecting, awaitItem())
+            assertEquals(ConnectionState.AuthRejected, awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
     private companion object {
         const val TOKEN = "test-jwt-token"
     }
