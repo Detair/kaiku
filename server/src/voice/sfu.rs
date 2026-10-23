@@ -353,14 +353,61 @@ pub struct SfuServer {
     stale_rx: Mutex<Option<mpsc::UnboundedReceiver<StalePeer>>>,
 }
 
-/// Whether a `PUBLIC_IP` string is compatible with the allowed ICE family.
-/// Unparseable values are kept (matches pre-existing behaviour).
-fn public_ip_matches_family(ip: &str, family: IceIpFamily) -> bool {
-    !matches!(
-        (ip.parse::<std::net::IpAddr>(), family),
-        (Ok(std::net::IpAddr::V4(_)), IceIpFamily::V6)
-            | (Ok(std::net::IpAddr::V6(_)), IceIpFamily::V4)
-    )
+/// Result of combining `VOICE_ICE_IP_FAMILY` with `PUBLIC_IP`.
+#[derive(Debug, PartialEq, Eq)]
+struct IceNetworkPlan {
+    /// Network types to set on the `SettingEngine` (`None` = webrtc-ice default).
+    network_types: Option<Vec<NetworkType>>,
+    /// Whether NAT 1:1 mapping with `PUBLIC_IP` should be applied.
+    use_public_ip: bool,
+    /// `PUBLIC_IP` was set but its family is excluded by the family filter.
+    public_ip_ignored: bool,
+}
+
+/// Single place deciding family / `PUBLIC_IP` behaviour. A `PUBLIC_IP` of an
+/// excluded family is ignored; an unparseable one is kept (legacy behaviour).
+/// Without a family restriction, `PUBLIC_IP` keeps its previous effect of
+/// enabling both Udp4 and Udp6.
+fn ice_network_plan(family: IceIpFamily, public_ip: Option<&str>) -> IceNetworkPlan {
+    let ip_family_ok = public_ip.is_none_or(|ip| {
+        !matches!(
+            (ip.parse::<std::net::IpAddr>(), family),
+            (Ok(std::net::IpAddr::V4(_)), IceIpFamily::V6)
+                | (Ok(std::net::IpAddr::V6(_)), IceIpFamily::V4)
+        )
+    });
+    let network_types = match family {
+        IceIpFamily::V4 => Some(vec![NetworkType::Udp4]),
+        IceIpFamily::V6 => Some(vec![NetworkType::Udp6]),
+        IceIpFamily::Both if public_ip.is_some() => {
+            Some(vec![NetworkType::Udp4, NetworkType::Udp6])
+        }
+        IceIpFamily::Both => None,
+    };
+    IceNetworkPlan {
+        network_types,
+        use_public_ip: public_ip.is_some() && ip_family_ok,
+        public_ip_ignored: public_ip.is_some() && !ip_family_ok,
+    }
+}
+
+/// Warn when none of the allowed interface names exists on this host (a typo
+/// would otherwise yield zero ICE candidates and voice joins fail silently).
+fn warn_if_no_interface_matches(allowed: &[String]) {
+    match webrtc::util::ifaces::ifaces() {
+        Ok(found) => {
+            if !found.iter().any(|i| allowed.contains(&i.name)) {
+                let mut names: Vec<&str> = found.iter().map(|i| i.name.as_str()).collect();
+                names.sort_unstable();
+                names.dedup();
+                warn!(configured = ?allowed, available = ?names,
+                    "VOICE_ICE_INTERFACES matches no interface on this host; voice will have no ICE candidates");
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "could not list network interfaces to validate VOICE_ICE_INTERFACES");
+        }
+    }
 }
 
 impl SfuServer {
@@ -429,33 +476,27 @@ impl SfuServer {
 
         // Configure SettingEngine for NAT traversal behind Docker/VPS
         let mut setting_engine = SettingEngine::default();
-        // PUBLIC_IP NAT 1:1 only applies when its family is allowed by
-        // VOICE_ICE_IP_FAMILY; otherwise the family filter wins (logged).
-        let public_ip_usable = config.public_ip.as_deref().filter(|ip| {
-            let ok = public_ip_matches_family(ip, config.voice_ice_ip_family);
-            if !ok {
-                warn!(public_ip = %ip, family = ?config.voice_ice_ip_family,
-                    "PUBLIC_IP ignored: address family excluded by VOICE_ICE_IP_FAMILY");
-            }
-            ok
-        });
-        if let Some(public_ip) = public_ip_usable {
+        // Family / PUBLIC_IP interaction lives in `ice_network_plan`.
+        let plan = ice_network_plan(config.voice_ice_ip_family, config.public_ip.as_deref());
+        if plan.public_ip_ignored {
+            warn!(public_ip = ?config.public_ip, family = ?config.voice_ice_ip_family,
+                "PUBLIC_IP ignored: address family excluded by VOICE_ICE_IP_FAMILY");
+        }
+        if let Some(types) = plan.network_types {
+            setting_engine.set_network_types(types);
+        }
+        if let (true, Some(public_ip)) = (plan.use_public_ip, config.public_ip.as_deref()) {
             setting_engine.set_nat_1to1_ips(
                 vec![public_ip.to_owned()],
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
-            setting_engine.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
             info!(public_ip = %public_ip, "SFU NAT 1:1 IP configured");
         }
 
-        // Restrict ICE to the configured IP family / interfaces.
-        match config.voice_ice_ip_family {
-            IceIpFamily::V4 => setting_engine.set_network_types(vec![NetworkType::Udp4]),
-            IceIpFamily::V6 => setting_engine.set_network_types(vec![NetworkType::Udp6]),
-            IceIpFamily::Both => {}
-        }
+        // Restrict ICE to the configured interfaces.
         if let Some(allowed) = config.voice_ice_interfaces.clone() {
             info!(interfaces = ?allowed, "SFU ICE interface filter configured");
+            warn_if_no_interface_matches(&allowed);
             setting_engine
                 .set_interface_filter(Box::new(move |name| allowed.iter().any(|a| a == name)));
         }
@@ -1333,11 +1374,26 @@ mod ice_filter_tests {
             .collect()
     }
 
+    /// Does the host have a non-loopback address of the given family?
+    async fn has_family(v6: bool) -> bool {
+        webrtc::util::vnet::net::Net::new(None)
+            .get_interfaces()
+            .await
+            .iter()
+            .flat_map(|i| i.addrs().iter().map(|a| a.addr()))
+            .any(|a| !a.is_loopback() && a.is_ipv6() == v6)
+    }
+
     #[tokio::test]
     async fn sfu_candidates_respect_ip_family() {
         let mut config = Config::default_for_test();
         config.voice_ice_ip_family = IceIpFamily::V4;
         let ips = gather_ips(config).await;
+        if has_family(false).await {
+            assert!(!ips.is_empty(), "host has IPv4 but no candidates gathered");
+        } else {
+            eprintln!("SKIP non-empty v4 assertion: host has no non-loopback IPv4");
+        }
         assert!(ips.iter().all(std::net::IpAddr::is_ipv4), "{ips:?}");
 
         // Opposite family: nothing of the excluded family may appear (on a
@@ -1383,10 +1439,50 @@ mod ice_filter_tests {
     }
 
     #[test]
-    fn public_ip_family_compatibility() {
-        assert!(public_ip_matches_family("203.0.113.5", IceIpFamily::V4));
-        assert!(!public_ip_matches_family("203.0.113.5", IceIpFamily::V6));
-        assert!(!public_ip_matches_family("2001:db8::1", IceIpFamily::V4));
-        assert!(public_ip_matches_family("2001:db8::1", IceIpFamily::Both));
+    fn network_plan_covers_family_and_public_ip() {
+        use NetworkType::{Udp4, Udp6};
+        let v4 = Some("203.0.113.5");
+        let v6 = Some("2001:db8::1");
+        let plan = |t: Option<Vec<NetworkType>>, use_ip, ign| IceNetworkPlan {
+            network_types: t,
+            use_public_ip: use_ip,
+            public_ip_ignored: ign,
+        };
+        // Both
+        assert_eq!(
+            ice_network_plan(IceIpFamily::Both, None),
+            plan(None, false, false)
+        );
+        let both = Some(vec![Udp4, Udp6]);
+        assert_eq!(
+            ice_network_plan(IceIpFamily::Both, v4),
+            plan(both.clone(), true, false)
+        );
+        assert_eq!(
+            ice_network_plan(IceIpFamily::Both, v6),
+            plan(both, true, false)
+        );
+        // V4
+        let t4 = Some(vec![Udp4]);
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V4, None),
+            plan(t4.clone(), false, false)
+        );
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V4, v4),
+            plan(t4.clone(), true, false)
+        );
+        assert_eq!(ice_network_plan(IceIpFamily::V4, v6), plan(t4, false, true));
+        // V6
+        let t6 = Some(vec![Udp6]);
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V6, None),
+            plan(t6.clone(), false, false)
+        );
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V6, v6),
+            plan(t6.clone(), true, false)
+        );
+        assert_eq!(ice_network_plan(IceIpFamily::V6, v4), plan(t6, false, true));
     }
 }
