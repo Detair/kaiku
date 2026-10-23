@@ -33,13 +33,13 @@ class VoiceViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
 
-    private val currentChannelIdFlow = MutableStateFlow<Int?>(null)
+    private val currentChannelIdFlow = MutableStateFlow<String?>(null)
     private val participantsFlow = MutableStateFlow<List<VoiceParticipant>>(emptyList())
     private val isMutedFlow = MutableStateFlow(false)
     private val isConnectedFlow = MutableStateFlow(false)
     private val screenSharesFlow = MutableStateFlow<List<ScreenShareInfo>>(emptyList())
     private val layerPreferencesFlow = MutableStateFlow<Map<String, String>>(emptyMap())
-    private val errorFlow = MutableStateFlow<String?>(null)
+    private val errorFlow = MutableStateFlow<Int?>(null)
     private val remoteVideoTracksFlow = MutableStateFlow<Map<String, VideoTrack>>(emptyMap())
     private val currentRouteFlow = MutableStateFlow(AudioRoute.Speaker)
     private val availableRoutesFlow = MutableStateFlow(setOf(AudioRoute.Speaker, AudioRoute.Earpiece))

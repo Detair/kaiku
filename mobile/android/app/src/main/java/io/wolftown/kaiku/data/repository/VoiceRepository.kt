@@ -19,6 +19,7 @@ import io.wolftown.kaiku.data.ws.VoiceParticipant
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -181,7 +182,8 @@ class VoiceRepository @Inject constructor(
 
             // 7. Collect service events first (so StartFailed cannot be missed), then
             // start the foreground service.
-            serviceEventJob = scope.launch {
+            // UNDISPATCHED: subscribe before the service can emit (replay is 0).
+            serviceEventJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 voiceServiceEvents.events.collect { event ->
                     when (event) {
                         VoiceServiceEvent.MuteToggle -> toggleMute()

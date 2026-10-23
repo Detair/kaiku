@@ -63,6 +63,7 @@ fun VoiceChannelScreen(
     val participants by viewModel.participants.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
+    val isInChannel by viewModel.isInChannel.collectAsState()
     val screenShares by viewModel.screenShares.collectAsState()
     val remoteVideoTracks by viewModel.remoteVideoTracks.collectAsState()
     val layerPreferences by viewModel.layerPreferences.collectAsState()
@@ -209,10 +210,25 @@ fun VoiceChannelScreen(
             }
 
             // Connection status
-            if (!isConnected) {
+            if (isInChannel && !isConnected) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+
+            // Not joined and not blocked on settings: let the user (re)start the join,
+            // e.g. after dismissing the rationale dialog.
+            if (!isInChannel && pendingDecision != VoicePermissionDecision.OpenSettings) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Button(onClick = { evaluate() }) {
+                        Text(stringResource(R.string.voice_join))
+                    }
+                }
             }
 
             // Microphone permanently denied: only the system settings can fix it.

@@ -39,6 +39,7 @@
     <!-- Voice -->
     <string name="voice_leave_and_go_back">Leave and go back</string>
     <string name="voice_no_one_here">No one else is here yet</string>
+    <string name="voice_join">Join voice</string>
     <string name="voice_muted">Muted</string>
     <string name="voice_unknown_user">Unknown</string>
     <string name="voice_disconnect">Disconnect</string>

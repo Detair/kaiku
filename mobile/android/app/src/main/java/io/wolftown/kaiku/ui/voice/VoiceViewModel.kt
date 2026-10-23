@@ -58,6 +58,11 @@ class VoiceViewModel @Inject constructor(
     val participants: StateFlow<List<VoiceParticipant>> = voiceRepository.participants
     val isMuted: StateFlow<Boolean> = voiceRepository.isMuted
     val isConnected: StateFlow<Boolean> = voiceRepository.isConnected
+
+    /** True while this ViewModel's channel is the one the repository is joined to. */
+    val isInChannel: StateFlow<Boolean> = voiceRepository.currentChannelId
+        .map { it == channelId }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val screenShares: StateFlow<List<ScreenShareInfo>> = voiceRepository.screenShares
     val remoteVideoTracks: StateFlow<Map<String, VideoTrack>> = webRtcManager.remoteVideoTracks
     val layerPreferences: StateFlow<Map<String, String>> = voiceRepository.layerPreferences

@@ -141,6 +141,7 @@ class VoiceCallService : Service() {
     private fun failStart(reason: String) {
         logger.warning("VoiceCallService could not start foreground: $reason")
         voiceServiceEvents.emit(VoiceServiceEvent.StartFailed)
+        // stopSelf() before startForeground() cancels the pending FGS start timeout.
         stopSelf()
     }
 
