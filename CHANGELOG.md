@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: unread channels now show a count badge and bolder name in the channel list, clearing when you open the channel and re-raising on new messages
 - Android: messages now render inline markdown (bold, italic, strikethrough, inline code, and click-to-reveal spoilers) instead of plain text
 - Android: DMs show the person's name instead of an ID, channel groups show their category names, and opening a DM clears its unread badge on the server.
+- Android: failed sends, edits and deletes now show a message (with Retry); editing your own messages works; a banner shows when the app is reconnecting.
 - Desktop auto-update: the app checks GitHub Releases for new signed builds shortly after startup, downloads updates in the background, and offers a one-click restart to apply — release artifacts are now cryptographically signed and ship with an updater manifest
 - Desktop system tray: Kaiku now lives in the tray with a Show/Quit menu, closing the window hides it to the tray instead of quitting (use the tray's "Quit Kaiku" to exit), and the tray shows your total unread count (tooltip everywhere, number badge on macOS and most Linux trays)
 - Desktop client now reports live voice connection quality (latency, packet loss, jitter) in the quality indicator, matching the browser client — previously the desktop always showed "unknown"

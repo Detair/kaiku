@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.data.ws.RealtimeStatus
 import io.wolftown.kaiku.domain.ChannelSection
 import io.wolftown.kaiku.domain.groupChannels
 import io.wolftown.kaiku.domain.model.Channel
@@ -19,7 +21,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val guildRepository: GuildRepository
+    private val guildRepository: GuildRepository,
+    realtimeConnectionManager: RealtimeConnectionManager
 ) : ViewModel() {
 
     companion object {
@@ -27,6 +30,9 @@ class HomeViewModel @Inject constructor(
     }
 
     val guilds: StateFlow<List<Guild>> = guildRepository.guilds
+
+    /** Realtime connection state, for the reconnect banner. */
+    val connectionStatus: StateFlow<RealtimeStatus> = realtimeConnectionManager.status
 
     val selectedGuild: StateFlow<Guild?> = combine(
         guildRepository.guilds,

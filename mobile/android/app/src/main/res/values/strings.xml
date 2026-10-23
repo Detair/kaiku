@@ -26,6 +26,19 @@
     <string name="chat_typing_one">%1$s is typing…</string>
     <string name="chat_typing_two">%1$s and %2$s are typing…</string>
     <string name="chat_typing_many">Several people are typing…</string>
+    <string name="chat_send_failed">Couldn\'t send your message.</string>
+    <string name="chat_edit_failed">Couldn\'t edit your message.</string>
+    <string name="chat_delete_failed">Couldn\'t delete your message.</string>
+    <string name="chat_load_failed">Couldn\'t load messages.</string>
+    <string name="chat_reaction_failed">Couldn\'t update your reaction.</string>
+    <string name="chat_edit_title">Edit message</string>
+    <string name="chat_edit_save">Save</string>
+    <string name="chat_edit_cancel">Cancel</string>
+    <string name="chat_edit_label">Message</string>
+
+    <!-- Connection banner -->
+    <string name="connection_reconnecting">Reconnecting…</string>
+    <string name="connection_offline">You\'re offline</string>
 
     <!-- Channel list -->
     <string name="channel_prefix_text">#</string>

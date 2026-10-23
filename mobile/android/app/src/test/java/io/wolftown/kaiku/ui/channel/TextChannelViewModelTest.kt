@@ -3,10 +3,13 @@ package io.wolftown.kaiku.ui.channel
 import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import io.mockk.*
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.ChatRepository
 import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.data.ws.RealtimeStatus
 import io.wolftown.kaiku.domain.ChannelTitle
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
@@ -30,6 +33,8 @@ class TextChannelViewModelTest {
     private lateinit var guildRepository: GuildRepository
     private lateinit var dmRepository: DmRepository
     private lateinit var authState: AuthState
+    private lateinit var realtimeManager: RealtimeConnectionManager
+    private val statusFlow = MutableStateFlow(RealtimeStatus.Connected)
     private lateinit var viewModel: TextChannelViewModel
     private lateinit var savedStateHandle: SavedStateHandle
 
@@ -71,6 +76,8 @@ class TextChannelViewModelTest {
         guildRepository = mockk(relaxed = true)
         dmRepository = mockk(relaxed = true)
         authState = mockk(relaxed = true)
+        realtimeManager = mockk(relaxed = true)
+        every { realtimeManager.status } returns statusFlow
         every { guildRepository.channels } returns channelsFlow
         every { dmRepository.conversations } returns conversationsFlow
         every { authState.currentUserId } returns currentUserIdFlow
@@ -86,7 +93,7 @@ class TextChannelViewModelTest {
     }
 
     private fun createViewModel(): TextChannelViewModel {
-        return TextChannelViewModel(chatRepository, guildRepository, dmRepository, authState, savedStateHandle)
+        return TextChannelViewModel(chatRepository, guildRepository, dmRepository, authState, realtimeManager, savedStateHandle)
     }
 
     // ========================================================================
@@ -419,5 +426,129 @@ class TextChannelViewModelTest {
             assertEquals(ChannelTitle("general", isDm = false), item)
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    // ========================================================================
+    // Errors, editing, connection status
+    // ========================================================================
+
+    private fun loadedViewModel(): TextChannelViewModel {
+        coEvery { chatRepository.loadMessages(any(), any()) } coAnswers {
+            messagesFlow.value = sampleMessages
+            false
+        }
+        return createViewModel()
+    }
+
+    @Test
+    fun `send failure exposes error and restores input`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.sendMessage("ch-1", "hi") } throws RuntimeException("boom")
+
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_send_failed, viewModel.error.value)
+        assertEquals("hi", viewModel.messageInput.value)
+
+        viewModel.clearError()
+        assertNull(viewModel.error.value)
+    }
+
+    @Test
+    fun `edit failure exposes error`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.editMessage("msg-1", "new") } throws RuntimeException("boom")
+
+        viewModel.onEditMessage("msg-1", "new")
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_edit_failed, viewModel.error.value)
+    }
+
+    @Test
+    fun `delete failure exposes error`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.deleteMessage("ch-1", "msg-1") } throws RuntimeException("boom")
+
+        viewModel.onDeleteMessage("msg-1")
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_delete_failed, viewModel.error.value)
+    }
+
+    @Test
+    fun `initial load failure exposes load error`() = runTest {
+        coEvery { chatRepository.loadMessages(any(), any()) } throws RuntimeException("boom")
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_load_failed, viewModel.error.value)
+    }
+
+    @Test
+    fun `reaction failure exposes error`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.addReaction("ch-1", "msg-1", "x") } throws RuntimeException("boom")
+
+        viewModel.onAddReaction("msg-1", "x")
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_reaction_failed, viewModel.error.value)
+    }
+
+    @Test
+    fun `confirm edit calls repository and closes dialog`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.editMessage("msg-1", "new") } just Runs
+
+        viewModel.onStartEdit("msg-1")
+        assertEquals("msg-1", viewModel.editingMessage.value?.id)
+
+        viewModel.onConfirmEdit("new")
+        advanceUntilIdle()
+
+        coVerify { chatRepository.editMessage("msg-1", "new") }
+        assertNull(viewModel.editingMessage.value)
+    }
+
+    @Test
+    fun `blank edit is ignored`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+
+        viewModel.onStartEdit("msg-1")
+        viewModel.onConfirmEdit("   ")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { chatRepository.editMessage(any(), any()) }
+    }
+
+    @Test
+    fun `cancel edit closes dialog without calling repository`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+
+        viewModel.onStartEdit("msg-1")
+        viewModel.onCancelEdit()
+
+        assertNull(viewModel.editingMessage.value)
+        coVerify(exactly = 0) { chatRepository.editMessage(any(), any()) }
+    }
+
+    @Test
+    fun `connection status mirrors realtime manager`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        assertEquals(RealtimeStatus.Connected, viewModel.connectionStatus.value)
+
+        statusFlow.value = RealtimeStatus.Reconnecting
+        assertEquals(RealtimeStatus.Reconnecting, viewModel.connectionStatus.value)
     }
 }

@@ -4,10 +4,13 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.ChatRepository
 import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.data.ws.RealtimeStatus
 import io.wolftown.kaiku.domain.ChannelTitle
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.resolveChannelTitle
@@ -29,6 +32,7 @@ class TextChannelViewModel @Inject constructor(
     private val guildRepository: GuildRepository,
     private val dmRepository: DmRepository,
     authState: AuthState,
+    realtimeConnectionManager: RealtimeConnectionManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -60,8 +64,16 @@ class TextChannelViewModel @Inject constructor(
     private val _messageInput = MutableStateFlow("")
     val messageInput: StateFlow<String> = _messageInput.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    /** `@StringRes` of the latest failed action, or null. Cleared by [clearError]. */
+    private val _error = MutableStateFlow<Int?>(null)
+    val error: StateFlow<Int?> = _error.asStateFlow()
+
+    /** The message being edited; non-null while the edit dialog is shown. */
+    private val _editingMessage = MutableStateFlow<Message?>(null)
+    val editingMessage: StateFlow<Message?> = _editingMessage.asStateFlow()
+
+    /** Realtime connection state, for the reconnect banner. */
+    val connectionStatus: StateFlow<RealtimeStatus> = realtimeConnectionManager.status
 
     init {
         chatRepository.subscribeToChannel(channelId)
@@ -88,7 +100,7 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: Exception) {
                 // Restore input on failure so the user can retry
                 _messageInput.value = content
-                _error.value = "Failed to send message"
+                _error.value = R.string.chat_send_failed
                 logger.log(Level.WARNING, "Failed to send message", e)
             }
         }
@@ -101,10 +113,27 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = "Failed to edit message"
+                _error.value = R.string.chat_edit_failed
                 logger.log(Level.WARNING, "Failed to edit message $messageId", e)
             }
         }
+    }
+
+    fun onStartEdit(messageId: String) {
+        _editingMessage.value = messages.value.firstOrNull { it.id == messageId }
+    }
+
+    fun onConfirmEdit(content: String) {
+        val message = _editingMessage.value ?: return
+        val trimmed = content.trim()
+        if (trimmed.isEmpty()) return
+        _editingMessage.value = null
+        if (trimmed == message.content) return
+        onEditMessage(message.id, trimmed)
+    }
+
+    fun onCancelEdit() {
+        _editingMessage.value = null
     }
 
     fun onDeleteMessage(messageId: String) {
@@ -114,7 +143,7 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = "Failed to delete message"
+                _error.value = R.string.chat_delete_failed
                 logger.log(Level.WARNING, "Failed to delete message $messageId", e)
             }
         }
@@ -127,7 +156,7 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = "Failed to add reaction"
+                _error.value = R.string.chat_reaction_failed
                 logger.log(Level.WARNING, "Failed to add reaction on $messageId", e)
             }
         }
@@ -140,7 +169,7 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = "Failed to remove reaction"
+                _error.value = R.string.chat_reaction_failed
                 logger.log(Level.WARNING, "Failed to remove reaction on $messageId", e)
             }
         }
@@ -155,7 +184,7 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = "Failed to load more messages"
+                _error.value = R.string.chat_load_failed
                 logger.log(Level.WARNING, "Failed to load more messages", e)
             }
         }
@@ -178,7 +207,7 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = "Failed to load messages"
+                _error.value = R.string.chat_load_failed
                 logger.log(Level.WARNING, "Failed to load initial messages", e)
             } finally {
                 _isLoading.value = false

@@ -10,10 +10,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.ui.shared.ConnectionBanner
 
 /**
  * Full-screen text channel view.
@@ -38,6 +40,22 @@ fun TextChannelScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val canLoadMore by viewModel.canLoadMore.collectAsState()
     val messageInput by viewModel.messageInput.collectAsState()
+    val error by viewModel.error.collectAsState()
+    val editingMessage by viewModel.editingMessage.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    LaunchedEffect(error) {
+        val res = error ?: return@LaunchedEffect
+        val retry = res == R.string.chat_send_failed
+        val result = snackbarHostState.showSnackbar(
+            message = context.getString(res),
+            actionLabel = if (retry) context.getString(R.string.common_retry) else null
+        )
+        viewModel.clearError()
+        if (retry && result == SnackbarResult.ActionPerformed) viewModel.onSendMessage()
+    }
 
     val listState = rememberLazyListState()
 
@@ -84,6 +102,7 @@ fun TextChannelScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(titleText) },
@@ -107,11 +126,13 @@ fun TextChannelScreen(
             )
         }
     ) { paddingValues ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+        ConnectionBanner(status = connectionStatus)
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 isLoading && messages.isEmpty() -> {
                     CircularProgressIndicator(
@@ -153,10 +174,7 @@ fun TextChannelScreen(
                             MessageItem(
                                 message = message,
                                 isOwnMessage = message.author.id == currentUserId,
-                                onEdit = { msgId ->
-                                    // In a full implementation, this would show an edit dialog.
-                                    // For now, the edit action is wired up via the ViewModel.
-                                },
+                                onEdit = viewModel::onStartEdit,
                                 onDelete = { msgId ->
                                     viewModel.onDeleteMessage(msgId)
                                 },
@@ -169,6 +187,15 @@ fun TextChannelScreen(
                 }
             }
         }
+        }
+    }
+
+    editingMessage?.let { message ->
+        EditMessageDialog(
+            initial = message.content,
+            onConfirm = viewModel::onConfirmEdit,
+            onDismiss = viewModel::onCancelEdit
+        )
     }
 
     reactionTargetId?.let { messageId ->
