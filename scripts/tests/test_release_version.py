@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from release_version import (  # noqa: E402
     VersionError,
     check_consistency,
+    compare_versions,
     parse_version,
     read_versions,
     write_version,
@@ -181,6 +182,24 @@ class ReleaseVersionTest(unittest.TestCase):
 
     def test_cli_invalid_exit_2(self):
         self.assertEqual(run_cli("parse", "v1.0").returncode, 2)
+
+    def test_compare_versions(self):
+        cases = [
+            ("1.0.0", "1.0.0-rc.5", 1),
+            ("1.0.0-rc.1", "1.0.0", -1),
+            ("1.0.1-rc.1", "1.0.0", 1),
+            ("v1.2.0", "1.2.0", 0),
+            ("1.10.0", "1.9.0", 1),
+            ("1.0.0-rc.2", "1.0.0-rc.10", -1),
+        ]
+        for a, b, want in cases:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(compare_versions(parse_version(a), parse_version(b)), want)
+
+    def test_cli_compare(self):
+        result = run_cli("compare", "1.0.0", "1.0.1")
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "-1"))
+        self.assertEqual(run_cli("compare", "1.0.0", "junk").returncode, 2)
 
 
 if __name__ == "__main__":

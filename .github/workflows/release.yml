@@ -576,7 +576,7 @@ jobs:
           done
 
           # Android APK; its checksum joins checksums.txt below
-          find artifacts -type f -name "Kaiku-*.apk" -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "Kaiku-*.apk" -o -name "Kaiku-*.apk.sha256" \) -exec cp {} release-assets/ \;
 
           # Consolidate the per-target checksums (installers only)
           find artifacts -type f -name "checksums.txt" -exec cat {} \; > release-assets/checksums.txt
@@ -657,10 +657,17 @@ jobs:
     needs: [prepare-release, build-tauri, build-docker, build-android, publish-release]
     if: needs.prepare-release.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    # Serialize image publication across versions so two overlapping releases
+    # cannot race on `latest`.
+    concurrency:
+      group: release-image-publish
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download image artifact
         uses: actions/download-artifact@v4
         with:
@@ -694,6 +701,28 @@ jobs:
               "$SERVER_IMAGE":*) ;;
               *) echo "::error::Refusing to push unexpected tag $tag"; exit 1 ;;
             esac
+            if [ "$tag" = "$SERVER_IMAGE:latest" ]; then
+              # `latest` must never move backwards (e.g. a late 1.0.0 run
+              # after 1.1.0 was published). The version tag is always pushed.
+              if docker pull "$tag" >"$RUNNER_TEMP/pull.log" 2>&1; then
+                current="$(docker image inspect "$tag" \
+                  --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+                if ! cmp="$(python3 scripts/release_version.py compare "$VERSION" "$current" 2>/dev/null)"; then
+                  echo "::warning::Current latest has unparseable version label '$current'; not moving latest"
+                  continue
+                fi
+                if [ "$cmp" -lt 0 ]; then
+                  echo "::warning::latest is at $current, newer than $VERSION; not moving latest"
+                  continue
+                fi
+              elif grep -qiE 'not found|manifest unknown|name unknown' "$RUNNER_TEMP/pull.log"; then
+                echo "latest does not exist yet; creating it"
+              else
+                cat "$RUNNER_TEMP/pull.log"
+                echo "::error::Cannot determine current latest"
+                exit 1
+              fi
+            fi
             docker tag kaiku-server:smoke "$tag"
             docker push "$tag"
             echo "pushed $tag"

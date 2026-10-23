@@ -82,6 +82,12 @@ class ReleaseVersion:
         return self.major * 1_000_000 + self.minor * 10_000 + self.patch * 100 + rc_slot
 
 
+def compare_versions(a: ReleaseVersion, b: ReleaseVersion) -> int:
+    """-1/0/1 by release precedence (rc.N < final of the same X.Y.Z)."""
+    ka, kb = a.android_version_code, b.android_version_code
+    return (ka > kb) - (ka < kb)
+
+
 def parse_version(text: str) -> ReleaseVersion:
     match = _VERSION_RE.fullmatch(text)
     if match is None:
@@ -281,6 +287,9 @@ def main(argv: list[str] | None = None) -> int:
     check = sub.add_parser("check", help="verify version files agree")
     check.add_argument("--tag", help="also require the files to match this tag")
     sub.add_parser("android-code", help="print Android versionCode").add_argument("version")
+    cmp_p = sub.add_parser("compare", help="compare two versions")
+    cmp_p.add_argument("a")
+    cmp_p.add_argument("b")
     args = parser.parse_args(argv)
 
     try:
@@ -293,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "android-code":
             print(parse_version(args.version).android_version_code)
+            return 0
+        if args.command == "compare":
+            print(compare_versions(parse_version(args.a), parse_version(args.b)))
             return 0
         if args.command == "bump":
             v = parse_version(args.version)
