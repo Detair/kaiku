@@ -63,3 +63,12 @@ directory. Briefs live in `docs/developer-guide/agents/experts/`.
   runs) plus experts exhausted it for ~137 h. Use OpenCode Go models (Kimi K3
   first) as the external reviewer while Gemini/Codex are limited; reserve
   Gemini for whole-codebase sweeps where its context length matters.
+- 2026-10-23 18:10: Gemini 4 Argon exhausted until ~2026-10-30 (maintainer). Other
+  Antigravity models work and have separate quota: `gemini-3.8-flash-high` (Google,
+  fast, good for small/medium diffs and re-reviews) and `gpt-oss-120b-medium`
+  (OpenAI open-weight, another family). Same headless rule (no shell; built-in
+  read/search tools only). External-review routing now: small/medium diffs →
+  Gemini 3.8 Flash or GPT-OSS 120B (no lock); security/concurrency/large →
+  Codex (`flock` + `timeout 2400`); Kimi when OpenCode Go has quota.
+- A Codex run once hung for ~7 h holding the shared lock and blocked all
+  sessions: always wrap Codex in `timeout 2400`.
