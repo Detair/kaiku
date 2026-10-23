@@ -158,14 +158,18 @@ pub async fn broadcast_to_channel(
 // Pattern subscribe to all channel events
 subscriber.psubscribe("channel:*").await?;
 
-// Receive messages
-while let Ok(message) = pubsub_stream.recv().await {
+// Receive messages (`forward_pubsub_messages`); Lagged/Closed end the pipeline
+loop {
+    let message = match pubsub_stream.recv().await { /* Lagged → Lagged, Closed → StreamEnded */ };
     let channel_id = parse_channel_id_from_redis_channel(message.channel)?;
 
     // Only forward if client is subscribed to this channel
     if subscribed_channels.read().await.contains(&channel_id) {
         let event: ServerEvent = serde_json::from_str(&message.value)?;
-        tx.send(event).await?;
+        // Bounded send: timeout → SlowClient (1013), closed → ClientGone
+        if let Err(e) = send_outbound(&tx, OutboundMsg::Event(event)).await {
+            return e.into();
+        }
     }
 }
 ```
@@ -263,16 +267,18 @@ ClientEvent::VoiceJoin { .. }
 **Voice Handler** (in `voice::ws_handler`):
 - Validates voice channel permissions
 - Calls SFU methods (`join_room`, `handle_answer`, etc.)
-- Sends `VoiceOffer`, `VoiceIceCandidate` events back via `tx` channel
+- Sends `VoiceOffer`, `VoiceIceCandidate` events back via `tx` channel, always through `send_outbound` (a failure surfaces as `VoiceError::Outbound` and ends the socket)
+- Fan-out to *other* peers (`Room::broadcast_except` / `broadcast_all`, `SfuServer::renegotiate`) uses `send_outbound_within(.., PEER_SIGNAL_SEND_TIMEOUT)` (250 ms, concurrent per peer): a stalled peer is skipped and logged, never blocking the sender's socket loop; the stalled peer's own loop tears it down
 
 ### Error Handling
 
 **Client Errors** (malformed JSON, invalid channel ID):
 ```rust
-tx.send(ServerEvent::Error {
+send_outbound(tx, OutboundMsg::Event(ServerEvent::Error {
     code: "invalid_request".to_string(),
     message: "Channel not found".to_string(),
-}).await?;
+}))
+.await?; // never a raw `tx.send(..).await`: a stalled client would block the socket loop
 ```
 
 **Server Errors** (DB failure, Redis down):

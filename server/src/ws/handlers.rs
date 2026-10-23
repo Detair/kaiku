@@ -538,7 +538,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
 /// Why a bounded outbound send failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum OutboundSendError {
+pub enum OutboundSendError {
     /// The outbound queue stayed full for [`SLOW_CLIENT_SEND_TIMEOUT`].
     #[error("client too slow: outbound queue stayed full")]
     TimedOut,
@@ -565,7 +565,18 @@ pub(crate) async fn send_outbound(
     tx: &mpsc::Sender<OutboundMsg>,
     msg: OutboundMsg,
 ) -> Result<(), OutboundSendError> {
-    match tokio::time::timeout(SLOW_CLIENT_SEND_TIMEOUT, tx.send(msg)).await {
+    send_outbound_within(tx, msg, SLOW_CLIENT_SEND_TIMEOUT).await
+}
+
+/// [`send_outbound`] with a caller-chosen bound. Used for sends to *other*
+/// sockets' queues (voice fan-out), which must not hold up the caller for the
+/// full slow-client timeout.
+pub(crate) async fn send_outbound_within(
+    tx: &mpsc::Sender<OutboundMsg>,
+    msg: OutboundMsg,
+    timeout: Duration,
+) -> Result<(), OutboundSendError> {
+    match tokio::time::timeout(timeout, tx.send(msg)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_closed)) => Err(OutboundSendError::Closed),
         Err(_elapsed) => Err(OutboundSendError::TimedOut),
@@ -575,8 +586,13 @@ pub(crate) async fn send_outbound(
 /// If a (boxed) handler error is a failed outbound send, the socket must end:
 /// returns the matching exit reason.
 fn outbound_failure(err: &(dyn std::error::Error + 'static)) -> Option<PubsubExit> {
-    err.downcast_ref::<OutboundSendError>()
-        .map(|e| PubsubExit::from(*e))
+    if let Some(e) = err.downcast_ref::<OutboundSendError>() {
+        return Some(PubsubExit::from(*e));
+    }
+    match err.downcast_ref::<crate::voice::VoiceError>() {
+        Some(crate::voice::VoiceError::Outbound(e)) => Some(PubsubExit::from(*e)),
+        _ => None,
+    }
 }
 
 /// Queue a Close frame (reason "resync") and give the sender task up to
@@ -823,6 +839,11 @@ pub async fn handle_client_message(
             )
             .await
             {
+                // A reply to this socket that could not be queued ends the
+                // socket like any other failed outbound send.
+                if matches!(e, crate::voice::VoiceError::Outbound(_)) {
+                    return Err(Box::new(e));
+                }
                 warn!("Voice event error: {}", e);
                 send_outbound(
                     tx,
@@ -1882,6 +1903,22 @@ mod pubsub_tests {
             .into();
         assert_eq!(outbound_failure(&*boxed), Some(PubsubExit::SlowClient));
         let other: Box<dyn std::error::Error + Send + Sync> = "bad input".into();
+        assert_eq!(outbound_failure(&*other), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_voice_reply_is_an_outbound_failure() {
+        let (tx, _rx_never_drained) = mpsc::channel(1);
+        send_outbound(&tx, OutboundMsg::Ping).await.unwrap();
+        let voice_err: crate::voice::VoiceError = send_outbound(&tx, OutboundMsg::Ping)
+            .await
+            .unwrap_err()
+            .into();
+        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(voice_err);
+        assert_eq!(outbound_failure(&*boxed), Some(PubsubExit::SlowClient));
+
+        let other: Box<dyn std::error::Error + Send + Sync> =
+            Box::new(crate::voice::VoiceError::NotInChannel);
         assert_eq!(outbound_failure(&*other), None);
     }
 
