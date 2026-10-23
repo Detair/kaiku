@@ -22,7 +22,7 @@ The rate limiting system is built on Valkey (a BSD-3-Clause licensed Redis fork)
 | `RATE_LIMIT_ENABLED` | `true` | Enable or disable rate limiting entirely |
 | `RATE_LIMIT_PREFIX` | `canis:rl` | Prefix for Valkey keys |
 | `RATE_LIMIT_FAIL_OPEN` | `true` | Allow requests when Valkey is unavailable |
-| `RATE_LIMIT_TRUSTED_PROXIES` | (empty) | Comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted |
+| `RATE_LIMIT_TRUSTED_PROXIES` | unset (trust none) | Comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted |
 | `RATE_LIMIT_TRUST_PROXY` | - | Deprecated and ignored; use `RATE_LIMIT_TRUSTED_PROXIES` |
 | `RATE_LIMIT_ALLOWLIST` | (empty) | Comma-separated list of IPs to bypass rate limiting |
 
@@ -188,7 +188,9 @@ RATE_LIMIT_TRUSTED_PROXIES=10.42.0.0/16
 RATE_LIMIT_TRUSTED_PROXIES=192.0.2.10,::1
 ```
 
-Invalid entries are logged as a warning at startup and skipped.
+Invalid entries are logged as a warning at startup and skipped. An unparseable `X-Forwarded-For` entry (for example one with a port) ends the right-to-left walk, and the request falls back to `X-Real-IP`, then the peer address.
+
+The list must cover the peer address Kaiku actually sees. In k3s with the bundled svclb and `externalTrafficPolicy: Cluster`, Traefik sees node IPs instead of client IPs, so the client address is lost before it reaches Kaiku; use `externalTrafficPolicy: Local` or configure Traefik's `forwardedHeaders.trustedIPs` accordingly.
 
 **Migration**: `RATE_LIMIT_TRUST_PROXY` is deprecated and no longer has any effect. If it is set to `true` without `RATE_LIMIT_TRUSTED_PROXIES`, the server logs a warning at startup and trusts no proxy, so all clients behind your reverse proxy share the proxy's address for rate limiting until you set the new variable.
 

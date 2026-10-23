@@ -217,12 +217,12 @@ impl RateLimitConfig {
         if let Some(val) = get("RATE_LIMIT_TRUSTED_PROXIES") {
             let mut nets = Vec::new();
             for entry in val.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-                match TrustedProxies::parse(entry) {
-                    Ok(t) => nets.push(t),
+                match TrustedProxies::parse_entry(entry) {
+                    Ok(n) => nets.push(n),
                     Err(e) => warn!(entry, "RATE_LIMIT_TRUSTED_PROXIES entry skipped: {e}"),
                 }
             }
-            config.trusted_proxies = TrustedProxies::from_parts(nets);
+            config.trusted_proxies = TrustedProxies::from_nets(nets);
         }
         if let Some(val) = get("RATE_LIMIT_TRUST_PROXY") {
             if val.trim().eq_ignore_ascii_case("true") && config.trusted_proxies.is_empty() {

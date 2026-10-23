@@ -26,7 +26,7 @@ impl TrustedProxies {
     }
 
     /// Parses a single CIDR or bare IP.
-    fn parse_entry(entry: &str) -> Result<IpNet, String> {
+    pub(crate) fn parse_entry(entry: &str) -> Result<IpNet, String> {
         if let Ok(net) = entry.parse::<IpNet>() {
             return Ok(net);
         }
@@ -36,9 +36,9 @@ impl TrustedProxies {
             .map_err(|_| format!("invalid proxy address or CIDR: {entry:?}"))
     }
 
-    /// Merges several parsed sets into one.
-    pub(crate) fn from_parts(parts: Vec<Self>) -> Self {
-        Self(parts.into_iter().flat_map(|p| p.0).collect())
+    /// Builds a set from already-parsed networks.
+    pub(crate) const fn from_nets(nets: Vec<IpNet>) -> Self {
+        Self(nets)
     }
 
     /// Returns true if no proxy is trusted.
@@ -72,17 +72,21 @@ pub fn extract_client_ip(
         return peer;
     }
 
-    let forwarded: Vec<&str> = headers
+    // Right-to-left walk; `None` marks an unparseable entry (or a header
+    // value that is not valid text), which ends the walk.
+    let entries: Vec<Option<IpAddr>> = headers
         .get_all("X-Forwarded-For")
         .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|s| s.split(','))
+        .flat_map(|v| match v.to_str() {
+            Ok(s) => s.split(',').map(|e| e.trim().parse().ok()).collect(),
+            Err(_) => vec![None],
+        })
         .collect();
-    for entry in forwarded.iter().rev() {
-        if let Ok(ip) = entry.trim().parse::<IpAddr>() {
-            if !trusted.contains(ip) {
-                return ip;
-            }
+    for entry in entries.iter().rev() {
+        match entry {
+            Some(ip) if trusted.contains(*ip) => {}
+            Some(ip) => return *ip,
+            None => break,
         }
     }
 
@@ -194,6 +198,26 @@ mod tests {
         let headers = hdrs(&[("X-Forwarded-For", "not-an-ip")]);
         let ip = extract_client_ip(&headers, Some(&peer("10.42.0.7")), &trusted);
         assert_eq!(ip, "10.42.0.7".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn trusted_peer_unparseable_rightmost_entry_stops_walk() {
+        let trusted = TrustedProxies::parse("10.42.0.0/16").unwrap();
+        for xff in [
+            "6.6.6.6, 1.2.3.4:5678",
+            "6.6.6.6, garbage",
+            "6.6.6.6, [2001:db8::1]:80",
+        ] {
+            let headers = hdrs(&[("X-Forwarded-For", xff)]);
+            let ip = extract_client_ip(&headers, Some(&peer("10.42.0.7")), &trusted);
+            assert_eq!(ip, "10.42.0.7".parse::<IpAddr>().unwrap(), "{xff}");
+        }
+        let headers = hdrs(&[
+            ("X-Forwarded-For", "6.6.6.6, 1.2.3.4:5678"),
+            ("X-Real-IP", "198.51.100.25"),
+        ]);
+        let ip = extract_client_ip(&headers, Some(&peer("10.42.0.7")), &trusted);
+        assert_eq!(ip, "198.51.100.25".parse::<IpAddr>().unwrap());
     }
 
     #[test]
