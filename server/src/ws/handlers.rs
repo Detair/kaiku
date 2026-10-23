@@ -1284,7 +1284,8 @@ impl PubsubExit {
 /// `subscriber` is created and later `QUIT` by the socket (see `handle_socket`).
 ///
 /// Fires `ready` once the `channel:*` pattern subscription and all per-user
-/// subscriptions have succeeded (any failure returns `SubscribeFailed`), then waits for `start`
+/// subscriptions have succeeded and a PING on the same connection has confirmed
+/// that Valkey executed them (any failure returns `SubscribeFailed`), then waits for `start`
 /// (sent by the socket after it queued `Ready`) and forwards messages until the pipeline stops.
 /// The returned [`PubsubExit`] says why.
 async fn handle_pubsub(
@@ -1346,6 +1347,18 @@ async fn handle_pubsub(
             return PubsubExit::SubscribeFailed;
         }
         debug!("Subscribed to {}", channel);
+    }
+
+    // fred resolves `subscribe`/`psubscribe` as soon as the command is queued
+    // on the connection, before it is written and long before Valkey has
+    // executed it (the server's acks are dropped as "unused subscription
+    // responses"). Under load another connection can therefore still see the
+    // channel without this subscriber. A PING on the same connection is
+    // answered only after Valkey has executed every command sent before it,
+    // so its reply proves that all subscriptions above are active.
+    if let Err(e) = subscriber.ping::<fred::types::Value>(None).await {
+        error!("Subscription barrier (PING) failed: {}", e);
+        return PubsubExit::SubscribeFailed;
     }
 
     // Subscriptions are live: the socket may now announce `Ready`.
