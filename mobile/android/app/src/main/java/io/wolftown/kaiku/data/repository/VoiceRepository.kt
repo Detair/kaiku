@@ -16,11 +16,11 @@ import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.VoiceParticipant
+import io.wolftown.kaiku.di.VoiceCoroutineScope
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -53,13 +53,19 @@ class VoiceRepository @Inject constructor(
     private val audioRouteManager: AudioRouteManager,
     private val voiceServiceEvents: VoiceServiceEvents,
     private val micPermissionChecker: MicPermissionChecker,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    @VoiceCoroutineScope voiceScope: CoroutineScope,
 ) : Closeable {
     companion object {
         private val logger = Logger.getLogger("VoiceRepository")
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Child of the injected voice scope (Dispatchers.IO in production, the test
+    // scheduler in unit tests). Own SupervisorJob so close() only cancels this
+    // repository's collectors, not WebRtcManager's work on the shared scope.
+    private val scope = CoroutineScope(
+        voiceScope.coroutineContext + SupervisorJob(voiceScope.coroutineContext[Job])
+    )
     private val leaveMutex = Mutex()
 
     private val _currentChannelId = MutableStateFlow<String?>(null)
@@ -343,7 +349,10 @@ class VoiceRepository @Inject constructor(
 
     private fun startCollectingEvents(channelId: String) {
         eventCollectionJob?.cancel()
-        eventCollectionJob = scope.launch {
+        // UNDISPATCHED: subscribe to the replay-0 SharedFlow before joinChannel
+        // sends VoiceJoin, so a fast VoiceSubscriberOffer/PublisherAnswer cannot
+        // be emitted while the collector is still waiting for an IO thread.
+        eventCollectionJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             webSocket.events.collect { event ->
                 handleServerEvent(channelId, event)
             }

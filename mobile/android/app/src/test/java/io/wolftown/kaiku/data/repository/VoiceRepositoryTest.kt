@@ -21,7 +21,10 @@ import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.service.VoiceCallService
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +34,6 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
-import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -64,7 +66,10 @@ class VoiceRepositoryTest {
     private lateinit var context: Context
     private lateinit var repository: VoiceRepository
 
+    // Main is set to this dispatcher, so runTest shares its scheduler and
+    // advanceUntilIdle() drives every coroutine the repository launches.
     private val testDispatcher = StandardTestDispatcher()
+    private lateinit var voiceScope: CoroutineScope
 
     // Mutable backing flows for the WebSocket event stream and the publisher-
     // / subscriber-side ICE-connected StateFlow. Tests drive these to simulate
@@ -81,6 +86,7 @@ class VoiceRepositoryTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        voiceScope = CoroutineScope(SupervisorJob() + testDispatcher)
         webRtcManager = mockk(relaxed = true)
         webSocket = mockk(relaxed = true)
         audioRouteManager = mockk(relaxed = true)
@@ -113,11 +119,13 @@ class VoiceRepositoryTest {
             voiceServiceEvents = voiceServiceEvents,
             micPermissionChecker = micPermissionChecker,
             context = context,
+            voiceScope = voiceScope,
         )
     }
 
     @After
     fun tearDown() {
+        voiceScope.cancel()
         unmockkObject(VoiceCallService.Companion)
         Dispatchers.resetMain()
     }
@@ -143,17 +151,13 @@ class VoiceRepositoryTest {
         every { voiceServiceEvents.events } returns serviceEvents
 
         repository.joinChannel("ch-1")
-        // The repository collects on its own IO scope; wait until it subscribed.
-        kotlinx.coroutines.withContext(Dispatchers.Default) {
-            serviceEvents.subscriptionCount.first { it > 0 }
-        }
+        // The collector subscribes UNDISPATCHED inside joinChannel.
+        assertEquals(1, serviceEvents.subscriptionCount.value)
 
-        serviceEvents.tryEmit(VoiceServiceEvent.StartFailed)
+        serviceEvents.emit(VoiceServiceEvent.StartFailed)
+        advanceUntilIdle()
 
-        val errorRes = kotlinx.coroutines.withContext(Dispatchers.Default) {
-            repository.error.first { it != null }
-        }
-        assertEquals(R.string.voice_start_failed, errorRes)
+        assertEquals(R.string.voice_start_failed, repository.error.value)
         assertTrue(repository.currentChannelId.value == null)
         verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
     }
@@ -200,6 +204,7 @@ class VoiceRepositoryTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
 
+        assertEquals(1, wsEvents.subscriptionCount.value)
         wsEvents.emit(ServerEvent.VoicePublisherAnswer(channelId = "ch-1", sdp = "v=0\r\no=answer\r\n"))
         advanceUntilIdle()
 
@@ -211,6 +216,7 @@ class VoiceRepositoryTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
 
+        assertEquals(1, wsEvents.subscriptionCount.value)
         wsEvents.emit(ServerEvent.VoiceSubscriberOffer(channelId = "ch-1", sdp = "v=0\r\no=offer\r\n"))
         advanceUntilIdle()
 
