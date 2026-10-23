@@ -55,6 +55,9 @@ class KaikuWebSocket @Inject constructor(
     /** The current socket; guarded by [lock]. */
     private var webSocket: WebSocket? = null
 
+    /** Whether [webSocket] completed the upgrade (onOpen); guarded by [lock]. */
+    private var socketOpen = false
+
     /**
      * Opens a WebSocket connection to [serverUrl] and authenticates with
      * [accessToken] in the first frame. Does nothing while a socket is
@@ -80,6 +83,7 @@ class KaikuWebSocket @Inject constructor(
             }
 
             _connectionState.value = ConnectionState.Connecting
+            socketOpen = false
             webSocket = okHttpClient.newWebSocket(request, Listener(accessToken))
         }
     }
@@ -87,9 +91,12 @@ class KaikuWebSocket @Inject constructor(
     override fun disconnect() {
         synchronized(lock) {
             val socket = webSocket
+            val open = socketOpen
             webSocket = null
-            if (socket != null && !socket.close(NORMAL_CLOSURE, null)) {
-                socket.cancel()
+            socketOpen = false
+            if (socket != null) {
+                // A socket still upgrading is aborted; an open one gets a close handshake.
+                if (!open || !socket.close(NORMAL_CLOSURE, null)) socket.cancel()
             }
             _connectionState.value = ConnectionState.Disconnected
         }
@@ -111,13 +118,12 @@ class KaikuWebSocket @Inject constructor(
         .replace("http://", "ws://")
         .trimEnd('/') + "/ws"
 
-    private fun isCurrent(socket: WebSocket): Boolean = synchronized(lock) { webSocket === socket }
-
     /** Marks [socket] closed with [code] if it is still the current socket. */
     private fun handleClosed(socket: WebSocket, code: Int?) {
         synchronized(lock) {
             if (webSocket !== socket) return
             webSocket = null
+            socketOpen = false
             _connectionState.value = if (code == AUTH_REJECTED_CLOSE_CODE) {
                 ConnectionState.AuthRejected
             } else {
@@ -134,7 +140,10 @@ class KaikuWebSocket @Inject constructor(
 
     private inner class Listener(private val accessToken: String) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (!isCurrent(webSocket)) return
+            synchronized(lock) {
+                if (this@KaikuWebSocket.webSocket !== webSocket) return
+                socketOpen = true
+            }
             // Authenticate via the first frame (post-connect auth); stay Connecting until Ready.
             webSocket.send(json.encodeToString<ClientEvent>(ClientEvent.Authenticate(accessToken)))
             logger.info("socket open, awaiting ready")

@@ -3,6 +3,7 @@ package io.wolftown.kaiku.data.ws
 import app.cash.turbine.test
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthSession
@@ -39,11 +40,22 @@ class RealtimeConnectionManagerTest {
         var disconnects = 0
         val sent = mutableListOf<ClientEvent>()
 
+        /**
+         * When set, the next connect fails synchronously into this state. Collectors
+         * only see the conflated value, so e.g. Disconnected -> Connecting -> Disconnected
+         * is never observed (like OkHttp failing before the collector resumes).
+         */
+        var failNextConnectWith: ConnectionState? = null
+
         override fun connect(serverUrl: String, accessToken: String) {
             if (state.value == ConnectionState.Connecting || state.value == ConnectionState.Connected) return
             connects += accessToken
             log += "connect:$accessToken"
             state.value = ConnectionState.Connecting
+            failNextConnectWith?.let {
+                failNextConnectWith = null
+                state.value = it
+            }
         }
 
         override fun disconnect() {
@@ -156,6 +168,7 @@ class RealtimeConnectionManagerTest {
             scope = scope.backgroundScope,
             clock = WallClock { scope.testScheduler.currentTime },
             backoff = ReconnectBackoff(jitter = 0.0),
+            expiryClock = WallClock { scope.testScheduler.currentTime },
         )
     }
 
@@ -247,6 +260,7 @@ class RealtimeConnectionManagerTest {
         }
 
         assertEquals(AuthSession.LoggedOut, h.authState.session.value)
+        verify(exactly = 1) { h.tokens.storage.clear() }
         assertEquals(RealtimeConnectionManager.MAX_CONSECUTIVE_AUTH_REJECTS - 1, h.refresher.forceCalls)
         val connectsAtLogout = h.socket.connects.size
         assertEquals(RealtimeConnectionManager.MAX_CONSECUTIVE_AUTH_REJECTS, connectsAtLogout)
@@ -328,9 +342,73 @@ class RealtimeConnectionManagerTest {
         h.manager.onAppForeground()
         runCurrent()
         assertEquals(2, h.socket.connects.size)
+        h.socket.ready()
+        runCurrent()
 
         // The pending backoff retry was cancelled: no extra connect later.
-        advanceTimeBy(fiveMinutes)
+        h.socket.pong()
+        advanceTimeBy(RealtimeConnectionManager.PING_INTERVAL_MS)
+        assertEquals(2, h.socket.connects.size)
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+    }
+
+    @Test
+    fun `connect without Ready times out and reconnects`() = runManagerTest { h ->
+        h.authState.setLoggedIn("user-1")
+        h.manager.start()
+        runCurrent()
+        assertEquals(1, h.socket.connects.size)
+        val disconnectsBefore = h.socket.disconnects
+
+        advanceTimeBy(RealtimeConnectionManager.CONNECT_TIMEOUT_MS)
+        assertEquals(disconnectsBefore, h.socket.disconnects)
+
+        advanceTimeBy(2) // past CONNECT_TIMEOUT_MS
+        assertEquals(disconnectsBefore + 1, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Reconnecting, h.manager.status.value)
+
+        advanceTimeBy(1_001) // first backoff step
+        assertEquals(2, h.socket.connects.size)
+
+        // Ready on the new socket clears its timeout.
+        h.socket.ready()
+        runCurrent()
+        h.socket.pong()
+        advanceTimeBy(RealtimeConnectionManager.CONNECT_TIMEOUT_MS + 1)
+        assertEquals(disconnectsBefore + 1, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+    }
+
+    @Test
+    fun `foreground recovers when socket already disconnected unobserved`() = runManagerTest { h ->
+        // The first connect fails before the collector sees Connecting, so the
+        // manager never observes the Disconnected and still reports Connecting.
+        h.manager.start()
+        runCurrent() // drain the initial inputs so no queued socket state can reveal the failure
+        h.socket.failNextConnectWith = ConnectionState.Disconnected
+        h.authState.setLoggedIn("user-1")
+        runCurrent()
+        assertEquals(1, h.socket.connects.size)
+        assertEquals(ConnectionState.Disconnected, h.socket.state.value)
+        assertEquals(RealtimeStatus.Connecting, h.manager.status.value)
+
+        h.manager.onAppForeground()
+        runCurrent()
+
+        assertEquals(2, h.socket.connects.size)
+        assertEquals(ConnectionState.Connecting, h.socket.state.value)
+    }
+
+    @Test
+    fun `unobserved disconnect is recovered by connect timeout`() = runManagerTest { h ->
+        h.manager.start()
+        runCurrent() // drain the initial inputs so no queued socket state can reveal the failure
+        h.socket.failNextConnectWith = ConnectionState.Disconnected
+        h.authState.setLoggedIn("user-1")
+        runCurrent()
+        assertEquals(1, h.socket.connects.size)
+
+        advanceTimeBy(RealtimeConnectionManager.CONNECT_TIMEOUT_MS + 1 + 1_001)
         assertEquals(2, h.socket.connects.size)
     }
 

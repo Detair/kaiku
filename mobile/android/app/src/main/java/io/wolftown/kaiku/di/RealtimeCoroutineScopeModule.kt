@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.di
 
+import android.os.SystemClock
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -26,5 +27,6 @@ object RealtimeCoroutineScopeModule {
 
     @Provides
     @Singleton
-    fun provideWallClock(): WallClock = WallClock(System::currentTimeMillis)
+    // Monotonic (keeps counting in deep sleep, immune to clock changes) for pong/watchdog timing.
+    fun provideWallClock(): WallClock = WallClock(SystemClock::elapsedRealtime)
 }

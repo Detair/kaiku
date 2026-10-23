@@ -46,6 +46,7 @@ class RealtimeConnectionManager internal constructor(
     private val scope: CoroutineScope,
     private val clock: WallClock,
     private val backoff: ReconnectBackoff,
+    private val expiryClock: WallClock,
 ) {
 
     @Inject
@@ -57,13 +58,19 @@ class RealtimeConnectionManager internal constructor(
         connectivity: ConnectivitySignal,
         @RealtimeCoroutineScope scope: CoroutineScope,
         clock: WallClock,
-    ) : this(socket, refresher, tokenStorage, authState, connectivity, scope, clock, ReconnectBackoff())
+    ) : this(
+        socket, refresher, tokenStorage, authState, connectivity, scope, clock,
+        ReconnectBackoff(),
+        // Token expiry is stored as wall-clock millis, so compare it against wall-clock time only.
+        WallClock(System::currentTimeMillis),
+    )
 
     companion object {
         private val logger = Logger.getLogger("RealtimeConnectionManager")
 
         const val PING_INTERVAL_MS = 30_000L
         const val PONG_TIMEOUT_MS = 75_000L
+        const val CONNECT_TIMEOUT_MS = 20_000L
         const val REFRESH_LEAD_MS = 60_000L
         const val MAX_CONSECUTIVE_AUTH_REJECTS = 3
 
@@ -84,6 +91,7 @@ class RealtimeConnectionManager internal constructor(
         data class RetryDue(val generation: Int) : Input
         data class PingDue(val generation: Int) : Input
         data class WatchdogDue(val generation: Int) : Input
+        data class ConnectTimeoutDue(val generation: Int) : Input
         data class RefreshDue(val generation: Int) : Input
     }
 
@@ -105,6 +113,8 @@ class RealtimeConnectionManager internal constructor(
     private var retryGeneration = 0
     private var heartbeatJobs: List<Job> = emptyList()
     private var heartbeatGeneration = 0
+    private var connectTimeoutJob: Job? = null
+    private var connectTimeoutGeneration = 0
     private var refreshJob: Job? = null
     private var refreshGeneration = 0
 
@@ -153,6 +163,7 @@ class RealtimeConnectionManager internal constructor(
             }
             is Input.PingDue -> if (input.generation == heartbeatGeneration) onPingDue()
             is Input.WatchdogDue -> if (input.generation == heartbeatGeneration) onWatchdogDue()
+            is Input.ConnectTimeoutDue -> if (input.generation == connectTimeoutGeneration) onConnectTimeout()
             is Input.RefreshDue -> if (input.generation == refreshGeneration) onRefreshDue()
         }
     }
@@ -228,8 +239,10 @@ class RealtimeConnectionManager internal constructor(
             return
         }
         scheduleTokenRefresh(minDelayMs = MIN_REFRESH_DELAY_MS)
-        socketActive = true
         socket.connect(url, token)
+        // Only after connect() returned: if it threw, the actor's catch schedules a retry.
+        socketActive = true
+        armConnectTimeout()
     }
 
     private suspend fun onSocketState(state: ConnectionState) {
@@ -265,6 +278,9 @@ class RealtimeConnectionManager internal constructor(
         if (consecutiveAuthRejects >= MAX_CONSECUTIVE_AUTH_REJECTS) {
             logger.warning("socket rejected $consecutiveAuthRejects times in a row, logging out")
             stopAfterSessionEnded()
+            // Same as the refresher's AUTH_REJECTED path: without clearing, every cold
+            // start would restore the session and loop home -> login again.
+            tokenStorage.clear()
             authState.setLoggedOut()
             return
         }
@@ -286,6 +302,7 @@ class RealtimeConnectionManager internal constructor(
                 if (!isLoggedIn()) return
                 logger.info("ready, status=Connected")
                 cancelRetry()
+                cancelConnectTimeout()
                 backoff.reset()
                 consecutiveAuthRejects = 0
                 lastPongAt = clock.nowMillis()
@@ -335,8 +352,17 @@ class RealtimeConnectionManager internal constructor(
     /** Step 7. */
     private suspend fun onForeground() {
         if (!isLoggedIn()) return
-        val current = _status.value
-        if (current == RealtimeStatus.Connected || current == RealtimeStatus.Connecting) return
+        val socketState = socket.connectionState.value
+        val terminal = socketState == ConnectionState.Disconnected || socketState == ConnectionState.AuthRejected
+        if (socketActive && terminal) {
+            // The socket ended without us observing it (StateFlow conflation): recover now.
+            logger.info("app foreground found socket $socketState unobserved")
+            socketActive = false
+            stopHeartbeat()
+        } else {
+            val current = _status.value
+            if (current == RealtimeStatus.Connected || current == RealtimeStatus.Connecting) return
+        }
         logger.info("app foreground, connecting now")
         backoff.reset()
         attemptConnect()
@@ -361,10 +387,49 @@ class RealtimeConnectionManager internal constructor(
         inbox.send(Input.WatchdogDue(generation))
     }
 
+    /** Stops every per-socket timer: ping, watchdog and the connect timeout. */
     private fun stopHeartbeat() {
         heartbeatGeneration++
         heartbeatJobs.forEach { it.cancel() }
         heartbeatJobs = emptyList()
+        cancelConnectTimeout()
+    }
+
+    // -- Connect timeout --------------------------------------------------------
+
+    /** Armed when a socket is opened; Ready or any terminal state clears it. */
+    private fun armConnectTimeout() {
+        cancelConnectTimeout()
+        val generation = connectTimeoutGeneration
+        connectTimeoutJob = scope.launch {
+            delay(CONNECT_TIMEOUT_MS)
+            inbox.send(Input.ConnectTimeoutDue(generation))
+        }
+    }
+
+    private fun cancelConnectTimeout() {
+        connectTimeoutGeneration++
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = null
+    }
+
+    /**
+     * No Ready within [CONNECT_TIMEOUT_MS]: either a half-open socket (reads never
+     * time out) or a close we never observed because the state flow conflated it.
+     */
+    private fun onConnectTimeout() {
+        connectTimeoutJob = null
+        if (!socketActive) return
+        logger.warning("no ready within connect timeout, reconnecting")
+        stopHeartbeat()
+        socketActive = false
+        socket.disconnect()
+        if (!isLoggedIn()) return
+        if (!connectivity.isConnected.value) {
+            setStatus(RealtimeStatus.Offline)
+            return
+        }
+        enterReconnecting()
     }
 
     private fun onPingDue() {
@@ -412,7 +477,7 @@ class RealtimeConnectionManager internal constructor(
 
     private fun scheduleTokenRefresh(minDelayMs: Long) {
         cancelTokenRefresh()
-        val dueIn = tokenStorage.getAccessTokenExpiresAtMillis() - REFRESH_LEAD_MS - clock.nowMillis()
+        val dueIn = tokenStorage.getAccessTokenExpiresAtMillis() - REFRESH_LEAD_MS - expiryClock.nowMillis()
         val delayMs = dueIn.coerceAtLeast(minDelayMs)
         launchRefresh(delayMs)
     }
@@ -462,7 +527,7 @@ class RealtimeConnectionManager internal constructor(
 
     private fun hasUnexpiredAccessToken(): Boolean =
         tokenStorage.getAccessToken() != null &&
-            tokenStorage.getAccessTokenExpiresAtMillis() > clock.nowMillis()
+            tokenStorage.getAccessTokenExpiresAtMillis() > expiryClock.nowMillis()
 
     private fun setStatus(next: RealtimeStatus) {
         if (_status.value != next) {

@@ -38,7 +38,10 @@ interface ConnectivitySignal {
     val networkId: StateFlow<Long?>
 }
 
-/** Wall-clock source, injectable so tests can use virtual time. */
+/**
+ * Millisecond time source, injectable so tests can use virtual time. Production
+ * binds a monotonic clock (`SystemClock.elapsedRealtime`) for timing intervals.
+ */
 fun interface WallClock {
     fun nowMillis(): Long
 }
