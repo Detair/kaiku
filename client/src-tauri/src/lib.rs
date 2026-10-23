@@ -161,6 +161,7 @@ pub fn run() {
             commands::webcam::stop_webcam,
             commands::webcam::enumerate_webcam_devices_cmd,
             // Settings commands
+            commands::settings::get_default_server_url,
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::settings::get_ui_state,

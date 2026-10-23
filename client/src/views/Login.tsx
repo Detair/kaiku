@@ -1,4 +1,4 @@
-import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
+import { Component, createSignal, createResource, Show, For, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   login,
@@ -8,7 +8,7 @@ import {
   clearError,
   setAuthState,
 } from "@/stores/auth";
-import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
+import { fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { KeyRound, ShieldCheck } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
@@ -34,7 +34,16 @@ const Login: Component = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
-  const [serverUrl] = createSignal(defaultServerUrl);
+  const [serverUrl, setServerUrl] = createSignal(defaultServerUrl);
+  // Native mode: a tester override (KAIKU_SERVER_URL) beats the build-time default.
+  onMount(async () => {
+    try {
+      const override = await getDefaultServerUrl();
+      if (override) setServerUrl(override);
+    } catch (err) {
+      console.warn("[Login] Could not read default server URL:", err instanceof Error ? err.message : err);
+    }
+  });
   const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [mfaCode, setMfaCode] = createSignal("");
@@ -42,7 +51,7 @@ const Login: Component = () => {
   const [oidcLoading, setOidcLoading] = createSignal<string | null>(null);
 
   // Fetch server settings from hardcoded beta URL
-  const [settings] = createResource(() => defaultServerUrl, async (url) => {
+  const [settings] = createResource(serverUrl, async (url) => {
     if (!url.trim()) return null;
     try {
       return await fetchServerSettings(url);

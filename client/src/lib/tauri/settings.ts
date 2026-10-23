@@ -5,6 +5,16 @@
 import type { AppSettings, UiState } from "../types";
 import { isTauri } from "./common";
 
+/**
+ * Tester override for the server address (env `KAIKU_SERVER_URL`, native only).
+ * Returns null in the browser or when the variable is unset.
+ */
+export async function getDefaultServerUrl(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string | null>("get_default_server_url");
+}
+
 export async function getSettings(): Promise<AppSettings> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
