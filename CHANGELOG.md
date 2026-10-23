@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS: the app no longer quits the first time it uses the microphone or camera; macOS now asks for permission.
 - The 'Log in on phone' QR code works again after restarting the app or reloading the page.
 - Realtime updates now recover by themselves after a network drop, sleep or server restart, and a small indicator shows while the app reconnects.
+- The desktop app can sign in and stay signed in against servers that restrict allowed origins.
 - The first direct message to someone now appears immediately on all of their open devices, instead of only after reloading the conversation list.
 - Realtime updates no longer stop silently when the server's internal event stream hiccups — the connection is closed so apps reconnect and catch up.
 - Android: shared photos, avatars and server icons now load; encrypted messages show a clear note instead of raw data.

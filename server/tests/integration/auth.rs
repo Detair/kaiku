@@ -15,6 +15,8 @@
 use sqlx::PgPool;
 use vc_server::auth::{hash_password, verify_password};
 
+use super::helpers::{spawn_test_server, TestApp};
+
 // ============================================================================
 // Password Hashing Tests (Unit tests - no database required)
 // ============================================================================
@@ -299,4 +301,83 @@ async fn test_expired_session_not_found(pool: PgPool) {
         .expect("Lookup should succeed");
 
     assert!(found.is_none(), "Expired session should not be found");
+}
+
+// ============================================================================
+// Desktop (Tauri) webview origins
+// ============================================================================
+
+fn config_with_origins(origins: &[&str]) -> vc_server::config::Config {
+    let mut config = vc_server::config::Config::default_for_test();
+    config.cors_allowed_origins = origins.iter().map(|o| (*o).to_string()).collect();
+    config
+}
+
+#[sqlx::test]
+async fn test_cors_preflight_allows_tauri_origin_with_credentials(pool: PgPool) {
+    let app =
+        TestApp::with_pool_and_config(pool, config_with_origins(&["https://kaiku.example"])).await;
+    let server = spawn_test_server(app.router.clone()).await;
+
+    let resp = reqwest::Client::new()
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/auth/refresh", server.url),
+        )
+        .header("Origin", "tauri://localhost")
+        .header("Access-Control-Request-Method", "POST")
+        .header(
+            "Access-Control-Request-Headers",
+            "x-refresh-token, content-type",
+        )
+        .send()
+        .await
+        .expect("preflight");
+
+    let h = resp.headers();
+    assert_eq!(h["access-control-allow-origin"], "tauri://localhost");
+    assert_eq!(h["access-control-allow-credentials"], "true");
+    let allowed = h["access-control-allow-headers"]
+        .to_str()
+        .unwrap()
+        .to_lowercase();
+    assert!(allowed.contains("x-refresh-token"), "got {allowed}");
+}
+
+#[sqlx::test]
+async fn test_login_from_tauri_origin_returns_refresh_token_in_body(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(
+        pool.clone(),
+        config_with_origins(&["https://kaiku.example"]),
+    )
+    .await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let username = format!("tauri_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    let hash = hash_password("password123").expect("hash");
+    vc_server::db::create_user(&pool, &username, "Tauri", None, &hash)
+        .await
+        .expect("create user");
+
+    let login = |origin: &'static str| {
+        let url = format!("{}/auth/login", server.url);
+        let username = username.clone();
+        async move {
+            reqwest::Client::new()
+                .post(url)
+                .header("Origin", origin)
+                .json(&serde_json::json!({ "username": username, "password": "password123" }))
+                .send()
+                .await
+                .expect("login")
+        }
+    };
+
+    let body: serde_json::Value = login("tauri://localhost").await.json().await.unwrap();
+    assert!(body["refresh_token"].as_str().is_some(), "{body}");
+
+    let body: serde_json::Value = login("https://kaiku.example").await.json().await.unwrap();
+    assert!(
+        body.get("refresh_token").map_or(true, |v| v.is_null()),
+        "{body}"
+    );
 }

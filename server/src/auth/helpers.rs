@@ -6,6 +6,7 @@ use axum_extra::extract::CookieJar;
 
 use super::cookies;
 use super::error::{AuthError, AuthResult};
+use crate::config::TAURI_ORIGINS;
 
 /// Hash a token for secure storage using SHA256.
 ///
@@ -46,14 +47,19 @@ pub(super) fn extract_refresh_token(
 ///
 /// Browser (CORS) requests include the `Origin` header; for those clients the
 /// refresh token is delivered solely via `HttpOnly` cookie.  Non-browser clients
-/// (e.g. Tauri) omit `Origin` and receive the token in the response body.
+/// omit `Origin` and receive the token in the response body, as does the Tauri
+/// desktop webview (its origin is one of [`TAURI_ORIGINS`]; cookies do not
+/// survive there).
 pub(super) fn should_return_refresh_token(headers: &HeaderMap) -> bool {
-    let has_origin = headers.contains_key(ORIGIN);
+    let origin = headers.get(ORIGIN);
+    let deliver =
+        origin.is_none_or(|value| value.to_str().is_ok_and(|v| TAURI_ORIGINS.contains(&v)));
     tracing::debug!(
-        has_origin_header = has_origin,
+        has_origin_header = origin.is_some(),
+        deliver_in_body = deliver,
         "Refresh token delivery decision"
     );
-    !has_origin
+    deliver
 }
 
 /// Extract the current session's token hash from cookie (browser) or `X-Refresh-Token` header
@@ -92,4 +98,40 @@ pub(super) fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
                 .take(512)
                 .collect()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::*;
+    use crate::config::TAURI_ORIGINS;
+
+    fn origin(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(ORIGIN, HeaderValue::from_str(value).unwrap());
+        headers
+    }
+
+    #[test]
+    fn refresh_token_returned_without_origin() {
+        assert!(should_return_refresh_token(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn refresh_token_returned_for_tauri_origin() {
+        for o in TAURI_ORIGINS {
+            assert!(should_return_refresh_token(&origin(o)), "{o}");
+        }
+    }
+
+    #[test]
+    fn refresh_token_withheld_for_web_origin() {
+        assert!(!should_return_refresh_token(&origin(
+            "https://kaiku.example"
+        )));
+        assert!(!should_return_refresh_token(&origin(
+            "https://kaiku.pmind.de"
+        )));
+    }
 }

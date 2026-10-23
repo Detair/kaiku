@@ -270,7 +270,39 @@ pub struct Config {
     pub geoip_api_url: Option<String>,
 }
 
+/// Origins presented by the Tauri desktop webview (per platform/webview
+/// flavour). They are added to every explicit CORS allow-list automatically.
+pub const TAURI_ORIGINS: [&str; 3] = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
 impl Config {
+    /// CORS origins the server actually allows.
+    ///
+    /// A wildcard configuration is returned unchanged (`["*"]`). An explicit
+    /// list is extended with [`TAURI_ORIGINS`] (deduplicated), so self-hosters
+    /// restricting origins do not have to know the desktop webview origins.
+    #[must_use]
+    pub fn effective_cors_origins(&self) -> Vec<String> {
+        if self.cors_allowed_origins.iter().any(|o| o == "*") {
+            return vec!["*".to_string()];
+        }
+        let mut origins: Vec<String> = Vec::new();
+        for origin in self
+            .cors_allowed_origins
+            .iter()
+            .map(String::as_str)
+            .chain(TAURI_ORIGINS)
+        {
+            if !origins.iter().any(|o| o == origin) {
+                origins.push(origin.to_string());
+            }
+        }
+        origins
+    }
+
     /// Load configuration from environment variables.
     pub fn from_env() -> Result<Self> {
         let config = Self {
@@ -666,5 +698,37 @@ mod stun_sovereignty_tests {
             "stun:stun.l.google.com:19302",
             None,
         ));
+    }
+}
+
+#[cfg(test)]
+mod cors_origin_tests {
+    use super::{Config, TAURI_ORIGINS};
+
+    fn config_with(origins: &[&str]) -> Config {
+        let mut config = Config::default_for_test();
+        config.cors_allowed_origins = origins.iter().map(|o| (*o).to_string()).collect();
+        config
+    }
+
+    #[test]
+    fn effective_origins_add_tauri_to_explicit_list() {
+        let origins = config_with(&["https://a"]).effective_cors_origins();
+        assert!(origins.contains(&"https://a".to_string()));
+        for o in TAURI_ORIGINS {
+            assert!(origins.contains(&o.to_string()), "missing {o}");
+        }
+        assert_eq!(origins.len(), 1 + TAURI_ORIGINS.len());
+    }
+
+    #[test]
+    fn effective_origins_deduplicate_tauri_entries() {
+        let origins = config_with(&["tauri://localhost", "https://a"]).effective_cors_origins();
+        assert_eq!(origins.len(), 1 + TAURI_ORIGINS.len());
+    }
+
+    #[test]
+    fn effective_origins_keep_wildcard() {
+        assert_eq!(config_with(&["*"]).effective_cors_origins(), vec!["*"]);
     }
 }
