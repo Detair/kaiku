@@ -156,9 +156,18 @@ async fn send_unifiedpush(endpoint: &str, signal: &WakeSignal) -> Delivery {
     }
     // SSRF guard: reject internal/private targets and connect only to the
     // address that passed validation; redirects are never followed.
-    let Ok(verified) = crate::webhooks::ssrf::verify_resolved_ip(endpoint).await else {
-        tracing::warn!("push endpoint blocked by SSRF guard");
-        return Delivery::Failed;
+    let verified = match crate::webhooks::ssrf::verify_resolved_ip(endpoint).await {
+        Ok(v) => v,
+        Err(crate::webhooks::ssrf::SsrfError::Blocked(_)) => {
+            // Malformed or private/reserved target: it will never become valid,
+            // so let the caller prune the subscription.
+            tracing::warn!("push endpoint blocked by SSRF guard; dropping subscription");
+            return Delivery::Gone;
+        }
+        Err(crate::webhooks::ssrf::SsrfError::Resolution(_)) => {
+            tracing::warn!("push endpoint could not be resolved; will retry later");
+            return Delivery::Failed;
+        }
     };
     let Ok(client) =
         crate::webhooks::ssrf::pinned_client(&verified, std::time::Duration::from_secs(10))
@@ -351,6 +360,22 @@ mod tests {
             send_unifiedpush("not a url", &sig).await,
             Delivery::Gone
         ));
+    }
+
+    #[tokio::test]
+    async fn private_endpoint_is_gone() {
+        let sig = WakeSignal::dm(Uuid::nil(), 1);
+        for ep in [
+            "https://127.0.0.1/x",
+            "https://10.0.0.5/x",
+            "https://[::1]/x",
+            "https://[ff02::1]/x",
+        ] {
+            assert!(
+                matches!(send_unifiedpush(ep, &sig).await, Delivery::Gone),
+                "{ep} must be pruned"
+            );
+        }
     }
 
     #[test]

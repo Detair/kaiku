@@ -27,7 +27,14 @@ pub fn maybe_file_url(s3_key: Option<String>) -> Option<String> {
 
 /// Infer MIME type from file extension.
 fn content_type_from_key(key: &str) -> &'static str {
-    match key.rsplit('.').next().unwrap_or("") {
+    // Extensions are matched case-insensitively so `.PNG` still renders under `nosniff`.
+    match key
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -111,6 +118,18 @@ pub async fn serve(State(state): State<AppState>, Path(key): Path<String>) -> im
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_type_ignores_extension_case() {
+        assert_eq!(content_type_from_key("avatars/u/a.png"), "image/png");
+        assert_eq!(content_type_from_key("avatars/u/a.PNG"), "image/png");
+        assert_eq!(content_type_from_key("avatars/u/a.JpG"), "image/jpeg");
+        assert_eq!(content_type_from_key("avatars/u/a.WEBP"), "image/webp");
+        assert_eq!(
+            content_type_from_key("avatars/u/a.bin"),
+            "application/octet-stream"
+        );
+    }
 
     #[test]
     fn public_keys() {

@@ -60,6 +60,8 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
                 || v6.is_unspecified()     // ::
                 || (v6.segments()[0] & 0xFE00) == 0xFC00 // fc00::/7 (ULA)
                 || (v6.segments()[0] & 0xFFC0) == 0xFE80 // fe80::/10 (link-local)
+                || (v6.segments()[0] & 0xFF00) == 0xFF00 // ff00::/8 (multicast)
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8) // 2001:db8::/32 (documentation)
                 || is_v4_mapped_private(v6)
                 || is_nat64_private(v6)
         }
@@ -95,14 +97,35 @@ pub struct VerifiedUrl {
     pub addr: std::net::SocketAddr,
 }
 
+/// Why [`verify_resolved_ip`] rejected a URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SsrfError {
+    /// The URL is malformed or its target is a private/reserved address.
+    /// Retrying will not help.
+    Blocked(String),
+    /// The host could not be resolved right now (possibly transient).
+    Resolution(String),
+}
+
+impl std::fmt::Display for SsrfError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blocked(m) | Self::Resolution(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for SsrfError {}
+
 /// Resolve a URL's hostname and verify the resolved IP is not private/reserved.
 /// Returns the verified host and a pinned socket address to use for delivery,
 /// preventing DNS rebinding (TOCTOU) attacks.
-pub async fn verify_resolved_ip(url: &str) -> Result<VerifiedUrl, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
+pub async fn verify_resolved_ip(url: &str) -> Result<VerifiedUrl, SsrfError> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|e| SsrfError::Blocked(format!("Invalid URL: {e}")))?;
     let host = parsed
         .host_str()
-        .ok_or_else(|| "URL has no host".to_string())?
+        .ok_or_else(|| SsrfError::Blocked("URL has no host".to_string()))?
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_string();
@@ -112,7 +135,9 @@ pub async fn verify_resolved_ip(url: &str) -> Result<VerifiedUrl, String> {
     // C4: Always validate raw IPs at delivery time (defense-in-depth against DNS rebinding)
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_private_ip(&ip) {
-            return Err(format!("URL contains private IP address: {ip}"));
+            return Err(SsrfError::Blocked(format!(
+                "URL contains private IP address: {ip}"
+            )));
         }
         return Ok(VerifiedUrl {
             host: host.clone(),
@@ -124,19 +149,21 @@ pub async fn verify_resolved_ip(url: &str) -> Result<VerifiedUrl, String> {
 
     let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(&addr_str)
         .await
-        .map_err(|e| format!("DNS resolution failed for {host}: {e}"))?
+        .map_err(|e| SsrfError::Resolution(format!("DNS resolution failed for {host}: {e}")))?
         .collect();
 
     if addrs.is_empty() {
-        return Err(format!("DNS resolution returned no addresses for {host}"));
+        return Err(SsrfError::Resolution(format!(
+            "DNS resolution returned no addresses for {host}"
+        )));
     }
 
     for addr in &addrs {
         if is_private_ip(&addr.ip()) {
-            return Err(format!(
+            return Err(SsrfError::Blocked(format!(
                 "DNS for {host} resolved to private address {}",
                 addr.ip()
-            ));
+            )));
         }
     }
 
@@ -224,6 +251,17 @@ mod tests {
         assert!(is_private_ip(&"0.1.2.3".parse().unwrap()));
         assert!(is_private_ip(&"64:ff9b::a00:1".parse().unwrap())); // 10.0.0.1
         assert!(!is_private_ip(&"64:ff9b::808:808".parse().unwrap())); // 8.8.8.8
+    }
+
+    #[test]
+    fn blocks_ipv6_multicast_and_documentation() {
+        assert!(is_private_ip(&"ff02::1".parse().unwrap()));
+        assert!(is_private_ip(&"ff00::".parse().unwrap()));
+        assert!(is_private_ip(&"2001:db8::1".parse().unwrap()));
+        assert!(is_private_ip(&"2001:db8:ffff::1".parse().unwrap()));
+        // Neighbouring public space stays reachable.
+        assert!(!is_private_ip(&"2001:4860:4860::8888".parse().unwrap()));
+        assert!(!is_private_ip(&"2001:db9::1".parse().unwrap()));
     }
 
     #[tokio::test]
