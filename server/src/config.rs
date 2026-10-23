@@ -151,6 +151,13 @@ pub struct Config {
     /// Highest UDP port the SFU may bind for ICE/media (`VOICE_UDP_PORT_MAX`).
     pub voice_udp_port_max: Option<u16>,
 
+    /// Allowed network interface names for ICE host candidates
+    /// (`VOICE_ICE_INTERFACES`). `None` = all interfaces.
+    pub voice_ice_interfaces: Option<Vec<String>>,
+
+    /// IP family used for ICE candidates (`VOICE_ICE_IP_FAMILY`, default both).
+    pub voice_ice_ip_family: IceIpFamily,
+
     /// Public base URL of this instance (e.g. "<https://kaiku.example.com>").
     /// Used to build absolute URLs handed to external services (incoming
     /// webhook execute URLs). Falls back to request Host headers when unset.
@@ -316,6 +323,10 @@ impl Config {
             env_opt("VOICE_UDP_PORT_MIN").as_deref(),
             env_opt("VOICE_UDP_PORT_MAX").as_deref(),
         )?;
+        let voice_ice_interfaces =
+            parse_voice_ice_interfaces(env_opt("VOICE_ICE_INTERFACES").as_deref());
+        let voice_ice_ip_family =
+            parse_voice_ice_ip_family(env_opt("VOICE_ICE_IP_FAMILY").as_deref())?;
         let config = Self {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
@@ -378,6 +389,8 @@ impl Config {
             public_ip: env_opt("PUBLIC_IP"),
             voice_udp_port_min,
             voice_udp_port_max,
+            voice_ice_interfaces,
+            voice_ice_ip_family,
             public_base_url: env_opt("PUBLIC_BASE_URL"),
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
@@ -586,6 +599,8 @@ impl Config {
             public_ip: None,
             voice_udp_port_min: None,
             voice_udp_port_max: None,
+            voice_ice_interfaces: None,
+            voice_ice_ip_family: IceIpFamily::Both,
             public_base_url: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
@@ -654,6 +669,82 @@ const TEST_MFA_ENCRYPTION_KEY: &str =
 /// empty issuer URL on the beta server.
 fn env_opt(name: &str) -> Option<String> {
     env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// IP family allowed for ICE candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IceIpFamily {
+    V4,
+    V6,
+    #[default]
+    Both,
+}
+
+/// Parse `VOICE_ICE_INTERFACES`: comma-separated names, trimmed, empty entries
+/// dropped; an empty list means unset (all interfaces).
+fn parse_voice_ice_interfaces(raw: Option<&str>) -> Option<Vec<String>> {
+    let names: Vec<String> = raw?
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+/// Parse `VOICE_ICE_IP_FAMILY`: `v4` | `v6` | `both` (case-insensitive).
+fn parse_voice_ice_ip_family(raw: Option<&str>) -> Result<IceIpFamily> {
+    match raw.map(|v| v.trim().to_lowercase()).as_deref() {
+        None | Some("both") => Ok(IceIpFamily::Both),
+        Some("v4") => Ok(IceIpFamily::V4),
+        Some("v6") => Ok(IceIpFamily::V6),
+        Some(other) => anyhow::bail!(
+            "Invalid VOICE_ICE_IP_FAMILY value '{other}'. Must be one of: v4, v6, both"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod voice_ice_filter_tests {
+    use super::*;
+
+    #[test]
+    fn interfaces_are_trimmed_and_empty_means_unset() {
+        assert_eq!(parse_voice_ice_interfaces(None), None);
+        assert_eq!(parse_voice_ice_interfaces(Some(" , ,")), None);
+        assert_eq!(
+            parse_voice_ice_interfaces(Some(" eth0, ,wt0 ")),
+            Some(vec!["eth0".to_string(), "wt0".to_string()])
+        );
+    }
+
+    #[test]
+    fn ip_family_parses_case_insensitively() {
+        assert_eq!(parse_voice_ice_ip_family(None).unwrap(), IceIpFamily::Both);
+        assert_eq!(
+            parse_voice_ice_ip_family(Some("V4")).unwrap(),
+            IceIpFamily::V4
+        );
+        assert_eq!(
+            parse_voice_ice_ip_family(Some("v6")).unwrap(),
+            IceIpFamily::V6
+        );
+        assert_eq!(
+            parse_voice_ice_ip_family(Some("Both")).unwrap(),
+            IceIpFamily::Both
+        );
+    }
+
+    #[test]
+    fn ip_family_rejects_invalid_value() {
+        let err = parse_voice_ice_ip_family(Some("ipv4"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("VOICE_ICE_IP_FAMILY") && err.contains("v4, v6, both"),
+            "{err}"
+        );
+    }
 }
 
 const VOICE_UDP_RANGE_ERROR: &str =

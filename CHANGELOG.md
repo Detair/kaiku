@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.
+- Operators can restrict voice ICE candidates to chosen network interfaces and an IP family (`VOICE_ICE_INTERFACES`, `VOICE_ICE_IP_FAMILY`).
 - Operators can pin voice media to a UDP port range (`VOICE_UDP_PORT_MIN` / `VOICE_UDP_PORT_MAX`).
 - Server admins can create accounts with a temporary password via the admin API (`POST /api/admin/users`); the new user is asked to set their own password at first sign-in. Registration can stay closed.
 - Apps can fetch messages they missed while offline (`GET /api/messages/channel/{id}?after=…`), and the realtime connection now reports the server time on connect so reconnecting apps catch up reliably.

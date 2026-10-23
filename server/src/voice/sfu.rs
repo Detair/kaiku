@@ -36,7 +36,7 @@ use super::screen_share::{ScreenShareInfo, ScreenShareLimiter};
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
-use crate::config::Config;
+use crate::config::{Config, IceIpFamily};
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
 use crate::ws::handlers::{send_outbound, send_outbound_within, OutboundSendError};
 use crate::ws::{OutboundMsg, ServerEvent};
@@ -353,6 +353,16 @@ pub struct SfuServer {
     stale_rx: Mutex<Option<mpsc::UnboundedReceiver<StalePeer>>>,
 }
 
+/// Whether a `PUBLIC_IP` string is compatible with the allowed ICE family.
+/// Unparseable values are kept (matches pre-existing behaviour).
+fn public_ip_matches_family(ip: &str, family: IceIpFamily) -> bool {
+    !matches!(
+        (ip.parse::<std::net::IpAddr>(), family),
+        (Ok(std::net::IpAddr::V4(_)), IceIpFamily::V6)
+            | (Ok(std::net::IpAddr::V6(_)), IceIpFamily::V4)
+    )
+}
+
 impl SfuServer {
     /// Create a new SFU server.
     pub fn new(config: Arc<Config>, rate_limiter: Option<RateLimiter>) -> Result<Self, VoiceError> {
@@ -419,13 +429,35 @@ impl SfuServer {
 
         // Configure SettingEngine for NAT traversal behind Docker/VPS
         let mut setting_engine = SettingEngine::default();
-        if let Some(ref public_ip) = config.public_ip {
+        // PUBLIC_IP NAT 1:1 only applies when its family is allowed by
+        // VOICE_ICE_IP_FAMILY; otherwise the family filter wins (logged).
+        let public_ip_usable = config.public_ip.as_deref().filter(|ip| {
+            let ok = public_ip_matches_family(ip, config.voice_ice_ip_family);
+            if !ok {
+                warn!(public_ip = %ip, family = ?config.voice_ice_ip_family,
+                    "PUBLIC_IP ignored: address family excluded by VOICE_ICE_IP_FAMILY");
+            }
+            ok
+        });
+        if let Some(public_ip) = public_ip_usable {
             setting_engine.set_nat_1to1_ips(
-                vec![public_ip.clone()],
+                vec![public_ip.to_owned()],
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
             setting_engine.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
             info!(public_ip = %public_ip, "SFU NAT 1:1 IP configured");
+        }
+
+        // Restrict ICE to the configured IP family / interfaces.
+        match config.voice_ice_ip_family {
+            IceIpFamily::V4 => setting_engine.set_network_types(vec![NetworkType::Udp4]),
+            IceIpFamily::V6 => setting_engine.set_network_types(vec![NetworkType::Udp6]),
+            IceIpFamily::Both => {}
+        }
+        if let Some(allowed) = config.voice_ice_interfaces.clone() {
+            info!(interfaces = ?allowed, "SFU ICE interface filter configured");
+            setting_engine
+                .set_interface_filter(Box::new(move |name| allowed.iter().any(|a| a == name)));
         }
 
         // Pin ICE/media to the configured UDP range (firewall-friendly).
@@ -1273,5 +1305,88 @@ mod udp_range_tests {
                 "candidate port {p} outside range"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ice_filter_tests {
+    use super::*;
+
+    /// Gather host candidate IPs for an SFU built from `config`.
+    async fn gather_ips(config: Config) -> Vec<std::net::IpAddr> {
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        let pc = sfu
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("pc");
+        pc.create_data_channel("probe", None).await.expect("dc");
+        let offer = pc.create_offer(None).await.expect("offer");
+        let mut gathered = pc.gathering_complete_promise().await;
+        pc.set_local_description(offer).await.expect("local desc");
+        let _ = tokio::time::timeout(Duration::from_secs(10), gathered.recv()).await;
+        let sdp = pc.local_description().await.expect("desc").sdp;
+        let _ = pc.close().await;
+        sdp.lines()
+            .filter_map(|l| l.strip_prefix("a=candidate:"))
+            .filter_map(|l| l.split_whitespace().nth(4)?.parse().ok())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sfu_candidates_respect_ip_family() {
+        let mut config = Config::default_for_test();
+        config.voice_ice_ip_family = IceIpFamily::V4;
+        let ips = gather_ips(config).await;
+        assert!(ips.iter().all(std::net::IpAddr::is_ipv4), "{ips:?}");
+
+        // Opposite family: nothing of the excluded family may appear (on a
+        // host without global IPv6 this also yields no candidates at all).
+        let mut config = Config::default_for_test();
+        config.voice_ice_ip_family = IceIpFamily::V6;
+        let ips = gather_ips(config).await;
+        assert!(ips.iter().all(std::net::IpAddr::is_ipv6), "{ips:?}");
+    }
+
+    /// Approach: loopback is suppressed by webrtc-ice, so pick a real
+    /// interface from the host (the first one that has a non-loopback IPv4
+    /// address) and assert all candidate IPs belong to it; a nonexistent
+    /// name must yield no host candidates.
+    #[tokio::test]
+    async fn sfu_candidates_respect_interface_filter() {
+        let ifaces = webrtc::util::vnet::net::Net::new(None)
+            .get_interfaces()
+            .await;
+        let Some(chosen) = ifaces.iter().find(|i| {
+            i.addrs()
+                .iter()
+                .any(|a| a.addr().is_ipv4() && !a.addr().is_loopback())
+        }) else {
+            eprintln!("SKIP: host has no non-loopback IPv4 interface");
+            return;
+        };
+        let own: Vec<std::net::IpAddr> = chosen.addrs().iter().map(|a| a.addr()).collect();
+
+        let mut config = Config::default_for_test();
+        config.voice_ice_interfaces = Some(vec![chosen.name().to_owned()]);
+        let ips = gather_ips(config).await;
+        assert!(!ips.is_empty(), "expected candidates on {}", chosen.name());
+        assert!(
+            ips.iter().all(|ip| own.contains(ip)),
+            "{ips:?} not in {own:?}"
+        );
+
+        let mut config = Config::default_for_test();
+        config.voice_ice_interfaces = Some(vec!["no-such-if0".to_owned()]);
+        let ips = gather_ips(config).await;
+        assert!(ips.is_empty(), "{ips:?}");
+    }
+
+    #[test]
+    fn public_ip_family_compatibility() {
+        assert!(public_ip_matches_family("203.0.113.5", IceIpFamily::V4));
+        assert!(!public_ip_matches_family("203.0.113.5", IceIpFamily::V6));
+        assert!(!public_ip_matches_family("2001:db8::1", IceIpFamily::V4));
+        assert!(public_ip_matches_family("2001:db8::1", IceIpFamily::Both));
     }
 }
