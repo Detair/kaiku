@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -11,6 +12,10 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 TAURI_WORKFLOW = ROOT / ".github/workflows/tauri-build.yml"
 SETUP_INTEGRATION = ROOT / "server/tests/integration/setup_integration.rs"
 UPLOADS_HTTP = ROOT / "server/tests/integration/uploads_http.rs"
+TAURI_DIR = ROOT / "client/src-tauri"
+TAURI_CONF = TAURI_DIR / "tauri.conf.json"
+INFO_PLIST = TAURI_DIR / "Info.plist"
+MACOS_USAGE_KEYS = ["NSMicrophoneUsageDescription", "NSCameraUsageDescription"]
 
 WINDOWS_LIBVPX_TOKENS = [
     "vcpkg install libvpx:x64-windows-static-md",
@@ -92,6 +97,35 @@ def check_uploads_guardrails(content: str, errors: list[str]) -> None:
     )
 
 
+def check_macos_bundle(errors: list[str]) -> None:
+    """macOS kills the app on first mic/camera use without usage strings."""
+    info = read_text(INFO_PLIST, errors)
+    for key in MACOS_USAGE_KEYS:
+        if info and not re.search(
+            rf"<key>{key}</key>\s*<string>\s*\S[^<]*</string>", info
+        ):
+            errors.append(f"Info.plist: {key} missing or empty")
+
+    conf_text = read_text(TAURI_CONF, errors)
+    if not conf_text:
+        return
+    try:
+        conf = json.loads(conf_text)
+    except json.JSONDecodeError as exc:
+        errors.append(f"tauri.conf.json: invalid JSON: {exc}")
+        return
+    entitlements = conf.get("bundle", {}).get("macOS", {}).get("entitlements")
+    if not entitlements:
+        errors.append("tauri.conf.json: bundle.macOS.entitlements not set")
+    elif not (TAURI_DIR / entitlements).is_file():
+        errors.append(f"tauri.conf.json: entitlements file not found: {entitlements}")
+    else:
+        ent = (TAURI_DIR / entitlements).read_text(encoding="utf-8")
+        for key in ("com.apple.security.device.audio-input", "com.apple.security.device.camera"):
+            if not re.search(rf"<key>{re.escape(key)}</key>\s*<true\s*/>", ent):
+                errors.append(f"{entitlements}: {key} not set to true")
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -106,6 +140,8 @@ def main() -> int:
         check_setup_integration_guardrails(setup_integration_text, errors)
     if uploads_http_text:
         check_uploads_guardrails(uploads_http_text, errors)
+
+    check_macos_bundle(errors)
 
     if errors:
         print("CI guardrails check failed:")
