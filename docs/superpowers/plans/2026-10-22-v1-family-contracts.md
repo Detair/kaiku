@@ -146,3 +146,14 @@ member cannot join voice from a restrictive network.
   header auth (`Sec-WebSocket-Protocol`, desktop/Tauri): HTTP 403 at upgrade, no
   close frame. Clients treat HTTP 401/403 at the WS handshake like 1008
   (refresh, or show login / password change) — never a blind retry loop.
+
+## C13b — SFU ICE interface filter (server → athene) — added 2026-10-23
+
+With `hostNetwork`, webrtc-ice binds one UDP port per local address per peer
+connection (2 PCs per participant), exhausting the range and advertising
+internal addresses (overlay/pod networks) as host candidates. Optional:
+`VOICE_ICE_INTERFACES` (comma list of allowed interface names) and
+`VOICE_ICE_IP_FAMILY` (`v4`|`v6`|`both`, default `both`). Unset = current
+behaviour. athene sets `VOICE_ICE_INTERFACES=eth0`, `VOICE_ICE_IP_FAMILY=v4`.
+Note: the advertised IP is `PUBLIC_IP` (existing var); ports are advertised
+unchanged, so the firewall forwards the same UDP port numbers 1:1.
