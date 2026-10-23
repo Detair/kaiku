@@ -4,9 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.GuildRepository
-import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.domain.ChannelSection
 import io.wolftown.kaiku.domain.groupChannels
 import io.wolftown.kaiku.domain.model.Channel
@@ -21,9 +19,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val guildRepository: GuildRepository,
-    private val webSocket: KaikuWebSocket,
-    private val tokenStorage: TokenStorage
+    private val guildRepository: GuildRepository
 ) : ViewModel() {
 
     companion object {
@@ -72,7 +68,7 @@ class HomeViewModel @Inject constructor(
     val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {
-        connectWebSocket()
+        // The realtime connection is owned by RealtimeConnectionManager, started by KaikuApplication.
         loadGuilds()
     }
 
@@ -114,14 +110,6 @@ class HomeViewModel @Inject constructor(
 
     fun refresh() {
         loadGuilds()
-    }
-
-    private fun connectWebSocket() {
-        val serverUrl = tokenStorage.getServerUrl() ?: run {
-            logger.warning("Server URL not configured, cannot connect WebSocket")
-            return
-        }
-        webSocket.connect(serverUrl)
     }
 
     private fun loadGuilds() {

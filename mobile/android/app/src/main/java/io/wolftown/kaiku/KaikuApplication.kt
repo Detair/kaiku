@@ -12,6 +12,7 @@ import com.google.android.gms.security.ProviderInstaller
 import dagger.hilt.android.HiltAndroidApp
 import io.wolftown.kaiku.data.api.AuthHeaderInterceptor
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
@@ -28,8 +29,13 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory {
     @Inject
     lateinit var tokenStorage: TokenStorage
 
+    /** Owns the realtime connection for the whole process (connect, reconnect, refresh, watchdog). */
+    @Inject
+    lateinit var realtimeConnectionManager: RealtimeConnectionManager
+
     override fun onCreate() {
         super.onCreate()
+        realtimeConnectionManager.start()
         try {
             ProviderInstaller.installIfNeeded(this)
         } catch (e: GooglePlayServicesRepairableException) {

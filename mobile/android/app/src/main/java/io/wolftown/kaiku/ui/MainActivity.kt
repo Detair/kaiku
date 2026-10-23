@@ -19,6 +19,7 @@ import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.ui.auth.LoginViewModel
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
@@ -36,6 +37,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var tokenStorage: TokenStorage
+
+    @Inject
+    lateinit var realtimeConnectionManager: RealtimeConnectionManager
 
     private val loginViewModel: LoginViewModel by viewModels()
 
@@ -56,6 +60,12 @@ class MainActivity : ComponentActivity() {
                 serverBaseUrl = tokenStorage::getServerUrl
             )
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Reconnect right away when returning to the app instead of waiting out the backoff.
+        realtimeConnectionManager.onAppForeground()
     }
 
     override fun onNewIntent(intent: Intent) {
