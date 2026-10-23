@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
+
 vi.mock("@/lib/tauri", () => ({
   wsConnect: vi.fn(),
   wsDisconnect: vi.fn(),
@@ -11,6 +14,7 @@ vi.mock("@/lib/tauri", () => ({
   wsStatus: vi.fn(),
   wsSend: vi.fn(),
   wsPing: vi.fn(),
+  wsReconnectNow: vi.fn().mockResolvedValue(undefined),
   setBrowserSocketHooks: vi.fn(),
   ensureFreshAccessToken: vi.fn().mockResolvedValue(true),
 }));
@@ -411,6 +415,100 @@ describe("websocket store", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(handlePreferencesUpdated).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("native mode", () => {
+    type Listener = (event: { payload: unknown }) => unknown;
+    let listeners: Map<string, Listener>;
+    let ws: typeof import("../websocket");
+    let nativeTauri: typeof import("@/lib/tauri");
+
+    const fire = async (name: string, payload: unknown = null) => {
+      const listener = listeners.get(name);
+      expect(listener, `listener for ${name}`).toBeDefined();
+      await listener!({ payload });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+
+    beforeEach(async () => {
+      listeners = new Map();
+      listenMock.mockReset().mockImplementation(async (name: string, cb: Listener) => {
+        listeners.set(name, cb);
+        return () => listeners.delete(name);
+      });
+      (window as unknown as Record<string, unknown>).__TAURI__ = {};
+      vi.resetModules();
+      ws = await import("../websocket");
+      nativeTauri = await import("@/lib/tauri");
+      await ws.initWebSocket();
+    });
+
+    afterEach(async () => {
+      await ws.disconnect();
+      delete (window as unknown as Record<string, unknown>).__TAURI__;
+    });
+
+    it("registers one server-event listener plus the status listeners", () => {
+      expect([...listeners.keys()].sort()).toEqual([
+        "ws:connected",
+        "ws:connecting",
+        "ws:disconnected",
+        "ws:reconnecting",
+        "ws:server_event",
+      ]);
+    });
+
+    it("native ws:server_event is handled by the shared handler", async () => {
+      const { addMessage } = await import("@/stores/messages");
+      const message = { id: "m1", channel_id: "c1", content: "hi" };
+
+      await fire("ws:server_event", {
+        type: "message_new",
+        channel_id: "c1",
+        message,
+      });
+
+      expect(addMessage).toHaveBeenCalledWith(message);
+    });
+
+    it("native ws:connected after ws:reconnecting runs handleReconnect", async () => {
+      const { loadDMs } = await import("@/stores/dms");
+      await ws.connect();
+      expect(ws.isConnected()).toBe(true);
+      vi.mocked(loadDMs).mockClear();
+
+      await fire("ws:reconnecting", 1);
+      expect(ws.wsState.status).toBe("reconnecting");
+
+      await fire("ws:connected");
+
+      expect(ws.isConnected()).toBe(true);
+      expect(loadDMs).toHaveBeenCalledTimes(1);
+    });
+
+    it("online event in native mode invokes ws_reconnect_now", async () => {
+      await ws.connect();
+      await fire("ws:reconnecting", 1);
+
+      window.dispatchEvent(new Event("online"));
+
+      expect(nativeTauri.wsReconnectNow).toHaveBeenCalledTimes(1);
+      expect(ws.canRetryConnectionNow()).toBe(true);
+    });
+
+    it("a server error event is shown as the connection error", async () => {
+      await fire("ws:server_event", { type: "error", code: "x", message: "Nope" });
+
+      expect(ws.wsState.error).toBe("Nope");
+    });
+
+    it("ws:disconnected from Rust ends the connection", async () => {
+      await ws.connect();
+
+      await fire("ws:disconnected");
+
+      expect(ws.wsState.status).toBe("disconnected");
     });
   });
 });

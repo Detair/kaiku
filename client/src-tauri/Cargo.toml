@@ -59,7 +59,11 @@ base64 = "0.22"
 reqwest = { version = "0.13", features = ["json"] }
 
 # WebSocket
-tokio-tungstenite.workspace = true
+# rustls-tls-native-roots: `wss://` needs a TLS backend (OS trust store).
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+# Both ring and aws-lc-rs end up enabled in this crate graph, so rustls cannot
+# pick a provider by itself: the WebSocket client installs ring explicitly.
+rustls.workspace = true
 url = "2"
 
 # Secure Storage
@@ -137,6 +141,8 @@ sentry-tracing = "0.48"
 tempfile.workspace = true
 # HTTP mock server for the session manager tests (MIT/Apache-2.0)
 wiremock = "0.6"
+# Paused clock for the WebSocket watchdog test
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

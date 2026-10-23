@@ -4,8 +4,9 @@
  *
  * Transport-agnostic: the actual socket lives behind a {@link ConnectionDriver}.
  * - `mode: "managed"` (browser): the supervisor schedules retries itself.
- * - `mode: "external"` (native, Rust retries): the supervisor only maps status,
- *   runs `onRecovered`, and turns `triggerNow` into `driver.reconnectNow()`.
+ * - `mode: "external"` (native, Rust retries, pings and watches for silence):
+ *   the supervisor only maps status, runs `onRecovered`, and turns
+ *   `triggerNow` into `driver.reconnectNow()`.
  */
 
 export type ConnectionState =
@@ -117,6 +118,8 @@ export function createConnectionSupervisor(
 
   function startWatchdog(): void {
     stopWatchdog();
+    // External mode: the owner of the connection pings and detects silence.
+    if (opts.mode === "external") return;
     lastFrameAt = Date.now();
     pingTimer = setInterval(() => {
       if (phase === "open") driver.sendPing();

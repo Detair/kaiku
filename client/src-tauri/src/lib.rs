@@ -73,6 +73,9 @@ pub fn run() {
 
             tracing::info!("Kaiku Client starting");
 
+            // Pick the TLS crypto provider once, before any `wss://` handshake.
+            network::websocket::install_crypto_provider();
+
             // Initialize keyring's default credential store. keyring 4 split into
             // `keyring` (store selection) and `keyring-core` (Entry/Error), and
             // requires explicit store selection before any Entry::new. Choosing
@@ -166,6 +169,8 @@ pub fn run() {
             commands::websocket::ws_connect,
             commands::websocket::ws_disconnect,
             commands::websocket::ws_status,
+            commands::websocket::ws_send,
+            commands::websocket::ws_reconnect_now,
             commands::websocket::ws_subscribe,
             commands::websocket::ws_unsubscribe,
             commands::websocket::ws_typing,

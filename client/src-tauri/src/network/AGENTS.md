@@ -7,138 +7,49 @@
 ## Architecture
 
 ```
-Tauri Commands
-    ↓ HTTP (reqwest)
-Server REST API (/auth, /channels, /messages, /users)
-    ↓ JSON responses
-Tauri Commands return data to frontend
-
-Frontend Events
-    ↓ WebSocket (tokio-tungstenite)
-Server WebSocket (/ws?token=...)
-    ↓ ServerEvent JSON
-WebSocketManager forwards to frontend via Tauri events
+SessionManager (access token, refresh)
+    ↓ auth_info() / refresh()
+WebSocketManager loop (tokio-tungstenite, rustls)
+    ↔ Server WebSocket (/ws, token in Sec-WebSocket-Protocol)
+    ↓ every text frame, parsed JSON
+Tauri event `ws:server_event` → webview `handleServerEvent()` (same as browser)
 ```
 
 ## Module Structure
 
 | File | Purpose | Key Types |
 |------|---------|-----------|
-| `mod.rs` | Module root | Re-exports `WebSocketManager`, `ClientEvent`, `ConnectionStatus` |
-| `websocket.rs` | WebSocket lifecycle and event routing | `WebSocketManager`, `ClientEvent`, `ServerEvent` |
+| `mod.rs` | Module root | Re-exports `WebSocketManager`, `ClientEvent`, `ConnectionStatus`, `WsTimings` |
+| `websocket.rs` | Connection loop, watchdog, forwarding | `WebSocketManager`, `ClientEvent`, `Outbound`, `WsEvents`, `WsTimings` |
 
-## Key Files
+## `websocket.rs`
 
-### `websocket.rs`
-**Purpose:** Bidirectional real-time communication with server.
-
-**Key Types:**
-
-#### `ClientEvent` (Client → Server)
-```rust
-enum ClientEvent {
-    Ping,
-    Subscribe { channel_id: String },
-    Unsubscribe { channel_id: String },
-    Typing { channel_id: String },
-    StopTyping { channel_id: String },
-    VoiceJoin { channel_id: String },
-    VoiceLeave { channel_id: String },
-    VoiceAnswer { channel_id: String, sdp: String },
-    VoiceIceCandidate { channel_id: String, candidate: String },
-    VoiceMute { channel_id: String },
-    VoiceUnmute { channel_id: String },
-}
-```
-
-#### `ServerEvent` (Server → Client)
-```rust
-enum ServerEvent {
-    Ready { user_id: String },
-    Pong,
-    Subscribed { channel_id: String },
-    Unsubscribed { channel_id: String },
-    MessageNew { channel_id: String, message: Value },
-    MessageEdit { channel_id: String, message_id: String, content: String, edited_at: String },
-    MessageDelete { channel_id: String, message_id: String },
-    TypingStart { channel_id: String, user_id: String },
-    TypingStop { channel_id: String, user_id: String },
-    PresenceUpdate { user_id: String, status: String },
-    VoiceOffer { channel_id: String, sdp: String },
-    VoiceIceCandidate { channel_id: String, candidate: String },
-    // ... (truncated for brevity)
-}
-```
-
-#### `ConnectionStatus`
-```rust
-enum ConnectionStatus {
-    Disconnected,
-    Connecting,
-    Connected,
-    Reconnecting,
-}
-```
-
-#### `WebSocketManager`
-Manages WebSocket lifecycle:
-- **Connect**: Establish WebSocket, start send/receive tasks
-- **Disconnect**: Clean shutdown
-- **Send**: Queue `ClientEvent` for server
-- **Receive**: Forward `ServerEvent` to frontend via Tauri events
-
-## Key Patterns
-
-### Connection Flow
-1. **Connect:**
-   ```rust
-   let ws_manager = WebSocketManager::new(&server_url, &token, app_handle).await?;
-   *state.websocket.write().await = Some(ws_manager);
-   ```
-
-2. **WebSocket URL:** `wss://{server_url}/ws?token={access_token}`
-
-3. **Handshake:** Server sends `ServerEvent::Ready { user_id }` on success
-
-4. **Heartbeat:** Client sends `ClientEvent::Ping` every 30s, expects `ServerEvent::Pong`
-
-### Send/Receive Tasks
-WebSocketManager spawns two tokio tasks:
-
-**Send Task:**
-- Reads from `mpsc::Receiver<ClientEvent>`
-- Serializes to JSON, sends as WebSocket message
-
-**Receive Task:**
-- Reads WebSocket messages
-- Deserializes to `ServerEvent`
-- Emits Tauri event to frontend (e.g., `app.emit("ws:message_new", event)`)
-
-**Lifetime:** Tasks run until WebSocket closes or `disconnect()` called.
-
-### Event Routing (Server → Frontend)
-Server events map to Tauri events:
-
-| ServerEvent | Tauri Event | Payload |
-|-------------|-------------|---------|
-| `MessageNew` | `ws:message_new` | `{ channel_id, message }` |
-| `TypingStart` | `ws:typing_start` | `{ channel_id, user_id }` |
-| `VoiceOffer` | `ws:voice_offer` | `{ channel_id, sdp }` |
-| `PresenceUpdate` | `ws:presence_update` | `{ user_id, status }` |
-
-Frontend listens:
-```typescript
-import { listen } from '@tauri-apps/api/event';
-listen('ws:message_new', (event) => {
-    console.log('New message:', event.payload);
-});
-```
-
-### Reconnection (Future)
-Not yet implemented. Planned:
-- Exponential backoff (1s, 2s, 4s, 8s, max 30s)
-- Persist subscriptions, re-subscribe on reconnect
-- Queue client events during disconnection
+- **Outgoing:** `Outbound::Event(ClientEvent)` from Rust (voice signalling,
+  typing, …) or `Outbound::Raw(String)` from the `ws_send` command (must be a
+  JSON object with a string `type`). Sending fails while not connected.
+- **Incoming:** every text frame is emitted once as `ws:server_event` with
+  the parsed JSON. There is no typed server-event enum: unknown event types
+  reach the webview unchanged.
+- **Status events:** `ws:connecting`, `ws:connected`, `ws:reconnecting`
+  (attempt, emitted when a connection is lost or an attempt fails) and
+  `ws:disconnected` (the loop ended by itself because there is no session).
+  `disconnect()` stops the loop silently.
+- **Tokens:** read from `SessionManager::auth_info()` before every attempt;
+  refreshed first when they expire within 60 s. HTTP 401 on the handshake or a
+  server close with 1008 → `refresh()`, then one immediate retry.
+  `SessionError::Expired` → stop (the session manager emits
+  `auth:session_expired`).
+- **Backoff:** `next_backoff(attempt, jitter)` — 1 s doubling to 30 s, ±20 %,
+  same curve as `nextBackoffMs` in `client/src/stores/websocket/connection.ts`.
+  `ws_reconnect_now` wakes the backoff sleep. Close codes 1011/1013 are
+  ordinary drops (backoff, then the webview catches up).
+- **Watchdog:** `ClientEvent::Ping` every `ping_every` (20 s); no inbound frame
+  for `silence_limit` (45 s) → drop and reconnect. Handshakes time out after 15 s.
+- **TLS:** `rustls-tls-native-roots`; `install_crypto_provider()` picks ring
+  once (both ring and aws-lc-rs are in the crate graph).
+- **Tests:** `WsEvents` is the emitter; tests record events instead of using an
+  `AppHandle` and run against a local `accept_hdr_async` server plus wiremock
+  for `/auth/*`.
 
 ## HTTP Client
 
@@ -165,33 +76,6 @@ let response = state.http
 - HTTP errors: Check `response.status().is_success()`
 - Deserialize errors: `response.json::<T>().await.map_err(...)`
 
-## Testing
-
-### Unit Tests
-Not yet implemented for WebSocketManager.
-
-**Future:**
-- Mock WebSocket server (e.g., with `tungstenite` test utilities)
-- Test event serialization/deserialization
-- Test reconnection logic
-
-### Integration Tests
-Test from frontend:
-```typescript
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-
-test('WebSocket message flow', async () => {
-    await invoke('ws_connect', { serverUrl: 'wss://example.com', token: 'test' });
-
-    const received = new Promise((resolve) => {
-        listen('ws:ready', (event) => resolve(event.payload));
-    });
-
-    expect(await received).toHaveProperty('user_id');
-});
-```
-
 ## Common Issues
 
 ### Connection Refused
@@ -204,8 +88,8 @@ test('WebSocket message flow', async () => {
 - **Fix:** Re-login to get new token
 
 ### Events Not Received
-- **Cause:** Event name mismatch (frontend expects `ws:message_new`, backend emits `message_new`)
-- **Fix:** Ensure consistent event naming (use `ws:` prefix)
+- **Cause:** The webview must listen to `ws:server_event` and switch on `payload.type`;
+  there are no per-type `ws:<name>` events any more.
 
 ### WebSocket Closes Immediately
 - **Cause:** Server rejected connection (auth failure, rate limit)
@@ -220,9 +104,7 @@ Not yet implemented. Future optimization:
 - Reduce overhead for high-frequency events (e.g., typing indicators)
 
 ### Backpressure
-- **Problem:** Frontend receives events faster than it can process
-- **Current:** Unbounded channel (risk of OOM)
-- **Future:** Bounded channel with overflow strategy (drop old events)
+- Outgoing queue is bounded (100); a full queue rejects the send.
 
 ### Compression
 Not yet implemented. Future:
@@ -236,8 +118,8 @@ Not yet implemented. Future:
 - **Development:** `ws://` acceptable for localhost only
 
 ### Authentication
-- **Query Param:** `?token={access_token}` (not ideal, but simple)
-- **Future:** Send token in WebSocket sub-protocol header
+- The access token travels in the `Sec-WebSocket-Protocol` header
+  (`access_token.<jwt>, access_token`), never in the URL.
 
 ### Input Validation
 - **Server-side:** All client events must be validated server-side
@@ -249,11 +131,10 @@ Not yet implemented. Future:
 
 ## Future Improvements
 
-1. **Auto-reconnection:** Exponential backoff, subscription restoration
-2. **Event Replay:** Request missed events after reconnection
-3. **Compression:** Enable permessage-deflate
-4. **Binary Protocol:** Switch to MessagePack or Protobuf for efficiency
-5. **WebSocket Subprotocols:** Structured versioning
+1. **Event Replay:** Request missed events after reconnection
+2. **Compression:** Enable permessage-deflate
+3. **Binary Protocol:** Switch to MessagePack or Protobuf for efficiency
+4. **WebSocket Subprotocols:** Structured versioning
 
 ## Related Documentation
 

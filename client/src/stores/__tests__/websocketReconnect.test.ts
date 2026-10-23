@@ -219,6 +219,18 @@ describe("connection supervisor", () => {
     expect(driver.open).toHaveBeenCalledTimes(1);
   });
 
+  it("external mode leaves pings and silence detection to the owner", async () => {
+    const { supervisor, driver, opts } = makeSupervisor({ mode: "external" });
+    active = supervisor;
+    await supervisor.start();
+
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(driver.sendPing).not.toHaveBeenCalled();
+    expect(driver.close).not.toHaveBeenCalled();
+    expect(opts.onStatus).toHaveBeenLastCalledWith("connected", 0);
+  });
+
   it("external mode never schedules retries itself", async () => {
     const { supervisor, driver, opts } = makeSupervisor({ mode: "external" });
     active = supervisor;

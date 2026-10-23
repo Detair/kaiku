@@ -194,9 +194,9 @@ export function getBrowserWebSocket(): WebSocket | null {
  */
 export async function wsSend(message: any): Promise<void> {
   if (isTauri) {
-    // Rust has no generic `ws_send` command registered yet, so this would
-    // fail inside invoke anyway; fail explicitly until it exists.
-    throw new Error("Native WebSocket send is not available yet");
+    // Rust accepts a JSON object with a string `type` and forwards it as is.
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("ws_send", { message: JSON.stringify(message) });
   } else {
     if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
       throw new Error(
@@ -206,6 +206,17 @@ export async function wsSend(message: any): Promise<void> {
     }
     browserWs.send(JSON.stringify(message));
   }
+}
+
+/**
+ * Native only: skip the Rust reconnect backoff and try now (network back,
+ * window visible, "Retry now"). No-op in the browser, where the supervisor
+ * opens sockets itself.
+ */
+export async function wsReconnectNow(): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("ws_reconnect_now");
 }
 
 // ============================================================================
