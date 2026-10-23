@@ -1,7 +1,7 @@
 //! File serving endpoint — streams files from S3 with caching headers.
 //!
-//! `GET /api/files/{key...}` → serves file bytes from S3.
-//! No auth required (URLs are shared in messages, profiles).
+//! `GET /api/files/{key...}` → streams public files (avatars, banners) from S3.
+//! No auth required; only public key prefixes are served.
 
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -36,8 +36,35 @@ fn content_type_from_key(key: &str) -> &'static str {
     }
 }
 
-/// Serve a file from S3 storage.
+/// Whether `key` names an object that may be served without authentication.
+///
+/// Only user avatars (`avatars/...`, including DM icons under
+/// `avatars/channels/...`) and server banners (`guilds/{uuid}/banner-...`) are
+/// public. Every other prefix is served through authenticated routes only.
+pub fn is_public_file_key(key: &str) -> bool {
+    if key.starts_with('/') || key.contains("..") || key.contains("//") || key.contains('\\') {
+        return false;
+    }
+    if let Some(rest) = key.strip_prefix("avatars/") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = key.strip_prefix("guilds/") {
+        if let Some((guild_id, file)) = rest.split_once('/') {
+            return uuid::Uuid::parse_str(guild_id).is_ok()
+                && file.starts_with("banner-")
+                && file.len() > "banner-".len()
+                && !file.contains('/');
+        }
+    }
+    false
+}
+
+/// Serve a public file from S3 storage, streaming the body.
 pub async fn serve(State(state): State<AppState>, Path(key): Path<String>) -> impl IntoResponse {
+    if !is_public_file_key(&key) {
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
+    }
+
     let s3 = match &state.s3 {
         Some(s3) => s3,
         None => {
@@ -51,15 +78,6 @@ pub async fn serve(State(state): State<AppState>, Path(key): Path<String>) -> im
 
     match s3.get_object_stream(&key).await {
         Ok(stream) => {
-            let bytes = match stream.collect().await {
-                Ok(data) => data.into_bytes(),
-                Err(e) => {
-                    tracing::warn!(key = %key, error = %e, "Failed to read file from S3");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file")
-                        .into_response();
-                }
-            };
-
             let content_type = content_type_from_key(&key);
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
@@ -67,12 +85,39 @@ pub async fn serve(State(state): State<AppState>, Path(key): Path<String>) -> im
                 header::CACHE_CONTROL,
                 "public, max-age=86400".parse().unwrap(),
             );
+            headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
 
-            (StatusCode::OK, headers, bytes).into_response()
+            let body = axum::body::Body::new(stream.into_inner());
+            (StatusCode::OK, headers, body).into_response()
         }
         Err(e) => {
             tracing::warn!(key = %key, error = %e, "Failed to serve file from S3");
             (StatusCode::NOT_FOUND, "File not found").into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_keys() {
+        assert!(is_public_file_key("avatars/0190abcd/1700_me.png"));
+        assert!(is_public_file_key("avatars/channels/0190abcd/0190abce.png"));
+        assert!(is_public_file_key(
+            "guilds/01900000-0000-7000-8000-000000000000/banner-1700_b.png"
+        ));
+        assert!(!is_public_file_key("attachments/c/m/f.png"));
+        assert!(!is_public_file_key("exports/u/j.zip"));
+        assert!(!is_public_file_key("emojis/g/e.png"));
+        assert!(!is_public_file_key("avatars/../exports/u/j.zip"));
+        assert!(!is_public_file_key("avatars//x.png"));
+        assert!(!is_public_file_key("avatars/"));
+        assert!(!is_public_file_key("guilds/not-a-uuid/banner-x.png"));
+        assert!(!is_public_file_key(
+            "guilds/01900000-0000-7000-8000-000000000000/other.png"
+        ));
+        assert!(!is_public_file_key("/avatars/x.png"));
     }
 }
