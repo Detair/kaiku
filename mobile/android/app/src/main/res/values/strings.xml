@@ -20,4 +20,29 @@
     <string name="home_no_servers">No servers yet</string>
     <string name="home_servers_load_failed">Couldn\'t load your servers.</string>
     <string name="home_channels_load_failed">Couldn\'t load this server\'s channels.</string>
+
+    <!-- Voice -->
+    <string name="voice_leave_and_go_back">Leave and go back</string>
+    <string name="voice_no_one_here">No one else is here yet</string>
+    <string name="voice_muted">Muted</string>
+    <string name="voice_unknown_user">Unknown</string>
+    <string name="voice_disconnect">Disconnect</string>
+    <string name="voice_mute">Mute</string>
+    <string name="voice_in_channel">In voice channel</string>
+    <string name="voice_default_channel_name">Voice channel</string>
+    <string name="voice_notification_channel_name">Voice calls</string>
+    <string name="voice_notification_channel_description">Active voice call notifications</string>
+    <string name="voice_route_speaker">Speaker</string>
+    <string name="voice_route_earpiece">Earpiece</string>
+    <string name="voice_route_bluetooth">Bluetooth</string>
+    <string name="voice_route_wired_headset">Wired headset</string>
+    <string name="voice_permission_rationale">Kaiku needs microphone access so others can hear you in voice channels.</string>
+    <string name="voice_permission_continue">Continue</string>
+    <string name="voice_permission_needed">Microphone access is turned off. Allow it in the app settings to join voice channels.</string>
+    <string name="voice_permission_open_settings">Open settings</string>
+    <string name="voice_permission_try_again">Try again</string>
+    <string name="voice_mic_permission_required">Microphone access is required to join voice.</string>
+    <string name="voice_join_failed">Couldn\'t join the voice channel.</string>
+    <string name="voice_start_failed">Couldn\'t start the voice call. Check that Kaiku may use the microphone and run in the background.</string>
+    <string name="voice_connection_error">Voice connection problem.</string>
 </resources>

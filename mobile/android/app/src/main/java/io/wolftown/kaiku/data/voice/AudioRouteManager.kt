@@ -1,6 +1,5 @@
 package io.wolftown.kaiku.data.voice
 
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
@@ -9,8 +8,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
+import androidx.annotation.RequiresApi
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,18 @@ enum class AudioRoute {
 }
 
 /**
+ * Picks the route used when a call starts: Bluetooth > wired headset > speaker.
+ *
+ * The earpiece is never the default: family voice is group voice (as on Discord),
+ * so the phone is not held to the ear. It stays selectable manually.
+ */
+internal fun selectDefaultRoute(available: Set<AudioRoute>): AudioRoute = when {
+    AudioRoute.Bluetooth in available -> AudioRoute.Bluetooth
+    AudioRoute.WiredHeadset in available -> AudioRoute.WiredHeadset
+    else -> AudioRoute.Speaker
+}
+
+/**
  * Manages Android audio routing for voice calls.
  *
  * Handles:
@@ -59,6 +72,12 @@ class AudioRouteManager @Inject constructor(
 ) : Closeable {
     companion object {
         private val logger = Logger.getLogger("AudioRouteManager")
+
+        private val WIRED_TYPES = setOf(
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_USB_HEADSET
+        )
     }
 
     private val audioManager: AudioManager =
@@ -131,7 +150,8 @@ class AudioRouteManager @Inject constructor(
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         registerReceivers()
-        detectAvailableRoutes()
+        // Apply the default immediately so the UI and the real output agree.
+        detectAvailableRoutes(forceDefault = true)
 
         logger.info("Audio focus requested, mode set to MODE_IN_COMMUNICATION")
     }
@@ -145,7 +165,12 @@ class AudioRouteManager @Inject constructor(
         audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
         audioFocusRequest = null
         audioManager.mode = AudioManager.MODE_NORMAL
-        audioManager.isSpeakerphoneOn = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        } else {
+            audioManager.isSpeakerphoneOn = false
+        }
+        stopBluetoothSco()
 
         unregisterReceivers()
 
@@ -168,6 +193,65 @@ class AudioRouteManager @Inject constructor(
             return
         }
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!switchRouteModern(route)) {
+                logger.warning("No communication device for route $route")
+                return
+            }
+        } else {
+            switchRouteLegacy(route)
+        }
+
+        logger.info("Switched audio route to $route")
+    }
+
+    /**
+     * Detects currently available audio routes and updates [availableRoutes].
+     *
+     * Speaker and Earpiece are always available. Bluetooth (an actual SCO output
+     * device) and WiredHeadset depend on connected hardware.
+     *
+     * @param forceDefault apply [selectDefaultRoute] even if it equals the current
+     *   route (call start). Otherwise only react to changes: fall back if the
+     *   current route disappeared, or move to a newly connected Bluetooth/wired
+     *   device.
+     */
+    fun detectAvailableRoutes(forceDefault: Boolean = false) {
+        val previous = _availableRoutes.value
+        val routes = mutableSetOf(AudioRoute.Speaker, AudioRoute.Earpiece)
+        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+
+        if (outputs.any { it.type in WIRED_TYPES }) {
+            routes.add(AudioRoute.WiredHeadset)
+        }
+        if (outputs.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }) {
+            routes.add(AudioRoute.Bluetooth)
+        }
+
+        _availableRoutes.value = routes
+
+        val current = _currentRoute.value
+        val default = selectDefaultRoute(routes)
+        val newlyConnected = (routes - previous).any {
+            it == AudioRoute.Bluetooth || it == AudioRoute.WiredHeadset
+        }
+        val target = when {
+            forceDefault -> default
+            current !in routes -> default
+            newlyConnected -> default
+            else -> current
+        }
+
+        if (forceDefault || target != current) {
+            switchRoute(target)
+        }
+
+        logger.info("Available routes: $routes")
+    }
+
+    // -- Internal -------------------------------------------------------------
+
+    private fun switchRouteLegacy(route: AudioRoute) {
         when (route) {
             AudioRoute.Speaker -> {
                 audioManager.isSpeakerphoneOn = true
@@ -191,57 +275,25 @@ class AudioRouteManager @Inject constructor(
                 _currentRoute.value = route
             }
         }
-
-        logger.info("Switched audio route to $route")
     }
 
-    /**
-     * Detects currently available audio routes and updates [availableRoutes].
-     *
-     * Speaker and Earpiece are always available. Bluetooth and WiredHeadset
-     * depend on connected hardware.
-     */
-    fun detectAvailableRoutes() {
-        val routes = mutableSetOf(AudioRoute.Speaker, AudioRoute.Earpiece)
-
-        @Suppress("DEPRECATION")
-        if (audioManager.isWiredHeadsetOn) {
-            routes.add(AudioRoute.WiredHeadset)
+    /** API 31+: select the communication device directly. Returns false if none matches. */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun switchRouteModern(route: AudioRoute): Boolean {
+        val wanted: Set<Int> = when (route) {
+            AudioRoute.Speaker -> setOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+            AudioRoute.Earpiece -> setOf(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+            AudioRoute.Bluetooth -> setOf(
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                AudioDeviceInfo.TYPE_BLE_HEADSET
+            )
+            AudioRoute.WiredHeadset -> WIRED_TYPES
         }
-
-        if (isBluetoothAvailable()) {
-            routes.add(AudioRoute.Bluetooth)
-        }
-
-        _availableRoutes.value = routes
-
-        // Auto-select best route: bluetooth > wired > earpiece
-        val bestRoute = when {
-            AudioRoute.Bluetooth in routes -> AudioRoute.Bluetooth
-            AudioRoute.WiredHeadset in routes -> AudioRoute.WiredHeadset
-            else -> _currentRoute.value
-        }
-
-        if (bestRoute != _currentRoute.value && bestRoute in routes) {
-            switchRoute(bestRoute)
-        }
-
-        logger.info("Available routes: $routes")
-    }
-
-    // -- Internal -------------------------------------------------------------
-
-    private fun isBluetoothAvailable(): Boolean {
-        return try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            @Suppress("DEPRECATION")
-            adapter != null &&
-                adapter.isEnabled &&
-                audioManager.isBluetoothScoAvailableOffCall
-        } catch (e: SecurityException) {
-            logger.warning("Bluetooth permission missing, skipping Bluetooth audio route")
-            false
-        }
+        val device = audioManager.availableCommunicationDevices.firstOrNull { it.type in wanted }
+            ?: return false
+        if (!audioManager.setCommunicationDevice(device)) return false
+        _currentRoute.value = route
+        return true
     }
 
     private fun startBluetoothSco() {

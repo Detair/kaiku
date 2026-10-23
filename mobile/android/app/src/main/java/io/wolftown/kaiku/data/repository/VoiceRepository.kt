@@ -4,7 +4,10 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.MicPermissionChecker
+import io.wolftown.kaiku.data.voice.MissingMicPermissionException
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.WebRtcManager
@@ -48,6 +51,7 @@ class VoiceRepository @Inject constructor(
     private val webSocket: KaikuWebSocket,
     private val audioRouteManager: AudioRouteManager,
     private val voiceServiceEvents: VoiceServiceEvents,
+    private val micPermissionChecker: MicPermissionChecker,
     @ApplicationContext private val context: Context
 ) : Closeable {
     companion object {
@@ -73,9 +77,14 @@ class VoiceRepository @Inject constructor(
     /** Whether the WebRTC connection is established. */
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    /** Error message from voice subsystem (SDP failure, ICE failure, etc.). */
-    val error: StateFlow<String?> = _error.asStateFlow()
+    private val _error = MutableStateFlow<Int?>(null)
+    /** `@StringRes` of the latest voice error (start failure, WebRTC failure), or null. */
+    val error: StateFlow<Int?> = _error.asStateFlow()
+
+    /** Dismisses the current [error]. */
+    fun clearError() {
+        _error.value = null
+    }
 
     private val _screenShares = MutableStateFlow<List<ScreenShareInfo>>(emptyList())
     /** Active screen shares in the current voice channel. */
@@ -107,6 +116,12 @@ class VoiceRepository @Inject constructor(
      * 6. Start foreground service
      */
     suspend fun joinChannel(channelId: String) {
+        // Fail fast: the microphone foreground service and capture cannot start
+        // without RECORD_AUDIO, so don't touch WebRTC at all.
+        if (!micPermissionChecker.isGranted()) {
+            throw MissingMicPermissionException()
+        }
+
         // If already in a channel, leave first
         if (_currentChannelId.value != null) {
             leaveChannel()
@@ -139,7 +154,7 @@ class VoiceRepository @Inject constructor(
                 )
             }
             webRtcManager.onError = { errorMsg ->
-                _error.value = errorMsg
+                _error.value = R.string.voice_connection_error
                 logger.warning("WebRTC error: $errorMsg")
             }
 
@@ -164,16 +179,25 @@ class VoiceRepository @Inject constructor(
             // 6. Request audio focus
             audioRouteManager.requestAudioFocus()
 
-            // 7. Start foreground service and collect notification action events
-            VoiceCallService.start(context, channelId, channelId)
+            // 7. Collect service events first (so StartFailed cannot be missed), then
+            // start the foreground service.
             serviceEventJob = scope.launch {
                 voiceServiceEvents.events.collect { event ->
                     when (event) {
                         VoiceServiceEvent.MuteToggle -> toggleMute()
                         VoiceServiceEvent.Disconnect -> leaveChannel()
+                        VoiceServiceEvent.StartFailed -> {
+                            try {
+                                leaveChannel()
+                            } finally {
+                                // leaveChannel clears _error, so set it afterwards.
+                                _error.value = R.string.voice_start_failed
+                            }
+                        }
                     }
                 }
             }
+            VoiceCallService.start(context, channelId, channelId)
 
             logger.info("Joined voice channel: $channelId")
         } catch (e: CancellationException) {
@@ -443,7 +467,7 @@ class VoiceRepository @Inject constructor(
             }
 
             is ServerEvent.VoiceError -> {
-                _error.value = "Voice error: ${event.message}"
+                _error.value = R.string.voice_connection_error
                 logger.warning("Voice error from server: code=${event.code} message=${event.message}")
             }
 

@@ -7,6 +7,7 @@ import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.MissingMicPermissionException
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
@@ -32,7 +33,7 @@ class VoiceViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
 
-    private val currentChannelIdFlow = MutableStateFlow<String?>(null)
+    private val currentChannelIdFlow = MutableStateFlow<Int?>(null)
     private val participantsFlow = MutableStateFlow<List<VoiceParticipant>>(emptyList())
     private val isMutedFlow = MutableStateFlow(false)
     private val isConnectedFlow = MutableStateFlow(false)
@@ -97,8 +98,42 @@ class VoiceViewModelTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
-        // ViewModel joins the channel on init
-        coVerify { voiceRepository.joinChannel("voice-ch-1") }
+        viewModel.onJoin()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { voiceRepository.joinChannel("voice-ch-1") }
+    }
+
+    @Test
+    fun `init does not join channel`() = runTest {
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { voiceRepository.joinChannel(any()) }
+    }
+
+    @Test
+    fun `onJoin skips when already in this channel`() = runTest {
+        currentChannelIdFlow.value = "voice-ch-1"
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onJoin()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { voiceRepository.joinChannel(any()) }
+    }
+
+    @Test
+    fun `missing mic permission surfaces a string resource error`() = runTest {
+        coEvery { voiceRepository.joinChannel(any()) } throws MissingMicPermissionException()
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onJoin()
+        advanceUntilIdle()
+
+        assertEquals(io.wolftown.kaiku.R.string.voice_mic_permission_required, viewModel.error.value)
     }
 
     // ========================================================================

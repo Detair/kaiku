@@ -10,7 +10,11 @@ import io.mockk.mockkObject
 import io.mockk.slot
 import io.mockk.unmockkObject
 import io.mockk.verify
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.MicPermissionChecker
+import io.wolftown.kaiku.data.voice.MissingMicPermissionException
+import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
@@ -27,6 +31,8 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import kotlinx.coroutines.flow.first
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -54,6 +60,7 @@ class VoiceRepositoryTest {
     private lateinit var webSocket: KaikuWebSocket
     private lateinit var audioRouteManager: AudioRouteManager
     private lateinit var voiceServiceEvents: VoiceServiceEvents
+    private lateinit var micPermissionChecker: MicPermissionChecker
     private lateinit var context: Context
     private lateinit var repository: VoiceRepository
 
@@ -78,6 +85,8 @@ class VoiceRepositoryTest {
         webSocket = mockk(relaxed = true)
         audioRouteManager = mockk(relaxed = true)
         voiceServiceEvents = mockk(relaxed = true)
+        micPermissionChecker = mockk()
+        every { micPermissionChecker.isGranted() } returns true
         context = mockk(relaxed = true)
 
         // VoiceRepository.joinChannel calls VoiceCallService.start(...), which constructs
@@ -102,6 +111,7 @@ class VoiceRepositoryTest {
             webSocket = webSocket,
             audioRouteManager = audioRouteManager,
             voiceServiceEvents = voiceServiceEvents,
+            micPermissionChecker = micPermissionChecker,
             context = context,
         )
     }
@@ -110,6 +120,42 @@ class VoiceRepositoryTest {
     fun tearDown() {
         unmockkObject(VoiceCallService.Companion)
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `join without mic permission fails fast`() = runTest {
+        every { micPermissionChecker.isGranted() } returns false
+
+        try {
+            repository.joinChannel("ch-1")
+            org.junit.Assert.fail("expected MissingMicPermissionException")
+        } catch (_: MissingMicPermissionException) {
+            // expected
+        }
+
+        coVerify(exactly = 0) { webRtcManager.initialize() }
+        assertTrue(repository.currentChannelId.value == null)
+    }
+
+    @Test
+    fun `service start failure leaves channel and sets error`() = runTest {
+        val serviceEvents = MutableSharedFlow<VoiceServiceEvent>(extraBufferCapacity = 5)
+        every { voiceServiceEvents.events } returns serviceEvents
+
+        repository.joinChannel("ch-1")
+        // The repository collects on its own IO scope; wait until it subscribed.
+        kotlinx.coroutines.withContext(Dispatchers.Default) {
+            serviceEvents.subscriptionCount.first { it > 0 }
+        }
+
+        serviceEvents.tryEmit(VoiceServiceEvent.StartFailed)
+
+        val errorRes = kotlinx.coroutines.withContext(Dispatchers.Default) {
+            repository.error.first { it != null }
+        }
+        assertEquals(R.string.voice_start_failed, errorRes)
+        assertTrue(repository.currentChannelId.value == null)
+        verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
     }
 
     @Test

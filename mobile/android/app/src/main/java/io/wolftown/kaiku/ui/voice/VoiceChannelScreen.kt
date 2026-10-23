@@ -1,5 +1,16 @@
 package io.wolftown.kaiku.ui.voice
 
+import android.Manifest
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -18,11 +29,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
@@ -52,6 +68,72 @@ fun VoiceChannelScreen(
     val layerPreferences by viewModel.layerPreferences.collectAsState()
     val currentRoute by viewModel.currentRoute.collectAsState()
     val availableRoutes by viewModel.availableRoutes.collectAsState()
+    val error by viewModel.error.collectAsState()
+
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // --- Runtime permissions (RECORD_AUDIO gates joining) ---------------------
+    var askedBefore by rememberSaveable { mutableStateOf(false) }
+    var pendingDecision by remember { mutableStateOf<VoicePermissionDecision?>(null) }
+    var evaluate: () -> Unit = {}
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { evaluate() }
+
+    evaluate = {
+        val micGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        val activity = context.findComponentActivity()
+        val rationale = activity != null && ActivityCompat.shouldShowRequestPermissionRationale(
+            activity, Manifest.permission.RECORD_AUDIO
+        )
+        when (val decision = VoicePermissions.decide(micGranted, rationale, askedBefore)) {
+            VoicePermissionDecision.Join -> {
+                pendingDecision = null
+                viewModel.onJoin()
+            }
+            VoicePermissionDecision.Request -> {
+                pendingDecision = null
+                askedBefore = true
+                permissionLauncher.launch(
+                    VoicePermissions.toRequest(Build.VERSION.SDK_INT).toTypedArray()
+                )
+            }
+            VoicePermissionDecision.ShowRationale,
+            VoicePermissionDecision.OpenSettings -> pendingDecision = decision
+        }
+    }
+
+    // Decide once on first composition. Re-entering an already joined channel is a
+    // no-op in the ViewModel.
+    LaunchedEffect(Unit) { evaluate() }
+
+    error?.let { errorRes ->
+        val message = stringResource(errorRes)
+        LaunchedEffect(errorRes) {
+            snackbarHostState.showSnackbar(message)
+            viewModel.clearError()
+        }
+    }
+
+    if (pendingDecision == VoicePermissionDecision.ShowRationale) {
+        AlertDialog(
+            onDismissRequest = { pendingDecision = null },
+            text = { Text(stringResource(R.string.voice_permission_rationale)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDecision = null
+                    askedBefore = true
+                    permissionLauncher.launch(
+                        VoicePermissions.toRequest(Build.VERSION.SDK_INT).toTypedArray()
+                    )
+                }) { Text(stringResource(R.string.voice_permission_continue)) }
+            }
+        )
+    }
 
     var fullscreenStreamId by remember { mutableStateOf<String?>(null) }
 
@@ -78,6 +160,7 @@ fun VoiceChannelScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("#$channelName") },
@@ -88,7 +171,7 @@ fun VoiceChannelScreen(
                     }) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Leave and go back"
+                            contentDescription = stringResource(R.string.voice_leave_and_go_back)
                         )
                     }
                 }
@@ -132,6 +215,34 @@ fun VoiceChannelScreen(
                 )
             }
 
+            // Microphone permanently denied: only the system settings can fix it.
+            if (pendingDecision == VoicePermissionDecision.OpenSettings) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.voice_permission_needed),
+                        style = MaterialTheme.typography.bodyLarge,
+                        textAlign = TextAlign.Center
+                    )
+                    Button(onClick = {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", context.packageName, null)
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }) { Text(stringResource(R.string.voice_permission_open_settings)) }
+                    TextButton(onClick = { evaluate() }) {
+                        Text(stringResource(R.string.voice_permission_try_again))
+                    }
+                }
+            }
+
             // Participant grid
             if (participants.isEmpty()) {
                 Box(
@@ -141,7 +252,7 @@ fun VoiceChannelScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "No one else is here yet",
+                        text = stringResource(R.string.voice_no_one_here),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -215,7 +326,7 @@ private fun ParticipantCard(participant: VoiceParticipant) {
 
             // Display name
             Text(
-                text = participant.displayName ?: participant.username ?: "Unknown",
+                text = participant.displayName ?: participant.username ?: stringResource(R.string.voice_unknown_user),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -226,7 +337,7 @@ private fun ParticipantCard(participant: VoiceParticipant) {
             if (participant.muted) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Muted",
+                    text = stringResource(R.string.voice_muted),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -399,12 +510,14 @@ private fun VoiceBottomBar(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = when (route) {
-                                            AudioRoute.Speaker -> "🔊 Speaker"
-                                            AudioRoute.Earpiece -> "📱 Earpiece"
-                                            AudioRoute.Bluetooth -> "🎧 Bluetooth"
-                                            AudioRoute.WiredHeadset -> "🎧 Wired Headset"
-                                        }
+                                        text = stringResource(
+                                            when (route) {
+                                                AudioRoute.Speaker -> R.string.voice_route_speaker
+                                                AudioRoute.Earpiece -> R.string.voice_route_earpiece
+                                                AudioRoute.Bluetooth -> R.string.voice_route_bluetooth
+                                                AudioRoute.WiredHeadset -> R.string.voice_route_wired_headset
+                                            }
+                                        )
                                     )
                                     if (route == currentRoute) {
                                         Spacer(modifier = Modifier.width(8.dp))
@@ -434,9 +547,15 @@ private fun VoiceBottomBar(
             ) {
                 Icon(
                     imageVector = Icons.Default.Call,
-                    contentDescription = "Disconnect"
+                    contentDescription = stringResource(R.string.voice_disconnect)
                 )
             }
         }
     }
+}
+
+private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
+    is ContextWrapper -> baseContext.findComponentActivity()
+    else -> null
 }

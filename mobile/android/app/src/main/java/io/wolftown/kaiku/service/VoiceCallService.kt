@@ -7,11 +7,16 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.Manifest
+import android.app.ForegroundServiceStartNotAllowedException
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import java.util.logging.Logger
@@ -43,7 +48,6 @@ class VoiceCallService : Service() {
         private val logger = Logger.getLogger("VoiceCallService")
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "voice_calls"
-        private const val CHANNEL_NAME = "Voice Calls"
 
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
@@ -89,24 +93,55 @@ class VoiceCallService : Service() {
             }
         }
 
-        val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME) ?: "Voice Channel"
+        val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME)
+            ?: getString(R.string.voice_default_channel_name)
+
+        // A microphone foreground service may only start with RECORD_AUDIO granted
+        // (Android 14 throws SecurityException otherwise).
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            failStart("RECORD_AUDIO not granted")
+            return START_NOT_STICKY
+        }
 
         createNotificationChannel()
 
         val notification = buildNotification(channelName)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: SecurityException) {
+            failStart("SecurityException: ${e.message}")
+            return START_NOT_STICKY
+        } catch (e: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException exists on API 31+ only; the
+            // SDK check keeps the class from being referenced on older devices.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                e is ForegroundServiceStartNotAllowedException
+            ) {
+                failStart("Foreground start not allowed")
+                return START_NOT_STICKY
+            }
+            throw e
         }
 
         logger.info("VoiceCallService started for channel: $channelName")
         return START_NOT_STICKY
+    }
+
+    private fun failStart(reason: String) {
+        logger.warning("VoiceCallService could not start foreground: $reason")
+        voiceServiceEvents.emit(VoiceServiceEvent.StartFailed)
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -117,10 +152,10 @@ class VoiceCallService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            CHANNEL_NAME,
+            getString(R.string.voice_notification_channel_name),
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Active voice call notifications"
+            description = getString(R.string.voice_notification_channel_description)
             setShowBadge(false)
         }
 
@@ -163,7 +198,7 @@ class VoiceCallService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("In voice channel")
+            .setContentTitle(getString(R.string.voice_in_channel))
             .setContentText(channelName)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(contentPendingIntent)
@@ -171,12 +206,12 @@ class VoiceCallService : Service() {
             .setSilent(true)
             .addAction(
                 android.R.drawable.ic_lock_silent_mode,
-                "Mute",
+                getString(R.string.voice_mute),
                 mutePendingIntent
             )
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
-                "Disconnect",
+                getString(R.string.voice_disconnect),
                 disconnectPendingIntent
             )
             .build()
