@@ -70,7 +70,7 @@ if [ -z "$latest_backup" ]; then
 else
     age_hours=$(( ($(date +%s) - $(stat -c %Y "$latest_backup")) / 3600 ))
     if [ "$age_hours" -lt "$MAX_BACKUP_AGE_HOURS" ] && gzip -t "$latest_backup" 2>/dev/null \
-        && zcat "$latest_backup" | tail -n 5 | grep -q "PostgreSQL database dump complete"; then
+        && grep -q "PostgreSQL database dump complete" <<<"$(zcat "$latest_backup" | tail -n 5)"; then
         pass "latest backup ${age_hours}h old, gzip intact, dump complete ($(basename "$latest_backup"))"
     else
         fail "latest backup is ${age_hours}h old, corrupt or incomplete — take a fresh one before upgrading"

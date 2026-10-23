@@ -48,9 +48,10 @@ fi
 
 # Verify: non-empty, the gzip stream is intact, and pg_dump reached its
 # trailer (a failed dump piped through gzip still yields a ~20-byte valid
-# gzip file, so integrity alone is not enough).
+# gzip file, so integrity alone is not enough). The tail is captured first:
+# `tail | grep -q` under pipefail can fail on SIGPIPE once grep has matched.
 if [ -s "$BACKUP_FILE" ] && gzip -t "$BACKUP_FILE" 2>/dev/null \
-    && zcat "$BACKUP_FILE" | tail -n 5 | grep -q "PostgreSQL database dump complete"; then
+    && grep -q "PostgreSQL database dump complete" <<<"$(zcat "$BACKUP_FILE" | tail -n 5)"; then
     SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
     echo "[$(date)] Postgres backup complete: $BACKUP_FILE ($SIZE)"
 else

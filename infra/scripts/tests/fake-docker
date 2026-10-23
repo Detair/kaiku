@@ -35,7 +35,8 @@ case "${1:-}" in
         fi
         case "$cmd" in
             *pg_dump*)
-                printf -- '-- PostgreSQL database dump\n\nSELECT 1;\n\n-- PostgreSQL database dump complete\n'
+                # Real pg_dump output: the marker is followed by more lines.
+                printf -- '-- PostgreSQL database dump\n\nSELECT 1;\n\n--\n-- PostgreSQL database dump complete\n--\n\n'
                 ;;
             *_sqlx_migrations*)
                 printf '%s\n' ${FAKE_DOCKER_MIGRATIONS:-1 2}

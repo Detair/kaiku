@@ -76,6 +76,36 @@ check "preflight: 1 pending migration reported" grep -q "1 pending migration" <<
 out=$(FAKE_DOCKER_MIGRATIONS="20240101000001 20240101000002 20240101000009" pf)
 check "preflight: DB version unknown to repo fails" grep -q "missing from the repo" <<<"$out"
 
+# --- dump-complete check under pipefail ---------------------------------------
+# A `tail` shim that writes its lines slowly: `... | tail -n 5 | grep -q` lets
+# grep exit at the marker, the next write raises SIGPIPE in tail, and pipefail
+# turns a complete dump into a failure. The check must not depend on that race.
+REAL_TAIL="$(command -v tail)"
+mkdir -p "$WORK/slowtail"
+cat >"$WORK/slowtail/tail" <<SHIM
+#!/usr/bin/env bash
+[ "\$*" = "-n 5" ] || exec "$REAL_TAIL" "\$@"
+"$REAL_TAIL" -n 5 | while IFS= read -r line; do
+    printf '%s\n' "\$line" || exit 141
+    sleep 0.2
+done
+exit "\${PIPESTATUS[1]}"
+SHIM
+chmod +x "$WORK/slowtail/tail"
+
+SP_DIR="$WORK/sigpipe"
+mkdir -p "$SP_DIR"
+PATH="$WORK/slowtail:$PATH" BACKUP_DIR="$SP_DIR" BACKUP_RUSTFS=false "$SCRIPTS/backup.sh" >"$WORK/sigpipe.out" 2>&1
+check "backup sigpipe: complete dump accepted" test $? -eq 0
+kept=("$SP_DIR"/kaiku-*.sql.gz)
+check "backup sigpipe: dump kept" test "${#kept[@]}" -eq 1
+
+rm -f "$WORK"/pfbackups/*.sql.gz
+printf -- '-- PostgreSQL database dump\nSELECT 1;\n--\n-- PostgreSQL database dump complete\n--\n\n' \
+    | gzip > "$WORK/pfbackups/kaiku-2024-01-02_000000.sql.gz"
+out=$(PATH="$WORK/slowtail:$PATH" pf)
+check "preflight sigpipe: complete backup passes check 4" grep -q "dump complete (" <<<"$out"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "$FAILED check(s) failed"
     exit 1
