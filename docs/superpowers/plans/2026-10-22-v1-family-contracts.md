@@ -164,3 +164,4 @@ unchanged, so the firewall forwards the same UDP port numbers 1:1.
 - **C16 — error text:** HTTP/WS errors carry the server error `code`; user-facing text is produced only by the client `errorText(code)` mapping (web) / string resource lookup (Android), never from server message strings.
 - **C17 — locale completeness:** a locale folder is either empty (pure fallback) or complete; CI enforces identical key sets.
 - Rulings: build-time-only Android lint-rule dependency (Apache-2.0) accepted; Android lint becomes a blocking CI step (i18n plan Task 10).
+- **C18–C21 — Push (adopted 2026-10-23):** C18 push config discovery, C19 per-device registration/delete, C20 wake-signal wire format (incl. `read` kind; FCM data values as strings; priorities; batching), C21 mention syntax and push targets. Definitions in `2026-10-23-v1-push-phase2.md` (renumbered from the planner's C15–C18 to avoid clashing with the i18n contracts).
