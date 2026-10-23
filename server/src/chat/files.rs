@@ -42,15 +42,26 @@ fn content_type_from_key(key: &str) -> &'static str {
 /// `avatars/channels/...`) and server banners (`guilds/{uuid}/banner-...`) are
 /// public. Every other prefix is served through authenticated routes only.
 pub fn is_public_file_key(key: &str) -> bool {
-    if key.starts_with('/') || key.contains("..") || key.contains("//") || key.contains('\\') {
+    if key.starts_with('/') || key.contains('\\') {
         return false;
     }
-    if let Some(rest) = key.strip_prefix("avatars/") {
-        return !rest.is_empty();
+    // Segment-based check: dots inside file names are fine, but empty,
+    // `.` and `..` segments are never accepted.
+    if key
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return false;
+    }
+    if key.starts_with("avatars/") {
+        return true;
     }
     if let Some(rest) = key.strip_prefix("guilds/") {
         if let Some((guild_id, file)) = rest.split_once('/') {
-            return uuid::Uuid::parse_str(guild_id).is_ok()
+            let canonical = uuid::Uuid::parse_str(guild_id)
+                .map(|u| u.hyphenated().to_string() == guild_id)
+                .unwrap_or(false);
+            return canonical
                 && file.starts_with("banner-")
                 && file.len() > "banner-".len()
                 && !file.contains('/');
@@ -119,5 +130,14 @@ mod tests {
             "guilds/01900000-0000-7000-8000-000000000000/other.png"
         ));
         assert!(!is_public_file_key("/avatars/x.png"));
+        assert!(is_public_file_key("avatars/u/1_a..b.png"));
+        assert!(is_public_file_key(
+            "guilds/01900000-0000-7000-8000-000000000000/banner-1_x..y.png"
+        ));
+        assert!(!is_public_file_key("avatars/u/../x"));
+        assert!(!is_public_file_key("avatars/./x"));
+        assert!(!is_public_file_key(
+            "guilds/0190000000007000800000000000000000/banner-x.png"
+        ));
     }
 }
