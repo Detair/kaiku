@@ -273,11 +273,21 @@ export function clearBrowserTokens() {
 
 let nativeAuthInfo: NativeAuthInfo | null = null;
 
+/**
+ * Whether `kaiku:session-expired` was already dispatched for the current
+ * native session. Kept apart from the cache: the cache can be empty while a
+ * session is live (startup before the first `get_auth_info`, a failed
+ * `loadNativeAuthInfo`), and an expiry reported then must still be shown.
+ * Reset when a session hands out a token again.
+ */
+let nativeSessionExpiryReported = false;
+
 /** Cache (or clear) the auth info handed out by the Rust session. */
 export function setNativeAuthInfo(info: NativeAuthInfo | null): void {
   nativeAuthInfo = info;
   if (info) {
     browserState.serverUrl = info.server_url;
+    nativeSessionExpiryReported = false;
   }
 }
 
@@ -311,7 +321,8 @@ export async function getAuthContext(): Promise<AuthContext> {
  * `null`, a `session_request` failing with "Session expired").
  */
 export function expireNativeSession(): void {
-  if (nativeAuthInfo === null) return;
+  if (nativeSessionExpiryReported) return;
+  nativeSessionExpiryReported = true;
   setNativeAuthInfo(null);
   window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
 }
@@ -319,22 +330,41 @@ export function expireNativeSession(): void {
 /** `Display` of the Rust `SessionError::Expired`. */
 export const NATIVE_SESSION_EXPIRED = "Session expired";
 
+/** Set once both native auth listeners are registered. */
 let nativeAuthEventsInitialized = false;
+let nativeAuthEventsInit: Promise<void> | null = null;
 
 /**
  * Follow the Rust refresh scheduler: new access tokens update the cache, an
- * ended session becomes `kaiku:session-expired`. Idempotent.
+ * ended session becomes `kaiku:session-expired`. Idempotent; concurrent
+ * callers share one setup, and a failed setup is retried by the next call
+ * instead of leaving the events unwired.
  */
-export async function initNativeAuthEvents(): Promise<void> {
-  if (!isTauri() || nativeAuthEventsInitialized) return;
-  nativeAuthEventsInitialized = true;
+export function initNativeAuthEvents(): Promise<void> {
+  if (!isTauri() || nativeAuthEventsInitialized) return Promise.resolve();
+  nativeAuthEventsInit ??= registerNativeAuthEvents().finally(() => {
+    nativeAuthEventsInit = null;
+  });
+  return nativeAuthEventsInit;
+}
+
+async function registerNativeAuthEvents(): Promise<void> {
   const { listen } = await import("@tauri-apps/api/event");
-  await listen<NativeAuthInfo>("auth:token_refreshed", (event) => {
-    setNativeAuthInfo(event.payload);
-  });
-  await listen("auth:session_expired", () => {
-    expireNativeSession();
-  });
+  const unlistenRefreshed = await listen<NativeAuthInfo>(
+    "auth:token_refreshed",
+    (event) => {
+      setNativeAuthInfo(event.payload);
+    },
+  );
+  try {
+    await listen("auth:session_expired", () => {
+      expireNativeSession();
+    });
+  } catch (err) {
+    unlistenRefreshed();
+    throw err;
+  }
+  nativeAuthEventsInitialized = true;
 }
 
 /** Wait after a transient refresh failure (offline, 5xx) before retrying. */

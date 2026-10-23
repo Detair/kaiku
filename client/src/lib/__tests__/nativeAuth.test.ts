@@ -234,6 +234,57 @@ describe("native auth", () => {
       window.removeEventListener("kaiku:session-expired", expired);
     }
   });
+
+  it("session expiry with an empty cache is still reported, once", async () => {
+    const expired = vi.fn();
+    window.addEventListener("kaiku:session-expired", expired);
+    try {
+      // Startup race: the session ends before anything filled the cache.
+      common.expireNativeSession();
+      common.expireNativeSession();
+      expect(expired).toHaveBeenCalledTimes(1);
+
+      // A new session re-arms the report.
+      common.setNativeAuthInfo(info("tok"));
+      common.expireNativeSession();
+      expect(expired).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener("kaiku:session-expired", expired);
+    }
+  });
+
+  it("refresh_session returning null with an empty cache reports the expiry", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "refresh_session") return null;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    const expired = vi.fn();
+    window.addEventListener("kaiku:session-expired", expired);
+    try {
+      await expect(common.refreshAccessToken()).resolves.toBe(false);
+      expect(expired).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("kaiku:session-expired", expired);
+    }
+  });
+
+  it("a failed listen does not leave native auth events unwired", async () => {
+    const handlers: Record<string, (e: { payload: unknown }) => void> = {};
+    listenMock
+      .mockImplementationOnce(async () => () => {})
+      .mockRejectedValueOnce(new Error("ipc not ready"))
+      .mockImplementation(async (name: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[name] = cb;
+        return () => {};
+      });
+
+    await expect(common.initNativeAuthEvents()).rejects.toThrow("ipc not ready");
+    await common.initNativeAuthEvents();
+
+    expect(listenMock).toHaveBeenCalledTimes(4);
+    expect(handlers["auth:session_expired"]).toBeDefined();
+    expect(handlers["auth:token_refreshed"]).toBeDefined();
+  });
 });
 
 describe("browser auth", () => {
