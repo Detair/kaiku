@@ -121,10 +121,9 @@ import {
   type ConnectionState,
   type ConnectionSupervisor,
 } from "./connection";
+import { isTauri } from "@/lib/tauri/common";
 
 export type { ConnectionState } from "./connection";
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 // Type for unlisten function
 type UnlistenFn = () => void;
@@ -177,7 +176,7 @@ export async function initWebSocket(): Promise<void> {
   // Clean up existing listeners
   await cleanupWebSocket();
 
-  if (isTauri) {
+  if (isTauri()) {
     // Native mode: Rust owns the socket and its retries. Every server frame
     // arrives once as `ws:server_event` and goes through the same handler as
     // in the browser; the status events drive the supervisor.
@@ -863,8 +862,8 @@ const nativeDriver: ConnectionDriver = {
 
 function getSupervisor(): ConnectionSupervisor {
   supervisor ??= createConnectionSupervisor({
-    driver: isTauri ? nativeDriver : browserDriver,
-    mode: isTauri ? "external" : "managed",
+    driver: isTauri() ? nativeDriver : browserDriver,
+    mode: isTauri() ? "external" : "managed",
     onStatus: (status, attempt) => {
       setWsState({
         status,
@@ -896,7 +895,7 @@ export async function connect(): Promise<void> {
   // alive, natively it mirrors the Rust loop.
   try {
     setWsState({ error: null });
-    if (!isTauri) {
+    if (!isTauri()) {
       tauri.setBrowserSocketHooks({
         onClose: (intentional) => supervisor?.notifyClosed(intentional),
         onFrame: () => supervisor?.notifyFrame(),

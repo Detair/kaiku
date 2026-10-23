@@ -5,19 +5,16 @@
  * Rust `generate_handler![…]` list, and that every `invoke(` names its command
  * with a string literal (so the check can see it).
  *
+ * Also flags `isTauri` references that are not called: `isTauri` is a
+ * function, and an uncalled function reference is always truthy.
+ *
  * Run: bun run lint:tauri-commands
- * Exit code: 1 if an invoked command is unregistered or an invoke name is not
- * a literal, 0 otherwise.
+ * Exit code: 1 if an invoked command is unregistered, an invoke name is not
+ * a literal or `isTauri` is used uncalled, 0 otherwise.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-
-/**
- * Enable once `isTauri` is a function rather than a constant: an uncalled function
- * reference is always truthy.
- */
-const CHECK_UNCALLED_IS_TAURI = false;
 
 export interface InvokeSite {
   file: string;
@@ -232,17 +229,30 @@ export function findUnregisteredInvokes(
     .map(([name, files]) => ({ name, files: [...files].sort() }));
 }
 
+/** `import {`, `import type {`, `import X, {`, `export {` left open on this line. */
+const OPENS_SPECIFIER_LIST =
+  /^\s*(import|export)(\s+type)?(\s+[A-Za-z_$][\w$]*\s*,)?\s*\{[^}]*$/;
+
 /**
- * `isTauri` references not followed by `(` outside import/export lines, as
- * `file:line`. Only meaningful once `isTauri` is a function.
+ * `isTauri` references not followed by `(` outside import/export statements
+ * (including multi-line specifier lists), as `file:line`.
  */
 export function findUncalledIsTauri(srcFiles: Map<string, string>): string[] {
   const hits: string[] = [];
   for (const [file, src] of srcFiles) {
     if (isExcluded(file)) continue;
     const code = maskNonCode(src);
+    let inSpecifierList = false;
     code.split("\n").forEach((line, idx) => {
-      if (/^\s*(import|export)\b/.test(line)) return;
+      // Specifier lists of multi-line `import {` / `export {` statements.
+      if (inSpecifierList) {
+        if (line.includes("}")) inSpecifierList = false;
+        return;
+      }
+      if (/^\s*(import|export)\b/.test(line)) {
+        inSpecifierList = OPENS_SPECIFIER_LIST.test(line);
+        return;
+      }
       const re = /\bisTauri\b/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(line)) !== null) {
@@ -272,35 +282,32 @@ function collectSources(dir: string, root: string, out: Map<string, string>) {
   }
 }
 
+/** All check failures for the given sources, as printable messages. */
+export function runChecks(srcFiles: Map<string, string>, libRs: string): string[] {
+  const errors: string[] = [];
+  for (const { name, files } of findUnregisteredInvokes(srcFiles, libRs)) {
+    errors.push(`unregistered Tauri command "${name}": ${files.join(", ")}`);
+  }
+  for (const site of findNonLiteralInvokes(srcFiles)) {
+    errors.push(
+      `${site.file}:${site.line}: invoke() must name its command with a string literal`,
+    );
+  }
+  for (const hit of findUncalledIsTauri(srcFiles)) {
+    errors.push(`${hit}: isTauri must be called: isTauri()`);
+  }
+  return errors;
+}
+
 function main(): number {
   const clientDir = resolve(import.meta.dirname ?? __dirname, "..");
   const srcFiles = new Map<string, string>();
   collectSources(join(clientDir, "src"), clientDir, srcFiles);
   const libRs = readFileSync(join(clientDir, "src-tauri/src/lib.rs"), "utf8");
 
-  let failed = false;
-
-  const unregistered = findUnregisteredInvokes(srcFiles, libRs);
-  for (const { name, files } of unregistered) {
-    console.error(`unregistered Tauri command "${name}": ${files.join(", ")}`);
-    failed = true;
-  }
-
-  for (const site of findNonLiteralInvokes(srcFiles)) {
-    console.error(
-      `${site.file}:${site.line}: invoke() must name its command with a string literal`,
-    );
-    failed = true;
-  }
-
-  if (CHECK_UNCALLED_IS_TAURI) {
-    for (const hit of findUncalledIsTauri(srcFiles)) {
-      console.error(`${hit}: isTauri must be called: isTauri()`);
-      failed = true;
-    }
-  }
-
-  if (failed) return 1;
+  const errors = runChecks(srcFiles, libRs);
+  for (const error of errors) console.error(error);
+  if (errors.length > 0) return 1;
   console.log(
     `Tauri invoke check passed (${findInvokedCommands(srcFiles).size} commands, all registered).`,
   );

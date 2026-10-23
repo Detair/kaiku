@@ -40,7 +40,7 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
     props.streamId !== "webcam" && props.streamId !== "default";
 
   onMount(async () => {
-    if (!isTauri || !canvasRef || !isScreenShare()) return;
+    if (!isTauri() || !canvasRef || !isScreenShare()) return;
 
     try {
       renderer = new NativeYuvRenderer(canvasRef);

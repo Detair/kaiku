@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Common from "../tauri/common";
 import type * as Auth from "../tauri/auth";
 
-const { invokeMock, listenMock } = vi.hoisted(() => ({
+const { invokeMock, listenMock, tauriMode } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   listenMock: vi.fn(),
+  tauriMode: { native: false },
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
+  isTauri: () => tauriMode.native,
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
 const fetchMock = vi.fn();
@@ -46,14 +50,14 @@ describe("native auth", () => {
     listenMock.mockReset().mockResolvedValue(() => {});
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
-    (window as unknown as Record<string, unknown>).__TAURI__ = {};
+    tauriMode.native = true;
     vi.resetModules();
     common = await import("../tauri/common");
     auth = await import("../tauri/auth");
   });
 
   afterEach(() => {
-    delete (window as unknown as Record<string, unknown>).__TAURI__;
+    tauriMode.native = false;
     vi.unstubAllGlobals();
   });
 
@@ -236,7 +240,7 @@ describe("browser auth", () => {
   it("httpRequest in browser mode still sends credentials and no X-Refresh-Token", async () => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
-    delete (window as unknown as Record<string, unknown>).__TAURI__;
+    tauriMode.native = false;
     // Importing common.ts starts a cookie session-restore refresh.
     fetchMock.mockResolvedValue(respond(401));
     vi.resetModules();

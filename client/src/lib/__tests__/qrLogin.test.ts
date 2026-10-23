@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildQrLoginUri } from "../qrLogin";
 
+const { tauriMode } = vi.hoisted(() => ({ tauriMode: { native: false } }));
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  isTauri: () => tauriMode.native,
+}));
+
 describe("buildQrLoginUri", () => {
   it("encodes server and token", () => {
     expect(buildQrLoginUri("https://kaiku.example", "a+b")).toBe(
@@ -21,6 +28,7 @@ describe("buildQrLoginUri", () => {
 
 describe("getServerUrl", () => {
   afterEach(() => {
+    tauriMode.native = false;
     vi.unstubAllGlobals();
     vi.resetModules();
     localStorage.removeItem("serverUrl");
@@ -36,11 +44,9 @@ describe("getServerUrl", () => {
   });
 
   it("never returns a tauri:// origin in native mode", async () => {
-    vi.stubGlobal("__TAURI__", {});
+    tauriMode.native = true;
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401, json: vi.fn() }));
-    (window as unknown as Record<string, unknown>).__TAURI__ = {};
     const common = await import("../tauri/common");
-    delete (window as unknown as Record<string, unknown>).__TAURI__;
     common.browserState.serverUrl = "tauri://localhost";
     expect(common.getServerUrl()).toBe("");
     common.browserState.serverUrl = "";

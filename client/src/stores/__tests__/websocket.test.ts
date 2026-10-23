@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }));
+const { listenMock, tauriMode } = vi.hoisted(() => ({
+  listenMock: vi.fn(),
+  tauriMode: { native: false },
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  isTauri: () => tauriMode.native,
+}));
 
 vi.mock("@/lib/tauri", () => ({
   wsConnect: vi.fn(),
@@ -437,7 +444,7 @@ describe("websocket store", () => {
         listeners.set(name, cb);
         return () => listeners.delete(name);
       });
-      (window as unknown as Record<string, unknown>).__TAURI__ = {};
+      tauriMode.native = true;
       vi.resetModules();
       ws = await import("../websocket");
       nativeTauri = await import("@/lib/tauri");
@@ -446,7 +453,7 @@ describe("websocket store", () => {
 
     afterEach(async () => {
       await ws.disconnect();
-      delete (window as unknown as Record<string, unknown>).__TAURI__;
+      tauriMode.native = false;
     });
 
     it("registers one server-event listener plus the status listeners", () => {

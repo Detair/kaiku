@@ -1,7 +1,11 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import solid from "eslint-plugin-solid/configs/typescript";
-import { I18N_GUARDED_FILES, I18N_SELECTORS } from "./eslint.i18n.mjs";
+import {
+  I18N_GUARDED_FILES,
+  I18N_SELECTORS,
+  TAURI_DETECTION_SELECTORS,
+} from "./eslint.i18n.mjs";
 
 export default [
   js.configs.recommended,
@@ -25,6 +29,7 @@ export default [
       // defeats this rule's static analysis — the JSX ref={} binding form
       // assigns the variable at render time, which ESLint can't trace.
       "no-unassigned-vars": "off",
+      "no-restricted-syntax": ["error", ...TAURI_DETECTION_SELECTORS],
     },
   },
   {

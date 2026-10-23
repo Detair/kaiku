@@ -461,6 +461,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: bun run tauri build
 
+      # Rust unit tests of the desktop shell (session manager, native WebSocket).
+      - name: Test Tauri client library (Ubuntu)
+        if: matrix.platform == 'ubuntu-latest'
+        run: cargo test -p vc-client --lib
+
       - name: Upload artifacts (Ubuntu)
         if: matrix.platform == 'ubuntu-latest'
         uses: actions/upload-artifact@v4

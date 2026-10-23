@@ -9,8 +9,7 @@ import { createEffect } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { guildsState } from "@/stores/guilds";
 import { dmsState } from "@/stores/dms";
-
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 /**
  * Total unread across guilds and DMs. Pure and exported for tests.
@@ -32,7 +31,7 @@ export function computeTotalUnread(
  * a component context (uses createEffect).
  */
 export function initTrayBadge(): void {
-  if (!isTauri) return;
+  if (!isTauri()) return;
 
   createEffect(() => {
     const count = computeTotalUnread(

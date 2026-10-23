@@ -24,6 +24,7 @@ import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
+import { isTauri } from "@/lib/tauri/common";
 
 // Auth state interface
 interface AuthState {
@@ -53,8 +54,6 @@ const [authState, setAuthState] = createStore<AuthState>({
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
 
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-
 // Session-expired listener (registered once globally to prevent leaks)
 let sessionExpiredListenerRegistered = false;
 
@@ -68,7 +67,7 @@ function registerSessionExpiredListener() {
     // Native mode: Rust already tried the refresh and the server rejected it;
     // retrying would only report the same expiry again.
     let success = false;
-    if (!isTauri) {
+    if (!isTauri()) {
       console.warn("[Kaiku:Auth] Session expired: attempting silent retry...");
       success = await tauri.refreshAccessToken();
     }
@@ -76,7 +75,7 @@ function registerSessionExpiredListener() {
       console.log("[Kaiku:Auth] Silent retry: success — session recovered");
       // The browser reconnect supervisor stops when it reports an expired
       // session; restart it (no-op while it is still running).
-      if (!isTauri) {
+      if (!isTauri()) {
         try {
           await wsConnect();
         } catch (err) {
@@ -115,7 +114,7 @@ registerSessionExpiredListener();
 
 /** Native mode: follow token refreshes and expiry from the Rust session. */
 async function initNativeSession(): Promise<void> {
-  if (!isTauri) return;
+  if (!isTauri()) return;
   try {
     await tauri.initNativeAuthEvents();
   } catch (err) {

@@ -8,14 +8,23 @@
  * here rather than duplicating state.
  */
 
+import { isTauri as coreIsTauri } from "@tauri-apps/api/core";
 import type { User } from "../types";
 
 // ============================================================================
 // Tauri detection
 // ============================================================================
 
-export const isTauri =
-  typeof window !== "undefined" && "__TAURI__" in window;
+/**
+ * True when the webview runs inside the Tauri desktop shell (contract C6).
+ *
+ * Uses the Tauri core's own flag, which is set regardless of
+ * `withGlobalTauri`. Always call it — an uncalled function is truthy
+ * (`bun run lint:tauri-commands` enforces this).
+ */
+export function isTauri(): boolean {
+  return coreIsTauri();
+}
 
 // ============================================================================
 // Session types
@@ -282,7 +291,7 @@ export async function loadNativeAuthInfo(): Promise<NativeAuthInfo | null> {
 
 /** Base URL and access token for the next request. */
 export async function getAuthContext(): Promise<AuthContext> {
-  if (!isTauri) {
+  if (!isTauri()) {
     return {
       baseUrl: getServerUrl().replace(/\/+$/, ""),
       accessToken: browserState.accessToken,
@@ -317,7 +326,7 @@ let nativeAuthEventsInitialized = false;
  * ended session becomes `kaiku:session-expired`. Idempotent.
  */
 export async function initNativeAuthEvents(): Promise<void> {
-  if (!isTauri || nativeAuthEventsInitialized) return;
+  if (!isTauri() || nativeAuthEventsInitialized) return;
   nativeAuthEventsInitialized = true;
   const { listen } = await import("@tauri-apps/api/event");
   await listen<NativeAuthInfo>("auth:token_refreshed", (event) => {
@@ -422,7 +431,7 @@ async function doRefreshNative(): Promise<boolean> {
 }
 
 async function doRefreshAccessToken(): Promise<boolean> {
-  if (isTauri) return doRefreshNative();
+  if (isTauri()) return doRefreshNative();
   try {
     console.log("[Auth] Refreshing access token...");
 
@@ -494,7 +503,7 @@ async function doRefreshAccessToken(): Promise<boolean> {
 export async function ensureFreshAccessToken(
   minValidityMs = 60_000,
 ): Promise<boolean> {
-  if (isTauri) {
+  if (isTauri()) {
     if (
       nativeAuthInfo &&
       nativeAuthInfo.expires_at_ms - Date.now() >= minValidityMs
@@ -518,7 +527,7 @@ export async function ensureFreshAccessToken(
 
 // On browser load, attempt to restore session from HttpOnly cookie.
 // The cookie is sent automatically; the server returns a fresh access token.
-if (!isTauri && !browserState.accessToken) {
+if (!isTauri() && !browserState.accessToken) {
   if (!isSessionRestoreBlocked()) {
     // refreshAccessToken never throws (returns false on failure), so no .catch() needed.
     void refreshAccessToken();
@@ -528,7 +537,7 @@ if (!isTauri && !browserState.accessToken) {
 // When the tab becomes visible again, check if the token needs refreshing.
 // Browsers throttle/pause setTimeout in background tabs, so the scheduled
 // refresh may not fire before the access token expires.
-if (!isTauri && typeof document !== "undefined") {
+if (!isTauri() && typeof document !== "undefined") {
   document.addEventListener("visibilitychange", async () => {
     if (document.hidden) return;
     if (!browserState.accessToken) return;
@@ -624,7 +633,7 @@ async function sendHttpRequest<T>(
     body: body ? JSON.stringify(body) : undefined,
   };
   // Cookies (refresh cookie, CSRF) only exist in browser mode.
-  if (!isTauri) {
+  if (!isTauri()) {
     init.credentials = "include";
   }
 
@@ -710,7 +719,7 @@ export async function getUploadAuth(): Promise<{
   baseUrl: string;
 }> {
   const { baseUrl, accessToken } = await getAuthContext();
-  if (isTauri && !accessToken) {
+  if (isTauri() && !accessToken) {
     throw new Error("Not authenticated");
   }
   return { token: accessToken, baseUrl };
@@ -726,7 +735,7 @@ export async function getUploadAuth(): Promise<{
  */
 export function getServerUrl(): string {
   const stored = browserState.serverUrl;
-  if (isTauri) {
+  if (isTauri()) {
     return /^https?:\/\//i.test(stored) ? stored : "";
   }
   return stored || (typeof window !== "undefined" ? window.location.origin : "");
@@ -736,6 +745,6 @@ export function getServerUrl(): string {
  * Get the current access token (for use in URLs that can't use headers).
  */
 export function getAccessToken(): string | null {
-  if (isTauri) return nativeAuthInfo?.access_token ?? null;
+  if (isTauri()) return nativeAuthInfo?.access_token ?? null;
   return browserState.accessToken;
 }

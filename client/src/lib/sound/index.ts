@@ -36,20 +36,13 @@ import {
   type NotificationContext,
 } from "@/lib/notifications";
 import { preferences } from "@/stores/preferences";
+import { isTauri } from "@/lib/tauri/common";
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 const COOLDOWN_MS = 2000; // 2 seconds between notifications
-
-// ============================================================================
-// Platform Detection
-// ============================================================================
-
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI__" in window;
-}
 
 // ============================================================================
 // State

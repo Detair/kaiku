@@ -46,8 +46,9 @@ Browser mode includes automatic token refresh (60s before expiry):
 ### Common Patterns
 
 ```typescript
-// Check if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+// Check if running in Tauri (contract C6) — always call it, never inline a check
+import { isTauri } from "@/lib/tauri/common";
+if (isTauri()) { /* native path */ }
 
 // Call platform-agnostic API
 import { login, getChannels } from "@/lib/tauri";

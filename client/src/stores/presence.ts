@@ -22,9 +22,7 @@ import { getBrowserWebSocket, updateStatus } from "@/lib/tauri";
 import { preferences } from "./preferences";
 import { currentUser, updateUser } from "./auth";
 import { setFriendsState } from "./friends";
-
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 // Type for unlisten function
 type UnlistenFn = () => void;
@@ -54,7 +52,7 @@ export async function initPresence(): Promise<void> {
 
   // Presence updates from the server reach the websocket store in both
   // modes (native: via `ws:server_event`). Native also reports local activity.
-  if (isTauri) {
+  if (isTauri()) {
     const { listen } = await import("@tauri-apps/api/event");
     activityUnlistener = await listen<Activity | null>(
       "presence:activity_changed",
@@ -406,7 +404,7 @@ export async function setMyCustomStatus(
 
   try {
     // Send via WebSocket
-    if (isTauri) {
+    if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("ws_send_custom_status", {
         customStatus: status,

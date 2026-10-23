@@ -7,6 +7,7 @@
 import type { VoiceAdapter } from "./types";
 import { BrowserVoiceAdapter } from "./browser";
 import { TauriVoiceAdapter } from "./tauri";
+import { isTauri } from "@/lib/tauri/common";
 
 // Singleton instance
 let adapterInstance: VoiceAdapter | null = null;
@@ -20,13 +21,11 @@ export async function createVoiceAdapter(): Promise<VoiceAdapter> {
     return adapterInstance;
   }
 
-  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-
   console.log(
-    `[VoiceAdapter] Creating ${isTauri ? "Tauri" : "Browser"} adapter`,
+    `[VoiceAdapter] Creating ${isTauri() ? "Tauri" : "Browser"} adapter`,
   );
 
-  if (isTauri) {
+  if (isTauri()) {
     adapterInstance = new TauriVoiceAdapter();
   } else {
     adapterInstance = new BrowserVoiceAdapter();

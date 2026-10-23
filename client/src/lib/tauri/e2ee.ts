@@ -21,7 +21,7 @@ import { httpRequest, isTauri } from "./common";
  * Note: E2EE commands require Tauri - they are not available in browser mode.
  */
 export async function getE2EEStatus(): Promise<E2EEStatus> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<E2EEStatus>("get_e2ee_status");
   }
@@ -42,7 +42,7 @@ export async function getE2EEStatus(): Promise<E2EEStatus> {
 export async function initE2EE(
   encryptionKey: string,
 ): Promise<InitE2EEResponse> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<InitE2EEResponse>("init_e2ee", { encryptionKey });
   }
@@ -59,7 +59,7 @@ export async function encryptMessage(
   plaintext: string,
   recipients: ClaimedPrekeyInput[],
 ): Promise<E2EEContent> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<E2EEContent>("encrypt_message", { plaintext, recipients });
   }
@@ -77,7 +77,7 @@ export async function decryptMessage(
   messageType: number,
   ciphertext: string,
 ): Promise<string> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<string>("decrypt_message", {
       senderUserId,
@@ -99,7 +99,7 @@ export async function decryptMessage(
  * Returns the exportable session key (base64) that should be shared with other members.
  */
 export async function createMegolmSession(roomId: string): Promise<string> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<string>("create_megolm_session", { roomId });
   }
@@ -111,7 +111,7 @@ export async function createMegolmSession(roomId: string): Promise<string> {
  * Encrypt a message for a group using Megolm.
  */
 export async function encryptGroupMessage(roomId: string, plaintext: string): Promise<string> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<string>("encrypt_group_message", { roomId, plaintext });
   }
@@ -127,7 +127,7 @@ export async function addInboundGroupSession(
   senderKey: string,
   sessionKey: string
 ): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<void>("add_inbound_group_session", { roomId, senderKey, sessionKey });
   }
@@ -143,7 +143,7 @@ export async function decryptGroupMessage(
   senderKey: string,
   ciphertext: string
 ): Promise<string> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<string>("decrypt_group_message", { roomId, senderKey, ciphertext });
   }
@@ -156,7 +156,7 @@ export async function decryptGroupMessage(
  * Note: E2EE commands require Tauri - they are not available in browser mode.
  */
 export async function markPrekeysPublished(): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<void>("mark_prekeys_published");
   }
@@ -169,7 +169,7 @@ export async function markPrekeysPublished(): Promise<void> {
  * Note: E2EE commands require Tauri - they are not available in browser mode.
  */
 export async function generatePrekeys(count: number): Promise<PrekeyData[]> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<PrekeyData[]>("generate_prekeys", { count });
   }
@@ -182,7 +182,7 @@ export async function generatePrekeys(count: number): Promise<PrekeyData[]> {
  * Note: E2EE commands require Tauri - they are not available in browser mode.
  */
 export async function needsPrekeyUpload(): Promise<boolean> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<boolean>("needs_prekey_upload");
   }
@@ -197,7 +197,7 @@ export async function needsPrekeyUpload(): Promise<boolean> {
  * Note: E2EE commands require Tauri - they are not available in browser mode.
  */
 export async function getOurCurve25519Key(): Promise<string | null> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<string>("get_our_curve25519_key");
   }

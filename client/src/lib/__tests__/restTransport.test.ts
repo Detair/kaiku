@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { invokeMock, listenMock } = vi.hoisted(() => ({
+const { invokeMock, listenMock, tauriMode } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   listenMock: vi.fn(),
+  tauriMode: { native: false },
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
+  isTauri: () => tauriMode.native,
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
 const fetchMock = vi.fn();
@@ -58,12 +62,12 @@ describe("native REST transport", () => {
     listenMock.mockReset().mockResolvedValue(() => {});
     fetchMock.mockReset().mockResolvedValue(respond(200, {}));
     vi.stubGlobal("fetch", fetchMock);
-    (window as unknown as Record<string, unknown>).__TAURI__ = {};
+    tauriMode.native = true;
     vi.resetModules();
   });
 
   afterEach(() => {
-    delete (window as unknown as Record<string, unknown>).__TAURI__;
+    tauriMode.native = false;
     vi.unstubAllGlobals();
   });
 

@@ -28,9 +28,7 @@ import {
 import { secureCopy } from "@/lib/clipboard";
 import { e2eeStore } from "@/stores/e2ee";
 import { uploadKeys, markPrekeysPublished } from "@/lib/tauri";
-
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 interface E2EESetupModalProps {
   /** Whether the modal is open. */
@@ -50,7 +48,7 @@ interface RecoveryKey {
  * Generate a recovery key via Tauri command.
  */
 async function generateRecoveryKey(): Promise<RecoveryKey> {
-  if (!isTauri) {
+  if (!isTauri()) {
     throw new Error("E2EE requires the native Tauri app");
   }
   const result = await invoke<{ full_key: string; chunks: string[] }>(

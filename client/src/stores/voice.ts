@@ -4,7 +4,7 @@
  * Manages voice channel state including connection, participants, and audio settings.
  */
 
-import { createStore, produce } from "solid-js/store";
+import { createStore } from "solid-js/store";
 import {
   createVoiceAdapter,
   getVoiceAdapter,
@@ -25,12 +25,6 @@ import { currentUser } from "@/stores/auth";
 import * as tauri from "@/lib/tauri";
 import { showToast, dismissToast } from "@/components/ui/Toast";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
-
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-
-// Type for unlisten function
-type UnlistenFn = () => void;
 
 // Helper to get error message from VoiceError
 function getErrorMessage(error: VoiceError): string {
@@ -114,9 +108,6 @@ const [voiceState, setVoiceState] = createStore<VoiceStoreState>({
 // PTT/PTM controller instance
 let pttController: PttController | null = null;
 let pttCleanup: (() => void) | null = null;
-
-// Event listeners
-let unlisteners: UnlistenFn[] = [];
 
 // Metrics collection interval
 let metricsInterval: number | null = null;
@@ -296,108 +287,11 @@ if (typeof document !== "undefined") {
 }
 
 /**
- * Initialize voice event listeners.
- */
-export async function initVoice(): Promise<void> {
-  // Clean up existing listeners
-  await cleanupVoice();
-
-  // Tauri-specific event listeners
-  if (!isTauri) {
-    // Browser mode - WebSocket events are handled in websocket store
-    return;
-  }
-
-  const { listen } = await import("@tauri-apps/api/event");
-
-  // Voice user events
-  unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>(
-      "ws:voice_user_joined",
-      (event) => {
-        const { channel_id, user_id } = event.payload;
-        if (channel_id === voiceState.channelId) {
-          addParticipant(user_id);
-        }
-      },
-    ),
-  );
-
-  unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>(
-      "ws:voice_user_left",
-      (event) => {
-        const { channel_id, user_id } = event.payload;
-        if (channel_id === voiceState.channelId) {
-          removeParticipant(user_id);
-        }
-      },
-    ),
-  );
-
-  unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>(
-      "ws:voice_user_muted",
-      (event) => {
-        const { channel_id, user_id } = event.payload;
-        if (channel_id === voiceState.channelId) {
-          updateParticipant(user_id, { muted: true });
-        }
-      },
-    ),
-  );
-
-  unlisteners.push(
-    await listen<{ channel_id: string; user_id: string }>(
-      "ws:voice_user_unmuted",
-      (event) => {
-        const { channel_id, user_id } = event.payload;
-        if (channel_id === voiceState.channelId) {
-          updateParticipant(user_id, { muted: false });
-        }
-      },
-    ),
-  );
-
-  unlisteners.push(
-    await listen<{ channel_id: string; participants: VoiceParticipant[] }>(
-      "ws:voice_room_state",
-      (event) => {
-        const { channel_id, participants } = event.payload;
-        if (channel_id === voiceState.channelId) {
-          setParticipants(participants);
-        }
-      },
-    ),
-  );
-
-  unlisteners.push(
-    await listen<{ code: string; message: string }>(
-      "ws:voice_error",
-      (event) => {
-        console.error("Voice error:", event.payload);
-        const error: VoiceError = {
-          type: "server_rejected",
-          code: event.payload.code,
-          message: event.payload.message,
-        };
-        setVoiceState({ error });
-      },
-    ),
-  );
-}
-
-/**
- * Cleanup voice listeners.
+ * Stop voice background work (metrics collection).
  */
 export async function cleanupVoice(): Promise<void> {
   // Stop metrics collection to prevent orphaned intervals
   stopMetricsLoop();
-
-  for (const unlisten of unlisteners) {
-    unlisten();
-  }
-  unlisteners = [];
 }
 
 /**
@@ -1013,53 +907,6 @@ export async function stopWebcam(): Promise<void> {
   }
 
   setVoiceState({ webcamActive: false });
-}
-
-// Participant management
-
-function addParticipant(userId: string): void {
-  setVoiceState(
-    produce((state) => {
-      state.participants[userId] = {
-        user_id: userId,
-        muted: false,
-        speaking: false,
-        screen_sharing: false,
-      };
-    }),
-  );
-}
-
-function removeParticipant(userId: string): void {
-  setVoiceState(
-    produce((state) => {
-      delete state.participants[userId];
-    }),
-  );
-}
-
-function updateParticipant(
-  userId: string,
-  update: Partial<VoiceParticipant>,
-): void {
-  setVoiceState(
-    produce((state) => {
-      if (state.participants[userId]) {
-        Object.assign(state.participants[userId], update);
-      }
-    }),
-  );
-}
-
-function setParticipants(participants: VoiceParticipant[]): void {
-  setVoiceState(
-    produce((state) => {
-      state.participants = {};
-      for (const p of participants) {
-        state.participants[p.user_id] = p;
-      }
-    }),
-  );
 }
 
 /**

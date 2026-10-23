@@ -5,6 +5,7 @@ import {
   findRegisteredCommands,
   findUncalledIsTauri,
   findUnregisteredInvokes,
+  runChecks,
 } from "../check-tauri-commands";
 
 const LIB_RS = `
@@ -112,5 +113,32 @@ describe("check-tauri-commands", () => {
     });
 
     expect(findUncalledIsTauri(src)).toEqual(["src/lib/a.ts:3"]);
+  });
+
+  it("ignores isTauri in multi-line import and export lists", () => {
+    const src = files({
+      "src/lib/a.ts": [
+        `import {`,
+        `  httpRequest,`,
+        `  isTauri,`,
+        `} from "./common";`,
+        `export {`,
+        `  isTauri,`,
+        `};`,
+        `if (isTauri) {}`,
+      ].join("\n"),
+    });
+
+    expect(findUncalledIsTauri(src)).toEqual(["src/lib/a.ts:8"]);
+  });
+
+  it("the CLI check fails on an uncalled isTauri", () => {
+    const src = files({
+      "src/lib/a.ts": [`import { isTauri } from "./common";`, `if (isTauri) {}`].join("\n"),
+    });
+
+    expect(runChecks(src, LIB_RS)).toEqual([
+      "src/lib/a.ts:2: isTauri must be called: isTauri()",
+    ]);
   });
 });

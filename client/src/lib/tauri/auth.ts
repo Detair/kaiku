@@ -76,7 +76,7 @@ export async function login(
   password: string,
   mfaCode?: string,
 ): Promise<AuthResult> {
-  if (isTauri) {
+  if (isTauri()) {
     return invokeNativeAuth((invoke) =>
       invoke<AuthResult>("login", {
         request: {
@@ -137,7 +137,7 @@ export async function updateStatus(
     offline: "offline",
   };
   const message = { type: "set_status", status: statusMap[status] ?? "online" };
-  if (isTauri) {
+  if (isTauri()) {
     await wsSend(message);
     return;
   }
@@ -151,7 +151,7 @@ export async function register(
   email?: string,
   displayName?: string,
 ): Promise<AuthResult> {
-  if (isTauri) {
+  if (isTauri()) {
     return invokeNativeAuth((invoke) =>
       invoke<AuthResult>("register", {
         request: {
@@ -199,7 +199,7 @@ export async function register(
 }
 
 export async function logout(): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("logout");
@@ -247,7 +247,7 @@ export async function logout(): Promise<void> {
 }
 
 export async function getCurrentUser(): Promise<SessionRestoreResult> {
-  if (isTauri) {
+  if (isTauri()) {
     return invokeNativeAuth((invoke) =>
       invoke<SessionRestoreResult>("get_current_user"),
     );
@@ -322,7 +322,7 @@ export async function updatePassword(
   new_password: string,
   revoke_others: boolean = false,
 ): Promise<{ success: boolean; message: string; revoked_count: number }> {
-  if (isTauri) {
+  if (isTauri()) {
     return nativeSessionRequest("POST", "/auth/me/password", {
       current_password,
       new_password,
@@ -343,7 +343,7 @@ export async function updatePassword(
  * List all active sessions for the current user.
  */
 export async function listSessions(): Promise<SessionListResponse> {
-  if (isTauri) {
+  if (isTauri()) {
     return nativeSessionRequest<SessionListResponse>("GET", "/auth/sessions");
   }
   return fetchApi<SessionListResponse>("/auth/sessions");
@@ -353,7 +353,7 @@ export async function listSessions(): Promise<SessionListResponse> {
  * Revoke a specific session by ID.
  */
 export async function revokeSession(sessionId: string): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     await nativeSessionRequest<unknown>("DELETE", `/auth/sessions/${sessionId}`);
     return;
   }
@@ -364,7 +364,7 @@ export async function revokeSession(sessionId: string): Promise<void> {
  * Revoke all sessions except the current one.
  */
 export async function revokeAllOtherSessions(): Promise<RevokeAllResponse> {
-  if (isTauri) {
+  if (isTauri()) {
     return nativeSessionRequest<RevokeAllResponse>("DELETE", "/auth/sessions");
   }
   return fetchApi<RevokeAllResponse>("/auth/sessions", { method: "DELETE" });
@@ -408,7 +408,7 @@ export async function linkIdentity(
   providerSlug: string,
 ): Promise<{ mode: "tauri" } | { mode: "browser"; authUrl: string }> {
   const baseUrl = getServerUrl().replace(/\/+$/, "");
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("oidc_link_identity", { serverUrl: baseUrl, providerSlug });
     return { mode: "tauri" };
@@ -585,7 +585,7 @@ export async function oidcAuthorize(
 > {
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
-  if (isTauri) {
+  if (isTauri()) {
     const result = await invokeNativeAuth((invoke) =>
       invoke<AuthResult>("oidc_authorize", {
         serverUrl: baseUrl,
