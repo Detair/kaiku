@@ -295,6 +295,21 @@ export async function getAuthContext(): Promise<AuthContext> {
   };
 }
 
+/**
+ * Native mode: the Rust session has ended (refresh token rejected). Clears
+ * the cache and dispatches `kaiku:session-expired` once, however many paths
+ * report it (the `auth:session_expired` event, `refresh_session` returning
+ * `null`, a `session_request` failing with "Session expired").
+ */
+export function expireNativeSession(): void {
+  if (nativeAuthInfo === null) return;
+  setNativeAuthInfo(null);
+  window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+}
+
+/** `Display` of the Rust `SessionError::Expired`. */
+export const NATIVE_SESSION_EXPIRED = "Session expired";
+
 let nativeAuthEventsInitialized = false;
 
 /**
@@ -309,8 +324,7 @@ export async function initNativeAuthEvents(): Promise<void> {
     setNativeAuthInfo(event.payload);
   });
   await listen("auth:session_expired", () => {
-    setNativeAuthInfo(null);
-    window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+    expireNativeSession();
   });
 }
 
@@ -396,8 +410,7 @@ async function doRefreshNative(): Promise<boolean> {
     const info = await invoke<NativeAuthInfo | null>("refresh_session");
     if (!info) {
       console.warn("[Auth] Session ended (refresh rejected)");
-      setNativeAuthInfo(null);
-      window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+      expireNativeSession();
       return false;
     }
     setNativeAuthInfo(info);

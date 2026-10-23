@@ -165,6 +165,49 @@ describe("native auth", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("session_request rejected with an ended session expires it once", async () => {
+    const handlers: Record<string, (e: { payload: unknown }) => void> = {};
+    listenMock.mockImplementation(async (name: string, cb: (e: { payload: unknown }) => void) => {
+      handlers[name] = cb;
+      return () => {};
+    });
+    await common.initNativeAuthEvents();
+    common.setNativeAuthInfo(info("tok"));
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "session_request") {
+        // Rust also emits auth:session_expired for the same end of session.
+        handlers["auth:session_expired"]({ payload: null });
+        throw "Session expired";
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+    const expired = vi.fn();
+    window.addEventListener("kaiku:session-expired", expired);
+    try {
+      await expect(auth.listSessions()).rejects.toBe("Session expired");
+      expect(expired).toHaveBeenCalledTimes(1);
+      expect(common.getAccessToken()).toBeNull();
+    } finally {
+      window.removeEventListener("kaiku:session-expired", expired);
+    }
+  });
+
+  it("session_request failing for another reason keeps the session", async () => {
+    common.setNativeAuthInfo(info("tok"));
+    invokeMock.mockRejectedValue("Connection failed: offline");
+    const expired = vi.fn();
+    window.addEventListener("kaiku:session-expired", expired);
+    try {
+      await expect(auth.revokeAllOtherSessions()).rejects.toBe(
+        "Connection failed: offline",
+      );
+      expect(expired).not.toHaveBeenCalled();
+      expect(common.getAccessToken()).toBe("tok");
+    } finally {
+      window.removeEventListener("kaiku:session-expired", expired);
+    }
+  });
+
   it("native auth events update the cache and expire the session", async () => {
     const handlers: Record<string, (e: { payload: unknown }) => void> = {};
     listenMock.mockImplementation(async (name: string, cb: (e: { payload: unknown }) => void) => {

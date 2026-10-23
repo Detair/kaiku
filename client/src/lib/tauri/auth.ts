@@ -13,6 +13,7 @@ import type {
 import {
   browserState,
   clearBrowserTokens,
+  expireNativeSession,
   fetchApi,
   getServerUrl,
   getUploadAuth,
@@ -20,6 +21,7 @@ import {
   httpRequest,
   isTauri,
   loadNativeAuthInfo,
+  NATIVE_SESSION_EXPIRED,
   refreshAccessToken,
   scheduleTokenRefresh,
   setNativeAuthInfo,
@@ -49,7 +51,19 @@ async function nativeSessionRequest<T>(
   body?: unknown,
 ): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>("session_request", { method, path, body: body ?? null });
+  try {
+    return await invoke<T>("session_request", {
+      method,
+      path,
+      body: body ?? null,
+    });
+  } catch (error) {
+    // Rust ended the session (refresh token rejected during the request).
+    if (String(error) === NATIVE_SESSION_EXPIRED) {
+      expireNativeSession();
+    }
+    throw error;
+  }
 }
 
 export async function login(

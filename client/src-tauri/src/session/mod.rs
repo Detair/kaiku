@@ -8,13 +8,14 @@
 
 pub mod store;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 pub use store::{KeyringTokenStore, StoredSession, TokenStore};
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{broadcast, Mutex, MutexGuard, Notify, RwLock};
 use tracing::{info, warn};
 
 use crate::{AuthState, User, UserStatus};
@@ -299,7 +300,15 @@ pub struct SessionManager {
     refresh_lock: Mutex<()>,
     /// Wakes the refresh scheduler when the session changes.
     changed: Notify,
+    /// Bumped whenever a different session starts or the session ends, so a
+    /// slow operation can tell that the session it started with is gone.
+    generation: AtomicU64,
+    /// Token refreshes and server-side session ends, from any code path.
+    events: broadcast::Sender<SessionEvent>,
 }
+
+/// Proof that the caller holds `refresh_lock`.
+type LockGuard<'a> = MutexGuard<'a, ()>;
 
 impl SessionManager {
     pub fn new(
@@ -314,7 +323,23 @@ impl SessionManager {
             session: StdRwLock::new(None),
             refresh_lock: Mutex::new(()),
             changed: Notify::new(),
+            generation: AtomicU64::new(0),
+            events: broadcast::channel(16).0,
         }
+    }
+
+    /// Session events (`TokenRefreshed`, `Expired`) for the webview bridge.
+    pub fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
+        self.events.subscribe()
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn publish(&self, event: SessionEvent) {
+        // No subscriber (tests, before setup) is fine.
+        let _ = self.events.send(event);
     }
 
     #[cfg(test)]
@@ -329,8 +354,13 @@ impl SessionManager {
             .clone()
     }
 
-    fn set_session(&self, session: Option<Session>) {
+    /// Replace the session. `new_identity` marks a different session (sign-in,
+    /// restore, sign-out) as opposed to a token rotation of the same one.
+    fn set_session(&self, session: Option<Session>, new_identity: bool) {
         *self.session.write().unwrap_or_else(PoisonError::into_inner) = session;
+        if new_identity {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
         self.changed.notify_one();
     }
 
@@ -345,12 +375,16 @@ impl SessionManager {
         }
     }
 
-    /// Forget the session everywhere. Caller holds `refresh_lock`.
-    async fn end_session(&self, server_url: &str) {
+    /// Forget the session everywhere. `expired` = the server rejected it (the
+    /// webview is told via `SessionEvent::Expired`); `false` = user sign-out.
+    async fn end_session(&self, _lock: &LockGuard<'_>, server_url: &str, expired: bool) {
         if let Err(e) = self.store.clear(server_url) {
             warn!(error = %e, "Could not remove the stored login from the OS keyring");
         }
-        self.set_session(None);
+        self.set_session(None, true);
+        if expired {
+            self.publish(SessionEvent::Expired);
+        }
         let mut auth = self.legacy.write().await;
         auth.access_token = None;
         auth.user = None;
@@ -445,7 +479,7 @@ impl SessionManager {
         let mut session = Session::from_tokens(&base, &tokens, Some(user.clone()));
         session.password_change_required = password_change_required;
         let persisted = self.persist(&session);
-        self.set_session(Some(session));
+        self.set_session(Some(session), true);
         {
             let mut auth = self.legacy.write().await;
             auth.server_url = Some(base);
@@ -513,12 +547,20 @@ impl SessionManager {
     /// without a second server call.
     pub async fn refresh(&self) -> Result<AuthInfo, SessionError> {
         let seen = self.snapshot().map(|s| s.access_token);
-        let _guard = self.refresh_lock.lock().await;
+        let guard = self.refresh_lock.lock().await;
         let current = self.snapshot().ok_or(SessionError::Expired)?;
         if seen.as_deref() != Some(current.access_token.as_str()) {
             return Ok(current.auth_info());
         }
+        self.refresh_locked(&guard, current).await
+    }
 
+    /// Rotate the tokens of `current`. Caller holds `refresh_lock`.
+    async fn refresh_locked(
+        &self,
+        lock: &LockGuard<'_>,
+        current: Session,
+    ) -> Result<AuthInfo, SessionError> {
         let tokens = match self
             .call_refresh(&current.server_url, &current.refresh_token)
             .await
@@ -526,7 +568,7 @@ impl SessionManager {
             Ok(tokens) => tokens,
             Err(SessionError::Expired) => {
                 info!("Refresh token rejected; session ended");
-                self.end_session(&current.server_url).await;
+                self.end_session(lock, &current.server_url, true).await;
                 return Err(SessionError::Expired);
             }
             Err(e) => return Err(e),
@@ -535,17 +577,18 @@ impl SessionManager {
         let session = Session::from_tokens(&current.server_url, &tokens, current.user);
         self.persist(&session);
         let info = session.auth_info();
-        self.set_session(Some(session));
+        self.set_session(Some(session), false);
         self.legacy.write().await.access_token = Some(tokens.access_token);
+        self.publish(SessionEvent::TokenRefreshed(info.clone()));
         Ok(info)
     }
 
     /// Restore the session on app start from the stored refresh token.
     pub async fn restore(&self) -> SessionRestoreResult {
-        let session = {
+        let (session, generation) = {
             let _guard = self.refresh_lock.lock().await;
             if let Some(existing) = self.snapshot() {
-                existing
+                (existing, self.generation())
             } else {
                 let stored = match self.store.load() {
                     Ok(Some(stored)) => stored,
@@ -581,11 +624,11 @@ impl SessionManager {
                 };
                 let session = Session::from_tokens(&stored.server_url, &tokens, None);
                 self.persist(&session);
-                self.set_session(Some(session.clone()));
+                self.set_session(Some(session.clone()), true);
                 let mut auth = self.legacy.write().await;
                 auth.server_url = Some(session.server_url.clone());
                 auth.access_token = Some(session.access_token.clone());
-                session
+                (session, self.generation())
             }
         };
 
@@ -617,6 +660,21 @@ impl SessionManager {
         };
         let password_change_required =
             session.password_change_required || flag(&user, "password_change_required");
+
+        // Sign-in or sign-out may have happened while the profile loaded:
+        // only commit it to the session it was fetched for.
+        let _guard = self.refresh_lock.lock().await;
+        if self.generation() != generation {
+            info!("Session changed during restore; dropping the restored profile");
+            return match self.snapshot() {
+                Some(current) if current.user.is_some() => SessionRestoreResult {
+                    user: current.user,
+                    error_reason: None,
+                    password_change_required: current.password_change_required,
+                },
+                _ => SessionRestoreResult::empty(None),
+            };
+        }
         {
             let mut guard = self.session.write().unwrap_or_else(PoisonError::into_inner);
             if let Some(current) = guard.as_mut() {
@@ -636,7 +694,7 @@ impl SessionManager {
     /// Sign out: revoke the refresh token on the server (best effort), forget
     /// it locally.
     pub async fn logout(&self) -> Result<(), SessionError> {
-        let _guard = self.refresh_lock.lock().await;
+        let guard = self.refresh_lock.lock().await;
         if let Some(session) = self.snapshot() {
             let result = self
                 .http
@@ -650,11 +708,11 @@ impl SessionManager {
                 Ok(r) => warn!(status = r.status().as_u16(), "Server-side logout failed"),
                 Err(e) => warn!(error = %e, "Server-side logout failed"),
             }
-            self.end_session(&session.server_url).await;
+            self.end_session(&guard, &session.server_url, false).await;
         } else {
             match self.store.load() {
-                Ok(Some(stored)) => self.end_session(&stored.server_url).await,
-                Ok(None) => self.set_session(None),
+                Ok(Some(stored)) => self.end_session(&guard, &stored.server_url, false).await,
+                Ok(None) => self.set_session(None, true),
                 Err(e) => warn!(error = %e, "Could not read the stored login from the OS keyring"),
             }
         }
@@ -674,6 +732,11 @@ impl SessionManager {
         let verb = allowed_session_request(method, path).ok_or_else(|| {
             SessionError::InvalidRequest(format!("Request not allowed: {method} {path}"))
         })?;
+        // Hold the rotation lock for the whole request: the server identifies
+        // the current session by the refresh token sent here, so a rotation
+        // in between would make e.g. "revoke all other sessions" revoke this
+        // one too.
+        let guard = self.refresh_lock.lock().await;
         let mut retried = false;
         loop {
             let session = self.snapshot().ok_or(SessionError::Expired)?;
@@ -689,7 +752,7 @@ impl SessionManager {
             let status = response.status().as_u16();
             if status == 401 && !retried {
                 retried = true;
-                self.refresh().await?;
+                self.refresh_locked(&guard, session).await?;
                 continue;
             }
             let text = response.text().await.map_err(|e| network(&e))?;
@@ -756,11 +819,9 @@ fn add_ms(now: u64, d: Duration) -> u64 {
 
 /// Keep the access token fresh while signed in. Only a rejected refresh
 /// token (`Expired`) ends the session; network errors and 5xx keep the stored
-/// token and retry after `retry_delay`.
-pub async fn run_refresh_loop<F>(mgr: Arc<SessionManager>, timing: SchedulerTiming, emit: F)
-where
-    F: Fn(SessionEvent) + Send + 'static,
-{
+/// token and retry after `retry_delay`. Results reach the webview through
+/// [`SessionManager::subscribe`], like refreshes from any other path.
+pub async fn run_refresh_loop(mgr: Arc<SessionManager>, timing: SchedulerTiming) {
     let mut hold_until: Option<u64> = None;
     loop {
         let Some(info) = mgr.auth_info() else {
@@ -776,14 +837,8 @@ where
             continue;
         }
         match mgr.refresh().await {
-            Ok(info) => {
-                hold_until = Some(add_ms(now_ms(), timing.min_delay));
-                emit(SessionEvent::TokenRefreshed(info));
-            }
-            Err(SessionError::Expired) => {
-                hold_until = None;
-                emit(SessionEvent::Expired);
-            }
+            Ok(_) => hold_until = Some(add_ms(now_ms(), timing.min_delay)),
+            Err(SessionError::Expired) => hold_until = None,
             Err(e) => {
                 warn!(error = %e, "Token refresh failed; keeping the session and retrying");
                 hold_until = Some(add_ms(now_ms(), timing.retry_delay));
@@ -792,14 +847,22 @@ where
     }
 }
 
-/// Start the background refresh for the app: emits `auth:token_refreshed`
-/// (payload [`AuthInfo`]) and `auth:session_expired` (no payload).
+/// Start the background refresh for the app and forward every session event
+/// to the webview: `auth:token_refreshed` (payload [`AuthInfo`]) and
+/// `auth:session_expired` (no payload).
 pub fn spawn_refresh_scheduler(app: tauri::AppHandle, mgr: Arc<SessionManager>) {
     use tauri::Emitter;
-    tauri::async_runtime::spawn(run_refresh_loop(
-        mgr,
-        SchedulerTiming::default(),
-        move |event| {
+    let mut events = mgr.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let event = match events.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, "Session events lagged");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
             let result = match event {
                 SessionEvent::TokenRefreshed(info) => app.emit("auth:token_refreshed", info),
                 SessionEvent::Expired => app.emit("auth:session_expired", ()),
@@ -807,8 +870,9 @@ pub fn spawn_refresh_scheduler(app: tauri::AppHandle, mgr: Arc<SessionManager>) 
             if let Err(e) = result {
                 warn!(error = %e, "Could not deliver session event to the webview");
             }
-        },
-    ));
+        }
+    });
+    tauri::async_runtime::spawn(run_refresh_loop(mgr, SchedulerTiming::default()));
 }
 
 #[cfg(test)]
@@ -1217,6 +1281,157 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_request_waits_for_concurrent_rotation() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(tokens("at-2", "rt-2"))
+                    .set_delay(std::time::Duration::from_millis(150)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/auth/sessions"))
+            .and(header("x-refresh-token", "rt-2"))
+            .and(header("authorization", "Bearer at-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"revoked_count": 1})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // A stale token would make the server revoke the current session too.
+        Mock::given(method("DELETE"))
+            .and(path("/auth/sessions"))
+            .and(header("x-refresh-token", "rt-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"revoked_count": 2})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let (refreshed, revoked) = tokio::join!(m.refresh(), async {
+            // Start while the rotation is in flight.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            m.session_request("DELETE", "/auth/sessions", None).await
+        });
+
+        assert_eq!(refreshed.unwrap().access_token, "at-2");
+        assert_eq!(revoked.unwrap()["revoked_count"], json!(1));
+    }
+
+    #[tokio::test]
+    async fn session_request_rejected_refresh_ends_session_and_publishes_expiry() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("GET"))
+            .and(path("/auth/sessions"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut events = m.subscribe();
+
+        let err = m
+            .session_request("GET", "/auth/sessions", None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SessionError::Expired));
+        assert!(matches!(events.try_recv(), Ok(SessionEvent::Expired)));
+        assert!(m.auth_info().is_none());
+        assert!(store.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_request_401_retry_publishes_new_token() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("GET"))
+            .and(path("/auth/sessions"))
+            .and(header("authorization", "Bearer at-1"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/auth/sessions"))
+            .and(header("authorization", "Bearer at-2"))
+            .and(header("x-refresh-token", "rt-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sessions": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("at-2", "rt-2")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut events = m.subscribe();
+
+        let value = m
+            .session_request("GET", "/auth/sessions", None)
+            .await
+            .unwrap();
+
+        assert_eq!(value["sessions"], json!([]));
+        match events.try_recv() {
+            Ok(SessionEvent::TokenRefreshed(info)) => assert_eq!(info.access_token, "at-2"),
+            other => panic!("expected TokenRefreshed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_during_delayed_restore_keeps_state_empty() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::with_session(&server.uri(), "rt-old"));
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("at-2", "rt-2")))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(me())
+                    .set_delay(std::time::Duration::from_millis(200)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/logout"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let m = manager(&store);
+
+        let (restored, logged_out) = tokio::join!(m.restore(), async {
+            // Sign out while the profile request is still pending.
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            m.logout().await
+        });
+
+        logged_out.unwrap();
+        assert!(restored.user.is_none());
+        assert!(m.auth_info().is_none());
+        assert!(store.get().is_none());
+        let auth = m.legacy_auth().read().await;
+        assert!(auth.user.is_none());
+        assert!(auth.access_token.is_none());
+    }
+
+    #[tokio::test]
     async fn logout_revokes_on_server_and_clears_store() {
         let server = MockServer::start().await;
         let store = Arc::new(MemoryTokenStore::new());
@@ -1311,10 +1526,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(tokens("at-2", "rt-2")))
             .mount(&server)
             .await;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = tokio::spawn(run_refresh_loop(m.clone(), fast_timing(), move |e| {
-            let _ = tx.send(e);
-        }));
+        let mut rx = m.subscribe();
+        let task = tokio::spawn(run_refresh_loop(m.clone(), fast_timing()));
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
@@ -1339,10 +1552,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = tokio::spawn(run_refresh_loop(m.clone(), fast_timing(), move |e| {
-            let _ = tx.send(e);
-        }));
+        let mut rx = m.subscribe();
+        let task = tokio::spawn(run_refresh_loop(m.clone(), fast_timing()));
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await

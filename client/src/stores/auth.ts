@@ -134,21 +134,34 @@ function warnIfNotRemembered(result: tauri.AuthResult): void {
   }
 }
 
-/** Shared post-login setup: WebSocket, presence, preferences, idle detection. */
-async function startSessionServices(context: string): Promise<void> {
+/**
+ * Shared post-sign-in setup: WebSocket, presence, preferences, idle
+ * detection. Used after session restore, login, registration and both OIDC
+ * flows. `showWsError: false` keeps registration's behaviour of not showing
+ * the "real-time unavailable" banner when the first connect fails.
+ */
+async function startSessionServices(
+  options: { showWsError?: boolean } = {},
+): Promise<void> {
+  const { showWsError = true } = options;
+
   // Initialize WebSocket listeners and presence in parallel (independent)
   await Promise.all([initWebSocket(), initPresence()]);
 
   // Connect WebSocket and sync preferences in parallel (independent)
   await Promise.all([
-    wsConnect().catch((wsErr) => {
-      console.error("WebSocket connection failed:", wsErr);
-      setAuthState({
-        error: "Real-time messaging temporarily unavailable. Reconnecting...",
-      });
-    }),
+    wsConnect()
+      .then(() => console.log("[Auth] WebSocket connected"))
+      .catch((wsErr) => {
+        console.error("[Auth] WebSocket connection failed:", wsErr);
+        if (showWsError) {
+          setAuthState({
+            error: "Real-time messaging temporarily unavailable. Reconnecting...",
+          });
+        }
+      }),
     initPreferences()
-      .then(() => console.log(`[Auth] Preferences initialized after ${context}`))
+      .then(() => console.log("[Auth] Preferences initialized"))
       .catch((prefErr) => {
         console.error("[Auth] Preferences initialization failed:", prefErr);
       }),
@@ -180,29 +193,7 @@ export async function initAuth(): Promise<void> {
         isInitialized: true,
       });
 
-      // Initialize WebSocket listeners and presence in parallel (independent)
-      await Promise.all([initWebSocket(), initPresence()]);
-
-      // Connect WebSocket and sync preferences in parallel (independent)
-      await Promise.all([
-        wsConnect()
-          .then(() => console.log("[Auth] WebSocket reconnected after session restore"))
-          .catch((wsErr) => {
-            console.error("[Auth] WebSocket reconnection failed:", wsErr);
-            setAuthState(
-              "error",
-              "Real-time messaging temporarily unavailable. Reconnecting...",
-            );
-          }),
-        initPreferences()
-          .then(() => console.log("[Auth] Preferences initialized after session restore"))
-          .catch((prefErr) => {
-            console.error("[Auth] Preferences initialization failed:", prefErr);
-          }),
-      ]);
-
-      // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
-      initIdleDetection();
+      await startSessionServices();
     } else {
       setAuthState({
         user: null,
@@ -264,26 +255,7 @@ export async function login(
       sessionExpired: false,
     });
 
-    // Initialize WebSocket listeners and presence in parallel (independent)
-    await Promise.all([initWebSocket(), initPresence()]);
-
-    // Connect WebSocket and sync preferences in parallel (independent)
-    await Promise.all([
-      wsConnect().catch((wsErr) => {
-        console.error("WebSocket connection failed:", wsErr);
-        setAuthState({
-          error: "Real-time messaging temporarily unavailable. Reconnecting...",
-        });
-      }),
-      initPreferences()
-        .then(() => console.log("[Auth] Preferences initialized after login"))
-        .catch((prefErr) => {
-          console.error("[Auth] Preferences initialization failed:", prefErr);
-        }),
-    ]);
-
-    // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
-    initIdleDetection();
+    await startSessionServices();
 
     return result.user;
   } catch (err) {
@@ -337,23 +309,7 @@ export async function register(
       sessionExpired: false,
     });
 
-    // Initialize WebSocket listeners and presence in parallel (independent)
-    await Promise.all([initWebSocket(), initPresence()]);
-
-    // Connect WebSocket and sync preferences in parallel (independent)
-    await Promise.all([
-      wsConnect().catch((wsErr) => {
-        console.error("WebSocket connection failed:", wsErr);
-      }),
-      initPreferences()
-        .then(() => console.log("[Auth] Preferences initialized after registration"))
-        .catch((prefErr) => {
-          console.error("[Auth] Preferences initialization failed:", prefErr);
-        }),
-    ]);
-
-    // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
-    initIdleDetection();
+    await startSessionServices({ showWsError: false });
 
     return result.user;
   } catch (err) {
@@ -383,7 +339,7 @@ export async function completeNativeOidcLogin(
     mfaRequired: false,
     sessionExpired: false,
   });
-  await startSessionServices("OIDC login");
+  await startSessionServices();
 }
 
 /**
@@ -419,23 +375,7 @@ export async function loginWithOidc(
       sessionExpired: false,
     });
 
-    // Initialize WebSocket listeners and presence in parallel (independent)
-    await Promise.all([initWebSocket(), initPresence()]);
-
-    // Connect WebSocket and sync preferences in parallel (independent)
-    await Promise.all([
-      wsConnect().catch((wsErr) => {
-        console.error("WebSocket connection failed:", wsErr);
-        setAuthState({
-          error: "Real-time messaging temporarily unavailable. Reconnecting...",
-        });
-      }),
-      initPreferences().catch((prefErr) => {
-        console.error("[Auth] Preferences initialization failed:", prefErr);
-      }),
-    ]);
-
-    initIdleDetection();
+    await startSessionServices();
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });
