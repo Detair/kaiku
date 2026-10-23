@@ -17,7 +17,7 @@ use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db::{self, Channel, ChannelType};
 use crate::social::block_cache;
-use crate::ws::{broadcast_to_user, ServerEvent};
+use crate::ws::{broadcast_to_user, broadcast_to_users, ServerEvent};
 
 // ============================================================================
 // Database Functions
@@ -127,9 +127,12 @@ pub(crate) async fn dm_list_entry(
 /// Tell every participant of a newly created DM about it with
 /// [`ServerEvent::DmCreated`], including the creator (their other devices).
 ///
-/// Each participant gets their own `GET /api/dm` element. Failures are logged
-/// and never fail the request.
+/// Each participant gets their own `GET /api/dm` element. All payloads are
+/// built first and then published back-to-back in one pipeline, so no
+/// participant can post into the DM before every participant's socket has been
+/// told (and auto-subscribed). Failures are logged and never fail the request.
 async fn announce_dm_created(state: &AppState, channel: &Channel, participant_ids: &[Uuid]) {
+    let mut events = Vec::with_capacity(participant_ids.len());
     for &participant_id in participant_ids {
         let entry = match dm_list_entry(&state.db, participant_id, channel.clone()).await {
             Ok(entry) => entry,
@@ -143,34 +146,28 @@ async fn announce_dm_created(state: &AppState, channel: &Channel, participant_id
                 continue;
             }
         };
-        let channel_json = match serde_json::to_value(&entry) {
-            Ok(value) => value,
-            Err(e) => {
-                tracing::warn!(
-                    channel_id = %channel.id,
-                    user_id = %participant_id,
-                    error = %e,
-                    "Failed to serialize DmCreated event"
-                );
-                continue;
-            }
-        };
-        if let Err(e) = broadcast_to_user(
-            &state.redis,
-            participant_id,
-            &ServerEvent::DmCreated {
-                channel: channel_json,
-            },
-        )
-        .await
-        {
-            tracing::warn!(
+        match serde_json::to_value(&entry) {
+            Ok(channel_json) => events.push((
+                participant_id,
+                ServerEvent::DmCreated {
+                    channel: channel_json,
+                },
+            )),
+            Err(e) => tracing::warn!(
                 channel_id = %channel.id,
                 user_id = %participant_id,
                 error = %e,
-                "Failed to broadcast DmCreated event"
-            );
+                "Failed to serialize DmCreated event"
+            ),
         }
+    }
+
+    if let Err(e) = broadcast_to_users(&state.redis, &events).await {
+        tracing::warn!(
+            channel_id = %channel.id,
+            error = %e,
+            "Failed to broadcast DmCreated events"
+        );
     }
 }
 

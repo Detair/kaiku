@@ -1144,6 +1144,36 @@ pub async fn broadcast_to_user(
     Ok(())
 }
 
+/// Publish one event per user in a single pipeline, back-to-back.
+///
+/// All payloads are serialized before anything is published, and the
+/// publishes are written together, so no user can react to their event (for
+/// example by posting) before the others' events are out.
+#[tracing::instrument(skip(redis, events), fields(count = events.len()))]
+pub async fn broadcast_to_users(
+    redis: &Client,
+    events: &[(Uuid, ServerEvent)],
+) -> Result<(), Error> {
+    let mut payloads = Vec::with_capacity(events.len());
+    for (user_id, event) in events {
+        let payload = serde_json::to_string(event)
+            .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
+        payloads.push((channels::user_events(*user_id), payload));
+    }
+
+    if payloads.is_empty() {
+        return Ok(());
+    }
+    let pipeline = redis.pipeline();
+    for (channel, payload) in payloads {
+        // Queued only; nothing is sent until `all()`.
+        pipeline.publish::<(), _, _>(channel, payload).await?;
+    }
+    pipeline.all::<Vec<Value>>().await?;
+
+    Ok(())
+}
+
 /// Broadcast a presence update to all users who should see it.
 pub(super) async fn broadcast_presence_update(
     state: &AppState,
