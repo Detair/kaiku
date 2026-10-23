@@ -8,10 +8,8 @@ set -u
 
 case "${1:-}" in
     exec)
-        if [ "${FAKE_DOCKER_MODE:-ok}" = "fail" ]; then
-            exit 1
-        fi
-        # Find the `sh -c <cmd>` part; the command must authenticate.
+        # Find the `sh -c <cmd>` part; the command must authenticate and must
+        # reference the variable literally (expanded inside the container).
         shift
         cmd=""
         while [ $# -gt 0 ]; do
@@ -22,12 +20,19 @@ case "${1:-}" in
             shift
         done
         case "$cmd" in
-            *PGPASSWORD=*) ;;
+            *PGPASSWORD=*'$POSTGRESQL_PASSWORD'*) ;;
             *)
-                echo "fake-docker: exec without PGPASSWORD (cmd: '$cmd')" >&2
+                echo "fake-docker: exec without PGPASSWORD=\$POSTGRESQL_PASSWORD (cmd: '$cmd')" >&2
                 exit 2
                 ;;
         esac
+        if [ "${FAKE_DOCKER_MODE:-ok}" = "fail" ]; then
+            exit 1
+        fi
+        if [ "${FAKE_DOCKER_MODE:-ok}" = "truncated" ]; then
+            printf -- '-- PostgreSQL database dump\n\nSELECT 1;\n'
+            exit 0
+        fi
         case "$cmd" in
             *pg_dump*)
                 printf -- '-- PostgreSQL database dump\n\nSELECT 1;\n\n-- PostgreSQL database dump complete\n'

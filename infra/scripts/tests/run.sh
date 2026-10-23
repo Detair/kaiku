@@ -48,13 +48,29 @@ check "backup fail: exit non-zero" test "$rc" -ne 0
 left=("$FAIL_DIR"/*.sql.gz)
 check "backup fail: no .sql.gz left behind" test "${#left[@]}" -eq 0
 
-check "backup: no PGPASSWORD-less exec recorded" bash -c '! grep -q "pg_dump -U voicechat" "$1"' _ "$FAKE_DOCKER_LOG"
+check "backup: exec used in-container POSTGRESQL_PASSWORD" grep -q 'POSTGRESQL_PASSWORD' "$FAKE_DOCKER_LOG"
+
+# --- backup: truncated dump (docker exits 0, no trailer) -----------------------
+TR_DIR="$WORK/trunc"
+mkdir -p "$TR_DIR"
+FAKE_DOCKER_MODE=truncated BACKUP_DIR="$TR_DIR" BACKUP_RUSTFS=false "$SCRIPTS/backup.sh" >"$WORK/trunc.out" 2>&1
+rc=$?
+check "backup truncated: exit non-zero" test "$rc" -ne 0
+left=("$TR_DIR"/*.sql.gz)
+check "backup truncated: no .sql.gz left behind" test "${#left[@]}" -eq 0
+
+# --- preflight check 4: truncated latest dump is rejected ----------------------
+mkdir -p "$WORK/pfbackups"
+printf -- '-- PostgreSQL database dump\nSELECT 1;\n' | gzip > "$WORK/pfbackups/kaiku-2024-01-01_000000.sql.gz"
 
 # --- preflight: migration version comparison (check 5) -------------------------
 MIG="$WORK/migrations"
 mkdir -p "$MIG" "$WORK/pfbackups"
 touch "$MIG/20240101000001_a.sql" "$MIG/20240101000002_b.sql"
 pf() { MIGRATIONS_DIR="$MIG" BACKUP_DIR="$WORK/pfbackups" "$SCRIPTS/upgrade-preflight.sh" 2>&1; }
+out=$(pf)
+check "preflight: truncated backup fails check 4" grep -q "corrupt or incomplete" <<<"$out"
+rm -f "$WORK"/pfbackups/*.sql.gz
 out=$(FAKE_DOCKER_MIGRATIONS="20240101000001" pf)
 check "preflight: 1 pending migration reported" grep -q "1 pending migration" <<<"$out"
 out=$(FAKE_DOCKER_MIGRATIONS="20240101000001 20240101000002 20240101000009" pf)
