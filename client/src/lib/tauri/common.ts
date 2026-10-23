@@ -581,6 +581,15 @@ export async function httpRequest<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  return (await sendHttpRequest<T>(method, path, body, false)).data;
+}
+
+/** Like `httpRequest`, but also returns the HTTP status of the success response. */
+export async function httpRequestWithStatus<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ data: T; status: number }> {
   return sendHttpRequest<T>(method, path, body, false);
 }
 
@@ -589,7 +598,7 @@ async function sendHttpRequest<T>(
   path: string,
   body: unknown,
   isRetry: boolean,
-): Promise<T> {
+): Promise<{ data: T; status: number }> {
   const { baseUrl, accessToken: token } = await getAuthContext();
 
   const headers: Record<string, string> = {};
@@ -630,37 +639,32 @@ async function sendHttpRequest<T>(
   if (!response.ok) {
     let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
 
+    // Read the body once as text: a failed json() would consume it.
+    let rawBody = "";
     try {
-      const errorBody = await response.json();
-      // Detect MFA_REQUIRED from server — throw before falling into catch
+      rawBody = await response.text();
+    } catch (textError) {
+      console.error(
+        `[httpRequest] Failed to read error response body for ${path}:`,
+        textError,
+      );
+    }
+
+    let errorBody: { error?: string; message?: string } | null = null;
+    try {
+      errorBody = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      if (rawBody.length > 0 && rawBody.length < 500) {
+        errorMessage = rawBody;
+      }
+    }
+
+    if (errorBody && typeof errorBody === "object") {
+      // Detect MFA_REQUIRED from server
       if (response.status === 403 && errorBody.error === "MFA_REQUIRED") {
         throw new HttpError(403, "MFA_REQUIRED");
       }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
-    } catch (parseError) {
-      // Re-throw HttpError (including MFA_REQUIRED) without wrapping
-      if (parseError instanceof HttpError) {
-        throw parseError;
-      }
-      // Log parse failure but continue with text fallback
-      console.warn(
-        `[httpRequest] Failed to parse error response as JSON for ${path}:`,
-        parseError,
-      );
-
-      try {
-        const text = await response.text();
-        if (text.length > 0 && text.length < 500) {
-          errorMessage = text;
-        }
-      } catch (textError) {
-        // Log double failure (both JSON and text parsing failed)
-        console.error(
-          `[httpRequest] Failed to parse error response as both JSON and text for ${path}:`,
-          textError,
-        );
-        // Use statusText as final fallback
-      }
     }
 
     throw new HttpError(response.status, errorMessage);
@@ -668,10 +672,10 @@ async function sendHttpRequest<T>(
 
   // Handle empty responses
   const text = await response.text();
-  if (!text) return null as T;
+  if (!text) return { data: null as T, status: response.status };
 
   try {
-    return JSON.parse(text);
+    return { data: JSON.parse(text) as T, status: response.status };
   } catch (parseError) {
     console.error(
       `[httpRequest] Failed to parse success response as JSON for ${cleanPath}:`,

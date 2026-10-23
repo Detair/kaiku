@@ -7,12 +7,11 @@
 import { createSignal, createMemo } from "solid-js";
 import type { FavoriteChannel, Favorite } from "@/lib/types";
 import { showToast } from "@/components/ui/Toast";
+import { httpRequest } from "@/lib/tauri/common";
 
 // ============================================================================
 // State
 // ============================================================================
-
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 const [favorites, setFavorites] = createSignal<FavoriteChannel[]>([]);
 const [isLoading, setIsLoading] = createSignal(false);
@@ -67,62 +66,12 @@ export function isFavorited(channelId: string): boolean {
 // API Calls
 // ============================================================================
 
-async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const method = options?.method || "GET";
-    const body = options?.body ? JSON.parse(options.body as string) : undefined;
-
-    switch (method) {
-      case "GET":
-        return invoke("fetch_favorites") as Promise<T>;
-      case "POST": {
-        const channelId = endpoint.split("/").pop();
-        return invoke("add_favorite", { channelId }) as Promise<T>;
-      }
-      case "DELETE": {
-        const channelId = endpoint.split("/").pop();
-        return invoke("remove_favorite", { channelId }) as Promise<T>;
-      }
-      case "PUT":
-        if (endpoint.includes("reorder-guilds")) {
-          return invoke("reorder_favorite_guilds", {
-            guildIds: body.guild_ids,
-          }) as Promise<T>;
-        }
-        return invoke("reorder_favorite_channels", {
-          guildId: body.guild_id,
-          channelIds: body.channel_ids,
-        }) as Promise<T>;
-      default:
-        throw new Error(`Unknown method: ${method}`);
-    }
-  }
-
-  // HTTP fallback for browser
-  const { getAccessToken, getServerUrl } = await import("@/lib/tauri");
-  const token = getAccessToken();
-  const baseUrl = getServerUrl();
-
-  const response = await fetch(`${baseUrl}${endpoint}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...options?.headers,
-    },
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: "unknown" }));
-    throw new Error(error.error || `API error: ${response.status}`);
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json();
+async function apiCall<T>(
+  method: string,
+  endpoint: string,
+  body?: unknown,
+): Promise<T> {
+  return httpRequest<T>(method, endpoint, body);
 }
 
 // ============================================================================
@@ -134,8 +83,8 @@ export async function loadFavorites(): Promise<void> {
   try {
     const response = await apiCall<
       FavoriteChannel[] | { favorites: FavoriteChannel[] }
-    >("/api/me/favorites");
-    // Handle both shapes: Tauri returns array directly, browser returns { favorites: [...] }
+    >("GET", "/api/me/favorites");
+    // Handle both shapes: a bare array or { favorites: [...] }
     const data = Array.isArray(response) ? response : response.favorites;
     setFavorites(data);
   } catch (error) {
@@ -154,9 +103,10 @@ export async function addFavorite(
   channelType: "text" | "voice",
 ): Promise<boolean> {
   try {
-    const result = await apiCall<Favorite>(`/api/me/favorites/${channelId}`, {
-      method: "POST",
-    });
+    const result = await apiCall<Favorite>(
+      "POST",
+      `/api/me/favorites/${channelId}`,
+    );
 
     // Add to local state
     setFavorites((prev) => [
@@ -189,7 +139,7 @@ export async function addFavorite(
 
 export async function removeFavorite(channelId: string): Promise<boolean> {
   try {
-    await apiCall(`/api/me/favorites/${channelId}`, { method: "DELETE" });
+    await apiCall("DELETE", `/api/me/favorites/${channelId}`);
     setFavorites((prev) => prev.filter((f) => f.channel_id !== channelId));
     return true;
   } catch (error) {
@@ -239,9 +189,9 @@ export async function reorderChannels(
   channelIds: string[],
 ): Promise<boolean> {
   try {
-    await apiCall("/api/me/favorites/reorder", {
-      method: "PUT",
-      body: JSON.stringify({ guild_id: guildId, channel_ids: channelIds }),
+    await apiCall("PUT", "/api/me/favorites/reorder", {
+      guild_id: guildId,
+      channel_ids: channelIds,
     });
 
     // Update local state positions
@@ -263,9 +213,8 @@ export async function reorderChannels(
 
 export async function reorderGuilds(guildIds: string[]): Promise<boolean> {
   try {
-    await apiCall("/api/me/favorites/reorder-guilds", {
-      method: "PUT",
-      body: JSON.stringify({ guild_ids: guildIds }),
+    await apiCall("PUT", "/api/me/favorites/reorder-guilds", {
+      guild_ids: guildIds,
     });
 
     // Update local state positions

@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "lint": "eslint src",
     "lint:handlers": "bash scripts/check-dead-handlers.sh",
+    "lint:tauri-commands": "bun scripts/check-tauri-commands.ts",
     "format": "prettier --write src",
     "test": "vitest",
     "test:run": "vitest run",

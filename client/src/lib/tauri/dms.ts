@@ -11,7 +11,6 @@ import {
   getAccessToken,
   getServerUrl,
   httpRequest,
-  isTauri,
   validateFileSize,
 } from "./common";
 
@@ -93,20 +92,10 @@ export async function uploadDMAvatar(
 // ============================================================================
 
 export async function getDMs(): Promise<DMChannel[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_dms");
-  }
-
   return httpRequest<DMChannel[]>("GET", "/api/dm");
 }
 
 export async function getDM(channelId: string): Promise<DMChannel> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_dm", { channelId });
-  }
-
   return httpRequest<DMChannel>("GET", `/api/dm/${channelId}`);
 }
 
@@ -114,11 +103,6 @@ export async function createDM(
   participantIds: string[],
   name?: string,
 ): Promise<DMChannel> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_dm", { participantIds, name });
-  }
-
   return httpRequest<DMChannel>("POST", "/api/dm", {
     participant_ids: participantIds,
     name,
@@ -126,20 +110,10 @@ export async function createDM(
 }
 
 export async function leaveDM(channelId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("leave_dm", { channelId });
-  }
-
   await httpRequest<void>("POST", `/api/dm/${channelId}/leave`);
 }
 
 export async function getDMList(): Promise<DMListItem[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_dm_list");
-  }
-
   return httpRequest<DMListItem[]>("GET", "/api/dm");
 }
 
@@ -147,11 +121,6 @@ export async function markDMAsRead(
   channelId: string,
   lastReadMessageId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mark_dm_as_read", { channelId, lastReadMessageId });
-  }
-
   await httpRequest<void>("POST", `/api/dm/${channelId}/read`, {
     last_read_message_id: lastReadMessageId,
   });
@@ -177,11 +146,6 @@ export async function updateDMName(
 export async function getCallState(
   channelId: string,
 ): Promise<CallStateResponse | null> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_call_state", { channelId });
-  }
-
   return httpRequest<CallStateResponse | null>(
     "GET",
     `/api/dm/${channelId}/call`,
@@ -194,11 +158,6 @@ export async function getCallState(
 export async function startDMCall(
   channelId: string,
 ): Promise<CallStateResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("start_dm_call", { channelId });
-  }
-
   return httpRequest<CallStateResponse>(
     "POST",
     `/api/dm/${channelId}/call/start`,
@@ -211,11 +170,6 @@ export async function startDMCall(
 export async function joinDMCall(
   channelId: string,
 ): Promise<CallStateResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("join_dm_call", { channelId });
-  }
-
   return httpRequest<CallStateResponse>(
     "POST",
     `/api/dm/${channelId}/call/join`,
@@ -228,11 +182,6 @@ export async function joinDMCall(
 export async function declineDMCall(
   channelId: string,
 ): Promise<CallStateResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("decline_dm_call", { channelId });
-  }
-
   return httpRequest<CallStateResponse>(
     "POST",
     `/api/dm/${channelId}/call/decline`,
@@ -245,11 +194,6 @@ export async function declineDMCall(
 export async function leaveDMCall(
   channelId: string,
 ): Promise<CallStateResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("leave_dm_call", { channelId });
-  }
-
   return httpRequest<CallStateResponse>(
     "POST",
     `/api/dm/${channelId}/call/leave`,

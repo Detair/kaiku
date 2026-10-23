@@ -194,8 +194,9 @@ export function getBrowserWebSocket(): WebSocket | null {
  */
 export async function wsSend(message: any): Promise<void> {
   if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("ws_send", { message: JSON.stringify(message) });
+    // Rust has no generic `ws_send` command registered yet, so this would
+    // fail inside invoke anyway; fail explicitly until it exists.
+    throw new Error("Native WebSocket send is not available yet");
   } else {
     if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
       throw new Error(

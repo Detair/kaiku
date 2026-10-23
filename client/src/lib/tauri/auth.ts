@@ -31,15 +31,19 @@ import {
   type AuthResult,
   type SessionRestoreResult,
 } from "./common";
-import { getBrowserWebSocket } from "./websocket";
+import { getBrowserWebSocket, wsSend } from "./websocket";
 
-/** Native mode: call a Rust command and cache the session's auth info. */
+type InvokeFn = typeof import("@tauri-apps/api/core").invoke;
+
+/**
+ * Native mode: call a Rust auth command and cache the session's auth info.
+ * The caller names the command with a literal so `lint:tauri-commands` sees it.
+ */
 async function invokeNativeAuth<T>(
-  cmd: string,
-  args?: Record<string, unknown>,
+  call: (invoke: InvokeFn) => Promise<T>,
 ): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const result = await invoke<T>(cmd, args);
+  const result = await call(invoke);
   await loadNativeAuthInfo();
   return result;
 }
@@ -73,14 +77,16 @@ export async function login(
   mfaCode?: string,
 ): Promise<AuthResult> {
   if (isTauri) {
-    return invokeNativeAuth<AuthResult>("login", {
-      request: {
-        server_url: serverUrl,
-        username,
-        password,
-        mfa_code: mfaCode ?? null,
-      },
-    });
+    return invokeNativeAuth((invoke) =>
+      invoke<AuthResult>("login", {
+        request: {
+          server_url: serverUrl,
+          username,
+          password,
+          mfa_code: mfaCode ?? null,
+        },
+      }),
+    );
   }
 
   // Browser mode
@@ -122,11 +128,6 @@ export async function login(
 export async function updateStatus(
   status: "online" | "idle" | "dnd" | "invisible" | "offline",
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_status", { status });
-  }
-
   // Map client status names to server enum values
   const statusMap: Record<string, string> = {
     online: "online",
@@ -135,9 +136,12 @@ export async function updateStatus(
     invisible: "offline",
     offline: "offline",
   };
-  getBrowserWebSocket()?.send(
-    JSON.stringify({ type: "set_status", status: statusMap[status] ?? "online" }),
-  );
+  const message = { type: "set_status", status: statusMap[status] ?? "online" };
+  if (isTauri) {
+    await wsSend(message);
+    return;
+  }
+  getBrowserWebSocket()?.send(JSON.stringify(message));
 }
 
 export async function register(
@@ -148,15 +152,17 @@ export async function register(
   displayName?: string,
 ): Promise<AuthResult> {
   if (isTauri) {
-    return invokeNativeAuth<AuthResult>("register", {
-      request: {
-        server_url: serverUrl,
-        username,
-        email,
-        password,
-        display_name: displayName,
-      },
-    });
+    return invokeNativeAuth((invoke) =>
+      invoke<AuthResult>("register", {
+        request: {
+          server_url: serverUrl,
+          username,
+          email,
+          password,
+          display_name: displayName,
+        },
+      }),
+    );
   }
 
   // Browser mode
@@ -242,7 +248,9 @@ export async function logout(): Promise<void> {
 
 export async function getCurrentUser(): Promise<SessionRestoreResult> {
   if (isTauri) {
-    return invokeNativeAuth<SessionRestoreResult>("get_current_user");
+    return invokeNativeAuth((invoke) =>
+      invoke<SessionRestoreResult>("get_current_user"),
+    );
   }
 
   // Browser mode - check if we have a token
@@ -437,46 +445,26 @@ export interface MfaBackupCodeCountResponse {
 
 /** Setup MFA — returns TOTP secret and QR code URL. */
 export async function mfaSetup(): Promise<MfaSetupResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_setup");
-  }
   return httpRequest<MfaSetupResponse>("POST", "/auth/mfa/setup");
 }
 
 /** Verify MFA code (TOTP or backup). Returns backup codes on first verify. */
 export async function mfaVerify(code: string): Promise<MfaVerifyResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_verify", { code });
-  }
   return httpRequest<MfaVerifyResponse>("POST", "/auth/mfa/verify", { code });
 }
 
 /** Disable MFA (requires valid TOTP or backup code). */
 export async function mfaDisable(code: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_disable", { code });
-  }
   await httpRequest<unknown>("POST", "/auth/mfa/disable", { code });
 }
 
 /** Generate (or regenerate) MFA backup codes. */
 export async function mfaGenerateBackupCodes(): Promise<MfaBackupCodesResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_generate_backup_codes");
-  }
   return httpRequest<MfaBackupCodesResponse>("POST", "/auth/mfa/backup-codes");
 }
 
 /** Get remaining MFA backup code count. */
 export async function mfaBackupCodeCount(): Promise<MfaBackupCodeCountResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_backup_code_count");
-  }
   return httpRequest<MfaBackupCodeCountResponse>(
     "GET",
     "/auth/mfa/backup-codes/count",
@@ -494,10 +482,6 @@ export interface QrLoginCreateResponse {
 
 /** Create a QR login token for mobile scanning. */
 export async function qrLoginCreate(): Promise<QrLoginCreateResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("qr_login_create");
-  }
   return httpRequest<QrLoginCreateResponse>("POST", "/auth/qr/create");
 }
 
@@ -602,10 +586,12 @@ export async function oidcAuthorize(
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
   if (isTauri) {
-    const result = await invokeNativeAuth<AuthResult>("oidc_authorize", {
-      serverUrl: baseUrl,
-      providerSlug,
-    });
+    const result = await invokeNativeAuth((invoke) =>
+      invoke<AuthResult>("oidc_authorize", {
+        serverUrl: baseUrl,
+        providerSlug,
+      }),
+    );
     return { mode: "tauri", result };
   }
 

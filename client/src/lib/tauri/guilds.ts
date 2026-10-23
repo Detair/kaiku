@@ -27,7 +27,6 @@ import {
   fetchApi,
   getUploadAuth,
   httpRequest,
-  isTauri,
   validateFileSize,
 } from "./common";
 
@@ -36,20 +35,10 @@ import {
 // ============================================================================
 
 export async function getGuilds(): Promise<Guild[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guilds");
-  }
-
   return httpRequest<Guild[]>("GET", "/api/guilds");
 }
 
 export async function getGuild(guildId: string): Promise<Guild> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild", { guildId });
-  }
-
   return httpRequest<Guild>("GET", `/api/guilds/${guildId}`);
 }
 
@@ -73,11 +62,6 @@ export async function createGuild(
     }
   }
 
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_guild", body);
-  }
-
   return httpRequest<Guild>("POST", "/api/guilds", body);
 }
 
@@ -87,16 +71,6 @@ export async function updateGuild(
   description?: string,
   icon_url?: string,
 ): Promise<Guild> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_guild", {
-      guildId,
-      name,
-      description,
-      iconUrl: icon_url,
-    });
-  }
-
   return httpRequest<Guild>("PATCH", `/api/guilds/${guildId}`, {
     name,
     description,
@@ -105,11 +79,6 @@ export async function updateGuild(
 }
 
 export async function deleteGuild(guildId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_guild", { guildId });
-  }
-
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}`);
 }
 
@@ -122,31 +91,16 @@ export async function joinGuild(
 }
 
 export async function leaveGuild(guildId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("leave_guild", { guildId });
-  }
-
   await httpRequest<void>("POST", `/api/guilds/${guildId}/leave`);
 }
 
 export async function getGuildMembers(guildId: string): Promise<GuildMember[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_members", { guildId });
-  }
-
   return httpRequest<GuildMember[]>("GET", `/api/guilds/${guildId}/members`);
 }
 
 export async function getGuildChannels(
   guildId: string,
 ): Promise<ChannelWithUnread[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_channels", { guildId });
-  }
-
   return httpRequest<ChannelWithUnread[]>(
     "GET",
     `/api/guilds/${guildId}/channels`,
@@ -240,11 +194,6 @@ export async function joinDiscoverable(
  * Get invites for a guild (owner only)
  */
 export async function getGuildInvites(guildId: string): Promise<GuildInvite[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_invites", { guildId });
-  }
-
   return httpRequest<GuildInvite[]>("GET", `/api/guilds/${guildId}/invites`);
 }
 
@@ -255,11 +204,6 @@ export async function createGuildInvite(
   guildId: string,
   expiresIn: InviteExpiry = "7d",
 ): Promise<GuildInvite> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_guild_invite", { guildId, expiresIn });
-  }
-
   return httpRequest<GuildInvite>("POST", `/api/guilds/${guildId}/invites`, {
     expires_in: expiresIn,
   });
@@ -272,11 +216,6 @@ export async function deleteGuildInvite(
   guildId: string,
   code: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_guild_invite", { guildId, code });
-  }
-
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}/invites/${code}`);
 }
 
@@ -284,11 +223,6 @@ export async function deleteGuildInvite(
  * Join a guild via invite code
  */
 export async function joinViaInvite(code: string): Promise<InviteResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("join_via_invite", { code });
-  }
-
   return httpRequest<InviteResponse>("POST", `/api/invites/${code}/join`);
 }
 
@@ -299,11 +233,6 @@ export async function kickGuildMember(
   guildId: string,
   userId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("kick_guild_member", { guildId, userId });
-  }
-
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}/members/${userId}`);
 }
 
@@ -317,11 +246,6 @@ export async function kickGuildMember(
 export async function getGuildCategories(
   guildId: string,
 ): Promise<ChannelCategory[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_categories", { guildId });
-  }
-
   return httpRequest<ChannelCategory[]>(
     "GET",
     `/api/guilds/${guildId}/categories`,
@@ -337,11 +261,6 @@ export async function createGuildCategory(
   parentId?: string,
   categoryType?: string,
 ): Promise<ChannelCategory> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_guild_category", { guildId, name, parentId, categoryType });
-  }
-
   return httpRequest<ChannelCategory>(
     "POST",
     `/api/guilds/${guildId}/categories`,
@@ -365,11 +284,6 @@ export async function updateGuildCategory(
     parentId?: string | null;
   },
 ): Promise<ChannelCategory> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_guild_category", { guildId, categoryId, ...updates });
-  }
-
   return httpRequest<ChannelCategory>(
     "PATCH",
     `/api/guilds/${guildId}/categories/${categoryId}`,
@@ -386,11 +300,6 @@ export async function updateGuildCategory(
 // ============================================================================
 
 export async function getGuildEmojis(guildId: string): Promise<GuildEmoji[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_emojis", { guildId });
-  }
-
   return httpRequest<GuildEmoji[]>("GET", `/api/guilds/${guildId}/emojis`);
 }
 
@@ -468,11 +377,6 @@ export async function updateGuildEmoji(
   emojiId: string,
   name: string,
 ): Promise<GuildEmoji> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_guild_emoji", { guildId, emojiId, name });
-  }
-
   return httpRequest<GuildEmoji>(
     "PATCH",
     `/api/guilds/${guildId}/emojis/${emojiId}`,
@@ -486,11 +390,6 @@ export async function deleteGuildEmoji(
   guildId: string,
   emojiId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_guild_emoji", { guildId, emojiId });
-  }
-
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}/emojis/${emojiId}`);
 }
 
@@ -501,11 +400,6 @@ export async function deleteGuildCategory(
   guildId: string,
   categoryId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_guild_category", { guildId, categoryId });
-  }
-
   await httpRequest<void>(
     "DELETE",
     `/api/guilds/${guildId}/categories/${categoryId}`,
@@ -519,11 +413,6 @@ export async function reorderGuildCategories(
   guildId: string,
   categories: Array<{ id: string; position: number; parentId?: string | null }>,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("reorder_guild_categories", { guildId, categories });
-  }
-
   await httpRequest<void>("POST", `/api/guilds/${guildId}/categories/reorder`, {
     categories: categories.map((c) => ({
       id: c.id,
@@ -550,11 +439,6 @@ export async function reorderGuildChannels(
   guildId: string,
   channels: ChannelPosition[],
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("reorder_guild_channels", { guildId, channels });
-  }
-
   await httpRequest<void>("POST", `/api/guilds/${guildId}/channels/reorder`, {
     channels,
   });
@@ -568,11 +452,6 @@ export async function reorderGuildChannels(
  * Get all roles for a guild.
  */
 export async function getGuildRoles(guildId: string): Promise<GuildRole[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_roles", { guildId });
-  }
-
   return httpRequest<GuildRole[]>("GET", `/api/guilds/${guildId}/roles`);
 }
 
@@ -583,11 +462,6 @@ export async function createGuildRole(
   guildId: string,
   request: CreateRoleRequest,
 ): Promise<GuildRole> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_guild_role", { guildId, request });
-  }
-
   return httpRequest<GuildRole>(
     "POST",
     `/api/guilds/${guildId}/roles`,
@@ -603,11 +477,6 @@ export async function updateGuildRole(
   roleId: string,
   request: UpdateRoleRequest,
 ): Promise<GuildRole> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_guild_role", { guildId, roleId, request });
-  }
-
   return httpRequest<GuildRole>(
     "PATCH",
     `/api/guilds/${guildId}/roles/${roleId}`,
@@ -622,11 +491,6 @@ export async function deleteGuildRole(
   guildId: string,
   roleId: string,
 ): Promise<DeleteRoleResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_guild_role", { guildId, roleId });
-  }
-
   return httpRequest<DeleteRoleResponse>(
     "DELETE",
     `/api/guilds/${guildId}/roles/${roleId}`,
@@ -640,11 +504,6 @@ export async function deleteGuildRole(
 export async function getGuildMemberRoles(
   guildId: string,
 ): Promise<Record<string, string[]>> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_member_roles", { guildId });
-  }
-
   return httpRequest<Record<string, string[]>>(
     "GET",
     `/api/guilds/${guildId}/member-roles`,
@@ -659,11 +518,6 @@ export async function assignMemberRole(
   userId: string,
   roleId: string,
 ): Promise<AssignRoleResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("assign_member_role", { guildId, userId, roleId });
-  }
-
   return httpRequest<AssignRoleResponse>(
     "POST",
     `/api/guilds/${guildId}/members/${userId}/roles/${roleId}`,
@@ -678,11 +532,6 @@ export async function removeMemberRole(
   userId: string,
   roleId: string,
 ): Promise<RemoveRoleResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("remove_member_role", { guildId, userId, roleId });
-  }
-
   return httpRequest<RemoveRoleResponse>(
     "DELETE",
     `/api/guilds/${guildId}/members/${userId}/roles/${roleId}`,

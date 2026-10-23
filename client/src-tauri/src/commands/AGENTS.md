@@ -20,10 +20,17 @@ Frontend receives Promise<T>
 
 ## Module Structure
 
+**No REST proxies.** Plain server REST calls (guilds, channels, messages, DMs,
+pins, favorites, preferences, admin, pages, roles, MFA, QR login, DM call
+signalling) go from the webview through `httpRequest` in
+`client/src/lib/tauri/common.ts`, with the base URL and access token from
+`get_auth_info`. Commands here exist only for session/auth, WebSocket, voice
+and media, tray, local settings, crypto/E2EE, presence scanning, sound and
+clipboard.
+
 | File | Purpose | Key Commands |
 |------|---------|--------------|
 | `auth.rs` | Authentication, registration, logout | `login`, `register`, `logout`, `get_current_user` |
-| `chat.rs` | Text channels and messages | `get_channels`, `get_messages`, `send_message` |
 | `crypto.rs` | E2EE encryption operations (Olm + Megolm) | `init_e2ee`, `encrypt_message`, `decrypt_message`, `create_megolm_session`, `encrypt_group_message`, `decrypt_group_message` |
 | `voice.rs` | Voice channel join/leave, mute/deafen | `join_voice`, `leave_voice`, `set_mute`, `handle_voice_offer` |
 | `settings.rs` | User preferences (audio, theme, etc.) | `get_settings`, `update_settings` |
@@ -108,16 +115,6 @@ listen('voice:state_change', (event) => console.log(event.payload));
 - Refresh token: OS keyring (persistent across restarts)
 - Never log tokens
 - Clear keyring on logout
-
-### `chat.rs`
-**Purpose:** Text channel operations.
-
-**Key Commands:**
-- `get_channels()`: Fetch list of accessible channels
-- `get_messages(channel_id, limit, before)`: Paginated message history
-- `send_message(channel_id, content)`: Send text message
-
-**Pattern:** All API calls use `state.http` (reqwest) with `Authorization: Bearer {token}` header.
 
 ### `voice.rs`
 **Purpose:** Voice channel lifecycle and WebRTC signaling.
@@ -204,6 +201,8 @@ test('login flow', async () => {
 ### "Failed to invoke command" Error
 - **Cause:** Command not registered in `lib.rs` `invoke_handler!` macro
 - **Fix:** Add command to the macro list
+- **Check:** `cd client && bun run lint:tauri-commands` (runs in CI) lists every
+  `invoke("…")` name missing from `generate_handler!`
 
 ### Serialization Errors
 - **Cause:** Type mismatch between frontend and Rust (e.g., `number` vs `string`)

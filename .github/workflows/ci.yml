@@ -308,6 +308,10 @@ jobs:
       - name: Lint (fails on errors; warnings allowed)
         run: bun run lint
 
+      - name: Check Tauri invoke registration
+        working-directory: client
+        run: bun run lint:tauri-commands
+
       - name: Run tests
         run: bun run test:run
 

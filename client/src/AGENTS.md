@@ -125,7 +125,7 @@ import { For, Show } from "solid-js";
 The app runs in two modes:
 
 1. **Tauri Native (production):**
-   - Commands via `@tauri-apps/api/core` `invoke()`
+   - REST via `httpRequest` (same path as the browser); native commands via `@tauri-apps/api/core` `invoke()`
    - WebSocket via Tauri backend
    - Voice via native Rust WebRTC
 

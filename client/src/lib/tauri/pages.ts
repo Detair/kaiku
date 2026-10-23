@@ -9,7 +9,7 @@ import type {
   PageRevision,
   RevisionListItem,
 } from "../types";
-import { httpRequest, isTauri } from "./common";
+import { httpRequest } from "./common";
 
 // ============================================================================
 // Platform pages
@@ -19,11 +19,6 @@ import { httpRequest, isTauri } from "./common";
  * List all platform pages.
  */
 export async function listPlatformPages(): Promise<PageListItem[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("list_platform_pages");
-  }
-
   return httpRequest<PageListItem[]>("GET", "/api/pages");
 }
 
@@ -31,11 +26,6 @@ export async function listPlatformPages(): Promise<PageListItem[]> {
  * Get a platform page by slug.
  */
 export async function getPlatformPage(slug: string): Promise<Page> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_platform_page", { slug });
-  }
-
   return httpRequest<Page>("GET", `/api/pages/by-slug/${slug}`);
 }
 
@@ -48,16 +38,6 @@ export async function createPlatformPage(
   slug?: string,
   requiresAcceptance?: boolean,
 ): Promise<Page> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_platform_page", {
-      title,
-      content,
-      slug,
-      requiresAcceptance,
-    });
-  }
-
   return httpRequest<Page>("POST", "/api/pages", {
     title,
     content,
@@ -76,17 +56,6 @@ export async function updatePlatformPage(
   content?: string,
   requiresAcceptance?: boolean,
 ): Promise<Page> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_platform_page", {
-      pageId,
-      title,
-      slug,
-      content,
-      requiresAcceptance,
-    });
-  }
-
   return httpRequest<Page>("PATCH", `/api/pages/${pageId}`, {
     title,
     slug,
@@ -99,11 +68,6 @@ export async function updatePlatformPage(
  * Delete a platform page (admin only).
  */
 export async function deletePlatformPage(pageId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_platform_page", { pageId });
-  }
-
   await httpRequest<void>("DELETE", `/api/pages/${pageId}`);
 }
 
@@ -111,11 +75,6 @@ export async function deletePlatformPage(pageId: string): Promise<void> {
  * Reorder platform pages (admin only).
  */
 export async function reorderPlatformPages(pageIds: string[]): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("reorder_platform_pages", { pageIds });
-  }
-
   await httpRequest<void>("POST", "/api/pages/reorder", { page_ids: pageIds });
 }
 
@@ -127,11 +86,6 @@ export async function reorderPlatformPages(pageIds: string[]): Promise<void> {
  * List guild pages.
  */
 export async function listGuildPages(guildId: string): Promise<PageListItem[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("list_guild_pages", { guildId });
-  }
-
   return httpRequest<PageListItem[]>("GET", `/api/guilds/${guildId}/pages`);
 }
 
@@ -142,11 +96,6 @@ export async function getGuildPage(
   guildId: string,
   slug: string,
 ): Promise<Page> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_guild_page", { guildId, slug });
-  }
-
   return httpRequest<Page>(
     "GET",
     `/api/guilds/${guildId}/pages/by-slug/${slug}`,
@@ -164,18 +113,6 @@ export async function createGuildPage(
   requiresAcceptance?: boolean,
   categoryId?: string,
 ): Promise<Page> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_guild_page", {
-      guildId,
-      title,
-      content,
-      slug,
-      requiresAcceptance,
-      categoryId,
-    });
-  }
-
   return httpRequest<Page>("POST", `/api/guilds/${guildId}/pages`, {
     title,
     content,
@@ -197,19 +134,6 @@ export async function updateGuildPage(
   requiresAcceptance?: boolean,
   categoryId?: string | null,
 ): Promise<Page> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_guild_page", {
-      guildId,
-      pageId,
-      title,
-      slug,
-      content,
-      requiresAcceptance,
-      categoryId,
-    });
-  }
-
   // Build body — only include category_id if explicitly provided
   const body: Record<string, unknown> = {
     title,
@@ -235,11 +159,6 @@ export async function deleteGuildPage(
   guildId: string,
   pageId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_guild_page", { guildId, pageId });
-  }
-
   await httpRequest<void>("DELETE", `/api/guilds/${guildId}/pages/${pageId}`);
 }
 
@@ -250,11 +169,6 @@ export async function reorderGuildPages(
   guildId: string,
   pageIds: string[],
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("reorder_guild_pages", { guildId, pageIds });
-  }
-
   await httpRequest<void>("POST", `/api/guilds/${guildId}/pages/reorder`, {
     page_ids: pageIds,
   });
@@ -264,11 +178,6 @@ export async function reorderGuildPages(
  * Accept a page.
  */
 export async function acceptPage(pageId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("accept_page", { pageId });
-  }
-
   await httpRequest<void>("POST", `/api/pages/${pageId}/accept`);
 }
 
@@ -276,11 +185,6 @@ export async function acceptPage(pageId: string): Promise<void> {
  * Get pages pending acceptance.
  */
 export async function getPendingAcceptance(): Promise<PageListItem[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_pending_acceptance");
-  }
-
   return httpRequest<PageListItem[]>("GET", "/api/pages/pending-acceptance");
 }
 
@@ -295,11 +199,6 @@ export async function listPageRevisions(
   guildId: string,
   pageId: string,
 ): Promise<RevisionListItem[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("list_page_revisions", { guildId, pageId });
-  }
-
   return httpRequest<RevisionListItem[]>(
     "GET",
     `/api/guilds/${guildId}/pages/${pageId}/revisions`,
@@ -314,11 +213,6 @@ export async function getPageRevision(
   pageId: string,
   revisionNumber: number,
 ): Promise<PageRevision> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_page_revision", { guildId, pageId, revisionNumber });
-  }
-
   return httpRequest<PageRevision>(
     "GET",
     `/api/guilds/${guildId}/pages/${pageId}/revisions/${revisionNumber}`,
@@ -333,11 +227,6 @@ export async function restorePageRevision(
   pageId: string,
   revisionNumber: number,
 ): Promise<Page> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("restore_page_revision", { guildId, pageId, revisionNumber });
-  }
-
   return httpRequest<Page>(
     "POST",
     `/api/guilds/${guildId}/pages/${pageId}/revisions/${revisionNumber}/restore`,
@@ -354,11 +243,6 @@ export async function restorePageRevision(
 export async function listPageCategories(
   guildId: string,
 ): Promise<PageCategory[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("list_page_categories", { guildId });
-  }
-
   return httpRequest<PageCategory[]>(
     "GET",
     `/api/guilds/${guildId}/page-categories`,
@@ -372,11 +256,6 @@ export async function createPageCategory(
   guildId: string,
   name: string,
 ): Promise<PageCategory> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_page_category", { guildId, name });
-  }
-
   return httpRequest<PageCategory>(
     "POST",
     `/api/guilds/${guildId}/page-categories`,
@@ -394,11 +273,6 @@ export async function updatePageCategory(
   categoryId: string,
   name: string,
 ): Promise<PageCategory> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_page_category", { guildId, categoryId, name });
-  }
-
   return httpRequest<PageCategory>(
     "PATCH",
     `/api/guilds/${guildId}/page-categories/${categoryId}`,
@@ -413,11 +287,6 @@ export async function deletePageCategory(
   guildId: string,
   categoryId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_page_category", { guildId, categoryId });
-  }
-
   await httpRequest<void>(
     "DELETE",
     `/api/guilds/${guildId}/page-categories/${categoryId}`,
@@ -431,11 +300,6 @@ export async function reorderPageCategories(
   guildId: string,
   categoryIds: string[],
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("reorder_page_categories", { guildId, categoryIds });
-  }
-
   await httpRequest<void>(
     "POST",
     `/api/guilds/${guildId}/page-categories/reorder`,
