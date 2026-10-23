@@ -207,18 +207,26 @@ export function createConnectionSupervisor(
       }
     }
 
+    // External mode: the owner's status events (notifyOpened / notifyClosed)
+    // are authoritative and may describe this attempt, and later ones, before
+    // open() settles. A settlement that finds the phase moved on is stale and
+    // must not overwrite the newer state; it still tells the caller how the
+    // first attempt went.
     try {
       await driver.open();
     } catch (err) {
-      if (gen === generation) connectionLost();
+      if (gen === generation && phase === "opening") connectionLost();
       throw err;
     }
 
     if (gen !== generation) {
-      // Stopped while the open was in flight: don't keep a stray connection.
-      driver.close();
+      // Stopped while the open was in flight. Managed: don't keep a stray
+      // socket. External: the owner has one connection, which the stop or the
+      // next open already replaced; closing now would kill that one.
+      if (opts.mode === "managed") driver.close();
       return false;
     }
+    if (phase !== "opening") return phase === "open";
     await opened();
     return true;
   }
@@ -279,8 +287,12 @@ export function createConnectionSupervisor(
   function notifyClosed(intentional: boolean): void {
     // Only a close of the live connection matters; failures of an attempt in
     // flight are handled by attemptOpen(), and a close after the watchdog
-    // dropped the socket is already accounted for.
-    if (phase !== "open") return;
+    // dropped the socket is already accounted for. External mode is the
+    // exception: a loss reported while the first open is in flight means that
+    // attempt failed and the owner is retrying.
+    const firstAttemptFailed =
+      opts.mode === "external" && phase === "opening" && !intentional;
+    if (phase !== "open" && !firstAttemptFailed) return;
     if (intentional) {
       stopWatchdog();
       phase = "idle";

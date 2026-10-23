@@ -616,5 +616,31 @@ describe("websocket store", () => {
 
       expect(ws.wsState.status).toBe("disconnected");
     });
+
+    it("a late ws_connect failure after Rust reconnected leaves the live connection alone", async () => {
+      const { loadDMs } = await import("@/stores/dms");
+      vi.mocked(loadDMs).mockClear();
+      let reject!: (err: Error) => void;
+      vi.mocked(nativeTauri.wsConnect).mockReturnValueOnce(
+        new Promise<void>((_, rej) => {
+          reject = rej;
+        }),
+      );
+      const connecting = ws.connect();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Rust: first attempt failed, retry connected, before the command settles.
+      await fire("ws:reconnecting", 1);
+      expect(ws.wsState.status).toBe("reconnecting");
+      await fire("ws:connected");
+      expect(ws.isConnected()).toBe(true);
+      expect(loadDMs).toHaveBeenCalledTimes(1);
+
+      reject(new Error("WebSocket connection failed; retrying"));
+      await expect(connecting).rejects.toThrow("retrying");
+
+      expect(ws.isConnected()).toBe(true);
+      expect(ws.wsState.error).toBeNull();
+    });
   });
 });

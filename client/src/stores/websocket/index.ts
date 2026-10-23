@@ -957,8 +957,10 @@ export async function connect(): Promise<void> {
     }
   } catch (err) {
     // Status stays as the supervisor set it ("reconnecting": it retries).
+    // Natively the first attempt's failure can arrive after a retry already
+    // connected (ws:connected); don't show a stale error over a live socket.
     const error = err instanceof Error ? err.message : String(err);
-    setWsState({ error });
+    if (wsState.status !== "connected") setWsState({ error });
     throw err;
   }
 }

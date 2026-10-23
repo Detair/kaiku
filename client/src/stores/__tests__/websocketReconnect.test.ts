@@ -248,4 +248,86 @@ describe("connection supervisor", () => {
     expect(opts.onStatus).toHaveBeenLastCalledWith("connected", 0);
     expect(opts.onRecovered).toHaveBeenCalledTimes(1);
   });
+
+  // External mode: the owner's status events are authoritative. The open()
+  // promise (the `ws_connect` command) can settle long after the events that
+  // describe the same attempt arrived, so a late settlement must not undo
+  // newer state.
+  describe("external mode: late open() settlement", () => {
+    function deferred() {
+      let resolve!: () => void;
+      let reject!: (err: Error) => void;
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    it("a late success after the connection was lost does not fake a recovery", async () => {
+      const { supervisor, driver, opts } = makeSupervisor({ mode: "external" });
+      active = supervisor;
+      const open = deferred();
+      driver.open.mockReturnValueOnce(open.promise);
+      const started = supervisor.start();
+
+      // ws:connected, then ws:reconnecting, before ws_connect settles.
+      supervisor.notifyOpened();
+      await vi.advanceTimersByTimeAsync(0);
+      supervisor.notifyClosed(false);
+      expect(opts.onStatus).toHaveBeenLastCalledWith("reconnecting", 1);
+
+      open.resolve();
+      await started;
+
+      expect(opts.onStatus).toHaveBeenLastCalledWith("reconnecting", 1);
+      expect(opts.onRecovered).not.toHaveBeenCalled();
+
+      // Still waiting: the real ws:connected is what recovers.
+      supervisor.notifyOpened();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opts.onStatus).toHaveBeenLastCalledWith("connected", 0);
+      expect(opts.onRecovered).toHaveBeenCalledTimes(1);
+    });
+
+    it("a late failure after the connection recovered does not report a loss", async () => {
+      const { supervisor, driver, opts } = makeSupervisor({ mode: "external" });
+      active = supervisor;
+      const open = deferred();
+      driver.open.mockReturnValueOnce(open.promise);
+      const started = supervisor.start();
+
+      // The first attempt failed (ws:reconnecting) and Rust's retry connected
+      // (ws:connected) before the ws_connect rejection arrives.
+      supervisor.notifyClosed(false);
+      expect(opts.onStatus).toHaveBeenLastCalledWith("reconnecting", 1);
+      supervisor.notifyOpened();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opts.onStatus).toHaveBeenLastCalledWith("connected", 0);
+      expect(opts.onRecovered).toHaveBeenCalledTimes(1);
+
+      open.reject(new Error("WebSocket connection failed; retrying"));
+      await expect(started).rejects.toThrow("retrying");
+
+      expect(opts.onStatus).toHaveBeenLastCalledWith("connected", 0);
+      const statuses = opts.onStatus.mock.calls.map((c) => c[0]);
+      expect(statuses.filter((s) => s === "reconnecting")).toHaveLength(1);
+    });
+
+    it("a late success after stop()/start() does not close the new connection", async () => {
+      const { supervisor, driver } = makeSupervisor({ mode: "external" });
+      active = supervisor;
+      const open = deferred();
+      driver.open.mockReturnValueOnce(open.promise);
+      const first = supervisor.start();
+
+      supervisor.stop();
+      // The owner replaced its connection with this one.
+      expect(await supervisor.start()).toBe(true);
+
+      open.resolve();
+      expect(await first).toBe(false);
+      expect(driver.close).not.toHaveBeenCalled();
+    });
+  });
 });
