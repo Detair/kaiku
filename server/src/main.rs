@@ -427,6 +427,7 @@ async fn main() -> Result<()> {
     voice_health_handle.abort();
     custom_status_sweep_handle.abort();
     let _ = voice_cleanup_handle.await;
+    let _ = stale_peer_reaper_handle.await;
     let _ = db_cleanup_handle.await;
     let _ = webhook_worker_handle.await;
     let _ = rtp_flush_handle.await;

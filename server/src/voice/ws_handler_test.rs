@@ -434,6 +434,39 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_leave_when_not_in_room_sends_no_user_left(
+        pool: PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = two_in_room(&pool).await?;
+        drain(&mut t._rx1);
+        drain(&mut t.rx2);
+
+        let outsider = Uuid::new_v4();
+        let removed = crate::voice::leave::leave_voice_internal(
+            &t.sfu,
+            &pool,
+            outsider,
+            t.channel_id,
+            None,
+            None,
+        )
+        .await?;
+
+        assert!(!removed);
+        assert!(peer_present(&t.sfu, t.channel_id, t.u1).await);
+        assert!(peer_present(&t.sfu, t.channel_id, t.u2).await);
+        for events in [drain(&mut t._rx1), drain(&mut t.rx2)] {
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, ServerEvent::VoiceUserLeft { .. })),
+                "no VoiceUserLeft expected, got {events:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[sqlx::test]
     async fn test_socket_close_only_removes_peer_owned_by_that_socket(
         pool: PgPool,
     ) -> Result<(), Box<dyn std::error::Error>> {

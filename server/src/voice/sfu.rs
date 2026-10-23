@@ -391,15 +391,29 @@ fn ice_network_plan(family: IceIpFamily, public_ip: Option<&str>) -> IceNetworkP
     }
 }
 
-/// Warn when none of the allowed interface names exists on this host (a typo
+/// Configured interface names that do not exist on this host.
+fn unmatched_interface_names<'a>(allowed: &'a [String], available: &[&str]) -> Vec<&'a str> {
+    allowed
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !available.contains(name))
+        .collect()
+}
+
+/// Warn about configured interface names missing on this host, and when none of
+/// the allowed interface names exists on this host (a typo
 /// would otherwise yield zero ICE candidates and voice joins fail silently).
 fn warn_if_no_interface_matches(allowed: &[String]) {
     match webrtc::util::ifaces::ifaces() {
         Ok(found) => {
+            let mut names: Vec<&str> = found.iter().map(|i| i.name.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            for name in unmatched_interface_names(allowed, &names) {
+                warn!(interface = %name, available = ?names,
+                    "VOICE_ICE_INTERFACES entry matches no interface on this host");
+            }
             if !found.iter().any(|i| allowed.contains(&i.name)) {
-                let mut names: Vec<&str> = found.iter().map(|i| i.name.as_str()).collect();
-                names.sort_unstable();
-                names.dedup();
                 warn!(configured = ?allowed, available = ?names,
                     "VOICE_ICE_INTERFACES matches no interface on this host; voice will have no ICE candidates");
             }
@@ -1436,6 +1450,16 @@ mod ice_filter_tests {
         config.voice_ice_interfaces = Some(vec!["no-such-if0".to_owned()]);
         let ips = gather_ips(config).await;
         assert!(ips.is_empty(), "{ips:?}");
+    }
+
+    #[test]
+    fn unmatched_interface_names_lists_each_missing_name() {
+        let allowed = vec!["eth0".to_string(), "typo0".to_string(), "wg9".to_string()];
+        assert_eq!(
+            unmatched_interface_names(&allowed, &["eth0", "lo"]),
+            vec!["typo0", "wg9"]
+        );
+        assert!(unmatched_interface_names(&allowed, &["eth0", "typo0", "wg9"]).is_empty());
     }
 
     #[test]

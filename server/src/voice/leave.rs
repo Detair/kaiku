@@ -170,14 +170,18 @@ pub async fn leave_voice_internal(
     // Free per-peer rate-limit buckets so they don't accumulate across reconnects.
     sfu.voice_rate_limiter().forget_peer(user_id);
 
-    room.broadcast_except(
-        user_id,
-        ServerEvent::VoiceUserLeft {
-            channel_id,
+    // Only announce a departure that actually happened; a leave for a user who
+    // is not in the room must not tell the others anything.
+    if removed {
+        room.broadcast_except(
             user_id,
-        },
-    )
-    .await;
+            ServerEvent::VoiceUserLeft {
+                channel_id,
+                user_id,
+            },
+        )
+        .await;
+    }
 
     sfu.cleanup_room_if_empty(channel_id).await;
 
