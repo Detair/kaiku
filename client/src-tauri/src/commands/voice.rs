@@ -34,6 +34,9 @@ struct IceServerEntry {
     credential: Option<String>,
 }
 
+/// Per-request timeout so an unresponsive server cannot stall voice join.
+const ICE_SERVERS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Fetch STUN/TURN configuration from the server (`GET /api/voice/ice-servers`).
 ///
 /// Falls back to the default public STUN server on any error or an empty list,
@@ -48,6 +51,7 @@ pub async fn fetch_ice_servers(
         let resp = http
             .get(&url)
             .bearer_auth(token)
+            .timeout(ICE_SERVERS_TIMEOUT)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -58,6 +62,7 @@ pub async fn fetch_ice_servers(
         Ok(body
             .ice_servers
             .into_iter()
+            .filter(|s| !s.urls.is_empty())
             .map(|s| IceServerConfig {
                 urls: s.urls,
                 username: s.username,
@@ -1084,6 +1089,43 @@ mod tests {
             .and(path("/api/voice/ice-servers"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ice_servers": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let servers = fetch_ice_servers(&reqwest::Client::new(), &server.uri(), "tok").await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, IceServerConfig::default().urls);
+    }
+
+    #[tokio::test]
+    async fn ice_servers_drop_entries_with_empty_urls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/voice/ice-servers"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "ice_servers": [{ "urls": [] }] })),
+            )
+            .mount(&server)
+            .await;
+
+        let servers = fetch_ice_servers(&reqwest::Client::new(), &server.uri(), "tok").await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, IceServerConfig::default().urls);
+    }
+
+    #[tokio::test]
+    async fn ice_servers_fall_back_on_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/voice/ice-servers"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(ICE_SERVERS_TIMEOUT + std::time::Duration::from_secs(1))
+                    .set_body_json(serde_json::json!({
+                        "ice_servers": [{ "urls": ["stun:slow.example:3478"] }]
+                    })),
             )
             .mount(&server)
             .await;
