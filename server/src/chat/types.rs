@@ -250,15 +250,18 @@ pub struct ReactionInfo {
     pub users: Vec<Uuid>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListMessagesQuery {
+    /// Return messages older than this message id (newest first).
     pub before: Option<Uuid>,
+    /// Return a window of messages centred on this message id.
     #[serde(default)]
     pub around: Option<Uuid>,
     /// Catch-up cursor: return messages newer than this one, oldest first.
     /// Cannot be combined with `before` or `around`.
     #[serde(default)]
     pub after: Option<Uuid>,
+    /// Page size: default 50, clamped to 1..=100.
     #[serde(default = "default_message_limit")]
     pub limit: i64,
 }

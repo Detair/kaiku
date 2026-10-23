@@ -41,7 +41,7 @@ use crate::ws::{broadcast_admin_event, broadcast_to_channel, broadcast_to_user, 
     get,
     path = "/api/messages/channel/{channel_id}",
     tag = "messages",
-    params(("channel_id" = Uuid, Path, description = "Channel ID")),
+    params(("channel_id" = Uuid, Path, description = "Channel ID"), ListMessagesQuery),
     responses(
         (status = 200, body = CursorPaginatedResponse<MessageResponse>),
     ),
@@ -114,6 +114,15 @@ pub async fn list(
         (msgs, has_more)
     };
 
+    // Cursor for the next page: the last row of the fetched window, taken
+    // *before* block filtering so the cursor advances even when every row of
+    // the page is filtered out (oldest for `before`, newest for `after`).
+    let next_cursor = if has_more {
+        messages.last().map(|m| m.id)
+    } else {
+        None
+    };
+
     // Filter out messages from blocked users (application-layer filtering)
     if !combined_block_set.is_empty() {
         messages.retain(|m| {
@@ -124,14 +133,6 @@ pub async fn list(
 
     // Build response with author info, attachments, and reactions
     let response = build_message_responses(&state.db, auth_user.id, messages).await?;
-
-    // Cursor for the next page: the last item in response order (oldest for
-    // `before` pages, newest for `after` pages).
-    let next_cursor = if has_more {
-        response.last().map(|m| m.id)
-    } else {
-        None
-    };
 
     Ok(Json(CursorPaginatedResponse {
         items: response,

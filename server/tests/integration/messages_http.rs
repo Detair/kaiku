@@ -429,3 +429,77 @@ async fn test_list_messages_after_foreign_or_unknown_anchor_is_400(pool: PgPool)
         assert_eq!(body["error"], "VALIDATION_ERROR");
     }
 }
+
+#[sqlx::test]
+async fn test_list_messages_after_cursor_advances_past_fully_blocked_page(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "after-blocked").await;
+    let (blocked_id, _) = create_test_user(&app.pool).await;
+    sqlx::query(
+        "INSERT INTO friendships (id, requester_id, addressee_id, status) VALUES ($1, $2, $3, 'blocked')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(user_id)
+    .bind(blocked_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let m1 = insert_message_at(&app.pool, channel_id, user_id, "m1", "2026-01-01T00:00:01Z").await;
+    let b = insert_message_at(
+        &app.pool,
+        channel_id,
+        blocked_id,
+        "b",
+        "2026-01-01T00:00:02Z",
+    )
+    .await;
+    let m3 = insert_message_at(&app.pool, channel_id, user_id, "m3", "2026-01-01T00:00:03Z").await;
+
+    let page = list_messages(&app, channel_id, &token, &format!("after={m1}&limit=1")).await;
+    assert!(page["items"].as_array().unwrap().is_empty());
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page["next_cursor"], b.to_string());
+
+    let page = list_messages(&app, channel_id, &token, &format!("after={b}&limit=1")).await;
+    assert_eq!(ids(&page["items"]), vec![m3.to_string()]);
+
+    // `before` path: same rule (oldest fetched row, pre-filter).
+    let page = list_messages(&app, channel_id, &token, &format!("before={m3}&limit=1")).await;
+    assert!(page["items"].as_array().unwrap().is_empty());
+    assert_eq!(page["next_cursor"], b.to_string());
+}
+
+#[sqlx::test]
+async fn test_list_messages_after_soft_deleted_anchor_is_valid(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "after-deleted-anchor").await;
+    let m1 = insert_message_at(&app.pool, channel_id, user_id, "m1", "2026-01-01T00:00:01Z").await;
+    let m2 = insert_message_at(&app.pool, channel_id, user_id, "m2", "2026-01-01T00:00:02Z").await;
+    sqlx::query("UPDATE messages SET deleted_at = NOW() WHERE id = $1")
+        .bind(m1)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let page = list_messages(&app, channel_id, &token, &format!("after={m1}")).await;
+    assert_eq!(ids(&page["items"]), vec![m2.to_string()]);
+}
+
+#[sqlx::test]
+async fn test_list_messages_after_created_at_tie_broken_by_id(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "after-tie").await;
+    let t = "2026-01-01T00:00:01Z";
+    let mut m = Vec::new();
+    for i in 0..3 {
+        m.push(insert_message_at(&app.pool, channel_id, user_id, &format!("t{i}"), t).await);
+    }
+    m.sort(); // v7 ids; ties order by id
+
+    let page = list_messages(&app, channel_id, &token, &format!("after={}", m[0])).await;
+    assert_eq!(
+        ids(&page["items"]),
+        vec![m[1].to_string(), m[2].to_string()]
+    );
+}
