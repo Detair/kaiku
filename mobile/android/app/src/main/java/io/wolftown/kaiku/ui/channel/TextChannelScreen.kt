@@ -16,6 +16,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
 
 /**
  * Full-screen text channel view.
@@ -40,24 +42,25 @@ fun TextChannelScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val canLoadMore by viewModel.canLoadMore.collectAsState()
     val messageInput by viewModel.messageInput.collectAsState()
-    val error by viewModel.error.collectAsState()
     val editingMessage by viewModel.editingMessage.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
-    LaunchedEffect(error) {
-        val res = error ?: return@LaunchedEffect
-        val retry = res == R.string.chat_send_failed
-        // Clear first: a snackbar with an action suspends until dismissed, and a
-        // repeat of the same error would be conflated by the StateFlow and lost.
-        viewModel.clearError()
-        val result = snackbarHostState.showSnackbar(
-            message = context.getString(res),
-            actionLabel = if (retry) context.getString(R.string.common_retry) else null,
-            withDismissAction = true
-        )
-        if (retry && result == SnackbarResult.ActionPerformed) viewModel.onSendMessage()
+    // Not keyed on the error value: clearing it would re-key the effect and cancel the
+    // snackbar. Clearing first lets a repeated identical error re-emit; collectLatest
+    // replaces a showing snackbar with the newest error.
+    LaunchedEffect(Unit) {
+        viewModel.error.filterNotNull().collectLatest { res ->
+            viewModel.clearError()
+            val retry = res == R.string.chat_send_failed
+            val result = snackbarHostState.showSnackbar(
+                message = context.getString(res),
+                actionLabel = if (retry) context.getString(R.string.common_retry) else null,
+                withDismissAction = true
+            )
+            if (retry && result == SnackbarResult.ActionPerformed) viewModel.onSendMessage()
+        }
     }
 
     val listState = rememberLazyListState()
