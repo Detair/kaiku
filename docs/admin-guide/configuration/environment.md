@@ -26,7 +26,7 @@ variables marked "empty = unset".
 | `BIND_ADDRESS` | `0.0.0.0:8080` | Address and port the HTTP server listens on |
 | `KAIKU_ENV` | `production` | Deployment environment name |
 | `PUBLIC_BASE_URL` | unset (empty = unset) | Public base URL for absolute URLs handed to external services (webhook execute URLs); falls back to the request Host header |
-| `PUBLIC_IP` | unset (empty = unset) | Public IP advertised for voice (WebRTC) connections (NAT 1:1 mapping). Required when the server runs behind NAT or in a container so clients can reach the SFU |
+| `PUBLIC_IP` | unset (empty = unset) | Public IP advertised for voice (WebRTC) connections (NAT 1:1 mapping). Required when the server runs behind NAT or in a container so clients can reach the SFU. The advertised candidate port is the bound port (no port translation), so the firewall/NAT must forward the identical UDP port numbers 1:1, including the `VOICE_UDP_PORT_MIN`-`VOICE_UDP_PORT_MAX` range |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. The desktop app origins `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost` are added automatically to an explicit list |
 | `ENABLE_API_DOCS` | `false` in release builds | Serve the OpenAPI docs |
 | `ENABLE_GUILD_DISCOVERY` | `true` | Enable public guild discovery |
@@ -107,7 +107,7 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `TURN_SHARED_SECRET` | unset | Shared secret for time-limited TURN credentials (coturn `use-auth-secret`) |
 | `TURN_CREDENTIAL_TTL` | `3600` | Lifetime of generated TURN credentials in seconds |
 | `VOICE_UDP_PORT_MIN` | unset (ephemeral ports) | Lowest UDP port the voice SFU may use for peer connections. Must be set together with `VOICE_UDP_PORT_MAX`; the server refuses to start if only one is set or if min > max. Open/forward this UDP range in your firewall |
-| `VOICE_UDP_PORT_MAX` | unset (ephemeral ports) | Highest UDP port of the range. Each port in the range serves peer connections, so size the range for your expected concurrent voice participants |
+| `VOICE_UDP_PORT_MAX` | unset (ephemeral ports) | Highest UDP port of the range. Each port in the range serves peer connections. Size it generously: each participant uses two peer connections (publisher and subscriber), and the ICE stack binds one UDP socket per usable local interface address (IPv4/IPv6; more under hostNetwork) per connection. You need at least 2 × concurrent participants × local addresses, plus headroom. Example: 10 participants on a host with 2 addresses need at least 40 ports; 100 is a sensible choice. If the range is too small, joining voice fails under load. Ports must be 1-65535 |
 
 ## Observability
 

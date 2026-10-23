@@ -670,6 +670,10 @@ fn parse_voice_udp_port_range(
         (Some(min), Some(max)) => {
             let min: u16 = min.trim().parse().context(VOICE_UDP_RANGE_ERROR)?;
             let max: u16 = max.trim().parse().context(VOICE_UDP_RANGE_ERROR)?;
+            anyhow::ensure!(
+                min >= 1,
+                "{VOICE_UDP_RANGE_ERROR} (ports must be within 1-65535)"
+            );
             anyhow::ensure!(min <= max, VOICE_UDP_RANGE_ERROR);
             Ok((Some(min), Some(max)))
         }
@@ -699,6 +703,13 @@ mod voice_udp_range_tests {
             err.to_string(),
             "VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max"
         );
+    }
+
+    #[test]
+    fn udp_range_rejects_port_zero() {
+        let err = parse_voice_udp_port_range(Some("0"), Some("50010")).unwrap_err();
+        assert!(err.to_string().contains("1-65535"), "{err}");
+        assert!(parse_voice_udp_port_range(Some("0"), Some("0")).is_err());
     }
 
     #[test]
