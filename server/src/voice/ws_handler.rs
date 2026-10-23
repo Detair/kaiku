@@ -245,12 +245,15 @@ async fn handle_join(
     let screen_shares = room.get_screen_shares().await;
     let webcams = room.get_webcams().await;
 
-    tx.send(OutboundMsg::Event(ServerEvent::VoiceRoomState {
-        channel_id,
-        participants,
-        screen_shares,
-        webcams,
-    }))
+    crate::ws::handlers::send_outbound(
+        tx,
+        OutboundMsg::Event(ServerEvent::VoiceRoomState {
+            channel_id,
+            participants,
+            screen_shares,
+            webcams,
+        }),
+    )
     .await
     .map_err(|e| VoiceError::Signaling(e.to_string()))?;
 
@@ -1158,12 +1161,15 @@ async fn handle_set_layer_preference(
         preferred_layer,
     ) {
         // Notify the viewer of the layer change
-        tx.send(OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
-            channel_id,
-            source_user_id: target_user_id,
-            track_source,
-            active_layer: new_layer,
-        }))
+        crate::ws::handlers::send_outbound(
+            tx,
+            OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
+                channel_id,
+                source_user_id: target_user_id,
+                track_source,
+                active_layer: new_layer,
+            }),
+        )
         .await
         .map_err(|e| VoiceError::Signaling(e.to_string()))?;
     }

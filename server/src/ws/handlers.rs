@@ -405,18 +405,29 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         }
     };
 
-    if pubsub_ready {
+    // Why the socket ends, if that warrants a Close frame (see `close_code`).
+    let mut exit: Option<PubsubExit> = None;
+
+    if !pubsub_ready {
+        exit = Some(PubsubExit::SubscribeFailed);
+    } else if let Err(err) = async {
         // `Ready` is the first frame: queue it, then let the pub/sub task start
         // forwarding (events published meanwhile wait in its receiver).
-        let _ = tx
-            .send(OutboundMsg::Event(ServerEvent::Ready {
+        send_outbound(
+            &tx,
+            OutboundMsg::Event(ServerEvent::Ready {
                 user_id,
                 server_time: chrono::Utc::now(),
-            }))
-            .await;
+            }),
+        )
+        .await?;
         let _ = start_tx.send(());
-        send_presence_snapshot(&state, user_id, &tx).await;
-
+        send_presence_snapshot(&state, user_id, &tx).await
+    }
+    .await
+    {
+        exit = Some(err.into());
+    } else {
         // Per-connection mutable state for rate limiting and deduplication
         let mut msg_state = ClientMessageState::default();
 
@@ -443,13 +454,19 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                             )
                             .await
                             {
+                                if let Some(reason) = outbound_failure(&*e) {
+                                    exit = Some(reason);
+                                    break;
+                                }
                                 warn!("Error handling message: {}", e);
-                                let _ = tx
-                                    .send(OutboundMsg::Event(ServerEvent::Error {
-                                        code: "message_error".to_string(),
-                                        message: e.to_string(),
-                                    }))
-                                    .await;
+                                let reply = OutboundMsg::Event(ServerEvent::Error {
+                                    code: "message_error".to_string(),
+                                    message: e.to_string(),
+                                });
+                                if let Err(err) = send_outbound(&tx, reply).await {
+                                    exit = Some(err.into());
+                                    break;
+                                }
                             }
                         }
                         Some(Ok(Message::Ping(_data))) => {
@@ -478,27 +495,27 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
                         break;
                     }
                     awaiting_pong = true;
-                    if tx.send(OutboundMsg::Ping).await.is_err() {
+                    if let Err(err) = send_outbound(&tx, OutboundMsg::Ping).await {
+                        exit = Some(err.into());
                         break;
                     }
                 }
 
-                exit = &mut pubsub_handle => {
+                pubsub_exit = &mut pubsub_handle => {
                     // A panicked or cancelled pub/sub task is a pipeline failure too.
-                    let exit = exit.unwrap_or(PubsubExit::StreamEnded);
-                    if let Some(code) = exit.close_code() {
-                        warn!(
-                            "Pub/sub pipeline stopped ({:?}), closing socket with {}: user={}",
-                            exit, code, user_id
-                        );
-                        close_and_flush(&tx, &mut sender_handle, code).await;
-                    }
+                    exit = Some(pubsub_exit.unwrap_or(PubsubExit::StreamEnded));
                     break;
                 }
             }
         }
-    } else {
-        close_and_flush(&tx, &mut sender_handle, CLOSE_INTERNAL_ERROR).await;
+    }
+
+    if let Some(code) = exit.and_then(PubsubExit::close_code) {
+        warn!(
+            "Closing socket ({:?}) with {}: user={}",
+            exit, code, user_id
+        );
+        close_and_flush(&tx, &mut sender_handle, code).await;
     }
 
     // Cleanup
@@ -517,6 +534,49 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
     info!("WebSocket disconnected: user={}", user_id);
     crate::observability::metrics::record_ws_disconnect();
+}
+
+/// Why a bounded outbound send failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum OutboundSendError {
+    /// The outbound queue stayed full for [`SLOW_CLIENT_SEND_TIMEOUT`].
+    #[error("client too slow: outbound queue stayed full")]
+    TimedOut,
+    /// The outbound queue is closed (the socket is shutting down).
+    #[error("outbound queue closed")]
+    Closed,
+}
+
+impl From<OutboundSendError> for PubsubExit {
+    fn from(err: OutboundSendError) -> Self {
+        match err {
+            OutboundSendError::TimedOut => Self::SlowClient,
+            OutboundSendError::Closed => Self::ClientGone,
+        }
+    }
+}
+
+/// Queue a message for the socket, waiting at most [`SLOW_CLIENT_SEND_TIMEOUT`]
+/// for room in the outbound queue.
+///
+/// Every outbound send of a socket goes through here, so a stalled client can
+/// never block the socket loop (or the pub/sub forwarder) indefinitely.
+pub(crate) async fn send_outbound(
+    tx: &mpsc::Sender<OutboundMsg>,
+    msg: OutboundMsg,
+) -> Result<(), OutboundSendError> {
+    match tokio::time::timeout(SLOW_CLIENT_SEND_TIMEOUT, tx.send(msg)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_closed)) => Err(OutboundSendError::Closed),
+        Err(_elapsed) => Err(OutboundSendError::TimedOut),
+    }
+}
+
+/// If a (boxed) handler error is a failed outbound send, the socket must end:
+/// returns the matching exit reason.
+fn outbound_failure(err: &(dyn std::error::Error + 'static)) -> Option<PubsubExit> {
+    err.downcast_ref::<OutboundSendError>()
+        .map(|e| PubsubExit::from(*e))
 }
 
 /// Queue a Close frame (reason "resync") and give the sender task up to
@@ -542,7 +602,11 @@ async fn close_and_flush(
 }
 
 /// Send the friends' presence snapshot (status, activity, custom status).
-async fn send_presence_snapshot(state: &AppState, user_id: Uuid, tx: &mpsc::Sender<OutboundMsg>) {
+async fn send_presence_snapshot(
+    state: &AppState,
+    user_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+) -> Result<(), OutboundSendError> {
     match get_friends_presence(&state.db, user_id).await {
         Ok(snapshots) => {
             for snap in snapshots {
@@ -551,9 +615,7 @@ async fn send_presence_snapshot(state: &AppState, user_id: Uuid, tx: &mpsc::Send
                     user_id: snap.user_id,
                     status: snap.status.clone(),
                 };
-                if tx.send(OutboundMsg::Event(presence_event)).await.is_err() {
-                    break;
-                }
+                send_outbound(tx, OutboundMsg::Event(presence_event)).await?;
 
                 let is_offline = snap.status == "offline";
 
@@ -567,9 +629,7 @@ async fn send_presence_snapshot(state: &AppState, user_id: Uuid, tx: &mpsc::Send
                                 user_id: snap.user_id,
                                 activity: Some(activity),
                             };
-                            if tx.send(OutboundMsg::Event(activity_event)).await.is_err() {
-                                break;
-                            }
+                            send_outbound(tx, OutboundMsg::Event(activity_event)).await?;
                         }
                     }
 
@@ -582,9 +642,7 @@ async fn send_presence_snapshot(state: &AppState, user_id: Uuid, tx: &mpsc::Send
                                 user_id: snap.user_id,
                                 custom_status: Some(cs),
                             };
-                            if tx.send(OutboundMsg::Event(cs_event)).await.is_err() {
-                                break;
-                            }
+                            send_outbound(tx, OutboundMsg::Event(cs_event)).await?;
                         }
                     }
                 }
@@ -597,6 +655,8 @@ async fn send_presence_snapshot(state: &AppState, user_id: Uuid, tx: &mpsc::Send
             );
         }
     }
+
+    Ok(())
 }
 
 /// Handle a client message.
@@ -631,7 +691,7 @@ pub async fn handle_client_message(
 
     match event {
         ClientEvent::Ping => {
-            tx.send(OutboundMsg::Event(ServerEvent::Pong)).await?;
+            send_outbound(tx, OutboundMsg::Event(ServerEvent::Pong)).await?;
         }
 
         ClientEvent::Subscribe { channel_id } => {
@@ -640,10 +700,13 @@ pub async fn handle_client_message(
                 .await?
                 .is_none()
             {
-                tx.send(OutboundMsg::Event(ServerEvent::Error {
-                    code: "channel_not_found".to_string(),
-                    message: "Channel not found".to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "channel_not_found".to_string(),
+                        message: "Channel not found".to_string(),
+                    }),
+                )
                 .await?;
                 return Ok(());
             }
@@ -653,10 +716,13 @@ pub async fn handle_client_message(
                 .await
                 .is_err()
             {
-                tx.send(OutboundMsg::Event(ServerEvent::Error {
-                    code: "forbidden".to_string(),
-                    message: "You don't have permission to view this channel".to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "forbidden".to_string(),
+                        message: "You don't have permission to view this channel".to_string(),
+                    }),
+                )
                 .await?;
                 return Ok(());
             }
@@ -664,15 +730,21 @@ pub async fn handle_client_message(
             // Add to subscribed channels
             subscribed_channels.write().await.insert(channel_id);
 
-            tx.send(OutboundMsg::Event(ServerEvent::Subscribed { channel_id }))
-                .await?;
+            send_outbound(
+                tx,
+                OutboundMsg::Event(ServerEvent::Subscribed { channel_id }),
+            )
+            .await?;
             debug!("User {} subscribed to channel {}", user_id, channel_id);
         }
 
         ClientEvent::Unsubscribe { channel_id } => {
             subscribed_channels.write().await.remove(&channel_id);
-            tx.send(OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id }))
-                .await?;
+            send_outbound(
+                tx,
+                OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id }),
+            )
+            .await?;
             debug!("User {} unsubscribed from channel {}", user_id, channel_id);
         }
 
@@ -752,10 +824,13 @@ pub async fn handle_client_message(
             .await
             {
                 warn!("Voice event error: {}", e);
-                tx.send(OutboundMsg::Event(ServerEvent::VoiceError {
-                    code: "voice_error".to_string(),
-                    message: e.to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::VoiceError {
+                        code: "voice_error".to_string(),
+                        message: e.to_string(),
+                    }),
+                )
                 .await?;
             }
         }
@@ -890,10 +965,14 @@ pub async fn handle_client_message(
             let is_elevated =
                 crate::admin::is_elevated_admin(&state.redis, &state.db, user_id).await;
             if !is_elevated {
-                tx.send(OutboundMsg::Event(ServerEvent::Error {
-                    code: "admin_not_elevated".to_string(),
-                    message: "Must be an elevated admin to subscribe to admin events".to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "admin_not_elevated".to_string(),
+                        message: "Must be an elevated admin to subscribe to admin events"
+                            .to_string(),
+                    }),
+                )
                 .await?;
                 return Ok(());
             }
@@ -941,7 +1020,7 @@ async fn handle_component_interaction(
             code: code.to_string(),
             message: msg.to_string(),
         };
-        async move { tx.send(OutboundMsg::Event(ev)).await }
+        async move { send_outbound(tx, OutboundMsg::Event(ev)).await }
     };
 
     // Rate-limit clicks per user — each interaction does Redis writes + a
@@ -1103,8 +1182,8 @@ impl PubsubExit {
 /// Handle Redis pub/sub messages.
 ///
 /// Fires `ready` once the `channel:*` pattern subscription and all per-user
-/// subscriptions have returned, then waits for `start` (sent by the socket
-/// after it queued `Ready`) and forwards messages until the pipeline stops.
+/// subscriptions have succeeded (any failure returns `SubscribeFailed`), then waits for `start`
+/// (sent by the socket after it queued `Ready`) and forwards messages until the pipeline stops.
 /// The returned [`PubsubExit`] says why.
 async fn handle_pubsub(
     redis: Client,
@@ -1138,44 +1217,35 @@ async fn handle_pubsub(
 
     // Subscribe to user's own events channel (for preferences sync, etc.)
     let user_channel = channels::user_events(params.user_id);
-    // Cross-device sync depends on this channel, so a failure ends the pipeline.
+    // Cross-device sync depends on this channel; like every subscription below,
+    // a failure ends the pipeline (no `Ready`, close 1011).
     if let Err(e) = subscriber.subscribe(&user_channel).await {
         error!("Failed to subscribe to user events channel: {}", e);
         return PubsubExit::SubscribeFailed;
     }
     debug!("Subscribed to user events channel: {}", user_channel);
 
-    // Subscribe to admin events channel
-    if let Err(e) = subscriber.subscribe(channels::ADMIN_EVENTS).await {
-        warn!("Failed to subscribe to admin events: {}", e);
-    } else {
-        debug!("Subscribed to admin events channel");
-    }
-
-    // Subscribe to friends' presence channels
-    for friend_id in &params.friend_ids {
-        let presence_channel = channels::user_presence(*friend_id);
-        if let Err(e) = subscriber.subscribe(&presence_channel).await {
-            warn!(
-                "Failed to subscribe to presence channel for friend {}: {}",
-                friend_id, e
-            );
-        } else {
-            debug!("Subscribed to presence channel: {}", presence_channel);
+    // Every other subscription is required too: `Ready` promises that the
+    // socket sees all of its events, so any failure ends the pipeline.
+    let other_channels = std::iter::once(channels::ADMIN_EVENTS.to_string())
+        .chain(
+            params
+                .friend_ids
+                .iter()
+                .map(|id| channels::user_presence(*id)),
+        )
+        .chain(
+            params
+                .guild_ids
+                .iter()
+                .map(|id| channels::guild_events(*id)),
+        );
+    for channel in other_channels {
+        if let Err(e) = subscriber.subscribe(&channel).await {
+            error!("Failed to subscribe to {}: {}", channel, e);
+            return PubsubExit::SubscribeFailed;
         }
-    }
-
-    // Subscribe to guild event channels for state sync
-    for guild_id in &params.guild_ids {
-        let guild_channel = channels::guild_events(*guild_id);
-        if let Err(e) = subscriber.subscribe(&guild_channel).await {
-            warn!(
-                "Failed to subscribe to guild events channel for guild {}: {}",
-                guild_id, e
-            );
-        } else {
-            debug!("Subscribed to guild events channel: {}", guild_channel);
-        }
+        debug!("Subscribed to {}", channel);
     }
 
     // Subscriptions are live: the socket may now announce `Ready`.
@@ -1261,23 +1331,14 @@ pub(crate) async fn forward_pubsub_messages(
 
     macro_rules! try_forward {
         ($event:expr) => {
-            match tokio::time::timeout(
-                SLOW_CLIENT_SEND_TIMEOUT,
-                params.tx.send(OutboundMsg::Event($event)),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(_closed)) => {
-                    return PubsubExit::ClientGone;
-                }
-                Err(_elapsed) => {
+            if let Err(err) = send_outbound(&params.tx, OutboundMsg::Event($event)).await {
+                if err == OutboundSendError::TimedOut {
                     warn!(
                         "Closing slow WebSocket client (user {}): outbound queue full for {:?}",
                         params.user_id, SLOW_CLIENT_SEND_TIMEOUT
                     );
-                    return PubsubExit::SlowClient;
                 }
+                return err.into();
             }
         };
     }
@@ -1787,6 +1848,41 @@ mod pubsub_tests {
         assert!(subscriber.has_reconnect_policy());
         // The shared base client is left untouched.
         assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_send_gives_up_when_queue_stays_full() {
+        let (tx, _rx_never_drained) = mpsc::channel(1);
+        send_outbound(&tx, OutboundMsg::Ping).await.unwrap(); // fills the queue
+        let started = tokio::time::Instant::now();
+        let err = send_outbound(&tx, OutboundMsg::Ping).await.unwrap_err();
+        assert!(matches!(err, OutboundSendError::TimedOut));
+        assert!(started.elapsed() >= SLOW_CLIENT_SEND_TIMEOUT);
+        assert_eq!(PubsubExit::from(err), PubsubExit::SlowClient);
+    }
+
+    #[tokio::test]
+    async fn bounded_send_reports_closed_queue() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let err = send_outbound(&tx, OutboundMsg::Ping).await.unwrap_err();
+        assert!(matches!(err, OutboundSendError::Closed));
+        assert_eq!(PubsubExit::from(err), PubsubExit::ClientGone);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_send_failure_is_recognisable_through_boxed_errors() {
+        // handle_client_message returns Box<dyn Error>; the socket loop must
+        // still tell an outbound failure apart from an ordinary handler error.
+        let (tx, _rx_never_drained) = mpsc::channel(1);
+        send_outbound(&tx, OutboundMsg::Ping).await.unwrap();
+        let boxed: Box<dyn std::error::Error + Send + Sync> = send_outbound(&tx, OutboundMsg::Ping)
+            .await
+            .unwrap_err()
+            .into();
+        assert_eq!(outbound_failure(&*boxed), Some(PubsubExit::SlowClient));
+        let other: Box<dyn std::error::Error + Send + Sync> = "bad input".into();
+        assert_eq!(outbound_failure(&*other), None);
     }
 
     #[test]

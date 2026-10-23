@@ -29,7 +29,7 @@
 3. Upgrade to WebSocket protocol
 4. Server updates user presence to `online` and spawns the message sender task (drains the outbound mpsc, writes to the WebSocket)
 5. Load friends, guild IDs and block sets
-6. Spawn the Redis pub/sub task (`handle_pubsub`); it fires a `ready` oneshot once `psubscribe("channel:*")` and all per-user `subscribe` calls have returned (a failed `psubscribe` or `user:{id}` subscribe ends the pipeline with `SubscribeFailed`)
+6. Spawn the Redis pub/sub task (`handle_pubsub`); it fires a `ready` oneshot once `psubscribe("channel:*")` and all per-user `subscribe` calls have returned (every subscription is required: a failed `psubscribe` or any `subscribe` — user, admin, friend presence, guild — ends the pipeline with `SubscribeFailed`, so no `Ready` is sent and the socket closes with 1011)
 7. Wait for that `ready` signal (max 5 s; on timeout or early failure the socket is closed with **1011**)
 8. Queue `Ready { user_id, server_time }` (server_time = RFC 3339 UTC, taken when Ready is built; clients use it as the catch-up watermark) — so `Ready` always means "subscriptions are live" — then send the `start` oneshot; only then does the pub/sub task begin forwarding (events published in between wait in its broadcast receiver), so `Ready` is always the first frame. Then the friends' presence snapshot
 9. Main loop (`select!`): client messages, server heartbeat, and the pub/sub task's exit
@@ -205,7 +205,7 @@ while let Some(msg) = ws_receiver.next().await {
 }
 ```
 
-**Backpressure**: `mpsc::channel(256)` outbound buffer. The pub/sub forwarder uses `send()` bounded by `SLOW_CLIENT_SEND_TIMEOUT` (1 s), so short bursts (presence snapshot, bulk replies) just wait. If the queue stays full for the whole timeout, forwarding ends with `PubsubExit::SlowClient` and the socket is closed with 1013 so the client reconnects and catches up (events are never dropped silently). Each socket's subscriber client is created with a 1024-slot fred broadcast buffer (`SUBSCRIBER_BROADCAST_CAPACITY`, default 32) so ordinary server-wide traffic during such a wait does not overflow into `Lagged`/1011.
+**Backpressure**: `mpsc::channel(256)` outbound buffer. The pub/sub forwarder uses `send()` bounded by `SLOW_CLIENT_SEND_TIMEOUT` (1 s), so short bursts (presence snapshot, bulk replies) just wait. If the queue stays full for the whole timeout, forwarding ends with `PubsubExit::SlowClient` and the socket is closed with 1013 so the client reconnects and catches up (events are never dropped silently). All other outbound sends of a socket (Ready, presence snapshot, client-message replies, error replies, heartbeat Ping, voice replies) go through the same bounded helper `send_outbound`; a timeout ends the socket like `SlowClient` (close 1013), a closed queue like `ClientGone`, so a stalled client can never block the socket loop and its exit handling. Each socket's subscriber client is created with a 1024-slot fred broadcast buffer (`SUBSCRIBER_BROADCAST_CAPACITY`, default 32) so ordinary server-wide traffic during such a wait does not overflow into `Lagged`/1011.
 
 ### Typing Indicators
 
