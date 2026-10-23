@@ -114,6 +114,12 @@ public key; a new pair means every installed client trusts the old key and
 cd client && bun run tauri signer generate -w ~/kaiku-updater.key
 ```
 
+If you generated a new pair, replace `plugins.updater.pubkey` in
+`client/src-tauri/tauri.conf.json` with the new `.pub` content and merge that
+change **before tagging**; the release workflow rejects bundles signed with a
+key that does not match the configured pubkey. Installs signed for the old key
+will not accept updates.
+
 Set two secrets in Environment `release`:
 
 | Secret | Content |
@@ -261,7 +267,8 @@ A publish via `workflow_dispatch` with `dry_run=false` passes the
 
 ```sh
 gh release view v1.0.0-rc.1 --json assets,isDraft,isPrerelease --jq '.assets[].name'
-mkdir -p /tmp/rc && cd /tmp/rc && gh release download v1.0.0-rc.1
+export KAIKU_REPO="$PWD"   # your kaiku checkout
+mkdir -p /tmp/rc && cd /tmp/rc && gh release download v1.0.0-rc.1 --repo Detair/kaiku
 sha256sum -c checksums.txt
 ```
 
@@ -274,7 +281,7 @@ sha256sum -c checksums.txt
       `darwin-x86_64`, `linux-x86_64`, `windows-x86_64`, each with a
       non-empty `signature`.
 - [ ] The APK verifies. Needs the Android SDK build-tools (`ANDROID_HOME`):
-      `scripts/android_verify_apk.sh Kaiku-1.0.0-rc.1.apk 1.0.0-rc.1 1000001`
+      `"$KAIKU_REPO"/scripts/android_verify_apk.sh Kaiku-1.0.0-rc.1.apk 1.0.0-rc.1 1000001`
       Compare the printed signer certificate SHA-256 with the one in the
       run's job summary and with your key backup record. The signer must be
       the same on every release or sideload upgrades break.
@@ -307,7 +314,7 @@ is a draft), fetch it from the draft and serve it locally:
 
 ```sh
 mkdir -p /tmp/rc-updater && cd /tmp/rc-updater
-gh release download v1.0.0-rc.1 --pattern latest.json --clobber
+gh release download v1.0.0-rc.1 --repo Detair/kaiku --pattern latest.json --clobber
 python3 -m http.server 8099 --bind 127.0.0.1
 ```
 
