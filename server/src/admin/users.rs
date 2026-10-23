@@ -161,15 +161,18 @@ pub async fn create_user(
     let password_hash = crate::auth::hash_password(&body.temporary_password)
         .map_err(|_| AdminError::Internal("Password processing failed".to_string()))?;
 
+    // Insert and audit entry commit together: an audit failure must not leave
+    // an account behind (a retry would then hit 409).
+    let mut tx = state.db.begin().await?;
     let (id, username, display_name, email, avatar_url, created_at, is_banned) =
-        queries::insert_admin_created_user(&state.db, &body.username, display_name, &password_hash)
+        queries::insert_admin_created_user(&mut *tx, &body.username, display_name, &password_hash)
             .await?
             .ok_or_else(|| AdminError::Conflict("Username already taken".to_string()))?;
 
     // Never include the temporary password in the audit entry.
     let ip_address = addr.ip().to_string();
     write_audit_log(
-        &state.db,
+        &mut *tx,
         admin.user_id,
         "admin.users.create",
         Some("user"),
@@ -178,6 +181,7 @@ pub async fn create_user(
         Some(&ip_address),
     )
     .await?;
+    tx.commit().await?;
 
     tracing::info!(admin_id = %admin.user_id, user_id = %id, "Admin created user account");
 

@@ -701,9 +701,6 @@ pub async fn download(
     Path(id): Path<Uuid>,
     Query(query): Query<DownloadQuery>,
 ) -> Result<Response, ChatError> {
-    // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
-
     // Get user ID from either AuthUser (header) or token query parameter
     let user_id = if let Some(user) = auth_user {
         user.id
@@ -735,6 +732,10 @@ pub async fn download(
     } else {
         return Err(ChatError::Forbidden);
     };
+
+    // Check S3 is configured (after the caller checks, so a pending user gets
+    // PASSWORD_CHANGE_REQUIRED even without storage).
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     // Check permissions
     let has_access = db::check_attachment_access(&state.db, id, user_id)

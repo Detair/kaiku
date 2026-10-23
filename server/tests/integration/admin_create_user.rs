@@ -492,3 +492,74 @@ async fn pending_user_query_token_download_refused(pool: PgPool) {
     let body = super::helpers::body_to_json(resp).await;
     assert_eq!(body["error"], "FORBIDDEN");
 }
+
+/// Without S3 configured, a pending user on the deprecated `?token=` path must
+/// still see PASSWORD_CHANGE_REQUIRED, not STORAGE_NOT_CONFIGURED.
+#[sqlx::test]
+async fn pending_user_query_token_download_refused_without_s3(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (pending_id, _) = create_test_user(&pool).await;
+    sqlx::query("UPDATE users SET must_change_password = true WHERE id = $1")
+        .bind(pending_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = generate_access_token(&app.config, pending_id);
+    let resp = app
+        .router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/api/messages/attachments/{}/download?token={token}",
+                    Uuid::now_v7()
+                ))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = super::helpers::body_to_json(resp).await;
+    assert_eq!(body["error"], "PASSWORD_CHANGE_REQUIRED");
+}
+
+/// The account insert and its audit entry are atomic: when the audit write
+/// fails, no account is left behind and a retry succeeds.
+#[sqlx::test]
+async fn audit_failure_rolls_back_created_account(pool: PgPool) {
+    let (_app, server, token) = setup_admin(&pool).await;
+
+    sqlx::query(
+        r"CREATE FUNCTION test_fail_audit() RETURNS trigger AS $$
+          BEGIN RAISE EXCEPTION 'audit write blocked'; END $$ LANGUAGE plpgsql",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r"CREATE TRIGGER test_fail_audit BEFORE INSERT ON system_audit_log
+          FOR EACH ROW WHEN (NEW.action = 'admin.users.create')
+          EXECUTE FUNCTION test_fail_audit()",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
+    assert!(resp.status().is_server_error(), "got {}", resp.status());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE username = 'oma'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "account must be rolled back");
+
+    sqlx::query("DROP TRIGGER test_fail_audit ON system_audit_log")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
+    assert_eq!(resp.status(), StatusCode::CREATED, "retry must succeed");
+}
