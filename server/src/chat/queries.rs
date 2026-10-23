@@ -488,7 +488,7 @@ pub async fn list_dm_participants(
            FROM dm_participants dp
            JOIN users u ON u.id = dp.user_id
            WHERE dp.channel_id = $1
-           ORDER BY dp.joined_at ASC"#,
+           ORDER BY dp.joined_at ASC, dp.user_id ASC"#,
         channel_id,
     )
     .fetch_all(pool)

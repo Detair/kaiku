@@ -439,7 +439,7 @@ pub struct DMListResponse {
     pub unread_count: i64,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct DMParticipant {
     pub user_id: Uuid,
     pub username: String,

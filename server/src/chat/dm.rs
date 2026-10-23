@@ -9,8 +9,8 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::types::{
-    CreateDMRequest, DMIconResponse, DMListResponse, DMParticipant, DMResponse, MarkAsReadRequest,
-    MarkAsReadResponse, UpdateDMNameRequest,
+    CreateDMRequest, DMIconResponse, DMListResponse, DMParticipant, DMResponse, LastMessagePreview,
+    MarkAsReadRequest, MarkAsReadResponse, UpdateDMNameRequest,
 };
 use super::{queries, ChatError};
 use crate::api::AppState;
@@ -105,6 +105,22 @@ pub async fn get_dm_participants(
     queries::list_dm_participants(pool, channel_id).await
 }
 
+/// Assemble one `GET /api/dm` element. Single constructor shared by
+/// [`dm_list_entry`] and [`announce_dm_created`] so the shapes cannot drift.
+fn build_dm_list_entry(
+    channel: Channel,
+    participants: Vec<DMParticipant>,
+    last_message: Option<LastMessagePreview>,
+    unread_count: i64,
+) -> DMListResponse {
+    DMListResponse {
+        channel: channel.into(),
+        participants,
+        last_message,
+        unread_count,
+    }
+}
+
 /// Build one `GET /api/dm` element for `channel` as seen by `viewer_id`
 /// (participants, last message preview, the viewer's unread count).
 pub(crate) async fn dm_list_entry(
@@ -116,51 +132,55 @@ pub(crate) async fn dm_list_entry(
     let last_message = queries::fetch_last_message_preview(pool, channel.id).await?;
     let unread_count = queries::dm_unread_count(pool, viewer_id, channel.id).await?;
 
-    Ok(DMListResponse {
-        channel: channel.into(),
+    Ok(build_dm_list_entry(
+        channel,
         participants,
         last_message,
         unread_count,
-    })
+    ))
 }
 
 /// Tell every participant of a newly created DM about it with
 /// [`ServerEvent::DmCreated`], including the creator (their other devices).
 ///
-/// Each participant gets their own `GET /api/dm` element. All payloads are
-/// built first and then published back-to-back in one pipeline, so no
-/// participant can post into the DM before every participant's socket has been
-/// told (and auto-subscribed). Failures are logged and never fail the request.
-async fn announce_dm_created(state: &AppState, channel: &Channel, participant_ids: &[Uuid]) {
-    let mut events = Vec::with_capacity(participant_ids.len());
-    for &participant_id in participant_ids {
-        let entry = match dm_list_entry(&state.db, participant_id, channel.clone()).await {
-            Ok(entry) => entry,
-            Err(e) => {
-                tracing::warn!(
-                    channel_id = %channel.id,
-                    user_id = %participant_id,
-                    error = %e,
-                    "Failed to build DmCreated event"
-                );
-                continue;
-            }
-        };
-        match serde_json::to_value(&entry) {
-            Ok(channel_json) => events.push((
-                participant_id,
-                ServerEvent::DmCreated {
-                    channel: channel_json,
-                },
-            )),
-            Err(e) => tracing::warn!(
+/// The channel is brand new, so every recipient's `GET /api/dm` element is
+/// identical: participants as already fetched by the caller, no last message,
+/// zero unread. Nothing in the entry is viewer-specific beyond the unread
+/// count, so it is built (via the shared constructor) and serialized once, with
+/// no further queries. All events are published back-to-back in one pipeline,
+/// so no participant can post into the DM before every participant's socket
+/// has been told (and auto-subscribed). Failures are logged and never fail the
+/// request.
+async fn announce_dm_created(
+    state: &AppState,
+    channel: &Channel,
+    participants: Vec<DMParticipant>,
+) {
+    let recipients: Vec<Uuid> = participants.iter().map(|p| p.user_id).collect();
+    let entry = build_dm_list_entry(channel.clone(), participants, None, 0);
+    let channel_json = match serde_json::to_value(&entry) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
                 channel_id = %channel.id,
-                user_id = %participant_id,
                 error = %e,
                 "Failed to serialize DmCreated event"
-            ),
+            );
+            return;
         }
-    }
+    };
+
+    let events: Vec<(Uuid, ServerEvent)> = recipients
+        .into_iter()
+        .map(|user_id| {
+            (
+                user_id,
+                ServerEvent::DmCreated {
+                    channel: channel_json.clone(),
+                },
+            )
+        })
+        .collect();
 
     if let Err(e) = broadcast_to_users(&state.redis, &events).await {
         tracing::warn!(
@@ -277,8 +297,7 @@ pub async fn create_dm(
     let participants = get_dm_participants(&state.db, channel.id).await?;
 
     if newly_created {
-        let participant_ids: Vec<Uuid> = participants.iter().map(|p| p.user_id).collect();
-        announce_dm_created(&state, &channel, &participant_ids).await;
+        announce_dm_created(&state, &channel, participants.clone()).await;
     }
 
     let response = DMResponse {
