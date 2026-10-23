@@ -157,3 +157,10 @@ internal addresses (overlay/pod networks) as host candidates. Optional:
 behaviour. athene sets `VOICE_ICE_INTERFACES=eth0`, `VOICE_ICE_IP_FAMILY=v4`.
 Note: the advertised IP is `PUBLIC_IP` (existing var); ports are advertised
 unchanged, so the firewall forwards the same UDP port numbers 1:1.
+
+## Phase 2 contracts (adopted 2026-10-23 by the coordinator)
+
+- **C15 — i18n key naming:** web and Android share key names (`area.screen.element`, Android `area_screen_element`); one web catalog file per area. Details: `2026-10-23-v1-i18n-phase2.md`.
+- **C16 — error text:** HTTP/WS errors carry the server error `code`; user-facing text is produced only by the client `errorText(code)` mapping (web) / string resource lookup (Android), never from server message strings.
+- **C17 — locale completeness:** a locale folder is either empty (pure fallback) or complete; CI enforces identical key sets.
+- Rulings: build-time-only Android lint-rule dependency (Apache-2.0) accepted; Android lint becomes a blocking CI step (i18n plan Task 10).
