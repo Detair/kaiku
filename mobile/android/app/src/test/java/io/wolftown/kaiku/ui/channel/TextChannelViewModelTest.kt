@@ -3,8 +3,15 @@ package io.wolftown.kaiku.ui.channel
 import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import io.mockk.*
+import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.ChatRepository
+import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.domain.ChannelTitle
+import io.wolftown.kaiku.domain.model.Channel
+import io.wolftown.kaiku.domain.model.ChannelType
+import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.model.DmParticipant
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.coroutines.Dispatchers
@@ -21,12 +28,17 @@ class TextChannelViewModelTest {
 
     private lateinit var chatRepository: ChatRepository
     private lateinit var guildRepository: GuildRepository
+    private lateinit var dmRepository: DmRepository
+    private lateinit var authState: AuthState
     private lateinit var viewModel: TextChannelViewModel
     private lateinit var savedStateHandle: SavedStateHandle
 
     private val testDispatcher = StandardTestDispatcher()
 
     private val messagesFlow = MutableStateFlow<List<Message>>(emptyList())
+    private val channelsFlow = MutableStateFlow<List<Channel>>(emptyList())
+    private val conversationsFlow = MutableStateFlow<List<DmConversation>>(emptyList())
+    private val currentUserIdFlow = MutableStateFlow<String?>("me")
     private val typingUsersFlow = MutableStateFlow<Set<String>>(emptySet())
 
     private val testAuthor = User(
@@ -57,6 +69,11 @@ class TextChannelViewModelTest {
         Dispatchers.setMain(testDispatcher)
         chatRepository = mockk(relaxed = true)
         guildRepository = mockk(relaxed = true)
+        dmRepository = mockk(relaxed = true)
+        authState = mockk(relaxed = true)
+        every { guildRepository.channels } returns channelsFlow
+        every { dmRepository.conversations } returns conversationsFlow
+        every { authState.currentUserId } returns currentUserIdFlow
         savedStateHandle = SavedStateHandle(mapOf("channelId" to "ch-1"))
 
         every { chatRepository.getMessages("ch-1") } returns messagesFlow
@@ -69,7 +86,7 @@ class TextChannelViewModelTest {
     }
 
     private fun createViewModel(): TextChannelViewModel {
-        return TextChannelViewModel(chatRepository, guildRepository, savedStateHandle)
+        return TextChannelViewModel(chatRepository, guildRepository, dmRepository, authState, savedStateHandle)
     }
 
     // ========================================================================
@@ -352,5 +369,55 @@ class TextChannelViewModelTest {
         advanceUntilIdle()
 
         verify { chatRepository.sendTypingIndicator("ch-1") }
+    }
+
+    // ========================================================================
+    // Title
+    // ========================================================================
+
+    @Test
+    fun `title is null for unknown channel and never the id`() = runTest {
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
+        viewModel = createViewModel()
+
+        viewModel.title.test {
+            assertNull(awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `title resolves dm participant once conversations load`() = runTest {
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
+        viewModel = createViewModel()
+
+        viewModel.title.test {
+            assertNull(awaitItem())
+            conversationsFlow.value = listOf(
+                DmConversation(
+                    id = "ch-1",
+                    participants = listOf(
+                        DmParticipant(userId = "me", username = "me", displayName = "Me"),
+                        DmParticipant(userId = "u2", username = "alice", displayName = "Alice"),
+                    ),
+                )
+            )
+            assertEquals(ChannelTitle("Alice", isDm = true), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `title uses guild channel name`() = runTest {
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
+        channelsFlow.value = listOf(Channel(id = "ch-1", name = "general", channelType = ChannelType.TEXT))
+        viewModel = createViewModel()
+
+        viewModel.title.test {
+            var item = awaitItem()
+            if (item == null) item = awaitItem()
+            assertEquals(ChannelTitle("general", isDm = false), item)
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 }

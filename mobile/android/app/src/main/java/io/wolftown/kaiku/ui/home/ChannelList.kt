@@ -11,51 +11,37 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.domain.ChannelSection
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 
 /**
  * Displays channels grouped by category.
  *
- * Channels with null categoryId appear at the top, followed by groups
- * keyed by categoryId. Within each group, channels are already sorted
- * by position (the ViewModel handles sorting).
+ * Sections arrive ready-made from the ViewModel: uncategorised channels first
+ * (no header), then one section per category with its name as the header.
  */
 @Composable
 fun ChannelList(
-    channels: List<Channel>,
+    sections: List<ChannelSection>,
     onChannelSelected: (channelId: String, channelType: ChannelType) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Group channels: null categoryId first, then by categoryId
-    val uncategorized = channels.filter { it.categoryId == null }
-    val categorized = channels
-        .filter { it.categoryId != null }
-        .groupBy { it.categoryId!! }
-
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 8.dp)
     ) {
-        // Uncategorized channels at the top
-        if (uncategorized.isNotEmpty()) {
-            items(uncategorized, key = { it.id }) { channel ->
-                ChannelItem(
-                    channel = channel,
-                    onClick = { onChannelSelected(channel.id, channel.channelType) }
-                )
+        sections.forEachIndexed { index, section ->
+            if (section.title != null) {
+                item(key = "section-$index") {
+                    CategoryHeader(title = section.title)
+                }
             }
-        }
-
-        // Categorized channel groups
-        categorized.forEach { (categoryId, categoryChannels) ->
-            item(key = "category-$categoryId") {
-                CategoryHeader(categoryId = categoryId)
-            }
-            items(categoryChannels, key = { it.id }) { channel ->
+            items(section.channels, key = { it.id }) { channel ->
                 ChannelItem(
                     channel = channel,
                     onClick = { onChannelSelected(channel.id, channel.channelType) }
@@ -67,11 +53,11 @@ fun ChannelList(
 
 @Composable
 private fun CategoryHeader(
-    categoryId: String,
+    title: String,
     modifier: Modifier = Modifier
 ) {
     Text(
-        text = categoryId.uppercase(),
+        text = title.uppercase(),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontWeight = FontWeight.SemiBold,
@@ -93,14 +79,15 @@ private fun ChannelItem(
         verticalAlignment = Alignment.CenterVertically
     ) {
         val prefix = when (channel.channelType) {
-            ChannelType.VOICE -> "\uD83D\uDD0A "  // speaker emoji as icon fallback
-            else -> "# "
+            ChannelType.VOICE -> stringResource(R.string.channel_prefix_voice)
+            else -> stringResource(R.string.channel_prefix_text)
         }
 
         Text(
             text = prefix,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = 6.dp)
         )
 
         val hasUnread = channel.unreadCount > 0
@@ -119,13 +106,19 @@ private fun ChannelItem(
 
         if (hasUnread) {
             Badge {
-                Text(text = if (channel.unreadCount > 99) "99+" else channel.unreadCount.toString())
+                Text(
+                    text = if (channel.unreadCount > 99) {
+                        stringResource(R.string.channel_unread_overflow)
+                    } else {
+                        channel.unreadCount.toString()
+                    }
+                )
             }
         }
 
         if (channel.channelType == ChannelType.VOICE && channel.userLimit != null && channel.userLimit > 0) {
             Text(
-                text = "/${channel.userLimit}",
+                text = stringResource(R.string.channel_user_limit, channel.userLimit),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

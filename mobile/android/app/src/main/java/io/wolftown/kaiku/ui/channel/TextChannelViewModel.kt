@@ -4,14 +4,18 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.ChatRepository
+import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.domain.ChannelTitle
 import io.wolftown.kaiku.domain.model.Message
+import io.wolftown.kaiku.domain.resolveChannelTitle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.logging.Level
@@ -23,6 +27,8 @@ import javax.inject.Inject
 class TextChannelViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val guildRepository: GuildRepository,
+    private val dmRepository: DmRepository,
+    authState: AuthState,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -32,9 +38,14 @@ class TextChannelViewModel @Inject constructor(
 
     private val channelId: String = savedStateHandle["channelId"]!!
 
-    val channelName: StateFlow<String> = guildRepository.channels
-        .map { channels -> channels.find { it.id == channelId }?.name ?: channelId }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), channelId)
+    /** Guild channel name or DM participant name; null while unknown (never the raw id). */
+    val title: StateFlow<ChannelTitle?> = combine(
+        guildRepository.channels,
+        dmRepository.conversations,
+        authState.currentUserId,
+    ) { channels, dms, userId ->
+        resolveChannelTitle(channelId, channels, dms, userId)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val messages: StateFlow<List<Message>> = chatRepository.getMessages(channelId)
     val typingUsers: StateFlow<Set<String>> = chatRepository.getTypingUsers(channelId)

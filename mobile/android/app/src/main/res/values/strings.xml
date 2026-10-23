@@ -17,12 +17,28 @@
     <string name="chat_react">React</string>
     <string name="chat_edit">Edit</string>
     <string name="chat_delete">Delete</string>
+    <string name="chat_title_loading">Conversation</string>
+    <string name="chat_title_channel">#%1$s</string>
+    <string name="chat_message_placeholder_channel">Message #%1$s</string>
+    <string name="chat_message_placeholder_dm">Message %1$s</string>
+    <string name="chat_message_placeholder_loading">Message</string>
+    <string name="chat_send">Send message</string>
+    <string name="chat_typing_one">%1$s is typing…</string>
+    <string name="chat_typing_two">%1$s and %2$s are typing…</string>
+    <string name="chat_typing_many">Several people are typing…</string>
+
+    <!-- Channel list -->
+    <string name="channel_prefix_text">#</string>
+    <string name="channel_prefix_voice">🔊</string>
+    <string name="channel_unread_overflow">99+</string>
+    <string name="channel_user_limit">/%1$d</string>
 
     <!-- Direct messages -->
     <string name="dm_title">Direct messages</string>
     <string name="dm_empty">No direct messages yet</string>
     <string name="dm_last_message_preview">%1$s: %2$s</string>
     <string name="dm_unread_overflow">99+</string>
+    <string name="dm_load_failed">Couldn\'t load your direct messages.</string>
 
     <!-- Home -->
     <string name="home_open_servers">Open servers</string>

@@ -4,6 +4,7 @@ import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.WsJson
 import io.wolftown.kaiku.domain.model.AuthResponse
+import io.wolftown.kaiku.domain.model.Category
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.CursorPage
@@ -77,5 +78,15 @@ class GoldenContractTest {
         )
         assertEquals(2, channels.count { it.channelType == ChannelType.UNKNOWN })
         assertEquals(3, channels[0].unreadCount)
+    }
+
+    @Test
+    fun `categories fixture decodes`() {
+        val categories = KaikuJson.decodeFromString<List<Category>>(Golden.load("guild_categories.json"))
+
+        assertEquals(listOf("Text Channels", "Voice"), categories.map { it.name })
+        assertEquals(listOf(0, 1), categories.map { it.position })
+        assertEquals(null, categories[0].parentId)
+        assertEquals(categories[0].id, categories[1].parentId)
     }
 }

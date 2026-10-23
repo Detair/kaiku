@@ -6,6 +6,7 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.domain.model.Category
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
@@ -31,6 +32,7 @@ class HomeViewModelTest {
     private val guildsFlow = MutableStateFlow<List<Guild>>(emptyList())
     private val selectedGuildIdFlow = MutableStateFlow<String?>(null)
     private val channelsFlow = MutableStateFlow<List<Channel>>(emptyList())
+    private val categoriesFlow = MutableStateFlow<List<Category>>(emptyList())
 
     private val sampleGuilds = listOf(
         Guild(id = "guild-1", name = "Guild One", memberCount = 10),
@@ -52,6 +54,7 @@ class HomeViewModelTest {
         every { guildRepository.guilds } returns guildsFlow
         every { guildRepository.selectedGuildId } returns selectedGuildIdFlow
         every { guildRepository.channels } returns channelsFlow
+        every { guildRepository.categories } returns categoriesFlow
         every { tokenStorage.getServerUrl() } returns "https://example.com"
     }
 
@@ -292,5 +295,21 @@ class HomeViewModelTest {
 
         assertEquals(R.string.home_channels_load_failed, viewModel.error.value)
         assertTrue(viewModel.guilds.value.isNotEmpty())
+    }
+
+    @Test
+    fun `sections group filtered channels under category names`() = runTest {
+        categoriesFlow.value = listOf(Category(id = "cat-1", name = "News"))
+        channelsFlow.value = sampleChannels + Channel(
+            id = "ch-dm", name = "dm", channelType = ChannelType.DM, position = 9
+        )
+
+        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        advanceUntilIdle()
+
+        val sections = viewModel.sections.value
+        assertEquals(listOf<String?>(null, "News"), sections.map { it.title })
+        assertEquals(listOf("ch-2", "ch-1"), sections[0].channels.map { it.id })
+        assertEquals(listOf("ch-3"), sections[1].channels.map { it.id })
     }
 }

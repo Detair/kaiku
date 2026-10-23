@@ -28,7 +28,7 @@ fun HomeScreen(
 ) {
     val guilds by viewModel.guilds.collectAsState()
     val selectedGuild by viewModel.selectedGuild.collectAsState()
-    val channels by viewModel.channels.collectAsState()
+    val sections by viewModel.sections.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
 
@@ -158,7 +158,7 @@ fun HomeScreen(
 
                     else -> {
                         ChannelList(
-                            channels = channels,
+                            sections = sections,
                             onChannelSelected = { channelId, channelType ->
                                 viewModel.onChannelSelected(channelId, channelType)
                             }

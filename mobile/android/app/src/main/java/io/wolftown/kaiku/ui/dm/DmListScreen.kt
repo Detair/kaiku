@@ -74,7 +74,7 @@ fun DmListScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = error ?: stringResource(R.string.common_error_generic),
+                            text = stringResource(error ?: R.string.common_error_generic),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodyLarge
                         )

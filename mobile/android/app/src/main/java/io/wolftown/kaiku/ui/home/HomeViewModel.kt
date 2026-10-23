@@ -7,6 +7,8 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.domain.ChannelSection
+import io.wolftown.kaiku.domain.groupChannels
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
@@ -49,6 +51,11 @@ class HomeViewModel @Inject constructor(
                 .sortedBy { it.position }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** [channels] grouped under their category headers. */
+    val sections: StateFlow<List<ChannelSection>> = combine(channels, guildRepository.categories) { list, categories ->
+        groupChannels(list, categories)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()

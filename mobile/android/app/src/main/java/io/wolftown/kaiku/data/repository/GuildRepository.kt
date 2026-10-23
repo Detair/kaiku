@@ -2,8 +2,10 @@ package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.ChannelApi
 import io.wolftown.kaiku.data.api.GuildApi
+import io.wolftown.kaiku.domain.model.Category
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.Guild
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,6 +26,9 @@ class GuildRepository @Inject constructor(
     private val _channels = MutableStateFlow<List<Channel>>(emptyList())
     val channels: StateFlow<List<Channel>> = _channels.asStateFlow()
 
+    private val _categories = MutableStateFlow<List<Category>>(emptyList())
+    val categories: StateFlow<List<Category>> = _categories.asStateFlow()
+
     /** The channel the user currently has open; its messages count as read. */
     private val _activeChannelId = MutableStateFlow<String?>(null)
 
@@ -38,6 +43,16 @@ class GuildRepository @Inject constructor(
 
     suspend fun loadChannels(guildId: String) {
         val channelList = channelApi.getChannels(guildId)
+        // Category names are cosmetic: a failure leaves the channels ungrouped
+        // instead of failing the whole load.
+        val categoryList = try {
+            guildApi.getCategories(guildId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emptyList()
+        }
+        _categories.value = categoryList
         _channels.value = channelList
     }
 

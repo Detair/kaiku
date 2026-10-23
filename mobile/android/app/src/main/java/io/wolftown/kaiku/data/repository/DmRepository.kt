@@ -31,8 +31,10 @@ class DmRepository @Inject constructor(
      * a server failure is surfaced to the caller.
      */
     suspend fun markAsRead(channelId: String) {
+        val lastMessageId = _conversations.value.find { it.id == channelId }?.lastMessage?.id
         _conversations.value = clearUnread(_conversations.value, channelId)
-        dmApi.markAsRead(channelId)
+        // The server marks read up to a message id; with no message there is nothing to send.
+        if (lastMessageId != null) dmApi.markAsRead(channelId, lastMessageId)
     }
 
     companion object {

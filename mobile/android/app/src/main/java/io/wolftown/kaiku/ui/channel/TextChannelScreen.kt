@@ -32,7 +32,7 @@ fun TextChannelScreen(
     onNavigateBack: () -> Unit,
     viewModel: TextChannelViewModel = hiltViewModel()
 ) {
-    val channelName by viewModel.channelName.collectAsState()
+    val title by viewModel.title.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val typingUsers by viewModel.typingUsers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -70,10 +70,23 @@ fun TextChannelScreen(
         }
     }
 
+    val titleText = when (val t = title) {
+        null -> stringResource(R.string.chat_title_loading)
+        else -> if (t.isDm) t.text else stringResource(R.string.chat_title_channel, t.text)
+    }
+    val placeholder = when (val t = title) {
+        null -> stringResource(R.string.chat_message_placeholder_loading)
+        else -> if (t.isDm) {
+            stringResource(R.string.chat_message_placeholder_dm, t.text)
+        } else {
+            stringResource(R.string.chat_message_placeholder_channel, t.text)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("#$channelName") },
+                title = { Text(titleText) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
@@ -87,7 +100,7 @@ fun TextChannelScreen(
         bottomBar = {
             MessageInput(
                 input = messageInput,
-                channelName = channelName,
+                placeholder = placeholder,
                 typingUsers = typingUsers,
                 onInputChanged = viewModel::onMessageInputChanged,
                 onSend = viewModel::onSendMessage
