@@ -76,7 +76,8 @@ class AudioRouteManager @Inject constructor(
         private val WIRED_TYPES = setOf(
             AudioDeviceInfo.TYPE_WIRED_HEADSET,
             AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-            AudioDeviceInfo.TYPE_USB_HEADSET
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE
         )
     }
 
@@ -224,7 +225,12 @@ class AudioRouteManager @Inject constructor(
         if (outputs.any { it.type in WIRED_TYPES }) {
             routes.add(AudioRoute.WiredHeadset)
         }
-        if (outputs.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }) {
+        val hasBluetooth = outputs.any {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+        }
+        if (hasBluetooth) {
             routes.add(AudioRoute.Bluetooth)
         }
 

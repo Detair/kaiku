@@ -13,6 +13,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
@@ -124,10 +125,8 @@ class VoiceCallService : Service() {
             return START_NOT_STICKY
         } catch (e: IllegalStateException) {
             // ForegroundServiceStartNotAllowedException exists on API 31+ only; the
-            // SDK check keeps the class from being referenced on older devices.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                e is ForegroundServiceStartNotAllowedException
-            ) {
+            // class reference lives in Api31, which never loads on older devices.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && Api31.isStartNotAllowed(e)) {
                 failStart("Foreground start not allowed")
                 return START_NOT_STICKY
             }
@@ -216,5 +215,11 @@ class VoiceCallService : Service() {
                 disconnectPendingIntent
             )
             .build()
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private object Api31 {
+        fun isStartNotAllowed(e: Throwable): Boolean =
+            e is ForegroundServiceStartNotAllowedException
     }
 }
