@@ -671,7 +671,6 @@ impl SfuServer {
                         if let Ok(local_track) = room
                             .track_router
                             .create_subscriber_track(uid, source_type, &other_peer, &track)
-                            .await
                         {
                             match other_peer
                                 .add_outgoing_track(uid, source_type, local_track)

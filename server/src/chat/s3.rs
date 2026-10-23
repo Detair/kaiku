@@ -60,7 +60,7 @@ impl S3Client {
     ///
     /// Supports custom endpoints for S3-compatible backends (`RustFS`, R2, B2).
     /// Uses path-style addressing when a custom endpoint is configured.
-    pub async fn new(config: &Config) -> Result<Self, S3Error> {
+    pub fn new(config: &Config) -> Result<Self, S3Error> {
         let region =
             Region::new(std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string()));
 

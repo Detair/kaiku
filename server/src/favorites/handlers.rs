@@ -107,10 +107,11 @@ pub async fn add_favorite(
         return Err(FavoritesError::ChannelNotFound); // Don't leak existence
     }
 
-    // 4. Verify user has VIEW_CHANNEL permission for the channel
+    // 4. Verify user has VIEW_CHANNEL permission for the channel (generic error to avoid leaking
+    //    permission details)
     crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
         .await
-        .map_err(|_| FavoritesError::ChannelNotFound)?; // Generic error to avoid leaking permission details
+        .map_err(|_| FavoritesError::ChannelNotFound)?;
 
     // 5. Transaction for atomic insert
     let mut tx = state.db.begin().await?;
