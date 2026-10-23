@@ -98,8 +98,8 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // Restore input on failure so the user can retry
-                _messageInput.value = content
+                // Restore input on failure so the user can retry, unless a newer draft was typed
+                if (_messageInput.value.isEmpty()) _messageInput.value = content
                 _error.value = R.string.chat_send_failed
                 logger.log(Level.WARNING, "Failed to send message", e)
             }

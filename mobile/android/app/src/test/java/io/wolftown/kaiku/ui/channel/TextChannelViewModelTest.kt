@@ -458,6 +458,27 @@ class TextChannelViewModelTest {
     }
 
     @Test
+    fun `send failure keeps a newer draft`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { chatRepository.sendMessage("ch-1", "hi") } coAnswers {
+            gate.await()
+            throw RuntimeException("boom")
+        }
+
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle() // send is now suspended on the gate
+        viewModel.onMessageInputChanged("newer")
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_send_failed, viewModel.error.value)
+        assertEquals("newer", viewModel.messageInput.value)
+    }
+
+    @Test
     fun `edit failure exposes error`() = runTest {
         viewModel = loadedViewModel()
         advanceUntilIdle()

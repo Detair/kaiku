@@ -49,12 +49,14 @@ fun TextChannelScreen(
     LaunchedEffect(error) {
         val res = error ?: return@LaunchedEffect
         val retry = res == R.string.chat_send_failed
+        // Clear first: a snackbar with an action suspends until dismissed, and a
+        // repeat of the same error would be conflated by the StateFlow and lost.
+        viewModel.clearError()
         val result = snackbarHostState.showSnackbar(
             message = context.getString(res),
             actionLabel = if (retry) context.getString(R.string.common_retry) else null,
             withDismissAction = true
         )
-        viewModel.clearError()
         if (retry && result == SnackbarResult.ActionPerformed) viewModel.onSendMessage()
     }
 
