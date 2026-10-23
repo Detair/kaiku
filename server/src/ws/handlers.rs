@@ -45,6 +45,13 @@ const PUBSUB_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// torn down.
 const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Close code: authentication rejected (policy violation).
+const CLOSE_POLICY_VIOLATION: u16 = 1008;
+
+/// Error code sent before closing a socket whose user must change their
+/// password first.
+const PASSWORD_CHANGE_REQUIRED: &str = "PASSWORD_CHANGE_REQUIRED";
+
 /// Close code: server-side event pipeline failed; reconnect and catch up.
 const CLOSE_INTERNAL_ERROR: u16 = 1011;
 
@@ -143,14 +150,13 @@ pub async fn handler(
             }
         };
 
-        // Verify user still exists (lightweight existence check, not full row fetch)
-        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
+        // Verify the user still exists and has no pending forced password change.
+        match user_must_change_password(&state, user_id).await {
+            Ok(Some(false)) => {}
+            Ok(Some(true)) => {
+                return error_response(403, PASSWORD_CHANGE_REQUIRED);
+            }
+            Ok(None) => {
                 return error_response(401, "User not found");
             }
             Err(e) => {
@@ -186,7 +192,12 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     .await
     {
         Ok(Ok(uid)) => uid,
-        Ok(Err(reason)) => {
+        Ok(Err(AuthFrameError::PasswordChangeRequired)) => {
+            debug!("Post-connect auth refused: password change required");
+            refuse_password_change_required(ws_sender).await;
+            return;
+        }
+        Ok(Err(AuthFrameError::Failed(reason))) => {
             warn!("Post-connect auth failed: {}", reason);
             let mut ws_sender = ws_sender;
             let _ = ws_sender.close().await;
@@ -207,11 +218,62 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     handle_socket(socket, state, user_id).await;
 }
 
+/// Look up whether a user must change their password before connecting.
+///
+/// `Ok(None)` means the user does not exist.
+async fn user_must_change_password(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>("SELECT must_change_password FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+}
+
+/// Why post-connect authentication did not produce a user.
+enum AuthFrameError {
+    /// The user must change their password first (close 1008 with an error event).
+    PasswordChangeRequired,
+    /// Any other failure; the socket is simply closed.
+    Failed(String),
+}
+
+impl From<String> for AuthFrameError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+/// Tell a pre-auth socket that the password must be changed first, then close
+/// it with 1008. Both sends together are bounded by [`CLOSE_FLUSH_TIMEOUT`] so a
+/// stalled client cannot hold the task.
+async fn refuse_password_change_required(
+    mut ws_sender: futures::stream::SplitSink<WebSocket, Message>,
+) {
+    let event = ServerEvent::Error {
+        code: PASSWORD_CHANGE_REQUIRED.to_string(),
+        message: "You must change your password before connecting".to_string(),
+    };
+    let refuse = async {
+        if let Ok(json) = serde_json::to_string(&event) {
+            ws_sender.send(Message::Text(json.into())).await?;
+        }
+        ws_sender
+            .send(Message::Close(Some(CloseFrame {
+                code: CLOSE_POLICY_VIOLATION,
+                reason: PASSWORD_CHANGE_REQUIRED.into(),
+            })))
+            .await
+    };
+    let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, refuse).await;
+}
+
 /// Read frames until an `Authenticate` event arrives and validate its token.
 async fn wait_for_auth_frame(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
     state: &AppState,
-) -> Result<Uuid, String> {
+) -> Result<Uuid, AuthFrameError> {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => match serde_json::from_str::<ClientEvent>(&text) {
@@ -222,43 +284,38 @@ async fn wait_for_auth_frame(
                     // Reject access tokens whose session was logged out or revoked.
                     if let Some(sid) = claims.sid.as_deref() {
                         if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                            return Err("Session revoked".to_string());
+                            return Err("Session revoked".to_string().into());
                         }
                     }
 
                     let user_id = Uuid::parse_str(&claims.sub)
                         .map_err(|_| "Invalid user ID in token".to_string())?;
 
-                    // Verify user exists
-                    match sqlx::query_scalar::<_, bool>(
-                        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
-                    )
-                    .bind(user_id)
-                    .fetch_one(&state.db)
-                    .await
-                    {
-                        Ok(true) => return Ok(user_id),
-                        Ok(false) => return Err("User not found".to_string()),
-                        Err(e) => return Err(format!("Database error: {e}")),
-                    }
+                    // Verify the user exists and has no pending forced password change.
+                    return match user_must_change_password(state, user_id).await {
+                        Ok(Some(false)) => Ok(user_id),
+                        Ok(Some(true)) => Err(AuthFrameError::PasswordChangeRequired),
+                        Ok(None) => Err("User not found".to_string().into()),
+                        Err(e) => Err(format!("Database error: {e}").into()),
+                    };
                 }
                 Ok(_) => {
                     // Ignore non-Authenticate events during pre-auth
                 }
                 Err(e) => {
-                    return Err(format!("Invalid event: {e}"));
+                    return Err(format!("Invalid event: {e}").into());
                 }
             },
             Ok(Message::Close(_)) => {
-                return Err("Connection closed before authentication".to_string());
+                return Err("Connection closed before authentication".to_string().into());
             }
             Ok(_) => {} // Ignore binary, ping, pong
             Err(e) => {
-                return Err(format!("WebSocket error: {e}"));
+                return Err(format!("WebSocket error: {e}").into());
             }
         }
     }
-    Err("Connection closed before authentication".to_string())
+    Err("Connection closed before authentication".to_string().into())
 }
 
 /// Handle WebSocket connection.

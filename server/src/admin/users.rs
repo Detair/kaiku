@@ -1,4 +1,4 @@
-//! Admin user management handlers (list, details, ban, delete, export, bulk).
+//! Admin user management handlers (list, create, details, ban, delete, export, bulk).
 
 #![allow(clippy::used_underscore_binding)]
 
@@ -6,20 +6,21 @@ use std::fmt::Write;
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::header;
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tracing::warn;
 use uuid::Uuid;
+use validator::Validate;
 
 use super::error::AdminError;
 use super::queries;
 use super::shared::{escape_csv, DeleteResponse, PaginatedResponse, PaginationParams};
 use super::types::{
-    BulkActionFailure, BulkBanRequest, BulkBanResponse, ElevatedAdmin, GlobalBanRequest,
-    SystemAdminUser,
+    BulkActionFailure, BulkBanRequest, BulkBanResponse, CreateUserRequest, ElevatedAdmin,
+    GlobalBanRequest, SystemAdminUser,
 };
 use crate::api::AppState;
 use crate::permissions::queries::write_audit_log;
@@ -121,6 +122,77 @@ pub async fn list_users(
         limit,
         offset,
     }))
+}
+
+/// Create a local account with a temporary password.
+///
+/// `POST /api/admin/users`
+///
+/// Works regardless of the registration policy. The new user must set their
+/// own password at first sign-in (`password_change_required`).
+#[utoipa::path(
+    post,
+    path = "/api/admin/users",
+    tag = "admin",
+    request_body = CreateUserRequest,
+    responses(
+        (status = 201, description = "User created", body = UserSummary),
+        (status = 400, description = "Validation failed"),
+        (status = 403, description = "Not a system admin or session not elevated"),
+        (status = 409, description = "Username already taken"),
+    ),
+    security(("bearer_auth" = []))
+)]
+#[tracing::instrument(skip(state, body), fields(username = %body.username))]
+pub async fn create_user(
+    State(state): State<AppState>,
+    Extension(admin): Extension<SystemAdminUser>,
+    Extension(_elevated): Extension<ElevatedAdmin>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<CreateUserRequest>,
+) -> Result<(StatusCode, Json<UserSummary>), AdminError> {
+    body.validate()
+        .map_err(|e| AdminError::Validation(crate::validation::format_validation_errors(&e)))?;
+
+    let display_name = body.display_name.as_deref().unwrap_or(&body.username);
+    crate::presence::validate_unicode_text(display_name, 64)
+        .map_err(|e| AdminError::Validation(format!("display_name: {e}")))?;
+
+    let password_hash = crate::auth::hash_password(&body.temporary_password)
+        .map_err(|_| AdminError::Internal("Password processing failed".to_string()))?;
+
+    let (id, username, display_name, email, avatar_url, created_at, is_banned) =
+        queries::insert_admin_created_user(&state.db, &body.username, display_name, &password_hash)
+            .await?
+            .ok_or_else(|| AdminError::Conflict("Username already taken".to_string()))?;
+
+    // Never include the temporary password in the audit entry.
+    let ip_address = addr.ip().to_string();
+    write_audit_log(
+        &state.db,
+        admin.user_id,
+        "admin.users.create",
+        Some("user"),
+        Some(id),
+        Some(serde_json::json!({"username": username, "display_name": display_name})),
+        Some(&ip_address),
+    )
+    .await?;
+
+    tracing::info!(admin_id = %admin.user_id, user_id = %id, "Admin created user account");
+
+    Ok((
+        StatusCode::CREATED,
+        Json(UserSummary {
+            id,
+            username,
+            display_name,
+            email,
+            avatar_url,
+            created_at,
+            is_banned,
+        }),
+    ))
 }
 
 /// Get detailed user information.

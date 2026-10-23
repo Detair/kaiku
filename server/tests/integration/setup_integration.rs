@@ -59,7 +59,7 @@ async fn test_first_user_receives_admin_sequential(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at"#,
+                     created_at, updated_at, must_change_password"#,
         username1,
         "First User",
         "hash"
@@ -121,7 +121,7 @@ async fn test_first_user_receives_admin_sequential(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at"#,
+                     created_at, updated_at, must_change_password"#,
         username2,
         "Second User",
         "hash"
@@ -200,7 +200,7 @@ async fn test_concurrent_registrations_only_one_gets_admin(pool: PgPool) {
                              auth_method as "auth_method: _", external_id, avatar_url,
                              status as "status: _", mfa_secret, is_bot, bot_owner_id,
                              deletion_requested_at, deletion_scheduled_at,
-                             created_at, updated_at"#,
+                             created_at, updated_at, must_change_password"#,
                 username.clone(),
                 format!("User {}", i),
                 "hash"

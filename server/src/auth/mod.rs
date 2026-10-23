@@ -29,7 +29,7 @@ use axum::{middleware as axum_middleware, Router};
 pub use error::{AuthError, AuthResult};
 pub use helpers::hash_token;
 pub use jwt::Claims;
-pub use middleware::{require_auth, AuthUser};
+pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser};
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;
@@ -48,14 +48,17 @@ use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, Ra
 /// - GET /oidc/authorize/{provider} - Initiate OIDC flow
 /// - GET /oidc/callback - OIDC callback
 ///
-/// Protected routes (auth required):
+/// Protected routes that stay usable while an admin-issued temporary password
+/// has not been replaced yet (`require_auth_allow_password_change`):
 /// - POST /logout - Invalidate session
+/// - GET /me - Get current user profile
+/// - POST /me/password - Change password (invalidates all sessions)
+///
+/// Protected routes (auth required, password change completed):
 /// - GET /sessions - List active sessions
 /// - DELETE /sessions - Revoke all sessions except current
 /// - DELETE /sessions/{id} - Revoke a specific session
-/// - GET /me - Get current user profile
 /// - POST /me - Update profile
-/// - POST /me/password - Change password (invalidates all sessions)
 /// - POST /me/avatar - Upload avatar
 /// - POST /mfa/setup - Setup MFA
 /// - POST /mfa/verify - Verify MFA (TOTP or backup code)
@@ -171,17 +174,24 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(reset_password_route)
         .merge(qr_redeem_route);
 
+    // Routes a user with a pending forced password change may still use.
+    let password_change_routes = Router::new()
+        .route("/logout", post(login::logout))
+        .route("/me", get(profile::get_profile))
+        .route("/me/password", post(profile::update_password))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_allow_password_change,
+        ));
+
     // Protected routes (auth required)
     let protected_routes = Router::new()
-        .route("/logout", post(login::logout))
         .route(
             "/sessions",
             get(sessions::list_sessions).delete(sessions::revoke_all_other_sessions),
         )
         .route("/sessions/{id}", delete(sessions::revoke_session))
-        .route("/me", get(profile::get_profile))
         .route("/me", post(profile::update_profile))
-        .route("/me/password", post(profile::update_password))
         .route(
             "/me/avatar",
             post(profile::upload_avatar).layer(DefaultBodyLimit::max(state.config.max_avatar_size)),
@@ -218,6 +228,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )));
 
     public_routes
+        .merge(password_change_routes)
         .merge(protected_routes)
         .merge(link_authorize_route)
 }

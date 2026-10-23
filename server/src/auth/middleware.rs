@@ -31,6 +31,8 @@ pub struct AuthUser {
     pub mfa_enabled: bool,
     /// When the account is scheduled for permanent deletion (if requested).
     pub deletion_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether the user must set a new password before using the rest of the API.
+    pub must_change_password: bool,
 }
 
 impl From<User> for AuthUser {
@@ -43,6 +45,7 @@ impl From<User> for AuthUser {
             avatar_url: user.avatar_url,
             mfa_enabled: user.mfa_secret.is_some(),
             deletion_scheduled_at: user.deletion_scheduled_at,
+            must_change_password: user.must_change_password,
         }
     }
 }
@@ -51,6 +54,10 @@ impl From<User> for AuthUser {
 ///
 /// Extracts Bearer token from Authorization header, validates JWT,
 /// loads user from database, and injects `AuthUser` into request extensions.
+///
+/// Users that still have to replace an admin-issued temporary password are
+/// rejected with [`AuthError::PasswordChangeRequired`]; the few routes they may
+/// use are layered with [`require_auth_allow_password_change`] instead.
 ///
 /// # Usage
 ///
@@ -62,8 +69,30 @@ impl From<User> for AuthUser {
 /// ```
 pub async fn require_auth(
     State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AuthError> {
+    authenticate(&state, request, next, false).await
+}
+
+/// Like [`require_auth`], but also admits users whose password change is
+/// still pending.
+///
+/// Only for the routes such a user needs to finish onboarding: changing the
+/// password, reading their own profile and logging out.
+pub async fn require_auth_allow_password_change(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AuthError> {
+    authenticate(&state, request, next, true).await
+}
+
+async fn authenticate(
+    state: &AppState,
     mut request: Request,
     next: Next,
+    allow_password_change: bool,
 ) -> Result<Response, AuthError> {
     // Extract Authorization header
     let auth_header = request
@@ -96,6 +125,10 @@ pub async fn require_auth(
     let user = find_user_by_id(&state.db, user_id)
         .await?
         .ok_or(AuthError::UserNotFound)?;
+
+    if user.must_change_password && !allow_password_change {
+        return Err(AuthError::PasswordChangeRequired);
+    }
 
     // Inject AuthUser into request extensions
     let auth_user = AuthUser::from(user);

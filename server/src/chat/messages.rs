@@ -1704,6 +1704,7 @@ mod tests {
             avatar_url: user.avatar_url.clone(),
             mfa_enabled: false,
             deletion_scheduled_at: None,
+            must_change_password: false,
         }
     }
 
