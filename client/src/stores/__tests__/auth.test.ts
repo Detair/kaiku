@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   getCurrentUser: vi.fn(),
@@ -68,6 +68,9 @@ import {
   clearSetupRequired,
   isAuthenticated,
   currentUser,
+  abandonRestore,
+  retryRestoreNow,
+  restoreRetryDelayMs,
 } from "../auth";
 
 function createUser(overrides: Partial<User> = {}): User {
@@ -95,6 +98,7 @@ describe("auth store", () => {
       error: null,
       setupRequired: false,
       sessionExpired: false,
+      restorePending: false,
     });
   });
 
@@ -243,20 +247,112 @@ describe("auth store", () => {
       });
     });
 
-    it("shows network error toast when error_reason is network_error", async () => {
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
-        user: null,
-        error_reason: "network_error",
+    describe("server unreachable with a stored login (network_error)", () => {
+      const offline = { user: null, error_reason: "network_error" } as const;
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.mocked(initWebSocket).mockResolvedValue(undefined);
+        vi.mocked(initPresence).mockResolvedValue(undefined);
+        vi.mocked(wsConnect).mockResolvedValue(undefined);
+        vi.mocked(initPreferences).mockResolvedValue(undefined);
       });
 
-      await initAuth();
+      afterEach(() => {
+        abandonRestore();
+        vi.useRealTimers();
+      });
 
-      expect(authState.user).toBeNull();
-      expect(authState.isInitialized).toBe(true);
-      expect(showToast).toHaveBeenCalledWith({
-        type: "error",
-        title: "Connection Failed",
-        message: "Could not connect to server.",
+      it("keeps the login and shows the pending state instead of the login form", async () => {
+        vi.mocked(tauri.getCurrentUser).mockResolvedValue(offline);
+
+        await initAuth();
+
+        expect(authState.restorePending).toBe(true);
+        expect(authState.isInitialized).toBe(false);
+        expect(authState.isLoading).toBe(false);
+        expect(showToast).not.toHaveBeenCalled();
+      });
+
+      it("retries with backoff and signs in once the server answers", async () => {
+        const user = createUser();
+        vi.mocked(tauri.getCurrentUser)
+          .mockResolvedValueOnce(offline)
+          .mockResolvedValueOnce(offline)
+          .mockResolvedValueOnce({ user, error_reason: null });
+
+        await initAuth();
+        await vi.advanceTimersByTimeAsync(restoreRetryDelayMs(1));
+        expect(tauri.getCurrentUser).toHaveBeenCalledTimes(2);
+        expect(authState.restorePending).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(restoreRetryDelayMs(2));
+
+        expect(tauri.getCurrentUser).toHaveBeenCalledTimes(3);
+        expect(authState.user).toEqual(user);
+        expect(authState.isInitialized).toBe(true);
+        expect(authState.restorePending).toBe(false);
+        expect(wsConnect).toHaveBeenCalled();
+
+        // No further attempts once signed in.
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(tauri.getCurrentUser).toHaveBeenCalledTimes(3);
+      });
+
+      it("ends only when the server rejects the stored login", async () => {
+        vi.mocked(tauri.getCurrentUser)
+          .mockResolvedValueOnce(offline)
+          .mockResolvedValueOnce({ user: null, error_reason: "session_expired" });
+
+        await initAuth();
+        await vi.advanceTimersByTimeAsync(restoreRetryDelayMs(1));
+
+        expect(authState.user).toBeNull();
+        expect(authState.isInitialized).toBe(true);
+        expect(authState.restorePending).toBe(false);
+        expect(showToast).toHaveBeenCalledWith({
+          type: "warning",
+          title: "Session Expired",
+          message: "Please log in again.",
+        });
+      });
+
+      it("coming back online retries at once", async () => {
+        vi.mocked(tauri.getCurrentUser)
+          .mockResolvedValueOnce(offline)
+          .mockResolvedValueOnce({ user: createUser(), error_reason: null });
+
+        await initAuth();
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(tauri.getCurrentUser).toHaveBeenCalledTimes(2);
+        expect(authState.isInitialized).toBe(true);
+        expect(authState.user).not.toBeNull();
+      });
+
+      it("Try again retries at once; Sign in instead shows the login form and stops retrying", async () => {
+        vi.mocked(tauri.getCurrentUser).mockResolvedValue(offline);
+
+        await initAuth();
+        retryRestoreNow();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(tauri.getCurrentUser).toHaveBeenCalledTimes(2);
+
+        abandonRestore();
+
+        expect(authState.restorePending).toBe(false);
+        expect(authState.isInitialized).toBe(true);
+        expect(authState.user).toBeNull();
+        await vi.advanceTimersByTimeAsync(120_000);
+        window.dispatchEvent(new Event("online"));
+        expect(tauri.getCurrentUser).toHaveBeenCalledTimes(2);
+      });
+
+      it("backoff doubles from 2 s and is capped at 30 s", () => {
+        expect([1, 2, 3, 4, 5, 6].map(restoreRetryDelayMs)).toEqual([
+          2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
+        ]);
       });
     });
   });

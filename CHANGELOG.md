@@ -87,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Desktop voice now uses the server's TURN relay, so voice also works on restrictive networks.
+- When the desktop app starts before the network or server is reachable, it now keeps your saved login and connects as soon as it can, instead of showing the login screen.
 - The desktop app now runs as a real desktop app again: your login is remembered securely across restarts, voice uses the built-in native engine, and tray, notifications and updates are active.
 - macOS: the app no longer quits the first time it uses the microphone or camera; macOS now asks for permission.
 - The 'Log in on phone' QR code works again after restarting the app or reloading the page.

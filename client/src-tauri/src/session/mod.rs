@@ -21,7 +21,11 @@ use tracing::{info, warn};
 use crate::{AuthState, User, UserStatus};
 
 /// How long session restore waits for the server before reporting a network error.
-const RESTORE_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// Generous on purpose: the webview keeps the stored login and retries after a
+/// `network_error`, and an attempt abandoned while the server is already
+/// rotating the refresh token would lose the new token.
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(15);
 
 // ============================================================================
 // Wire and result types
@@ -1245,6 +1249,13 @@ mod tests {
         assert!(result.password_change_required);
         assert_eq!(store.get().unwrap().refresh_token, "rt-2");
         assert_eq!(m.auth_info().unwrap().access_token, "at-2");
+    }
+
+    #[test]
+    fn restore_timeout_tolerates_a_slow_start() {
+        // A short timeout dropped users on the login screen on a slow start
+        // and could abandon a refresh the server was already rotating.
+        assert!(RESTORE_TIMEOUT >= Duration::from_secs(15));
     }
 
     #[tokio::test]

@@ -36,6 +36,12 @@ interface AuthState {
   setupRequired: boolean;
   mfaRequired: boolean;
   sessionExpired: boolean;
+  /**
+   * A stored login exists but the server could not be reached at start.
+   * The login is kept and the restore retried; the UI shows a
+   * "can't reach the server" state instead of the login form.
+   */
+  restorePending: boolean;
 }
 
 // Create the store
@@ -48,6 +54,7 @@ const [authState, setAuthState] = createStore<AuthState>({
   setupRequired: false,
   mfaRequired: false,
   sessionExpired: false,
+  restorePending: false,
 });
 
 // Derived state
@@ -172,58 +179,161 @@ async function startSessionServices(
 
 // Actions
 
+// Session restore retry (stored login, server unreachable at start).
+// Backoff doubles from 2 s and is capped at 30 s; `online` and the window
+// becoming visible retry at once. Only the server rejecting the stored
+// login (`session_expired`) or the user choosing to sign in ends it.
+const RESTORE_RETRY_BASE_MS = 2_000;
+const RESTORE_RETRY_MAX_MS = 30_000;
+let restoreRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let restoreRetryAttempt = 0;
+let restoreInFlight = false;
+let restoreTriggersAttached = false;
+
+/** Delay before restore retry `attempt` (1-based). Exported for tests. */
+export function restoreRetryDelayMs(attempt: number): number {
+  return Math.min(
+    RESTORE_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1),
+    RESTORE_RETRY_MAX_MS,
+  );
+}
+
+function onRestoreTrigger(): void {
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    return;
+  }
+  retryRestoreNow();
+}
+
+function attachRestoreTriggers(): void {
+  if (restoreTriggersAttached || typeof window === "undefined") return;
+  restoreTriggersAttached = true;
+  window.addEventListener("online", onRestoreTrigger);
+  document.addEventListener("visibilitychange", onRestoreTrigger);
+}
+
+function stopRestoreRetry(): void {
+  if (restoreRetryTimer) {
+    clearTimeout(restoreRetryTimer);
+    restoreRetryTimer = null;
+  }
+  restoreRetryAttempt = 0;
+  if (restoreTriggersAttached) {
+    window.removeEventListener("online", onRestoreTrigger);
+    document.removeEventListener("visibilitychange", onRestoreTrigger);
+    restoreTriggersAttached = false;
+  }
+}
+
+function scheduleRestoreRetry(): void {
+  attachRestoreTriggers();
+  if (restoreRetryTimer) clearTimeout(restoreRetryTimer);
+  restoreRetryAttempt += 1;
+  const delay = restoreRetryDelayMs(restoreRetryAttempt);
+  console.warn(
+    `[Auth] Server unreachable during session restore — retrying in ${Math.round(delay / 1000)}s`,
+  );
+  restoreRetryTimer = setTimeout(() => {
+    restoreRetryTimer = null;
+    void attemptRestore();
+  }, delay);
+}
+
+/** Try the pending session restore now ("Try again", `online`, focus). */
+export function retryRestoreNow(): void {
+  if (!authState.restorePending || restoreInFlight) return;
+  if (restoreRetryTimer) {
+    clearTimeout(restoreRetryTimer);
+    restoreRetryTimer = null;
+  }
+  void attemptRestore();
+}
+
 /**
- * Initialize auth state by checking for existing session.
+ * Give up waiting for the server and show the login form. The stored login
+ * stays; a successful sign-in replaces it.
  */
-export async function initAuth(): Promise<void> {
-  if (authState.isInitialized) return;
+export function abandonRestore(): void {
+  if (!authState.restorePending) return;
+  stopRestoreRetry();
+  setAuthState({ restorePending: false, isInitialized: true, isLoading: false });
+}
 
-  setAuthState({ isLoading: true, error: null });
-
+/** One restore attempt; reschedules itself while the server is unreachable. */
+async function attemptRestore(): Promise<void> {
+  if (restoreInFlight) return;
+  restoreInFlight = true;
   try {
-    await initNativeSession();
     const result = await tauri.getCurrentUser();
+    // The user chose to sign in while this attempt was running.
+    if (authState.isInitialized) return;
 
     if (result.user) {
+      stopRestoreRetry();
       setAuthState({
         user: result.user,
         serverUrl: tauri.getServerUrl() || null,
         isLoading: false,
         isInitialized: true,
+        restorePending: false,
       });
 
       await startSessionServices();
-    } else {
-      setAuthState({
-        user: null,
-        isLoading: false,
-        isInitialized: true,
-      });
-
-      // Show toast for failed restore (only when there WAS a stored session)
-      if (result.error_reason === "session_expired") {
-        showToast({
-          type: "warning",
-          title: "Session Expired",
-          message: "Please log in again.",
-        });
-      } else if (result.error_reason === "network_error") {
-        showToast({
-          type: "error",
-          title: "Connection Failed",
-          message: "Could not connect to server.",
-        });
-      }
+      return;
     }
-  } catch (err) {
-    console.error("Failed to restore session:", err);
+
+    // Native mode reports `network_error` only when a stored login exists
+    // and the server could not be reached (offline, timeout, 5xx). Keep the
+    // login and retry instead of dropping the user on the login form.
+    if (result.error_reason === "network_error") {
+      setAuthState({ isLoading: false, restorePending: true });
+      scheduleRestoreRetry();
+      return;
+    }
+
+    stopRestoreRetry();
     setAuthState({
       user: null,
       isLoading: false,
       isInitialized: true,
+      restorePending: false,
+    });
+
+    // Show toast for failed restore (only when there WAS a stored session)
+    if (result.error_reason === "session_expired") {
+      showToast({
+        type: "warning",
+        title: "Session Expired",
+        message: "Please log in again.",
+      });
+    }
+  } catch (err) {
+    console.error("Failed to restore session:", err);
+    stopRestoreRetry();
+    setAuthState({
+      user: null,
+      isLoading: false,
+      isInitialized: true,
+      restorePending: false,
       error: null,
     });
+  } finally {
+    restoreInFlight = false;
   }
+}
+
+/**
+ * Initialize auth state by checking for existing session.
+ */
+export async function initAuth(): Promise<void> {
+  if (authState.isInitialized || authState.restorePending || restoreInFlight) {
+    return;
+  }
+
+  setAuthState({ isLoading: true, error: null });
+
+  await initNativeSession();
+  await attemptRestore();
 }
 
 /**
