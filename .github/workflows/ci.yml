@@ -83,6 +83,9 @@ jobs:
       - name: Validate release version consistency
         run: python3 scripts/release_version.py check
 
+      - name: Test ops scripts
+        run: bash infra/scripts/tests/run.sh
+
   # ===========================================================================
   # Rust Tests (with database services)
   # ===========================================================================

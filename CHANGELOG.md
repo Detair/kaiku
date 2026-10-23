@@ -103,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS: the app no longer quits the first time it uses the microphone or camera; macOS now asks for permission.
 - The 'Log in on phone' QR code works again after restarting the app or reloading the page.
 - Realtime updates now recover by themselves after a network drop, sleep or server restart, and a small indicator shows while the app reconnects.
+- Nightly backups and the upgrade preflight check now authenticate to the database correctly and reject incomplete dumps (#623).
 - People who lose connection, close their laptop or crash no longer stay visible in the voice channel; they are removed automatically.
 - The desktop app can sign in and stay signed in against servers that restrict allowed origins.
 - The first direct message to someone now appears immediately on all of their open devices, instead of only after reloading the conversation list.
