@@ -293,6 +293,16 @@ pub const TAURI_ORIGINS: [&str; 3] = [
 ];
 
 impl Config {
+    /// Whether object-storage credentials are configured.
+    ///
+    /// Blank values count as unset, so an empty `AWS_ACCESS_KEY_ID=` from a
+    /// compose template disables uploads instead of probing the default AWS
+    /// endpoint at startup.
+    #[must_use]
+    pub fn has_s3_credentials(&self) -> bool {
+        s3_credentials_present(self.s3_access_key.as_deref(), self.s3_secret_key.as_deref())
+    }
+
     /// CORS origins the server actually allows.
     ///
     /// A wildcard configuration is returned unchanged (`["*"]`). An explicit
@@ -701,6 +711,27 @@ fn parse_voice_ice_ip_family(raw: Option<&str>) -> Result<IceIpFamily> {
         Some(other) => anyhow::bail!(
             "Invalid VOICE_ICE_IP_FAMILY value '{other}'. Must be one of: v4, v6, both"
         ),
+    }
+}
+
+/// Both S3 credential halves present and non-blank.
+fn s3_credentials_present(access: Option<&str>, secret: Option<&str>) -> bool {
+    let present = |v: Option<&str>| v.is_some_and(|v| !v.trim().is_empty());
+    present(access) && present(secret)
+}
+
+#[cfg(test)]
+mod s3_credentials_tests {
+    use super::s3_credentials_present;
+
+    #[test]
+    fn blank_s3_credentials_count_as_unset() {
+        assert!(!s3_credentials_present(None, None));
+        assert!(!s3_credentials_present(Some(""), Some("")));
+        assert!(!s3_credentials_present(Some("  "), Some("secret")));
+        assert!(!s3_credentials_present(Some("key"), Some("")));
+        assert!(!s3_credentials_present(Some("key"), None));
+        assert!(s3_credentials_present(Some("key"), Some("secret")));
     }
 }
 
