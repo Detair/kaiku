@@ -130,3 +130,19 @@ several ICE/TURN URLs (`turn:…:3478?transport=udp`, `…?transport=tcp`,
 `turns:turn.kaiku.pmind.de:443?transport=tcp`) from one config value
 (e.g. comma-separated `TURN_URLS`). Not in Phase 1; pick up if a family
 member cannot join voice from a restrictive network.
+
+## Server-stream clarifications (2026-10-23, from the PR #663 whole-branch review) — binding
+
+- **C2 gap-free reconnect order (per channel):** send `subscribe` → wait for
+  `subscribed` → `GET /api/messages/channel/{id}?after=<last id>` → dedupe by
+  id. `Ready` only guarantees the Valkey subscriptions are live; channel events
+  are forwarded only for channels the socket subscribed to. Catch-up before
+  subscribing can lose messages.
+- **C3:** `DmCreated` auto-subscribe only covers sockets open at creation time
+  and sends no `subscribed` ack. After any reconnect clients load `GET /api/dm`
+  and subscribe to their DMs themselves.
+- **C11 extension:** pending-password users are refused differently by auth
+  mode — frame auth: `error` event `PASSWORD_CHANGE_REQUIRED` then close 1008;
+  header auth (`Sec-WebSocket-Protocol`, desktop/Tauri): HTTP 403 at upgrade, no
+  close frame. Clients treat HTTP 401/403 at the WS handshake like 1008
+  (refresh, or show login / password change) — never a blind retry loop.
