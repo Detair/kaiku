@@ -103,6 +103,8 @@ pub async fn verify_resolved_ip(url: &str) -> Result<VerifiedUrl, String> {
     let host = parsed
         .host_str()
         .ok_or_else(|| "URL has no host".to_string())?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
         .to_string();
 
     let port = parsed.port_or_known_default().unwrap_or(443);
@@ -222,6 +224,15 @@ mod tests {
         assert!(is_private_ip(&"0.1.2.3".parse().unwrap()));
         assert!(is_private_ip(&"64:ff9b::a00:1".parse().unwrap())); // 10.0.0.1
         assert!(!is_private_ip(&"64:ff9b::808:808".parse().unwrap())); // 8.8.8.8
+    }
+
+    #[tokio::test]
+    async fn verified_url_host_has_no_ipv6_brackets() {
+        let v = verify_resolved_ip("https://[2606:4700::1111]/x")
+            .await
+            .unwrap();
+        assert_eq!(v.host, "2606:4700::1111");
+        assert!(verify_resolved_ip("https://[::1]/x").await.is_err());
     }
 
     #[tokio::test]

@@ -129,6 +129,8 @@ async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Resul
 /// Send to one subscription, dispatching on its provider. New providers (FCM,
 /// APNs) add a match arm here.
 async fn send_one(sub: &PushSubscription, signal: &WakeSignal) -> Delivery {
+    // Any new provider arm (e.g. FCM) must validate its endpoint the same way
+    // (https only, SSRF guard, pinned client) before sending.
     match sub.provider.as_str() {
         "unifiedpush" => send_unifiedpush(&sub.endpoint, signal).await,
         other => {
@@ -138,10 +140,20 @@ async fn send_one(sub: &PushSubscription, signal: &WakeSignal) -> Delivery {
     }
 }
 
+fn endpoint_is_https(endpoint: &str) -> bool {
+    reqwest::Url::parse(endpoint).is_ok_and(|u| u.scheme() == "https")
+}
+
 /// `UnifiedPush`: POST the content-free JSON to the distributor endpoint. The
 /// endpoint is user-supplied, so it goes through the SSRF guard (private-IP /
 /// DNS-rebind protection) before the request — identical to webhook delivery.
 async fn send_unifiedpush(endpoint: &str, signal: &WakeSignal) -> Delivery {
+    // Legacy rows may hold plain-http endpoints; never deliver to them and let
+    // the caller prune the subscription.
+    if !endpoint_is_https(endpoint) {
+        tracing::warn!("push endpoint is not https; dropping subscription");
+        return Delivery::Gone;
+    }
     // SSRF guard: reject internal/private targets and connect only to the
     // address that passed validation; redirects are never followed.
     let Ok(verified) = crate::webhooks::ssrf::verify_resolved_ip(endpoint).await else {
@@ -325,6 +337,19 @@ pub fn router() -> axum::Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn non_https_endpoint_is_gone() {
+        let sig = WakeSignal::dm(Uuid::nil(), 1);
+        assert!(matches!(
+            send_unifiedpush("http://push.example/x", &sig).await,
+            Delivery::Gone
+        ));
+        assert!(matches!(
+            send_unifiedpush("not a url", &sig).await,
+            Delivery::Gone
+        ));
+    }
 
     #[test]
     fn wake_signal_is_content_free() {
