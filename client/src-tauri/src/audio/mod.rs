@@ -18,7 +18,8 @@ pub use handle::AudioHandle;
 pub const SAMPLE_RATE: u32 = 48000;
 pub const CHANNELS: u16 = 2;
 pub const FRAME_SIZE_MS: usize = 20;
-pub const FRAME_SIZE: usize = (SAMPLE_RATE as usize * FRAME_SIZE_MS) / 1000; // 960 samples per channel
+/// 960 samples per channel.
+pub const FRAME_SIZE: usize = (SAMPLE_RATE as usize * FRAME_SIZE_MS) / 1000;
 
 /// Capture-only channel count (mono for RNNoise compatibility).
 /// Playback/mixer stays stereo (`CHANNELS`) since remote peers may send stereo.

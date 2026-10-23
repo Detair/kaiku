@@ -121,7 +121,7 @@ impl TrackRouter {
     /// Create a local track for forwarding media from source to subscriber.
     ///
     /// Returns the local track that should be added to the subscriber's peer connection.
-    pub async fn create_subscriber_track(
+    pub fn create_subscriber_track(
         &self,
         source_user_id: Uuid,
         source_type: TrackSource,
@@ -364,7 +364,7 @@ impl TrackRouter {
     }
 
     /// Get the number of subscribers for a source.
-    pub async fn subscriber_count(&self, source_user_id: Uuid, source_type: TrackSource) -> usize {
+    pub fn subscriber_count(&self, source_user_id: Uuid, source_type: TrackSource) -> usize {
         self.subscriptions
             .get(&(source_user_id, source_type))
             .map_or(0, |entry| entry.value().len())
@@ -618,28 +618,16 @@ mod tests {
         let user_id = Uuid::new_v4();
 
         // All track sources should have 0 subscribers on empty router
+        assert_eq!(router.subscriber_count(user_id, TrackSource::Microphone), 0);
         assert_eq!(
-            router
-                .subscriber_count(user_id, TrackSource::Microphone)
-                .await,
+            router.subscriber_count(user_id, TrackSource::ScreenVideo(Uuid::nil())),
             0
         );
         assert_eq!(
-            router
-                .subscriber_count(user_id, TrackSource::ScreenVideo(Uuid::nil()))
-                .await,
+            router.subscriber_count(user_id, TrackSource::ScreenAudio(Uuid::nil())),
             0
         );
-        assert_eq!(
-            router
-                .subscriber_count(user_id, TrackSource::ScreenAudio(Uuid::nil()))
-                .await,
-            0
-        );
-        assert_eq!(
-            router.subscriber_count(user_id, TrackSource::Webcam).await,
-            0
-        );
+        assert_eq!(router.subscriber_count(user_id, TrackSource::Webcam), 0);
     }
 
     #[tokio::test]
@@ -735,9 +723,7 @@ mod tests {
         for _ in 0..10 {
             let router_clone = router.clone();
             handles.push(tokio::spawn(async move {
-                router_clone
-                    .subscriber_count(user_id, TrackSource::Microphone)
-                    .await
+                router_clone.subscriber_count(user_id, TrackSource::Microphone)
             }));
         }
 

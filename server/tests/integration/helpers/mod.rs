@@ -202,9 +202,7 @@ pub async fn fresh_test_app_with_s3_and_pool(pool: PgPool) -> (TestApp, String) 
     config.s3_access_key = Some("rustfsdev".to_string());
     config.s3_secret_key = Some("rustfsdev_secret".to_string());
 
-    let s3 = S3Client::new(&config)
-        .await
-        .expect("Failed to create S3 client for test");
+    let s3 = S3Client::new(&config).expect("Failed to create S3 client for test");
 
     // Create the test bucket
     s3.create_bucket_if_not_exists()

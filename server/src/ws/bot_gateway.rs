@@ -495,8 +495,6 @@ async fn handle_bot_event(
                 warn!("Failed to broadcast bot message: {e}");
                 format!("Failed to broadcast: {e}")
             })?;
-
-            Ok(())
         }
         BotClientEvent::CommandResponse {
             interaction_id,
@@ -700,8 +698,8 @@ async fn handle_bot_event(
                     format!("Failed to broadcast: {e}")
                 })?;
             }
-
-            Ok(())
         }
     }
+
+    Ok(())
 }
