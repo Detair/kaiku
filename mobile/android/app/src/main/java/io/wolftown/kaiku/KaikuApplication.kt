@@ -35,6 +35,7 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        // First connect waits for AuthState.initialize() in MainActivity, which runs after the ProviderInstaller TLS step below.
         realtimeConnectionManager.start()
         try {
             ProviderInstaller.installIfNeeded(this)

@@ -51,7 +51,8 @@ fun TextChannelScreen(
         val retry = res == R.string.chat_send_failed
         val result = snackbarHostState.showSnackbar(
             message = context.getString(res),
-            actionLabel = if (retry) context.getString(R.string.common_retry) else null
+            actionLabel = if (retry) context.getString(R.string.common_retry) else null,
+            withDismissAction = true
         )
         viewModel.clearError()
         if (retry && result == SnackbarResult.ActionPerformed) viewModel.onSendMessage()

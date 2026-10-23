@@ -164,7 +164,7 @@ fun VoiceChannelScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("#$channelName") },
+                title = { Text(stringResource(R.string.chat_title_channel, channelName)) },
                 navigationIcon = {
                     IconButton(onClick = {
                         viewModel.onLeave()
