@@ -67,5 +67,37 @@ leave STUN on Google, the server logs a startup **warning** flagging the leak.
 TURN credentials are issued per-request as HMAC-SHA1 time-limited tokens
 (RFC 5766), so no static password is stored client-side.
 
+### Hardened defaults in the bundled compose file
+
+The bundled `infra/compose/docker-compose.yml` ships with these settings:
+
+- **Required variables.** `docker compose` refuses to start unless
+  `VALKEY_PASSWORD` and `CORS_ALLOWED_ORIGINS` (e.g. `https://chat.example.com`)
+  are set, next to the existing `POSTGRES_PASSWORD`, JWT keys, `DOMAIN` and
+  `ACME_EMAIL`. Set `S3_ACCESS_KEY` / `S3_SECRET_KEY` when you use file
+  uploads; they are passed to both RustFS and the server. The desktop app's
+  origins are added by the server automatically.
+- **Valkey password.** Use a hex password (`openssl rand -hex 24`). It is
+  embedded in `REDIS_URL`, so characters such as `/`, `+`, `=` or `@`
+  (typical for base64) break the URL. `setup-beta.sh` generates a hex password.
+- **Trusted proxies.** The server trusts forwarded client addresses only from
+  the compose network (`RATE_LIMIT_TRUSTED_PROXIES`, derived from
+  `KAIKU_NET_SUBNET`).
+- **`KAIKU_NET_SUBNET`** (default `172.31.250.0/24`): subnet of the compose
+  application network. Change it if it collides with a LAN, VPN or other
+  Docker network on the host.
+- **`PUBLIC_IP`**: set it to the host's public address. The voice server
+  advertises it in its ICE candidates, and the TURN server no longer relays to
+  private addresses, so voice relies on it. Forward the UDP media range
+  (`RTP_PORT_MIN`-`RTP_PORT_MAX`) 1:1.
+- **Isolated TURN server.** `coturn` runs on its own `turn` network, cannot
+  reach the application services, and refuses to relay to private, loopback,
+  link-local and multicast addresses.
+
+**Trade-off: no TURN/TCP relay.** coturn runs with `--no-tcp-relay`, so
+relaying media over TCP is not available. Clients can still talk to the TURN
+server over TCP (port 3478), but the relayed leg is UDP only. Clients on
+networks that block all outgoing UDP cannot use voice through this TURN server.
+
 ---
 *Documentation to be expanded as the implementation stabilizes.*

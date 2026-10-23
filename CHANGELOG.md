@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Accept RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5 timing variability) with a dated justification until the `elliptic-curve` 0.14 ecosystem lands in `dtls`, `jsonwebtoken` and `openidconnect`; Kaiku signs its own tokens with EdDSA and is not affected on that path
 - Update `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, unsound `AsyncFd::new`; lockfile-only), restoring the License Compliance / Security Audit checks to green
+- The self-hosting compose file now isolates the TURN server, requires a Valkey password, forwards the CORS allow-list and trusted-proxy settings, and passes storage credentials to the server.
 - Outgoing webhook and push requests no longer follow redirects and always connect to the address that passed validation; push endpoints must use HTTPS.
 - The public file endpoint now serves only avatars and server banners and streams files instead of buffering them.
 - Logging out (or revoking a session from account settings) now immediately invalidates that session's access token. Previously the stateless access token kept working for up to its 15-minute lifetime after logout, so a captured token stayed usable on a shared or compromised device even after the user signed out. Access tokens now carry the session id and are checked against a short-lived server-side revocation list on every request and WebSocket connection
