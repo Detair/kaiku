@@ -210,6 +210,7 @@ export async function initWebSocket(): Promise<void> {
         }),
         // Rust ended the loop by itself (no session any more).
         listen("ws:disconnected", () => supervisor.stop()),
+        listen("ws:auth_rejected", () => handleNativeAuthRejected()),
       ])),
     );
   } else {
@@ -745,15 +746,39 @@ export async function cleanupWebSocket(): Promise<void> {
 }
 
 /**
- * Handle post-reconnect recovery: re-subscribe channels, reload messages.
- * Snapshots current subscribed channels before resetting state, then re-subscribes and reloads.
+ * Text channels of the active guild that are in the channel list. A guild
+ * opened while the socket was down got its channels over REST, but
+ * `loadChannelsForGuild` skipped the subscriptions; they are not in the
+ * subscribed set, so the reconnect must add them.
  */
+function activeGuildTextChannelIds(): string[] {
+  const guildId = guildsState.activeGuildId;
+  if (!guildId || guildId === DISCOVERY_SENTINEL) return [];
+  return (channelsState.channels ?? [])
+    .filter((c) => c.guild_id === guildId && c.channel_type === "text")
+    .map((c) => c.id);
+}
+
+function subscribeAll(ids: Iterable<string>): Promise<unknown> {
+  return Promise.all(
+    [...ids].map((id) =>
+      subscribeChannel(id).catch((err) =>
+        console.error("[WS] Failed to re-subscribe channel", id, err),
+      ),
+    ),
+  );
+}
+
 /**
  * Refresh channel/DM unread metadata after a reconnect. Exported for tests.
  *
  * - Active guild: re-fetch its channel list (selection-preserving) so the
- *   sidebar unread dots reflect what happened while offline.
- * - DMs: reload the DM list, which carries per-conversation unread state.
+ *   sidebar unread dots reflect what happened while offline, then subscribe
+ *   its text channels (no-op for the ones already subscribed; picks up
+ *   channels created while offline).
+ * - DMs: reload `GET /api/dm`, which carries per-conversation unread state;
+ *   `loadDMs` subscribes every DM (the server's `DmCreated` auto-subscribe
+ *   only covers sockets that were open at the time).
  *
  * Failures are logged and swallowed — reconnect recovery must not abort
  * because one refresh call failed.
@@ -764,9 +789,11 @@ export async function refreshUnreadStateAfterReconnect(): Promise<void> {
   const guildId = guildsState.activeGuildId;
   if (guildId && guildId !== DISCOVERY_SENTINEL) {
     tasks.push(
-      refreshChannelsForGuild(guildId).catch((err) =>
-        console.error("[WS] Failed to refresh guild channels", guildId, err),
-      ),
+      refreshChannelsForGuild(guildId)
+        .then(() => subscribeAll(activeGuildTextChannelIds()))
+        .catch((err) =>
+          console.error("[WS] Failed to refresh guild channels", guildId, err),
+        ),
     );
   }
 
@@ -779,8 +806,16 @@ export async function refreshUnreadStateAfterReconnect(): Promise<void> {
   await Promise.all(tasks);
 }
 
+/**
+ * Handle post-reconnect recovery: re-subscribe channels, reload messages.
+ * Snapshots the subscribed channels (plus the active guild's text channels,
+ * which a guild opened while offline never subscribed) before resetting
+ * state; subscribes first, then reloads (C2: subscribe before catch-up).
+ */
 async function handleReconnect(): Promise<void> {
-  const channelsToResubscribe = [...wsState.subscribedChannels];
+  const channelsToResubscribe = [
+    ...new Set([...wsState.subscribedChannels, ...activeGuildTextChannelIds()]),
+  ];
   const channelsToReload = Object.keys(messagesState.byChannel).filter(
     (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,
   );
@@ -789,19 +824,13 @@ async function handleReconnect(): Promise<void> {
   setWsState("subscribedChannels", new Set());
   setWsState({ status: "connected", reconnectAttempt: 0, error: null });
 
-  // Re-subscribe, reload messages, and refresh unread metadata in parallel.
-  // The metadata refresh is what clears stale unread dots: messages that
+  // Re-subscribe first, then reload messages and refresh unread metadata in
+  // parallel. The metadata refresh is what clears stale unread dots: messages that
   // arrived (or were read on another device) while disconnected changed
   // last_read_message_id / last_message_id server-side, and no WS event
   // replays them after reconnect.
+  await subscribeAll(channelsToResubscribe);
   await Promise.all([
-    Promise.all(
-      channelsToResubscribe.map((id) =>
-        subscribeChannel(id).catch((err) =>
-          console.error("[WS] Failed to re-subscribe channel", id, err),
-        ),
-      ),
-    ),
     Promise.all(
       channelsToReload.map((id) =>
         loadInitialMessages(id).catch((err) =>
@@ -859,6 +888,24 @@ const nativeDriver: ConnectionDriver = {
   },
   reconnectNow: () => tauri.wsReconnectNow(),
 };
+
+/**
+ * Native: the server refused the socket even with a freshly refreshed token,
+ * so retrying cannot help. Stop the supervisor and the Rust retry loop (the
+ * native driver's close → `ws_disconnect`) instead of showing "Reconnecting…"
+ * forever, and send the user down the "session expired → sign in again" path.
+ *
+ * Known gap: once server C4 refuses pending-password users at the upgrade
+ * (HTTP 403), those users land here too. The forced password-change screen
+ * (plan Task 13) must ship together with server C4 and route them to the
+ * change screen instead of this generic sign-in prompt.
+ */
+function handleNativeAuthRejected(): void {
+  console.warn("[WS] Server rejected a fresh token — ending the session");
+  supervisor?.stop();
+  nativeDriver.close();
+  window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+}
 
 function getSupervisor(): ConnectionSupervisor {
   supervisor ??= createConnectionSupervisor({

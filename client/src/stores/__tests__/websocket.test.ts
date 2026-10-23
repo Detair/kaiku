@@ -41,6 +41,7 @@ vi.mock("@/stores/messages", () => ({
   removeMessage: vi.fn(),
   messagesState: { byChannel: {} },
   setMessagesState: vi.fn(),
+  loadInitialMessages: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/stores/threads", () => ({
@@ -75,7 +76,7 @@ vi.mock("@/stores/friends", () => ({
 
 vi.mock("@/stores/channels", () => ({
   getChannel: vi.fn(),
-  channelsState: { selectedChannelId: null },
+  channelsState: { selectedChannelId: null, channels: [] as unknown[] },
   handleChannelReadEvent: vi.fn(),
   incrementUnreadCount: vi.fn(),
   updateChannelLastMessageId: vi.fn(),
@@ -347,6 +348,28 @@ describe("websocket store", () => {
       expect(loadDMs).toHaveBeenCalled();
     });
 
+    it("subscribes the active guild's text channels after the refresh", async () => {
+      const { channelsState } = await import("@/stores/channels");
+      const mutableChannels = channelsState as unknown as { channels: unknown[] };
+      mutableGuilds.activeGuildId = "g1";
+      // A channel created while offline shows up in the refreshed list.
+      vi.mocked(refreshChannelsForGuild).mockImplementationOnce(async () => {
+        mutableChannels.channels = [
+          { id: "new-text", guild_id: "g1", channel_type: "text" },
+          { id: "voice", guild_id: "g1", channel_type: "voice" },
+        ];
+      });
+      vi.mocked(tauri.wsSubscribe).mockResolvedValue(undefined);
+      try {
+        await refreshUnreadStateAfterReconnect();
+
+        expect(tauri.wsSubscribe).toHaveBeenCalledWith("new-text");
+        expect(tauri.wsSubscribe).not.toHaveBeenCalledWith("voice");
+      } finally {
+        mutableChannels.channels = [];
+      }
+    });
+
     it("does not reject when a refresh fails", async () => {
       mutableGuilds.activeGuildId = "g1";
       vi.mocked(refreshChannelsForGuild).mockRejectedValueOnce(
@@ -448,6 +471,13 @@ describe("websocket store", () => {
       vi.resetModules();
       ws = await import("../websocket");
       nativeTauri = await import("@/lib/tauri");
+      // Shared mock state survives resetModules; start each test clean.
+      const { channelsState } = await import("@/stores/channels");
+      const { guildsState } = await import("@/stores/guilds");
+      const { messagesState } = await import("@/stores/messages");
+      (channelsState as unknown as { channels: unknown[] }).channels = [];
+      (guildsState as { activeGuildId: string | null }).activeGuildId = null;
+      (messagesState as unknown as { byChannel: Record<string, unknown[]> }).byChannel = {};
       await ws.initWebSocket();
     });
 
@@ -458,6 +488,7 @@ describe("websocket store", () => {
 
     it("registers one server-event listener plus the status listeners", () => {
       expect([...listeners.keys()].sort()).toEqual([
+        "ws:auth_rejected",
         "ws:connected",
         "ws:connecting",
         "ws:disconnected",
@@ -508,6 +539,74 @@ describe("websocket store", () => {
       await fire("ws:server_event", { type: "error", code: "x", message: "Nope" });
 
       expect(ws.wsState.error).toBe("Nope");
+    });
+
+    it("a guild opened while the socket was down is subscribed after reconnect", async () => {
+      const { channelsState } = await import("@/stores/channels");
+      const { guildsState } = await import("@/stores/guilds");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      await ws.connect();
+      await fire("ws:reconnecting", 1);
+
+      // loadChannelsForGuild ran during the outage: REST list, no subscribe.
+      (guildsState as { activeGuildId: string | null }).activeGuildId = "g1";
+      (channelsState as unknown as { channels: unknown[] }).channels = [
+        { id: "t1", guild_id: "g1", channel_type: "text" },
+        { id: "t2", guild_id: "g1", channel_type: "text" },
+        { id: "v1", guild_id: "g1", channel_type: "voice" },
+      ];
+
+      await fire("ws:connected");
+
+      const subscribed = vi.mocked(nativeTauri.wsSubscribe).mock.calls.map((c) => c[0]);
+      expect(subscribed).toEqual(expect.arrayContaining(["t1", "t2"]));
+      expect(subscribed).not.toContain("v1");
+      expect(ws.wsState.subscribedChannels.has("t1")).toBe(true);
+      expect(ws.wsState.subscribedChannels.has("t2")).toBe(true);
+    });
+
+    it("reconnect re-subscribes before reloading messages", async () => {
+      const { messagesState, loadInitialMessages } = await import("@/stores/messages");
+      const order: string[] = [];
+      vi.mocked(nativeTauri.wsSubscribe).mockImplementation(async (id: string) => {
+        order.push(`subscribe:${id}`);
+      });
+      vi.mocked(loadInitialMessages).mockImplementation(async (id: string) => {
+        order.push(`reload:${id}`);
+      });
+      await ws.connect();
+      await ws.subscribeChannel("c1");
+      (messagesState as unknown as { byChannel: Record<string, unknown[]> }).byChannel = {
+        c1: [{ id: "m1" }],
+      };
+      order.length = 0;
+
+      await fire("ws:reconnecting", 1);
+      await fire("ws:connected");
+
+      expect(order).toEqual(["subscribe:c1", "reload:c1"]);
+    });
+
+    it("ws:auth_rejected stops reconnecting and reports an expired session", async () => {
+      await ws.connect();
+      await fire("ws:reconnecting", 1);
+      vi.mocked(nativeTauri.wsDisconnect).mockClear().mockResolvedValue(undefined);
+      const expired = vi.fn();
+      window.addEventListener("kaiku:session-expired", expired);
+      try {
+        await fire("ws:auth_rejected");
+
+        expect(ws.wsState.status).toBe("disconnected");
+        expect(nativeTauri.wsDisconnect).toHaveBeenCalledTimes(1);
+        expect(expired).toHaveBeenCalledTimes(1);
+
+        // The supervisor is stopped: no further "try now" reaches Rust.
+        vi.mocked(nativeTauri.wsReconnectNow).mockClear();
+        window.dispatchEvent(new Event("online"));
+        expect(nativeTauri.wsReconnectNow).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener("kaiku:session-expired", expired);
+      }
     });
 
     it("ws:disconnected from Rust ends the connection", async () => {
