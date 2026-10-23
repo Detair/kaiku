@@ -297,11 +297,7 @@ async fn process_delivery(
 
     // Build a per-request client that pins the resolved IP to prevent DNS rebinding.
     // This ensures the HTTP request goes to the same IP that passed SSRF validation.
-    let pinned_client = match reqwest::Client::builder()
-        .resolve(&verified.host, verified.addr)
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
+    let pinned_client = match super::ssrf::pinned_client(&verified, Duration::from_secs(10)) {
         Ok(c) => c,
         Err(e) => {
             error!(webhook_id = %item.webhook_id, error = %e, "Failed to build pinned HTTP client");

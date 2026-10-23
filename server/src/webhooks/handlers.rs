@@ -415,10 +415,7 @@ pub async fn test_webhook(
 
     // Build a per-request client that pins the resolved IP to prevent DNS rebinding.
     // This ensures the HTTP request goes to the same IP that passed SSRF validation.
-    let client = reqwest::Client::builder()
-        .resolve(&verified.host, verified.addr)
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
+    let client = super::ssrf::pinned_client(&verified, std::time::Duration::from_secs(10))
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

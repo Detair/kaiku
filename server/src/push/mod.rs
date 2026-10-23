@@ -105,7 +105,7 @@ async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Resul
     .await?;
 
     for sub in subs {
-        let delivery = send_one(&state.http_client, &sub, signal).await;
+        let delivery = send_one(&sub, signal).await;
         match delivery {
             Delivery::Gone => {
                 let _ = sqlx::query("DELETE FROM push_subscriptions WHERE id = $1")
@@ -128,13 +128,9 @@ async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Resul
 
 /// Send to one subscription, dispatching on its provider. New providers (FCM,
 /// APNs) add a match arm here.
-async fn send_one(
-    client: &reqwest::Client,
-    sub: &PushSubscription,
-    signal: &WakeSignal,
-) -> Delivery {
+async fn send_one(sub: &PushSubscription, signal: &WakeSignal) -> Delivery {
     match sub.provider.as_str() {
-        "unifiedpush" => send_unifiedpush(client, &sub.endpoint, signal).await,
+        "unifiedpush" => send_unifiedpush(&sub.endpoint, signal).await,
         other => {
             tracing::warn!(provider = %other, "unknown push provider; skipping");
             Delivery::Failed
@@ -145,19 +141,18 @@ async fn send_one(
 /// `UnifiedPush`: POST the content-free JSON to the distributor endpoint. The
 /// endpoint is user-supplied, so it goes through the SSRF guard (private-IP /
 /// DNS-rebind protection) before the request — identical to webhook delivery.
-async fn send_unifiedpush(
-    client: &reqwest::Client,
-    endpoint: &str,
-    signal: &WakeSignal,
-) -> Delivery {
-    // SSRF guard: reject internal/private targets.
-    if crate::webhooks::ssrf::verify_resolved_ip(endpoint)
-        .await
-        .is_err()
-    {
+async fn send_unifiedpush(endpoint: &str, signal: &WakeSignal) -> Delivery {
+    // SSRF guard: reject internal/private targets and connect only to the
+    // address that passed validation; redirects are never followed.
+    let Ok(verified) = crate::webhooks::ssrf::verify_resolved_ip(endpoint).await else {
         tracing::warn!("push endpoint blocked by SSRF guard");
         return Delivery::Failed;
-    }
+    };
+    let Ok(client) =
+        crate::webhooks::ssrf::pinned_client(&verified, std::time::Duration::from_secs(10))
+    else {
+        return Delivery::Failed;
+    };
 
     let body = match serde_json::to_vec(signal) {
         Ok(b) => b,
@@ -174,6 +169,9 @@ async fn send_unifiedpush(
             let status = resp.status();
             if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
                 Delivery::Gone
+            } else if status.is_redirection() {
+                tracing::warn!("push endpoint answered with a redirect; not followed");
+                Delivery::Failed
             } else if status.is_success() {
                 Delivery::Sent
             } else {
@@ -248,6 +246,18 @@ pub async fn create_subscription(
 ) -> Result<(StatusCode, Json<PushSubscription>), PushError> {
     body.validate()
         .map_err(|e| PushError::Validation(crate::validation::format_validation_errors(&e)))?;
+
+    if body.provider == "unifiedpush" {
+        let parsed = reqwest::Url::parse(&body.endpoint)
+            .map_err(|_| PushError::Validation("endpoint must be a valid URL".into()))?;
+        if parsed.scheme() != "https" {
+            return Err(PushError::Validation("endpoint must use https".into()));
+        }
+        match parsed.host_str() {
+            Some(h) if !crate::webhooks::ssrf::is_blocked_host(h) => {}
+            _ => return Err(PushError::Validation("endpoint host is not allowed".into())),
+        }
+    }
 
     let sub: PushSubscription = sqlx::query_as(
         "INSERT INTO push_subscriptions (user_id, provider, endpoint, public_key, auth_key, device_label)

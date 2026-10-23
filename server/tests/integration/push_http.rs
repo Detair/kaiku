@@ -138,3 +138,26 @@ async fn cannot_delete_another_users_subscription(pool: PgPool) {
         .await;
     assert_eq!(body_to_json(list).await.as_array().unwrap().len(), 0);
 }
+
+#[sqlx::test]
+async fn test_create_push_subscription_rejects_http_and_private(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+
+    for (endpoint, expected) in [
+        ("http://push.example/x", StatusCode::BAD_REQUEST),
+        ("https://127.0.0.1/x", StatusCode::BAD_REQUEST),
+        ("https://push.example/x", StatusCode::CREATED),
+    ] {
+        let resp = app
+            .oneshot(req(
+                Method::POST,
+                "/api/me/push-subscriptions",
+                &token,
+                Some(json!({ "provider": "unifiedpush", "endpoint": endpoint })),
+            ))
+            .await;
+        assert_eq!(resp.status(), expected, "endpoint {endpoint}");
+    }
+}

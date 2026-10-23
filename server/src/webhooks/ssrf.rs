@@ -3,6 +3,7 @@
 //! Blocks webhook deliveries to private/reserved network addresses.
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 /// Blocked hostname patterns (case-insensitive check performed by caller).
 const BLOCKED_HOSTNAMES: &[&str] = &[
@@ -45,6 +46,7 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
                 || v4.is_link_local()      // 169.254.0.0/16
                 || v4.is_broadcast()       // 255.255.255.255
                 || v4.is_unspecified()     // 0.0.0.0
+                || v4.octets()[0] == 0     // 0.0.0.0/8 ("this" network)
                 || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // 100.64.0.0/10 (CGN)
                 || v4.octets()[0] == 198 && (v4.octets()[1] & 0xFE) == 18 // 198.18.0.0/15 (benchmark)
                 || v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0 // 192.0.0.0/24 (IETF)
@@ -59,6 +61,7 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
                 || (v6.segments()[0] & 0xFE00) == 0xFC00 // fc00::/7 (ULA)
                 || (v6.segments()[0] & 0xFFC0) == 0xFE80 // fe80::/10 (link-local)
                 || is_v4_mapped_private(v6)
+                || is_nat64_private(v6)
         }
     }
 }
@@ -66,6 +69,18 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
 /// Check if an IPv6 address is a v4-mapped address (`::ffff:x.x.x.x`) pointing to a private IPv4.
 fn is_v4_mapped_private(v6: &std::net::Ipv6Addr) -> bool {
     if let Some(v4) = v6.to_ipv4_mapped() {
+        is_private_ip(&IpAddr::V4(v4))
+    } else {
+        false
+    }
+}
+
+/// Check if an IPv6 address is in the NAT64 prefix (`64:ff9b::/96`) and embeds a private IPv4.
+fn is_nat64_private(v6: &std::net::Ipv6Addr) -> bool {
+    let seg = v6.segments();
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6].iter().all(|s| *s == 0) {
+        let o = v6.octets();
+        let v4 = std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]);
         is_private_ip(&IpAddr::V4(v4))
     } else {
         false
@@ -129,6 +144,21 @@ pub async fn verify_resolved_ip(url: &str) -> Result<VerifiedUrl, String> {
     })
 }
 
+/// Build the only HTTP client allowed to fetch a user-controlled URL: it
+/// connects to the address that passed validation, never follows redirects
+/// and ignores proxy environment variables.
+pub fn pinned_client(
+    verified: &VerifiedUrl,
+    timeout: Duration,
+) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .resolve(&verified.host, verified.addr)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(timeout)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +215,66 @@ mod tests {
     fn blocks_cgn_range() {
         assert!(is_blocked_host("100.64.0.1"));
         assert!(is_blocked_host("100.127.255.254"));
+    }
+
+    #[test]
+    fn blocks_zero_network_and_nat64_private() {
+        assert!(is_private_ip(&"0.1.2.3".parse().unwrap()));
+        assert!(is_private_ip(&"64:ff9b::a00:1".parse().unwrap())); // 10.0.0.1
+        assert!(!is_private_ip(&"64:ff9b::808:808".parse().unwrap())); // 8.8.8.8
+    }
+
+    #[tokio::test]
+    async fn pinned_client_does_not_follow_redirects() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use axum::http::header;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use axum::Router;
+
+        let b_hits = Arc::new(AtomicUsize::new(0));
+        let hits = b_hits.clone();
+        let app_b = Router::new().route(
+            "/hit",
+            get(move || {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    "ok"
+                }
+            }),
+        );
+        let lb = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let pb = lb.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(lb, app_b).await.unwrap() });
+
+        let app_a = Router::new().route(
+            "/",
+            get(move || async move {
+                (
+                    axum::http::StatusCode::FOUND,
+                    [(header::LOCATION, format!("http://127.0.0.1:{pb}/hit"))],
+                )
+                    .into_response()
+            }),
+        );
+        let la = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a_addr = la.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(la, app_a).await.unwrap() });
+
+        let v = VerifiedUrl {
+            host: "hook.test".into(),
+            addr: a_addr,
+        };
+        let resp = pinned_client(&v, Duration::from_secs(2))
+            .unwrap()
+            .get(format!("http://hook.test:{}/", a_addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 302);
+        assert_eq!(b_hits.load(Ordering::SeqCst), 0);
     }
 }
