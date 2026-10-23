@@ -39,7 +39,8 @@ Tauri event `ws:server_event` → webview `handleServerEvent()` (same as browser
   or a server close with 1008 → `refresh()`, then one immediate retry. If the
   fresh token is rejected too, `ws:auth_rejected` is emitted once (hook for
   "show login / password change", C11) and the loop backs off without more
-  refreshes until a connection ends normally.
+  refreshes until a connection stays up for `healthy_after` (60 s). Shorter
+  connections also keep the backoff growing.
   Losing a live connection always emits `ws:reconnecting` before any retry.
   `SessionError::Expired` → stop (the session manager emits
   `auth:session_expired`).

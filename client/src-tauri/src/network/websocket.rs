@@ -134,6 +134,10 @@ pub struct WsTimings {
     pub ping_every: Duration,
     /// Drop and reconnect when no frame arrived for this long.
     pub silence_limit: Duration,
+    /// A connection that stayed up this long counts as healthy: it ends an
+    /// auth-rejection streak and restarts the backoff. Shorter ones (e.g. the
+    /// server accepts, then closes with 1008 at once) continue both.
+    pub healthy_after: Duration,
 }
 
 impl Default for WsTimings {
@@ -141,6 +145,7 @@ impl Default for WsTimings {
         Self {
             ping_every: Duration::from_secs(20),
             silence_limit: Duration::from_secs(45),
+            healthy_after: Duration::from_mins(1),
         }
     }
 }
@@ -331,8 +336,8 @@ enum Ended {
     Shutdown,
 }
 
-/// Where a streak of auth rejections stands; reset whenever a connection was
-/// established (the server accepted the token).
+/// Where a streak of auth rejections stands; reset only by a connection that
+/// stayed up for `WsTimings::healthy_after`.
 #[derive(Clone, Copy)]
 enum AuthRetry {
     /// No rejection yet: the next one refreshes and retries at once.
@@ -385,18 +390,23 @@ impl Connection {
             let mut reported = false;
             let next = match self.attempt().await {
                 Attempt::Connected(ws) => {
+                    let started = Instant::now();
                     let ended = self.serve(*ws).await;
                     if matches!(ended, Ended::Shutdown) {
                         return;
                     }
-                    // A connection was established: the token was accepted, so
-                    // a rejection streak only counts consecutive handshakes.
-                    auth = AuthRetry::Fresh;
+                    if started.elapsed() >= self.timings.healthy_after {
+                        // Proven healthy: a later rejection starts a new streak
+                        // and the backoff counts from 1 again. (Not "got a
+                        // frame": the server sends `ready` right away.)
+                        auth = AuthRetry::Fresh;
+                        attempt = 1;
+                    } else {
+                        attempt = attempt.saturating_add(1);
+                    }
                     // The live connection is gone: say so before refreshing or
                     // retrying, so the webview recovers (re-subscribes) on the
                     // next ws:connected and nothing is queued for a dead socket.
-                    // The backoff counts from 1 again after a live connection.
-                    attempt = 1;
                     self.set_status(ConnectionStatus::Reconnecting { attempt });
                     reported = true;
                     match ended {
@@ -1015,8 +1025,10 @@ mod tests {
                     let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, cb).await else {
                         return;
                     };
-                    // The first two (healthy) connections are closed with 1008.
+                    // The first two connections stay up past `healthy_after`,
+                    // then are closed with 1008.
                     if served.fetch_add(1, Ordering::SeqCst) < 2 {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
                         let _ = ws
                             .close(Some(CloseFrame {
                                 code: CloseCode::Policy,
@@ -1033,7 +1045,10 @@ mod tests {
         let manager = WebSocketManager::start(
             events.clone(),
             session,
-            WsTimings::default(),
+            WsTimings {
+                healthy_after: Duration::from_millis(50),
+                ..WsTimings::default()
+            },
             Some(format!("ws://127.0.0.1:{port}/ws")),
         );
 
@@ -1042,6 +1057,70 @@ mod tests {
         assert!(!names.iter().any(|n| n == "ws:auth_rejected"), "{names:?}");
         assert_eq!(manager.status(), ConnectionStatus::Connected);
         // `.expect(2)` on /auth/refresh is verified when `http` drops.
+    }
+
+    #[tokio::test]
+    async fn persistent_post_handshake_1008_refreshes_once() {
+        use tungstenite::protocol::frame::coding::CloseCode;
+        use tungstenite::protocol::CloseFrame;
+
+        let http = MockServer::start().await;
+        let session = session_with(&http, "old").await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("new", "rt-2")))
+            .expect(1)
+            .mount(&http)
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (conn_tx, mut conn_rx) = mpsc::unbounded_channel::<()>();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let conn_tx = conn_tx.clone();
+                tokio::spawn(async move {
+                    let cb = |_: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                        Ok(accept_protocol(resp))
+                    };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, cb).await else {
+                        return;
+                    };
+                    let _ = conn_tx.send(());
+                    // Upgrade accepted, then rejected at once.
+                    let _ = ws
+                        .close(Some(CloseFrame {
+                            code: CloseCode::Policy,
+                            reason: "".into(),
+                        }))
+                        .await;
+                    while ws.next().await.is_some() {}
+                });
+            }
+        });
+
+        let events = Arc::new(Recorder::default());
+        let manager = WebSocketManager::start(
+            events.clone(),
+            session,
+            WsTimings::default(),
+            Some(format!("ws://127.0.0.1:{port}/ws")),
+        );
+
+        for _ in 0..3 {
+            within(conn_rx.recv()).await;
+        }
+        drop(manager);
+        let names = events.names();
+        assert_eq!(
+            names.iter().filter(|n| *n == "ws:auth_rejected").count(),
+            1,
+            "{names:?}"
+        );
+        // `.expect(1)` on /auth/refresh is verified when `http` drops.
     }
 
     /// A server that rejects every handshake with `status`: exactly one
@@ -1141,6 +1220,7 @@ mod tests {
         let timings = WsTimings {
             ping_every: Duration::from_secs(20),
             silence_limit: Duration::from_secs(45),
+            healthy_after: Duration::from_mins(1),
         };
         let events = Arc::new(Recorder::default());
         let _manager = WebSocketManager::start(
