@@ -223,7 +223,11 @@ pub async fn dispatch_new_message(state: &AppState, d: NewMessageDispatch<'_>) {
     }
 
     // Announcement publish → fan out to follower channels (async, loop-guarded).
-    if d.channel.channel_type == db::ChannelType::Announcement && !d.is_crosspost {
+    // The crosspost carries text only, so a file-only message is not forwarded.
+    if d.channel.channel_type == db::ChannelType::Announcement
+        && !d.is_crosspost
+        && !d.content.is_empty()
+    {
         crate::chat::announcements::spawn_crosspost(
             state.clone(),
             channel_id,

@@ -14,7 +14,8 @@ use vc_server::permissions::GuildPermissions;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel,
-    create_guild_with_default_role, create_test_user, generate_access_token, TestApp,
+    create_guild_with_default_role, create_test_user, fresh_test_app_with_s3_and_pool,
+    generate_access_token, rustfs_available, TestApp,
 };
 
 /// Build an upload request for `channel_id` with a small text file and
@@ -257,6 +258,12 @@ async fn test_upload_blocked_in_dm(pool: PgPool) {
     assert_eq!(resp.status(), 403);
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "BLOCKED");
+
+    // The blocking side (sender blocked the recipient) is rejected as well
+    let resp = app.oneshot(upload_request(&token_a, channel_id, "")).await;
+    assert_eq!(resp.status(), 403, "sender who blocked the recipient");
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "BLOCKED");
 }
 
 #[sqlx::test]
@@ -346,4 +353,148 @@ async fn test_upload_s3_failure_leaves_no_message(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(count, 0, "a failed upload must not leave a message row");
+}
+
+// ============================================================================
+// Announcement crosspost (RustFS required)
+// ============================================================================
+
+/// A file-only upload to an announcement channel crossposts nothing (the
+/// crosspost carries text only); a text+file upload still crossposts its text.
+#[sqlx::test]
+async fn test_file_only_announcement_upload_is_not_crossposted(pool: PgPool) {
+    if !rustfs_available().await {
+        eprintln!("SKIP: RustFS unavailable");
+        return;
+    }
+    let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let (source, follower) = announcement_with_follower(&app.pool, guild_id).await;
+
+    let resp = app.oneshot(upload_request(&token, source, "")).await;
+    assert_eq!(resp.status(), 201, "file-only announcement upload");
+
+    // Control: text+file still crossposts its text. Wait for it to land.
+    let resp = app.oneshot(upload_request(&token, source, "news")).await;
+    assert_eq!(resp.status(), 201, "text+file announcement upload");
+    assert_eq!(
+        settled_contents(&app.pool, follower).await,
+        vec!["news".to_string()],
+        "follower must only get the text crosspost"
+    );
+}
+
+/// Create an announcement channel followed by one text channel.
+/// Returns (source, follower).
+async fn announcement_with_follower(pool: &PgPool, guild_id: Uuid) -> (Uuid, Uuid) {
+    let source = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, 'news', 'announcement')",
+    )
+    .bind(source)
+    .bind(guild_id)
+    .execute(pool)
+    .await
+    .expect("create announcement channel");
+    let follower = create_channel(pool, guild_id, "follower").await;
+    sqlx::query(
+        "INSERT INTO announcement_follows (source_channel_id, target_channel_id) VALUES ($1, $2)",
+    )
+    .bind(source)
+    .bind(follower)
+    .execute(pool)
+    .await
+    .expect("create follow");
+    (source, follower)
+}
+
+/// Wait until `channel` holds at least one message, then a little longer so a
+/// stray crosspost spawned earlier also lands; return all contents.
+async fn settled_contents(pool: &PgPool, channel: Uuid) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE channel_id = $1")
+            .bind(channel)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        if n > 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "text crosspost never arrived"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    sqlx::query_scalar("SELECT content FROM messages WHERE channel_id = $1 ORDER BY id")
+        .bind(channel)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+/// The shared dispatch (used by uploads) does not crosspost an announcement
+/// without text; one with text still crossposts. No storage needed.
+#[sqlx::test]
+async fn test_dispatch_skips_crosspost_without_text(pool: PgPool) {
+    use std::sync::Arc;
+
+    use vc_server::api::{AppState, AppStateConfig};
+    use vc_server::chat::send::{dispatch_new_message, NewMessageDispatch};
+    use vc_server::config::Config;
+    use vc_server::voice::sfu::SfuServer;
+
+    let config = Config::default_for_test();
+    let redis = vc_server::db::create_redis_client(&config.redis_url)
+        .await
+        .expect("connect test Redis");
+    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("SfuServer");
+    let state = AppState::new(AppStateConfig {
+        db: pool.clone(),
+        redis,
+        config,
+        s3: None,
+        sfu,
+        rate_limiter: None,
+        screen_share_limiter: None,
+        email: None,
+        oidc_manager: None,
+        http_client: reqwest::Client::new(),
+    });
+
+    let (owner, _) = create_test_user(&pool).await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&pool, owner, perms).await;
+    let (source, follower) = announcement_with_follower(&pool, guild_id).await;
+    let channel = vc_server::db::find_channel_by_id(&pool, source)
+        .await
+        .unwrap()
+        .expect("announcement channel");
+
+    for content in ["", "news"] {
+        dispatch_new_message(
+            &state,
+            NewMessageDispatch {
+                channel: &channel,
+                author_id: owner,
+                message_id: Uuid::now_v7(),
+                content,
+                encrypted: false,
+                is_crosspost: false,
+                message_json: serde_json::json!({}),
+            },
+        )
+        .await;
+    }
+
+    assert_eq!(
+        settled_contents(&pool, follower).await,
+        vec!["news".to_string()],
+        "follower must only get the text crosspost"
+    );
 }

@@ -359,6 +359,7 @@ async fn ws_close_releases_valkey_subscriber(pool: PgPool) {
 #[sqlx::test]
 async fn test_upload_message_broadcasts_message_new(pool: PgPool) {
     if !rustfs_available().await {
+        eprintln!("SKIP: RustFS unavailable");
         return;
     }
     let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;

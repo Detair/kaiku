@@ -503,9 +503,21 @@ pub async fn upload_message_with_file(
         }
     };
 
-    // Get author profile for response
-    let author = db::find_user_by_id(&state.db, auth_user.id)
-        .await?
+    // Get author profile for response. The message is already committed, so a
+    // lookup failure falls back to a placeholder instead of failing the request
+    // (which would skip the dispatch below).
+    let author_user = match db::find_user_by_id(&state.db, auth_user.id).await {
+        Ok(user) => user,
+        Err(e) => {
+            tracing::warn!(
+                message_id = %message.id,
+                error = %e,
+                "Author lookup failed after upload commit; using placeholder profile"
+            );
+            None
+        }
+    };
+    let author = author_user
         .map(AuthorProfile::from)
         .unwrap_or_else(|| AuthorProfile {
             id: auth_user.id,
