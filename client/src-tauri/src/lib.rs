@@ -8,6 +8,7 @@ mod commands;
 mod crypto;
 mod network;
 mod presence;
+mod session;
 mod tray;
 mod video;
 mod voice;
@@ -85,7 +86,10 @@ pub fn run() {
             }
 
             // Store app state
-            app.manage(AppState::new());
+            let state = AppState::new();
+            // Keep the access token fresh in the background (Rust-owned session).
+            session::spawn_refresh_scheduler(app.handle().clone(), state.session.clone());
+            app.manage(state);
 
             // Store clipboard guard
             app.manage(Arc::new(ClipboardGuard::new()));
@@ -117,6 +121,8 @@ pub fn run() {
             commands::auth::logout,
             commands::auth::get_current_user,
             commands::auth::get_auth_info,
+            commands::auth::refresh_session,
+            commands::auth::session_request,
             commands::auth::register,
             commands::auth::oidc_authorize,
             commands::auth::oidc_link_identity,
@@ -327,11 +333,13 @@ pub struct User {
     pub mfa_enabled: bool,
 }
 
-/// Authentication state.
+/// Authentication state read by the REST proxy commands.
+///
+/// Tokens are written only by [`session::SessionManager`], which also owns the refresh
+/// token (never stored here).
 #[derive(Debug, Default)]
 pub struct AuthState {
     pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
     pub user: Option<User>,
     pub server_url: Option<String>,
 }
@@ -391,8 +399,10 @@ impl VoiceState {
 pub struct AppState {
     /// HTTP client for API requests.
     pub http: HttpClient,
-    /// Authentication state.
+    /// Authentication state (mirror of the session for older commands).
     pub auth: Arc<RwLock<AuthState>>,
+    /// Owner of tokens, keyring entry and refresh.
+    pub session: Arc<session::SessionManager>,
     /// WebSocket connection manager.
     pub websocket: Arc<RwLock<Option<WebSocketManager>>>,
     /// Voice state.
@@ -411,9 +421,17 @@ impl AppState {
             .build()
             .expect("Failed to create HTTP client");
 
+        let auth = Arc::new(RwLock::new(AuthState::default()));
+        let session = Arc::new(session::SessionManager::new(
+            http.clone(),
+            Arc::new(session::KeyringTokenStore),
+            auth.clone(),
+        ));
+
         Self {
             http,
-            auth: Arc::new(RwLock::new(AuthState::default())),
+            auth,
+            session,
             websocket: Arc::new(RwLock::new(None)),
             voice: Arc::new(RwLock::new(None)),
             crypto: Arc::new(Mutex::new(None)),

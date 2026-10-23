@@ -1,12 +1,18 @@
 //! Authentication Commands
+//!
+//! Thin wrappers around [`crate::session::SessionManager`], which owns the
+//! tokens. No command returns the refresh token to the webview.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
-use crate::{AppState, User, UserStatus};
+use crate::session::{
+    AuthInfo, AuthResult, RegisterRequest, SessionError, SessionRestoreResult, TokenResponse,
+};
+use crate::AppState;
 
 /// Login request from frontend.
 #[derive(Deserialize)]
@@ -28,154 +34,23 @@ impl std::fmt::Debug for LoginRequest {
     }
 }
 
-/// Register request from frontend.
-#[derive(Debug, Deserialize)]
-pub struct RegisterRequest {
-    pub server_url: String,
-    pub username: String,
-    pub email: Option<String>,
-    pub password: String,
-    pub display_name: Option<String>,
-}
-
-/// Token response from server.
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct TokenResponse {
-    access_token: String,
-    refresh_token: String,
-    expires_in: u64,
-    token_type: String,
-}
-
-/// User response from server /auth/me endpoint.
-#[derive(Debug, Deserialize)]
-struct UserResponse {
-    id: String,
-    username: String,
-    display_name: String,
-    email: Option<String>,
-    avatar_url: Option<String>,
-    status: String,
-    mfa_enabled: bool,
-}
-
-impl From<UserResponse> for User {
-    fn from(r: UserResponse) -> Self {
-        Self {
-            id: r.id,
-            username: r.username,
-            display_name: r.display_name,
-            avatar_url: r.avatar_url,
-            email: r.email,
-            mfa_enabled: r.mfa_enabled,
-            status: match r.status.as_str() {
-                "online" => UserStatus::Online,
-                "away" => UserStatus::Away,
-                "busy" => UserStatus::Busy,
-                _ => UserStatus::Offline,
-            },
-        }
-    }
-}
-
 /// Login with username and password.
 #[command]
-pub async fn login(state: State<'_, AppState>, request: LoginRequest) -> Result<User, String> {
+pub async fn login(
+    state: State<'_, AppState>,
+    request: LoginRequest,
+) -> Result<AuthResult, String> {
     info!("Attempting login for user: {}", request.username);
-
-    let server_url = request.server_url.trim_end_matches('/');
-
-    // Send login request to server
-    let mut login_body = serde_json::json!({
-        "username": request.username,
-        "password": request.password
-    });
-    if let Some(ref code) = request.mfa_code {
-        login_body["mfa_code"] = serde_json::json!(code);
-    }
-
-    let response = state
-        .http
-        .post(format!("{server_url}/auth/login"))
-        .json(&login_body)
-        .send()
+    state
+        .session
+        .login(
+            &request.server_url,
+            &request.username,
+            &request.password,
+            request.mfa_code,
+        )
         .await
-        .map_err(|e| {
-            error!("Login request failed: {}", e);
-            format!("Connection failed: {e}")
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        error!("Login failed with status {}: {}", status, body);
-
-        // Detect MFA_REQUIRED error
-        if status.as_u16() == 403 {
-            if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
-                if error_json["error"].as_str() == Some("MFA_REQUIRED") {
-                    return Err("MFA_REQUIRED".to_string());
-                }
-            }
-        }
-
-        return Err(if status.as_u16() == 401 {
-            "Invalid username or password".to_string()
-        } else {
-            format!("Login failed: {status}")
-        });
-    }
-
-    let tokens: TokenResponse = response.json().await.map_err(|e| {
-        error!("Failed to parse token response: {}", e);
-        format!("Invalid response from server: {e}")
-    })?;
-
-    debug!("Login successful, fetching user info");
-
-    // Fetch user info with the new token
-    let user_response = state
-        .http
-        .get(format!("{server_url}/auth/me"))
-        .header("Authorization", format!("Bearer {}", tokens.access_token))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch user info: {e}"))?;
-
-    if !user_response.status().is_success() {
-        return Err("Failed to fetch user info".to_string());
-    }
-
-    let user_data: UserResponse = user_response
-        .json()
-        .await
-        .map_err(|e| format!("Invalid user response: {e}"))?;
-
-    let user: User = user_data.into();
-
-    // Store auth state
-    {
-        let mut auth = state.auth.write().await;
-        auth.access_token = Some(tokens.access_token.clone());
-        auth.refresh_token = Some(tokens.refresh_token.clone());
-        auth.server_url = Some(server_url.to_string());
-        auth.user = Some(user.clone());
-    }
-
-    // Store refresh token securely in keyring
-    if let Err(e) = store_refresh_token(server_url, &tokens.refresh_token) {
-        error!("Failed to store refresh token: {}", e);
-        // Continue anyway - user is still logged in for this session
-    }
-
-    // Store server URL for session restore on next launch
-    if let Err(e) = store_server_url(server_url) {
-        error!("Failed to store server URL: {}", e);
-    }
-
-    info!("User {} logged in successfully", user.username);
-    Ok(user)
+        .map_err(|e| e.to_string())
 }
 
 /// Register a new user.
@@ -183,303 +58,60 @@ pub async fn login(state: State<'_, AppState>, request: LoginRequest) -> Result<
 pub async fn register(
     state: State<'_, AppState>,
     request: RegisterRequest,
-) -> Result<User, String> {
+) -> Result<AuthResult, String> {
     info!("Attempting registration for user: {}", request.username);
-
-    let server_url = request.server_url.trim_end_matches('/');
-
-    // Send register request to server
-    let response = state
-        .http
-        .post(format!("{server_url}/auth/register"))
-        .json(&serde_json::json!({
-            "username": request.username,
-            "email": request.email,
-            "password": request.password,
-            "display_name": request.display_name
-        }))
-        .send()
+    state
+        .session
+        .register(request)
         .await
-        .map_err(|e| {
-            error!("Registration request failed: {}", e);
-            format!("Connection failed: {e}")
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        error!("Registration failed with status {}: {}", status, body);
-        return Err(if status.as_u16() == 409 {
-            "Username or email already exists".to_string()
-        } else if status.as_u16() == 400 {
-            // Try to extract validation error
-            if let Ok(error) = serde_json::from_str::<serde_json::Value>(&body) {
-                error["error"]
-                    .as_str()
-                    .unwrap_or("Invalid input")
-                    .to_string()
-            } else {
-                "Invalid input".to_string()
-            }
-        } else {
-            format!("Registration failed: {status}")
-        });
-    }
-
-    let tokens: TokenResponse = response.json().await.map_err(|e| {
-        error!("Failed to parse token response: {}", e);
-        format!("Invalid response from server: {e}")
-    })?;
-
-    debug!("Registration successful, fetching user info");
-
-    // Fetch user info with the new token
-    let user_response = state
-        .http
-        .get(format!("{server_url}/auth/me"))
-        .header("Authorization", format!("Bearer {}", tokens.access_token))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch user info: {e}"))?;
-
-    if !user_response.status().is_success() {
-        return Err("Failed to fetch user info".to_string());
-    }
-
-    let user_data: UserResponse = user_response
-        .json()
-        .await
-        .map_err(|e| format!("Invalid user response: {e}"))?;
-
-    let user: User = user_data.into();
-
-    // Store auth state
-    {
-        let mut auth = state.auth.write().await;
-        auth.access_token = Some(tokens.access_token.clone());
-        auth.refresh_token = Some(tokens.refresh_token.clone());
-        auth.server_url = Some(server_url.to_string());
-        auth.user = Some(user.clone());
-    }
-
-    // Store refresh token securely
-    if let Err(e) = store_refresh_token(server_url, &tokens.refresh_token) {
-        error!("Failed to store refresh token: {}", e);
-    }
-
-    info!("User {} registered successfully", user.username);
-    Ok(user)
+        .map_err(|e| e.to_string())
 }
 
 /// Logout and clear credentials.
 #[command]
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     info!("Logging out");
-
-    let (server_url, refresh_token) = {
-        let auth = state.auth.read().await;
-        (auth.server_url.clone(), auth.refresh_token.clone())
-    };
-
-    // Try to invalidate token on server (best effort)
-    if let (Some(url), Some(token)) = (server_url.as_ref(), refresh_token.as_ref()) {
-        let _ = state
-            .http
-            .post(format!("{url}/auth/logout"))
-            .json(&serde_json::json!({ "refresh_token": token }))
-            .send()
-            .await;
-    }
-
-    // Clear auth state
-    {
-        let mut auth = state.auth.write().await;
-        auth.access_token = None;
-        auth.refresh_token = None;
-        auth.user = None;
-        // Keep server_url for potential re-login
-    }
-
+    let result = state.session.logout().await.map_err(|e| e.to_string());
     // Clear crypto state — drops Megolm sessions, Olm account, closes SQLite
     *state.crypto.lock().await = None;
-
-    // Clear stored credentials
-    if let Some(url) = server_url {
-        let _ = clear_refresh_token(&url);
-    }
-
-    info!("Logged out successfully");
-    Ok(())
+    result
 }
 
-/// Result of session restoration attempt.
-#[derive(Debug, Serialize, Clone)]
-pub struct SessionRestoreResult {
-    /// The restored user, if successful.
-    pub user: Option<User>,
-    /// Error reason if restoration failed: "session_expired" or "network_error".
-    /// None means success or no stored session (clean state).
-    pub error_reason: Option<String>,
-}
-
-/// Get the current authenticated user, attempting session restore from keyring if needed.
+/// Get the current user, restoring the session from the keyring if needed.
 #[command]
 pub async fn get_current_user(state: State<'_, AppState>) -> Result<SessionRestoreResult, String> {
-    // Check if we have a user in memory
-    {
-        let auth = state.auth.read().await;
-        if auth.user.is_some() {
-            return Ok(SessionRestoreResult {
-                user: auth.user.clone(),
-                error_reason: None,
-            });
-        }
-    }
-
-    // Try to restore session from keyring
-    let server_url = match get_server_url() {
-        Ok(Some(url)) => url,
-        Ok(None) => {
-            debug!("No server URL in keyring, no session to restore");
-            return Ok(SessionRestoreResult {
-                user: None,
-                error_reason: None,
-            });
-        }
-        Err(e) => {
-            warn!("Failed to read server URL from keyring: {}", e);
-            return Ok(SessionRestoreResult {
-                user: None,
-                error_reason: None,
-            });
-        }
-    };
-
-    let refresh_token = match get_refresh_token(&server_url) {
-        Ok(Some(token)) => token,
-        Ok(None) => {
-            debug!("No refresh token in keyring for {}", server_url);
-            return Ok(SessionRestoreResult {
-                user: None,
-                error_reason: None,
-            });
-        }
-        Err(e) => {
-            warn!("Failed to read refresh token from keyring: {}", e);
-            return Ok(SessionRestoreResult {
-                user: None,
-                error_reason: None,
-            });
-        }
-    };
-
-    info!("Attempting session restore for {}", server_url);
-
-    // Attempt token refresh with 5-second timeout
-    let client = &state.http;
-    let refresh_response = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        client
-            .post(format!("{server_url}/auth/refresh"))
-            .json(&serde_json::json!({ "refresh_token": refresh_token }))
-            .send(),
-    )
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err(e)) => {
-            warn!("Session restore network error: {}", e);
-            return Ok(SessionRestoreResult {
-                user: None,
-                error_reason: Some("network_error".to_string()),
-            });
-        }
-        Err(_) => {
-            warn!("Session restore timed out after 5s");
-            return Ok(SessionRestoreResult {
-                user: None,
-                error_reason: Some("network_error".to_string()),
-            });
-        }
-    };
-
-    if !refresh_response.status().is_success() {
-        warn!(
-            "Session restore refresh failed: {}",
-            refresh_response.status()
-        );
-        let _ = clear_refresh_token(&server_url);
-        return Ok(SessionRestoreResult {
-            user: None,
-            error_reason: Some("session_expired".to_string()),
-        });
-    }
-
-    let tokens: TokenResponse = refresh_response
-        .json()
-        .await
-        .map_err(|e| format!("Invalid refresh response: {e}"))?;
-
-    // Store new refresh token in keyring (rotation)
-    if let Err(e) = store_refresh_token(&server_url, &tokens.refresh_token) {
-        error!("Failed to update refresh token in keyring: {}", e);
-    }
-
-    // Fetch user profile
-    let user_response = client
-        .get(format!("{server_url}/auth/me"))
-        .header("Authorization", format!("Bearer {}", tokens.access_token))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch user info: {e}"))?;
-
-    if !user_response.status().is_success() {
-        return Err("Failed to fetch user info during session restore".to_string());
-    }
-
-    let user_data: UserResponse = user_response
-        .json()
-        .await
-        .map_err(|e| format!("Invalid user response: {e}"))?;
-
-    let user: User = user_data.into();
-
-    // Update auth state
-    {
-        let mut auth = state.auth.write().await;
-        auth.access_token = Some(tokens.access_token);
-        auth.refresh_token = Some(tokens.refresh_token);
-        auth.server_url = Some(server_url);
-        auth.user = Some(user.clone());
-    }
-
-    info!("Session restored for user: {}", user.username);
-    Ok(SessionRestoreResult {
-        user: Some(user),
-        error_reason: None,
-    })
+    Ok(state.session.restore().await)
 }
 
-/// Get auth info for fetch-based operations (e.g., file uploads).
-///
-/// Returns the server URL and access token so the webview can make
-/// authenticated fetch requests directly (needed for multipart uploads).
+/// Base URL and access token for webview-side requests (REST, uploads).
 #[command]
-pub async fn get_auth_info(state: State<'_, AppState>) -> Result<Option<(String, String)>, String> {
-    let auth = state.auth.read().await;
-    match (&auth.server_url, &auth.access_token) {
-        (Some(url), Some(token)) => Ok(Some((url.clone(), token.clone()))),
-        _ => Ok(None),
+pub async fn get_auth_info(state: State<'_, AppState>) -> Result<Option<AuthInfo>, String> {
+    Ok(state.session.auth_info())
+}
+
+/// Refresh the access token now. `None` means the session has ended.
+#[command]
+pub async fn refresh_session(state: State<'_, AppState>) -> Result<Option<AuthInfo>, String> {
+    match state.session.refresh().await {
+        Ok(info) => Ok(Some(info)),
+        Err(SessionError::Expired) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }
 
-/// OIDC login response returned to the frontend.
-#[derive(Debug, Serialize)]
-pub struct OidcLoginResult {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_in: u64,
-    pub setup_required: bool,
+/// Session-management requests that need the refresh token (allowlisted).
+#[command]
+pub async fn session_request(
+    state: State<'_, AppState>,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    state
+        .session
+        .session_request(&method, &path, body)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Start OIDC login flow for Tauri desktop.
@@ -488,14 +120,14 @@ pub struct OidcLoginResult {
 /// 2. Requests the authorize URL from the server (with localhost `redirect_uri`)
 /// 3. Opens the authorize URL in the default browser
 /// 4. Waits for the OIDC callback on the localhost listener
-/// 5. Extracts tokens from the callback query params and returns them
+/// 5. Hands the tokens from the callback to the session manager (they never reach the webview)
 #[command]
 pub async fn oidc_authorize(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
     server_url: String,
     provider_slug: String,
-) -> Result<OidcLoginResult, String> {
+) -> Result<AuthResult, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use url::Url;
@@ -633,7 +265,7 @@ pub async fn oidc_authorize(
     };
 
     // 60 second timeout for the user to complete the OIDC flow
-    let params = tokio::time::timeout(std::time::Duration::from_secs(60), accept_future)
+    let params = tokio::time::timeout(std::time::Duration::from_mins(1), accept_future)
         .await
         .map_err(|_| "OIDC login timed out (60s). Please try again.".to_string())?
         .map_err(|e| format!("Failed to receive OIDC callback: {e}"))?;
@@ -647,69 +279,36 @@ pub async fn oidc_authorize(
         return Err(format!("OIDC login failed: {error} — {desc}"));
     }
 
-    let access_token = params
-        .get("access_token")
-        .ok_or("No access_token in OIDC callback")?
-        .clone();
-    let refresh_token = params
-        .get("refresh_token")
-        .ok_or("No refresh_token in OIDC callback")?
-        .clone();
-    let expires_in: u64 = params
-        .get("expires_in")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(900);
-    let setup_required: bool = params
-        .get("setup_required")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(false);
+    let token = |key: &str| {
+        params
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("No {key} in OIDC callback"))
+    };
+    let flag = |key: &str| {
+        params
+            .get(key)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(false)
+    };
+    let tokens = TokenResponse {
+        access_token: token("access_token")?,
+        refresh_token: token("refresh_token")?,
+        expires_in: params
+            .get("expires_in")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(900),
+        setup_required: flag("setup_required"),
+        password_change_required: flag("password_change_required"),
+    };
 
-    // Fetch user info with the new token
-    let user_response = state
-        .http
-        .get(format!("{server_url}/auth/me"))
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
+    let result = state
+        .session
+        .adopt_tokens(server_url, tokens)
         .await
-        .map_err(|e| format!("Failed to fetch user info: {e}"))?;
-
-    if !user_response.status().is_success() {
-        return Err("Failed to fetch user info after OIDC login".to_string());
-    }
-
-    let user_data: UserResponse = user_response
-        .json()
-        .await
-        .map_err(|e| format!("Invalid user response: {e}"))?;
-
-    let user: User = user_data.into();
-
-    // Store auth state
-    {
-        let mut auth = state.auth.write().await;
-        auth.access_token = Some(access_token.clone());
-        auth.refresh_token = Some(refresh_token.clone());
-        auth.server_url = Some(server_url.to_string());
-        auth.user = Some(user.clone());
-    }
-
-    // Store refresh token securely
-    if let Err(e) = store_refresh_token(server_url, &refresh_token) {
-        error!("Failed to store OIDC refresh token: {}", e);
-    }
-
-    // Store server URL for session restore on next launch
-    if let Err(e) = store_server_url(server_url) {
-        error!("Failed to store server URL: {}", e);
-    }
-
-    info!("OIDC login successful for user: {}", user.username);
-    Ok(OidcLoginResult {
-        access_token,
-        refresh_token,
-        expires_in,
-        setup_required,
-    })
+        .map_err(|e| e.to_string())?;
+    info!("OIDC login successful");
+    Ok(result)
 }
 
 /// Link an additional external (OIDC) identity to the signed-in account (desktop).
@@ -841,7 +440,7 @@ pub async fn oidc_link_identity(
         }
     };
 
-    let params = tokio::time::timeout(std::time::Duration::from_secs(60), accept_future)
+    let params = tokio::time::timeout(std::time::Duration::from_mins(1), accept_future)
         .await
         .map_err(|_| "Linking timed out (60s). Please try again.".to_string())?
         .map_err(|e| format!("Failed to receive link callback: {e}"))?;
@@ -861,48 +460,6 @@ pub async fn oidc_link_identity(
         Err(format!("Linking failed: {error}"))
     } else {
         Err("Linking failed: no result in callback".to_string())
-    }
-}
-
-// Keyring helpers
-
-const KEYRING_SERVICE: &str = "voicechat";
-
-fn keyring_user(server_url: &str) -> String {
-    // Use server URL as keyring username to support multiple servers
-    format!("refresh_token:{server_url}")
-}
-
-fn store_refresh_token(server_url: &str, token: &str) -> Result<(), keyring_core::Error> {
-    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
-    entry.set_password(token)
-}
-
-fn clear_refresh_token(server_url: &str) -> Result<(), keyring_core::Error> {
-    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
-    entry.delete_credential()
-}
-
-fn store_server_url(server_url: &str) -> Result<(), keyring_core::Error> {
-    let entry = keyring_core::Entry::new(KEYRING_SERVICE, "server_url")?;
-    entry.set_password(server_url)
-}
-
-fn get_server_url() -> Result<Option<String>, keyring_core::Error> {
-    let entry = keyring_core::Entry::new(KEYRING_SERVICE, "server_url")?;
-    match entry.get_password() {
-        Ok(url) => Ok(Some(url)),
-        Err(keyring_core::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-fn get_refresh_token(server_url: &str) -> Result<Option<String>, keyring_core::Error> {
-    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &keyring_user(server_url))?;
-    match entry.get_password() {
-        Ok(token) => Ok(Some(token)),
-        Err(keyring_core::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e),
     }
 }
 

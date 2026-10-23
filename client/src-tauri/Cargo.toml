@@ -135,6 +135,8 @@ sentry-tracing = "0.48"
 
 [dev-dependencies]
 tempfile.workspace = true
+# HTTP mock server for the session manager tests (MIT/Apache-2.0)
+wiremock = "0.6"
 
 [lints]
 workspace = true
