@@ -14,7 +14,7 @@
 import { Component, createSignal, createEffect, Show } from "solid-js";
 import { authState, clearSetupRequired } from "@/stores/auth";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
-import { getAuthContext } from "@/lib/tauri";
+import { getAuthContext, getServerUrl } from "@/lib/tauri";
 
 // Setup config interface (matches server API)
 interface SetupConfig {
@@ -22,17 +22,6 @@ interface SetupConfig {
   registration_policy: "open" | "invite_only" | "closed";
   terms_url?: string;
   privacy_url?: string;
-}
-
-// Get server URL from auth state or localStorage
-function getServerUrl(): string {
-  if (authState.serverUrl) {
-    return authState.serverUrl;
-  }
-  if (typeof localStorage !== "undefined") {
-    return localStorage.getItem("serverUrl") || window.location.origin;
-  }
-  return window.location.origin;
 }
 
 // Fetch setup config from server
