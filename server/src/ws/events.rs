@@ -929,6 +929,16 @@ pub enum ServerEvent {
         updated_by: Uuid,
     },
 
+    /// A DM channel was newly created with this user as a participant (sent
+    /// to every participant, including the creator's other devices). Open
+    /// sockets are subscribed to the channel before this event is delivered.
+    DmCreated {
+        /// The DM exactly as one element of `GET /api/dm` (`DMListResponse`)
+        /// for the receiving user. A JSON value because `DMListResponse` is
+        /// serialize-only.
+        channel: serde_json::Value,
+    },
+
     // Admin events (broadcast to admin subscribers)
     /// User was banned
     AdminUserBanned {

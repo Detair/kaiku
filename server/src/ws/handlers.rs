@@ -1440,6 +1440,23 @@ pub(crate) async fn forward_pubsub_messages(
                         } => {
                             params.blocked_users.write().await.remove(unblocked_id);
                         }
+                        // Subscribe before forwarding: Redis keeps publish
+                        // order on this connection, so the DM's first
+                        // `channel:{id}` events are not filtered out.
+                        ServerEvent::DmCreated { channel } => {
+                            let channel_id = channel
+                                .get("id")
+                                .and_then(|id| id.as_str())
+                                .and_then(|id| Uuid::parse_str(id).ok());
+                            if let Some(channel_id) = channel_id {
+                                params.subscribed_channels.write().await.insert(channel_id);
+                            } else {
+                                warn!(
+                                    "DmCreated without a valid channel id (user {})",
+                                    params.user_id
+                                );
+                            }
+                        }
                         _ => {}
                     }
 
@@ -1673,6 +1690,38 @@ mod pubsub_tests {
             kind: MessageKind::PMessage,
             server: Server::new("127.0.0.1", 6379),
         }
+    }
+
+    #[tokio::test]
+    async fn dm_created_subscribes_before_forwarding() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, mut rx) = test_params(16);
+        let dm_created = ServerEvent::DmCreated {
+            channel: serde_json::json!({ "id": CHANNEL }),
+        };
+        btx.send(PubsubMessage {
+            channel: channels::user_events(params.user_id).into(),
+            value: PubsubValue::from(serde_json::to_string(&dm_created).expect("serialize")),
+            kind: MessageKind::Message,
+            server: Server::new("127.0.0.1", 6379),
+        })
+        .unwrap();
+        btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        drop(btx);
+
+        assert!(matches!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::StreamEnded
+        ));
+        assert!(params.subscribed_channels.read().await.contains(&CHANNEL));
+        assert!(matches!(
+            rx.recv().await,
+            Some(OutboundMsg::Event(ServerEvent::DmCreated { .. }))
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+        ));
     }
 
     #[tokio::test]

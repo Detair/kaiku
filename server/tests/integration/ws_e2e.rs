@@ -12,8 +12,8 @@ use vc_server::ws::events::broadcast_to_user;
 use vc_server::ws::ServerEvent;
 
 use super::helpers::{
-    create_dm_channel, create_test_user, generate_access_token, next_ws_event, spawn_test_server,
-    ws_connect, TestApp,
+    create_dm_channel, create_test_user, expect_no_ws_event, generate_access_token, next_ws_event,
+    spawn_test_server, ws_connect, TestApp, TestServer,
 };
 
 #[sqlx::test]
@@ -155,4 +155,149 @@ async fn ws_ready_carries_server_time(pool: PgPool) {
             .abs()
             < 5
     );
+}
+
+/// POST /api/dm as `token` with the given participants; returns (status, body).
+async fn post_dm(
+    server: &TestServer,
+    token: &str,
+    participant_ids: &[Uuid],
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/dm", server.url))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "participant_ids": participant_ids }))
+        .send()
+        .await
+        .expect("POST /api/dm");
+    let status = resp.status();
+    let body = resp.json().await.expect("POST /api/dm JSON body");
+    (status, body)
+}
+
+/// The first DM reaches the recipient live: `dm_created` carries the same
+/// object as the recipient's `GET /api/dm` entry, and the recipient's socket
+/// is subscribed to the new channel without sending `subscribe`.
+#[sqlx::test]
+async fn first_dm_is_pushed_and_auto_subscribed(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+
+    let (user_a, _) = create_test_user(&pool).await;
+    let (user_b, _) = create_test_user(&pool).await;
+    let token_a = generate_access_token(&app.config, user_a);
+    let token_b = generate_access_token(&app.config, user_b);
+
+    let mut ws_a = ws_connect(&server, &token_a).await;
+    next_ws_event(&mut ws_a, "ready", Duration::from_secs(5)).await;
+    let mut ws_b = ws_connect(&server, &token_b).await;
+    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+
+    let (status, dm) = post_dm(&server, &token_a, &[user_b]).await;
+    assert_eq!(status, 201, "POST /api/dm failed: {dm}");
+    let dm_id: Uuid = dm["id"].as_str().unwrap().parse().unwrap();
+
+    let ev = next_ws_event(&mut ws_b, "dm_created", Duration::from_secs(5)).await;
+    assert_eq!(ev["channel"]["id"], dm_id.to_string());
+    assert_eq!(ev["channel"]["participants"].as_array().unwrap().len(), 2);
+
+    // The event's channel is exactly B's GET /api/dm element for this DM.
+    let list: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/api/dm", server.url))
+        .bearer_auth(&token_b)
+        .send()
+        .await
+        .expect("GET /api/dm")
+        .json()
+        .await
+        .expect("GET /api/dm JSON");
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == dm_id.to_string())
+        .expect("new DM in recipient's list");
+    assert_eq!(&ev["channel"], entry);
+
+    // The creator's own sockets (other devices) are told as well.
+    let ev_a = next_ws_event(&mut ws_a, "dm_created", Duration::from_secs(5)).await;
+    assert_eq!(ev_a["channel"]["id"], dm_id.to_string());
+
+    // A posts a message; B receives it without ever sending "subscribe".
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/messages/channel/{dm_id}", server.url))
+        .bearer_auth(&token_a)
+        .json(&serde_json::json!({ "content": "first" }))
+        .send()
+        .await
+        .expect("POST message");
+    assert!(
+        resp.status().is_success(),
+        "POST message: {}",
+        resp.status()
+    );
+
+    let msg = next_ws_event(&mut ws_b, "message_new", Duration::from_secs(5)).await;
+    assert_eq!(msg["channel_id"], dm_id.to_string());
+    assert_eq!(msg["message"]["content"], "first");
+}
+
+/// Re-opening an existing 1:1 DM returns it again and announces nothing.
+#[sqlx::test]
+async fn existing_dm_does_not_emit_dm_created(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+
+    let (user_a, _) = create_test_user(&pool).await;
+    let (user_b, _) = create_test_user(&pool).await;
+    let token_a = generate_access_token(&app.config, user_a);
+    let token_b = generate_access_token(&app.config, user_b);
+
+    let (status, first) = post_dm(&server, &token_a, &[user_b]).await;
+    assert_eq!(status, 201, "POST /api/dm failed: {first}");
+
+    let mut ws_b = ws_connect(&server, &token_b).await;
+    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+
+    // The existing API answers 201 with the same channel for an existing DM.
+    let (status, again) = post_dm(&server, &token_a, &[user_b]).await;
+    assert_eq!(status, 201, "POST /api/dm failed: {again}");
+    assert_eq!(again["id"], first["id"]);
+
+    expect_no_ws_event(&mut ws_b, "dm_created", Duration::from_secs(1)).await;
+
+    // Control: the same socket does receive the event for a genuinely new DM.
+    let (user_c, _) = create_test_user(&pool).await;
+    let (status, group) = post_dm(&server, &token_a, &[user_b, user_c]).await;
+    assert_eq!(status, 201, "POST /api/dm failed: {group}");
+    let ev = next_ws_event(&mut ws_b, "dm_created", Duration::from_secs(5)).await;
+    assert_eq!(ev["channel"]["id"], group["id"]);
+}
+
+/// A new group DM is announced to every participant.
+#[sqlx::test]
+async fn group_dm_is_pushed_to_every_participant(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+
+    let (user_a, _) = create_test_user(&pool).await;
+    let (user_b, _) = create_test_user(&pool).await;
+    let (user_c, _) = create_test_user(&pool).await;
+    let token_a = generate_access_token(&app.config, user_a);
+    let token_b = generate_access_token(&app.config, user_b);
+    let token_c = generate_access_token(&app.config, user_c);
+
+    let mut ws_b = ws_connect(&server, &token_b).await;
+    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+    let mut ws_c = ws_connect(&server, &token_c).await;
+    next_ws_event(&mut ws_c, "ready", Duration::from_secs(5)).await;
+
+    let (status, dm) = post_dm(&server, &token_a, &[user_b, user_c]).await;
+    assert_eq!(status, 201, "POST /api/dm failed: {dm}");
+
+    for ws in [&mut ws_b, &mut ws_c] {
+        let ev = next_ws_event(ws, "dm_created", Duration::from_secs(5)).await;
+        assert_eq!(ev["channel"]["id"], dm["id"]);
+        assert_eq!(ev["channel"]["participants"].as_array().unwrap().len(), 3);
+    }
 }

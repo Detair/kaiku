@@ -104,6 +104,34 @@ async fn test_create_dm_returns_existing(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn test_group_dm_creation_still_returns_201_with_participants(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_a, _) = create_test_user(&app.pool).await;
+    let (user_b, _) = create_test_user(&app.pool).await;
+    let (user_c, _) = create_test_user(&app.pool).await;
+    let token_a = generate_access_token(&app.config, user_a);
+
+    let (status, dm) = create_dm_via_api(&app, &token_a, &[user_b, user_c]).await;
+    assert_eq!(status, 201, "Group DM creation failed: {dm}");
+    assert_eq!(dm["channel_type"], "dm");
+    let mut ids: Vec<&str> = dm["participants"]
+        .as_array()
+        .expect("Response should have participants")
+        .iter()
+        .map(|p| p["user_id"].as_str().unwrap())
+        .collect();
+    ids.sort_unstable();
+    let mut expected = vec![user_a.to_string(), user_b.to_string(), user_c.to_string()];
+    expected.sort_unstable();
+    assert_eq!(ids, expected);
+
+    // A second group DM with the same people is a new channel.
+    let (status2, dm2) = create_dm_via_api(&app, &token_a, &[user_b, user_c]).await;
+    assert_eq!(status2, 201, "Second group DM creation failed: {dm2}");
+    assert_ne!(dm2["id"], dm["id"]);
+}
+
+#[sqlx::test]
 async fn test_list_dms(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_a, _) = create_test_user(&app.pool).await;

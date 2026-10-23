@@ -833,3 +833,35 @@ pub async fn next_ws_event(
         .await
         .unwrap_or_else(|_| panic!("timed out after {timeout:?} waiting for {event_type:?}"))
 }
+
+/// Assert that no server event whose `type` equals `event_type` arrives within
+/// `timeout`.
+///
+/// Other events and control frames are skipped. Panics if a matching event
+/// arrives, or if the socket closes or errors (the check would be vacuous).
+pub async fn expect_no_ws_event(ws: &mut WsClient, event_type: &str, timeout: Duration) {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let wait = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&text).expect("server sent invalid JSON");
+                    if value["type"] == event_type {
+                        panic!("unexpected {event_type:?} event: {value}");
+                    }
+                }
+                Some(Ok(Message::Close(frame))) => {
+                    panic!("WebSocket closed while checking for {event_type:?}: {frame:?}")
+                }
+                Some(Ok(_)) => {}
+                Some(Err(e)) => panic!("WebSocket error while checking for {event_type:?}: {e}"),
+                None => panic!("WebSocket stream ended while checking for {event_type:?}"),
+            }
+        }
+    };
+    // Timing out is the expected outcome.
+    let _ = tokio::time::timeout(timeout, wait).await;
+}

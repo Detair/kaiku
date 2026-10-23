@@ -101,6 +101,8 @@ CallEnded { channel_id, reason, duration_secs }
 CallParticipantJoined { channel_id, user_id, username }
 CallParticipantLeft { channel_id, user_id }
 CallDeclined { channel_id, user_id }
+// DM lifecycle (user channel)
+DmCreated { channel }                        // New DM; `channel` = one GET /api/dm element for the receiver
 ```
 
 ### Channel Subscription
@@ -118,6 +120,8 @@ let subscribed_channels: Arc<RwLock<HashSet<Uuid>>> = Arc::new(RwLock::new(HashS
 3. Add `channel_id` to `subscribed_channels` set
 4. Server responds `Subscribed { channel_id }`
 5. Redis pub/sub task filters events by subscribed channels
+
+**Auto-subscribe on `DmCreated`**: `POST /api/dm` publishes `DmCreated` on `user:{id}` of every participant (creator included) when the DM is newly created (an existing 1:1 DM sends nothing; group DMs are always new). In the `user:{id}` branch of `forward_pubsub_messages`, the socket inserts `channel["id"]` into `subscribed_channels` *before* forwarding the event. Redis keeps publish order on the subscriber connection, so the DM's first `channel:{id}` events (e.g. `MessageNew`) reach the socket without a client `Subscribe`.
 
 **Unsubscribe**:
 1. Client sends `Unsubscribe { channel_id }` (when navigating away)
