@@ -23,8 +23,8 @@ use crate::{AuthState, User, UserStatus};
 /// How long session restore waits for the server before reporting a network error.
 ///
 /// Generous on purpose: the webview keeps the stored login and retries after a
-/// `network_error`, and an attempt abandoned while the server is already
-/// rotating the refresh token would lose the new token.
+/// `network_error`. An answer that arrives later is still committed by the
+/// rotation task, so a slow start costs a retry, never the login.
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(15);
 
 // ============================================================================
@@ -277,6 +277,19 @@ impl Session {
         }
     }
 
+    /// The stored login before its first rotation: only the refresh token is
+    /// known, so the access token is empty and already expired.
+    fn from_stored(stored: &StoredSession) -> Self {
+        Self {
+            server_url: stored.server_url.clone(),
+            access_token: String::new(),
+            refresh_token: stored.refresh_token.clone(),
+            expires_at_ms: 0,
+            user: None,
+            password_change_required: false,
+        }
+    }
+
     fn auth_info(&self) -> AuthInfo {
         AuthInfo {
             server_url: self.server_url.clone(),
@@ -335,6 +348,18 @@ pub struct SessionInner {
 
 /// Proof that the caller holds `refresh_lock`.
 type LockGuard<'a> = MutexGuard<'a, ()>;
+
+/// Why tokens are rotated; decides how the result is committed.
+#[derive(Clone, Copy)]
+enum Rotation {
+    /// A signed-in session gets a new token pair: same identity, the webview
+    /// hears about it through `SessionEvent`s.
+    Refresh,
+    /// App start: the stored refresh token becomes the session (new identity,
+    /// legacy server URL set). No events: the restore result carries the
+    /// outcome, and a rejected token only clears the store.
+    Restore,
+}
 
 impl SessionInner {
     fn generation(&self) -> u64 {
@@ -420,15 +445,25 @@ impl SessionInner {
 
     /// Rotate the tokens of `current` and commit them (memory, keyring,
     /// legacy state, event). Runs on its own task holding `rotation`.
-    async fn rotate(&self, current: Session) -> Result<AuthInfo, SessionError> {
+    async fn rotate(&self, current: Session, kind: Rotation) -> Result<Session, SessionError> {
         let tokens = match self
             .call_refresh(&current.server_url, &current.refresh_token)
             .await
         {
             Ok(tokens) => tokens,
             Err(SessionError::Expired) => {
-                info!("Refresh token rejected; session ended");
-                self.clear_session(&current.server_url, true).await;
+                match kind {
+                    Rotation::Refresh => {
+                        info!("Refresh token rejected; session ended");
+                        self.clear_session(&current.server_url, true).await;
+                    }
+                    Rotation::Restore => {
+                        info!("Stored login was rejected by the server");
+                        if let Err(e) = self.store.clear(&current.server_url) {
+                            warn!(error = %e, "Could not remove the stored login from the OS keyring");
+                        }
+                    }
+                }
                 return Err(SessionError::Expired);
             }
             Err(e) => return Err(e),
@@ -436,11 +471,18 @@ impl SessionInner {
 
         let session = Session::from_tokens(&current.server_url, &tokens, current.user);
         self.persist(&session);
-        let info = session.auth_info();
-        self.set_session(Some(session), false);
-        self.legacy.write().await.access_token = Some(tokens.access_token);
-        self.publish(SessionEvent::TokenRefreshed(info.clone()));
-        Ok(info)
+        self.set_session(Some(session.clone()), matches!(kind, Rotation::Restore));
+        {
+            let mut auth = self.legacy.write().await;
+            auth.access_token = Some(tokens.access_token);
+            if matches!(kind, Rotation::Restore) {
+                auth.server_url = Some(session.server_url.clone());
+            }
+        }
+        if matches!(kind, Rotation::Refresh) {
+            self.publish(SessionEvent::TokenRefreshed(session.auth_info()));
+        }
+        Ok(session)
     }
 }
 
@@ -626,17 +668,31 @@ impl SessionManager {
         self.refresh_locked(&guard, current).await
     }
 
-    /// Rotate the tokens of `current`. Caller holds `refresh_lock`.
-    ///
-    /// The server revokes the old refresh token as soon as it answers, so the
-    /// rotation runs on its own task: dropping the caller (aborted WebSocket
-    /// loop, cancelled command) must not lose the new token. The task holds
-    /// `rotation` until it is done, which [`Self::lock`] waits for.
+    /// Rotate the tokens of a signed-in session. Caller holds `refresh_lock`.
     async fn refresh_locked(
+        &self,
+        lock: &LockGuard<'_>,
+        current: Session,
+    ) -> Result<AuthInfo, SessionError> {
+        self.rotate_on_task(lock, current, Rotation::Refresh)
+            .await
+            .map(|session| session.auth_info())
+    }
+
+    /// Rotate the tokens of `current` on a task of its own. Caller holds
+    /// `refresh_lock`.
+    ///
+    /// The server revokes the old refresh token as soon as it answers, so
+    /// dropping the caller (aborted WebSocket loop, cancelled command, a
+    /// restore that timed out) must not lose the new token: the task finishes
+    /// and commits regardless, holding `rotation` until it is done, which
+    /// [`Self::lock`] waits for.
+    async fn rotate_on_task(
         &self,
         _lock: &LockGuard<'_>,
         current: Session,
-    ) -> Result<AuthInfo, SessionError> {
+        kind: Rotation,
+    ) -> Result<Session, SessionError> {
         let rotation = self
             .rotation
             .clone()
@@ -645,7 +701,7 @@ impl SessionManager {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             let _rotation = rotation;
-            inner.rotate(current).await
+            inner.rotate(current, kind).await
         })
         .await
         .unwrap_or_else(|e| Err(SessionError::Network(format!("token rotation failed: {e}"))))
@@ -653,8 +709,15 @@ impl SessionManager {
 
     /// Restore the session on app start from the stored refresh token.
     pub async fn restore(&self) -> SessionRestoreResult {
+        self.restore_within(RESTORE_TIMEOUT).await
+    }
+
+    /// [`Self::restore`] with an explicit wait for the server's answer. A
+    /// rotation that outlives the wait still commits (see
+    /// [`Self::rotate_on_task`]); the next restore finds the session.
+    async fn restore_within(&self, server_timeout: Duration) -> SessionRestoreResult {
         let (session, generation) = {
-            let _guard = self.lock().await;
+            let guard = self.lock().await;
             if let Some(existing) = self.snapshot() {
                 (existing, self.generation())
             } else {
@@ -667,18 +730,14 @@ impl SessionManager {
                     }
                 };
                 info!("Restoring session");
-                let refreshed = tokio::time::timeout(
-                    RESTORE_TIMEOUT,
-                    self.call_refresh(&stored.server_url, &stored.refresh_token),
+                let rotated = tokio::time::timeout(
+                    server_timeout,
+                    self.rotate_on_task(&guard, Session::from_stored(&stored), Rotation::Restore),
                 )
                 .await;
-                let tokens = match refreshed {
-                    Ok(Ok(tokens)) => tokens,
+                let session = match rotated {
+                    Ok(Ok(session)) => session,
                     Ok(Err(SessionError::Expired)) => {
-                        info!("Stored login was rejected by the server");
-                        if let Err(e) = self.store.clear(&stored.server_url) {
-                            warn!(error = %e, "Could not remove the stored login from the OS keyring");
-                        }
                         return SessionRestoreResult::empty(Some("session_expired"));
                     }
                     Ok(Err(e)) => {
@@ -686,16 +745,10 @@ impl SessionManager {
                         return SessionRestoreResult::empty(Some("network_error"));
                     }
                     Err(_) => {
-                        warn!("Session restore timed out; keeping the stored login");
+                        warn!("Session restore timed out; a late answer is still committed");
                         return SessionRestoreResult::empty(Some("network_error"));
                     }
                 };
-                let session = Session::from_tokens(&stored.server_url, &tokens, None);
-                self.persist(&session);
-                self.set_session(Some(session.clone()), true);
-                let mut auth = self.legacy.write().await;
-                auth.server_url = Some(session.server_url.clone());
-                auth.access_token = Some(session.access_token.clone());
                 (session, self.generation())
             }
         };
@@ -1256,6 +1309,46 @@ mod tests {
         // A short timeout dropped users on the login screen on a slow start
         // and could abandon a refresh the server was already rotating.
         assert!(RESTORE_TIMEOUT >= Duration::from_secs(15));
+    }
+
+    #[tokio::test]
+    async fn restore_timed_out_rotation_still_commits() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::with_session(&server.uri(), "rt-old"));
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .and(body_json(json!({"refresh_token": "rt-old"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(tokens("at-2", "rt-2"))
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .and(header("authorization", "Bearer at-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(me()))
+            .mount(&server)
+            .await;
+        let m = manager(&store);
+
+        // The caller gives up while the server is already rotating: the old
+        // refresh token is revoked the moment the server answers.
+        let first = m.restore_within(Duration::from_millis(50)).await;
+        assert!(first.user.is_none());
+        assert_eq!(first.error_reason.as_deref(), Some("network_error"));
+
+        // The retry waits for the orphaned rotation and finds the new session
+        // instead of sending the revoked token again (`.expect(1)`).
+        let second = m.restore().await;
+        assert_eq!(second.user.unwrap()["username"], json!("alice"));
+        assert_eq!(store.get().unwrap().refresh_token, "rt-2");
+        assert_eq!(m.auth_info().unwrap().access_token, "at-2");
+        let auth = m.legacy_auth().read().await;
+        assert_eq!(auth.access_token.as_deref(), Some("at-2"));
+        assert_eq!(auth.server_url.as_deref(), Some(server.uri().as_str()));
     }
 
     #[tokio::test]
