@@ -22,7 +22,7 @@ once per OS before a release and record the result in the table at the bottom.
 ## Windows
 
 - [ ] Install the package from the CI artifact (SmartScreen: "More info" then "Run anyway" for unsigned builds)
-- [ ] Launch the app; the login screen shows the dev stack address (the `KAIKU_SERVER_URL` override, if set)
+- [ ] With `KAIKU_SERVER_URL` set, launch the app and sign in; sign-in works against the dev stack and DevTools → Network shows requests to that address
 - [ ] Log in with a test user
 - [ ] Quit completely, restart: still logged in, no login screen
 - [ ] Quit, turn the network off, start the app: "Can't reach the server" screen with retry instead of the login screen; turn the network on: logged in without typing the password
@@ -46,7 +46,7 @@ once per OS before a release and record the result in the table at the bottom.
 ## Linux
 
 - [ ] Install the package from the CI artifact (AppImage: `chmod +x`; or the `.deb`/`.rpm` via the package manager)
-- [ ] Launch the app; the login screen shows the dev stack address (the `KAIKU_SERVER_URL` override, if set)
+- [ ] With `KAIKU_SERVER_URL` set, launch the app and sign in; sign-in works against the dev stack and DevTools → Network shows requests to that address
 - [ ] Log in with a test user
 - [ ] Quit completely, restart: still logged in, no login screen
 - [ ] Quit, turn the network off, start the app: "Can't reach the server" screen with retry instead of the login screen; turn the network on: logged in without typing the password
@@ -72,7 +72,7 @@ once per OS before a release and record the result in the table at the bottom.
 ## macOS
 
 - [ ] Install the package from the CI artifact (Gatekeeper: right-click, Open, or `xattr -d com.apple.quarantine` for unsigned builds)
-- [ ] Launch the app; the login screen shows the dev stack address (the `KAIKU_SERVER_URL` override, if set)
+- [ ] With `KAIKU_SERVER_URL` set, launch the app and sign in; sign-in works against the dev stack and DevTools → Network shows requests to that address
 - [ ] Log in with a test user
 - [ ] Quit completely, restart: still logged in, no login screen
 - [ ] Quit, turn the network off, start the app: "Can't reach the server" screen with retry instead of the login screen; turn the network on: logged in without typing the password
