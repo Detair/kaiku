@@ -430,11 +430,14 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()),
     );
 
-    // Spawn task to handle Redis pub/sub
+    // Spawn task to handle Redis pub/sub. The socket owns the subscriber client
+    // so cleanup can `QUIT` it: fred keeps the connection (and its
+    // subscriptions) alive after the last handle is dropped.
+    let subscriber = new_subscriber_client(&state.redis);
     let (ready_tx, ready_rx) = oneshot::channel();
     let (start_tx, start_rx) = oneshot::channel();
     let mut pubsub_handle: tokio::task::JoinHandle<PubsubExit> = tokio::spawn(handle_pubsub(
-        state.redis.clone(),
+        subscriber.clone(),
         HandlePubsubParams {
             tx: tx.clone(),
             subscribed_channels: subscribed_channels.clone(),
@@ -450,41 +453,36 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
     // `Ready` promises that the socket's subscriptions are live, so wait for
     // the pub/sub task before announcing it.
-    let pubsub_ready = match tokio::time::timeout(PUBSUB_READY_TIMEOUT, ready_rx).await {
-        Ok(Ok(())) => true,
-        Ok(Err(_)) => {
-            warn!("Pub/sub pipeline failed before ready: user={}", user_id);
-            false
-        }
-        Err(_) => {
-            warn!("Pub/sub pipeline not ready in time: user={}", user_id);
-            false
-        }
-    };
-
     // Why the socket ends, if that warrants a Close frame (see `close_code`).
     let mut exit: Option<PubsubExit> = None;
 
-    if !pubsub_ready {
-        exit = Some(PubsubExit::SubscribeFailed);
-    } else if let Err(err) = async {
-        // `Ready` is the first frame: queue it, then let the pub/sub task start
-        // forwarding (events published meanwhile wait in its receiver).
-        send_outbound(
-            &tx,
-            OutboundMsg::Event(ServerEvent::Ready {
-                user_id,
-                server_time: chrono::Utc::now(),
-            }),
-        )
-        .await?;
-        let _ = start_tx.send(());
-        send_presence_snapshot(&state, user_id, &tx).await
+    match tokio::time::timeout(PUBSUB_READY_TIMEOUT, ready_rx).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            // The pub/sub task returned before `ready`: keep its real reason.
+            let reason = (&mut pubsub_handle)
+                .await
+                .unwrap_or(PubsubExit::StreamEnded);
+            warn!(
+                "Pub/sub pipeline failed before ready ({:?}): user={}",
+                reason, user_id
+            );
+            exit = Some(reason);
+        }
+        Err(_) => {
+            warn!("Pub/sub pipeline not ready in time: user={}", user_id);
+            exit = Some(PubsubExit::SubscribeFailed);
+        }
     }
-    .await
-    {
-        exit = Some(err.into());
-    } else {
+
+    // On a setup failure there is no `Ready`; the socket is closed below.
+    if exit.is_none() {
+        if let Err(err) = send_ready_and_snapshot(&state, user_id, &tx, start_tx).await {
+            exit = Some(err.into());
+        }
+    }
+
+    if exit.is_none() {
         // Per-connection mutable state for rate limiting and deduplication
         let mut msg_state = ClientMessageState::default();
 
@@ -578,6 +576,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     // Cleanup
     pubsub_handle.abort();
     sender_handle.abort();
+    // Close the subscriber connection on every path (including ConnectFailed
+    // and setup failures); bounded so a hung Valkey cannot hold the task.
+    let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, subscriber.quit()).await;
 
     // Free per-peer voice rate-limit buckets in case the socket dropped without
     // an explicit VoiceLeave (ping timeout, TCP drop, app crash). The explicit
@@ -672,6 +673,27 @@ async fn close_and_flush(
         }
     };
     let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, flush).await;
+}
+
+/// Queue `Ready` as the socket's first frame, release the pub/sub forwarder
+/// (`start`; events published meanwhile wait in its receiver), then send the
+/// friends' presence snapshot.
+async fn send_ready_and_snapshot(
+    state: &AppState,
+    user_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+    start: oneshot::Sender<()>,
+) -> Result<(), OutboundSendError> {
+    send_outbound(
+        tx,
+        OutboundMsg::Event(ServerEvent::Ready {
+            user_id,
+            server_time: chrono::Utc::now(),
+        }),
+    )
+    .await?;
+    let _ = start.send(());
+    send_presence_snapshot(state, user_id, tx).await
 }
 
 /// Send the friends' presence snapshot (status, activity, custom status).
@@ -1259,20 +1281,20 @@ impl PubsubExit {
 
 /// Handle Redis pub/sub messages.
 ///
+/// `subscriber` is created and later `QUIT` by the socket (see `handle_socket`).
+///
 /// Fires `ready` once the `channel:*` pattern subscription and all per-user
 /// subscriptions have succeeded (any failure returns `SubscribeFailed`), then waits for `start`
 /// (sent by the socket after it queued `Ready`) and forwards messages until the pipeline stops.
 /// The returned [`PubsubExit`] says why.
 async fn handle_pubsub(
-    redis: Client,
+    subscriber: Client,
     params: HandlePubsubParams,
     ready: oneshot::Sender<()>,
     start: oneshot::Receiver<()>,
 ) -> PubsubExit {
-    // Create a subscriber client
-    let subscriber = new_subscriber_client(&redis);
-
-    // Connect (fred 8.x returns JoinHandle)
+    // Connect the socket-owned subscriber client (`connect` spawns fred's
+    // connection task; the socket `QUIT`s the client during cleanup).
     let _connect_handle = subscriber.connect();
 
     if let Err(e) = subscriber.wait_for_connect().await {

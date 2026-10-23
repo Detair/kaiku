@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use fred::interfaces::ClientLike;
+use fred::interfaces::{ClientLike, PubsubInterface};
 use futures::{SinkExt, StreamExt};
 use sqlx::PgPool;
 use tokio_tungstenite::tungstenite::Message;
@@ -16,6 +16,10 @@ use super::helpers::{
     spawn_test_server, ws_connect, TestApp, TestServer,
 };
 
+/// Upper bound for awaited WebSocket events. Generous because the full suite
+/// runs many servers in parallel; tests finish as soon as the event arrives.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[sqlx::test]
 async fn ws_message_posted_after_ready_is_delivered(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
@@ -28,12 +32,12 @@ async fn ws_message_posted_after_ready_is_delivered(pool: PgPool) {
     let token_b = generate_access_token(&app.config, user_b);
 
     let mut ws_b = ws_connect(&server, &token_b).await;
-    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws_b, "ready", EVENT_TIMEOUT).await;
     let subscribe = serde_json::json!({ "type": "subscribe", "channel_id": dm }).to_string();
     ws_b.send(Message::Text(subscribe.into()))
         .await
         .expect("send subscribe");
-    next_ws_event(&mut ws_b, "subscribed", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws_b, "subscribed", EVENT_TIMEOUT).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/messages/channel/{dm}", server.url))
@@ -48,7 +52,7 @@ async fn ws_message_posted_after_ready_is_delivered(pool: PgPool) {
         resp.status()
     );
 
-    let ev = next_ws_event(&mut ws_b, "message_new", Duration::from_secs(5)).await;
+    let ev = next_ws_event(&mut ws_b, "message_new", EVENT_TIMEOUT).await;
     assert_eq!(ev["message"]["content"], "hello");
 }
 
@@ -66,7 +70,7 @@ async fn ws_user_event_published_right_after_ready_is_delivered(pool: PgPool) {
     let token = generate_access_token(&app.config, user);
 
     let mut ws = ws_connect(&server, &token).await;
-    next_ws_event(&mut ws, "ready", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
 
     let channel_id = Uuid::now_v7();
     broadcast_to_user(
@@ -80,7 +84,7 @@ async fn ws_user_event_published_right_after_ready_is_delivered(pool: PgPool) {
     .await
     .expect("publish user event");
 
-    let ev = next_ws_event(&mut ws, "channel_read", Duration::from_secs(5)).await;
+    let ev = next_ws_event(&mut ws, "channel_read", EVENT_TIMEOUT).await;
     assert_eq!(ev["channel_id"], channel_id.to_string());
 
     redis.quit().await.expect("quit test Valkey client");
@@ -116,7 +120,7 @@ async fn ws_ready_is_first_frame_while_events_are_published(pool: PgPool) {
     });
 
     let mut ws = ws_connect(&server, &token).await;
-    let first = tokio::time::timeout(Duration::from_secs(5), async {
+    let first = tokio::time::timeout(EVENT_TIMEOUT, async {
         loop {
             match ws.next().await {
                 Some(Ok(Message::Text(text))) => {
@@ -133,7 +137,7 @@ async fn ws_ready_is_first_frame_while_events_are_published(pool: PgPool) {
     assert_eq!(first["type"], "ready", "first frame was {first}");
 
     // Events published around setup still arrive (after `ready`).
-    next_ws_event(&mut ws, "channel_read", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws, "channel_read", EVENT_TIMEOUT).await;
 
     publisher.abort();
     redis.quit().await.expect("quit test Valkey client");
@@ -147,7 +151,7 @@ async fn ws_ready_carries_server_time(pool: PgPool) {
     let token = generate_access_token(&app.config, user);
 
     let mut ws = ws_connect(&server, &token).await;
-    let ready = next_ws_event(&mut ws, "ready", Duration::from_secs(5)).await;
+    let ready = next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
     let t = chrono::DateTime::parse_from_rfc3339(ready["server_time"].as_str().unwrap()).unwrap();
     assert!(
         (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
@@ -189,15 +193,15 @@ async fn first_dm_is_pushed_and_auto_subscribed(pool: PgPool) {
     let token_b = generate_access_token(&app.config, user_b);
 
     let mut ws_a = ws_connect(&server, &token_a).await;
-    next_ws_event(&mut ws_a, "ready", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws_a, "ready", EVENT_TIMEOUT).await;
     let mut ws_b = ws_connect(&server, &token_b).await;
-    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws_b, "ready", EVENT_TIMEOUT).await;
 
     let (status, dm) = post_dm(&server, &token_a, &[user_b]).await;
     assert_eq!(status, 201, "POST /api/dm failed: {dm}");
     let dm_id: Uuid = dm["id"].as_str().unwrap().parse().unwrap();
 
-    let ev = next_ws_event(&mut ws_b, "dm_created", Duration::from_secs(5)).await;
+    let ev = next_ws_event(&mut ws_b, "dm_created", EVENT_TIMEOUT).await;
     assert_eq!(ev["channel"]["id"], dm_id.to_string());
     assert_eq!(ev["channel"]["participants"].as_array().unwrap().len(), 2);
 
@@ -220,7 +224,7 @@ async fn first_dm_is_pushed_and_auto_subscribed(pool: PgPool) {
     assert_eq!(&ev["channel"], entry);
 
     // The creator's own sockets (other devices) are told as well.
-    let ev_a = next_ws_event(&mut ws_a, "dm_created", Duration::from_secs(5)).await;
+    let ev_a = next_ws_event(&mut ws_a, "dm_created", EVENT_TIMEOUT).await;
     assert_eq!(ev_a["channel"]["id"], dm_id.to_string());
 
     // A posts a message; B receives it without ever sending "subscribe".
@@ -237,7 +241,7 @@ async fn first_dm_is_pushed_and_auto_subscribed(pool: PgPool) {
         resp.status()
     );
 
-    let msg = next_ws_event(&mut ws_b, "message_new", Duration::from_secs(5)).await;
+    let msg = next_ws_event(&mut ws_b, "message_new", EVENT_TIMEOUT).await;
     assert_eq!(msg["channel_id"], dm_id.to_string());
     assert_eq!(msg["message"]["content"], "first");
 }
@@ -257,7 +261,7 @@ async fn existing_dm_does_not_emit_dm_created(pool: PgPool) {
     assert_eq!(status, 201, "POST /api/dm failed: {first}");
 
     let mut ws_b = ws_connect(&server, &token_b).await;
-    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws_b, "ready", EVENT_TIMEOUT).await;
 
     // The existing API answers 201 with the same channel for an existing DM.
     let (status, again) = post_dm(&server, &token_a, &[user_b]).await;
@@ -270,7 +274,7 @@ async fn existing_dm_does_not_emit_dm_created(pool: PgPool) {
     let (user_c, _) = create_test_user(&pool).await;
     let (status, group) = post_dm(&server, &token_a, &[user_b, user_c]).await;
     assert_eq!(status, 201, "POST /api/dm failed: {group}");
-    let ev = next_ws_event(&mut ws_b, "dm_created", Duration::from_secs(5)).await;
+    let ev = next_ws_event(&mut ws_b, "dm_created", EVENT_TIMEOUT).await;
     assert_eq!(ev["channel"]["id"], group["id"]);
 }
 
@@ -288,16 +292,63 @@ async fn group_dm_is_pushed_to_every_participant(pool: PgPool) {
     let token_c = generate_access_token(&app.config, user_c);
 
     let mut ws_b = ws_connect(&server, &token_b).await;
-    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws_b, "ready", EVENT_TIMEOUT).await;
     let mut ws_c = ws_connect(&server, &token_c).await;
-    next_ws_event(&mut ws_c, "ready", Duration::from_secs(5)).await;
+    next_ws_event(&mut ws_c, "ready", EVENT_TIMEOUT).await;
 
     let (status, dm) = post_dm(&server, &token_a, &[user_b, user_c]).await;
     assert_eq!(status, 201, "POST /api/dm failed: {dm}");
 
     for ws in [&mut ws_b, &mut ws_c] {
-        let ev = next_ws_event(ws, "dm_created", Duration::from_secs(5)).await;
+        let ev = next_ws_event(ws, "dm_created", EVENT_TIMEOUT).await;
         assert_eq!(ev["channel"]["id"], dm["id"]);
         assert_eq!(ev["channel"]["participants"].as_array().unwrap().len(), 3);
     }
+}
+
+/// Number of Valkey connections subscribed to `channel` (`PUBSUB NUMSUB`).
+async fn numsub(redis: &fred::clients::Client, channel: &str) -> i64 {
+    let reply: Vec<fred::types::Value> = redis.pubsub_numsub(channel).await.expect("PUBSUB NUMSUB");
+    reply
+        .get(1)
+        .and_then(fred::types::Value::as_i64)
+        .expect("NUMSUB count")
+}
+
+/// Closing a socket must close its per-socket Valkey subscriber connection.
+/// Counting subscribers of the test user's own `user:{id}` channel keeps this
+/// independent of other tests running in parallel.
+#[sqlx::test]
+async fn ws_close_releases_valkey_subscriber(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    let user_channel = vc_server::ws::channels::user_events(user);
+
+    let mut ws = ws_connect(&server, &token).await;
+    next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
+    assert_eq!(numsub(&redis, &user_channel).await, 1, "subscriber live");
+
+    ws.close(None).await.expect("close socket");
+    drop(ws);
+
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let count = numsub(&redis, &user_channel).await;
+        if count == 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "per-socket subscriber still connected after close ({count} subscriber(s) on {user_channel})"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    redis.quit().await.expect("quit test Valkey client");
 }

@@ -375,7 +375,7 @@ async fn pending_user_websocket_refused(pool: PgPool) {
 
     let mut ws = ws_connect(&server, &user_token).await;
     let mut saw_error = false;
-    let close_code = tokio::time::timeout(Duration::from_secs(5), async {
+    let close_code = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             match ws.next().await {
                 Some(Ok(Message::Text(text))) => {
