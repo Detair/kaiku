@@ -513,7 +513,6 @@ async fn subscribe_to_existing_tracks(
             match room
                 .track_router
                 .create_subscriber_track(*other_id, *source_type, peer, track)
-                .await
             {
                 Ok(local_track) => {
                     match peer

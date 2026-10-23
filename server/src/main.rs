@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
         || (std::env::var("AWS_ACCESS_KEY_ID").is_ok()
             && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok());
     let s3 = if has_s3_credentials {
-        match chat::S3Client::new(&config).await {
+        match chat::S3Client::new(&config) {
             Ok(client) => {
                 // Verify bucket access
                 match client.health_check().await {

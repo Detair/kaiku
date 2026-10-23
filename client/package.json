@@ -27,12 +27,12 @@
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "blurhash": "^2.0.5",
-    "dompurify": "^3.4.11",
+    "dompurify": "^3.4.17",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.3",
-    "mermaid": "^11.15.0",
+    "mermaid": "^11.16.1",
     "qrcode": "^1.5.4",
-    "solid-js": "^1.9.11",
+    "solid-js": "^1.9.17",
     "uplot": "^1.6.32"
   },
   "devDependencies": {
@@ -56,21 +56,25 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.2",
     "unocss": "^66.6.8",
-    "vite": "^8.0.16",
+    "vite": "^8.1.6",
     "vite-plugin-solid": "^2.11.11",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "picomatch": "^4.0.4",
     "rollup": "^4.60.3",
     "flatted": "^3.4.2",
-    "brace-expansion": "^5.0.6",
+    "brace-expansion": "^5.0.12",
     "lodash-es": "^4.18.1",
     "defu": "^6.1.7",
-    "postcss": "^8.5.10",
+    "postcss": "^8.5.23",
     "uuid": "^11.1.1",
-    "dompurify": "^3.4.11",
-    "undici": "^7.28.0",
-    "@babel/core": "^7.29.6"
+    "dompurify": "^3.4.17",
+    "undici": "^7.29.1",
+    "@babel/core": "^7.29.6",
+    "source-map-js": "^1.2.2",
+    "browserslist": "^4.28.7",
+    "baseline-browser-mapping": "^2.11.0",
+    "@humanfs/node": "^0.16.8"
   }
 }
