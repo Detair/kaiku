@@ -1,7 +1,7 @@
 /**
  * Security Settings
  *
- * Shows E2EE backup status, MFA (TOTP) management, and clipboard protection settings.
+ * Shows E2EE backup status (only when E2EE is enabled), MFA (TOTP) management, and clipboard protection settings.
  */
 
 import {
@@ -13,6 +13,7 @@ import {
   lazy,
 } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { isE2EEEnabled } from "@/lib/featureFlags";
 import {
   AlertTriangle,
   Check,
@@ -57,7 +58,12 @@ interface SecuritySettingsProps {
 }
 
 const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
+  const e2eeEnabled = isE2EEEnabled();
   const [backupStatus] = createResource<BackupStatus>(async () => {
+    // Encryption backup is hidden while E2EE is off (v1.0); skip the lookup.
+    if (!e2eeEnabled) {
+      return { has_backup: false, backup_created_at: null, version: null };
+    }
     try {
       return await invoke<BackupStatus>("get_backup_status");
     } catch {
@@ -248,7 +254,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
     <div class="space-y-6">
       <h3 class="text-lg font-semibold text-text-primary">Security</h3>
 
-      {/* Backup Status Card */}
+      {/* Backup Status Card (E2EE only) */}
+      <Show when={e2eeEnabled}>
       <div class="bg-surface-base rounded-xl p-4">
         <div class="flex items-start gap-4">
           <div
@@ -296,8 +303,10 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         </div>
       </div>
 
+      </Show>
+
       {/* Warning Banner (if no backup) */}
-      <Show when={!backupStatus()?.has_backup && !backupStatus.loading}>
+      <Show when={e2eeEnabled && !backupStatus()?.has_backup && !backupStatus.loading}>
         <div class="flex items-center gap-3 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl">
           <AlertTriangle class="w-5 h-5 text-yellow-400 flex-shrink-0" />
           <p class="text-sm text-yellow-200">

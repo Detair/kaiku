@@ -10,7 +10,7 @@ Solid.js signal-based state management. Each store manages a domain-specific sli
 
 - `auth.ts` - User authentication state and session management
 - `websocket.ts` - WebSocket connection and event routing
-- `messages.ts` - Message history per channel, E2EE encrypt/decrypt routing (Olm 1:1 + Megolm group)
+- `messages.ts` - Message history per channel, legacy E2EE decrypt routing (sending removed for v1.0)
 - `channels.ts` - Channel list and selection
 - `guilds.ts` - Guild/server list and active selection
 - `voice.ts` - Voice connection state and participants

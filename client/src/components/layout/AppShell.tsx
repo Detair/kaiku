@@ -30,6 +30,7 @@ import ServerRail from "./ServerRail";
 import Sidebar from "./Sidebar";
 import MobileDrawer from "./MobileDrawer";
 import MobileHeader from "./MobileHeader";
+import ConnectionIndicator from "./ConnectionIndicator";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 
 const ScreenShareViewer = lazy(
@@ -109,6 +110,9 @@ const AppShell: Component<AppShellProps> = (props) => {
       <main class="flex-1 flex flex-col min-w-0 bg-surface-layer1 relative border-l border-border-solid">
         {props.children}
       </main>
+
+      {/* Realtime connection state (fixed overlay, desktop and mobile) */}
+      <ConnectionIndicator />
 
       {/* Screen Share Viewer (Portal overlay) */}
       <LazyErrorBoundary name="ScreenShareViewer">

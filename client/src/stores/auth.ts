@@ -52,28 +52,7 @@ const [authState, setAuthState] = createStore<AuthState>({
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
 
-// WebSocket reconnection listener (registered once globally to prevent leaks)
-let wsReconnectListenerRegistered = false;
-
-function registerWebSocketReconnectListener() {
-  if (typeof window !== "undefined" && !wsReconnectListenerRegistered) {
-    try {
-      const handler = () => {
-        console.log("[Auth] WebSocket reconnected, clearing error message");
-        setAuthState("error", null);
-      };
-      window.addEventListener("ws-reconnected", handler);
-      wsReconnectListenerRegistered = true;
-      console.log("[Auth] WebSocket reconnection listener registered");
-    } catch (e) {
-      console.error(
-        "[Auth] Failed to register WebSocket reconnect listener:",
-        e,
-      );
-      // Non-critical, continue
-    }
-  }
-}
+const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 // Session-expired listener (registered once globally to prevent leaks)
 let sessionExpiredListenerRegistered = false;
@@ -90,6 +69,15 @@ function registerSessionExpiredListener() {
     const success = await tauri.refreshAccessToken();
     if (success) {
       console.log("[Kaiku:Auth] Silent retry: success — session recovered");
+      // The browser reconnect supervisor stops when it reports an expired
+      // session; restart it (no-op while it is still running).
+      if (!isTauri) {
+        try {
+          await wsConnect();
+        } catch (err) {
+          console.error("[Auth] WebSocket reconnect after session recovery failed:", err);
+        }
+      }
       return;
     }
 
@@ -136,15 +124,13 @@ export async function initAuth(): Promise<void> {
     if (result.user) {
       setAuthState({
         user: result.user,
+        serverUrl: tauri.getServerUrl() || null,
         isLoading: false,
         isInitialized: true,
       });
 
       // Initialize WebSocket listeners and presence in parallel (independent)
       await Promise.all([initWebSocket(), initPresence()]);
-
-      // Register WebSocket reconnection listener (once globally)
-      registerWebSocketReconnectListener();
 
       // Connect WebSocket and sync preferences in parallel (independent)
       await Promise.all([
@@ -227,9 +213,6 @@ export async function login(
 
     // Initialize WebSocket listeners and presence in parallel (independent)
     await Promise.all([initWebSocket(), initPresence()]);
-
-    // Register WebSocket reconnection listener (once globally)
-    registerWebSocketReconnectListener();
 
     // Connect WebSocket and sync preferences in parallel (independent)
     await Promise.all([
@@ -365,7 +348,6 @@ export async function loginWithOidc(
 
     // Initialize WebSocket listeners and presence in parallel (independent)
     await Promise.all([initWebSocket(), initPresence()]);
-    registerWebSocketReconnectListener();
 
     // Connect WebSocket and sync preferences in parallel (independent)
     await Promise.all([

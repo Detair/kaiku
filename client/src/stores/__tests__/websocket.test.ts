@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   wsConnect: vi.fn(),
@@ -10,6 +10,9 @@ vi.mock("@/lib/tauri", () => ({
   getBrowserWebSocket: vi.fn(),
   wsStatus: vi.fn(),
   wsSend: vi.fn(),
+  wsPing: vi.fn(),
+  setBrowserSocketHooks: vi.fn(),
+  ensureFreshAccessToken: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("@/stores/auth", () => ({
@@ -104,6 +107,7 @@ import {
   refreshUnreadStateAfterReconnect,
 } from "../websocket";
 import { refreshChannelsForGuild } from "@/stores/channels";
+import { handlePreferencesUpdated } from "@/stores/preferences";
 import { guildsState } from "@/stores/guilds";
 import { loadDMs } from "@/stores/dms";
 
@@ -119,6 +123,11 @@ describe("websocket store", () => {
     setTypingState({ byChannel: {} });
   });
 
+  afterEach(async () => {
+    // Stop the reconnect supervisor a test may have started.
+    await disconnect();
+  });
+
   describe("connect", () => {
     it("connects successfully", async () => {
       vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
@@ -129,13 +138,38 @@ describe("websocket store", () => {
       // Status is set to "connecting" before await
     });
 
+    it("connect() while the supervisor is already running does not run recovery", async () => {
+      vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
+      await connect();
+      setWsState("subscribedChannels", new Set(["ch-1"]));
+
+      await connect();
+
+      expect(tauri.wsConnect).toHaveBeenCalledTimes(1);
+      expect(tauri.wsSubscribe).not.toHaveBeenCalled();
+      expect(loadDMs).not.toHaveBeenCalled();
+    });
+
+    it("connect() while a retry is pending does not fake a connection", async () => {
+      vi.mocked(tauri.wsConnect).mockRejectedValueOnce(new Error("down"));
+      await expect(connect()).rejects.toThrow("down");
+      expect(wsState.status).toBe("reconnecting");
+      setWsState("subscribedChannels", new Set(["ch-1"]));
+
+      await connect();
+
+      expect(wsState.status).toBe("reconnecting");
+      expect(tauri.wsSubscribe).not.toHaveBeenCalled();
+    });
+
     it("sets error on failure", async () => {
       vi.mocked(tauri.wsConnect).mockRejectedValue(
         new Error("Connection failed"),
       );
 
       await expect(connect()).rejects.toThrow("Connection failed");
-      expect(wsState.status).toBe("disconnected");
+      // Browser mode keeps retrying with backoff after a failed first attempt.
+      expect(wsState.status).toBe("reconnecting");
       expect(wsState.error).toBe("Connection failed");
     });
   });
@@ -310,6 +344,73 @@ describe("websocket store", () => {
       vi.mocked(loadDMs).mockRejectedValueOnce(new Error("network"));
 
       await expect(refreshUnreadStateAfterReconnect()).resolves.toBeUndefined();
+    });
+  });
+
+  describe("browser reconnect", () => {
+    type Hooks = { onClose(intentional: boolean): void; onFrame(): void };
+    const lastHooks = (): Hooks => {
+      const calls = vi.mocked(tauri.setBrowserSocketHooks).mock.calls;
+      return calls[calls.length - 1][0] as Hooks;
+    };
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    it("isConnected() is false after the browser socket closes", async () => {
+      vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
+      vi.mocked(tauri.getBrowserWebSocket).mockReturnValue(
+        new EventTarget() as unknown as WebSocket,
+      );
+
+      await connect();
+      expect(isConnected()).toBe(true);
+
+      lastHooks().onClose(false);
+
+      expect(isConnected()).toBe(false);
+      expect(wsState.status).toBe("reconnecting");
+    });
+
+    it("one inbound frame after two reconnects is handled once", async () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const sockets = [new EventTarget(), new EventTarget(), new EventTarget()];
+      let current = 0;
+      vi.mocked(tauri.wsConnect).mockImplementation(async () => {
+        current = vi.mocked(tauri.wsConnect).mock.calls.length - 1;
+      });
+      vi.mocked(tauri.getBrowserWebSocket).mockImplementation(
+        () => sockets[current] as unknown as WebSocket,
+      );
+
+      await connect();
+      lastHooks().onClose(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      lastHooks().onClose(false);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(tauri.wsConnect).toHaveBeenCalledTimes(3);
+      expect(current).toBe(2);
+      expect(isConnected()).toBe(true);
+
+      const frame = () =>
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "preferences_updated",
+            preferences: {},
+            updated_at: "2026-10-22T00:00:00Z",
+          }),
+        });
+      sockets[2].dispatchEvent(frame());
+      // Old sockets must not carry a stale handler either.
+      sockets[0].dispatchEvent(frame());
+      sockets[1].dispatchEvent(frame());
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(handlePreferencesUpdated).toHaveBeenCalledTimes(1);
     });
   });
 });

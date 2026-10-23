@@ -91,6 +91,7 @@ export {
   HttpError,
   httpRequest,
   refreshAccessToken,
+  ensureFreshAccessToken,
   type SessionRestoreResult,
   type AuthResult,
 } from "./common";

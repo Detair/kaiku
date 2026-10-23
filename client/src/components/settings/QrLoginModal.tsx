@@ -11,6 +11,8 @@ import { X, Smartphone } from "lucide-solid";
 import QRCode from "qrcode";
 import { qrLoginCreate } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
+import { buildQrLoginUri } from "@/lib/qrLogin";
+import { t } from "@/i18n";
 
 interface QrLoginModalProps {
   serverUrl: string;
@@ -39,8 +41,10 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
     setQrDataUrl(null);
 
     try {
+      // Validate the server address before consuming a single-use token.
+      buildQrLoginUri(props.serverUrl, "");
       const response = await qrLoginCreate();
-      const uri = `kaiku://qr/login?server=${encodeURIComponent(props.serverUrl)}&token=${response.token}`;
+      const uri = buildQrLoginUri(props.serverUrl, response.token);
       const dataUrl = await QRCode.toDataURL(uri, {
         width: 256,
         margin: 2,
@@ -60,14 +64,17 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
         });
       }, 1000);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      showToast({
-        type: "error",
-        title: "QR Code Failed",
-        message: "Could not generate QR login code.",
-        duration: 5000,
-      });
+      if (err instanceof Error && err.message === "QR_NO_SERVER") {
+        setError(t("qr.noServer"));
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+        showToast({
+          type: "error",
+          title: t("qr.failedTitle"),
+          message: t("qr.failedMessage"),
+          duration: 5000,
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -94,7 +101,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
           <div class="flex items-center gap-3">
             <Smartphone class="w-5 h-5 text-accent-primary" />
             <h2 class="text-lg font-semibold text-text-primary">
-              Link Mobile Device
+              {t("qr.title")}
             </h2>
           </div>
           <button
@@ -108,7 +115,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
         {/* Content */}
         <div class="p-6 flex flex-col items-center gap-4">
           <p class="text-sm text-text-secondary text-center">
-            Scan this code with the Kaiku mobile app to sign in
+            {t("qr.instructions")}
           </p>
 
           <Show
@@ -123,7 +130,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
                       onClick={generateQr}
                       class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                     >
-                      Try again
+                      {t("qr.tryAgain")}
                     </button>
                   </div>
                 }
@@ -137,7 +144,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
             <div class="p-4 bg-white rounded-xl">
               <img
                 src={qrDataUrl()!}
-                alt="QR Login Code"
+                alt={t("qr.alt")}
                 class="w-56 h-56"
               />
             </div>
@@ -146,18 +153,18 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
               when={secondsLeft() > 0}
               fallback={
                 <div class="text-center">
-                  <p class="text-sm text-text-secondary mb-2">Code expired</p>
+                  <p class="text-sm text-text-secondary mb-2">{t("qr.expired")}</p>
                   <button
                     onClick={generateQr}
                     class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                   >
-                    Generate new code
+                    {t("qr.generateNew")}
                   </button>
                 </div>
               }
             >
               <p class="text-sm text-text-secondary">
-                Expires in {secondsLeft()}s
+                {t("qr.expiresIn", { seconds: secondsLeft() })}
               </p>
             </Show>
           </Show>
@@ -169,7 +176,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
             onClick={props.onClose}
             class="w-full px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary text-sm"
           >
-            Close
+            {t("common.close")}
           </button>
         </div>
       </div>

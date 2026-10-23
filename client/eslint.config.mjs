@@ -1,6 +1,7 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import solid from "eslint-plugin-solid/configs/typescript";
+import { I18N_GUARDED_FILES, I18N_SELECTORS } from "./eslint.i18n.mjs";
 
 export default [
   js.configs.recommended,
@@ -24,6 +25,15 @@ export default [
       // defeats this rule's static analysis — the JSX ref={} binding form
       // assigns the variable at render time, which ESLint can't trace.
       "no-unassigned-vars": "off",
+    },
+  },
+  {
+    files: I18N_GUARDED_FILES,
+    // No type-aware rules are enabled, so skip the project lookup; this also lets
+    // the lint test run on a virtual path that is not in any tsconfig.
+    languageOptions: { parserOptions: { project: false } },
+    rules: {
+      "no-restricted-syntax": ["error", ...I18N_SELECTORS],
     },
   },
   {
