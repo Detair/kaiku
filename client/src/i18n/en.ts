@@ -16,6 +16,8 @@ export const en = {
   "connection.reconnecting": "Reconnecting…",
   "connection.offline": "You're offline. New messages will appear when you're back online.",
   "connection.retryNow": "Retry now",
+  "auth.notRememberedTitle": "Login not saved",
+  "auth.notRemembered": "Kaiku couldn't save your login on this computer, so you'll need to sign in again next time.",
   "qr.title": "Link Mobile Device",
   "qr.instructions": "Scan this code with the Kaiku mobile app to sign in",
   "qr.alt": "QR login code",

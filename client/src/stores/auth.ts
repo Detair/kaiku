@@ -23,6 +23,7 @@ import { initPreferences } from "./preferences";
 import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
 
 // Auth state interface
 interface AuthState {
@@ -64,9 +65,13 @@ function registerSessionExpiredListener() {
     // Ignore if not authenticated
     if (!authState.user) return;
 
-    console.warn("[Kaiku:Auth] Session expired: attempting silent retry...");
-
-    const success = await tauri.refreshAccessToken();
+    // Native mode: Rust already tried the refresh and the server rejected it;
+    // retrying would only report the same expiry again.
+    let success = false;
+    if (!isTauri) {
+      console.warn("[Kaiku:Auth] Session expired: attempting silent retry...");
+      success = await tauri.refreshAccessToken();
+    }
     if (success) {
       console.log("[Kaiku:Auth] Silent retry: success — session recovered");
       // The browser reconnect supervisor stops when it reports an expired
@@ -108,6 +113,51 @@ function registerSessionExpiredListener() {
 // Register immediately — the listener checks auth state internally
 registerSessionExpiredListener();
 
+/** Native mode: follow token refreshes and expiry from the Rust session. */
+async function initNativeSession(): Promise<void> {
+  if (!isTauri) return;
+  try {
+    await tauri.initNativeAuthEvents();
+  } catch (err) {
+    console.error("[Auth] Native auth event setup failed:", err);
+  }
+}
+
+/** Tell the user when the OS keyring could not keep their login. */
+function warnIfNotRemembered(result: tauri.AuthResult): void {
+  if (result.persisted === false) {
+    showToast({
+      type: "warning",
+      title: t("auth.notRememberedTitle"),
+      message: t("auth.notRemembered"),
+    });
+  }
+}
+
+/** Shared post-login setup: WebSocket, presence, preferences, idle detection. */
+async function startSessionServices(context: string): Promise<void> {
+  // Initialize WebSocket listeners and presence in parallel (independent)
+  await Promise.all([initWebSocket(), initPresence()]);
+
+  // Connect WebSocket and sync preferences in parallel (independent)
+  await Promise.all([
+    wsConnect().catch((wsErr) => {
+      console.error("WebSocket connection failed:", wsErr);
+      setAuthState({
+        error: "Real-time messaging temporarily unavailable. Reconnecting...",
+      });
+    }),
+    initPreferences()
+      .then(() => console.log(`[Auth] Preferences initialized after ${context}`))
+      .catch((prefErr) => {
+        console.error("[Auth] Preferences initialization failed:", prefErr);
+      }),
+  ]);
+
+  // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
+  initIdleDetection();
+}
+
 // Actions
 
 /**
@@ -119,6 +169,7 @@ export async function initAuth(): Promise<void> {
   setAuthState({ isLoading: true, error: null });
 
   try {
+    await initNativeSession();
     const result = await tauri.getCurrentUser();
 
     if (result.user) {
@@ -199,7 +250,9 @@ export async function login(
   setAuthState({ isLoading: true, error: null });
 
   try {
+    await initNativeSession();
     const result = await tauri.login(serverUrl, username, password, mfaCode);
+    warnIfNotRemembered(result);
     setAuthState({
       user: result.user,
       serverUrl,
@@ -265,6 +318,7 @@ export async function register(
   setAuthState({ isLoading: true, error: null });
 
   try {
+    await initNativeSession();
     const result = await tauri.register(
       serverUrl,
       username,
@@ -272,6 +326,7 @@ export async function register(
       email,
       displayName,
     );
+    warnIfNotRemembered(result);
     setAuthState({
       user: result.user,
       serverUrl,
@@ -309,26 +364,44 @@ export async function register(
 }
 
 /**
- * Complete OIDC login after receiving tokens from the callback.
- * This is called after the OIDC provider redirects back with tokens.
+ * Complete a native (Tauri) OIDC login: Rust already holds the tokens and
+ * returned the user.
+ */
+export async function completeNativeOidcLogin(
+  serverUrl: string,
+  result: tauri.AuthResult,
+): Promise<void> {
+  await initNativeSession();
+  warnIfNotRemembered(result);
+  setAuthState({
+    user: result.user,
+    serverUrl: tauri.getServerUrl() || serverUrl,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    setupRequired: result.setup_required,
+    mfaRequired: false,
+    sessionExpired: false,
+  });
+  await startSessionServices("OIDC login");
+}
+
+/**
+ * Complete a browser OIDC login after receiving the access token from the
+ * callback page. The refresh token is an HttpOnly cookie, so
+ * `_refreshToken` is ignored.
  */
 export async function loginWithOidc(
   serverUrl: string,
   accessToken: string,
-  refreshToken: string | undefined,
+  _refreshToken: string | undefined,
   expiresIn: number,
   setupRequired: boolean = false,
 ): Promise<void> {
   setAuthState({ isLoading: true, error: null });
 
   try {
-    // Store tokens
-    await tauri.oidcCompleteLogin(
-      serverUrl,
-      accessToken,
-      refreshToken,
-      expiresIn,
-    );
+    await tauri.oidcCompleteLogin(serverUrl, accessToken, expiresIn);
 
     // Fetch the current user with the new token
     const result = await tauri.getCurrentUser();

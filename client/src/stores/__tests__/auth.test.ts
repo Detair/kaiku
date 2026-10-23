@@ -264,7 +264,7 @@ describe("auth store", () => {
   describe("login", () => {
     it("logs in and inits subsystems", async () => {
       const user = createUser();
-      vi.mocked(tauri.login).mockResolvedValue({ user, setup_required: false });
+      vi.mocked(tauri.login).mockResolvedValue({ user, setup_required: false, password_change_required: false });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
@@ -283,6 +283,7 @@ describe("auth store", () => {
       vi.mocked(tauri.login).mockResolvedValue({
         user: createUser(),
         setup_required: true,
+        password_change_required: false,
       });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
@@ -313,6 +314,7 @@ describe("auth store", () => {
       vi.mocked(tauri.register).mockResolvedValue({
         user,
         setup_required: false,
+        password_change_required: false,
       });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
@@ -329,6 +331,7 @@ describe("auth store", () => {
       vi.mocked(tauri.register).mockResolvedValue({
         user: createUser(),
         setup_required: true,
+        password_change_required: false,
       });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);

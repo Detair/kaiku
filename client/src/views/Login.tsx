@@ -3,6 +3,7 @@ import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   login,
   loginWithOidc,
+  completeNativeOidcLogin,
   authState,
   clearError,
   setAuthState,
@@ -112,14 +113,8 @@ const Login: Component = () => {
       const result = await oidcAuthorize(serverUrl(), provider.slug);
 
       if (result.mode === "tauri") {
-        // Tauri: tokens returned directly from the command
-        await loginWithOidc(
-          serverUrl(),
-          result.tokens.access_token,
-          result.tokens.refresh_token,
-          result.tokens.expires_in || 900,
-          result.tokens.setup_required ?? false,
-        );
+        // Tauri: Rust kept the tokens and returned the user
+        await completeNativeOidcLogin(serverUrl(), result.result);
         navigate("/", { replace: true });
         setOidcLoading(null);
         return;

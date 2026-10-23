@@ -64,7 +64,6 @@ export type {
   ChannelPin,
   ServerSettings,
   OidcProvider,
-  OidcLoginResult,
   AuthSettingsResponse,
   AuthMethodsConfig,
   AdminOidcProvider,
@@ -92,8 +91,13 @@ export {
   httpRequest,
   refreshAccessToken,
   ensureFreshAccessToken,
+  getAuthContext,
+  setNativeAuthInfo,
+  initNativeAuthEvents,
   type SessionRestoreResult,
   type AuthResult,
+  type NativeAuthInfo,
+  type AuthContext,
 } from "./common";
 
 // Domain command modules

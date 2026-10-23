@@ -1,9 +1,10 @@
 /**
  * Shared helpers for the Tauri command wrapper layer.
  *
- * Contains browser state (server URL, access/refresh tokens), HTTP request
- * helpers, upload authentication, file-size validation, and the Tauri/browser
- * mode detection flag. Other domain modules in this directory import from
+ * Contains browser state (server URL, access token), the native session
+ * cache (native mode: tokens are owned by Rust, the webview only sees the
+ * access token), HTTP request helpers, upload authentication, file-size
+ * validation, and the Tauri/browser mode detection flag. Other domain modules in this directory import from
  * here rather than duplicating state.
  */
 
@@ -24,21 +25,38 @@ export const isTauri =
 export interface SessionRestoreResult {
   user: User | null;
   error_reason: string | null;
+  password_change_required?: boolean;
 }
 
-/** Auth response type from server. */
+/** Auth response type from server (browser mode). */
 export interface AuthResponse {
   access_token: string;
-  refresh_token?: string;
   expires_in: number;
   token_type: string;
   setup_required: boolean;
+  password_change_required?: boolean;
 }
 
 /** Auth result type (returned by login/register). */
 export interface AuthResult {
   user: User;
   setup_required: boolean;
+  password_change_required: boolean;
+  /** Native mode: `false` when the OS keyring could not store the login. */
+  persisted?: boolean;
+}
+
+/** Native mode: base URL and access token provided by the Rust session. */
+export interface NativeAuthInfo {
+  server_url: string;
+  access_token: string;
+  expires_at_ms: number;
+}
+
+/** Base URL and access token for a request, in either mode. */
+export interface AuthContext {
+  baseUrl: string;
+  accessToken: string | null;
 }
 
 // ============================================================================
@@ -198,7 +216,6 @@ export function validateFileSize(
 export const browserState = {
   serverUrl: typeof window !== "undefined" ? window.location.origin : "",
   accessToken: null as string | null,
-  refreshToken: null as string | null,
   tokenExpiresAt: null as number | null,
   refreshTimer: null as ReturnType<typeof setTimeout> | null,
 };
@@ -238,13 +255,73 @@ export function clearBrowserTokens() {
     browserState.refreshTimer = null;
   }
   browserState.accessToken = null;
-  browserState.refreshToken = null;
   browserState.tokenExpiresAt = null;
 }
 
+// ============================================================================
+// Native session cache (Tauri)
+// ============================================================================
+
+let nativeAuthInfo: NativeAuthInfo | null = null;
+
+/** Cache (or clear) the auth info handed out by the Rust session. */
+export function setNativeAuthInfo(info: NativeAuthInfo | null): void {
+  nativeAuthInfo = info;
+  if (info) {
+    browserState.serverUrl = info.server_url;
+  }
+}
+
+/** Fetch the current auth info from Rust and cache it. */
+export async function loadNativeAuthInfo(): Promise<NativeAuthInfo | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const info = await invoke<NativeAuthInfo | null>("get_auth_info");
+  setNativeAuthInfo(info);
+  return info;
+}
+
+/** Base URL and access token for the next request. */
+export async function getAuthContext(): Promise<AuthContext> {
+  if (!isTauri) {
+    return {
+      baseUrl: getServerUrl().replace(/\/+$/, ""),
+      accessToken: browserState.accessToken,
+    };
+  }
+  const info = nativeAuthInfo ?? (await loadNativeAuthInfo());
+  return {
+    baseUrl: (info?.server_url ?? getServerUrl()).replace(/\/+$/, ""),
+    accessToken: info?.access_token ?? null,
+  };
+}
+
+let nativeAuthEventsInitialized = false;
+
 /**
- * Schedule automatic token refresh before expiration.
- * Refreshes 1 minute before the token expires.
+ * Follow the Rust refresh scheduler: new access tokens update the cache, an
+ * ended session becomes `kaiku:session-expired`. Idempotent.
+ */
+export async function initNativeAuthEvents(): Promise<void> {
+  if (!isTauri || nativeAuthEventsInitialized) return;
+  nativeAuthEventsInitialized = true;
+  const { listen } = await import("@tauri-apps/api/event");
+  await listen<NativeAuthInfo>("auth:token_refreshed", (event) => {
+    setNativeAuthInfo(event.payload);
+  });
+  await listen("auth:session_expired", () => {
+    setNativeAuthInfo(null);
+    window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+  });
+}
+
+/** Wait after a transient refresh failure (offline, 5xx) before retrying. */
+const REFRESH_RETRY_MS = 30_000;
+
+/**
+ * Schedule automatic token refresh before expiration (browser mode).
+ * Refreshes 1 minute before the token expires. Only a rejected refresh
+ * (401/403, tokens cleared) ends the session; transient failures keep the
+ * tokens and retry after 30 s.
  */
 export function scheduleTokenRefresh() {
   // Clear any existing timer
@@ -266,20 +343,30 @@ export function scheduleTokenRefresh() {
     `[Auth] Scheduling token refresh in ${Math.round(refreshIn / 1000)}s`,
   );
 
-  browserState.refreshTimer = setTimeout(async () => {
-    const success = await refreshAccessToken();
-    if (!success) {
-      console.warn("[Auth] Scheduled token refresh failed — clearing session");
-      clearBrowserTokens();
-      window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
-    }
+  browserState.refreshTimer = setTimeout(() => {
+    void runScheduledRefresh();
   }, refreshIn);
+}
+
+async function runScheduledRefresh(): Promise<void> {
+  browserState.refreshTimer = null;
+  if (await refreshAccessToken()) return;
+  if (browserState.accessToken === null) {
+    console.warn("[Auth] Scheduled token refresh rejected — session ended");
+    window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+    return;
+  }
+  console.warn("[Auth] Scheduled token refresh failed — retrying in 30s");
+  if (browserState.refreshTimer) clearTimeout(browserState.refreshTimer);
+  browserState.refreshTimer = setTimeout(() => {
+    void runScheduledRefresh();
+  }, REFRESH_RETRY_MS);
 }
 
 /**
  * Refresh the access token. Browser mode sends a credentialed request so the
- * server reads the HttpOnly cookie; Tauri mode sends the refresh token in the
- * request body.
+ * server reads the HttpOnly cookie; native mode asks the Rust session
+ * (`refresh_session`), which owns the refresh token.
  *
  * Single-flight: concurrent callers share one in-flight request. The server
  * rotates the refresh token on every use, so two parallel refreshes race —
@@ -299,32 +386,40 @@ export function refreshAccessToken(): Promise<boolean> {
   return refreshInFlight;
 }
 
+/**
+ * Native refresh. `null` from Rust means the session has ended; a rejected
+ * invoke (offline, 5xx) is transient and keeps the cached token.
+ */
+async function doRefreshNative(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const info = await invoke<NativeAuthInfo | null>("refresh_session");
+    if (!info) {
+      console.warn("[Auth] Session ended (refresh rejected)");
+      setNativeAuthInfo(null);
+      window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+      return false;
+    }
+    setNativeAuthInfo(info);
+    return true;
+  } catch (error) {
+    console.error("[Auth] Token refresh error:", error);
+    return false;
+  }
+}
+
 async function doRefreshAccessToken(): Promise<boolean> {
+  if (isTauri) return doRefreshNative();
   try {
     console.log("[Auth] Refreshing access token...");
 
     const baseUrl = browserState.serverUrl.replace(/\/+$/, "");
 
-    // Tauri clients send refresh_token in body; browser sends nothing
-    // (server reads the HttpOnly cookie automatically).
-    const fetchOptions: RequestInit = {
+    // The server reads the HttpOnly refresh cookie.
+    const response = await fetch(`${baseUrl}/auth/refresh`, {
       method: "POST",
       credentials: "include",
-    };
-    if (isTauri) {
-      const refreshToken = browserState.refreshToken;
-      if (!refreshToken) {
-        clearBrowserTokens();
-        return false;
-      }
-
-      fetchOptions.headers = { "Content-Type": "application/json" };
-      fetchOptions.body = JSON.stringify({
-        refresh_token: refreshToken,
-      });
-    }
-
-    const response = await fetch(`${baseUrl}/auth/refresh`, fetchOptions);
+    });
 
     if (!response.ok) {
       console.error("[Auth] Token refresh failed:", response.status);
@@ -358,14 +453,6 @@ async function doRefreshAccessToken(): Promise<boolean> {
     // Store access token in memory; browser mode relies on HttpOnly cookie
     // for the refresh token so we don't keep it in JS-accessible memory.
     browserState.accessToken = data.access_token;
-    if (isTauri) {
-      if (!data.refresh_token) {
-        console.error("[Auth] Token refresh returned empty refresh token");
-        clearBrowserTokens();
-        return false;
-      }
-      browserState.refreshToken = data.refresh_token;
-    }
     browserState.tokenExpiresAt = Date.now() + data.expires_in * 1000;
 
     console.log("[Auth] Token refreshed successfully");
@@ -394,6 +481,16 @@ async function doRefreshAccessToken(): Promise<boolean> {
 export async function ensureFreshAccessToken(
   minValidityMs = 60_000,
 ): Promise<boolean> {
+  if (isTauri) {
+    if (
+      nativeAuthInfo &&
+      nativeAuthInfo.expires_at_ms - Date.now() >= minValidityMs
+    ) {
+      return true;
+    }
+    if (await refreshAccessToken()) return true;
+    return nativeAuthInfo !== null;
+  }
   const expiresAt = browserState.tokenExpiresAt;
   if (
     browserState.accessToken &&
@@ -459,62 +556,63 @@ export class HttpError extends Error {
   }
 }
 
-/** HTTP helper for browser mode. */
+const AUTH_ENDPOINTS = new Set(["/auth/login", "/auth/register", "/auth/refresh"]);
+
+/**
+ * HTTP helper for both modes. Base URL and bearer come from
+ * `getAuthContext()`. A 401 from a non-auth endpoint triggers one refresh and
+ * one retry.
+ */
 export async function httpRequest<T>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const token = browserState.accessToken;
+  return sendHttpRequest<T>(method, path, body, false);
+}
+
+async function sendHttpRequest<T>(
+  method: string,
+  path: string,
+  body: unknown,
+  isRetry: boolean,
+): Promise<T> {
+  const { baseUrl, accessToken: token } = await getAuthContext();
 
   const headers: Record<string, string> = {};
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
 
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  // Tauri clients send the refresh token via header so the server can identify
-  // the current session (it cannot read HttpOnly cookies like browsers do).
-  if (isTauri && browserState.refreshToken) {
-    headers["X-Refresh-Token"] = browserState.refreshToken;
-  }
-
-  // Remove trailing slash from serverUrl and ensure path starts with /
-  const baseUrl = browserState.serverUrl.replace(/\/+$/, "");
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
-
-  const isAuthEndpoint =
-    cleanPath === "/auth/login" ||
-    cleanPath === "/auth/register" ||
-    cleanPath === "/auth/refresh";
+  const isAuthEndpoint = AUTH_ENDPOINTS.has(cleanPath);
 
   if (token && !isAuthEndpoint) {
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const logHeaders = { ...headers };
-  if (logHeaders.Authorization) {
-    logHeaders.Authorization = "Bearer [REDACTED]";
-  }
-  if (logHeaders["X-Refresh-Token"]) {
-    logHeaders["X-Refresh-Token"] = "[REDACTED]";
-  }
-
   console.log(`[httpRequest] ${method} ${path}`, {
     hasToken: !!token,
     hasAuthHeader: !!headers["Authorization"],
-    headers: JSON.stringify(logHeaders),
   });
 
-  const response = await fetch(`${baseUrl}${cleanPath}`, {
+  const init: RequestInit = {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
-    credentials: "include",
-  });
+  };
+  // Cookies (refresh cookie, CSRF) only exist in browser mode.
+  if (!isTauri) {
+    init.credentials = "include";
+  }
+
+  const response = await fetch(`${baseUrl}${cleanPath}`, init);
+
+  if (response.status === 401 && !isAuthEndpoint && !isRetry) {
+    if (await refreshAccessToken()) {
+      return sendHttpRequest<T>(method, path, body, true);
+    }
+  }
 
   if (!response.ok) {
     let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
@@ -588,32 +686,17 @@ export async function fetchApi<T>(
 }
 
 /**
- * Get auth credentials for fetch-based uploads.
- * In Tauri mode, retrieves from Rust backend state.
- * In browser mode, reads from browserState/localStorage.
+ * Get auth credentials for fetch-based uploads (both modes).
  */
 export async function getUploadAuth(): Promise<{
   token: string | null;
   baseUrl: string;
 }> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const authInfo = await invoke<[string, string] | null>("get_auth_info");
-    if (!authInfo) {
-      throw new Error("Not authenticated");
-    }
-    return {
-      baseUrl: authInfo[0].replace(/\/+$/, ""),
-      token: authInfo[1],
-    };
+  const { baseUrl, accessToken } = await getAuthContext();
+  if (isTauri && !accessToken) {
+    throw new Error("Not authenticated");
   }
-  return {
-    token: browserState.accessToken,
-    baseUrl: (browserState.serverUrl || window.location.origin).replace(
-      /\/+$/,
-      "",
-    ),
-  };
+  return { token: accessToken, baseUrl };
 }
 
 // ============================================================================
@@ -636,5 +719,6 @@ export function getServerUrl(): string {
  * Get the current access token (for use in URLs that can't use headers).
  */
 export function getAccessToken(): string | null {
+  if (isTauri) return nativeAuthInfo?.access_token ?? null;
   return browserState.accessToken;
 }

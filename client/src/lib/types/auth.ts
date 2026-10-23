@@ -32,14 +32,6 @@ export interface OidcProvider {
   icon_hint: string | null;
 }
 
-/** Result from Tauri OIDC login flow (tokens returned directly). */
-export interface OidcLoginResult {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-  setup_required: boolean;
-}
-
 /** Which auth methods are enabled on the server. */
 export interface AuthMethodsConfig {
   local: boolean;
