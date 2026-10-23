@@ -904,7 +904,9 @@ function handleNativeAuthRejected(): void {
   console.warn("[WS] Server rejected a fresh token — ending the session");
   supervisor?.stop();
   nativeDriver.close();
-  window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+  // Clears the cached bearer and shares the dedupe flag with the other
+  // expiry paths, so exactly one `kaiku:session-expired` fires.
+  tauri.expireNativeSession();
 }
 
 function getSupervisor(): ConnectionSupervisor {

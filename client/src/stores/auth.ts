@@ -180,10 +180,10 @@ async function startSessionServices(
 // Actions
 
 // Session restore retry (stored login, server unreachable at start).
-// Backoff doubles from 2 s and is capped at 30 s; `online` and the window
+// Backoff doubles from 5 s and is capped at 30 s; `online` and the window
 // becoming visible retry at once. Only the server rejecting the stored
 // login (`session_expired`) or the user choosing to sign in ends it.
-const RESTORE_RETRY_BASE_MS = 2_000;
+const RESTORE_RETRY_BASE_MS = 5_000;
 const RESTORE_RETRY_MAX_MS = 30_000;
 let restoreRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let restoreRetryAttempt = 0;
@@ -353,7 +353,9 @@ export async function login(
     await initNativeSession();
     const result = await tauri.login(serverUrl, username, password, mfaCode);
     warnIfNotRemembered(result);
+    stopRestoreRetry();
     setAuthState({
+      restorePending: false,
       user: result.user,
       serverUrl,
       isLoading: false,
@@ -408,7 +410,9 @@ export async function register(
       displayName,
     );
     warnIfNotRemembered(result);
+    stopRestoreRetry();
     setAuthState({
+      restorePending: false,
       user: result.user,
       serverUrl,
       isLoading: false,
@@ -438,7 +442,9 @@ export async function completeNativeOidcLogin(
 ): Promise<void> {
   await initNativeSession();
   warnIfNotRemembered(result);
+  stopRestoreRetry();
   setAuthState({
+    restorePending: false,
     user: result.user,
     serverUrl: tauri.getServerUrl() || serverUrl,
     isLoading: false,

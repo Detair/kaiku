@@ -1,30 +1,43 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listenMock, tauriMode } = vi.hoisted(() => ({
+const { listenMock, invokeMock, tauriMode } = vi.hoisted(() => ({
   listenMock: vi.fn(),
+  invokeMock: vi.fn(),
   tauriMode: { native: false },
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
   isTauri: () => tauriMode.native,
+  invoke: invokeMock,
 }));
 
-vi.mock("@/lib/tauri", () => ({
-  wsConnect: vi.fn(),
-  wsDisconnect: vi.fn(),
-  wsSubscribe: vi.fn(),
-  wsUnsubscribe: vi.fn(),
-  wsTyping: vi.fn(),
-  wsStopTyping: vi.fn(),
-  getBrowserWebSocket: vi.fn(),
-  wsStatus: vi.fn(),
-  wsSend: vi.fn(),
-  wsPing: vi.fn(),
-  wsReconnectNow: vi.fn().mockResolvedValue(undefined),
-  setBrowserSocketHooks: vi.fn(),
-  ensureFreshAccessToken: vi.fn().mockResolvedValue(true),
-}));
+vi.mock("@/lib/tauri", async () => {
+  // The real auth cache + session-expiry dedupe, so the test can observe them.
+  const common =
+    await vi.importActual<typeof import("@/lib/tauri/common")>(
+      "@/lib/tauri/common",
+    );
+  return {
+    expireNativeSession: common.expireNativeSession,
+    getAuthContext: common.getAuthContext,
+    setNativeAuthInfo: common.setNativeAuthInfo,
+    refreshAccessToken: common.refreshAccessToken,
+    wsConnect: vi.fn(),
+    wsDisconnect: vi.fn(),
+    wsSubscribe: vi.fn(),
+    wsUnsubscribe: vi.fn(),
+    wsTyping: vi.fn(),
+    wsStopTyping: vi.fn(),
+    getBrowserWebSocket: vi.fn(),
+    wsStatus: vi.fn(),
+    wsSend: vi.fn(),
+    wsPing: vi.fn(),
+    wsReconnectNow: vi.fn().mockResolvedValue(undefined),
+    setBrowserSocketHooks: vi.fn(),
+    ensureFreshAccessToken: vi.fn().mockResolvedValue(true),
+  };
+});
 
 vi.mock("@/stores/auth", () => ({
   currentUser: vi.fn(() => ({ id: "me", username: "me" })),
@@ -350,7 +363,9 @@ describe("websocket store", () => {
 
     it("subscribes the active guild's text channels after the refresh", async () => {
       const { channelsState } = await import("@/stores/channels");
-      const mutableChannels = channelsState as unknown as { channels: unknown[] };
+      const mutableChannels = channelsState as unknown as {
+        channels: unknown[];
+      };
       mutableGuilds.activeGuildId = "g1";
       // A channel created while offline shows up in the refreshed list.
       vi.mocked(refreshChannelsForGuild).mockImplementationOnce(async () => {
@@ -463,10 +478,12 @@ describe("websocket store", () => {
 
     beforeEach(async () => {
       listeners = new Map();
-      listenMock.mockReset().mockImplementation(async (name: string, cb: Listener) => {
-        listeners.set(name, cb);
-        return () => listeners.delete(name);
-      });
+      listenMock
+        .mockReset()
+        .mockImplementation(async (name: string, cb: Listener) => {
+          listeners.set(name, cb);
+          return () => listeners.delete(name);
+        });
       tauriMode.native = true;
       vi.resetModules();
       ws = await import("../websocket");
@@ -477,7 +494,9 @@ describe("websocket store", () => {
       const { messagesState } = await import("@/stores/messages");
       (channelsState as unknown as { channels: unknown[] }).channels = [];
       (guildsState as { activeGuildId: string | null }).activeGuildId = null;
-      (messagesState as unknown as { byChannel: Record<string, unknown[]> }).byChannel = {};
+      (
+        messagesState as unknown as { byChannel: Record<string, unknown[]> }
+      ).byChannel = {};
       await ws.initWebSocket();
     });
 
@@ -536,7 +555,11 @@ describe("websocket store", () => {
     });
 
     it("a server error event is shown as the connection error", async () => {
-      await fire("ws:server_event", { type: "error", code: "x", message: "Nope" });
+      await fire("ws:server_event", {
+        type: "error",
+        code: "x",
+        message: "Nope",
+      });
 
       expect(ws.wsState.error).toBe("Nope");
     });
@@ -558,7 +581,9 @@ describe("websocket store", () => {
 
       await fire("ws:connected");
 
-      const subscribed = vi.mocked(nativeTauri.wsSubscribe).mock.calls.map((c) => c[0]);
+      const subscribed = vi
+        .mocked(nativeTauri.wsSubscribe)
+        .mock.calls.map((c) => c[0]);
       expect(subscribed).toEqual(expect.arrayContaining(["t1", "t2"]));
       expect(subscribed).not.toContain("v1");
       expect(ws.wsState.subscribedChannels.has("t1")).toBe(true);
@@ -566,17 +591,22 @@ describe("websocket store", () => {
     });
 
     it("reconnect re-subscribes before reloading messages", async () => {
-      const { messagesState, loadInitialMessages } = await import("@/stores/messages");
+      const { messagesState, loadInitialMessages } =
+        await import("@/stores/messages");
       const order: string[] = [];
-      vi.mocked(nativeTauri.wsSubscribe).mockImplementation(async (id: string) => {
-        order.push(`subscribe:${id}`);
-      });
+      vi.mocked(nativeTauri.wsSubscribe).mockImplementation(
+        async (id: string) => {
+          order.push(`subscribe:${id}`);
+        },
+      );
       vi.mocked(loadInitialMessages).mockImplementation(async (id: string) => {
         order.push(`reload:${id}`);
       });
       await ws.connect();
       await ws.subscribeChannel("c1");
-      (messagesState as unknown as { byChannel: Record<string, unknown[]> }).byChannel = {
+      (
+        messagesState as unknown as { byChannel: Record<string, unknown[]> }
+      ).byChannel = {
         c1: [{ id: "m1" }],
       };
       order.length = 0;
@@ -590,7 +620,9 @@ describe("websocket store", () => {
     it("ws:auth_rejected stops reconnecting and reports an expired session", async () => {
       await ws.connect();
       await fire("ws:reconnecting", 1);
-      vi.mocked(nativeTauri.wsDisconnect).mockClear().mockResolvedValue(undefined);
+      vi.mocked(nativeTauri.wsDisconnect)
+        .mockClear()
+        .mockResolvedValue(undefined);
       const expired = vi.fn();
       window.addEventListener("kaiku:session-expired", expired);
       try {
@@ -604,6 +636,33 @@ describe("websocket store", () => {
         vi.mocked(nativeTauri.wsReconnectNow).mockClear();
         window.dispatchEvent(new Event("online"));
         expect(nativeTauri.wsReconnectNow).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener("kaiku:session-expired", expired);
+      }
+    });
+
+    it("auth_rejected then refresh_session → null reports expiry once and drops the bearer", async () => {
+      nativeTauri.setNativeAuthInfo({
+        server_url: "https://s.example",
+        access_token: "old-bearer",
+      } as never);
+      expect((await nativeTauri.getAuthContext()).accessToken).toBe(
+        "old-bearer",
+      );
+      invokeMock.mockResolvedValue(null);
+      vi.mocked(nativeTauri.wsDisconnect).mockResolvedValue(undefined);
+      const expired = vi.fn();
+      window.addEventListener("kaiku:session-expired", expired);
+      invokeMock.mockClear();
+      try {
+        await fire("ws:auth_rejected");
+        expect(await nativeTauri.refreshAccessToken()).toBe(false);
+
+        expect(expired).toHaveBeenCalledTimes(1);
+        invokeMock.mockResolvedValue(null); // get_auth_info reload
+        expect((await nativeTauri.getAuthContext()).accessToken).not.toBe(
+          "old-bearer",
+        );
       } finally {
         window.removeEventListener("kaiku:session-expired", expired);
       }

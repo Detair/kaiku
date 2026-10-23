@@ -349,9 +349,35 @@ describe("auth store", () => {
         expect(tauri.getCurrentUser).toHaveBeenCalledTimes(2);
       });
 
-      it("backoff doubles from 2 s and is capped at 30 s", () => {
+      it.each(["login", "register"] as const)(
+        "a successful %s while restore is pending stops the retry timer and listeners",
+        async (kind) => {
+          const user = createUser();
+          vi.mocked(tauri.getCurrentUser).mockResolvedValue(offline);
+          const result = { user, setup_required: false, password_change_required: false };
+          vi.mocked(tauri.login).mockResolvedValue(result);
+          vi.mocked(tauri.register).mockResolvedValue(result);
+
+          await initAuth();
+          expect(authState.restorePending).toBe(true);
+          const calls = vi.mocked(tauri.getCurrentUser).mock.calls.length;
+
+          if (kind === "login") await login("https://server.com", "a", "p");
+          else await register("https://server.com", "a", "p");
+
+          expect(authState.restorePending).toBe(false);
+          await vi.advanceTimersByTimeAsync(120_000);
+          window.dispatchEvent(new Event("online"));
+          document.dispatchEvent(new Event("visibilitychange"));
+          await vi.advanceTimersByTimeAsync(0);
+          expect(tauri.getCurrentUser).toHaveBeenCalledTimes(calls);
+          expect(vi.getTimerCount()).toBe(0);
+        },
+      );
+
+      it("backoff doubles from 5 s and is capped at 30 s", () => {
         expect([1, 2, 3, 4, 5, 6].map(restoreRetryDelayMs)).toEqual([
-          2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
+          5_000, 10_000, 20_000, 30_000, 30_000, 30_000,
         ]);
       });
     });

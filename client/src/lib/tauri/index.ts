@@ -93,6 +93,7 @@ export {
   ensureFreshAccessToken,
   getAuthContext,
   setNativeAuthInfo,
+  expireNativeSession,
   initNativeAuthEvents,
   type SessionRestoreResult,
   type AuthResult,
