@@ -364,6 +364,11 @@ offered, not the full download. Do the full test after publishing.
   the right key into Environment `release` (M2) and re-run the **whole** run
   (`gh run rerun <run-id>`): the bundles were signed with the wrong key.
   Nothing was published.
+- **`latest` points at an older release** (theoretical race: two final
+  releases reach `push-image` at nearly the same time, so each reads the other
+  as absent or older; the semver check in `push-image` prevents any other
+  regression). Set it by hand to the newest final version:
+  `docker buildx imagetools create -t ghcr.io/detair/kaiku-server:latest ghcr.io/detair/kaiku-server:<newest>`.
 - **Half-published run** (something public but the run failed afterwards,
   e.g. a manual image push): delete the draft and the GHCR version as in
   section 4, then use the next version.

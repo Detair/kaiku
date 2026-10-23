@@ -657,11 +657,6 @@ jobs:
     needs: [prepare-release, build-tauri, build-docker, build-android, publish-release]
     if: needs.prepare-release.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    # Serialize image publication across versions so two overlapping releases
-    # cannot race on `latest`.
-    concurrency:
-      group: release-image-publish
-      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -704,23 +699,20 @@ jobs:
             if [ "$tag" = "$SERVER_IMAGE:latest" ]; then
               # `latest` must never move backwards (e.g. a late 1.0.0 run
               # after 1.1.0 was published). The version tag is always pushed.
-              if docker pull "$tag" >"$RUNNER_TEMP/pull.log" 2>&1; then
+              if docker pull "$tag" >/dev/null 2>"$RUNNER_TEMP/pull.err"; then
                 current="$(docker image inspect "$tag" \
                   --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
-                if ! cmp="$(python3 scripts/release_version.py compare "$VERSION" "$current" 2>/dev/null)"; then
-                  echo "::warning::Current latest has unparseable version label '$current'; not moving latest"
-                  continue
-                fi
-                if [ "$cmp" -lt 0 ]; then
-                  echo "::warning::latest is at $current, newer than $VERSION; not moving latest"
-                  continue
-                fi
-              elif grep -qiE 'not found|manifest unknown|name unknown' "$RUNNER_TEMP/pull.log"; then
-                echo "latest does not exist yet; creating it"
+                decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --current "$current")"
+              elif [ "$(python3 scripts/latest_tag_decision.py classify "$RUNNER_TEMP/pull.err")" = "absent" ]; then
+                decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --absent)"
               else
-                cat "$RUNNER_TEMP/pull.log"
-                echo "::error::Cannot determine current latest"
+                cat "$RUNNER_TEMP/pull.err"
+                echo "::error::Cannot determine current latest (pull failed for a reason other than 'manifest unknown')"
                 exit 1
+              fi
+              if [ "$decision" != "push" ]; then
+                echo "::warning::Not moving latest (decision: $decision); see reason above"
+                continue
               fi
             fi
             docker tag kaiku-server:smoke "$tag"
