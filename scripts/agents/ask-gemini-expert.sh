@@ -21,4 +21,4 @@ file read, list and search tools.
 
 Question:
 $question"
-exec agy --mode plan --model "$model" --print-timeout 900s --print="$prompt"
+exec </dev/null agy --mode plan --model "$model" --print-timeout 900s --print="$prompt"

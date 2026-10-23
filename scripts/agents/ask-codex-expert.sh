@@ -20,5 +20,5 @@ $question"
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 codex exec -s read-only -m "$model" -c "model_reasoning_effort=\"$effort\"" \
-  -C "$repo_root" -o "$out" "$prompt" >/dev/null 2>&1
+  -C "$repo_root" -o "$out" "$prompt" </dev/null >/dev/null 2>&1
 cat "$out"

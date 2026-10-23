@@ -72,3 +72,7 @@ directory. Briefs live in `docs/developer-guide/agents/experts/`.
   Codex (`flock` + `timeout 2400`); Kimi when OpenCode Go has quota.
 - A Codex run once hung for ~7 h holding the shared lock and blocked all
   sessions: always wrap Codex in `timeout 2400`.
+- Root cause of the 7 h hang: `codex exec` in a background shell waited on
+  stdin ("Reading additional input from stdin..."). Always redirect stdin for
+  headless CLIs: `codex exec … </dev/null`, `agy … </dev/null`,
+  `opencode run … </dev/null`.
