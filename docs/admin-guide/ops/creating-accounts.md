@@ -64,7 +64,18 @@ Until the user changes the password:
   `GET /auth/me` work;
 - every other API route answers `403` with error code
   `PASSWORD_CHANGE_REQUIRED`;
-- the realtime connection (WebSocket) is refused with close code `1008`.
+- the realtime connection (WebSocket) is refused. Clients that authenticate
+  with the `authenticate` frame get an `error` event `PASSWORD_CHANGE_REQUIRED`
+  and close code `1008`. Clients that send the token in the
+  `Sec-WebSocket-Protocol` header get the HTTP handshake refused with `403`
+  `PASSWORD_CHANGE_REQUIRED`. Clients treat both like any other auth problem:
+  they show the password-change screen and do not retry blindly.
 
 The new password must differ from the temporary one. As soon as it is set,
 `password_change_required` becomes `false` and the account works normally.
+
+**Which apps can do this:** the first-sign-in password change is built into
+the desktop and Android apps. The web client does not have a forced-change
+screen yet. A user who signs in there first sees errors until they change the
+password in one of the supported apps. Hand the new user the desktop or
+Android app for their first sign-in.

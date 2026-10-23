@@ -15,7 +15,10 @@
 
 ## Key Files
 
-- `mod.rs` — WebSocket upgrade handler, socket lifecycle, event routing, Redis pub/sub integration
+- `mod.rs` — module docs and re-exports
+- `handlers.rs` — upgrade handler (header and post-connect auth), socket lifecycle (`handle_socket`), `handle_client_message` dispatch, Redis pub/sub forwarder (`handle_pubsub`, `forward_pubsub_messages`), bounded sends (`send_outbound`)
+- `events.rs` — `ClientEvent` / `ServerEvent` / `OutboundMsg`, broadcast helpers, Redis channel names
+- `bot_gateway.rs`, `bot_events.rs` — separate WebSocket gateway for bots
 
 ## For AI Agents
 
@@ -24,16 +27,17 @@
 ### WebSocket Lifecycle
 
 **Connection Flow**:
-1. Client connects to `GET /ws?token={jwt_access_token}`
-2. Server validates JWT in query param (before WebSocket upgrade)
+1. Client connects to `GET /ws`, authenticating either with `Sec-WebSocket-Protocol: access_token.<jwt>` (validated *before* the upgrade) or by sending `{"type":"authenticate","token":…}` as the first frame (within 5 s after the upgrade)
+2. Auth refusals (see **Auth refusal signals** below): header auth answers with a plain HTTP status before the upgrade; frame auth answers on the socket
 3. Upgrade to WebSocket protocol
 4. Server updates user presence to `online` and spawns the message sender task (drains the outbound mpsc, writes to the WebSocket)
 5. Load friends, guild IDs and block sets
 6. Spawn the Redis pub/sub task (`handle_pubsub`); it fires a `ready` oneshot once `psubscribe("channel:*")` and all per-user `subscribe` calls have returned (every subscription is required: a failed `psubscribe` or any `subscribe` — user, admin, friend presence, guild — ends the pipeline with `SubscribeFailed`, so no `Ready` is sent and the socket closes with 1011)
 7. Wait for that `ready` signal (max 5 s; on timeout or early failure the socket is closed with **1011**)
 8. Queue `Ready { user_id, server_time }` (server_time = RFC 3339 UTC, taken when Ready is built; clients use it as the catch-up watermark) — so `Ready` always means "subscriptions are live" — then send the `start` oneshot; only then does the pub/sub task begin forwarding (events published in between wait in its broadcast receiver), so `Ready` is always the first frame. Then the friends' presence snapshot
+   - `Ready` guarantees that the socket's **Valkey** subscriptions are live. It does *not* mean the socket receives `channel:{id}` events yet: those are filtered by the socket's `subscribed_channels`, which is empty at `Ready`. A client only gets a channel's messages after its own `subscribe` for that channel was acknowledged with `subscribed`.
 9. Main loop (`select!`): client messages, server heartbeat, and the pub/sub task's exit
-10. On disconnect: Abort background tasks, set presence to `offline`
+10. On disconnect / any exit: abort background tasks, `QUIT` the socket's own subscriber client (bounded by 1 s; fred keeps the connection and its subscriptions alive if the client is merely dropped), set presence to `offline`
 
 **Pub/sub pipeline failure** (`PubsubExit`): the pub/sub task returns why it stopped. Every reason except `ClientGone` closes the socket with a Close frame (reason `"resync"`), giving the sender task at most 1 s to flush it:
 - `ConnectFailed`, `SubscribeFailed`, `StreamEnded`, `Lagged` → **1011** (server-side event pipeline failed). A subscriber reconnect counts as `StreamEnded`, because a plain fred client does not restore its subscriptions.
@@ -41,9 +45,23 @@
 - `ClientGone` → no Close frame (the socket is already going away)
 
 Clients treat 1011/1013 as "reconnect with backoff, then catch up" via the REST history endpoints. 1008 stays reserved for auth rejection.
+
+**Gap-free reconnect / catch-up order** (per channel the client shows):
+1. Reconnect and wait for `ready`.
+2. Send `subscribe` for the channel and wait for its `subscribed` ack. From then on, live `message_new` events for that channel are delivered.
+3. `GET /api/messages/channel/{id}?after=<last known message id>` (page until `next_cursor` is absent).
+4. Merge live events and the fetched page, **deduplicating by message id** (a message can arrive both ways).
+
+Fetching *before* `subscribed` leaves a gap: messages posted between the fetch and the subscription are neither in the page nor delivered live.
+
+**DMs after reconnect**: `DmCreated` auto-subscribes only sockets that are open when the DM is created, and that auto-subscribe sends no `subscribed` ack. After any reconnect the client must `GET /api/dm` and `subscribe` to its DM channels itself (then catch up as above).
 Clients must treat an abnormal close (1006) after a healthy session the same as 1011/1013 (reconnect + catch-up): a 1013 Close frame may never reach a stalled client.
 
-**Authentication**:
+**Auth refusal signals** (client contract): both mean "auth problem — refresh the token, or show login / the password-change screen; never retry blindly":
+- Header auth (`Sec-WebSocket-Protocol`): the handshake is refused with an HTTP status before any upgrade — `401` (invalid/revoked token, unknown user) or `403` with body `PASSWORD_CHANGE_REQUIRED` (forced password change pending). Clients see a failed handshake, not a close frame.
+- Frame auth (`authenticate` frame): a pending password change gets an `error` event with code `PASSWORD_CHANGE_REQUIRED`, then close **1008**; other auth failures close the socket.
+
+**Authentication** (illustrative; the real code lives in `handlers.rs`):
 ```rust
 // Query param validation (before upgrade)
 let claims = jwt::validate_access_token(&query.token, &state.config.jwt_secret)?;
@@ -53,7 +71,7 @@ let user_id = Uuid::parse_str(&claims.sub)?;
 ws.on_upgrade(move |socket| handle_socket(socket, state, user_id))
 ```
 
-**Why Query Param Auth**: Browsers cannot send custom headers in WebSocket upgrade request. Query param is standard workaround.
+**Why no query-param auth**: tokens in URLs leak into logs and history. Browsers cannot set custom headers on a WebSocket upgrade, so they use `Sec-WebSocket-Protocol` or the post-connect `authenticate` frame.
 
 ### Event Types
 
@@ -311,11 +329,11 @@ Router::new()
 
 ### Performance Optimization
 
-**Memory per Connection**:
-- `WebSocket` struct: ~1 KB
-- `mpsc::channel(100)`: ~10 KB (event buffer)
-- `subscribed_channels`: ~1 KB (HashSet of UUIDs)
-- **Total**: ~12 KB per connection (scalable to 10,000s of connections on modern server)
+**Memory per Connection** (estimate; `size_of` measured: `OutboundMsg` 128 B, fred `Message` 136 B):
+- Own Valkey subscriber client (`new_subscriber_client`): fred preallocates **every** notification broadcast channel (pub/sub, keyspace, errors, reconnect, connect, …) with `SUBSCRIBER_BROADCAST_CAPACITY` = 1024 slots. The pub/sub buffer alone is ~1024 × ~160 B ≈ 160 KB; all of them together are on the order of **0.5 MB per socket**. There is also one Valkey TCP connection per socket, and each one receives *all* server-wide `channel:*` traffic.
+- Outbound `mpsc::channel(256)`: allocated in 32-slot blocks, ~4 KB when idle, up to ~32 KB (plus event payloads) when full.
+- WebSocket, `subscribed_channels`, block sets, task stacks: a few KB.
+- **Total**: roughly **0.5–0.6 MB per connection**, dominated by the fred subscriber. This is fine for family or small-community scale (hundreds of sockets). Before scaling to many thousands, revisit it: lower the capacity, or share one subscriber per server instance and fan out in-process.
 
 **Latency Targets**:
 - Client → Server: <10ms (local processing)
