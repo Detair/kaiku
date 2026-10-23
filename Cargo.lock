@@ -12022,6 +12022,7 @@ dependencies = [
  "image",
  "infer",
  "init-tracing-opentelemetry",
+ "ipnet",
  "jsonwebtoken",
  "lettre",
  "mime_guess",

@@ -2,6 +2,10 @@
 
 use std::collections::HashSet;
 
+use tracing::warn;
+
+use super::ip::TrustedProxies;
+
 /// Configuration for the rate limiting system.
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
@@ -11,8 +15,8 @@ pub struct RateLimitConfig {
     pub redis_key_prefix: String,
     /// Whether to allow requests when Redis is unavailable
     pub fail_open: bool,
-    /// Whether to trust X-Forwarded-For headers
-    pub trust_proxy: bool,
+    /// Proxies whose forwarded headers are trusted (default: none)
+    pub trusted_proxies: TrustedProxies,
     /// IP addresses that bypass rate limiting
     pub allowlist: HashSet<String>,
     /// Per-category rate limits
@@ -83,7 +87,7 @@ impl Default for RateLimitConfig {
             // Security: fail_closed by default - reject requests when Redis unavailable
             // Set RATE_LIMIT_FAIL_OPEN=true only if availability > security for your use case
             fail_open: false,
-            trust_proxy: false,
+            trusted_proxies: TrustedProxies::default(),
             allowlist: HashSet::new(),
             limits: RateLimits::default(),
         }
@@ -167,7 +171,9 @@ impl RateLimitConfig {
     /// - `RATE_LIMIT_ENABLED`: Enable/disable rate limiting (default: true)
     /// - `RATE_LIMIT_PREFIX`: Redis key prefix (default: "canis:rl")
     /// - `RATE_LIMIT_FAIL_OPEN`: Allow requests when Redis unavailable (default: false)
-    /// - `RATE_LIMIT_TRUST_PROXY`: Trust X-Forwarded-For headers (default: false)
+    /// - `RATE_LIMIT_TRUSTED_PROXIES`: Comma-separated CIDRs/IPs of proxies whose
+    ///   `X-Forwarded-For`/`X-Real-IP` headers are trusted (default: none)
+    /// - `RATE_LIMIT_TRUST_PROXY`: Deprecated and ignored (logs a warning)
     /// - `RATE_LIMIT_ALLOWLIST`: Comma-separated IP allowlist
     /// - `RATE_LIMIT_AUTH_LOGIN`: Login limit as "`requests,window_secs`"
     /// - `RATE_LIMIT_AUTH_REGISTER`: Register limit as "`requests,window_secs`"
@@ -182,86 +188,118 @@ impl RateLimitConfig {
     /// - `RATE_LIMIT_WEBHOOK_EXECUTE`: Incoming webhook execution limit as "`requests,window_secs`"
     /// - `RATE_LIMIT_FAILED_AUTH`: Failed auth as "`max_failures,block_duration_secs,window_secs`"
     pub fn from_env() -> Self {
+        let vars: Vec<(String, String)> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("RATE_LIMIT_"))
+            .collect();
+        let refs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        Self::from_env_map(&refs)
+    }
+
+    /// Builds configuration from explicit key/value pairs (see [`Self::from_env`]).
+    pub(crate) fn from_env_map(vars: &[(&str, &str)]) -> Self {
+        let get = |name: &str| -> Option<String> {
+            vars.iter()
+                .rev()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| (*v).to_string())
+        };
         let mut config = Self::default();
 
-        if let Ok(val) = std::env::var("RATE_LIMIT_ENABLED") {
+        if let Some(val) = get("RATE_LIMIT_ENABLED") {
             config.enabled = val.parse().unwrap_or(true);
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_PREFIX") {
+        if let Some(val) = get("RATE_LIMIT_PREFIX") {
             config.redis_key_prefix = val;
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_FAIL_OPEN") {
+        if let Some(val) = get("RATE_LIMIT_FAIL_OPEN") {
             config.fail_open = val.parse().unwrap_or(false);
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_TRUST_PROXY") {
-            config.trust_proxy = val.parse().unwrap_or(false);
+        if let Some(val) = get("RATE_LIMIT_TRUSTED_PROXIES") {
+            let mut nets = Vec::new();
+            for entry in val.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+                match TrustedProxies::parse(entry) {
+                    Ok(t) => nets.push(t),
+                    Err(e) => warn!(entry, "RATE_LIMIT_TRUSTED_PROXIES entry skipped: {e}"),
+                }
+            }
+            config.trusted_proxies = TrustedProxies::from_parts(nets);
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_ALLOWLIST") {
+        if let Some(val) = get("RATE_LIMIT_TRUST_PROXY") {
+            if val.trim().eq_ignore_ascii_case("true") && config.trusted_proxies.is_empty() {
+                warn!(
+                    "RATE_LIMIT_TRUST_PROXY is deprecated and ignored: no proxy is trusted. \
+                     Set RATE_LIMIT_TRUSTED_PROXIES to the CIDR(s) of your reverse proxy"
+                );
+            } else {
+                warn!("RATE_LIMIT_TRUST_PROXY is deprecated and ignored; use RATE_LIMIT_TRUSTED_PROXIES");
+            }
+        }
+        if let Some(val) = get("RATE_LIMIT_ALLOWLIST") {
             config.allowlist = val.split(',').map(|s| s.trim().to_string()).collect();
         }
 
         // Parse per-category limits (format: "requests,window_secs")
-        if let Ok(val) = std::env::var("RATE_LIMIT_AUTH_LOGIN") {
+        if let Some(val) = get("RATE_LIMIT_AUTH_LOGIN") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.auth_login = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_AUTH_REGISTER") {
+        if let Some(val) = get("RATE_LIMIT_AUTH_REGISTER") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.auth_register = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_AUTH_PASSWORD_RESET") {
+        if let Some(val) = get("RATE_LIMIT_AUTH_PASSWORD_RESET") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.auth_password_reset = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_AUTH_OTHER") {
+        if let Some(val) = get("RATE_LIMIT_AUTH_OTHER") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.auth_other = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_WRITE") {
+        if let Some(val) = get("RATE_LIMIT_WRITE") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.write = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_SOCIAL") {
+        if let Some(val) = get("RATE_LIMIT_SOCIAL") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.social = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_READ") {
+        if let Some(val) = get("RATE_LIMIT_READ") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.read = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_WS_CONNECT") {
+        if let Some(val) = get("RATE_LIMIT_WS_CONNECT") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.ws_connect = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_WS_MESSAGE") {
+        if let Some(val) = get("RATE_LIMIT_WS_MESSAGE") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.ws_message = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_VOICE_JOIN") {
+        if let Some(val) = get("RATE_LIMIT_VOICE_JOIN") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.voice_join = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_SEARCH") {
+        if let Some(val) = get("RATE_LIMIT_SEARCH") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.search = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_WEBHOOK_EXECUTE") {
+        if let Some(val) = get("RATE_LIMIT_WEBHOOK_EXECUTE") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.webhook_execute = limit;
             }
         }
-        if let Ok(val) = std::env::var("RATE_LIMIT_FAILED_AUTH") {
+        if let Some(val) = get("RATE_LIMIT_FAILED_AUTH") {
             if let Some(limit) = parse_failed_auth_config(&val) {
                 config.limits.failed_auth = limit;
             }
@@ -319,8 +357,29 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.redis_key_prefix, "canis:rl");
         assert!(!config.fail_open);
-        assert!(!config.trust_proxy);
+        assert!(config.trusted_proxies.is_empty());
         assert!(config.allowlist.is_empty());
+    }
+
+    #[test]
+    fn legacy_trust_proxy_without_cidrs_trusts_nothing() {
+        let config = RateLimitConfig::from_env_map(&[("RATE_LIMIT_TRUST_PROXY", "true")]);
+        assert!(config.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn trusted_proxies_env_parsed_and_invalid_entries_skipped() {
+        let config = RateLimitConfig::from_env_map(&[(
+            "RATE_LIMIT_TRUSTED_PROXIES",
+            "10.42.0.0/16, bogus, 192.0.2.1",
+        )]);
+        assert!(config
+            .trusted_proxies
+            .contains("10.42.3.4".parse().unwrap()));
+        assert!(config
+            .trusted_proxies
+            .contains("192.0.2.1".parse().unwrap()));
+        assert!(!config.trusted_proxies.contains("8.8.8.8".parse().unwrap()));
     }
 
     #[test]

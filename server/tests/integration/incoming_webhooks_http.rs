@@ -812,7 +812,7 @@ async fn execute_rate_limit_returns_discord_429(pool: PgPool) {
             enabled: true,
             redis_key_prefix: format!("test:rl:{}", Uuid::new_v4()),
             fail_open: false,
-            trust_proxy: false,
+            trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
             allowlist: HashSet::new(),
             limits: RateLimits {
                 webhook_execute: LimitConfig {

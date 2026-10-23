@@ -23,6 +23,7 @@ categories = ["multimedia", "network-programming"]
 # Async Runtime
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+ipnet = "2"
 
 # Web Framework
 axum = { version = "0.8", features = ["ws", "multipart", "macros"] }

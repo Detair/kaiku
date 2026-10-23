@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **End-to-end encryption paused for 1.0**: End-to-end encryption setup is no longer offered and the DM padlock is removed; direct messages are protected in transit (TLS) and on the server, and end-to-end encryption will return in a later release.
 - Windows releases ship a single `-setup.exe` installer (MSI dropped)
+- Rate limiting now only trusts `X-Forwarded-For` from proxies listed in `RATE_LIMIT_TRUSTED_PROXIES`. `RATE_LIMIT_TRUST_PROXY` is no longer used — self-hosters behind a reverse proxy must set the new variable.
 - Faster first load: the Floki illustrations (login/onboarding/home) now ship as WebP instead of PNG (~15× smaller — the login hero dropped from 487 KB to 31 KB), and the login hero is preloaded before the app bundle parses so it paints sooner
 - Integration tests now use `#[sqlx::test]`'s per-test database isolation; the shared-pool model that produced sporadic Postgres deadlocks in CI is retired. Contributor-facing documentation is in `server/tests/AGENTS.md`.
 - Voice connections use dual PeerConnection architecture (publisher + subscriber) for reliable screen sharing and multi-user scalability

@@ -22,7 +22,8 @@ The rate limiting system is built on Valkey (a BSD-3-Clause licensed Redis fork)
 | `RATE_LIMIT_ENABLED` | `true` | Enable or disable rate limiting entirely |
 | `RATE_LIMIT_PREFIX` | `canis:rl` | Prefix for Valkey keys |
 | `RATE_LIMIT_FAIL_OPEN` | `true` | Allow requests when Valkey is unavailable |
-| `RATE_LIMIT_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` and `X-Real-IP` headers |
+| `RATE_LIMIT_TRUSTED_PROXIES` | (empty) | Comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted |
+| `RATE_LIMIT_TRUST_PROXY` | - | Deprecated and ignored; use `RATE_LIMIT_TRUSTED_PROXIES` |
 | `RATE_LIMIT_ALLOWLIST` | (empty) | Comma-separated list of IPs to bypass rate limiting |
 
 ### Per-Category Limits
@@ -167,12 +168,29 @@ For blocked IPs:
 
 ### Proxy Trust
 
-When `RATE_LIMIT_TRUST_PROXY=true`, the system checks headers in this order:
-1. `X-Forwarded-For` (first IP in the list)
-2. `X-Real-IP`
-3. Direct connection IP
+Forwarded headers are only honored when the direct TCP peer is a proxy you listed in `RATE_LIMIT_TRUSTED_PROXIES` (comma-separated CIDRs or bare IPs). Requests from any other peer use the peer address and their `X-Forwarded-For` / `X-Real-IP` headers are ignored. The default is empty, which trusts nothing.
 
-**Security Warning**: Only enable `RATE_LIMIT_TRUST_PROXY` when running behind a trusted reverse proxy. Otherwise, clients can spoof their IP address.
+For a request from a trusted peer, the client IP is determined as follows:
+1. All `X-Forwarded-For` values are read right to left; trusted proxy addresses are skipped, and the first untrusted address is the client.
+2. If there is no usable `X-Forwarded-For`, `X-Real-IP` is used.
+3. Otherwise the direct connection IP is used.
+
+Examples:
+
+```bash
+# Docker Compose: the reverse proxy lives in the compose network subnet
+RATE_LIMIT_TRUSTED_PROXIES=172.18.0.0/16
+
+# Kubernetes (k3s): Traefik runs in the pod CIDR
+RATE_LIMIT_TRUSTED_PROXIES=10.42.0.0/16
+
+# A single proxy plus IPv6 loopback
+RATE_LIMIT_TRUSTED_PROXIES=192.0.2.10,::1
+```
+
+Invalid entries are logged as a warning at startup and skipped.
+
+**Migration**: `RATE_LIMIT_TRUST_PROXY` is deprecated and no longer has any effect. If it is set to `true` without `RATE_LIMIT_TRUSTED_PROXIES`, the server logs a warning at startup and trusts no proxy, so all clients behind your reverse proxy share the proxy's address for rate limiting until you set the new variable.
 
 ### IPv6 Normalization
 

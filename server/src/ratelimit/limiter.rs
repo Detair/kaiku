@@ -430,7 +430,7 @@ mod tests {
             enabled: true,
             redis_key_prefix: "test:rl".to_string(),
             fail_open: true,
-            trust_proxy: false,
+            trusted_proxies: Default::default(),
             allowlist: HashSet::from(["127.0.0.1".to_string()]),
             ..Default::default()
         }

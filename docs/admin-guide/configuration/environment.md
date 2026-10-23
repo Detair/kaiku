@@ -134,10 +134,7 @@ These are read outside `server/src/config.rs`:
 | `PUBLIC_URL` | unset | `auth/login.rs` | Public URL of the server; required for the OIDC browser login flow (callback is `$PUBLIC_URL/auth/oidc/callback`) |
 | `AWS_REGION` | `us-east-1` | `chat/s3.rs` | S3 region |
 | `DEPLOYMENT_ENVIRONMENT` | `local` | `observability/` | Environment label on telemetry |
+| `RATE_LIMIT_TRUSTED_PROXIES` | unset (trust none) | `ratelimit/config.rs` | Comma-separated CIDRs or bare IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted for rate limiting, e.g. `10.42.0.0/16` (k3s pod network) or your compose network subnet. Requests from other peers use the peer address. Invalid entries are skipped with a startup warning |
+| `RATE_LIMIT_TRUST_PROXY` | - | `ratelimit/config.rs` | **Deprecated, ignored.** Setting it to `true` logs a startup warning and trusts nothing; set `RATE_LIMIT_TRUSTED_PROXIES` instead |
 | `RATE_LIMIT_*` | see [rate-limiting.md](rate-limiting.md) | `ratelimit/config.rs` | Rate limiting |
 
-## Planned additions
-
-The server release plan adds `RATE_LIMIT_TRUSTED_PROXIES` (contract C9). The CI guardrail
-(`scripts/check_ci_guardrails.py`) fails when a variable read in `server/src/config.rs`
-is missing from this page, so that pull request must document it here.

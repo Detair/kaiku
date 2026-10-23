@@ -222,7 +222,7 @@ mod tests {
             enabled: true,
             redis_key_prefix: format!("test:vj:{}", uuid::Uuid::new_v4()),
             fail_open: false,
-            trust_proxy: false,
+            trusted_proxies: crate::ratelimit::TrustedProxies::default(),
             allowlist: HashSet::new(),
             limits: RateLimits {
                 voice_join: LimitConfig {
