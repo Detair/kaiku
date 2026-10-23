@@ -44,43 +44,6 @@ export const voiceChannels = () =>
 // Actions
 
 /**
- * Load channels from server (all channels - legacy).
- * Use loadChannelsForGuild for guild-scoped loading.
- * @deprecated Use loadChannelsForGuild or loadDMChannels instead.
- */
-export async function loadChannels(): Promise<void> {
-  setChannelsState({ isLoading: true, error: null });
-
-  try {
-    const rawChannels = await tauri.getChannels();
-    // Map to ChannelWithUnread (legacy endpoint doesn't return unread counts)
-    const channels: ChannelWithUnread[] = rawChannels.map((c) => ({
-      ...c,
-      unread_count: 0,
-      last_read_message_id: null,
-      last_message_id: null,
-    }));
-    setChannelsState({
-      channels,
-      isLoading: false,
-      error: null,
-    });
-
-    // Auto-select first text channel if none selected
-    if (!channelsState.selectedChannelId && channels.length > 0) {
-      const firstText = channels.find((c) => c.channel_type === "text");
-      if (firstText) {
-        setChannelsState({ selectedChannelId: firstText.id });
-      }
-    }
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    console.error("Failed to load channels:", error);
-    setChannelsState({ isLoading: false, error });
-  }
-}
-
-/**
  * Load channels for a specific guild.
  * This replaces the current channel list with the guild's channels.
  */

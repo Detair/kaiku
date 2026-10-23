@@ -37,19 +37,42 @@ function isIdentChar(ch: string | undefined): boolean {
 }
 
 /**
- * Replace comments and string/template contents with spaces (newlines kept),
- * so identifiers found afterwards are real code. Quote characters stay in
- * place so literal arguments can still be located and read from the source.
+ * Replace comments and string/template text with spaces (newlines kept), so
+ * identifiers found afterwards are real code. Quote characters stay in place
+ * so literal arguments can still be located and read from the source. Code
+ * inside template interpolations (`${…}`) stays visible, nested templates
+ * included.
  */
 function maskNonCode(src: string): string {
   const out = src.split("");
-  let i = 0;
   const blank = (from: number, to: number) => {
     for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
   };
+  // Each entry is the brace depth of a code context opened by `${`; the
+  // bottom entry is top-level code. `inTemplate` marks template text.
+  const codeDepths: number[] = [0];
+  let inTemplate = false;
+  let i = 0;
   while (i < src.length) {
     const ch = src[i];
     const next = src[i + 1];
+    if (inTemplate) {
+      if (ch === "\\") {
+        blank(i, i + 2);
+        i += 2;
+      } else if (ch === "`") {
+        inTemplate = false;
+        i++;
+      } else if (ch === "$" && next === "{") {
+        codeDepths.push(0);
+        inTemplate = false;
+        i += 2;
+      } else {
+        blank(i, i + 1);
+        i++;
+      }
+      continue;
+    }
     if (ch === "/" && next === "/") {
       const end = src.indexOf("\n", i);
       const stop = end === -1 ? src.length : end;
@@ -60,15 +83,30 @@ function maskNonCode(src: string): string {
       const stop = end === -1 ? src.length : end + 2;
       blank(i, stop);
       i = stop;
-    } else if (ch === '"' || ch === "'" || ch === "`") {
+    } else if (ch === '"' || ch === "'") {
       let j = i + 1;
-      while (j < src.length && src[j] !== ch) {
+      while (j < src.length && src[j] !== ch && src[j] !== "\n") {
         if (src[j] === "\\") j++;
-        else if (ch !== "`" && src[j] === "\n") break;
         j++;
       }
       blank(i + 1, j);
       i = j + 1;
+    } else if (ch === "`") {
+      inTemplate = true;
+      i++;
+    } else if (ch === "{") {
+      codeDepths[codeDepths.length - 1]++;
+      i++;
+    } else if (ch === "}") {
+      const top = codeDepths.length - 1;
+      if (codeDepths[top] === 0 && top > 0) {
+        // Closes a `${…}` interpolation: back to the template text.
+        codeDepths.pop();
+        inTemplate = true;
+      } else if (codeDepths[top] > 0) {
+        codeDepths[top]--;
+      }
+      i++;
     } else {
       i++;
     }
@@ -87,27 +125,40 @@ function skipWs(src: string, i: number): number {
   return i;
 }
 
-/** Skip a balanced `<…>` type argument list starting at `i` (which is `<`). */
+/**
+ * Skip a balanced `<…>` type argument list starting at `i` (which is `<`).
+ * Object, tuple and function types inside are allowed; `=>` is not a closer.
+ */
 function skipTypeArgs(code: string, i: number): number {
   let depth = 0;
+  let braces = 0;
   for (; i < code.length; i++) {
     const ch = code[i];
     if (ch === "=" && code[i + 1] === ">") {
       i++;
+    } else if (ch === "{") {
+      braces++;
+    } else if (ch === "}") {
+      if (braces === 0) return -1;
+      braces--;
     } else if (ch === "<") {
       depth++;
     } else if (ch === ">") {
       depth--;
-      if (depth === 0) return i + 1;
-    } else if (ch === ";" || ch === "{") {
+      if (depth === 0) return braces === 0 ? i + 1 : -1;
+    } else if (ch === ";" && braces === 0) {
+      // A statement ended: this `<` was a comparison, not type arguments.
       return -1;
     }
   }
   return -1;
 }
 
-/** Read a string literal at `i` from the original source; null if not one. */
-function readLiteral(src: string, i: number): string | null {
+/**
+ * Read a string literal at `i` from the original source. Returns null unless
+ * the literal is the whole argument: it must be followed by `,` or `)`.
+ */
+function readLiteralArg(src: string, i: number): string | null {
   const quote = src[i];
   if (quote !== '"' && quote !== "'" && quote !== "`") return null;
   let j = i + 1;
@@ -122,7 +173,9 @@ function readLiteral(src: string, i: number): string | null {
     value += src[j];
     j++;
   }
-  return j < src.length ? value : null;
+  if (j >= src.length) return null;
+  const after = skipWs(src, j + 1);
+  return src[after] === "," || src[after] === ")" ? value : null;
 }
 
 /** All `invoke(` / `invoke<T>(` call sites in one file. */
@@ -147,7 +200,7 @@ export function findInvokeSites(file: string, src: string): InvokeSite[] {
     sites.push({
       file,
       line: lineOf(src, start),
-      name: readLiteral(src, argStart),
+      name: readLiteralArg(src, argStart),
     });
   }
   return sites;

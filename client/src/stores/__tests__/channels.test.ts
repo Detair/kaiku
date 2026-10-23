@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
-  getChannels: vi.fn(),
   getGuildChannels: vi.fn(),
   createChannel: vi.fn(),
   markChannelAsRead: vi.fn(),
@@ -25,7 +24,6 @@ import type { Channel, ChannelWithUnread } from "@/lib/types";
 import {
   channelsState,
   setChannelsState,
-  loadChannels,
   loadChannelsForGuild,
   selectChannel,
   clearSelection,
@@ -82,55 +80,6 @@ describe("channels store", () => {
       expect(channelsState.selectedChannelId).toBeNull();
       expect(channelsState.isLoading).toBe(false);
       expect(channelsState.error).toBeNull();
-    });
-  });
-
-  describe("loadChannels", () => {
-    it("loads channels and auto-selects first text channel", async () => {
-      const channels: Channel[] = [
-        {
-          id: "v1",
-          name: "voice",
-          channel_type: "voice",
-          category_id: null,
-          guild_id: "g1",
-          topic: null,
-          icon_url: null,
-          user_limit: null,
-          position: 0,
-          created_at: "2025-01-01T00:00:00Z",
-        },
-        {
-          id: "t1",
-          name: "general",
-          channel_type: "text",
-          category_id: null,
-          guild_id: "g1",
-          topic: null,
-          icon_url: null,
-          user_limit: null,
-          position: 1,
-          created_at: "2025-01-01T00:00:00Z",
-        },
-      ];
-      vi.mocked(tauri.getChannels).mockResolvedValue(channels);
-
-      await loadChannels();
-
-      expect(channelsState.channels).toHaveLength(2);
-      expect(channelsState.selectedChannelId).toBe("t1");
-      expect(channelsState.isLoading).toBe(false);
-    });
-
-    it("sets error on failure", async () => {
-      vi.mocked(tauri.getChannels).mockRejectedValue(
-        new Error("Network error"),
-      );
-
-      await loadChannels();
-
-      expect(channelsState.error).toBe("Network error");
-      expect(channelsState.isLoading).toBe(false);
     });
   });
 

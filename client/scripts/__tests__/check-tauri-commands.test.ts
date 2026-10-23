@@ -141,4 +141,52 @@ describe("check-tauri-commands", () => {
       "src/lib/a.ts:2: isTauri must be called: isTauri()",
     ]);
   });
+
+  it("detects invokes whose type arguments contain object types", () => {
+    const src = files({
+      "src/lib/a.ts": [
+        `await invoke<{ ok: boolean }>("missing_a");`,
+        `await invoke<Array<{ id: string; tags: Record<string, number> }>>("missing_b", {});`,
+      ].join("\n"),
+    });
+
+    expect([...findInvokedCommands(src)].sort()).toEqual([
+      "missing_a",
+      "missing_b",
+    ]);
+    expect(findUnregisteredInvokes(src, LIB_RS).map((u) => u.name)).toEqual([
+      "missing_a",
+      "missing_b",
+    ]);
+  });
+
+  it("scans invokes inside template interpolations", () => {
+    const src = files({
+      "src/lib/a.ts": [
+        "const label = `state: ${await invoke<string>(\"missing_c\")}`;",
+        "const nested = `a ${`b ${invoke(\"missing_d\")}`} c`;",
+        "const plain = `invoke(\"not_code\")`;",
+      ].join("\n"),
+    });
+
+    expect([...findInvokedCommands(src)].sort()).toEqual([
+      "missing_c",
+      "missing_d",
+    ]);
+  });
+
+  it("rejects a first argument that only starts with a literal", () => {
+    const src = files({
+      "src/lib/a.ts": [
+        `await invoke("login" + suffix);`,
+        `await invoke("log" + "out", {});`,
+        `await invoke(cond ? "login" : "logout");`,
+        `await invoke("login" , { a: 1 });`,
+        `await invoke(\n  "logout"\n);`,
+      ].join("\n"),
+    });
+
+    expect(findNonLiteralInvokes(src).map((b) => b.line)).toEqual([1, 2, 3]);
+    expect([...findInvokedCommands(src)].sort()).toEqual(["login", "logout"]);
+  });
 });

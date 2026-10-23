@@ -9,10 +9,6 @@ import type {
 } from "../types";
 import { httpRequest } from "./common";
 
-export async function getChannels(): Promise<Channel[]> {
-  return httpRequest<Channel[]>("GET", "/api/channels");
-}
-
 export async function createChannel(
   name: string,
   channelType: "text" | "voice" | "forum" | "announcement",

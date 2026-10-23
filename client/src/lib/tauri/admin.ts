@@ -268,7 +268,7 @@ export async function adminElevate(
  * De-elevate admin session.
  */
 export async function adminDeElevate(): Promise<void> {
-  await httpRequest<void>("POST", "/api/admin/de-elevate");
+  await httpRequest<void>("DELETE", "/api/admin/elevate");
 }
 
 /**

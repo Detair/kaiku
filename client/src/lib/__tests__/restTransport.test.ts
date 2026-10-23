@@ -42,6 +42,7 @@ const CASES: Case[] = [
   { fn: "addReaction", module: "messages", args: ["c", "m", "👍"], method: "PUT", path: "/api/channels/c/messages/m/reactions", oldCommand: "add_reaction" },
   { fn: "markChannelAsRead", module: "channels", args: ["c", "m"], method: "POST", path: "/api/channels/c/read", oldCommand: "mark_channel_as_read" },
   { fn: "adminListUsers", module: "admin", args: [], method: "GET", path: "/api/admin/users", oldCommand: "admin_list_users" },
+  { fn: "adminDeElevate", module: "admin", args: [], method: "DELETE", path: "/api/admin/elevate", oldCommand: "admin_de_elevate" },
   { fn: "getMessages", module: "messages", args: ["c"], method: "GET", path: "/api/messages/channel/c", oldCommand: "get_messages" },
   { fn: "mfaSetup", module: "auth", args: [], method: "POST", path: "/auth/mfa/setup", oldCommand: "mfa_setup" },
   { fn: "qrLoginCreate", module: "auth", args: [], method: "POST", path: "/auth/qr/create", oldCommand: "qr_login_create" },

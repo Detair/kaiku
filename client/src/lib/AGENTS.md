@@ -51,9 +51,9 @@ import { isTauri } from "@/lib/tauri/common";
 if (isTauri()) { /* native path */ }
 
 // Call platform-agnostic API
-import { login, getChannels } from "@/lib/tauri";
+import { login, getGuildChannels } from "@/lib/tauri";
 const user = await login(serverUrl, username, password);
-const channels = await getChannels();
+const channels = await getGuildChannels(guildId);
 ```
 
 ### File Uploads
