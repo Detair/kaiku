@@ -1,7 +1,8 @@
 //! HTTP Integration Tests for Upload Error Paths
 //!
 //! S3 is not configured in test environment (`AppState.s3 = None`),
-//! so these tests verify error responses only.
+//! so these tests verify error responses only. Send authorization runs
+//! before the storage check, so permission tests need no `RustFS`.
 //!
 //! Run with: `cargo test --test integration uploads_http -- --nocapture`
 
@@ -11,7 +12,54 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
-use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
+use super::helpers::{
+    add_guild_member, body_to_json, create_channel, create_dm_channel,
+    create_guild_with_default_role, create_test_user, generate_access_token, TestApp,
+};
+
+/// Build an upload request for `channel_id` with a small text file and
+/// optional message `content`.
+fn upload_request(token: &str, channel_id: Uuid, content: &str) -> axum::http::Request<Body> {
+    let boundary = "----TestBoundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"\r\n\r\n{content}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--{boundary}--\r\n"
+    );
+    TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{channel_id}/upload"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
+    .body(Body::from(body))
+    .unwrap()
+}
+
+/// Create a guild whose `@everyone` role has `perms`, a channel of
+/// `channel_type` in it, and a non-owner member. Returns (channel, member token).
+async fn guild_member_channel(
+    app: &TestApp,
+    perms: GuildPermissions,
+    channel_type: &str,
+) -> (Uuid, String) {
+    let (owner, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let channel_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, 'upload-perm', $3::channel_type)",
+    )
+    .bind(channel_id)
+    .bind(guild_id)
+    .bind(channel_type)
+    .execute(&app.pool)
+    .await
+    .expect("create channel");
+    let (member, _) = create_test_user(&app.pool).await;
+    add_guild_member(&app.pool, guild_id, member).await;
+    (channel_id, generate_access_token(&app.config, member))
+}
 
 // ============================================================================
 // Upload Error Paths
@@ -167,4 +215,135 @@ async fn test_get_attachment_anti_enumeration_parity(pool: PgPool) {
     );
     let missing_body = body_to_json(missing_resp).await;
     assert_eq!(missing_body["error"], "FORBIDDEN");
+}
+
+// ============================================================================
+// Send authorization (shared with text messages)
+// ============================================================================
+
+#[sqlx::test]
+async fn test_upload_requires_attach_files(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let (channel_id, token) = guild_member_channel(&app, perms, "text").await;
+
+    let resp = app.oneshot(upload_request(&token, channel_id, "")).await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "upload without ATTACH_FILES must be 403"
+    );
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "FORBIDDEN");
+}
+
+#[sqlx::test]
+async fn test_upload_blocked_in_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_a, _) = create_test_user(&app.pool).await;
+    let (user_b, _) = create_test_user(&app.pool).await;
+    let token_a = generate_access_token(&app.config, user_a);
+    let token_b = generate_access_token(&app.config, user_b);
+    let channel_id = create_dm_channel(&app.pool, user_a, user_b).await;
+
+    // A (recipient) blocks B (sender)
+    let req = TestApp::request(Method::POST, &format!("/api/friends/{user_b}/block"))
+        .header("Authorization", format!("Bearer {token_a}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 200);
+
+    let resp = app.oneshot(upload_request(&token_b, channel_id, "")).await;
+    assert_eq!(resp.status(), 403);
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "BLOCKED");
+}
+
+#[sqlx::test]
+async fn test_upload_to_announcement_requires_send_announcements(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let perms = GuildPermissions::VIEW_CHANNEL
+        | GuildPermissions::SEND_MESSAGES
+        | GuildPermissions::ATTACH_FILES;
+    let (channel_id, token) = guild_member_channel(&app, perms, "announcement").await;
+
+    let resp = app.oneshot(upload_request(&token, channel_id, "")).await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "upload to announcement channel without SEND_ANNOUNCEMENTS must be 403"
+    );
+}
+
+#[sqlx::test]
+async fn test_upload_everyone_mention_requires_permission(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let perms = GuildPermissions::VIEW_CHANNEL
+        | GuildPermissions::SEND_MESSAGES
+        | GuildPermissions::ATTACH_FILES;
+    let (channel_id, token) = guild_member_channel(&app, perms, "text").await;
+
+    let resp = app
+        .oneshot(upload_request(&token, channel_id, "@everyone"))
+        .await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "@everyone in an upload without MENTION_EVERYONE must be 400"
+    );
+}
+
+#[sqlx::test]
+async fn test_upload_content_filter_returns_403(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let channel_id = create_channel(&app.pool, guild_id, "upload-filter").await;
+
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/guilds/{guild_id}/filters/patterns"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header("Content-Type", "application/json")
+    .body(Body::from(
+        serde_json::json!({ "pattern": "forbidden", "is_regex": false }).to_string(),
+    ))
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 201);
+
+    let resp = app
+        .oneshot(upload_request(&token, channel_id, "this is forbidden"))
+        .await;
+    assert_eq!(resp.status(), 403, "filtered upload text must be 403");
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "CONTENT_FILTERED");
+}
+
+#[sqlx::test]
+async fn test_upload_s3_failure_leaves_no_message(pool: PgPool) {
+    let app = TestApp::with_pool_and_unreachable_s3(pool.clone()).await;
+    let (owner, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let channel_id = create_channel(&app.pool, guild_id, "upload-s3-fail").await;
+
+    let resp = app
+        .oneshot(upload_request(&token, channel_id, "with text"))
+        .await;
+    assert!(
+        resp.status().is_server_error(),
+        "upload with failing storage must be 5xx, got {}",
+        resp.status()
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE channel_id = $1")
+        .bind(channel_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "a failed upload must not leave a message row");
 }
