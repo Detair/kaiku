@@ -39,7 +39,7 @@ nano .env  # Replace all CHANGEME values with generated secrets
 # POSTGRES_PASSWORD=$(openssl rand -base64 24)
 # JWT_SECRET=$(openssl rand -hex 32)
 # MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
-# VALKEY_PASSWORD=$(openssl rand -base64 16)
+# VALKEY_PASSWORD=$(openssl rand -hex 24)
 # GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16)
 
 # Start with monitoring

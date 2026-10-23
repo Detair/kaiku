@@ -99,5 +99,27 @@ relaying media over TCP is not available. Clients can still talk to the TURN
 server over TCP (port 3478), but the relayed leg is UDP only. Clients on
 networks that block all outgoing UDP cannot use voice through this TURN server.
 
+### Upgrading existing deployments
+
+When you update an existing compose installation:
+
+1. **Add the required variables** to your `.env`: `VALKEY_PASSWORD` and
+   `CORS_ALLOWED_ORIGINS`. Compose refuses to start without them.
+2. **Use a hex Valkey password.** If your current password is base64 and
+   contains `/`, `+` or `=`, generate a new one with `openssl rand -hex 24`,
+   put it in `.env`, then recreate Valkey so it starts with the new password
+   (`docker compose up -d --force-recreate valkey server`).
+3. **Subnet change.** The application network now uses `KAIKU_NET_SUBNET`
+   (default `172.31.250.0/24`). Docker cannot change the subnet of an existing
+   network, so run `docker compose down` once (volumes are kept) and then
+   `docker compose up -d` to recreate it. Pick another subnet if it overlaps
+   with your own networks.
+4. **Voice needs `PUBLIC_IP`.** Set it to the host's public address.
+5. **No TURN over TCP relay.** Clients on networks that block all outgoing UDP
+   can no longer relay voice through the bundled coturn.
+6. **Rate-limit proxy setting.** Remove `RATE_LIMIT_TRUST_PROXY` from `.env`;
+   it is replaced by `RATE_LIMIT_TRUSTED_PROXIES`, which the compose file now
+   sets from `KAIKU_NET_SUBNET`.
+
 ---
 *Documentation to be expanded as the implementation stabilizes.*
