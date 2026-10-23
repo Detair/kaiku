@@ -17,6 +17,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
 use webrtc::ice::network_type::NetworkType;
+use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -425,6 +426,14 @@ impl SfuServer {
             );
             setting_engine.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
             info!(public_ip = %public_ip, "SFU NAT 1:1 IP configured");
+        }
+
+        // Pin ICE/media to the configured UDP range (firewall-friendly).
+        if let (Some(min), Some(max)) = (config.voice_udp_port_min, config.voice_udp_port_max) {
+            let ephemeral = EphemeralUDP::new(min, max)
+                .map_err(|e| VoiceError::WebRtc(format!("invalid UDP port range: {e}")))?;
+            setting_engine.set_udp_network(UDPNetwork::Ephemeral(ephemeral));
+            info!(min, max, "SFU UDP port range configured");
         }
 
         // Build WebRTC API
@@ -1220,5 +1229,49 @@ mod renegotiate_tests {
             Some(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer { .. }))
         ));
         peer.close().await;
+    }
+}
+
+#[cfg(test)]
+mod udp_range_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sfu_candidates_use_configured_port_range() {
+        let mut config = Config::default_for_test();
+        config.voice_udp_port_min = Some(50000);
+        config.voice_udp_port_max = Some(50010);
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+
+        let pc = sfu
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("pc");
+        pc.create_data_channel("probe", None).await.expect("dc");
+        let offer = pc.create_offer(None).await.expect("offer");
+        let mut gathered = pc.gathering_complete_promise().await;
+        pc.set_local_description(offer).await.expect("local desc");
+        let _ = tokio::time::timeout(Duration::from_secs(10), gathered.recv()).await;
+
+        let sdp = pc.local_description().await.expect("local description").sdp;
+        let ports: Vec<u16> = sdp
+            .lines()
+            .filter_map(|l| l.strip_prefix("a=candidate:"))
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                (f.get(2).is_some_and(|p| p.eq_ignore_ascii_case("udp")))
+                    .then(|| f.get(5)?.parse().ok())
+                    .flatten()
+            })
+            .collect();
+        let _ = pc.close().await;
+        assert!(!ports.is_empty(), "no UDP host candidates gathered:\n{sdp}");
+        for p in ports {
+            assert!(
+                (50000..=50010).contains(&p),
+                "candidate port {p} outside range"
+            );
+        }
     }
 }

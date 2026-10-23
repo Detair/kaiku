@@ -26,8 +26,8 @@ variables marked "empty = unset".
 | `BIND_ADDRESS` | `0.0.0.0:8080` | Address and port the HTTP server listens on |
 | `KAIKU_ENV` | `production` | Deployment environment name |
 | `PUBLIC_BASE_URL` | unset (empty = unset) | Public base URL for absolute URLs handed to external services (webhook execute URLs); falls back to the request Host header |
-| `PUBLIC_IP` | unset (empty = unset) | Public IP advertised for voice (WebRTC) connections |
-| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
+| `PUBLIC_IP` | unset (empty = unset) | Public IP advertised for voice (WebRTC) connections (NAT 1:1 mapping). Required when the server runs behind NAT or in a container so clients can reach the SFU |
+| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. The desktop app origins `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost` are added automatically to an explicit list |
 | `ENABLE_API_DOCS` | `false` in release builds | Serve the OpenAPI docs |
 | `ENABLE_GUILD_DISCOVERY` | `true` | Enable public guild discovery |
 | `GEOIP_API_URL` | `http://ip-api.com/json/{ip}?fields=city,country` | GeoIP lookup endpoint for session locations; `{ip}` is replaced |
@@ -106,6 +106,8 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `TURN_CREDENTIAL` | unset | Static TURN credential |
 | `TURN_SHARED_SECRET` | unset | Shared secret for time-limited TURN credentials (coturn `use-auth-secret`) |
 | `TURN_CREDENTIAL_TTL` | `3600` | Lifetime of generated TURN credentials in seconds |
+| `VOICE_UDP_PORT_MIN` | unset (ephemeral ports) | Lowest UDP port the voice SFU may use for peer connections. Must be set together with `VOICE_UDP_PORT_MAX`; the server refuses to start if only one is set or if min > max. Open/forward this UDP range in your firewall |
+| `VOICE_UDP_PORT_MAX` | unset (ephemeral ports) | Highest UDP port of the range. Each port in the range serves peer connections, so size the range for your expected concurrent voice participants |
 
 ## Observability
 
@@ -134,7 +136,6 @@ These are read outside `server/src/config.rs`:
 
 ## Planned additions
 
-The server release plan adds `RATE_LIMIT_TRUSTED_PROXIES` (contract C9) and
-`VOICE_UDP_PORT_MIN` / `VOICE_UDP_PORT_MAX` (contract C13). The CI guardrail
+The server release plan adds `RATE_LIMIT_TRUSTED_PROXIES` (contract C9). The CI guardrail
 (`scripts/check_ci_guardrails.py`) fails when a variable read in `server/src/config.rs`
-is missing from this page, so those pull requests must document them here.
+is missing from this page, so that pull request must document it here.

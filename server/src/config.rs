@@ -144,6 +144,13 @@ pub struct Config {
     /// advertise the reachable IP instead of the container-internal IP.
     pub public_ip: Option<String>,
 
+    /// Lowest UDP port the SFU may bind for ICE/media (`VOICE_UDP_PORT_MIN`).
+    /// Set together with `voice_udp_port_max`, or not at all (ephemeral ports).
+    pub voice_udp_port_min: Option<u16>,
+
+    /// Highest UDP port the SFU may bind for ICE/media (`VOICE_UDP_PORT_MAX`).
+    pub voice_udp_port_max: Option<u16>,
+
     /// Public base URL of this instance (e.g. "<https://kaiku.example.com>").
     /// Used to build absolute URLs handed to external services (incoming
     /// webhook execute URLs). Falls back to request Host headers when unset.
@@ -305,6 +312,10 @@ impl Config {
 
     /// Load configuration from environment variables.
     pub fn from_env() -> Result<Self> {
+        let (voice_udp_port_min, voice_udp_port_max) = parse_voice_udp_port_range(
+            env_opt("VOICE_UDP_PORT_MIN").as_deref(),
+            env_opt("VOICE_UDP_PORT_MAX").as_deref(),
+        )?;
         let config = Self {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
@@ -365,6 +376,8 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600),
             public_ip: env_opt("PUBLIC_IP"),
+            voice_udp_port_min,
+            voice_udp_port_max,
             public_base_url: env_opt("PUBLIC_BASE_URL"),
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
@@ -571,6 +584,8 @@ impl Config {
             turn_shared_secret: None,
             turn_credential_ttl: 3600,
             public_ip: None,
+            voice_udp_port_min: None,
+            voice_udp_port_max: None,
             public_base_url: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
@@ -639,6 +654,64 @@ const TEST_MFA_ENCRYPTION_KEY: &str =
 /// empty issuer URL on the beta server.
 fn env_opt(name: &str) -> Option<String> {
     env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+const VOICE_UDP_RANGE_ERROR: &str =
+    "VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max";
+
+/// Parse the optional SFU UDP port range. Both bounds or neither; `min <= max`.
+/// Pure over its inputs so it is testable without touching process env.
+fn parse_voice_udp_port_range(
+    min: Option<&str>,
+    max: Option<&str>,
+) -> Result<(Option<u16>, Option<u16>)> {
+    match (min, max) {
+        (None, None) => Ok((None, None)),
+        (Some(min), Some(max)) => {
+            let min: u16 = min.trim().parse().context(VOICE_UDP_RANGE_ERROR)?;
+            let max: u16 = max.trim().parse().context(VOICE_UDP_RANGE_ERROR)?;
+            anyhow::ensure!(min <= max, VOICE_UDP_RANGE_ERROR);
+            Ok((Some(min), Some(max)))
+        }
+        _ => anyhow::bail!(VOICE_UDP_RANGE_ERROR),
+    }
+}
+
+#[cfg(test)]
+mod voice_udp_range_tests {
+    use super::parse_voice_udp_port_range;
+
+    #[test]
+    fn config_rejects_half_set_udp_range() {
+        for (min, max) in [(Some("50000"), None), (None, Some("50010"))] {
+            let err = parse_voice_udp_port_range(min, max).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max"
+            );
+        }
+    }
+
+    #[test]
+    fn config_rejects_inverted_udp_range() {
+        let err = parse_voice_udp_port_range(Some("50010"), Some("50000")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max"
+        );
+    }
+
+    #[test]
+    fn udp_range_accepts_valid_and_unset() {
+        assert_eq!(
+            parse_voice_udp_port_range(None, None).unwrap(),
+            (None, None)
+        );
+        assert_eq!(
+            parse_voice_udp_port_range(Some("50000"), Some("50000")).unwrap(),
+            (Some(50000), Some(50000))
+        );
+    }
 }
 
 #[cfg(test)]
