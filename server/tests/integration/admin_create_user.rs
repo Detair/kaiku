@@ -13,6 +13,11 @@ use sqlx::PgPool;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
+use vc_server::api::{create_router, AppState, AppStateConfig};
+use vc_server::chat::S3Client;
+use vc_server::config::Config;
+use vc_server::db;
+use vc_server::voice::sfu::SfuServer;
 
 use super::helpers::{
     create_elevated_session, create_test_user, generate_access_token, make_admin,
@@ -183,6 +188,8 @@ async fn create_user_duplicate_username_409(pool: PgPool) {
     assert_eq!(resp.status(), StatusCode::CREATED);
     let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "conflict");
 }
 
 #[sqlx::test]
@@ -415,4 +422,73 @@ async fn pending_user_websocket_header_auth_refused(pool: PgPool) {
         Err(e) => panic!("unexpected error: {e}"),
         Ok(_) => panic!("pending user must not be upgraded"),
     }
+}
+
+/// Build a router with an S3 client that is never contacted: the download
+/// handler only needs storage to be configured before it checks the caller.
+async fn app_with_unreachable_s3(pool: &PgPool) -> (axum::Router, std::sync::Arc<Config>) {
+    let mut config = Config::default_for_test();
+    config.s3_endpoint = Some("http://127.0.0.1:9".to_string());
+    config.s3_access_key = Some("unused".to_string());
+    config.s3_secret_key = Some("unused".to_string());
+    let s3 = S3Client::new(&config).expect("S3 client");
+    let redis = db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Redis");
+    let sfu = SfuServer::new(std::sync::Arc::new(config.clone()), None).expect("SfuServer");
+    let state = AppState::new(AppStateConfig {
+        db: pool.clone(),
+        redis,
+        config: config.clone(),
+        s3: Some(s3),
+        sfu,
+        rate_limiter: None,
+        screen_share_limiter: None,
+        email: None,
+        oidc_manager: None,
+        http_client: reqwest::Client::new(),
+    });
+    (create_router(state), std::sync::Arc::new(config))
+}
+
+#[sqlx::test]
+async fn pending_user_query_token_download_refused(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (router, config) = app_with_unreachable_s3(&pool).await;
+    let (pending_id, _) = create_test_user(&pool).await;
+    sqlx::query("UPDATE users SET must_change_password = true WHERE id = $1")
+        .bind(pending_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (normal_id, _) = create_test_user(&pool).await;
+    let attachment_id = Uuid::now_v7();
+
+    let download = |token: String| {
+        axum::http::Request::builder()
+            .uri(format!(
+                "/api/messages/attachments/{attachment_id}/download?token={token}"
+            ))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+
+    let resp = router
+        .clone()
+        .oneshot(download(generate_access_token(&config, pending_id)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = super::helpers::body_to_json(resp).await;
+    assert_eq!(body["error"], "PASSWORD_CHANGE_REQUIRED");
+
+    // Control: an ordinary user without access gets the plain FORBIDDEN code.
+    let resp = router
+        .oneshot(download(generate_access_token(&config, normal_id)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = super::helpers::body_to_json(resp).await;
+    assert_eq!(body["error"], "FORBIDDEN");
 }

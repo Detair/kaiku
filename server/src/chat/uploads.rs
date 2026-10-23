@@ -716,10 +716,22 @@ pub async fn download(
         // Validate token from query parameter
         let claims = validate_access_token(&token, &state.config.jwt_public_key)
             .map_err(|_| ChatError::Forbidden)?;
-        claims
+        let user_id = claims
             .sub
             .parse::<Uuid>()
-            .map_err(|_| ChatError::Forbidden)?
+            .map_err(|_| ChatError::Forbidden)?;
+        // This path bypasses `require_auth`, so apply its forced
+        // password-change rule here.
+        let must_change_password: Option<bool> =
+            sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
+        match must_change_password {
+            Some(false) => user_id,
+            Some(true) => return Err(ChatError::PasswordChangeRequired),
+            None => return Err(ChatError::Forbidden),
+        }
     } else {
         return Err(ChatError::Forbidden);
     };
