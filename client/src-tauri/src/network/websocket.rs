@@ -4,8 +4,10 @@
 //! backoff, a ping/silence watchdog and one event path to the webview.
 //!
 //! - Before every attempt the current access token is read from the [`SessionManager`]; a token
-//!   that expires within 60 s is refreshed first. A handshake rejected with HTTP 401 (or a server
-//!   close with code 1008) triggers a refresh, then a reconnect. An ended session stops the loop.
+//!   that expires within 60 s is refreshed first. A handshake rejected with HTTP 401/403 (or a
+//!   server close with code 1008) triggers one refresh and an immediate retry; if a fresh token is
+//!   rejected as well, `ws:auth_rejected` is emitted once and the loop backs off without further
+//!   refreshes. An ended session stops the loop.
 //! - Every inbound text frame is forwarded unchanged as `ws:server_event` (parsed JSON), so the
 //!   webview handles native and browser events with the same code and unknown event types are never
 //!   dropped.
@@ -184,9 +186,11 @@ pub fn next_backoff(attempt: u32, jitter: f64) -> Duration {
     Duration::from_millis(millis)
 }
 
-/// The server refused the handshake because of the token.
+/// The server refused the handshake for an auth reason: 401 (token) or 403
+/// (C11: e.g. a pending password change with header auth). Handled like a
+/// 1008 close.
 pub fn is_auth_rejection(err: &tungstenite::Error) -> bool {
-    matches!(err, tungstenite::Error::Http(response) if response.status() == 401)
+    matches!(err, tungstenite::Error::Http(response) if matches!(response.status().as_u16(), 401 | 403))
 }
 
 /// A server close that means "auth problem" (C11: 1008); 1011/1013 and the
@@ -223,7 +227,7 @@ impl WebSocketManager {
         if session.auth_info().is_none() {
             return Err("Not authenticated".to_string());
         }
-        install_crypto_provider();
+        // The crypto provider is installed at app setup (lib.rs).
         Ok(Self::start(Arc::new(app), session, timings, None))
     }
 
@@ -327,6 +331,18 @@ enum Ended {
     Shutdown,
 }
 
+/// Where a streak of auth rejections stands; reset when a connection ends
+/// normally.
+#[derive(Clone, Copy)]
+enum AuthRetry {
+    /// No rejection yet: the next one refreshes and retries at once.
+    Fresh,
+    /// Refreshed once for this streak.
+    Refreshed,
+    /// A fresh token was rejected too and `ws:auth_rejected` was emitted.
+    Reported,
+}
+
 /// What to do before the next attempt.
 enum Next {
     Backoff,
@@ -361,25 +377,35 @@ impl Connection {
 
     async fn run(mut self) {
         let mut attempt = 0u32;
-        // One immediate retry after an auth rejection; reset once connected.
-        let mut auth_retry_used = false;
+        let mut auth = AuthRetry::Fresh;
         self.set_status(ConnectionStatus::Connecting);
 
         loop {
+            // `true` once this round's failure was reported as ws:reconnecting.
+            let mut reported = false;
             let next = match self.attempt().await {
                 Attempt::Connected(ws) => {
-                    attempt = 0;
-                    auth_retry_used = false;
-                    match self.serve(*ws).await {
-                        Ended::Lost => Next::Backoff,
-                        Ended::AuthProblem => {
-                            self.refresh_after_rejection(&mut auth_retry_used).await
+                    let ended = self.serve(*ws).await;
+                    if matches!(ended, Ended::Shutdown) {
+                        return;
+                    }
+                    // The live connection is gone: say so before refreshing or
+                    // retrying, so the webview recovers (re-subscribes) on the
+                    // next ws:connected and nothing is queued for a dead socket.
+                    // The backoff counts from 1 again after a live connection.
+                    attempt = 1;
+                    self.set_status(ConnectionStatus::Reconnecting { attempt });
+                    reported = true;
+                    match ended {
+                        Ended::AuthProblem => self.after_rejection(&mut auth).await,
+                        Ended::Lost | Ended::Shutdown => {
+                            auth = AuthRetry::Fresh;
+                            Next::Backoff
                         }
-                        Ended::Shutdown => return,
                     }
                 }
                 Attempt::Failed => Next::Backoff,
-                Attempt::Rejected => self.refresh_after_rejection(&mut auth_retry_used).await,
+                Attempt::Rejected => self.after_rejection(&mut auth).await,
                 Attempt::NoSession => Next::Stop,
             };
 
@@ -391,8 +417,10 @@ impl Connection {
                 }
                 Next::Immediately => {}
                 Next::Backoff => {
-                    attempt = attempt.saturating_add(1);
-                    self.set_status(ConnectionStatus::Reconnecting { attempt });
+                    if !reported {
+                        attempt = attempt.saturating_add(1);
+                        self.set_status(ConnectionStatus::Reconnecting { attempt });
+                    }
                     let delay = next_backoff(attempt, rand::random::<f64>() - 0.5);
                     info!("Reconnecting in {:?} (attempt {})", delay, attempt);
                     tokio::select! {
@@ -404,15 +432,28 @@ impl Connection {
         }
     }
 
-    /// After a 401 handshake or a 1008 close: refresh, then retry at once
-    /// (only once in a row), back off on transient failure, stop if expired.
-    async fn refresh_after_rejection(&self, auth_retry_used: &mut bool) -> Next {
+    /// After an auth rejection (handshake 401/403 or a 1008 close). The first
+    /// one refreshes the token and retries at once. If the server still
+    /// rejects a fresh token, a new token will not help (e.g. a password
+    /// change is required): report `ws:auth_rejected` once and keep backing
+    /// off without refreshing; the regular expiry check still refreshes when
+    /// the token actually runs out.
+    async fn after_rejection(&self, auth: &mut AuthRetry) -> Next {
+        match auth {
+            AuthRetry::Fresh => {}
+            AuthRetry::Refreshed => {
+                warn!("WebSocket rejected a freshly refreshed token");
+                self.events.emit("ws:auth_rejected", Value::Null);
+                *auth = AuthRetry::Reported;
+                return Next::Backoff;
+            }
+            AuthRetry::Reported => return Next::Backoff,
+        }
         match self.session.refresh().await {
-            Ok(_) if !*auth_retry_used => {
-                *auth_retry_used = true;
+            Ok(_) => {
+                *auth = AuthRetry::Refreshed;
                 Next::Immediately
             }
-            Ok(_) => Next::Backoff,
             // The session manager published the expiry (auth:session_expired).
             Err(SessionError::Expired) => Next::Stop,
             Err(e) => {
@@ -644,6 +685,19 @@ mod tests {
                 .collect()
         }
 
+        /// Wait until `name` was recorded `count` times.
+        async fn wait_count(&self, name: &str, count: usize) {
+            loop {
+                let notified = self.changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.names().iter().filter(|n| *n == name).count() >= count {
+                    return;
+                }
+                notified.await;
+            }
+        }
+
         /// Wait until an event matching `pred` was recorded; returns its payload.
         async fn wait_for(&self, pred: impl Fn(&str, &Value) -> bool) -> Value {
             loop {
@@ -773,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_rejection_detected_for_http_401() {
+    fn auth_rejection_detected_for_http_401_and_403() {
         let response = |status: u16| {
             tungstenite::Error::Http(Box::new(
                 tungstenite::http::Response::builder()
@@ -783,6 +837,7 @@ mod tests {
             ))
         };
         assert!(is_auth_rejection(&response(401)));
+        assert!(is_auth_rejection(&response(403)));
         assert!(!is_auth_rejection(&response(500)));
         assert!(!is_auth_rejection(&tungstenite::Error::ConnectionClosed));
     }
@@ -849,6 +904,148 @@ mod tests {
         assert_eq!(session.auth_info().unwrap().access_token, "new");
         // Retried at once after the refresh: no backoff in between.
         assert!(!events.names().iter().any(|n| n == "ws:reconnecting"));
+    }
+
+    #[tokio::test]
+    async fn policy_close_refreshes_and_recovers() {
+        use tungstenite::protocol::frame::coding::CloseCode;
+        use tungstenite::protocol::CloseFrame;
+
+        let http = MockServer::start().await;
+        let session = session_with(&http, "old").await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("new", "rt-2")))
+            .expect(1)
+            .mount(&http)
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let seen_tx = seen_tx.clone();
+                tokio::spawn(async move {
+                    let token = Arc::new(StdMutex::new(String::new()));
+                    let seen = token.clone();
+                    let cb =
+                        move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                            *seen.lock().unwrap() = token_of(req);
+                            Ok(accept_protocol(resp))
+                        };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, cb).await else {
+                        return;
+                    };
+                    let token = token.lock().unwrap().clone();
+                    let _ = seen_tx.send(token.clone());
+                    if token == "old" {
+                        let _ = ws
+                            .close(Some(CloseFrame {
+                                code: CloseCode::Policy,
+                                reason: "".into(),
+                            }))
+                            .await;
+                    }
+                    while ws.next().await.is_some() {}
+                });
+            }
+        });
+
+        let events = Arc::new(Recorder::default());
+        let manager = WebSocketManager::start(
+            events.clone(),
+            session.clone(),
+            WsTimings::default(),
+            Some(format!("ws://127.0.0.1:{port}/ws")),
+        );
+
+        assert_eq!(within(seen_rx.recv()).await.as_deref(), Some("old"));
+        assert_eq!(within(seen_rx.recv()).await.as_deref(), Some("new"));
+        within(events.wait_count("ws:connected", 2)).await;
+        let names: Vec<String> = events
+            .names()
+            .into_iter()
+            .filter(|n| n != "ws:server_event")
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "ws:connecting",
+                "ws:connected",
+                "ws:reconnecting",
+                "ws:connected"
+            ]
+        );
+        assert_eq!(manager.status(), ConnectionStatus::Connected);
+    }
+
+    /// A server that rejects every handshake with `status`: exactly one
+    /// refresh across several attempts, then `ws:auth_rejected`.
+    async fn persistent_rejection_refreshes_once(status: StatusCode) {
+        let http = MockServer::start().await;
+        let session = session_with(&http, "old").await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("new", "rt-2")))
+            .expect(1)
+            .mount(&http)
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<()>();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let _ = seen_tx.send(());
+                tokio::spawn(async move {
+                    let cb = move |_: &Request, _: Response| -> Result<Response, ErrorResponse> {
+                        let mut err = ErrorResponse::new(None);
+                        *err.status_mut() = status;
+                        Err(err)
+                    };
+                    let _ = tokio_tungstenite::accept_hdr_async(stream, cb).await;
+                });
+            }
+        });
+
+        let events = Arc::new(Recorder::default());
+        let manager = WebSocketManager::start(
+            events.clone(),
+            session.clone(),
+            WsTimings::default(),
+            Some(format!("ws://127.0.0.1:{port}/ws")),
+        );
+
+        for _ in 0..4 {
+            within(seen_rx.recv()).await;
+        }
+        drop(manager);
+        let names = events.names();
+        assert_eq!(
+            names.iter().filter(|n| *n == "ws:auth_rejected").count(),
+            1,
+            "{names:?}"
+        );
+        assert!(!names.iter().any(|n| n == "ws:connected"), "{names:?}");
+        assert_eq!(session.auth_info().unwrap().access_token, "new");
+        // `.expect(1)` on /auth/refresh is verified when `http` drops.
+    }
+
+    #[tokio::test]
+    async fn persistent_401_refreshes_once() {
+        persistent_rejection_refreshes_once(StatusCode::UNAUTHORIZED).await;
+    }
+
+    #[tokio::test]
+    async fn persistent_403_refreshes_once() {
+        persistent_rejection_refreshes_once(StatusCode::FORBIDDEN).await;
     }
 
     #[tokio::test]

@@ -35,8 +35,12 @@ Tauri event `ws:server_event` → webview `handleServerEvent()` (same as browser
   `ws:disconnected` (the loop ended by itself because there is no session).
   `disconnect()` stops the loop silently.
 - **Tokens:** read from `SessionManager::auth_info()` before every attempt;
-  refreshed first when they expire within 60 s. HTTP 401 on the handshake or a
-  server close with 1008 → `refresh()`, then one immediate retry.
+  refreshed first when they expire within 60 s. HTTP 401/403 on the handshake
+  or a server close with 1008 → `refresh()`, then one immediate retry. If the
+  fresh token is rejected too, `ws:auth_rejected` is emitted once (hook for
+  "show login / password change", C11) and the loop backs off without more
+  refreshes until a connection ends normally.
+  Losing a live connection always emits `ws:reconnecting` before any retry.
   `SessionError::Expired` → stop (the session manager emits
   `auth:session_expired`).
 - **Backoff:** `next_backoff(attempt, jitter)` — 1 s doubling to 30 s, ±20 %,
