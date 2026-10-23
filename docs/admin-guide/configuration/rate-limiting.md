@@ -179,7 +179,8 @@ Examples:
 
 ```bash
 # Docker Compose: the reverse proxy lives in the compose network subnet
-RATE_LIMIT_TRUSTED_PROXIES=172.18.0.0/16
+# (the shipped compose file derives this from KAIKU_NET_SUBNET)
+RATE_LIMIT_TRUSTED_PROXIES=172.31.250.0/24
 
 # Kubernetes (k3s): Traefik runs in the pod CIDR
 RATE_LIMIT_TRUSTED_PROXIES=10.42.0.0/16
