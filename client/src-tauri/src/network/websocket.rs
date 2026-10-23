@@ -331,8 +331,8 @@ enum Ended {
     Shutdown,
 }
 
-/// Where a streak of auth rejections stands; reset when a connection ends
-/// normally.
+/// Where a streak of auth rejections stands; reset whenever a connection was
+/// established (the server accepted the token).
 #[derive(Clone, Copy)]
 enum AuthRetry {
     /// No rejection yet: the next one refreshes and retries at once.
@@ -389,6 +389,9 @@ impl Connection {
                     if matches!(ended, Ended::Shutdown) {
                         return;
                     }
+                    // A connection was established: the token was accepted, so
+                    // a rejection streak only counts consecutive handshakes.
+                    auth = AuthRetry::Fresh;
                     // The live connection is gone: say so before refreshing or
                     // retrying, so the webview recovers (re-subscribes) on the
                     // next ws:connected and nothing is queued for a dead socket.
@@ -398,10 +401,7 @@ impl Connection {
                     reported = true;
                     match ended {
                         Ended::AuthProblem => self.after_rejection(&mut auth).await,
-                        Ended::Lost | Ended::Shutdown => {
-                            auth = AuthRetry::Fresh;
-                            Next::Backoff
-                        }
+                        Ended::Lost | Ended::Shutdown => Next::Backoff,
                     }
                 }
                 Attempt::Failed => Next::Backoff,
@@ -981,6 +981,67 @@ mod tests {
             ]
         );
         assert_eq!(manager.status(), ConnectionStatus::Connected);
+    }
+
+    #[tokio::test]
+    async fn each_policy_close_cycle_refreshes_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use tungstenite::protocol::frame::coding::CloseCode;
+        use tungstenite::protocol::CloseFrame;
+
+        let http = MockServer::start().await;
+        let session = session_with(&http, "old").await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("new", "rt-2")))
+            .expect(2)
+            .mount(&http)
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let served = served.clone();
+                tokio::spawn(async move {
+                    let cb = |_: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                        Ok(accept_protocol(resp))
+                    };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, cb).await else {
+                        return;
+                    };
+                    // The first two (healthy) connections are closed with 1008.
+                    if served.fetch_add(1, Ordering::SeqCst) < 2 {
+                        let _ = ws
+                            .close(Some(CloseFrame {
+                                code: CloseCode::Policy,
+                                reason: "".into(),
+                            }))
+                            .await;
+                    }
+                    while ws.next().await.is_some() {}
+                });
+            }
+        });
+
+        let events = Arc::new(Recorder::default());
+        let manager = WebSocketManager::start(
+            events.clone(),
+            session,
+            WsTimings::default(),
+            Some(format!("ws://127.0.0.1:{port}/ws")),
+        );
+
+        within(events.wait_count("ws:connected", 3)).await;
+        let names = events.names();
+        assert!(!names.iter().any(|n| n == "ws:auth_rejected"), "{names:?}");
+        assert_eq!(manager.status(), ConnectionStatus::Connected);
+        // `.expect(2)` on /auth/refresh is verified when `http` drops.
     }
 
     /// A server that rejects every handshake with `status`: exactly one
