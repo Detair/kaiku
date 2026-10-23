@@ -4,6 +4,18 @@ import android.content.SharedPreferences
 import java.util.logging.Logger
 import javax.inject.Inject
 
+/**
+ * Persists the session tokens.
+ *
+ * All token writers ([saveTokens], [saveTokensIfRefreshTokenIs], [clear],
+ * [clearIfRefreshTokenIs], [saveServerUrl]) are synchronized on this instance,
+ * so the conditional variants used by the token refresh are atomic with respect
+ * to login and logout.
+ *
+ * [getSessionGeneration] changes whenever a different session may start (login,
+ * logout, server change) but not when a refresh rotates the current session's
+ * tokens. Callers capture it to detect that the session they started from is gone.
+ */
 class TokenStorage @Inject constructor(
     private val prefs: SharedPreferences
 ) {
@@ -19,7 +31,46 @@ class TokenStorage @Inject constructor(
         private val logger = Logger.getLogger("TokenStorage")
     }
 
+    @Volatile
+    private var sessionGeneration = 0L
+
+    /** Changes on login, logout and server change; unchanged by a refresh rotation. */
+    fun getSessionGeneration(): Long = sessionGeneration
+
+    /** Stores a new session (login). Starts a new session generation. */
+    @Synchronized
     fun saveTokens(
+        accessToken: String,
+        refreshToken: String?,
+        expiresIn: Int,
+        userId: String
+    ) {
+        // Bump before writing, so a reader that sees the new tokens also sees the new generation.
+        sessionGeneration++
+        writeTokens(accessToken, refreshToken, expiresIn, userId)
+    }
+
+    /**
+     * Stores rotated tokens only if the stored refresh token is still
+     * [expectedRefreshToken], i.e. the session was neither logged out nor
+     * replaced while the refresh was in flight. Keeps the session generation.
+     *
+     * @return true if the tokens were written, false if nothing was written.
+     */
+    @Synchronized
+    fun saveTokensIfRefreshTokenIs(
+        expectedRefreshToken: String,
+        accessToken: String,
+        refreshToken: String?,
+        expiresIn: Int,
+        userId: String
+    ): Boolean {
+        if (getRefreshToken() != expectedRefreshToken) return false
+        writeTokens(accessToken, refreshToken, expiresIn, userId)
+        return true
+    }
+
+    private fun writeTokens(
         accessToken: String,
         refreshToken: String?,
         expiresIn: Int,
@@ -51,7 +102,9 @@ class TokenStorage @Inject constructor(
 
     fun getServerUrl(): String? = prefs.getString(KEY_SERVER_URL, null)
 
+    @Synchronized
     fun saveServerUrl(url: String) {
+        sessionGeneration++
         val success = prefs.edit()
             .putString(KEY_SERVER_URL, url)
             .commit()
@@ -92,7 +145,29 @@ class TokenStorage @Inject constructor(
         }
     }
 
+    /** Removes the session tokens (logout). Starts a new session generation. */
+    @Synchronized
     fun clear() {
+        sessionGeneration++
+        removeTokens()
+    }
+
+    /**
+     * Removes the session tokens only if the stored refresh token is still
+     * [expectedRefreshToken] (null meaning "none stored"), so a rejected refresh
+     * of an old session never wipes a newer login.
+     *
+     * @return true if the tokens were removed (or already absent as expected).
+     */
+    @Synchronized
+    fun clearIfRefreshTokenIs(expectedRefreshToken: String?): Boolean {
+        if (getRefreshToken() != expectedRefreshToken) return false
+        sessionGeneration++
+        removeTokens()
+        return true
+    }
+
+    private fun removeTokens() {
         val success = prefs.edit()
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)

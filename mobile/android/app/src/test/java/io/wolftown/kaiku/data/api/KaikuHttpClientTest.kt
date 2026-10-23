@@ -8,6 +8,7 @@ import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.testutil.InMemorySharedPreferences
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
@@ -29,6 +30,11 @@ class KaikuHttpClientTest {
         tokenStorage = mockk(relaxed = true)
         authState = mockk(relaxed = true)
         every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
+        // Conditional writers: relaxed mocks would return false (= "session changed").
+        every { tokenStorage.clearIfRefreshTokenIs(any()) } returns true
+        every {
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
+        } returns true
     }
 
     private fun createClient(mockEngine: MockEngine): KaikuHttpClient {
@@ -101,9 +107,10 @@ class KaikuHttpClientTest {
         every { tokenStorage.getRefreshToken() } returns "valid-refresh-token"
         every { tokenStorage.getUserId() } returns "user-123"
         every {
-            tokenStorage.saveTokens(any(), any(), any(), any())
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
         } answers {
-            currentAccessToken = firstArg()
+            currentAccessToken = secondArg()
+            true
         }
 
         val mockEngine = MockEngine { request ->
@@ -153,7 +160,8 @@ class KaikuHttpClientTest {
 
         // Verify tokens were saved
         verify {
-            tokenStorage.saveTokens(
+            tokenStorage.saveTokensIfRefreshTokenIs(
+                expectedRefreshToken = "valid-refresh-token",
                 accessToken = "new-access-token",
                 refreshToken = "new-refresh-token",
                 expiresIn = 900,
@@ -258,7 +266,7 @@ class KaikuHttpClientTest {
 
         // Should still logout since we got a 401 with no refresh token
         verify { authState.setLoggedOut() }
-        verify { tokenStorage.clear() }
+        verify { tokenStorage.clearIfRefreshTokenIs(null) }
     }
 
     // ========================================================================
@@ -275,10 +283,11 @@ class KaikuHttpClientTest {
         every { tokenStorage.getRefreshToken() } returns "valid-refresh-token"
         every { tokenStorage.getUserId() } returns "user-123"
         every {
-            tokenStorage.saveTokens(any(), any(), any(), any())
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
         } answers {
             // Simulate real token storage: update the current token
-            currentAccessToken = firstArg()
+            currentAccessToken = secondArg()
+            true
         }
 
         val mockEngine = MockEngine { request ->
@@ -409,8 +418,11 @@ class KaikuHttpClientTest {
         every { tokenStorage.getAccessTokenExpiresAtMillis() } returns expiresAtMillis
         every { tokenStorage.getRefreshToken() } returns "valid-refresh-token"
         every { tokenStorage.getUserId() } returns "user-123"
-        every { tokenStorage.saveTokens(any(), any(), any(), any()) } answers {
-            currentAccessToken = firstArg()
+        every {
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
+        } answers {
+            currentAccessToken = secondArg()
+            true
         }
     }
 
@@ -456,7 +468,9 @@ class KaikuHttpClientTest {
 
         assertEquals(RefreshResult.SUCCESS, client.ensureFresh())
         assertEquals(0, requestCount)
-        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        verify(exactly = 0) {
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -475,7 +489,8 @@ class KaikuHttpClientTest {
         assertEquals(RefreshResult.SUCCESS, client.ensureFresh(minValidityMs = 60_000))
         assertEquals(1, refreshRequests)
         verify {
-            tokenStorage.saveTokens(
+            tokenStorage.saveTokensIfRefreshTokenIs(
+                expectedRefreshToken = "valid-refresh-token",
                 accessToken = "new-access-token",
                 refreshToken = "new-refresh-token",
                 expiresIn = 900,
@@ -500,7 +515,7 @@ class KaikuHttpClientTest {
 
         assertEquals(RefreshResult.AUTH_REJECTED, client.forceRefresh())
         verify { authState.setLoggedOut() }
-        verify { tokenStorage.clear() }
+        verify { tokenStorage.clearIfRefreshTokenIs("valid-refresh-token") }
     }
 
     @Test
@@ -513,7 +528,7 @@ class KaikuHttpClientTest {
 
         assertEquals(RefreshResult.NETWORK_ERROR, client.forceRefresh())
         verify(exactly = 0) { authState.setLoggedOut() }
-        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { tokenStorage.clearIfRefreshTokenIs(any()) }
     }
 
     @Test
@@ -582,8 +597,10 @@ class KaikuHttpClientTest {
 
         assertEquals(RefreshResult.NETWORK_ERROR, client.forceRefresh())
         verify(exactly = 0) { authState.setLoggedOut() }
-        verify(exactly = 0) { tokenStorage.clear() }
-        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.clearIfRefreshTokenIs(any()) }
+        verify(exactly = 0) {
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
+        }
     }
 
     @Test
@@ -602,65 +619,188 @@ class KaikuHttpClientTest {
 
         assertEquals(RefreshResult.NETWORK_ERROR, client.forceRefresh())
         verify(exactly = 0) { authState.setLoggedOut() }
-        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { tokenStorage.clearIfRefreshTokenIs(any()) }
     }
+
+    // ========================================================================
+    // Session races, against the real TokenStorage (in-memory preferences)
+    // ========================================================================
+
+    private fun realStorage(): TokenStorage =
+        TokenStorage(InMemorySharedPreferences()).apply {
+            saveServerUrl("https://kaiku.example.com")
+            saveTokens(
+                accessToken = "expired-token",
+                refreshToken = "valid-refresh-token",
+                expiresIn = 0,
+                userId = "user-123"
+            )
+        }
+
+    private fun MockRequestHandleScope.unauthorized() = respond(
+        content = """{"error": "unauthorized"}""",
+        status = HttpStatusCode.Unauthorized,
+        headers = headersOf(HttpHeaders.ContentType, "application/json")
+    )
 
     @Test
     fun `logout during in-flight refresh does not resurrect session`() = runTest {
-        stubTokenState("expired-token", expiresAtMillis = 0L)
-        var storedRefreshToken: String? = "valid-refresh-token"
-        every { tokenStorage.getRefreshToken() } answers { storedRefreshToken }
-        every { tokenStorage.clear() } answers { storedRefreshToken = null }
+        val storage = realStorage()
 
         val mockEngine = MockEngine {
             // User logs out while the refresh request is in flight
-            tokenStorage.clear()
+            storage.clear()
             refreshOk()
         }
 
-        val client = createClient(mockEngine)
+        val client = KaikuHttpClient.forTesting(storage, authState, mockEngine)
 
         assertEquals(RefreshResult.NO_SESSION, client.forceRefresh())
-        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        assertNull(storage.getAccessToken())
+        assertNull(storage.getRefreshToken())
     }
 
     @Test
     fun `new login during in-flight refresh is not clobbered`() = runTest {
-        stubTokenState("expired-token", expiresAtMillis = 0L)
-        var storedRefreshToken: String? = "valid-refresh-token"
-        every { tokenStorage.getRefreshToken() } answers { storedRefreshToken }
+        val storage = realStorage()
 
         val mockEngine = MockEngine {
-            // A new login stores a different refresh token while the request is in flight
-            storedRefreshToken = "fresh-login-refresh-token"
+            // A new login lands while the refresh request is in flight
+            storage.saveTokens("login-access-token", "login-refresh-token", 900, "user-456")
             refreshOk()
         }
 
-        val client = createClient(mockEngine)
+        val client = KaikuHttpClient.forTesting(storage, authState, mockEngine)
 
         assertEquals(RefreshResult.SUCCESS, client.forceRefresh())
-        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        assertEquals("login-access-token", storage.getAccessToken())
+        assertEquals("login-refresh-token", storage.getRefreshToken())
+        assertEquals("user-456", storage.getUserId())
+        verify(exactly = 0) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `rejected stale refresh 401 does not wipe a newer login`() = runTest {
+        val storage = realStorage()
+
+        val mockEngine = MockEngine {
+            storage.saveTokens("login-access-token", "login-refresh-token", 900, "user-456")
+            unauthorized()
+        }
+
+        val client = KaikuHttpClient.forTesting(storage, authState, mockEngine)
+
+        assertEquals(RefreshResult.SUCCESS, client.forceRefresh())
+        assertEquals("login-refresh-token", storage.getRefreshToken())
+        verify(exactly = 0) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `rejected stale refresh 403 does not wipe a newer login`() = runTest {
+        val storage = realStorage()
+
+        val mockEngine = MockEngine {
+            storage.saveTokens("login-access-token", "login-refresh-token", 900, "user-456")
+            respond(
+                content = """{"error": "forbidden"}""",
+                status = HttpStatusCode.Forbidden,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val client = KaikuHttpClient.forTesting(storage, authState, mockEngine)
+
+        assertEquals(RefreshResult.SUCCESS, client.forceRefresh())
+        assertEquals("login-refresh-token", storage.getRefreshToken())
         verify(exactly = 0) { authState.setLoggedOut() }
     }
 
     @Test
     fun `rejected refresh clears storage before logging out`() = runTest {
-        stubTokenState("expired-token", expiresAtMillis = 0L)
-
-        val mockEngine = MockEngine {
-            respond(
-                content = """{"error": "invalid refresh token"}""",
-                status = HttpStatusCode.Unauthorized,
-                headers = headersOf(HttpHeaders.ContentType, "application/json")
-            )
+        val storage = realStorage()
+        every { authState.setLoggedOut() } answers {
+            // Observers of LoggedOut must not see live tokens
+            assertNull(storage.getAccessToken())
+            assertNull(storage.getRefreshToken())
         }
 
-        val client = createClient(mockEngine)
+        val mockEngine = MockEngine { unauthorized() }
+
+        val client = KaikuHttpClient.forTesting(storage, authState, mockEngine)
 
         assertEquals(RefreshResult.AUTH_REJECTED, client.forceRefresh())
-        verifyOrder {
-            tokenStorage.clear()
-            authState.setLoggedOut()
+        verify(exactly = 1) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `stale 401 is not replayed with a new login on another server`() = runTest {
+        val storage = realStorage()
+        val requests = mutableListOf<Pair<String, String?>>() // host+path, Authorization
+
+        val mockEngine = MockEngine { request ->
+            synchronized(requests) {
+                requests += "${request.url.host}${request.url.encodedPath}" to
+                    request.headers[HttpHeaders.Authorization]
+            }
+            when (request.url.encodedPath) {
+                "/auth/refresh" -> {
+                    // A new login to a different server lands while the refresh is pending
+                    storage.saveServerUrl("https://other.example.com")
+                    storage.saveTokens("login-access-token", "login-refresh-token", 900, "user-456")
+                    refreshOk()
+                }
+                else -> unauthorized()
+            }
         }
+
+        val client = KaikuHttpClient.forTesting(storage, authState, mockEngine)
+
+        val response = client.activeClient().get("/api/test")
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+        val apiRequests = requests.filter { it.first.endsWith("/api/test") }
+        assertEquals("Original request must not be retried", 1, apiRequests.size)
+        assertEquals("kaiku.example.com/api/test", apiRequests.single().first)
+        assertEquals("Bearer expired-token", apiRequests.single().second)
+        assertTrue(
+            "No request may carry the new session's token to the old host",
+            requests.none {
+                it.first.startsWith("kaiku.example.com") &&
+                    it.second == "Bearer login-access-token"
+            }
+        )
+        // The new login is left intact
+        assertEquals("login-refresh-token", storage.getRefreshToken())
+        verify(exactly = 0) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `401 retry happens after the same session rotated`() = runTest {
+        val storage = realStorage()
+        var apiCalls = 0
+
+        val mockEngine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/auth/refresh" -> refreshOk()
+                else -> {
+                    apiCalls++
+                    if (request.headers[HttpHeaders.Authorization] == "Bearer new-access-token") {
+                        respond(
+                            content = """{"status": "ok"}""",
+                            status = HttpStatusCode.OK,
+                            headers = headersOf(HttpHeaders.ContentType, "application/json")
+                        )
+                    } else {
+                        unauthorized()
+                    }
+                }
+            }
+        }
+
+        val client = KaikuHttpClient.forTesting(storage, authState, mockEngine)
+
+        assertEquals(HttpStatusCode.OK, client.activeClient().get("/api/test").status)
+        assertEquals(2, apiCalls)
+        assertEquals("new-refresh-token", storage.getRefreshToken())
     }
 }

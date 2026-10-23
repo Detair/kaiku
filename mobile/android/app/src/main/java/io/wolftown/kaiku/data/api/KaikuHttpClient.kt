@@ -104,6 +104,12 @@ class KaikuHttpClient @Inject constructor(
                 return@intercept execute(request)
             }
 
+            // Capture the session this request belongs to. Read the generation
+            // before the token: a login landing in between makes the generation
+            // look stale (safe: no retry), never the other way round.
+            val generationAtRequest = tokenStorage.getSessionGeneration()
+            val serverUrlAtRequest = tokenStorage.getServerUrl()
+
             // Attach Bearer token if available
             tokenStorage.getAccessToken()?.let { token ->
                 request.headers[HttpHeaders.Authorization] = "Bearer $token"
@@ -115,26 +121,36 @@ class KaikuHttpClient @Inject constructor(
                 return@intercept originalCall
             }
 
-            // 401 received -- attempt token refresh (skipped if another caller
-            // already rotated the token this request was sent with)
             val tokenUsedInRequest =
                 request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")
 
-            val refreshResult = refreshMutex.withLock {
-                val currentToken = tokenStorage.getAccessToken()
-                if (currentToken != null && currentToken != tokenUsedInRequest) {
-                    RefreshResult.SUCCESS
+            val retry = refreshMutex.withLock {
+                if (!isSameSession(generationAtRequest, serverUrlAtRequest)) {
+                    // Logged out, logged in again or server changed since this
+                    // request was sent: never replay it with another session's token.
+                    false
                 } else {
-                    refreshLocked()
+                    val currentToken = tokenStorage.getAccessToken()
+                    if (currentToken != null && currentToken != tokenUsedInRequest) {
+                        // Same session, token already rotated by another caller
+                        true
+                    } else {
+                        refreshLocked() == Outcome.ROTATED
+                    }
                 }
             }
 
-            if (refreshResult != RefreshResult.SUCCESS) {
+            if (!retry) {
                 return@intercept originalCall
             }
 
-            // Retry original request with new token
+            // Retry original request with the rotated token, but only if the
+            // session is still the one the request started from (the retry
+            // reuses the original, already resolved URL).
             val newToken = tokenStorage.getAccessToken()
+            if (newToken == null || !isSameSession(generationAtRequest, serverUrlAtRequest)) {
+                return@intercept originalCall
+            }
             request.headers[HttpHeaders.Authorization] = "Bearer $newToken"
             execute(request)
         }
@@ -146,7 +162,7 @@ class KaikuHttpClient @Inject constructor(
         if (isValidFor(minValidityMs)) return RefreshResult.SUCCESS
         return refreshMutex.withLock {
             // Double-check: another caller may have refreshed while we waited
-            if (isValidFor(minValidityMs)) RefreshResult.SUCCESS else refreshLocked()
+            if (isValidFor(minValidityMs)) RefreshResult.SUCCESS else refreshLocked().result
         }
     }
 
@@ -158,10 +174,29 @@ class KaikuHttpClient @Inject constructor(
             if (currentToken != null && currentToken != tokenBefore) {
                 RefreshResult.SUCCESS
             } else {
-                refreshLocked()
+                refreshLocked().result
             }
         }
     }
+
+    /**
+     * Internal refresh outcome. Distinguishes a rotation of the session the
+     * refresh started from ([ROTATED], the only outcome that allows replaying a
+     * request) from finding a different session ([SESSION_CHANGED]) or a session
+     * ended by someone else ([SESSION_ENDED]).
+     */
+    private enum class Outcome(val result: RefreshResult) {
+        ROTATED(RefreshResult.SUCCESS),
+        SESSION_CHANGED(RefreshResult.SUCCESS),
+        SESSION_ENDED(RefreshResult.NO_SESSION),
+        AUTH_REJECTED(RefreshResult.AUTH_REJECTED),
+        NETWORK_ERROR(RefreshResult.NETWORK_ERROR),
+        NO_SESSION(RefreshResult.NO_SESSION),
+    }
+
+    private fun isSameSession(generation: Long, serverUrl: String?): Boolean =
+        tokenStorage.getSessionGeneration() == generation &&
+            tokenStorage.getServerUrl() == serverUrl
 
     private fun isValidFor(minValidityMs: Long): Boolean {
         if (tokenStorage.getAccessToken() == null) return false
@@ -170,39 +205,52 @@ class KaikuHttpClient @Inject constructor(
     }
 
     /**
+     * Classifies storage after the refresh token turned out to differ from the
+     * one a refresh started with: empty means someone else ended the session,
+     * anything else is a newer session that must be left untouched.
+     */
+    private fun changedSession(): Outcome =
+        if (tokenStorage.getRefreshToken() == null && tokenStorage.getAccessToken() == null) {
+            Outcome.SESSION_ENDED
+        } else {
+            Outcome.SESSION_CHANGED
+        }
+
+    /**
+     * Ends the session the refresh started from, but only if it is still the
+     * stored one (atomic in [TokenStorage]). Clears before logging out so no
+     * LoggedOut observer can read live tokens.
+     */
+    private fun endSessionIfStill(sentRefreshToken: String?, onEnded: Outcome): Outcome {
+        if (!tokenStorage.clearIfRefreshTokenIs(sentRefreshToken)) return changedSession()
+        authState.setLoggedOut()
+        return onEnded
+    }
+
+    /**
      * Refreshes the tokens. Must be called while holding [refreshMutex].
      *
-     * Ends the session (logout + clear stored tokens) on
-     * [RefreshResult.AUTH_REJECTED] and [RefreshResult.NO_SESSION].
+     * Ends the session (clear stored tokens, then logout) on
+     * [Outcome.AUTH_REJECTED] and [Outcome.NO_SESSION], only if the stored
+     * refresh token is still the one the refresh started from.
      */
-    private suspend fun refreshLocked(): RefreshResult {
+    private suspend fun refreshLocked(): Outcome {
         val refreshToken = tokenStorage.getRefreshToken()
-        val result = if (refreshToken == null) {
-            RefreshResult.NO_SESSION
-        } else {
-            performRefresh(refreshToken)
-        }
-        if (result == RefreshResult.AUTH_REJECTED || result == RefreshResult.NO_SESSION) {
-            // Clear first so no LoggedOut observer can read live tokens.
-            tokenStorage.clear()
-            authState.setLoggedOut()
-        }
-        return result
+            ?: return endSessionIfStill(null, Outcome.NO_SESSION)
+        return performRefresh(refreshToken)
     }
 
     /**
      * Performs the token refresh request through the configured client.
      *
-     * Returns [RefreshResult.SUCCESS] when tokens were saved,
-     * [RefreshResult.AUTH_REJECTED] on 401/403 (invalid refresh token), or
-     * [RefreshResult.NETWORK_ERROR] for transient failures (I/O, 5xx, other
-     * non-success statuses including 400) that should not log the user out.
-     *
-     * If the stored refresh token changed while the request was in flight
-     * (logout cleared it, or a new login replaced it), the response is
-     * discarded so a logged-out session is never resurrected.
+     * Status mapping: 2xx → tokens saved atomically if the stored refresh token
+     * is still [refreshToken] ([Outcome.ROTATED]); 401/403 → session ended if
+     * still current ([Outcome.AUTH_REJECTED]); 400, 5xx, other non-2xx and
+     * exceptions → [Outcome.NETWORK_ERROR] (session kept). If the stored refresh
+     * token changed while the request was in flight (logout or new login), the
+     * response is discarded and nothing is written or cleared.
      */
-    private suspend fun performRefresh(refreshToken: String): RefreshResult {
+    private suspend fun performRefresh(refreshToken: String): Outcome {
         return try {
             val response = activeClient().post("/auth/refresh") {
                 // Skip the auth interceptor: no Bearer header, no 401 recursion
@@ -213,41 +261,40 @@ class KaikuHttpClient @Inject constructor(
             val status = response.status
 
             if (status == HttpStatusCode.Unauthorized || status == HttpStatusCode.Forbidden) {
-                return RefreshResult.AUTH_REJECTED
+                // Only the session that sent this refresh token may be ended.
+                return endSessionIfStill(refreshToken, Outcome.AUTH_REJECTED)
             }
 
             if (!status.isSuccess()) {
                 logger.warning("Token refresh failed with HTTP ${status.value}")
-                return RefreshResult.NETWORK_ERROR
+                return Outcome.NETWORK_ERROR
             }
 
             val authResponse = response.body<AuthResponse>()
 
-            // Re-check: logout (clear) or a new login may have happened while
-            // the request was in flight. Never overwrite either.
-            when (tokenStorage.getRefreshToken()) {
-                null -> return RefreshResult.NO_SESSION
-                refreshToken -> Unit
-                else -> return RefreshResult.SUCCESS
-            }
-
             // Use existing userId since the refresh response does not include it
-            val userId = tokenStorage.getUserId() ?: return RefreshResult.NETWORK_ERROR
+            val userId = tokenStorage.getUserId()
+                ?: return if (tokenStorage.getRefreshToken() == refreshToken) {
+                    Outcome.NETWORK_ERROR
+                } else {
+                    changedSession()
+                }
 
-            tokenStorage.saveTokens(
+            val saved = tokenStorage.saveTokensIfRefreshTokenIs(
+                expectedRefreshToken = refreshToken,
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken ?: refreshToken,
                 expiresIn = authResponse.expiresIn,
                 userId = userId
             )
-            RefreshResult.SUCCESS
+            if (saved) Outcome.ROTATED else changedSession()
         } catch (e: kotlin.coroutines.cancellation.CancellationException) {
             throw e
         } catch (e: Exception) {
             // Log the exception type only: decoding errors can echo the response
             // body, which contains tokens.
             logger.warning("Token refresh failed: ${e.javaClass.simpleName}")
-            RefreshResult.NETWORK_ERROR
+            Outcome.NETWORK_ERROR
         }
     }
 }
