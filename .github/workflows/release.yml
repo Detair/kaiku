@@ -7,12 +7,29 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., v0.1.0)'
+        description: 'Tag to release (e.g., v1.0.0-rc.1)'
         required: true
         type: string
+      dry_run:
+        description: 'Dry run: build unsigned, publish nothing'
+        required: false
+        type: boolean
+        default: true
+
+# Read-only by default; jobs that write get their own grants.
+permissions:
+  contents: read
+
+# One run per tag at a time; a second run for the same tag (tag push and a
+# dispatch, or a re-dispatch) waits. Never cancel: a cancelled publish run
+# could leave a draft release whose server image was never pushed.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  SERVER_IMAGE: ghcr.io/detair/kaiku-server
 
 jobs:
   # ===========================================================================
@@ -22,99 +39,137 @@ jobs:
     name: Prepare Release
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get_version.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      android_version_code: ${{ steps.version.outputs.android_version_code }}
+      publish: ${{ steps.mode.outputs.publish }}
       release_notes: ${{ steps.release_notes.outputs.release_notes }}
-      is_prerelease: ${{ steps.check_prerelease.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get version from tag
-        id: get_version
+      # Exit 2 on an invalid tag fails the run before anything is built.
+      - name: Parse version from tag
+        id: version
         env:
-          INPUT_TAG: ${{ inputs.tag }}
-          GITHUB_REF_VALUE: ${{ github.ref }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        # No pipe: the default shell has no pipefail, so `| tee` would mask exit 2.
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="$INPUT_TAG"
-          else
-            VERSION="${GITHUB_REF_VALUE#refs/tags/}"
-          fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Version: ${VERSION}"
+          python3 scripts/release_version.py parse "$TAG" > "$RUNNER_TEMP/version.env"
+          cat "$RUNNER_TEMP/version.env"
+          cat "$RUNNER_TEMP/version.env" >> "$GITHUB_OUTPUT"
 
-      - name: Check if prerelease
-        id: check_prerelease
+      # Publish on a tag push, or on a dispatch with dry_run unticked.
+      - name: Decide publish or dry run
+        id: mode
         env:
-          VERSION: ${{ steps.get_version.outputs.version }}
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [[ "$VERSION" == *"alpha"* ]] || [[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"rc"* ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          publish=false
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
+            publish=true
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
+            publish=true
           fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish"
 
-      - name: Validate docs governance consistency
-        run: python3 scripts/check_docs_governance.py
+      - name: Verify version files and tag commit
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          python3 scripts/release_version.py check --tag "$TAG"
+          tag_commit=$(git rev-parse "$TAG^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "::error::Tag $TAG points at $tag_commit but the run checked out $head_commit"
+            exit 1
+          fi
 
       - name: Generate standardized release notes
         id: release_notes
         env:
-          VERSION: ${{ steps.get_version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python3 scripts/generate_release_notes.py --version "$VERSION" --output /tmp/release-notes.md
-          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
-          cat /tmp/release-notes.md >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          python3 scripts/generate_release_notes.py --version "$VERSION" --output "$RUNNER_TEMP/release-notes.md"
+          delim="NOTES_$(openssl rand -hex 8)"
+          {
+            echo "release_notes<<$delim"
+            cat "$RUNNER_TEMP/release-notes.md"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
 
   # ===========================================================================
   # Build Tauri Client (Multi-platform)
   # ===========================================================================
+  # Secrets live in Environment 'release' and are only read on publish runs;
+  # a dry run gets no environment, so every secret expression below is ''.
   build-tauri:
-    name: Build Tauri (${{ matrix.platform }})
+    name: Build Tauri (${{ matrix.target }})
     needs: prepare-release
+    environment: ${{ needs.prepare-release.outputs.publish == 'true' && 'release' || '' }}
     strategy:
       fail-fast: false
       matrix:
+        # One row per target: a single `tauri build` produces every bundle
+        # for that target. MSI is not built: WiX rejects non-numeric
+        # pre-release versions (-rc.N) and the updater prefers *-setup.exe.
         include:
-          - platform: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            bundle: deb
-          - platform: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bundle: appimage
-          - platform: windows-latest
+            bundles: appimage,deb
+          - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bundle: msi
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            bundle: nsis
-          - platform: macos-latest
+            bundles: nsis
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-            bundle: dmg
-          - platform: macos-latest
+            bundles: app,dmg
+          - os: macos-latest
             target: aarch64-apple-darwin
-            bundle: dmg
-    runs-on: ${{ matrix.platform }}
+            bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      MODE: ${{ needs.prepare-release.outputs.publish == 'true' && 'publish' || 'dry-run' }}
+      VERSION: ${{ needs.prepare-release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-latest'
+      # The repo scripts call python3; Windows runners only ship `python`.
+      - name: Provide python3 (Windows)
+        if: runner.os == 'Windows'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev libopus-dev
+          mkdir -p "$RUNNER_TEMP/python3-shim"
+          printf '#!/bin/sh\nexec python "$@"\n' > "$RUNNER_TEMP/python3-shim/python3"
+          chmod +x "$RUNNER_TEMP/python3-shim/python3"
+          echo "$RUNNER_TEMP/python3-shim" >> "$GITHUB_PATH"
+
+      # Dry runs build an untagged commit; stamp the requested version so the
+      # artifacts are named and report it exactly like a real release would.
+      - name: Stamp dry-run version
+        if: needs.prepare-release.outputs.publish != 'true'
+        run: sh scripts/bump-version.sh "$VERSION"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
+      - uses: ./.github/actions/setup-native-deps
+
+      # XCODE_CACHE_KEY is exported by setup-native-deps on macOS (empty
+      # elsewhere) so Xcode image rotations start a fresh cargo cache.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.XCODE_CACHE_KEY }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -125,66 +180,142 @@ jobs:
         working-directory: client
         run: bun install --frozen-lockfile || (sleep 5 && bun install --frozen-lockfile)
 
+      # Updater signing: required on publish, skipped (tauri.ci.conf.json
+      # turns createUpdaterArtifacts off) on a dry run.
+      - name: Check updater signing key
+        id: updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+        run: python3 scripts/require_secrets.py --mode "$MODE" --output updater --step "updater signing" TAURI_SIGNING_PRIVATE_KEY
+
+      # macOS signing hook (off until MACOS_SIGNING_ENABLED == 'true').
+      # Disabled: ad-hoc signing (identity "-"), which Apple Silicon needs to
+      # launch at all. Enabled: Tauri reads the APPLE_* variables natively.
+      - name: macOS signing hook
+        id: macsign
+        if: runner.os == 'macOS'
+        env:
+          ENABLED: ${{ vars.MACOS_SIGNING_ENABLED == 'true' }}
+          APPLE_CERTIFICATE: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.MACOS_SIGNING_ENABLED == 'true' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          if [ "$ENABLED" = true ]; then
+            python3 scripts/require_secrets.py --mode "$MODE" --output macsign --step "macOS signing" \
+              APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          else
+            echo "macsign=false" >> "$GITHUB_OUTPUT"
+          fi
+          if ! grep -qx 'macsign=true' "$GITHUB_OUTPUT"; then
+            echo "::notice::macOS build is ad-hoc signed; Gatekeeper will warn (set MACOS_SIGNING_ENABLED, see docs/ops/release-runbook.md)"
+          fi
+
+      # Windows signing hook (off until WINDOWS_SIGNING_ENABLED == 'true').
+      # The enabled path signs through Azure Trusted Signing and is not yet
+      # exercised by any run.
+      - name: Windows signing hook
+        id: winsign
+        if: runner.os == 'Windows'
+        env:
+          ENABLED: ${{ vars.WINDOWS_SIGNING_ENABLED == 'true' }}
+          AZURE_CLIENT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.WINDOWS_SIGNING_ENABLED == 'true' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ needs.prepare-release.outputs.publish == 'true' && vars.WINDOWS_SIGNING_ENABLED == 'true' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TENANT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && vars.WINDOWS_SIGNING_ENABLED == 'true' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_PROFILE }}
+        run: |
+          if [ "$ENABLED" = true ]; then
+            python3 scripts/require_secrets.py --mode "$MODE" --output winsign --step "Windows signing" \
+              AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID \
+              AZURE_TRUSTED_SIGNING_ENDPOINT AZURE_TRUSTED_SIGNING_ACCOUNT AZURE_TRUSTED_SIGNING_PROFILE
+          else
+            echo "winsign=false" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -qx 'winsign=true' "$GITHUB_OUTPUT"; then
+            python3 scripts/write_winsign_config.py --output "$RUNNER_TEMP/tauri-winsign.json"
+            echo "config=$RUNNER_TEMP/tauri-winsign.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Windows installer is unsigned; SmartScreen will warn"
+          fi
+
+      - name: Install trusted-signing-cli
+        if: steps.winsign.outputs.winsign == 'true'
+        env:
+          # Latest on crates.io at implementation time (2026-10-22).
+          TRUSTED_SIGNING_CLI_VERSION: "0.11.0"
+        run: cargo install trusted-signing-cli --locked --version "$TRUSTED_SIGNING_CLI_VERSION"
+
       - name: Build Tauri app
         working-directory: client
         env:
           BUILD_TARGET: ${{ matrix.target }}
-          # Required: bundle.createUpdaterArtifacts is enabled, so the build
-          # signs updater bundles. Builds fail if the key is missing.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-        run: bun run tauri build -- --target "$BUILD_TARGET"
+          BUNDLES: ${{ matrix.bundles }}
+          UPDATER: ${{ steps.updater.outputs.updater }}
+          WINSIGN_CONFIG: ${{ steps.winsign.outputs.config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.prepare-release.outputs.publish == 'true' && steps.updater.outputs.updater == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.updater.outputs.updater == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          APPLE_CERTIFICATE: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          # "-" = ad-hoc signature on macOS when the signing hook is off.
+          APPLE_SIGNING_IDENTITY: ${{ needs.prepare-release.outputs.publish == 'true' && steps.macsign.outputs.macsign == 'true' && secrets.APPLE_SIGNING_IDENTITY || (runner.os == 'macOS' && '-' || '') }}
+          AZURE_CLIENT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TENANT_ID: ${{ needs.prepare-release.outputs.publish == 'true' && steps.winsign.outputs.winsign == 'true' && secrets.AZURE_TENANT_ID || '' }}
+        run: |
+          # tauri-bundler checks these for presence, not content: an empty
+          # APPLE_CERTIFICATE would trigger a keychain import of nothing and
+          # defeat ad-hoc signing. Unset every empty optional signing var.
+          # (TAURI_SIGNING_PRIVATE_KEY_PASSWORD stays: empty = no password.)
+          for var in TAURI_SIGNING_PRIVATE_KEY \
+              APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+              APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+              AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID; do
+            [ -n "${!var}" ] || unset "$var"
+          done
+          config=()
+          if [ "$UPDATER" != true ]; then
+            config+=(--config src-tauri/tauri.ci.conf.json)
+          fi
+          if [ -n "$WINSIGN_CONFIG" ]; then
+            config+=(--config "$WINSIGN_CONFIG")
+          fi
+          bun run tauri build --target "$BUILD_TARGET" --bundles "$BUNDLES" "${config[@]}"
 
-      - name: Generate checksums (Linux)
-        if: matrix.platform == 'ubuntu-latest'
+      - name: Generate checksums
         env:
           BUILD_TARGET: ${{ matrix.target }}
-        working-directory: target
         run: |
-          cd "$BUILD_TARGET/release/bundle"
-          if [ -d "deb" ]; then
-            cd deb && sha256sum *.deb > checksums.txt && cd ..
+          cd "target/$BUILD_TARGET/release/bundle"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256() { sha256sum "$@"; }
+          else
+            sha256() { shasum -a 256 "$@"; }
           fi
-          if [ -d "appimage" ]; then
-            cd appimage && sha256sum *.AppImage >> checksums.txt && cd ..
+          shopt -s nullglob
+          files=(deb/*.deb appimage/*.AppImage nsis/*.exe dmg/*.dmg)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No installer bundles found for $BUILD_TARGET"
+            exit 1
           fi
-
-      - name: Generate checksums (Windows)
-        if: matrix.platform == 'windows-latest'
-        env:
-          BUILD_TARGET: ${{ matrix.target }}
-        working-directory: target
-        shell: pwsh
-        run: |
-          cd "$env:BUILD_TARGET/release/bundle"
-          if (Test-Path "msi") {
-            Get-ChildItem -Path msi\*.msi | ForEach-Object {
-              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-              "$hash  $($_.Name)" | Out-File -Append checksums.txt -Encoding utf8
-            }
-          }
-          if (Test-Path "nsis") {
-            Get-ChildItem -Path nsis\*.exe | ForEach-Object {
-              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-              "$hash  $($_.Name)" | Out-File -Append checksums.txt -Encoding utf8
-            }
-          }
-
-      - name: Generate checksums (macOS)
-        if: matrix.platform == 'macos-latest'
-        env:
-          BUILD_TARGET: ${{ matrix.target }}
-        working-directory: target
-        run: |
-          cd "$BUILD_TARGET/release/bundle"
-          if [ -d "dmg" ]; then
-            cd dmg && shasum -a 256 *.dmg > checksums.txt && cd ..
-          fi
+          # Bare file names: checksums.txt is checked against the downloaded
+          # release assets, which sit flat in one directory.
+          : > checksums.txt
+          for f in "${files[@]}"; do
+            (cd "$(dirname "$f")" && sha256 "$(basename "$f")") >> checksums.txt
+          done
+          cat checksums.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tauri-${{ matrix.platform }}-${{ matrix.target }}-${{ matrix.bundle }}
+          name: tauri-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/bundle/**/*
           retention-days: 7
@@ -192,71 +323,245 @@ jobs:
   # ===========================================================================
   # Build Server Docker Image
   # ===========================================================================
+  # Builds and smoke-tests the image, then exports exactly that image as an
+  # artifact. Nothing is pushed here: push-image publishes it only after every
+  # platform build and the release assembly succeeded.
   build-docker:
-    name: Build and Push Docker Image
+    name: Build and Smoke-test Docker Image
     needs: prepare-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/server
+          images: ${{ env.SERVER_IMAGE }}
+          # latest only for final releases (R-08); release candidates get only their version.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.prepare-release.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare-release.outputs.is_prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare-release.outputs.version }}
+            org.opencontainers.image.source=https://github.com/Detair/kaiku
 
-      - name: Build and push
+      # Build once into the local daemon and smoke-test it before anything is pushed.
+      - name: Build image for smoke test
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: infra/docker/server.Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          file: infra/docker/Dockerfile
+          load: true
+          push: false
+          tags: kaiku-server:smoke
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke test - binary runs and no config is baked in
+        run: |
+          set -euo pipefail
+          # Without env vars the server must fail on the first required variable.
+          # `docker run` exits non-zero here, so capture the output instead of piping.
+          out="$(docker run --rm kaiku-server:smoke 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q "DATABASE_URL must be set"
+
+      - name: Smoke test - image contents
+        run: |
+          set -euo pipefail
+          listing="$(docker run --rm --entrypoint /bin/sh kaiku-server:smoke -c 'ls -A /app')"
+          echo "$listing"
+          test "$listing" = "$(printf 'migrations\nvc-server')"
+
+      - name: Smoke test - version label
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          label="$(docker image inspect kaiku-server:smoke \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          echo "version label: $label"
+          test "$label" = "$VERSION"
+
+      # Dry runs export too, so the hand-off to push-image is exercised.
+      - name: Export smoke-tested image
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/server-image"
+          docker save kaiku-server:smoke | gzip > "$RUNNER_TEMP/server-image/kaiku-server.tar.gz"
+          ls -lh "$RUNNER_TEMP/server-image"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-image
+          path: ${{ runner.temp }}/server-image/kaiku-server.tar.gz
+          retention-days: 1
+
+  # ===========================================================================
+  # Build Android APK
+  # ===========================================================================
+  # Same secret scoping as build-tauri: the release environment (and so the
+  # signing secrets) exists only on publish runs. A dry run builds unsigned.
+  build-android:
+    name: Build Android APK
+    needs: prepare-release
+    environment: ${{ needs.prepare-release.outputs.publish == 'true' && 'release' || '' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      MODE: ${{ needs.prepare-release.outputs.publish == 'true' && 'publish' || 'dry-run' }}
+      PUBLISH: ${{ needs.prepare-release.outputs.publish }}
+      VERSION: ${{ needs.prepare-release.outputs.version }}
+      ANDROID_VERSION_CODE: ${{ needs.prepare-release.outputs.android_version_code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dry runs build an untagged commit; stamp the requested version so the
+      # APK reports exactly what a real release would.
+      - name: Stamp dry-run version
+        if: needs.prepare-release.outputs.publish != 'true'
+        run: sh scripts/bump-version.sh "$VERSION"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: gradle
+
+      # Publish: missing secrets fail the run. Dry run: build unsigned.
+      - name: Check Android signing secrets
+        id: signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: |
+          python3 scripts/require_secrets.py --mode "$MODE" --output signing --step "Android signing" \
+            ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD
+
+      - name: Decode release keystore
+        if: steps.signing.outputs.signing == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+        run: |
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Build release APK
+        working-directory: mobile/android
+        env:
+          SIGNING: ${{ steps.signing.outputs.signing }}
+          KAIKU_ANDROID_KEYSTORE_PATH: ${{ steps.signing.outputs.signing == 'true' && format('{0}/release.jks', runner.temp) || '' }}
+          KAIKU_ANDROID_KEYSTORE_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.signing.outputs.signing == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          KAIKU_ANDROID_KEY_ALIAS: ${{ needs.prepare-release.outputs.publish == 'true' && steps.signing.outputs.signing == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+          KAIKU_ANDROID_KEY_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.signing.outputs.signing == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: |
+          chmod +x gradlew
+          flags=()
+          # Publish must never fall back to an unsigned APK.
+          if [ "$PUBLISH" = true ]; then
+            flags+=(-Pkaiku.requireReleaseSigning=true)
+          fi
+          ./gradlew assembleRelease --no-daemon "${flags[@]}"
+
+      - name: Remove release keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Verify and stage APK
+        working-directory: mobile/android
+        env:
+          SIGNING: ${{ steps.signing.outputs.signing }}
+        run: |
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/release/*.apk)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release APK, found ${#apks[@]}"
+            exit 1
+          fi
+          expect=()
+          if [ "$SIGNING" != true ]; then
+            expect+=(--expect-unsigned)
+          fi
+          ../../scripts/android_verify_apk.sh "${apks[0]}" "$VERSION" "$ANDROID_VERSION_CODE" "${expect[@]}" > "$RUNNER_TEMP/verify.txt"
+          cat "$RUNNER_TEMP/verify.txt"
+
+          out="$GITHUB_WORKSPACE/android-out"
+          mkdir -p "$out"
+          cp "${apks[0]}" "$out/Kaiku-$VERSION.apk"
+          (cd "$out" && sha256sum "Kaiku-$VERSION.apk" > "Kaiku-$VERSION.apk.sha256")
+          cat "$out/Kaiku-$VERSION.apk.sha256"
+
+          {
+            echo "### Android APK"
+            echo "- File: \`Kaiku-$VERSION.apk\` (versionCode $ANDROID_VERSION_CODE)"
+            if [ "$SIGNING" = true ]; then
+              echo "- Signer certificate (record for the key backup and assetlinks.json):"
+              echo '```'
+              grep "certificate SHA-256 digest" "$RUNNER_TEMP/verify.txt" || echo "(no digest printed)"
+              echo '```'
+            else
+              echo "- Unsigned dry-run build; no signer certificate."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: android-out/*
+          retention-days: 7
 
   # ===========================================================================
   # Publish GitHub Release
   # ===========================================================================
   publish-release:
     name: Publish GitHub Release
-    needs: [prepare-release, build-tauri, build-docker]
+    needs: [prepare-release, build-tauri, build-docker, build-android]
+    # Only publish runs (tag push, or dispatch with dry_run unticked) publish.
+    if: needs.prepare-release.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      # Client artifacts only; the server image tarball is push-image's.
+      - name: Download Tauri artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: tauri-*
           path: artifacts
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: artifacts/android-apk
 
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
 
           # Find and copy all built packages
-          find artifacts -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" -o -name "*.dmg" \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.exe" -o -name "*.dmg" \) -exec cp {} release-assets/ \;
 
           # Updater signatures for Linux/Windows travel with their installers
-          find artifacts -type f \( -name "*.AppImage.sig" -o -name "*.exe.sig" -o -name "*.msi.sig" \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.AppImage.sig" -o -name "*.exe.sig" \) -exec cp {} release-assets/ \;
 
           # macOS updater bundles are named identically for both
           # architectures (Kaiku.app.tar.gz) — disambiguate by the build
@@ -270,82 +575,62 @@ jobs:
             fi
           done
 
-          # Find and consolidate checksums
-          find artifacts -type f -name "checksums.txt" -exec cat {} \; > release-assets/checksums.txt || true
+          # Android APK; its checksum joins checksums.txt below
+          find artifacts -type f \( -name "Kaiku-*.apk" -o -name "Kaiku-*.apk.sha256" \) -exec cp {} release-assets/ \;
+
+          # Consolidate the per-target checksums (installers only)
+          find artifacts -type f -name "checksums.txt" -exec cat {} \; > release-assets/checksums.txt
+          find artifacts -type f -name "Kaiku-*.apk.sha256" -exec cat {} \; >> release-assets/checksums.txt
 
           # List what we're uploading
           ls -lah release-assets/
 
+      # Fails the release if any platform lacks a signed updater bundle.
       - name: Generate updater manifest (latest.json)
         env:
-          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
-          python3 - <<'EOF'
-          import datetime
-          import glob
-          import json
-          import os
+          python3 scripts/generate_updater_manifest.py --assets-dir release-assets \
+            --tag "$TAG" --repo Detair/kaiku --mode publish --output release-assets/latest.json
 
-          tag = os.environ["VERSION"]
-          base = f"https://github.com/Detair/kaiku/releases/download/{tag}"
-          platforms = {}
+      # A TAURI_SIGNING_PRIVATE_KEY that does not belong to the pubkey baked
+      # into tauri.conf.json would ship updates no installed client accepts.
+      - name: Install minisign
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q minisign
 
-          def add(key, *patterns):
-              for pattern in patterns:
-                  for path in sorted(glob.glob(f"release-assets/{pattern}")):
-                      sig = path + ".sig"
-                      if os.path.exists(sig):
-                          with open(sig, encoding="utf-8") as f:
-                              platforms[key] = {
-                                  "signature": f.read().strip(),
-                                  "url": f"{base}/{os.path.basename(path)}",
-                              }
-                          return
-
-          add("linux-x86_64", "*.AppImage")
-          add("windows-x86_64", "*-setup.exe", "*.msi")
-          add("darwin-x86_64", "*x86_64.app.tar.gz")
-          add("darwin-aarch64", "*aarch64.app.tar.gz")
-
-          manifest = {
-              "version": tag.lstrip("v"),
-              "notes": f"See https://github.com/Detair/kaiku/releases/tag/{tag}",
-              "pub_date": datetime.datetime.now(datetime.timezone.utc)
-                  .isoformat(timespec="seconds"),
-              "platforms": platforms,
-          }
-          with open("release-assets/latest.json", "w", encoding="utf-8") as f:
-              json.dump(manifest, f, indent=2)
-          print(json.dumps(manifest, indent=2))
-          if not platforms:
-              raise SystemExit("No signed updater artifacts found — check TAURI_SIGNING_PRIVATE_KEY")
-          EOF
+      - name: Verify updater signatures against the configured pubkey
+        run: |
+          python3 scripts/verify_updater_signatures.py --manifest release-assets/latest.json \
+            --assets-dir release-assets --mode publish
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.prepare-release.outputs.version }}
-          IS_PRERELEASE: ${{ needs.prepare-release.outputs.is_prerelease }}
         with:
-          tag_name: ${{ needs.prepare-release.outputs.version }}
-          name: Release ${{ needs.prepare-release.outputs.version }}
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          name: Release ${{ needs.prepare-release.outputs.tag }}
           body: |
             ${{ needs.prepare-release.outputs.release_notes }}
 
             ## Installation
 
             ### Linux
-            - **Debian/Ubuntu**: Download the `.deb` file and install with `sudo dpkg -i canis_*.deb`
+            - **Debian/Ubuntu**: Download the `.deb` file and install with `sudo dpkg -i Kaiku_*_amd64.deb`
             - **Other distros**: Download the `.AppImage` file, make it executable, and run it
+            - Linux: use the AppImage for auto-updates
 
             ### Windows
-            - **Installer**: Download the `.exe` file for automatic installation
-            - **MSI**: Download the `.msi` file for Windows Installer
+            - **Installer**: Download the `-setup.exe` file for automatic installation
 
             ### macOS
             - Download the `.dmg` file for your architecture (Intel or Apple Silicon)
             - Open the DMG and drag the app to Applications
+
+            ### Android
+            - Download `Kaiku-${{ needs.prepare-release.outputs.version }}.apk` and allow installs from this source once. Updates install over the old version.
 
             ### Verify checksums
             ```bash
@@ -353,9 +638,89 @@ jobs:
             ```
 
             ## Server Deployment
-            Docker images are available at: `ghcr.io/${{ github.repository }}/server:${{ needs.prepare-release.outputs.version }}`
+            Server image: `${{ env.SERVER_IMAGE }}:${{ needs.prepare-release.outputs.version }}`
           draft: true
           prerelease: ${{ needs.prepare-release.outputs.is_prerelease == 'true' }}
           files: |
             release-assets/*
           fail_on_unmatched_files: false
+
+  # ===========================================================================
+  # Push Server Image
+  # ===========================================================================
+  # Last step of a publish run: the smoke-tested image from build-docker is
+  # pushed (and `latest` moved for a final release) only once all client
+  # builds succeeded and the draft release exists, so a failed platform never
+  # leaves a published image without a release.
+  push-image:
+    name: Push Server Image
+    needs: [prepare-release, build-tauri, build-docker, build-android, publish-release]
+    if: needs.prepare-release.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server-image
+          path: ${{ runner.temp }}/server-image
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load, check and push image
+        env:
+          TAGS: ${{ needs.build-docker.outputs.tags }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gunzip -c "$RUNNER_TEMP/server-image/kaiku-server.tar.gz" | docker load
+          label="$(docker image inspect kaiku-server:smoke \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          if [ "$label" != "$VERSION" ]; then
+            echo "::error::Image version label '$label' does not match release version '$VERSION'"
+            exit 1
+          fi
+          pushed=0
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            case "$tag" in
+              "$SERVER_IMAGE":*) ;;
+              *) echo "::error::Refusing to push unexpected tag $tag"; exit 1 ;;
+            esac
+            if [ "$tag" = "$SERVER_IMAGE:latest" ]; then
+              # `latest` must never move backwards (e.g. a late 1.0.0 run
+              # after 1.1.0 was published). The version tag is always pushed.
+              if docker pull "$tag" >/dev/null 2>"$RUNNER_TEMP/pull.err"; then
+                current="$(docker image inspect "$tag" \
+                  --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+                decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --current "$current")"
+              elif [ "$(python3 scripts/latest_tag_decision.py classify "$RUNNER_TEMP/pull.err")" = "absent" ]; then
+                decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --absent)"
+              else
+                cat "$RUNNER_TEMP/pull.err"
+                echo "::error::Cannot determine current latest (pull failed for a reason other than 'manifest unknown')"
+                exit 1
+              fi
+              if [ "$decision" != "push" ]; then
+                echo "::warning::Not moving latest (decision: $decision); see reason above"
+                continue
+              fi
+            fi
+            docker tag kaiku-server:smoke "$tag"
+            docker push "$tag"
+            echo "pushed $tag"
+            pushed=$((pushed + 1))
+          done <<< "$TAGS"
+          if [ "$pushed" -eq 0 ]; then
+            echo "::error::No image tags to push"
+            exit 1
+          fi
