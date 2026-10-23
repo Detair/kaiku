@@ -93,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Realtime updates now recover by themselves after a network drop, sleep or server restart, and a small indicator shows while the app reconnects.
 - The first direct message to someone now appears immediately on all of their open devices, instead of only after reloading the conversation list.
 - Realtime updates no longer stop silently when the server's internal event stream hiccups — the connection is closed so apps reconnect and catch up.
+- Android: shared photos, avatars and server icons now load; encrypted messages show a clear note instead of raw data.
 - Android: joining voice asks for microphone access instead of crashing; audio defaults to speaker or your headset.
 - Android: the channel list no longer goes blank when a server has forum or announcement channels; load errors are now shown.
 - Android: message history now loads when opening a channel and shows oldest-to-newest.
