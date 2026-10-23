@@ -16,9 +16,10 @@ These guardrails are designed to fail early in CI before those regressions land.
 
 The script `scripts/check_ci_guardrails.py` is the source of truth for automated checks.
 
-### 1) Windows libvpx setup must stay aligned in both workflows
+### 1) Native build dependencies live in one composite action
 
-Both `.github/workflows/ci.yml` and `.github/workflows/tauri-build.yml` must include:
+`.github/actions/setup-native-deps/action.yml` is the only place that installs
+the Tauri client's native libraries. It must include:
 
 - `vcpkg install libvpx:x64-windows-static-md`
 - `choco install -y pkgconfiglite`
@@ -27,7 +28,25 @@ Both `.github/workflows/ci.yml` and `.github/workflows/tauri-build.yml` must inc
 - `VPX_VERSION=1.15.2`
 - `VPX_STATIC=1`
 
-And `ci.yml` must not reintroduce a `PKG_CONFIG=...pkg-config/pkgconf` workaround.
+And it must not reintroduce a `PKG_CONFIG=...pkg-config/pkgconf` workaround.
+
+The Tauri build jobs `ci.yml` (`tauri`), `tauri-build.yml` (`build`) and
+`release.yml` (`build-tauri`) must run `uses: ./.github/actions/setup-native-deps`
+after `actions/checkout`, and must not inline `vcpkg`/`choco`/`brew` dependency installs.
+
+### 1a) PR workflows never touch the updater signing key
+
+`ci.yml` and `tauri-build.yml` must not reference `TAURI_SIGNING_PRIVATE_KEY`.
+They build with `--config src-tauri/tauri.ci.conf.json`, which disables updater artifacts.
+
+### 1b) `release.yml` stays buildable
+
+- `build-tauri` and `build-docker` both need `prepare-release`.
+- `build-tauri` sets `defaults.run.shell: bash` and has exactly one matrix row per
+  target, each with `os`, `target` and `bundles`.
+- Apple targets run on matching runners: `x86_64-apple-darwin` on `macos-15-intel`,
+  `aarch64-apple-darwin` on `macos-latest`.
+- The `build-docker` Dockerfile path must exist in the repo.
 
 ### 2) Setup integration tests must be DB-isolated and strict
 

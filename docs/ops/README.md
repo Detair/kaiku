@@ -9,6 +9,7 @@
 |---|---|
 | Taking / restoring backups, quarterly restore drill | [backup-restore-runbook.md](backup-restore-runbook.md) |
 | Upgrading to a new release, rolling back a bad one | [upgrade-playbook.md](upgrade-playbook.md) |
+| Cutting an RC or final release, one-time signing setup | [release-runbook.md](release-runbook.md) |
 | Reading metrics/traces/logs, alert meanings | [observability-runbook.md](observability-runbook.md) |
 | Observability data contract (what the server emits) | [observability-contract.md](observability-contract.md) |
 
