@@ -37,10 +37,12 @@ Tauri event `ws:server_event` → webview `handleServerEvent()` (same as browser
 - **Tokens:** read from `SessionManager::auth_info()` before every attempt;
   refreshed first when they expire within 60 s. HTTP 401/403 on the handshake
   or a server close with 1008 → `refresh()`, then one immediate retry. If the
-  fresh token is rejected too, `ws:auth_rejected` is emitted once (hook for
-  "show login / password change", C11) and the loop backs off without more
-  refreshes until a connection stays up for `healthy_after` (60 s). Shorter
-  connections also keep the backoff growing.
+  fresh token is rejected too, `ws:reconnecting` and then `ws:auth_rejected`
+  are emitted (hook for "show login / password change", C11) and the loop
+  parks: no automatic retry until `ws_reconnect_now` (which starts a fresh
+  round: one refresh, one retry) or a new `ws_connect`. A connection that
+  stays up for `healthy_after` (60 s) ends the rejection streak; shorter ones
+  keep the backoff growing.
   Losing a live connection always emits `ws:reconnecting` before any retry.
   `SessionError::Expired` → stop (the session manager emits
   `auth:session_expired`).
@@ -49,7 +51,9 @@ Tauri event `ws:server_event` → webview `handleServerEvent()` (same as browser
   `ws_reconnect_now` wakes the backoff sleep. Close codes 1011/1013 are
   ordinary drops (backoff, then the webview catches up).
 - **Watchdog:** `ClientEvent::Ping` every `ping_every` (20 s); no inbound frame
-  for `silence_limit` (45 s) → drop and reconnect. Handshakes time out after 15 s.
+  for `silence_limit` (45 s) → drop and reconnect. Every write (message, ping,
+  pong) gives up at the same deadline, so a peer that stopped reading cannot
+  stall the watchdog. Handshakes time out after 15 s.
 - **TLS:** `rustls-tls-native-roots`; `install_crypto_provider()` picks ring
   once (both ring and aws-lc-rs are in the crate graph).
 - **Tests:** `WsEvents` is the emitter; tests record events instead of using an

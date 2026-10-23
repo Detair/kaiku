@@ -6,8 +6,9 @@
 //! - Before every attempt the current access token is read from the [`SessionManager`]; a token
 //!   that expires within 60 s is refreshed first. A handshake rejected with HTTP 401/403 (or a
 //!   server close with code 1008) triggers one refresh and an immediate retry; if a fresh token is
-//!   rejected as well, `ws:auth_rejected` is emitted once and the loop backs off without further
-//!   refreshes. An ended session stops the loop.
+//!   rejected as well, `ws:auth_rejected` is emitted and the loop parks: no automatic retry until
+//!   an explicit [`WebSocketManager::reconnect_now`] (or a new `ws_connect`). An ended session
+//!   stops the loop.
 //! - Every inbound text frame is forwarded unchanged as `ws:server_event` (parsed JSON), so the
 //!   webview handles native and browser events with the same code and unknown event types are never
 //!   dropped.
@@ -18,13 +19,17 @@
 use std::sync::{Arc, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch, Notify};
 use tokio::task::JoinHandle;
-use tokio::time::{interval_at, sleep, sleep_until, timeout, Instant, MissedTickBehavior};
+use tokio::time::{
+    interval_at, sleep, sleep_until, timeout, timeout_at, Instant, MissedTickBehavior,
+};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message;
@@ -309,7 +314,9 @@ impl WebSocketManager {
         }
     }
 
-    /// Skip the current backoff wait and try to connect now.
+    /// Skip the current backoff wait and try to connect now. Also the only
+    /// way out of the parked state after `ws:auth_rejected`: the explicit
+    /// request starts a fresh round (one refresh, one retry).
     pub fn reconnect_now(&self) {
         self.wake.notify_waiters();
     }
@@ -336,22 +343,23 @@ enum Ended {
     Shutdown,
 }
 
-/// Where a streak of auth rejections stands; reset only by a connection that
-/// stayed up for `WsTimings::healthy_after`.
+/// Where a streak of auth rejections stands; reset by a connection that stayed
+/// up for `WsTimings::healthy_after` or by an explicit reconnect request.
 #[derive(Clone, Copy)]
 enum AuthRetry {
     /// No rejection yet: the next one refreshes and retries at once.
     Fresh,
-    /// Refreshed once for this streak.
+    /// Refreshed once for this streak: the next rejection parks the loop.
     Refreshed,
-    /// A fresh token was rejected too and `ws:auth_rejected` was emitted.
-    Reported,
 }
 
 /// What to do before the next attempt.
 enum Next {
     Backoff,
     Immediately,
+    /// A fresh token was rejected: report `ws:auth_rejected` and wait for an
+    /// explicit reconnect request instead of retrying on a schedule.
+    Park,
     Stop,
 }
 
@@ -438,6 +446,20 @@ impl Connection {
                         () = self.wake.notified() => info!("Reconnect requested"),
                     }
                 }
+                Next::Park => {
+                    // The failed attempt first, then the verdict: the webview
+                    // sees "reconnecting" before it ends the session.
+                    if !reported {
+                        attempt = attempt.saturating_add(1);
+                        self.set_status(ConnectionStatus::Reconnecting { attempt });
+                    }
+                    warn!("WebSocket rejected a freshly refreshed token; waiting for an explicit reconnect");
+                    self.events.emit("ws:auth_rejected", Value::Null);
+                    self.wake.notified().await;
+                    info!("Reconnect requested after an auth rejection");
+                    // An explicit request deserves a full round again.
+                    auth = AuthRetry::Fresh;
+                }
             }
         }
     }
@@ -445,19 +467,12 @@ impl Connection {
     /// After an auth rejection (handshake 401/403 or a 1008 close). The first
     /// one refreshes the token and retries at once. If the server still
     /// rejects a fresh token, a new token will not help (e.g. a password
-    /// change is required): report `ws:auth_rejected` once and keep backing
-    /// off without refreshing; the regular expiry check still refreshes when
-    /// the token actually runs out.
+    /// change is required) and retrying on a schedule would only hammer the
+    /// server: park until someone asks for a reconnect.
     async fn after_rejection(&self, auth: &mut AuthRetry) -> Next {
         match auth {
             AuthRetry::Fresh => {}
-            AuthRetry::Refreshed => {
-                warn!("WebSocket rejected a freshly refreshed token");
-                self.events.emit("ws:auth_rejected", Value::Null);
-                *auth = AuthRetry::Reported;
-                return Next::Backoff;
-            }
-            AuthRetry::Reported => return Next::Backoff,
+            AuthRetry::Refreshed => return Next::Park,
         }
         match self.session.refresh().await {
             Ok(_) => {
@@ -524,7 +539,10 @@ impl Connection {
     }
 
     /// Pump frames both ways until the connection ends.
-    async fn serve(&mut self, ws: WsStream) -> Ended {
+    async fn serve<S>(&mut self, ws: tokio_tungstenite::WebSocketStream<S>) -> Ended
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         info!("WebSocket connected");
         // Drop anything queued for an older connection.
         while self.outbound.try_recv().is_ok() {}
@@ -537,17 +555,24 @@ impl Connection {
         );
         ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut last_frame = Instant::now();
+        let silence_limit = self.timings.silence_limit;
 
         loop {
+            // Every write gives up at this deadline: a pending write keeps the
+            // watchdog branch below from running, so a peer that stopped
+            // reading (full send buffer) must not look "connected" for longer
+            // than a silent one.
+            let deadline = last_frame + silence_limit;
             tokio::select! {
                 msg = read.next() => {
                     last_frame = Instant::now();
                     match msg {
                         Some(Ok(Message::Text(text))) => self.forward(&text),
                         Some(Ok(Message::Ping(data))) => {
-                            if let Err(e) = write.send(Message::Pong(data)).await {
-                                warn!("Failed to send pong: {}", e);
-                                return Ended::Lost;
+                            // The ping just arrived: the pong has a full window.
+                            let deadline = last_frame + silence_limit;
+                            if let Err(ended) = write_frame(&mut write, Message::Pong(data), deadline, "pong").await {
+                                return ended;
                             }
                         }
                         Some(Ok(Message::Close(frame))) => {
@@ -573,20 +598,18 @@ impl Connection {
                     let Some(item) = item else { return Ended::Shutdown };
                     let Some(text) = item.into_text() else { continue };
                     debug!("Sending WebSocket message ({} bytes)", text.len());
-                    if let Err(e) = write.send(Message::Text(text.into())).await {
-                        warn!("Failed to send message: {}", e);
-                        return Ended::Lost;
+                    if let Err(ended) = write_frame(&mut write, Message::Text(text.into()), deadline, "message").await {
+                        return ended;
                     }
                 }
                 _ = ping.tick() => {
                     let text = Outbound::Event(ClientEvent::Ping).into_text().unwrap_or_default();
-                    if let Err(e) = write.send(Message::Text(text.into())).await {
-                        warn!("Failed to send ping: {}", e);
-                        return Ended::Lost;
+                    if let Err(ended) = write_frame(&mut write, Message::Text(text.into()), deadline, "ping").await {
+                        return ended;
                     }
                 }
-                () = sleep_until(last_frame + self.timings.silence_limit) => {
-                    warn!("No frame for {:?}, dropping connection", self.timings.silence_limit);
+                () = sleep_until(deadline) => {
+                    warn!("No frame for {:?}, dropping connection", silence_limit);
                     return Ended::Lost;
                 }
             }
@@ -604,6 +627,32 @@ impl Connection {
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Write one frame, or give up at the silence `deadline` (see `serve`).
+async fn write_frame<S>(
+    write: &mut SplitSink<tokio_tungstenite::WebSocketStream<S>, Message>,
+    message: Message,
+    deadline: Instant,
+    what: &str,
+) -> Result<(), Ended>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match timeout_at(deadline, write.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            warn!("Failed to send {}: {}", what, e);
+            Err(Ended::Lost)
+        }
+        Err(_) => {
+            warn!(
+                "Sending {} stalled until the silence limit, dropping connection",
+                what
+            );
+            Err(Ended::Lost)
+        }
+    }
+}
 
 /// Outcome of one connection attempt.
 enum Attempt {
@@ -782,6 +831,12 @@ mod tests {
             .insert("Sec-WebSocket-Protocol", "access_token".parse().unwrap());
         resp
     }
+
+    /// How long a parked loop is watched for an automatic retry: longer than
+    /// the backoff that would follow the second rejection (`next_backoff(2)`
+    /// is at most 2.4 s). Real time: the paused clock auto-advances past
+    /// `within` while the loopback handshake is in flight.
+    const PARKED_FOR: Duration = Duration::from_secs(3);
 
     async fn within<T>(fut: impl std::future::Future<Output = T>) -> T {
         tokio::time::timeout(Duration::from_secs(10), fut)
@@ -1060,7 +1115,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persistent_post_handshake_1008_refreshes_once() {
+    async fn persistent_post_handshake_1008_parks_after_one_refresh() {
         use tungstenite::protocol::frame::coding::CloseCode;
         use tungstenite::protocol::CloseFrame;
 
@@ -1110,9 +1165,18 @@ mod tests {
             Some(format!("ws://127.0.0.1:{port}/ws")),
         );
 
-        for _ in 0..3 {
+        // Token `old` rejected, refreshed, token `new` rejected too.
+        for _ in 0..2 {
             within(conn_rx.recv()).await;
         }
+        within(events.wait_count("ws:auth_rejected", 1)).await;
+        // Parked: no automatic retry (a backoff would have retried by now).
+        assert!(
+            tokio::time::timeout(PARKED_FOR, conn_rx.recv())
+                .await
+                .is_err(),
+            "reconnected on its own after ws:auth_rejected"
+        );
         drop(manager);
         let names = events.names();
         assert_eq!(
@@ -1123,21 +1187,9 @@ mod tests {
         // `.expect(1)` on /auth/refresh is verified when `http` drops.
     }
 
-    /// A server that rejects every handshake with `status`: exactly one
-    /// refresh across several attempts, then `ws:auth_rejected`.
-    async fn persistent_rejection_refreshes_once(status: StatusCode) {
-        let http = MockServer::start().await;
-        let session = session_with(&http, "old").await;
-        Mock::given(method("POST"))
-            .and(path("/auth/refresh"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("new", "rt-2")))
-            .expect(1)
-            .mount(&http)
-            .await;
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<()>();
+    /// Serves `status` for every handshake; yields one `()` per attempt.
+    fn rejecting_server(listener: TcpListener, status: StatusCode) -> mpsc::UnboundedReceiver<()> {
+        let (seen_tx, seen_rx) = mpsc::unbounded_channel::<()>();
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
@@ -1154,6 +1206,26 @@ mod tests {
                 });
             }
         });
+        seen_rx
+    }
+
+    /// A server that rejects every handshake with `status`: one refresh, one
+    /// retry, then `ws:auth_rejected` and the loop parks (no automatic retry;
+    /// a webview that missed the event would otherwise see "Reconnecting…"
+    /// forever while Rust hammers the server).
+    async fn persistent_rejection_parks_after_one_refresh(status: StatusCode) {
+        let http = MockServer::start().await;
+        let session = session_with(&http, "old").await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("new", "rt-2")))
+            .expect(1)
+            .mount(&http)
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut seen_rx = rejecting_server(listener, status);
 
         let events = Arc::new(Recorder::default());
         let manager = WebSocketManager::start(
@@ -1163,9 +1235,23 @@ mod tests {
             Some(format!("ws://127.0.0.1:{port}/ws")),
         );
 
-        for _ in 0..4 {
+        // Token `old` rejected, refreshed, token `new` rejected too.
+        for _ in 0..2 {
             within(seen_rx.recv()).await;
         }
+        within(events.wait_count("ws:auth_rejected", 1)).await;
+        assert_eq!(session.auth_info().unwrap().access_token, "new");
+        // Parked: no automatic retry (a backoff would have retried by now).
+        assert!(
+            tokio::time::timeout(PARKED_FOR, seen_rx.recv())
+                .await
+                .is_err(),
+            "reconnected on its own after ws:auth_rejected"
+        );
+        assert!(matches!(
+            manager.status(),
+            ConnectionStatus::Reconnecting { .. }
+        ));
         drop(manager);
         let names = events.names();
         assert_eq!(
@@ -1174,18 +1260,119 @@ mod tests {
             "{names:?}"
         );
         assert!(!names.iter().any(|n| n == "ws:connected"), "{names:?}");
-        assert_eq!(session.auth_info().unwrap().access_token, "new");
+        // The webview learns about the failed attempt before the verdict.
+        let reconnecting = names.iter().position(|n| n == "ws:reconnecting");
+        let rejected = names.iter().position(|n| n == "ws:auth_rejected");
+        assert!(reconnecting < rejected, "{names:?}");
         // `.expect(1)` on /auth/refresh is verified when `http` drops.
     }
 
     #[tokio::test]
-    async fn persistent_401_refreshes_once() {
-        persistent_rejection_refreshes_once(StatusCode::UNAUTHORIZED).await;
+    async fn persistent_401_parks_after_one_refresh() {
+        persistent_rejection_parks_after_one_refresh(StatusCode::UNAUTHORIZED).await;
     }
 
     #[tokio::test]
-    async fn persistent_403_refreshes_once() {
-        persistent_rejection_refreshes_once(StatusCode::FORBIDDEN).await;
+    async fn persistent_403_parks_after_one_refresh() {
+        persistent_rejection_parks_after_one_refresh(StatusCode::FORBIDDEN).await;
+    }
+
+    #[tokio::test]
+    async fn explicit_reconnect_wakes_a_parked_loop() {
+        let http = MockServer::start().await;
+        let session = session_with(&http, "old").await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("new", "rt-2")))
+            .expect(2)
+            .mount(&http)
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut seen_rx = rejecting_server(listener, StatusCode::UNAUTHORIZED);
+
+        let events = Arc::new(Recorder::default());
+        let manager = WebSocketManager::start(
+            events.clone(),
+            session,
+            WsTimings::default(),
+            Some(format!("ws://127.0.0.1:{port}/ws")),
+        );
+
+        for _ in 0..2 {
+            within(seen_rx.recv()).await;
+        }
+        within(events.wait_count("ws:auth_rejected", 1)).await;
+        // Let the loop park before asking it to try again.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // An explicit request ("Retry now", ws_reconnect_now) is a fresh start:
+        // one more refresh, one more retry, one more verdict, then parked again.
+        manager.reconnect_now();
+        for _ in 0..2 {
+            within(seen_rx.recv()).await;
+        }
+        within(events.wait_count("ws:auth_rejected", 2)).await;
+        assert!(
+            tokio::time::timeout(PARKED_FOR, seen_rx.recv())
+                .await
+                .is_err(),
+            "reconnected on its own after the second ws:auth_rejected"
+        );
+        // `.expect(2)` on /auth/refresh is verified when `http` drops.
+    }
+
+    #[tokio::test]
+    async fn blocked_write_does_not_stall_the_silence_watchdog() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        let http = MockServer::start().await;
+        let session = session_with(&http, "tok").await;
+        tokio::time::pause();
+
+        // A peer with tiny buffers that never reads: the first large frame
+        // fills them and the write stays pending forever.
+        let (client_io, server_io) = tokio::io::duplex(256);
+        let client_ws =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(client_io, Role::Client, None)
+                .await;
+
+        let (tx, outbound) = mpsc::channel(OUTBOUND_QUEUE);
+        let (status, _status_rx) = watch::channel(ConnectionStatus::Connecting);
+        let timings = WsTimings::default();
+        let events = Arc::new(Recorder::default());
+        let mut conn = Connection {
+            events: events.clone(),
+            session,
+            timings,
+            ws_url: None,
+            outbound,
+            status,
+            wake: Arc::new(Notify::new()),
+        };
+        let started = Instant::now();
+        let serving = tokio::spawn(async move { conn.serve(client_ws).await });
+        // Queue after serve() dropped anything stale from an older connection.
+        within(events.wait_for(|n, _| n == "ws:connected")).await;
+        tx.send(Outbound::Raw(
+            json!({"type": "typing", "channel_id": "x".repeat(4096)}).to_string(),
+        ))
+        .await
+        .unwrap();
+
+        let ended = tokio::time::timeout(Duration::from_mins(5), serving)
+            .await
+            .expect("a stalled write kept the connection alive past the silence limit")
+            .unwrap();
+        drop(server_io);
+
+        assert!(matches!(ended, Ended::Lost));
+        assert!(
+            started.elapsed() >= timings.silence_limit,
+            "dropped after {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
