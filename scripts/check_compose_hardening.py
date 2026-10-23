@@ -38,6 +38,9 @@ COMPOSE_TOKENS = [
     "RATE_LIMIT_TRUSTED_PROXIES=",
     "PUBLIC_IP=",
     "AWS_ACCESS_KEY_ID=",
+    # The SFU must bind inside the published UDP range
+    "VOICE_UDP_PORT_MIN=${RTP_PORT_MIN",
+    "VOICE_UDP_PORT_MAX=${RTP_PORT_MAX",
 ]
 
 

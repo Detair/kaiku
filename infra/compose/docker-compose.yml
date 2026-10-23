@@ -54,9 +54,10 @@ services:
       - TURN_CREDENTIAL=${TURN_CREDENTIAL:-}
       # Public address advertised for voice media (TURN cannot relay to private addresses)
       - PUBLIC_IP=${PUBLIC_IP:-}
+      # Voice media binds inside the published UDP range below (same variables)
+      - VOICE_UDP_PORT_MIN=${RTP_PORT_MIN:-10000}
+      - VOICE_UDP_PORT_MAX=${RTP_PORT_MAX:-10100}
       # Optional voice media tuning (empty = server default)
-      - VOICE_UDP_PORT_MIN=${VOICE_UDP_PORT_MIN:-}
-      - VOICE_UDP_PORT_MAX=${VOICE_UDP_PORT_MAX:-}
       - VOICE_ICE_INTERFACES=${VOICE_ICE_INTERFACES:-}
       - VOICE_ICE_IP_FAMILY=${VOICE_ICE_IP_FAMILY:-}
       - MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY:-}

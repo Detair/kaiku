@@ -76,10 +76,18 @@ For voice to work, configure:
 # Your server's public IP (required for NAT traversal)
 PUBLIC_IP=203.0.113.50
 
-# UDP port range (ensure firewall allows these)
+# UDP port range for voice media (ensure firewall allows these)
 RTP_PORT_MIN=10000
 RTP_PORT_MAX=10100
 ```
+
+Compose publishes `RTP_PORT_MIN`-`RTP_PORT_MAX` and passes the same values to
+the server as `VOICE_UDP_PORT_MIN`/`VOICE_UDP_PORT_MAX`, so the voice server
+binds only inside this range. Forward exactly this UDP range 1:1 (same port
+numbers) on your router and firewall. Size it for at least 2 x concurrent
+voice participants x local addresses of the host, plus headroom (see
+[environment variables](../configuration/environment.md)). If you change the
+range, update the firewall rules below to match.
 
 **Firewall rules:**
 ```bash

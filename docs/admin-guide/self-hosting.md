@@ -88,8 +88,14 @@ The bundled `infra/compose/docker-compose.yml` ships with these settings:
   Docker network on the host.
 - **`PUBLIC_IP`**: set it to the host's public address. The voice server
   advertises it in its ICE candidates, and the TURN server no longer relays to
-  private addresses, so voice relies on it. Forward the UDP media range
-  (`RTP_PORT_MIN`-`RTP_PORT_MAX`) 1:1.
+  private addresses, so voice relies on it.
+- **Voice UDP range** (`RTP_PORT_MIN`-`RTP_PORT_MAX`, default `10000`-`10100`):
+  compose publishes this range and passes the same values to the server as
+  `VOICE_UDP_PORT_MIN`/`VOICE_UDP_PORT_MAX`, so voice media binds only inside
+  it. Forward exactly this UDP range 1:1 (same port numbers) on your router
+  and firewall. Size it for at least 2 x concurrent voice participants x
+  local addresses of the host, plus headroom; see
+  [environment variables](configuration/environment.md).
 - **Isolated TURN server.** `coturn` runs on its own `turn` network, cannot
   reach the application services, and refuses to relay to private, loopback,
   link-local and multicast addresses.

@@ -105,6 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS: the app no longer quits the first time it uses the microphone or camera; macOS now asks for permission.
 - The 'Log in on phone' QR code works again after restarting the app or reloading the page.
 - Realtime updates now recover by themselves after a network drop, sleep or server restart, and a small indicator shows while the app reconnects.
+- Voice in the self-hosting compose stack now uses the published UDP range (`RTP_PORT_MIN`-`RTP_PORT_MAX`, passed to the server as `VOICE_UDP_PORT_MIN`/`VOICE_UDP_PORT_MAX`) instead of random unpublished ports.
 - Servers whose storage credentials are set but empty (as in the self-hosting compose file) now treat storage as not configured and no longer probe the default AWS endpoint at startup.
 - Nightly backups and the upgrade preflight check now authenticate to the database correctly and reject incomplete dumps (#623).
 - People who lose connection, close their laptop or crash no longer stay visible in the voice channel; they are removed automatically.
