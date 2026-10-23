@@ -11,7 +11,7 @@ use uuid::Uuid;
 use vc_common::protocol::PcType;
 
 use super::error::VoiceError;
-use super::metrics::{finalize_session, get_guild_id, store_metrics};
+use super::metrics::{get_guild_id, store_metrics};
 use super::rate_limit::EventClass;
 use super::screen_share::{
     validate_source_label, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
@@ -278,6 +278,9 @@ async fn handle_join(
 }
 
 /// Handle a user leaving a voice channel.
+///
+/// Leaving never requires channel access: a user whose access was revoked
+/// mid-call must still be able to leave.
 async fn handle_leave(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
@@ -286,148 +289,9 @@ async fn handle_leave(
     screen_share_limiter: Option<&ScreenShareLimiter>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User leaving voice channel");
-
-    // Check if user has VIEW_CHANNEL permission
-    crate::permissions::require_channel_access(pool, user_id, channel_id)
+    super::leave::leave_voice_internal(sfu, pool, user_id, channel_id, screen_share_limiter, None)
         .await
-        .map_err(|e| map_permission_error(e, "voice leave"))?;
-
-    let room = sfu
-        .get_room(channel_id)
-        .await
-        .ok_or(VoiceError::RoomNotFound(channel_id))?;
-
-    // Remove all screen shares for this user
-    let removed_shares = room.remove_user_screen_shares(user_id).await;
-    if !removed_shares.is_empty() {
-        if let Some(limiter) = screen_share_limiter {
-            limiter.stop_n(channel_id, removed_shares.len()).await;
-        } else {
-            tracing::warn!(
-                "Screen share limiter unavailable during leave — counter not decremented"
-            );
-        }
-
-        for share in &removed_shares {
-            room.broadcast_except(
-                user_id,
-                ServerEvent::ScreenShareStopped {
-                    channel_id,
-                    user_id,
-                    stream_id: share.stream_id,
-                    reason: "disconnected".to_string(),
-                },
-            )
-            .await;
-        }
-    }
-
-    // Check if webcam is active and stop it
-    if room.remove_webcam(user_id).await.is_some() {
-        room.broadcast_except(
-            user_id,
-            ServerEvent::WebcamStopped {
-                channel_id,
-                user_id,
-                reason: "disconnected".to_string(),
-            },
-        )
-        .await;
-    }
-
-    // Remove peer from room
-    if let Some(peer) = room.remove_peer(user_id).await {
-        // Record voice session end metric
-        let duration_s = (chrono::Utc::now() - peer.connected_at)
-            .num_milliseconds()
-            .max(0) as f64
-            / 1000.0;
-        crate::observability::metrics::record_voice_session_end(duration_s);
-
-        // Finalize session in background
-        let guild_id = get_guild_id(pool, channel_id).await;
-        let pool_clone = pool.clone();
-        let session_id = peer.session_id;
-        let connected_at = peer.connected_at;
-
-        tokio::spawn(async move {
-            // Retry with exponential backoff (3 attempts: 100ms, 200ms, 400ms)
-            const MAX_RETRIES: u32 = 3;
-            let mut delay = std::time::Duration::from_millis(100);
-
-            for attempt in 1..=MAX_RETRIES {
-                match finalize_session(
-                    &pool_clone,
-                    user_id,
-                    session_id,
-                    channel_id,
-                    guild_id,
-                    connected_at,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        if attempt > 1 {
-                            info!(
-                                user_id = %user_id,
-                                session_id = %session_id,
-                                attempt = attempt,
-                                "Session finalized after retry"
-                            );
-                        }
-                        return;
-                    }
-                    Err(e) if attempt < MAX_RETRIES => {
-                        warn!(
-                            user_id = %user_id,
-                            session_id = %session_id,
-                            attempt = attempt,
-                            error = %e,
-                            "Failed to finalize session, retrying in {:?}",
-                            delay
-                        );
-                        tokio::time::sleep(delay).await;
-                        delay *= 2; // Exponential backoff
-                    }
-                    Err(e) => {
-                        error!(
-                            user_id = %user_id,
-                            session_id = %session_id,
-                            "Failed to finalize session after {} attempts: {}",
-                            MAX_RETRIES,
-                            e
-                        );
-                        // Session data is lost - this should trigger an alert in production
-                    }
-                }
-            }
-        });
-
-        // Close the peer connection
-        peer.close().await;
-    }
-
-    // Free per-peer rate-limit buckets so they don't accumulate across reconnects.
-    sfu.voice_rate_limiter().forget_peer(user_id);
-
-    room.broadcast_except(
-        user_id,
-        ServerEvent::VoiceUserLeft {
-            channel_id,
-            user_id,
-        },
-    )
-    .await;
-
-    sfu.cleanup_room_if_empty(channel_id).await;
-
-    info!(
-        user_id = %user_id,
-        channel_id = %channel_id,
-        "User left voice channel"
-    );
-
-    Ok(())
+        .map(|_| ())
 }
 
 /// Handle a publisher SDP offer from the client.
@@ -561,7 +425,7 @@ async fn subscribe_to_existing_tracks(
 
     // Renegotiate subscriber PC to send the offer with new tracks
     if peer.outgoing_tracks_count().await > 0 {
-        if let Err(e) = SfuServer::renegotiate(peer).await {
+        if let Err(e) = SfuServer::renegotiate_own(peer).await {
             error!(user_id = %user_id, error = %e, "failed to renegotiate subscriber after join");
         }
     }

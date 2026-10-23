@@ -387,6 +387,11 @@ async fn main() -> Result<()> {
             .expect("Failed to create HTTP client"),
     });
 
+    // Remove voice peers whose connection failed and did not recover.
+    let stale_peer_reaper_handle = state
+        .sfu
+        .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
+
     // Build router
     let app = api::create_router(state);
 
@@ -417,6 +422,7 @@ async fn main() -> Result<()> {
 
     // 1. Abort non-draining background tasks
     voice_cleanup_handle.abort();
+    stale_peer_reaper_handle.abort();
     db_cleanup_handle.abort();
     webhook_worker_handle.abort();
     rtp_flush_handle.abort();

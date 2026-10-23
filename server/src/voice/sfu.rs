@@ -3,10 +3,12 @@
 //! Manages voice rooms and WebRTC peer connections for real-time audio and video.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use sqlx::PgPool;
 use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use vc_common::protocol::PcType;
@@ -29,13 +31,13 @@ use webrtc::rtp_transceiver::RTCPFeedback;
 use super::error::VoiceError;
 use super::peer::Peer;
 use super::rate_limit::{VoiceRateLimiter, VoiceStatsLimiter};
-use super::screen_share::ScreenShareInfo;
+use super::screen_share::{ScreenShareInfo, ScreenShareLimiter};
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
 use crate::config::Config;
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
-use crate::ws::handlers::send_outbound_within;
+use crate::ws::handlers::{send_outbound, send_outbound_within, OutboundSendError};
 use crate::ws::{OutboundMsg, ServerEvent};
 
 /// How long a send to *another* peer's socket may wait for room in its queue.
@@ -59,6 +61,21 @@ async fn fan_out(senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>, event: &Server
         }
     });
     futures::future::join_all(sends).await;
+}
+
+/// How long a peer connection may stay `Failed` before the peer is removed
+/// from its room. Gives ICE restarts and brief network switches a chance.
+pub const PEER_FAILED_GRACE: Duration = Duration::from_secs(15);
+
+/// A peer whose connection failed and did not recover within
+/// [`PEER_FAILED_GRACE`]. Handled by the reaper from
+/// [`SfuServer::spawn_stale_peer_reaper`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StalePeer {
+    pub user_id: Uuid,
+    pub channel_id: Uuid,
+    /// Only this session is removed; a newer session of the same user stays.
+    pub session_id: Uuid,
 }
 
 /// Default maximum participants per room.
@@ -139,7 +156,30 @@ impl Room {
 
     /// Remove a peer from the room.
     pub async fn remove_peer(&self, user_id: Uuid) -> Option<Arc<Peer>> {
+        self.remove_peer_matching(user_id, None).await
+    }
+
+    /// Remove a peer only if it is still the given session. Check and removal
+    /// happen under one lock, so a newer session of the same user is never hit.
+    pub async fn remove_peer_if_session(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Option<Arc<Peer>> {
+        self.remove_peer_matching(user_id, Some(session_id)).await
+    }
+
+    async fn remove_peer_matching(
+        &self,
+        user_id: Uuid,
+        session_id: Option<Uuid>,
+    ) -> Option<Arc<Peer>> {
         let mut peers = self.peers.write().await;
+        if let Some(expected) = session_id {
+            if peers.get(&user_id).map(|p| p.session_id) != Some(expected) {
+                return None;
+            }
+        }
         let peer = peers.remove(&user_id);
 
         if peer.is_some() {
@@ -306,6 +346,10 @@ pub struct SfuServer {
     stats_limiter: Arc<VoiceStatsLimiter>,
     /// Per-peer, per-event-class token bucket limiter for voice signaling events.
     voice_rate_limiter: Arc<VoiceRateLimiter>,
+    /// Peers whose connection failed for longer than [`PEER_FAILED_GRACE`].
+    stale_tx: mpsc::UnboundedSender<StalePeer>,
+    /// Receiving end of `stale_tx`, taken once by the reaper.
+    stale_rx: Mutex<Option<mpsc::UnboundedReceiver<StalePeer>>>,
 }
 
 impl SfuServer {
@@ -392,6 +436,8 @@ impl SfuServer {
 
         info!("SFU server initialized");
 
+        let (stale_tx, stale_rx) = mpsc::unbounded_channel();
+
         Ok(Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             api: Arc::new(api),
@@ -399,7 +445,85 @@ impl SfuServer {
             rate_limiter: rate_limiter.map(Arc::new),
             stats_limiter: Arc::new(VoiceStatsLimiter::default()),
             voice_rate_limiter: Arc::new(VoiceRateLimiter::new()),
+            stale_tx,
+            stale_rx: Mutex::new(Some(stale_rx)),
         })
+    }
+
+    /// Sender for reporting stale peers to the reaper.
+    #[must_use]
+    pub fn stale_peer_sender(&self) -> mpsc::UnboundedSender<StalePeer> {
+        self.stale_tx.clone()
+    }
+
+    /// Start the task that removes peers reported as stale (see
+    /// [`PEER_FAILED_GRACE`]). Call once after startup; later calls only log.
+    /// The task holds a weak reference, so it ends when the SFU is dropped.
+    pub fn spawn_stale_peer_reaper(
+        self: &Arc<Self>,
+        pool: PgPool,
+        limiter: Option<ScreenShareLimiter>,
+    ) -> JoinHandle<()> {
+        let rx = self
+            .stale_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let sfu = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let Some(mut rx) = rx else {
+                warn!("Stale voice peer reaper already running");
+                return;
+            };
+            while let Some(stale) = rx.recv().await {
+                let Some(sfu) = sfu.upgrade() else { break };
+                match super::leave::leave_voice_internal(
+                    &sfu,
+                    &pool,
+                    stale.user_id,
+                    stale.channel_id,
+                    limiter.as_ref(),
+                    Some(stale.session_id),
+                )
+                .await
+                {
+                    Ok(true) => info!(
+                        user_id = %stale.user_id,
+                        channel_id = %stale.channel_id,
+                        "Removed voice peer after failed connection"
+                    ),
+                    Ok(false) => debug!(
+                        user_id = %stale.user_id,
+                        session_id = %stale.session_id,
+                        "Stale voice peer already gone or replaced"
+                    ),
+                    Err(e) => warn!(
+                        user_id = %stale.user_id,
+                        channel_id = %stale.channel_id,
+                        error = %e,
+                        "Failed to remove stale voice peer"
+                    ),
+                }
+            }
+        })
+    }
+
+    /// Find the voice peer of `user_id` whose signaling queue is `tx`, i.e. the
+    /// peer that belongs to that WebSocket. Returns `(channel_id, session_id)`.
+    pub async fn find_peer_owned_by(
+        &self,
+        user_id: Uuid,
+        tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Option<(Uuid, Uuid)> {
+        let rooms: Vec<Arc<Room>> = self.rooms.read().await.values().cloned().collect();
+        for room in rooms {
+            if let Some(peer) = room.get_peer(user_id).await {
+                if peer.signal_tx.same_channel(tx) {
+                    return Some((room.channel_id, peer.session_id));
+                }
+            }
+        }
+        None
     }
 
     /// Start background cleanup task for voice stats rate limiter.
@@ -523,8 +647,8 @@ impl SfuServer {
         ));
 
         // Set up connection state handlers for both PCs
-        Self::register_pc_state_handler(&publisher_pc, &peer, user_id, channel_id, "publisher");
-        Self::register_pc_state_handler(&subscriber_pc, &peer, user_id, channel_id, "subscriber");
+        Self::register_pc_state_handler(&publisher_pc, &peer, self.stale_tx.clone(), "publisher");
+        Self::register_pc_state_handler(&subscriber_pc, &peer, self.stale_tx.clone(), "subscriber");
 
         Ok(peer)
     }
@@ -790,16 +914,27 @@ impl SfuServer {
     }
 
     /// Register a connection state change handler on a single `PeerConnection`.
+    ///
+    /// `Failed` starts a [`PEER_FAILED_GRACE`] timer; if the connection is
+    /// still `Failed` afterwards, the peer is reported to the stale-peer
+    /// reaper. `Disconnected` is only logged (it often recovers by itself).
+    /// The callback holds only weak references to the peer and the PC, so it
+    /// does not keep either alive.
     fn register_pc_state_handler(
         pc: &Arc<RTCPeerConnection>,
         peer: &Arc<Peer>,
-        user_id: Uuid,
-        channel_id: Uuid,
+        stale_tx: mpsc::UnboundedSender<StalePeer>,
         pc_label: &'static str,
     ) {
         let peer_weak = Arc::downgrade(peer);
+        let pc_weak = Arc::downgrade(pc);
+        let user_id = peer.user_id;
+        let channel_id = peer.channel_id;
+        let session_id = peer.session_id;
         pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
             let pw = peer_weak.clone();
+            let pcw = pc_weak.clone();
+            let stale_tx = stale_tx.clone();
             Box::pin(async move {
                 debug!(
                     user_id = %user_id,
@@ -809,12 +944,23 @@ impl SfuServer {
                     "Peer connection state changed"
                 );
 
-                if matches!(
-                    state,
-                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
-                ) && pw.upgrade().is_some()
-                {
-                    warn!(user_id = %user_id, pc = pc_label, "Peer connection failed/disconnected");
+                if pw.upgrade().is_none() {
+                    return;
+                }
+                match state {
+                    RTCPeerConnectionState::Failed => {
+                        warn!(user_id = %user_id, pc = pc_label, "Peer connection failed");
+                        let stale = StalePeer {
+                            user_id,
+                            channel_id,
+                            session_id,
+                        };
+                        tokio::spawn(report_if_still_failed(pw, pcw, stale_tx, stale, pc_label));
+                    }
+                    RTCPeerConnectionState::Disconnected => {
+                        warn!(user_id = %user_id, pc = pc_label, "Peer connection disconnected");
+                    }
+                    _ => {}
                 }
             })
         }));
@@ -843,25 +989,42 @@ impl SfuServer {
         Ok(())
     }
 
-    /// Trigger renegotiation on the subscriber PC by creating a new offer
-    /// and sending it to the peer. Used after dynamically adding/removing tracks.
+    /// Trigger renegotiation on the subscriber PC of *another* peer by creating
+    /// a new offer and sending it to that peer. Used after dynamically
+    /// adding/removing tracks. Runs from the sender's socket loop, so the wait
+    /// is bounded by the short per-peer [`PEER_SIGNAL_SEND_TIMEOUT`].
     pub async fn renegotiate(peer: &Arc<Peer>) -> Result<(), VoiceError> {
+        let event = Self::create_subscriber_offer(peer).await?;
+        let sent = send_outbound_within(&peer.signal_tx, event, PEER_SIGNAL_SEND_TIMEOUT).await;
+        Self::check_offer_sent(peer, sent)
+    }
+
+    /// [`Self::renegotiate`] for the peer of the socket that is handling the
+    /// current event (e.g. the joiner's first subscriber offer). Uses the
+    /// socket's own full slow-client bound, so a briefly busy queue does not
+    /// drop the offer.
+    pub async fn renegotiate_own(peer: &Arc<Peer>) -> Result<(), VoiceError> {
+        let event = Self::create_subscriber_offer(peer).await?;
+        let sent = send_outbound(&peer.signal_tx, event).await;
+        Self::check_offer_sent(peer, sent)
+    }
+
+    async fn create_subscriber_offer(peer: &Arc<Peer>) -> Result<OutboundMsg, VoiceError> {
         let offer = peer.subscriber_pc.create_offer(None).await?;
         peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        // Often called for *other* peers from the sender's socket loop, so the
-        // wait is bounded by the short per-peer timeout.
-        send_outbound_within(
-            &peer.signal_tx,
-            OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
-                channel_id: peer.channel_id,
-                sdp: offer.sdp,
-            }),
-            PEER_SIGNAL_SEND_TIMEOUT,
-        )
-        .await
-        .map_err(|e| {
+        Ok(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
+            channel_id: peer.channel_id,
+            sdp: offer.sdp,
+        }))
+    }
+
+    fn check_offer_sent(
+        peer: &Arc<Peer>,
+        sent: Result<(), OutboundSendError>,
+    ) -> Result<(), VoiceError> {
+        sent.map_err(|e| {
             tracing::error!(
                 user_id = %peer.user_id,
                 channel_id = %peer.channel_id,
@@ -922,6 +1085,36 @@ impl SfuServer {
     /// Get active room count.
     pub async fn room_count(&self) -> usize {
         self.rooms.read().await.len()
+    }
+}
+
+/// After [`PEER_FAILED_GRACE`], report the peer as stale if it still exists
+/// and this PC is still `Failed`.
+async fn report_if_still_failed(
+    peer: Weak<Peer>,
+    pc: Weak<RTCPeerConnection>,
+    stale_tx: mpsc::UnboundedSender<StalePeer>,
+    stale: StalePeer,
+    pc_label: &'static str,
+) {
+    tokio::time::sleep(PEER_FAILED_GRACE).await;
+    if peer.upgrade().is_none() {
+        return;
+    }
+    let still_failed = pc
+        .upgrade()
+        .is_some_and(|pc| pc.connection_state() == RTCPeerConnectionState::Failed);
+    if !still_failed {
+        return;
+    }
+    warn!(
+        user_id = %stale.user_id,
+        channel_id = %stale.channel_id,
+        pc = pc_label,
+        "Peer connection did not recover, removing peer"
+    );
+    if stale_tx.send(stale).is_err() {
+        warn!(user_id = %stale.user_id, "Stale voice peer reaper is not running");
     }
 }
 
@@ -987,5 +1180,45 @@ mod fan_out_tests {
         )
         .await;
         assert!(healthy_rx.try_recv().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod renegotiate_tests {
+    use super::*;
+
+    /// The joiner's own subscriber offer must survive a briefly busy queue:
+    /// it gets the full slow-client bound, not the short fan-out bound.
+    #[tokio::test]
+    async fn own_offer_waits_past_fan_out_timeout() {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let (tx, mut rx) = mpsc::channel(1);
+        let peer = sfu
+            .create_peer(
+                Uuid::from_u128(1),
+                "joiner".into(),
+                "Joiner".into(),
+                Uuid::from_u128(2),
+                tx.clone(),
+            )
+            .await
+            .expect("peer");
+        tx.try_send(OutboundMsg::Ping).expect("fill queue");
+
+        // Drain the queue only after the fan-out bound has passed.
+        let drain = tokio::spawn(async move {
+            tokio::time::sleep(PEER_SIGNAL_SEND_TIMEOUT * 2).await;
+            assert!(matches!(rx.recv().await, Some(OutboundMsg::Ping)));
+            rx.recv().await
+        });
+
+        SfuServer::renegotiate_own(&peer)
+            .await
+            .expect("own offer must not be dropped by the fan-out bound");
+        assert!(matches!(
+            drain.await.expect("drain task"),
+            Some(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer { .. }))
+        ));
+        peer.close().await;
     }
 }

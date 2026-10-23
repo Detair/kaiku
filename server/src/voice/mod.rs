@@ -14,6 +14,7 @@ pub mod call_handlers;
 pub mod call_service;
 pub mod error;
 pub(crate) mod handlers;
+pub mod leave;
 mod metrics;
 mod peer;
 mod quality;
@@ -36,7 +37,7 @@ pub use screen_share::{
     ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
     ScreenShareStartRequest, ScreenShareStopRequest,
 };
-pub use sfu::{ParticipantInfo, Room, SfuServer};
+pub use sfu::{ParticipantInfo, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
 pub use stats::{UserStats, VoiceStats};
 pub use track_types::{Layer, LayerPreference, TrackInfo, TrackKind, TrackSource};
 pub use webcam::WebcamInfo;
