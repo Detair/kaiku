@@ -34,7 +34,7 @@ class TextChannelViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val guildRepository: GuildRepository,
     private val dmRepository: DmRepository,
-    authState: AuthState,
+    private val authState: AuthState,
     realtimeConnectionManager: RealtimeConnectionManager,
     private val activeChannelTracker: ActiveChannelTracker,
     private val notificationSink: NotificationSink,
@@ -108,8 +108,9 @@ class TextChannelViewModel @Inject constructor(
     }
 
     private fun markNewestSeen(list: List<Message>) {
+        val userId = authState.currentUserId.value ?: return
         val newest = list.lastOrNull() ?: return
-        notificationLedger.markSeen(channelId, newest.id, newest.createdAt.ifEmpty { null })
+        notificationLedger.markSeen(userId, channelId, newest.id, newest.createdAt.ifEmpty { null })
     }
 
     fun onMessageInputChanged(text: String) {

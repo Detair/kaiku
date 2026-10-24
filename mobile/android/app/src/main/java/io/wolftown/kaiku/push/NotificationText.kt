@@ -32,10 +32,12 @@ data class NotificationLine(
 )
 
 /**
- * The new messages of one channel. [title] is the conversation title, or null
- * when it could not be resolved (the presenter then shows a generic title).
+ * The new messages of one channel for account [userId]. [title] is the
+ * conversation title, or null when it could not be resolved (the presenter
+ * then shows a generic title).
  */
 data class ChannelNotification(
+    val userId: String,
     val channelId: String,
     val title: String?,
     val isDm: Boolean,
@@ -45,6 +47,15 @@ data class ChannelNotification(
 
 /** Posts and clears per-channel message notifications. */
 interface NotificationSink {
-    fun show(n: ChannelNotification)
+    /**
+     * Posts [n] if [isStillValid] holds. The check runs under the same lock as
+     * [cancelAll], so a notification is never posted after a logout cleared
+     * them. Returns whether it was posted.
+     */
+    fun show(n: ChannelNotification, isStillValid: () -> Boolean): Boolean
+
     fun cancel(channelId: String)
+
+    /** Removes every message notification and the group summary (logout, account change). */
+    fun cancelAll()
 }

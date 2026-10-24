@@ -597,7 +597,7 @@ class TextChannelViewModelTest {
 
         assertEquals("ch-1", activeChannelTracker.visibleChannelId.value)
         verify { notificationSink.cancel("ch-1") }
-        verify { notificationLedger.markSeen("ch-1", "msg-2", "2026-03-12T10:01:00Z") }
+        verify { notificationLedger.markSeen("me", "ch-1", "msg-2", "2026-03-12T10:01:00Z") }
 
         viewModel.onHidden()
         assertNull(activeChannelTracker.visibleChannelId.value)

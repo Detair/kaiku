@@ -8,36 +8,64 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.wolftown.kaiku.data.local.TokenStorage
 import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Schedules the background fetch for a wake signal. */
-fun interface WakeWorkEnqueuer {
+/** The account a wake fetch belongs to (no tokens). */
+data class WakeOwner(val userId: String, val serverUrl: String?)
+
+/** Schedules and cancels the background fetches for wake signals. */
+interface WakeWorkEnqueuer {
+    /** Schedules a fetch for [signal] on behalf of the signed-in account; no-op when signed out. */
     fun enqueue(signal: WakeSignal)
+
+    /** Drops queued or running fetches of [channelId] (the channel was read). */
+    fun cancel(channelId: String)
+
+    /** Drops every queued or running fetch (logout, account change). */
+    fun cancelAll()
 }
 
 /**
  * [WakeWorkEnqueuer] on WorkManager: expedited when quota allows, needs a
  * network, one chain per channel (`wake-<channelId>`) so wakes for the same
- * channel run one after another.
+ * channel run one after another. Every request carries its account
+ * ([WakeOwner]) and the tag [WakeFetchWorker.WORK_TAG].
  */
 class WorkManagerWakeEnqueuer @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val tokenStorage: TokenStorage,
 ) : WakeWorkEnqueuer {
+
+    private val workManager: WorkManager
+        get() = WorkManager.getInstance(context)
+
     override fun enqueue(signal: WakeSignal) {
+        val userId = tokenStorage.getUserId() ?: return
+        val owner = WakeOwner(userId, tokenStorage.getServerUrl())
         val request = OneTimeWorkRequestBuilder<WakeFetchWorker>()
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .setConstraints(
                 Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
             )
-            .setInputData(WakeFetchWorker.inputData(signal))
+            .setInputData(WakeFetchWorker.inputData(signal, owner))
+            .addTag(WakeFetchWorker.WORK_TAG)
             .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(
+        workManager.enqueueUniqueWork(
             WakeFetchWorker.uniqueWorkName(signal.channelId),
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             request,
         )
+    }
+
+    override fun cancel(channelId: String) {
+        workManager.cancelUniqueWork(WakeFetchWorker.uniqueWorkName(channelId))
+    }
+
+    override fun cancelAll() {
+        workManager.cancelAllWorkByTag(WakeFetchWorker.WORK_TAG)
     }
 }
 
@@ -55,8 +83,11 @@ class WakeScheduler @Inject constructor(
         logger.info("wake received: kind=${signal.kind}")
         when (signal.kind) {
             WakeKind.DM, WakeKind.MENTION -> enqueuer.enqueue(signal)
-            // Read on another device: clear the notification, nothing to fetch.
-            WakeKind.READ -> sink.cancel(signal.channelId)
+            // Read on another device: clear the notification and stop pending fetches.
+            WakeKind.READ -> {
+                enqueuer.cancel(signal.channelId)
+                sink.cancel(signal.channelId)
+            }
             WakeKind.CALL, WakeKind.UNKNOWN -> Unit
         }
     }

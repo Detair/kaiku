@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
@@ -38,39 +40,41 @@ class AndroidNotificationPresenter @Inject constructor(
         const val MESSAGE_ID = 1
         const val SUMMARY_ID = 0
         const val MAX_LINES = 7
+
+        /** Account a message notification was posted for. */
+        const val EXTRA_USER_ID = "io.wolftown.kaiku.USER_ID"
     }
 
     private val manager: NotificationManager?
         get() = context.getSystemService(NotificationManager::class.java)
 
     @Synchronized
-    override fun show(n: ChannelNotification) {
-        val manager = manager ?: return
+    override fun show(n: ChannelNotification, isStillValid: () -> Boolean): Boolean {
+        val manager = manager ?: return false
         if (!canPost(manager)) {
             logger.info("message notification skipped: notifications disabled")
-            return
+            return false
         }
+        if (!isStillValid()) return false
+
         val channel = if (n.isDm) NotificationChannels.DM else NotificationChannels.MENTIONS
         val title = n.title ?: context.getString(R.string.notif_new_message)
 
-        val style = existingStyle(manager, n.channelId)
-            ?: NotificationCompat.MessagingStyle(
-                Person.Builder().setName(context.getString(R.string.notif_self_name)).build()
-            )
-        style.setConversationTitle(title)
-        // A 1:1 DM shows the sender as the title; everything else shows the conversation title.
-        style.setGroupConversation(!(n.isDm && n.lines.all { it.senderName == title }))
-        for (line in n.lines) {
-            style.addMessage(
-                NotificationCompat.MessagingStyle.Message(
-                    resolve(line.text),
-                    line.timestampMs,
-                    Person.Builder().setName(line.senderName).build(),
-                )
+        val newMessages = n.lines.map { line ->
+            NotificationCompat.MessagingStyle.Message(
+                resolve(line.text),
+                line.timestampMs,
+                Person.Builder().setName(line.senderName).build(),
             )
         }
-        val kept = style.messages
-        while (kept.size > MAX_LINES) kept.removeAt(0)
+        val kept = (existingMessages(manager, n) + newMessages).takeLast(MAX_LINES)
+        val style = NotificationCompat.MessagingStyle(
+            Person.Builder().setName(context.getString(R.string.notif_self_name)).build()
+        )
+            .setConversationTitle(title)
+            // A 1:1 DM shows the sender as the title; everything else shows the conversation title.
+            .setGroupConversation(!(n.isDm && n.lines.all { it.senderName == title }))
+        kept.forEach { style.addMessage(it) }
 
         val publicVersion = NotificationCompat.Builder(context, channel)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
@@ -91,21 +95,48 @@ class AndroidNotificationPresenter @Inject constructor(
             .setContentIntent(channelIntent(n.channelId))
             .setWhen(n.lines.maxOfOrNull { it.timestampMs } ?: System.currentTimeMillis())
             .setShowWhen(true)
+            .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
             .build()
 
         manager.notify(n.channelId, MESSAGE_ID, notification)
-        manager.notify(SUMMARY_ID, summary(channel))
+        manager.notify(SUMMARY_ID, summary())
+        return true
     }
 
     @Synchronized
     override fun cancel(channelId: String) {
         val manager = manager ?: return
         manager.cancel(channelId, MESSAGE_ID)
-        val othersRemain = manager.activeNotifications.any {
-            it.id == MESSAGE_ID && it.tag != null && it.tag != channelId &&
-                it.notification.group == GROUP
-        }
+        val othersRemain = messageNotifications(manager).any { it.tag != channelId }
         if (!othersRemain) manager.cancel(SUMMARY_ID)
+    }
+
+    @Synchronized
+    override fun cancelAll() {
+        val manager = manager ?: return
+        messageNotifications(manager).forEach { manager.cancel(it.tag, MESSAGE_ID) }
+        manager.cancel(SUMMARY_ID)
+    }
+
+    private fun messageNotifications(manager: NotificationManager): List<StatusBarNotification> =
+        manager.activeNotifications.filter {
+            it.id == MESSAGE_ID && it.tag != null && it.notification.group == GROUP
+        }
+
+    /**
+     * Lines of the channel's notification that is still shown, if it was
+     * posted for the same account; a foreign one is replaced, never extended.
+     */
+    private fun existingMessages(
+        manager: NotificationManager,
+        n: ChannelNotification,
+    ): List<NotificationCompat.MessagingStyle.Message> {
+        val active = manager.activeNotifications.firstOrNull { it.tag == n.channelId && it.id == MESSAGE_ID }
+            ?: return emptyList()
+        if (active.notification.extras.getString(EXTRA_USER_ID) != n.userId) return emptyList()
+        val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(active.notification)
+            ?: return emptyList()
+        return style.messages.toList()
     }
 
     private fun canPost(manager: NotificationManager): Boolean {
@@ -113,12 +144,6 @@ class AndroidNotificationPresenter @Inject constructor(
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun existingStyle(manager: NotificationManager, channelId: String): NotificationCompat.MessagingStyle? {
-        val active = manager.activeNotifications.firstOrNull { it.tag == channelId && it.id == MESSAGE_ID }
-            ?: return null
-        return NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(active.notification)
     }
 
     private fun resolve(text: LineText): CharSequence = when (text) {
@@ -141,14 +166,15 @@ class AndroidNotificationPresenter @Inject constructor(
         )
     }
 
-    private fun summary(channel: String): Notification {
+    /** The summary lives on a fixed channel; it never alerts (GROUP_ALERT_CHILDREN). */
+    private fun summary(): Notification {
         val launch = PendingIntent.getActivity(
             context,
             SUMMARY_ID,
             Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        return NotificationCompat.Builder(context, channel)
+        return NotificationCompat.Builder(context, NotificationChannels.MENTIONS)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(context.getString(R.string.notif_new_message))
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)

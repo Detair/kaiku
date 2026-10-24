@@ -7,7 +7,6 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.push.AndroidNotificationPresenter
 import io.wolftown.kaiku.push.NotificationLedger
 import io.wolftown.kaiku.push.NotificationSink
@@ -34,10 +33,8 @@ abstract class PushModule {
         @Singleton
         fun provideNotificationLedger(
             @ApplicationContext context: Context,
-            tokenStorage: TokenStorage,
         ): NotificationLedger = PrefsNotificationLedger(
             context.getSharedPreferences("notif_ledger", Context.MODE_PRIVATE),
-            tokenStorage::getUserId,
         )
     }
 }
