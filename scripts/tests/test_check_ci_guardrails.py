@@ -15,9 +15,11 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import check_ci_guardrails as guardrails  # noqa: E402
 from check_ci_guardrails import (  # noqa: E402
+    check_actions_pinned,
     check_ci_never_tags_latest,
     check_env_doc,
     check_native_deps_usage,
+    check_no_advisory_gates,
     check_no_signing_key_in_pr_workflows,
     check_release_android,
     check_release_hygiene,
@@ -26,6 +28,7 @@ from check_ci_guardrails import (  # noqa: E402
     check_release_workflow,
     check_server_image,
     check_windows_libvpx_guardrails,
+    check_workflow_permissions,
 )
 
 NATIVE_DEPS_USES = "uses: ./.github/actions/setup-native-deps"
@@ -537,6 +540,124 @@ class ServerImageTest(unittest.TestCase):
     def test_ci_without_latest_passes(self):
         errors: list[str] = []
         check_ci_never_tags_latest("tags: |\n  type=ref,event=branch\n  type=sha\n", errors)
+        self.assertEqual(errors, [])
+
+
+SHA = "a" * 40
+
+
+class WorkflowPermissionsTest(unittest.TestCase):
+    def test_workflow_without_permissions_is_rejected(self):
+        errors: list[str] = []
+        check_workflow_permissions({"ci.yml": {"jobs": {"a": {"steps": []}}}}, errors)
+        self.assertTrue(any("ci.yml" in e and "permissions" in e for e in errors), errors)
+
+    def test_read_only_workflow_passes(self):
+        errors: list[str] = []
+        wf = {"permissions": {"contents": "read"}, "jobs": {"a": {"permissions": {"packages": "write"}}}}
+        check_workflow_permissions({"ci.yml": wf}, errors)
+        self.assertEqual(errors, [])
+
+    def test_job_write_all_is_rejected(self):
+        errors: list[str] = []
+        wf = {"permissions": {"contents": "read"}, "jobs": {"a": {"permissions": "write-all"}}}
+        check_workflow_permissions({"ci.yml": wf}, errors)
+        self.assertTrue(any("write-all" in e for e in errors), errors)
+
+
+class ActionsPinnedTest(unittest.TestCase):
+    def test_unpinned_action_is_rejected(self):
+        errors: list[str] = []
+        check_actions_pinned({"ci.yml": "steps:\n  - uses: actions/checkout@v4\n"}, errors)
+        self.assertTrue(any("actions/checkout@v4" in e for e in errors), errors)
+
+    def test_sha_pinned_action_passes(self):
+        errors: list[str] = []
+        text = f"steps:\n  - uses: actions/checkout@{SHA} # v4.2.2\n"
+        check_actions_pinned({"ci.yml": text}, errors)
+        self.assertEqual(errors, [])
+
+    def test_local_action_is_allowed(self):
+        errors: list[str] = []
+        check_actions_pinned({"ci.yml": "steps:\n  - uses: ./.github/actions/setup-native-deps\n"}, errors)
+        self.assertEqual(errors, [])
+
+    def test_short_sha_is_rejected(self):
+        errors: list[str] = []
+        check_actions_pinned({"ci.yml": "steps:\n  - uses: a/b@abc1234\n"}, errors)
+        self.assertEqual(len(errors), 1, errors)
+
+
+class AdvisoryGatesTest(unittest.TestCase):
+    def test_advisory_android_tests_rejected(self):
+        ci = yaml.safe_load(
+            """
+jobs:
+  android:
+    steps:
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+        continue-on-error: true
+"""
+        )
+        errors: list[str] = []
+        check_no_advisory_gates(ci, errors)
+        self.assertTrue(any("android" in e for e in errors), errors)
+
+    def test_advisory_gitleaks_rejected(self):
+        ci = yaml.safe_load(
+            f"""
+jobs:
+  secrets:
+    steps:
+      - uses: gitleaks/gitleaks-action@{SHA}
+        continue-on-error: true
+"""
+        )
+        errors: list[str] = []
+        check_no_advisory_gates(ci, errors)
+        self.assertTrue(any("gitleaks" in e for e in errors), errors)
+
+    def test_advisory_windows_tauri_rejected(self):
+        ci = yaml.safe_load(
+            """
+jobs:
+  tauri:
+    strategy:
+      matrix:
+        include:
+          - platform: windows-latest
+            allow_failure: true
+    continue-on-error: ${{ matrix.allow_failure }}
+    steps: []
+"""
+        )
+        errors: list[str] = []
+        check_no_advisory_gates(ci, errors)
+        self.assertTrue(any("windows" in e.lower() for e in errors), errors)
+
+    def test_blocking_gates_pass(self):
+        ci = yaml.safe_load(
+            f"""
+jobs:
+  secrets:
+    steps:
+      - uses: gitleaks/gitleaks-action@{SHA}
+  android:
+    steps:
+      - run: ./gradlew testDebugUnitTest
+  tauri:
+    strategy:
+      matrix:
+        include:
+          - platform: windows-latest
+            allow_failure: false
+    continue-on-error: ${{{{ matrix.allow_failure }}}}
+    steps: []
+"""
+        )
+        errors: list[str] = []
+        check_no_advisory_gates(ci, errors)
         self.assertEqual(errors, [])
 
 
