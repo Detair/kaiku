@@ -321,7 +321,7 @@ need the maintainer's OK.
 
 Phases (dates are targets):
 
-- [~] **0 · Secure & observe (Oct 23–26)** — *code side done (compose hardening in #666, athene deployment prepared on kdorf/athene `feature/kaiku`); live steps wait for the maintainer.* — security hotfix S-01/S-08
+- [~] **0 · Secure & observe (Oct 23–26)** — *code side done (compose hardening in #666, athene deployment prepared on the private infrastructure repo); live steps wait for the maintainer.* — security hotfix S-01/S-08
       deployed; VPS read-only checks; packaged-desktop login test; infra
       decisions (Firebase, keystore, signing, alerting, off-host backups).
 - [x] **1 · Make the clients work (Oct 27–Nov 9)** — *done early, 2026-10-24: #658 release pipeline, #660/#662/#668 Android, #661/#665/#669 desktop (native mode), #663/#666 server; keep-green #659/#664/#667/#670.* — four parallel streams:
