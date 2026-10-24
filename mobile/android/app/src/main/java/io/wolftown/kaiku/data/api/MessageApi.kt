@@ -4,12 +4,26 @@ import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.http.*
+import io.wolftown.kaiku.domain.model.CursorPage
 import io.wolftown.kaiku.domain.model.Message
 import kotlinx.serialization.Serializable
 import javax.inject.Inject
 
 interface MessageApi {
-    suspend fun getMessages(channelId: String, before: String? = null, limit: Int = 50): List<Message>
+    /**
+     * Loads one page of channel history (`GET /api/messages/channel/{id}`).
+     *
+     * Pass at most one cursor: [before] pages backwards from a message id,
+     * [after] pages forwards. Passing both throws [IllegalArgumentException].
+     * Callers must not rely on the item order of the page; merge it with
+     * [io.wolftown.kaiku.domain.MessageOrdering.merge].
+     */
+    suspend fun getMessages(
+        channelId: String,
+        before: String? = null,
+        after: String? = null,
+        limit: Int = 50
+    ): CursorPage<Message>
     suspend fun sendMessage(channelId: String, content: String): Message
     suspend fun editMessage(messageId: String, content: String): Message
     suspend fun deleteMessage(messageId: String)
@@ -30,11 +44,21 @@ class MessageApiImpl @Inject constructor(
     private val httpClient: HttpClient
 ) : MessageApi {
 
-    override suspend fun getMessages(channelId: String, before: String?, limit: Int): List<Message> {
+    override suspend fun getMessages(
+        channelId: String,
+        before: String?,
+        after: String?,
+        limit: Int
+    ): CursorPage<Message> {
+        require(before == null || after == null) { "Pass either before or after, not both" }
+
         val response = httpClient.get("/api/messages/channel/$channelId") {
             parameter("limit", limit)
             if (before != null) {
                 parameter("before", before)
+            }
+            if (after != null) {
+                parameter("after", after)
             }
         }
 

@@ -33,9 +33,18 @@ class MarkdownParserTest {
 
     @Test
     fun nestedBoldItalic() {
-        // **_x_** → bold + italic
-        val result = MarkdownParser.parse("**_x_**")
-        assertEquals(listOf(Span("x", bold = true, italic = true)), result)
+        // `_` is deliberately literal (see underscores_areLiteral_notItalic), so
+        // nest with `*`. `***x***` is ambiguous for this parser (`**` wins), so
+        // put an italic run inside a bold one with surrounding text.
+        val result = MarkdownParser.parse("**a *x* b**")
+        assertEquals(
+            listOf(
+                Span("a ", bold = true),
+                Span("x", bold = true, italic = true),
+                Span(" b", bold = true),
+            ),
+            result,
+        )
     }
 
     @Test

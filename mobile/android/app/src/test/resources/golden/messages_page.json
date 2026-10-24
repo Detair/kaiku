@@ -1,0 +1,61 @@
+{
+  "has_more": true,
+  "items": [
+    {
+      "attachments": [
+        {
+          "filename": "photo.png",
+          "height": 720,
+          "id": "00000000-0000-4000-8000-00000000f001",
+          "mime_type": "image/png",
+          "size": 204800,
+          "thumbnail_url": "/api/messages/attachments/00000000-0000-4000-8000-00000000f001/download?variant=thumbnail",
+          "url": "/api/messages/attachments/00000000-0000-4000-8000-00000000f001/download",
+          "width": 1280
+        }
+      ],
+      "author": {
+        "avatar_url": null,
+        "display_name": "Alice",
+        "id": "00000000-0000-4000-8000-00000000a001",
+        "status": "online",
+        "username": "alice"
+      },
+      "channel_id": "00000000-0000-4000-8000-00000000c001",
+      "content": "Second message",
+      "created_at": "2026-03-12T10:01:00Z",
+      "edited_at": null,
+      "encrypted": false,
+      "id": "00000000-0000-4000-8000-00000000e002",
+      "message_type": "user",
+      "parent_id": null,
+      "pinned": false,
+      "reply_to": null,
+      "thread_last_reply_at": null,
+      "thread_reply_count": 0
+    },
+    {
+      "attachments": [],
+      "author": {
+        "avatar_url": null,
+        "display_name": "Alice",
+        "id": "00000000-0000-4000-8000-00000000a001",
+        "status": "online",
+        "username": "alice"
+      },
+      "channel_id": "00000000-0000-4000-8000-00000000c001",
+      "content": "First message",
+      "created_at": "2026-03-12T10:00:00.123456Z",
+      "edited_at": null,
+      "encrypted": false,
+      "id": "00000000-0000-4000-8000-00000000e001",
+      "message_type": "user",
+      "parent_id": null,
+      "pinned": false,
+      "reply_to": null,
+      "thread_last_reply_at": null,
+      "thread_reply_count": 0
+    }
+  ],
+  "next_cursor": "00000000-0000-4000-8000-00000000e001"
+}
