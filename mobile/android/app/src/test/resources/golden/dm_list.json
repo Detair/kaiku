@@ -1,0 +1,77 @@
+[
+  {
+    "category_id": null,
+    "channel_type": "dm",
+    "created_at": "2026-03-12T09:30:00Z",
+    "guild_id": null,
+    "icon_url": "/api/dm/00000000-0000-4000-8000-00000000d102/icon",
+    "id": "00000000-0000-4000-8000-00000000d102",
+    "last_message": {
+      "content": "See you Saturday",
+      "created_at": "2026-03-12T11:00:00Z",
+      "id": "00000000-0000-4000-8000-00000000e101",
+      "user_id": "00000000-0000-4000-8000-00000000a003",
+      "username": "carol"
+    },
+    "max_screen_shares": 1,
+    "name": "Weekend plans",
+    "participants": [
+      {
+        "avatar_url": null,
+        "display_name": "Alice",
+        "joined_at": "2026-03-12T09:30:00Z",
+        "user_id": "00000000-0000-4000-8000-00000000a001",
+        "username": "alice"
+      },
+      {
+        "avatar_url": null,
+        "display_name": "Bob",
+        "joined_at": "2026-03-12T09:30:00Z",
+        "user_id": "00000000-0000-4000-8000-00000000a002",
+        "username": "bob"
+      },
+      {
+        "avatar_url": "/api/users/carol/avatar",
+        "display_name": "Carol",
+        "joined_at": "2026-03-12T09:30:00Z",
+        "user_id": "00000000-0000-4000-8000-00000000a003",
+        "username": "carol"
+      }
+    ],
+    "position": 0,
+    "topic": null,
+    "unread_count": 2,
+    "user_limit": null
+  },
+  {
+    "category_id": null,
+    "channel_type": "dm",
+    "created_at": "2026-03-12T09:30:00Z",
+    "guild_id": null,
+    "icon_url": null,
+    "id": "00000000-0000-4000-8000-00000000d101",
+    "last_message": null,
+    "max_screen_shares": 1,
+    "name": "",
+    "participants": [
+      {
+        "avatar_url": null,
+        "display_name": "Alice",
+        "joined_at": "2026-03-12T09:30:00Z",
+        "user_id": "00000000-0000-4000-8000-00000000a001",
+        "username": "alice"
+      },
+      {
+        "avatar_url": null,
+        "display_name": "Bob",
+        "joined_at": "2026-03-12T09:30:00Z",
+        "user_id": "00000000-0000-4000-8000-00000000a002",
+        "username": "bob"
+      }
+    ],
+    "position": 0,
+    "topic": null,
+    "unread_count": 0,
+    "user_limit": null
+  }
+]

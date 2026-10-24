@@ -21,7 +21,8 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use vc_server::auth::types::AuthResponse;
 use vc_server::chat::types::{
-    AttachmentInfo, AuthorProfile, CursorPaginatedResponse, MessageResponse,
+    AttachmentInfo, AuthorProfile, CursorPaginatedResponse, DMListResponse, DMParticipant,
+    LastMessagePreview, MessageResponse,
 };
 use vc_server::db::{Channel, ChannelType};
 use vc_server::guild::categories::{Category, CategoryType};
@@ -274,5 +275,125 @@ fn android_golden_guild_categories() {
     check_golden(
         "guild_categories.json",
         serde_json::to_value(&categories).expect("serialize guild categories"),
+    );
+}
+
+#[test]
+fn android_golden_ws_ready() {
+    let event = ServerEvent::Ready {
+        user_id: AUTHOR_ID,
+        server_time: ts("2026-03-12T10:03:00.25Z"),
+    };
+
+    check_golden(
+        "ws_ready.json",
+        serde_json::to_value(&event).expect("serialize ready"),
+    );
+}
+
+/// `subscribed` ack: the client starts its gap-free catch-up for a channel
+/// only after this arrives (see `server/src/ws/AGENTS.md`).
+#[test]
+fn android_golden_ws_subscribed() {
+    let event = ServerEvent::Subscribed {
+        channel_id: CHANNEL_ID,
+    };
+
+    check_golden(
+        "ws_subscribed.json",
+        serde_json::to_value(&event).expect("serialize subscribed"),
+    );
+}
+
+const DM_CHANNEL_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_d101);
+const GROUP_DM_CHANNEL_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_d102);
+const BOB_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_a002);
+const CAROL_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_a003);
+const DM_MESSAGE_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_e101);
+
+fn dm_channel(id: Uuid, name: &str, icon_url: Option<&str>) -> Channel {
+    Channel {
+        id,
+        name: name.to_string(),
+        channel_type: ChannelType::Dm,
+        category_id: None,
+        guild_id: None,
+        topic: None,
+        icon_url: icon_url.map(str::to_string),
+        user_limit: None,
+        position: 0,
+        max_screen_shares: 1,
+        created_at: ts("2026-03-12T09:30:00Z"),
+        updated_at: ts("2026-03-12T09:30:00Z"),
+    }
+}
+
+fn participant(user_id: Uuid, username: &str, display_name: &str) -> DMParticipant {
+    DMParticipant {
+        user_id,
+        username: username.to_string(),
+        display_name: display_name.to_string(),
+        avatar_url: None,
+        joined_at: ts("2026-03-12T09:30:00Z"),
+    }
+}
+
+/// A brand-new 1:1 DM exactly as `announce_dm_created` builds it: no last
+/// message, zero unread.
+fn new_dm_entry() -> DMListResponse {
+    DMListResponse {
+        channel: dm_channel(DM_CHANNEL_ID, "", None).into(),
+        participants: vec![
+            participant(AUTHOR_ID, "alice", "Alice"),
+            participant(BOB_ID, "bob", "Bob"),
+        ],
+        last_message: None,
+        unread_count: 0,
+    }
+}
+
+#[test]
+fn android_golden_ws_dm_created() {
+    let event = ServerEvent::DmCreated {
+        channel: serde_json::to_value(new_dm_entry()).expect("serialize dm entry"),
+    };
+
+    check_golden(
+        "ws_dm_created.json",
+        serde_json::to_value(&event).expect("serialize dm_created"),
+    );
+}
+
+/// `GET /api/dm`: a group DM with a last message and unread count, and a
+/// fresh 1:1 DM.
+#[test]
+fn android_golden_dm_list() {
+    let mut group = DMListResponse {
+        channel: dm_channel(
+            GROUP_DM_CHANNEL_ID,
+            "Weekend plans",
+            Some("/api/dm/icon.png"),
+        )
+        .into(),
+        participants: vec![
+            participant(AUTHOR_ID, "alice", "Alice"),
+            participant(BOB_ID, "bob", "Bob"),
+            participant(CAROL_ID, "carol", "Carol"),
+        ],
+        last_message: Some(LastMessagePreview {
+            id: DM_MESSAGE_ID,
+            content: "See you Saturday".to_string(),
+            user_id: Some(CAROL_ID),
+            username: Some("carol".to_string()),
+            created_at: ts("2026-03-12T11:00:00Z"),
+        }),
+        unread_count: 2,
+    };
+    group.participants[2].avatar_url = Some("/api/users/carol/avatar".to_string());
+
+    let list = vec![group, new_dm_entry()];
+    check_golden(
+        "dm_list.json",
+        serde_json::to_value(&list).expect("serialize dm list"),
     );
 }
