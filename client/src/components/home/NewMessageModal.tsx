@@ -197,7 +197,7 @@ const FriendSelectItem: Component<FriendSelectItemProps> = (props) => {
         }}
       >
         <Show when={props.selected}>
-          <Check class="w-3 h-3 text-white" />
+          <Check class="w-3 h-3 text-on-accent" />
         </Show>
       </div>
 

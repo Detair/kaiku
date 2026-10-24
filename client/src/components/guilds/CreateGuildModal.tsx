@@ -392,7 +392,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                         <button
                           onClick={handleAddTag}
                           disabled={isCreating() || !tagInput().trim()}
-                          class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors"
+                          class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
                         >
                           Add
                         </button>

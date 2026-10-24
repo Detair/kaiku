@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   availableThemes,
+  selectableThemes,
   THEME_IDS,
   getCurrentTheme,
   getThemeFamily,
@@ -115,6 +116,21 @@ describe("theme store", () => {
       const current = getCurrentTheme();
       expect(current).toBeDefined();
       expect(availableThemes).toContain(current);
+    });
+  });
+
+  describe("hidden themes", () => {
+    it("solarized themes are not selectable", () => {
+      const ids = selectableThemes.map((t) => t.id);
+      expect(ids).not.toContain("solarized-dark");
+      expect(ids).not.toContain("solarized-light");
+      expect(ids).toContain("focused-hybrid");
+    });
+
+    it("stored hidden theme still applies", () => {
+      expect(availableThemes.map((t) => t.id)).toContain("solarized-dark");
+      expect(getThemeFamily("solarized-dark")).toBe("standard");
+      expect(THEME_NAMES).toContain("solarized-dark");
     });
   });
 });
