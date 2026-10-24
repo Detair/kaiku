@@ -77,17 +77,21 @@ export function formatShortDate(
 }
 
 /** Time for today, "Yesterday {time}", otherwise short date plus time. */
-export function formatTimestamp(iso: string, now: Date = new Date()): string {
+export function formatTimestamp(
+  iso: string,
+  now: Date = new Date(),
+  locales: Locales = formatLocales(),
+): string {
   const date = new Date(iso);
-  if (date.toDateString() === now.toDateString()) return formatTime(date);
+  if (date.toDateString() === now.toDateString()) return formatTime(date, locales);
 
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
   if (date.toDateString() === yesterday.toDateString()) {
-    return t("time.yesterdayAt", { time: formatTime(date) });
+    return t("time.yesterdayAt", { time: formatTime(date, locales) });
   }
 
-  return dateTime(date, formatLocales(), {
+  return dateTime(date, locales, {
     month: "short",
     day: "numeric",
     year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,

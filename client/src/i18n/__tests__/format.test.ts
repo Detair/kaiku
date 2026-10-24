@@ -11,6 +11,7 @@ async function load(de: Record<string, string> = {}) {
   return { ...locale, ...format };
 }
 
+const EN_US = ["en-US"];
 const NOW = new Date("2026-10-23T14:30:00Z");
 
 beforeEach(() => {
@@ -54,10 +55,19 @@ describe("format", () => {
 
   it("formatTimestamp says Yesterday", async () => {
     const { formatTimestamp } = await load();
-    const out = formatTimestamp("2026-10-22T09:05:00Z");
+    const out = formatTimestamp("2026-10-22T09:05:00Z", NOW, EN_US);
     expect(out).toContain("Yesterday");
     expect(out).toContain("09:05");
-    expect(formatTimestamp("2026-10-23T09:05:00Z")).toBe("09:05 AM");
+    expect(formatTimestamp("2026-10-23T09:05:00Z", NOW, EN_US)).toBe("09:05 AM");
+    expect(formatTimestamp("2026-10-23T09:05:00Z", NOW, ["de-DE"])).toBe("09:05");
+  });
+
+  it("formatRelativeTime switches to a date at 7 days, with a year across years", async () => {
+    const { formatRelativeTime, formatTimestamp } = await load();
+    expect(formatRelativeTime("2026-10-17T14:30:00Z")).toBe("6 days ago");
+    expect(formatRelativeTime("2026-10-16T14:30:00Z")).not.toContain("ago");
+    expect(formatTimestamp("2025-10-16T14:30:00Z", NOW, EN_US)).toContain("2025");
+    expect(formatTimestamp("2026-10-16T14:30:00Z", NOW, EN_US)).not.toContain("2026");
   });
 
   it("formatters return an empty string for invalid dates instead of throwing", async () => {
