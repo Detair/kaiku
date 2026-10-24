@@ -585,3 +585,46 @@ async fn test_refresh_refused_for_denylisted_session(pool: PgPool) {
         StatusCode::UNAUTHORIZED
     );
 }
+
+/// Retrying an account deletion that is already scheduled (e.g. after the
+/// first attempt could not reach Valkey) still ends every session: the open
+/// socket closes and the caller's token stops working, and the answer stays
+/// 409.
+#[sqlx::test]
+async fn test_deletion_retry_ends_sessions_again(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let (user_id, username) = create_password_user(&pool).await;
+    let session = login(&fx.server, &username).await;
+    let mut ws = connect_ready(&fx.server, &session.access).await;
+
+    // State left by a first attempt whose session ending failed: deletion
+    // scheduled, session row still present (nothing denylisted, no notice).
+    sqlx::query(
+        "UPDATE users SET deletion_requested_at = NOW(),
+                          deletion_scheduled_at = NOW() + INTERVAL '30 days'
+         WHERE id = $1",
+    )
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/me/delete-account", fx.server.url))
+        .bearer_auth(&session.access)
+        .json(&serde_json::json!({ "password": PASSWORD, "confirm": "DELETE" }))
+        .send()
+        .await
+        .expect("POST /api/me/delete-account");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    expect_session_revoked(&mut ws).await;
+    assert_eq!(
+        me_status(&fx.server, &session.access).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        refresh(&fx.server, &session.refresh).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}

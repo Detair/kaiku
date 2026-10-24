@@ -221,8 +221,23 @@ pub async fn request_deletion(
         .await?
         .ok_or(GovernanceError::Validation("User not found".to_string()))?;
 
-    // Check if already scheduled
+    // Check if already scheduled. A retry after a failed first attempt (its
+    // sessions were deleted but Valkey could not end them) lands here, so end
+    // them again before answering: any remaining rows plus the caller's own
+    // session are denylisted and every open socket of the user is closed.
     if user.deletion_scheduled_at.is_some() {
+        let mut ended = {
+            let mut conn = state.db.acquire().await?;
+            crate::auth::queries::delete_user_sessions_except(&mut conn, auth.id, None).await?
+        };
+        if let Some(own) = auth.session_id {
+            if !ended.contains(&own) {
+                ended.push(own);
+            }
+        }
+        crate::auth::revocation::end_all_sessions(&state, auth.id, &ended)
+            .await
+            .map_err(|e| GovernanceError::Internal(e.to_string()))?;
         return Err(GovernanceError::DeletionAlreadyScheduled);
     }
 
