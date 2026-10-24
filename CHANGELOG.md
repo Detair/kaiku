@@ -8,11 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Roadmap Alignment
-- Current roadmap phase: Phase 6 (Competitive Differentiators & Mastery) - Near complete
-- Roadmap last updated: 2026-05-07
+- Current roadmap phase: v1.0 Family Release — target Christmas 2026 (see `../developer-guide/project/goals.md` Goal 8 and `../reviews/2026-10-22-v1-family-release-readiness.md`)
+- Roadmap last updated: 2026-10-22
 
 ### Milestone Metadata
-- Milestone: Phase 6 - Competitive Differentiators & Mastery
+- Milestone: v1.0 Family Release (Goal 8)
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
