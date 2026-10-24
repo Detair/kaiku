@@ -89,6 +89,12 @@ fun KaikuNavGraph(
                         },
                         onPasswordChangeRequired = {
                             navController.navigate("change_password")
+                        },
+                        onChangeServer = {
+                            // Replace login so no screen below keeps the old server's state.
+                            navController.navigate("server_url") {
+                                popUpTo("login") { inclusive = true }
+                            }
                         }
                     )
                 }

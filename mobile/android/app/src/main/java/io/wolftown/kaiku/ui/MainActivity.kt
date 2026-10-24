@@ -2,6 +2,8 @@ package io.wolftown.kaiku.ui
 
 import android.content.Intent
 import android.os.Bundle
+import io.wolftown.kaiku.BuildConfig
+import io.wolftown.kaiku.domain.normalizeServerAddress
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -88,14 +90,17 @@ class MainActivity : ComponentActivity() {
      * Determines the initial navigation destination based on auth state:
      * - Logged in -> "home"
      * - Server URL saved but not logged in -> "login"
-     * - No server URL -> "server_url"
+     * - No server URL -> "login" with the built-in default server saved; only when
+     *   the build has no default does the person see "server_url"
      */
     private fun resolveStartDestination(): String {
-        return when {
-            authState.isLoggedIn.value -> "home"
-            tokenStorage.getServerUrl() != null -> "login"
-            else -> "server_url"
+        if (authState.isLoggedIn.value) return "home"
+        if (tokenStorage.getServerUrl() == null) {
+            val default = normalizeServerAddress(BuildConfig.DEFAULT_SERVER_URL).getOrNull()
+                ?: return "server_url"
+            tokenStorage.saveServerUrl(default)
         }
+        return "login"
     }
 }
 
