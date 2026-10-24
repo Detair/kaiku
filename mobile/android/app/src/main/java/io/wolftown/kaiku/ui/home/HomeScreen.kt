@@ -48,7 +48,7 @@ fun HomeScreen(
         }
     }
 
-    NotificationPermissionPrompt(onGranted = {})
+    NotificationPermissionPrompt(onGranted = viewModel::onNotificationsAllowed)
 
     ModalNavigationDrawer(
         drawerState = drawerState,

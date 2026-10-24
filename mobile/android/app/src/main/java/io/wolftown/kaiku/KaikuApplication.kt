@@ -17,6 +17,7 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.sync.ResyncCoordinator
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.push.NotificationChannels
+import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.push.PushSessionObserver
 import io.wolftown.kaiku.push.ReadSyncObserver
 import okhttp3.OkHttpClient
@@ -51,6 +52,10 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
     @Inject
     lateinit var pushSessionObserver: PushSessionObserver
 
+    /** Registers this device for push whenever a session starts. */
+    @Inject
+    lateinit var pushRegistrar: PushRegistrar
+
     /** Creates @HiltWorker workers (wake fetch); WorkManager's default initializer is removed in the manifest. */
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
@@ -68,6 +73,7 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
         resyncCoordinator.start()
         readSyncObserver.start()
         pushSessionObserver.start()
+        pushRegistrar.start()
         realtimeConnectionManager.start()
         try {
             ProviderInstaller.installIfNeeded(this)
