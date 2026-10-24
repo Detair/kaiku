@@ -1,8 +1,6 @@
 package io.wolftown.kaiku.service
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
@@ -20,6 +18,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
+import io.wolftown.kaiku.push.NotificationChannels
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -48,7 +47,6 @@ class VoiceCallService : Service() {
     companion object {
         private val logger = Logger.getLogger("VoiceCallService")
         private const val NOTIFICATION_ID = 1001
-        private const val CHANNEL_ID = "voice_calls"
 
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
@@ -106,8 +104,7 @@ class VoiceCallService : Service() {
             return START_NOT_STICKY
         }
 
-        createNotificationChannel()
-
+        // Channel is created at app start (NotificationChannels.ensureCreated).
         val notification = buildNotification(channelName)
 
         try {
@@ -149,20 +146,6 @@ class VoiceCallService : Service() {
         logger.info("VoiceCallService destroyed")
     }
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            getString(R.string.voice_notification_channel_name),
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = getString(R.string.voice_notification_channel_description)
-            setShowBadge(false)
-        }
-
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(channel)
-    }
-
     private fun buildNotification(channelName: String): Notification {
         // Tap notification to open the app
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
@@ -197,7 +180,7 @@ class VoiceCallService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, NotificationChannels.VOICE)
             .setContentTitle(getString(R.string.voice_in_channel))
             .setContentText(channelName)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)

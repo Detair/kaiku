@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import io.wolftown.kaiku.push.PushRegistrar
 
 /**
  * Integration test verifying the full auth flow:
@@ -56,7 +57,7 @@ class AuthFlowTest {
         authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
         webSocket = mockk(relaxed = true)
 
-        authRepository = AuthRepository(authApi, tokenStorage, authState)
+        authRepository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true))
     }
 
     // ========================================================================
