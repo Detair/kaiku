@@ -12,7 +12,12 @@ import io.wolftown.kaiku.data.api.PushConfig
 import io.wolftown.kaiku.data.api.PushRegistration
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.currentTime
@@ -35,15 +40,22 @@ class PushRegistrarTest {
         var requests = 0
         var unregisters = 0
         var failWith: Exception? = null
+        var hang = false
+        var unregisterGate: CompletableDeferred<Unit>? = null
+        val events = mutableListOf<String>()
 
         override suspend fun requestEndpoint(onEndpoint: suspend (String) -> Unit) {
             requests++
+            events += "request"
             failWith?.let { throw it }
+            if (hang) awaitCancellation()
             onEndpoint(endpoint)
         }
 
         override suspend fun unregister() {
+            unregisterGate?.await()
             unregisters++
+            events += "unregistered"
         }
     }
 
@@ -91,11 +103,12 @@ class PushRegistrarTest {
         coEvery { getConfig() } returns fcmConfig
     }
     private var userId: String? = USER
+    private var serverUrl: String? = SERVER
     private val tokenStorage: TokenStorage = mockk(relaxed = true) {
         every { getUserId() } answers { userId }
         every { getAccessToken() } returns "access"
         every { getRefreshToken() } returns "refresh"
-        every { getServerUrl() } returns SERVER
+        every { getServerUrl() } answers { serverUrl }
     }
     private val deviceIdStore: DeviceIdStore = mockk {
         every { id() } returns DEVICE_ID
@@ -356,6 +369,100 @@ class PushRegistrarTest {
 
         assertEquals(RefreshOutcome.REGISTERED, registrar.refresh())
         coVerify(exactly = 2) { api.register(fcmRegistration("fcm-token-1")) }
+    }
+
+    @Test
+    fun `re-login waits for the logout token deletion before requesting a token`() = runTest {
+        val registrar = newRegistrar()
+        registrar.refresh()
+        val gate = CompletableDeferred<Unit>()
+        fcm.unregisterGate = gate
+        registrar.unregisterForLogout()
+
+        val pass = async { registrar.refresh() }
+        runCurrent()
+        assertEquals(1, fcm.requests) // only the first login's request so far
+
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(RefreshOutcome.REGISTERED, pass.await())
+        assertEquals(listOf("request", "unregistered", "request"), fcm.events)
+    }
+
+    @Test
+    fun `waiting for the logout token deletion is bounded`() = runTest {
+        val registrar = newRegistrar()
+        registrar.refresh()
+        fcm.unregisterGate = CompletableDeferred() // never completes
+        registrar.unregisterForLogout()
+
+        val pass = async { registrar.refresh() }
+        advanceTimeBy(PushRegistrar.UNREGISTER_JOIN_TIMEOUT_MS + 1)
+        runCurrent()
+
+        assertEquals(RefreshOutcome.REGISTERED, pass.await())
+        assertEquals(2, fcm.requests)
+    }
+
+    @Test
+    fun `logout during the registration request rolls the row back`() = runTest {
+        val registrar = newRegistrar()
+        coEvery { api.register(any()) } coAnswers {
+            backgroundScope.launch { registrar.unregisterForLogout() }
+            // The logout times out on the lock, deletes and cleans up meanwhile.
+            delay(PushRegistrar.LOGOUT_LOCK_WAIT_MS + 500)
+        }
+
+        assertEquals(RefreshOutcome.NOT_LOGGED_IN, registrar.refresh())
+
+        assertNull(store.record)
+        // The logout's DELETE plus the rollback after the late response.
+        coVerify(exactly = 2) { api.unregisterDevice(DEVICE_ID) }
+    }
+
+    @Test
+    fun `account change during the registration request saves nothing and rolls back`() = runTest {
+        coEvery { api.register(any()) } coAnswers { userId = "user-2" }
+        val registrar = newRegistrar()
+
+        assertEquals(RefreshOutcome.NOT_LOGGED_IN, registrar.refresh())
+
+        assertNull(store.record)
+        coVerify(exactly = 1) { api.unregisterDevice(DEVICE_ID) }
+        assertEquals(PushStatus.Unknown, registrar.status.value)
+    }
+
+    @Test
+    fun `server change during the registration request saves nothing`() = runTest {
+        coEvery { api.register(any()) } coAnswers { serverUrl = "https://other.example.com" }
+
+        assertEquals(RefreshOutcome.NOT_LOGGED_IN, newRegistrar().refresh())
+
+        assertNull(store.record)
+        coVerify(exactly = 1) { api.unregisterDevice(DEVICE_ID) }
+    }
+
+    @Test
+    fun `signed out by the time the response arrives sends no rollback`() = runTest {
+        coEvery { api.register(any()) } coAnswers { userId = null }
+
+        assertEquals(RefreshOutcome.NOT_LOGGED_IN, newRegistrar().refresh())
+
+        coVerify(exactly = 0) { api.unregisterDevice(any()) }
+    }
+
+    @Test
+    fun `stalled token request times out and releases the lock`() = runTest {
+        fcm.hang = true
+        val registrar = newRegistrar()
+
+        assertEquals(RefreshOutcome.RETRY, registrar.refresh())
+        assertEquals(PushRegistrar.ENDPOINT_TIMEOUT_MS, currentTime)
+        assertEquals(1, scheduler.scheduled)
+
+        fcm.hang = false
+        assertEquals(RefreshOutcome.REGISTERED, registrar.refresh())
     }
 
     @Test

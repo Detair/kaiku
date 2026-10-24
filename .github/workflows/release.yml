@@ -478,10 +478,18 @@ jobs:
         run: |
           umask 077
           printf '%s' "$ANDROID_GOOGLE_SERVICES_JSON_BASE64" | base64 -d > mobile/android/app/google-services.json
-          # Fail early on a malformed secret (prints no content).
-          python3 -c 'import json, sys; json.load(open(sys.argv[1]))["project_info"]["project_id"]' \
-            mobile/android/app/google-services.json \
+          # Fail early on a malformed secret. Only the fixed line below is printed:
+          # a JSON error message could quote part of the secret.
+          python3 - mobile/android/app/google-services.json 2>/dev/null <<'PY' \
             || { echo "::error::ANDROID_GOOGLE_SERVICES_JSON_BASE64 is not a valid google-services.json"; exit 1; }
+          import json, sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as fh:
+                  if not json.load(fh)["project_info"]["project_id"]:
+                      sys.exit(1)
+          except Exception:
+              sys.exit(1)
+          PY
 
       - name: Build release APK
         working-directory: mobile/android
