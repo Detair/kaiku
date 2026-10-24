@@ -107,6 +107,9 @@ android {
         lintConfig = file("lint.xml")
         abortOnError = true
         checkDependencies = false
+        // Print every issue to the CI log (the HTML report is not uploaded).
+        textReport = true
+        textOutput = file("stdout")
     }
 }
 

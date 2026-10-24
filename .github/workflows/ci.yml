@@ -496,11 +496,11 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon
 
-      - name: Lint
-        run: ./gradlew lintDebug --no-daemon
-
       - name: Lint rule tests
         run: ./gradlew :lint-rules:test --no-daemon
+
+      - name: Lint
+        run: ./gradlew lintDebug --no-daemon
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
