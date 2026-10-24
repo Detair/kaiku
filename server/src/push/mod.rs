@@ -336,7 +336,7 @@ impl IntoResponse for PushError {
 pub struct CreateSubscriptionRequest {
     #[validate(length(min = 1, max = 32))]
     pub provider: String,
-    #[validate(length(min = 1, max = 4096))]
+    #[validate(length(min = 1, max = 2048))]
     pub endpoint: String,
     pub public_key: Option<String>,
     pub auth_key: Option<String>,
@@ -351,7 +351,7 @@ pub const MAX_SUBSCRIPTIONS_PER_USER: i64 = 10;
 
 /// FCM registration token shape (C19).
 fn is_valid_fcm_token(token: &str) -> bool {
-    (20..=4096).contains(&token.len())
+    (20..=2048).contains(&token.len())
         && token
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'-'))
@@ -428,6 +428,12 @@ pub async fn create_subscription(
     // Serialize registrations per user (cap race, same-endpoint races).
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
         .bind(auth.id)
+        .execute(&mut *tx)
+        .await?;
+    // Serialize the same endpoint across users (always after the user lock).
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2, 65))")
+        .bind(&body.provider)
+        .bind(&body.endpoint)
         .execute(&mut *tx)
         .await?;
     // A handed-down phone: the same (provider, endpoint) under other users is

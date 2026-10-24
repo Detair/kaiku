@@ -577,17 +577,33 @@ async fn test_device_registration_adopts_legacy_row_with_same_endpoint(pool: PgP
 }
 
 #[sqlx::test]
-async fn test_fcm_token_of_4096_chars_is_accepted(pool: PgPool) {
+async fn test_fcm_token_length_cap_is_2048(pool: PgPool) {
+    use rand::{Rng, SeedableRng};
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_:-";
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let mut random_token = |n: usize| -> String {
+        (0..n)
+            .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+            .collect()
+    };
+
     let (app, _mock) = fcm_enabled_app(pool.clone()).await;
     let (u, _) = create_test_user(&pool).await;
     let t = generate_access_token(&app.config, u);
     let r = post_sub(
         &app,
         &t,
-        json!({"provider": "fcm", "endpoint": "a".repeat(4096), "device_id": Uuid::new_v4()}),
+        json!({"provider": "fcm", "endpoint": random_token(2048), "device_id": Uuid::new_v4()}),
     )
     .await;
     assert_eq!(r.status(), StatusCode::CREATED);
+    let r = post_sub(
+        &app,
+        &t,
+        json!({"provider": "fcm", "endpoint": random_token(2049), "device_id": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 }
 
 #[sqlx::test]

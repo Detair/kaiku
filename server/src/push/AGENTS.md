@@ -57,6 +57,11 @@ Cross-user cleanup on registration matches only an exact (provider, endpoint):
 possessing the token proves the phone changed hands. A `device_id` is
 client-asserted, so it never deletes another user's rows.
 
+Endpoints (FCM tokens included) are capped at 2048 bytes: they sit in btree
+indexes, whose entries are limited to about 2.7 KB. Registration takes two
+advisory locks in a fixed order: the per-user lock (seed 0), then the
+(provider, endpoint) lock (seed 65, not in the `db/mod.rs` registry).
+
 ## Single replica
 
 The access-token cache is per process. Any per-user push state (e.g.

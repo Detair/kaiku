@@ -362,7 +362,6 @@ impl FcmClient {
             Err(e) => {
                 guard.retry_after = Some(Instant::now() + TOKEN_FAILURE_COOLDOWN);
                 // A slow failure can outlive the token: re-check expiry.
-                let _ = still_valid;
                 guard
                     .cached
                     .as_ref()
