@@ -62,6 +62,8 @@ pub struct AppState {
     pub filter_cache: Arc<FilterCache>,
     /// Shared HTTP client for outbound requests (geo-IP lookups, etc.)
     pub http_client: reqwest::Client,
+    /// Configured push transports (FCM only with a service account)
+    pub push: Arc<crate::push::PushService>,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -88,7 +90,9 @@ impl AppState {
     /// Create new application state.
     #[must_use]
     pub fn new(cfg: AppStateConfig) -> Self {
+        let push = Arc::new(crate::push::PushService::from_config(&cfg.config));
         Self {
+            push,
             db: cfg.db,
             redis: cfg.redis,
             config: Arc::new(cfg.config),

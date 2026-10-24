@@ -282,6 +282,14 @@ pub struct Config {
     /// Geo-IP API URL template (optional). Use `{ip}` as placeholder for the IP address.
     /// Default: `http://ip-api.com/json/{ip}?fields=city,country`
     pub geoip_api_url: Option<String>,
+
+    /// FCM service account (env: `FCM_SERVICE_ACCOUNT_FILE` or
+    /// `FCM_SERVICE_ACCOUNT_JSON`). `None` = FCM off.
+    pub fcm_service_account: Option<crate::push::fcm::ServiceAccountKey>,
+
+    /// FCM API base URL. Not an env var: always the Google endpoint outside
+    /// tests, which point it at a local mock.
+    pub fcm_api_base: String,
 }
 
 /// Origins presented by the Tauri desktop webview (per platform/webview
@@ -337,6 +345,15 @@ impl Config {
             parse_voice_ice_interfaces(env_opt("VOICE_ICE_INTERFACES").as_deref());
         let voice_ice_ip_family =
             parse_voice_ice_ip_family(env_opt("VOICE_ICE_IP_FAMILY").as_deref())?;
+        let fcm_service_account = crate::push::fcm::load_service_account(
+            env_opt("FCM_SERVICE_ACCOUNT_FILE"),
+            env_opt("FCM_SERVICE_ACCOUNT_JSON"),
+        )?;
+        let fcm_api_base = crate::push::fcm::FCM_API_BASE.to_string();
+        if let Some(key) = &fcm_service_account {
+            // Refuse to start with a key the FCM client cannot use.
+            crate::push::fcm::FcmClient::new(key.clone(), &fcm_api_base)?;
+        }
         let config = Self {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
@@ -516,6 +533,8 @@ impl Config {
             geoip_api_url: env::var("GEOIP_API_URL")
                 .ok()
                 .or_else(|| Some("http://ip-api.com/json/{ip}?fields=city,country".to_string())),
+            fcm_service_account,
+            fcm_api_base,
         };
 
         // SameSite=None requires the Secure flag — browsers reject the cookie otherwise
@@ -651,6 +670,8 @@ impl Config {
             loki_url: None,
             prometheus_url: None,
             geoip_api_url: None,
+            fcm_service_account: None,
+            fcm_api_base: crate::push::fcm::FCM_API_BASE.into(),
         }
     }
 }
