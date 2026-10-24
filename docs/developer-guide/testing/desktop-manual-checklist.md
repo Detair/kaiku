@@ -16,7 +16,6 @@ once per OS before a release and record the result in the table at the bottom.
 ## Known gaps
 
 - The Playwright e2e suite currently cannot run: `client/e2e/helpers.ts` lacks `registerAndReachMain`, a pre-existing gap.
-- If the server refuses the WebSocket even after a token refresh (`ws:auth_rejected`), the app stops reconnecting and shows the "Session Expired" dialog (log in again). Once server C4 refuses pending-password users at the upgrade (HTTP 403), they get this prompt too: the forced password-change screen (plan Task 13) must ship together with server C4 so those users see the change screen instead.
 - Entitlements on macOS apply only to signed builds. When notarising, check whether WKWebView needs additional hardened-runtime entitlements (for example JIT or unsigned executable memory) and record the outcome here.
 
 ## Windows
@@ -40,7 +39,7 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
-- [ ] Admin creates an account; the new user is forced to change the temporary password on first login (after Tasks 12-13 land)
+- [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
 - [ ] Log out, restart: login screen is shown
 
 ## Linux
@@ -66,7 +65,7 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
-- [ ] Admin creates an account; the new user is forced to change the temporary password on first login (after Tasks 12-13 land)
+- [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
 - [ ] Log out, restart: login screen is shown
 
 ## macOS
@@ -92,8 +91,12 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
-- [ ] Admin creates an account; the new user is forced to change the temporary password on first login (after Tasks 12-13 land)
+- [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
 - [ ] Log out, restart: login screen is shown
+
+## All platforms (and the web client)
+
+- [ ] Reconnect catch-up: user A has a channel open; cut A's network for 30 s; meanwhile B sends 3 messages and starts a brand-new DM with A; restore A's network: the 3 messages appear in order, without duplicates and without a scroll jump, and the new DM is in A's list without a reload
 
 ## Results
 

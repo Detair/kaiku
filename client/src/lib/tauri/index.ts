@@ -95,6 +95,8 @@ export {
   setNativeAuthInfo,
   expireNativeSession,
   initNativeAuthEvents,
+  PASSWORD_CHANGE_REQUIRED,
+  PASSWORD_CHANGE_REQUIRED_EVENT,
   type SessionRestoreResult,
   type AuthResult,
   type NativeAuthInfo,

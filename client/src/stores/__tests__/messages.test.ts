@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   getMessages: vi.fn(),
+  getMessagesAfter: vi.fn(),
   sendMessageWithStatus: vi.fn(),
   sendMessage: vi.fn(),
   getOurCurve25519Key: vi.fn(),
@@ -43,6 +44,7 @@ import {
   editingMessageId,
   setEditingMessageId,
   decryptMessageIfNeeded,
+  catchUpChannel,
 } from "../messages";
 
 function createMessage(id: string, channelId = "ch-1"): Message {
@@ -172,6 +174,113 @@ describe("messages store", () => {
 
       expect(messagesState.byChannel["ch-1"]).toHaveLength(1);
       expect(messagesState.byChannel["ch-1"][0].id).toBe("new");
+    });
+  });
+
+  describe("catchUpChannel", () => {
+    const page = (items: Message[], has_more: boolean): PaginatedMessages =>
+      ({ items, has_more, next_cursor: null }) as PaginatedMessages;
+
+    it("catchUpChannel appends only newer messages, deduplicated", async () => {
+      const [m1, m2, m3, m4] = ["m1", "m2", "m3", "m4"].map((id) =>
+        createMessage(id),
+      );
+      setMessagesState("byChannel", "ch-1", [m1, m2]);
+      vi.mocked(tauri.getMessagesAfter)
+        .mockResolvedValueOnce(page([m2, m3], true))
+        .mockResolvedValueOnce(page([m4], false));
+
+      const result = await catchUpChannel("ch-1");
+
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual([
+        "m1",
+        "m2",
+        "m3",
+        "m4",
+      ]);
+      expect(result).toBe("caught_up");
+      expect(vi.mocked(tauri.getMessagesAfter).mock.calls[0][1]).toBe("m2");
+      expect(vi.mocked(tauri.getMessagesAfter).mock.calls[1][1]).toBe("m3");
+    });
+
+    it("catchUpChannel reloads after maxPages", async () => {
+      setMessagesState("byChannel", "ch-1", [createMessage("m1")]);
+      let n = 0;
+      vi.mocked(tauri.getMessagesAfter).mockImplementation(async () =>
+        page([createMessage(`p${++n}`)], true),
+      );
+      vi.mocked(tauri.getMessages).mockResolvedValue(page([], false));
+
+      const result = await catchUpChannel("ch-1");
+
+      expect(result).toBe("reloaded");
+      expect(tauri.getMessagesAfter).toHaveBeenCalledTimes(5);
+      // loadInitialMessages ran once: one fresh newest-page fetch.
+      expect(tauri.getMessages).toHaveBeenCalledTimes(1);
+      expect(tauri.getMessages).toHaveBeenCalledWith("ch-1", undefined, 50);
+    });
+
+    it("catchUpChannel reloads when the server rejects the anchor (400)", async () => {
+      setMessagesState("byChannel", "ch-1", [createMessage("gone")]);
+      vi.mocked(tauri.getMessagesAfter).mockRejectedValue(
+        Object.assign(new Error("Unknown cursor"), { status: 400 }),
+      );
+      vi.mocked(tauri.getMessages).mockResolvedValue(
+        page([createMessage("fresh")], false),
+      );
+
+      const result = await catchUpChannel("ch-1");
+
+      expect(result).toBe("reloaded");
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual([
+        "fresh",
+      ]);
+    });
+
+    it("catchUpChannel with an empty cache loads the channel", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValue(
+        page([createMessage("n1")], false),
+      );
+
+      const result = await catchUpChannel("ch-1");
+
+      expect(result).toBe("reloaded");
+      expect(tauri.getMessagesAfter).not.toHaveBeenCalled();
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["n1"]);
+    });
+
+    it("catchUpChannel keeps order when live messages arrived first", async () => {
+      const at = (id: string, sec: number) => ({
+        ...createMessage(id),
+        created_at: `2026-11-01T10:00:${String(sec).padStart(2, "0")}Z`,
+      });
+      // m1 before the outage; m4 arrived live after the re-subscribe.
+      setMessagesState("byChannel", "ch-1", [at("m1", 1), at("m4", 4)]);
+      vi.mocked(tauri.getMessagesAfter).mockResolvedValueOnce(
+        page([at("m2", 2), at("m3", 3), at("m4", 4)], false),
+      );
+
+      await catchUpChannel("ch-1", 5, "m1");
+
+      expect(vi.mocked(tauri.getMessagesAfter).mock.calls[0][1]).toBe("m1");
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual([
+        "m1",
+        "m2",
+        "m3",
+        "m4",
+      ]);
+    });
+
+    it("catchUpChannel anchors on the newest sent message, not a pending one", async () => {
+      const pending = { ...createMessage("pending:x"), nonce: "x" };
+      setMessagesState("byChannel", "ch-1", [createMessage("m1"), pending]);
+      vi.mocked(tauri.getMessagesAfter).mockResolvedValueOnce(
+        page([], false),
+      );
+
+      await catchUpChannel("ch-1");
+
+      expect(vi.mocked(tauri.getMessagesAfter).mock.calls[0][1]).toBe("m1");
     });
   });
 

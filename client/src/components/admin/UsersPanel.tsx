@@ -50,6 +50,8 @@ import {
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
 import { showToast } from "@/components/ui/Toast";
+import CreateAccountModal from "./CreateAccountModal";
+import { t } from "@/i18n";
 
 const PAGE_SIZE = 20;
 
@@ -65,6 +67,7 @@ const UsersPanel: Component = () => {
   const [deleteConfirmText, setDeleteConfirmText] = createSignal("");
   const [actionLoading, setActionLoading] = createSignal(false);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
+  const [showCreateAccount, setShowCreateAccount] = createSignal(false);
 
   let listRef: HTMLDivElement | undefined;
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -281,6 +284,14 @@ const UsersPanel: Component = () => {
           <h2 class="text-lg font-bold text-text-primary">Users</h2>
 
           <div class="flex items-center gap-3">
+            {/* Create Account Button */}
+            <button
+              onClick={() => setShowCreateAccount(true)}
+              class="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-primary hover:bg-accent-primary/80 text-on-accent transition-colors text-sm font-medium"
+            >
+              {t("admin.createAccount.button")}
+            </button>
+
             {/* Export Button */}
             <button
               onClick={handleExport}
@@ -923,6 +934,10 @@ const UsersPanel: Component = () => {
             </div>
           </div>
         </div>
+      </Show>
+
+      <Show when={showCreateAccount()}>
+        <CreateAccountModal onClose={() => setShowCreateAccount(false)} />
       </Show>
     </div>
   );

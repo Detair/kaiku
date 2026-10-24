@@ -17,6 +17,9 @@ import {
   removeMessage,
   messagesState,
   loadInitialMessages,
+  catchUpChannel,
+  catchUpAnchor,
+  clearChannelMessages,
 } from "../messages";
 import { handlePreferencesUpdated } from "../preferences";
 import {
@@ -55,6 +58,7 @@ import {
   handleDMNameUpdated,
   updateDMLastMessage,
   loadDMs,
+  handleDmCreated,
 } from "../dms";
 import { handlePinAdded, handlePinRemoved } from "../channelPins";
 
@@ -121,7 +125,7 @@ import {
   type ConnectionState,
   type ConnectionSupervisor,
 } from "./connection";
-import { isTauri } from "@/lib/tauri/common";
+import { isTauri, PASSWORD_CHANGE_REQUIRED_EVENT } from "@/lib/tauri/common";
 
 export type { ConnectionState } from "./connection";
 
@@ -155,6 +159,18 @@ const [typingState, setTypingState] = createStore<TypingState>({
 
 // Event listeners
 let unlisteners: UnlistenFn[] = [];
+// Bumped by every `cleanupWebSocket()`: an `initWebSocket()` whose listener
+// registrations settle after a cleanup (or after a newer init, which cleans
+// up first) was superseded and must drop the handles it obtained.
+let listenerGeneration = 0;
+// Two epochs, so that overlapping calls of the same kind never cancel each
+// other (a no-op `connect()` must not make the one that opened skip recovery):
+// - `disconnectEpoch`, bumped by `disconnect()`: a `connect()` whose open
+//   settles after a disconnect took over reports nothing and skips recovery.
+// - `connectEpoch`, bumped by `connect()`: a `disconnect()` whose close
+//   settles after a newer connect began must not reset that connect's state.
+let disconnectEpoch = 0;
+let connectEpoch = 0;
 
 // Typing debounce timers
 const typingTimers: Record<string, NodeJS.Timeout> = {};
@@ -168,51 +184,137 @@ let connectStartTime = 0;
 let supervisor: ConnectionSupervisor | null = null;
 let detachBrowserMessageHandler: (() => void) | null = null;
 
+// --- C2 resync state ------------------------------------------------------
+
+/** How long reconnect recovery waits for `ready` and for `subscribed` acks. */
+const RESYNC_WAIT_MS = 3000;
+/** Longer gaps reload the open channel instead of paging through the gap. */
+const MAX_CATCH_UP_GAP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** `server_time` of the latest `ready`, and of the one before it. */
+let resyncWatermark: string | null = null;
+let previousWatermark: string | null = null;
+/** Whether the current connection has delivered `ready` yet. */
+let readyReceived = false;
+let readyWaiters: Array<() => void> = [];
+const subscribeAckWaiters = new Map<string, Set<() => void>>();
+
+/** Last `Ready.server_time` (RFC 3339), or null before the first `ready`. */
+export function getResyncWatermark(): string | null {
+  return resyncWatermark;
+}
+
+function handleReady(serverTime: string | undefined): void {
+  if (serverTime) {
+    previousWatermark = resyncWatermark;
+    resyncWatermark = serverTime;
+  }
+  readyReceived = true;
+  const waiters = readyWaiters;
+  readyWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+/** Resolves true once this connection's `ready` arrived, false after `ms`. */
+function waitForReady(ms: number): Promise<boolean> {
+  if (readyReceived) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      readyWaiters = readyWaiters.filter((w) => w !== done);
+      resolve(false);
+    }, ms);
+    readyWaiters.push(done);
+  });
+}
+
+/**
+ * Resolves true on the next `subscribed` ack for `channelId`, false after
+ * `ms` (e.g. the server refused the subscription). Register before sending.
+ */
+function waitForSubscribeAck(channelId: string, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let waiters = subscribeAckWaiters.get(channelId);
+    if (!waiters) {
+      waiters = new Set();
+      subscribeAckWaiters.set(channelId, waiters);
+    }
+    const settle = (acked: boolean) => {
+      clearTimeout(timer);
+      const set = subscribeAckWaiters.get(channelId);
+      set?.delete(done);
+      if (set?.size === 0) subscribeAckWaiters.delete(channelId);
+      resolve(acked);
+    };
+    const done = () => settle(true);
+    const timer = setTimeout(() => settle(false), ms);
+    waiters.add(done);
+  });
+}
+
+function handleSubscribedAck(channelId: string): void {
+  const waiters = subscribeAckWaiters.get(channelId);
+  if (!waiters) return;
+  for (const resolve of [...waiters]) resolve();
+}
+
 /**
  * Initialize WebSocket event listeners.
  * Call this once when the app starts (after auth).
  */
 export async function initWebSocket(): Promise<void> {
-  // Clean up existing listeners
+  // Clean up existing listeners; this also supersedes any older init that is
+  // still waiting for its registrations.
   await cleanupWebSocket();
+  const generation = listenerGeneration;
 
   if (isTauri()) {
     // Native mode: Rust owns the socket and its retries. Every server frame
     // arrives once as `ws:server_event` and goes through the same handler as
     // in the browser; the status events drive the supervisor.
     const { listen } = await import("@tauri-apps/api/event");
+    if (generation !== listenerGeneration) return;
     const supervisor = getSupervisor();
-    unlisteners.push(
-      ...(await Promise.all([
-        listen<ServerEvent>("ws:server_event", (event) => {
-          handleServerEvent(event.payload).catch((err) =>
-            console.error("[WS] Failed to handle server event:", err),
-          );
-        }),
-        listen("ws:connecting", () => {
-          Sentry.addBreadcrumb({ category: "ws", message: "connecting", level: "info" });
-        }),
-        listen("ws:connected", () => {
-          Sentry.addBreadcrumb({
-            category: "ws",
-            message: "connected",
-            data: { duration_ms: Date.now() - connectStartTime },
-            level: "info",
-          });
-          // After ws:reconnecting this runs handleReconnect (onRecovered).
-          supervisor.notifyOpened();
-        }),
-        listen<number>("ws:reconnecting", (event) => {
-          supervisor.notifyClosed(false);
-          if (wsState.status === "reconnecting") {
-            setWsState({ reconnectAttempt: event.payload });
-          }
-        }),
-        // Rust ended the loop by itself (no session any more).
-        listen("ws:disconnected", () => supervisor.stop()),
-        listen("ws:auth_rejected", () => handleNativeAuthRejected()),
-      ])),
-    );
+    const handles = await Promise.all([
+      listen<ServerEvent>("ws:server_event", (event) => {
+        handleServerEvent(event.payload).catch((err) =>
+          console.error("[WS] Failed to handle server event:", err),
+        );
+      }),
+      listen("ws:connecting", () => {
+        Sentry.addBreadcrumb({ category: "ws", message: "connecting", level: "info" });
+      }),
+      listen("ws:connected", () => {
+        Sentry.addBreadcrumb({
+          category: "ws",
+          message: "connected",
+          data: { duration_ms: Date.now() - connectStartTime },
+          level: "info",
+        });
+        // After ws:reconnecting this runs handleReconnect (onRecovered).
+        supervisor.notifyOpened();
+      }),
+      listen<number>("ws:reconnecting", (event) => {
+        supervisor.notifyClosed(false);
+        if (wsState.status === "reconnecting") {
+          setWsState({ reconnectAttempt: event.payload });
+        }
+      }),
+      // Rust ended the loop by itself (no session any more).
+      listen("ws:disconnected", () => supervisor.stop()),
+      listen("ws:auth_rejected", () => handleNativeAuthRejected()),
+    ]);
+    if (generation !== listenerGeneration) {
+      // A cleanup (or a newer init) ran while the registrations were in
+      // flight: these handles belong to nobody, so release them right away
+      // instead of leaving them registered or handing them to a later owner.
+      for (const unlisten of handles) unlisten();
+      return;
+    }
+    unlisteners.push(...handles);
   } else {
     // Browser mode: the handler is (re-)attached on every open by the
     // reconnect supervisor's driver; attach now if a socket already exists.
@@ -282,8 +384,19 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       }
       break;
 
+    case "ready":
+      handleReady(event.server_time);
+      break;
+
     case "subscribed":
+      handleSubscribedAck(event.channel_id);
+      break;
+
     case "unsubscribed":
+      break;
+
+    case "dm_created":
+      handleDmCreated(event.channel);
       break;
 
     case "message_edit":
@@ -724,7 +837,8 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     default:
-      console.log("Unhandled server event:", event.type);
+      // Exhaustive today; keeps logging event types the client predates.
+      console.log("Unhandled server event:", (event as { type: string }).type);
   }
 }
 
@@ -732,12 +846,23 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
  * Cleanup WebSocket listeners.
  */
 export async function cleanupWebSocket(): Promise<void> {
+  listenerGeneration += 1;
   for (const unlisten of unlisteners) {
     unlisten();
   }
   unlisteners = [];
   detachBrowserMessageHandler?.();
   detachBrowserMessageHandler = null;
+
+  // Resync state is per session: the next session's first `ready` must not
+  // be compared with this session's watermark, and its frames must not
+  // resolve this session's waiters. Dropped waiters still settle as "not
+  // arrived" on their own bounded timer (their cleanup is a no-op then).
+  resyncWatermark = null;
+  previousWatermark = null;
+  readyReceived = false;
+  readyWaiters = [];
+  subscribeAckWaiters.clear();
 
   // Clear typing timers
   for (const timer of Object.values(typingTimers)) {
@@ -807,42 +932,113 @@ export async function refreshUnreadStateAfterReconnect(): Promise<void> {
 }
 
 /**
- * Handle post-reconnect recovery: re-subscribe channels, reload messages.
+ * Channels whose messages are on screen: the selected guild channel and, when
+ * a conversation (not the friends list) is shown, the selected DM.
+ */
+function openChannelIds(): string[] {
+  const ids = new Set<string>();
+  if (channelsState.selectedChannelId) ids.add(channelsState.selectedChannelId);
+  if (dmsState.selectedDMId && !dmsState.isShowingFriends) {
+    ids.add(dmsState.selectedDMId);
+  }
+  return [...ids];
+}
+
+/** Whether the time between the last two `ready`s is too long to page through. */
+function gapTooLongForCatchUp(): boolean {
+  if (!resyncWatermark || !previousWatermark) return false;
+  const gap = Date.parse(resyncWatermark) - Date.parse(previousWatermark);
+  return gap > MAX_CATCH_UP_GAP_MS;
+}
+
+/**
+ * Bring one open channel up to date after a reconnect (C2 order: subscribed
+ * ack → `GET ?after=` → dedupe). Never rejects.
+ */
+async function resyncOpenChannel(
+  channelId: string,
+  anchor: string | undefined,
+  acked: Promise<boolean>,
+): Promise<void> {
+  if (!(await acked)) {
+    console.warn("[WS] No subscribe ack before catch-up for channel", channelId);
+  }
+  try {
+    if (gapTooLongForCatchUp()) {
+      await loadInitialMessages(channelId);
+    } else {
+      await catchUpChannel(channelId, undefined, anchor);
+    }
+  } catch (err) {
+    console.error("[WS] Catch-up failed, reloading channel", channelId, err);
+    await loadInitialMessages(channelId).catch((e) =>
+      console.error("[WS] Failed to reload messages for channel", channelId, e),
+    );
+  }
+}
+
+/**
+ * Handle post-reconnect recovery.
+ *
  * Snapshots the subscribed channels (plus the active guild's text channels,
- * which a guild opened while offline never subscribed) before resetting
- * state; subscribes first, then reloads (C2: subscribe before catch-up).
+ * which a guild opened while offline never subscribed, and the open channels)
+ * and the catch-up anchors before resetting state. Open channels: subscribe →
+ * wait for `ready` and the `subscribed` ack → catch up (C2). Other cached
+ * channels are dropped and reload when opened, which also picks up edits and
+ * deletes from the gap. Unread metadata is refreshed in parallel.
  */
 async function handleReconnect(): Promise<void> {
-  const channelsToResubscribe = [
-    ...new Set([...wsState.subscribedChannels, ...activeGuildTextChannelIds()]),
-  ];
-  const channelsToReload = Object.keys(messagesState.byChannel).filter(
+  const open = openChannelIds();
+  const cached = Object.keys(messagesState.byChannel).filter(
     (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,
   );
+  // Every open channel, cached or not: with an empty cache (new or quiet
+  // channel, or a load in flight) catchUpChannel falls back to a fresh load,
+  // so messages from the gap still appear.
+  const toCatchUp = open;
+  const toClear = cached.filter((id) => !open.includes(id));
+  const anchors = new Map(toCatchUp.map((id) => [id, catchUpAnchor(id)]));
+  const channelsToResubscribe = [
+    ...new Set([
+      ...wsState.subscribedChannels,
+      ...activeGuildTextChannelIds(),
+      ...toCatchUp,
+    ]),
+  ];
 
   // Clear subscribed set so subscribeChannel() early-return guard allows re-subscription
   setWsState("subscribedChannels", new Set());
   setWsState({ status: "connected", reconnectAttempt: 0, error: null });
 
-  // Re-subscribe first, then reload messages and refresh unread metadata in
-  // parallel. The metadata refresh is what clears stale unread dots: messages that
+  for (const id of toClear) clearChannelMessages(id);
+
+  // Register the ack waiters before the subscribe frames go out.
+  const acks = new Map(
+    toCatchUp.map((id) => [id, waitForSubscribeAck(id, RESYNC_WAIT_MS)]),
+  );
+  await subscribeAll(channelsToResubscribe);
+
+  // The metadata refresh is what clears stale unread dots: messages that
   // arrived (or were read on another device) while disconnected changed
   // last_read_message_id / last_message_id server-side, and no WS event
   // replays them after reconnect.
-  await subscribeAll(channelsToResubscribe);
   await Promise.all([
-    Promise.all(
-      channelsToReload.map((id) =>
-        loadInitialMessages(id).catch((err) =>
-          console.error("[WS] Failed to reload messages for channel", id, err),
+    (async () => {
+      if (toCatchUp.length === 0) return;
+      if (!(await waitForReady(RESYNC_WAIT_MS))) {
+        console.warn("[WS] No ready event after reconnect; catching up anyway");
+      }
+      await Promise.all(
+        toCatchUp.map((id) =>
+          resyncOpenChannel(id, anchors.get(id), acks.get(id)!),
         ),
-      ),
-    ),
+      );
+    })(),
     refreshUnreadStateAfterReconnect(),
   ]);
 
   console.info(
-    `[WS] Reconnect recovery complete: ${channelsToResubscribe.length} channels re-subscribed, ${channelsToReload.length} channels reloaded`,
+    `[WS] Reconnect recovery complete: ${channelsToResubscribe.length} channels re-subscribed, ${toCatchUp.length} caught up, ${toClear.length} cleared`,
   );
 
   // Signal connection ready after subscriptions are restored
@@ -893,17 +1089,29 @@ const nativeDriver: ConnectionDriver = {
  * Native: the server refused the socket even with a freshly refreshed token,
  * so retrying cannot help. Stop the supervisor and the Rust retry loop (the
  * native driver's close → `ws_disconnect`) instead of showing "Reconnecting…"
- * forever, and send the user down the "session expired → sign in again" path.
+ * forever.
  *
- * Known gap: once server C4 refuses pending-password users at the upgrade
- * (HTTP 403), those users land here too. The forced password-change screen
- * (plan Task 13) must ship together with server C4 and route them to the
- * change screen instead of this generic sign-in prompt.
+ * The server also refuses the upgrade (HTTP 403) while the account still has
+ * to replace an admin-issued temporary password (contract C4/C11). That is
+ * not an ended session: `GET /auth/me` stays allowed, so ask it, and if the
+ * change is pending send the user to the change-password screen. Any other
+ * outcome goes down the "session expired → sign in again" path.
  */
-function handleNativeAuthRejected(): void {
-  console.warn("[WS] Server rejected a fresh token — ending the session");
+async function handleNativeAuthRejected(): Promise<void> {
+  console.warn("[WS] Server rejected a fresh token — stopping reconnects");
   supervisor?.stop();
   nativeDriver.close();
+
+  let passwordChangePending = false;
+  try {
+    passwordChangePending = await tauri.isPasswordChangePending();
+  } catch (err) {
+    console.warn("[WS] Account check after auth rejection failed:", err);
+  }
+  if (passwordChangePending) {
+    window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
+    return;
+  }
   // Clears the cached bearer and shares the dedupe flag with the other
   // expiry paths, so exactly one `kaiku:session-expired` fires.
   tauri.expireNativeSession();
@@ -914,6 +1122,8 @@ function getSupervisor(): ConnectionSupervisor {
     driver: isTauri() ? nativeDriver : browserDriver,
     mode: isTauri() ? "external" : "managed",
     onStatus: (status, attempt) => {
+      // A new connection must deliver its own `ready` before catch-up.
+      if (status !== "connected") readyReceived = false;
       setWsState({
         status,
         reconnectAttempt: attempt,
@@ -942,6 +1152,10 @@ export function canRetryConnectionNow(): boolean {
 export async function connect(): Promise<void> {
   // The supervisor opens the connection; in the browser it also keeps it
   // alive, natively it mirrors the Rust loop.
+  // Mark that a connect began (a disconnect still closing must leave its
+  // state alone) and remember which disconnect it follows.
+  connectEpoch += 1;
+  const epoch = disconnectEpoch;
   try {
     setWsState({ error: null });
     if (!isTauri()) {
@@ -951,6 +1165,10 @@ export async function connect(): Promise<void> {
       });
     }
     const opened = await getSupervisor().start();
+    // A disconnect took over while the open was in flight: its state
+    // stands, this call reports nothing. An overlapping connect does not
+    // count: it was a no-op (`start()` → false) and recovery stays here.
+    if (epoch !== disconnectEpoch) return;
     // Only after this call opened a fresh socket. When the supervisor was
     // already running (connected, or retrying) it owns recovery itself;
     // running it here would fake "connected" on a socket that isn't open.
@@ -958,6 +1176,7 @@ export async function connect(): Promise<void> {
       await handleReconnect();
     }
   } catch (err) {
+    if (epoch !== disconnectEpoch) return;
     // Status stays as the supervisor set it ("reconnecting": it retries).
     // Natively the first attempt's failure can arrive after a retry already
     // connected (ws:connected); don't show a stale error over a live socket.
@@ -991,9 +1210,14 @@ export function waitForConnection(timeoutMs = 5000): Promise<boolean> {
  * Disconnect from the WebSocket server.
  */
 export async function disconnect(): Promise<void> {
+  disconnectEpoch += 1;
+  const epoch = connectEpoch;
   try {
     supervisor?.stop();
     await tauri.wsDisconnect();
+    // A newer connect established its own state while the close was in
+    // flight: resetting it here would show that live socket as disconnected.
+    if (epoch !== connectEpoch) return;
     detachBrowserMessageHandler?.();
     detachBrowserMessageHandler = null;
     setWsState({ status: "disconnected", subscribedChannels: new Set() });

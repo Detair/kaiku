@@ -8,6 +8,7 @@ import {
   retryRestoreNow,
 } from "@/stores/auth";
 import { t } from "@/i18n";
+import ForcedPasswordChange from "@/views/ForcedPasswordChange";
 
 interface AuthGuardProps {
   children: JSX.Element;
@@ -48,7 +49,12 @@ const AuthGuard: Component<AuthGuardProps> = (props) => {
         </Show>
       }
     >
-      <Show when={isAuthenticated()}>{props.children}</Show>
+      <Show when={isAuthenticated()}>
+        {/* C4: nothing else works until the temporary password is replaced. */}
+        <Show when={!authState.passwordChangeRequired} fallback={<ForcedPasswordChange />}>
+          {props.children}
+        </Show>
+      </Show>
     </Show>
   );
 };

@@ -347,11 +347,33 @@ async function pushPreferences(
 // Sync Functions
 // ============================================================================
 
+// Bumped by every `initPreferences()` and `cleanupPreferences()`: a run whose
+// server response arrives after a newer run began (another sign-in) or after
+// the session stopped was superseded and must not apply its result to state
+// or localStorage, nor push it with whatever session is current by then.
+let initGeneration = 0;
+
+/**
+ * Detach the preferences store from the session that is stopping: an
+ * `initPreferences()` still waiting on the server is superseded, and a
+ * debounced push that has not fired yet is dropped. Synchronous, so the
+ * caller can run it before anything of the next session starts.
+ */
+export function cleanupPreferences(): void {
+  initGeneration += 1;
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+}
+
 /**
  * Initialize preferences on login.
  * Fetches from server, compares timestamps with localStorage, and syncs.
  */
 export async function initPreferences(): Promise<void> {
+  const generation = ++initGeneration;
+  const superseded = () => generation !== initGeneration;
   setIsInitialized(false);
   setIsSyncing(true);
 
@@ -367,11 +389,13 @@ export async function initPreferences(): Promise<void> {
   try {
     const local = loadFromLocalStorage();
     const server = await fetchPreferences();
+    if (superseded()) return;
 
     if (!server.preferences || Object.keys(server.preferences).length === 0) {
       // No server prefs, push local (or defaults)
       const toSync = local?.data ?? DEFAULT_PREFERENCES;
       const result = await pushPreferences(toSync);
+      if (superseded()) return;
       const merged = { ...DEFAULT_PREFERENCES, ...result.preferences };
       setPreferences(merged);
       setLastUpdated(result.updated_at);
@@ -390,6 +414,7 @@ export async function initPreferences(): Promise<void> {
     } else {
       // Local is newer (edited while offline), push
       const result = await pushPreferences(local.data);
+      if (superseded()) return;
       const merged = { ...DEFAULT_PREFERENCES, ...result.preferences };
       setPreferences(merged);
       setLastUpdated(result.updated_at);
@@ -397,6 +422,7 @@ export async function initPreferences(): Promise<void> {
       console.log("[Preferences] Pushed offline changes to server");
     }
   } catch (e) {
+    if (superseded()) return;
     console.error("[Preferences] Failed to init preferences:", e);
     // Fall back to local or defaults
     const local = loadFromLocalStorage();
@@ -406,8 +432,11 @@ export async function initPreferences(): Promise<void> {
       console.log("[Preferences] Using local preferences (offline fallback)");
     }
   } finally {
-    setIsSyncing(false);
-    setIsInitialized(true);
+    // A superseded run leaves the sync flags to the run that replaced it.
+    if (!superseded()) {
+      setIsSyncing(false);
+      setIsInitialized(true);
+    }
   }
 }
 
@@ -429,6 +458,7 @@ export function updatePreference<K extends keyof UserPreferences>(
   // Debounced push to server
   if (pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
+    pushTimer = null;
     try {
       await pushPreferences(updated);
       console.log("[Preferences] Synced to server");

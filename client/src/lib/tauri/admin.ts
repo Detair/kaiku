@@ -4,6 +4,7 @@
  */
 
 import type {
+  AdminCreateUserRequest,
   AdminOidcProvider,
   AdminStats,
   AdminStatus,
@@ -158,6 +159,15 @@ export async function adminListUsers(
     "GET",
     `/api/admin/users${query ? `?${query}` : ""}`,
   );
+}
+
+/**
+ * Create an account with a temporary password (elevated admin only).
+ */
+export async function adminCreateUser(
+  body: AdminCreateUserRequest,
+): Promise<UserSummary> {
+  return httpRequest<UserSummary>("POST", "/api/admin/users", body);
 }
 
 /**

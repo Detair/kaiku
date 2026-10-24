@@ -39,11 +39,16 @@ const [presenceState, setPresenceState] = createStore<PresenceState>({
 
 // Event listener cleanup
 let activityUnlistener: UnlistenFn | null = null;
+// Bumped by every `initPresence()` and `cleanupPresence()`: an init whose
+// registration settles after either was superseded and releases its handle
+// instead of overwriting the current owner's.
+let presenceGeneration = 0;
 
 /**
  * Initialize presence event listeners.
  */
 export async function initPresence(): Promise<void> {
+  const generation = ++presenceGeneration;
   // Clean up existing listener
   if (activityUnlistener) {
     activityUnlistener();
@@ -54,7 +59,8 @@ export async function initPresence(): Promise<void> {
   // modes (native: via `ws:server_event`). Native also reports local activity.
   if (isTauri()) {
     const { listen } = await import("@tauri-apps/api/event");
-    activityUnlistener = await listen<Activity | null>(
+    if (generation !== presenceGeneration) return;
+    const unlisten = await listen<Activity | null>(
       "presence:activity_changed",
       async (event) => {
         // Notify focus engine of activity category change for auto-activation
@@ -81,6 +87,12 @@ export async function initPresence(): Promise<void> {
         }
       },
     );
+    if (generation !== presenceGeneration) {
+      // Cleaned up, or re-initialized, while the registration was in flight.
+      unlisten();
+      return;
+    }
+    activityUnlistener = unlisten;
   }
 }
 
@@ -92,6 +104,7 @@ export async function initPresence(): Promise<void> {
  * in between, so the deactivation always resolves before re-initialization.
  */
 export function cleanupPresence(): void {
+  presenceGeneration += 1;
   if (activityUnlistener) {
     activityUnlistener();
     activityUnlistener = null;

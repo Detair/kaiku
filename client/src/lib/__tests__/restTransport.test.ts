@@ -122,4 +122,47 @@ describe("native REST transport", () => {
     expect(JSON.parse(init.body)).toMatchObject({ content: "/roll" });
     expect(invokeMock).not.toHaveBeenCalled();
   });
+  it("403 PASSWORD_CHANGE_REQUIRED dispatches kaiku:password-change-required and throws a coded HttpError", async () => {
+    const common = await import("../tauri/common");
+    common.setNativeAuthInfo({
+      server_url: "https://srv",
+      access_token: "tok",
+      expires_at_ms: Date.now() + 900_000,
+    });
+    fetchMock.mockResolvedValue(
+      respond(403, { error: "PASSWORD_CHANGE_REQUIRED", message: "Password change required" }),
+    );
+    const onRequired = vi.fn();
+    window.addEventListener("kaiku:password-change-required", onRequired);
+    try {
+      const error = await common.httpRequest("GET", "/api/guilds").catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(common.HttpError);
+      expect((error as InstanceType<typeof common.HttpError>).status).toBe(403);
+      expect((error as Error).message).toBe("PASSWORD_CHANGE_REQUIRED");
+      expect(onRequired).toHaveBeenCalledTimes(1);
+      // No refresh attempt: the token is fine, the account is not.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("kaiku:password-change-required", onRequired);
+    }
+  });
+
+  it("other 403s do not report a pending password change", async () => {
+    const common = await import("../tauri/common");
+    common.setNativeAuthInfo({
+      server_url: "https://srv",
+      access_token: "tok",
+      expires_at_ms: Date.now() + 900_000,
+    });
+    fetchMock.mockResolvedValue(respond(403, { error: "FORBIDDEN", message: "Forbidden" }));
+    const onRequired = vi.fn();
+    window.addEventListener("kaiku:password-change-required", onRequired);
+    try {
+      await expect(common.httpRequest("GET", "/api/guilds")).rejects.toThrow("Forbidden");
+      expect(onRequired).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("kaiku:password-change-required", onRequired);
+    }
+  });
 });

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MockedFunction } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   getCurrentUser: vi.fn(),
@@ -7,6 +8,10 @@ vi.mock("@/lib/tauri", () => ({
   logout: vi.fn(),
   oidcCompleteLogin: vi.fn(),
   refreshAccessToken: vi.fn(),
+  updatePassword: vi.fn(),
+  // A live session has a token unless a test says otherwise.
+  getAccessToken: vi.fn(() => "token"),
+  expireNativeSession: vi.fn(),
   // Mirrors the real fallback: the stored server address survives a restart.
   getServerUrl: vi.fn(() => localStorage.getItem("serverUrl") ?? ""),
 }));
@@ -27,6 +32,7 @@ vi.mock("@/stores/presence", () => ({
 
 vi.mock("@/stores/preferences", () => ({
   initPreferences: vi.fn(),
+  cleanupPreferences: vi.fn(),
 }));
 
 vi.mock("@/stores/drafts", () => ({
@@ -71,7 +77,35 @@ import {
   abandonRestore,
   retryRestoreNow,
   restoreRetryDelayMs,
+  completeForcedPasswordChange,
+  hasPendingTemporaryPassword,
+  isForcedPasswordChangeSaved,
+  retryForcedPasswordChangeFinish,
+  PASSWORD_SAVED_REFRESH_FAILED,
+  TEARDOWN_STEP_TIMEOUT_MS,
 } from "../auth";
+
+/** Resolve `p`, or fail after `ms`: a hung lifecycle must fail, not time out. */
+async function withinMs<T>(p: Promise<T>, ms = 1000): Promise<T> {
+  let timer!: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`still pending after ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([p, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Make the next call of `step` stay pending until the returned function runs. */
+function holdOnce(step: MockedFunction<() => Promise<void>>): () => void {
+  let release!: () => void;
+  step.mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)));
+  return () => release();
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 function createUser(overrides: Partial<User> = {}): User {
   return {
@@ -99,6 +133,7 @@ describe("auth store", () => {
       setupRequired: false,
       sessionExpired: false,
       restorePending: false,
+      passwordChangeRequired: false,
     });
   });
 
@@ -650,6 +685,625 @@ describe("auth store", () => {
 
       expect(tauri.refreshAccessToken).not.toHaveBeenCalled();
       expect(authState.sessionExpired).toBe(false);
+    });
+  });
+  describe("forced password change", () => {
+    function mockServices() {
+      vi.mocked(initWebSocket).mockResolvedValue(undefined);
+      vi.mocked(initPresence).mockResolvedValue(undefined);
+      vi.mocked(wsConnect).mockResolvedValue(undefined);
+      vi.mocked(initPreferences).mockResolvedValue(undefined);
+      vi.mocked(wsDisconnect).mockResolvedValue(undefined);
+      vi.mocked(cleanupWebSocket).mockResolvedValue(undefined);
+    }
+
+    async function loginPending() {
+      vi.mocked(tauri.login).mockResolvedValue({
+        user: createUser(),
+        setup_required: false,
+        password_change_required: true,
+      });
+      await login("https://server.com", "alice", "temp-pw");
+    }
+
+    afterEach(async () => {
+      // Clears the remembered temporary password between tests.
+      vi.mocked(tauri.logout).mockResolvedValue(undefined);
+      await logout();
+    });
+
+    it("login with password_change_required sets the flag and does not connect the websocket", async () => {
+      mockServices();
+
+      await loginPending();
+
+      expect(authState.user).not.toBeNull();
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(hasPendingTemporaryPassword()).toBe(true);
+      expect(initWebSocket).not.toHaveBeenCalled();
+      expect(wsConnect).not.toHaveBeenCalled();
+      expect(initPresence).not.toHaveBeenCalled();
+      expect(initPreferences).not.toHaveBeenCalled();
+      expect(initIdleDetection).not.toHaveBeenCalled();
+    });
+
+    it("completeForcedPasswordChange uses the remembered temporary password, refreshes, clears the flag and connects", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(true);
+
+      await completeForcedPasswordChange(null, "new-pw-123");
+
+      expect(tauri.updatePassword).toHaveBeenCalledWith("temp-pw", "new-pw-123", true);
+      expect(tauri.refreshAccessToken).toHaveBeenCalled();
+      expect(authState.passwordChangeRequired).toBe(false);
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(wsConnect).toHaveBeenCalled();
+      expect(initIdleDetection).toHaveBeenCalled();
+    });
+
+    it("a failed change keeps the flag and the remembered password", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockRejectedValue(new Error("Server error (500)"));
+
+      await expect(completeForcedPasswordChange(null, "new-pw-123")).rejects.toThrow();
+
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(hasPendingTemporaryPassword()).toBe(true);
+      expect(wsConnect).not.toHaveBeenCalled();
+    });
+
+    it("an explicit current password wins over the remembered one", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(true);
+
+      await completeForcedPasswordChange("typed-pw", "new-pw-123");
+
+      expect(tauri.updatePassword).toHaveBeenCalledWith("typed-pw", "new-pw-123", true);
+    });
+
+    it("a restored session that still needs a password change goes to the change screen", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+        password_change_required: true,
+      });
+
+      await initAuth();
+
+      expect(authState.isInitialized).toBe(true);
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(wsConnect).not.toHaveBeenCalled();
+    });
+
+    it("PASSWORD_CHANGE_REQUIRED from any request switches to the change screen", async () => {
+      mockServices();
+      // Restored session whose restore response did not carry the flag.
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      await initAuth();
+      expect(authState.passwordChangeRequired).toBe(false);
+
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+
+      await vi.waitFor(() => {
+        expect(authState.passwordChangeRequired).toBe(true);
+      });
+      // No temporary password remembered: the screen asks for it.
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(authState.user).not.toBeNull();
+      expect(authState.sessionExpired).toBe(false);
+      // Services that would only collect 403s are stopped.
+      await vi.waitFor(() => {
+        expect(cleanupPresence).toHaveBeenCalled();
+      });
+      expect(wsDisconnect).toHaveBeenCalled();
+      expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+    });
+
+    it("a password-change event during service startup leaves nothing started", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      // The event arrives while the first startup step is still running.
+      vi.mocked(initWebSocket).mockImplementationOnce(async () => {
+        window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      });
+
+      await initAuth();
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(wsConnect).not.toHaveBeenCalled();
+      expect(initPreferences).not.toHaveBeenCalled();
+      expect(initIdleDetection).not.toHaveBeenCalled();
+      // What the first step started (listeners, presence) is undone.
+      expect(cleanupWebSocket).toHaveBeenCalled();
+      expect(cleanupPresence).toHaveBeenCalled();
+    });
+
+    it("a password-change event while the socket connects tears the socket down afterwards", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      let finishConnect!: () => void;
+      vi.mocked(wsConnect).mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishConnect = resolve)),
+      );
+      vi.mocked(initPreferences).mockImplementationOnce(async () => {
+        window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      });
+
+      const restoring = initAuth();
+      await vi.waitFor(() => expect(wsConnect).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 0));
+      // The connect completes after the event's cleanup already ran.
+      finishConnect();
+      await restoring;
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(initIdleDetection).not.toHaveBeenCalled();
+      const lastDisconnect = Math.max(...vi.mocked(wsDisconnect).mock.invocationCallOrder);
+      const connect = vi.mocked(wsConnect).mock.invocationCallOrder[0];
+      expect(lastDisconnect).toBeGreaterThan(connect);
+    });
+
+    it("a cancelled startup whose WebSocket init rejects still tears down presence that finishes later", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      let finishPresence!: () => void;
+      vi.mocked(initPresence).mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishPresence = resolve)),
+      );
+      vi.mocked(initWebSocket).mockImplementationOnce(async () => {
+        window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+        throw new Error("ws init failed");
+      });
+
+      const restoring = initAuth();
+      await vi.waitFor(() => expect(authState.passwordChangeRequired).toBe(true));
+      await new Promise((r) => setTimeout(r, 0));
+      // Presence finishes starting only after the WebSocket init failed.
+      finishPresence();
+      await restoring;
+      await vi.waitFor(() => expect(cleanupPresence).toHaveBeenCalled());
+
+      const presenceStarted = vi.mocked(initPresence).mock.invocationCallOrder[0];
+      const lastPresenceCleanup = Math.max(
+        ...vi.mocked(cleanupPresence).mock.invocationCallOrder,
+      );
+      expect(lastPresenceCleanup).toBeGreaterThan(presenceStarted);
+      expect(wsConnect).not.toHaveBeenCalled();
+      expect(initIdleDetection).not.toHaveBeenCalled();
+    });
+
+    it("a cancelled old startup that settles late leaves the replacement session running", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      let finishOldInit!: () => void;
+      vi.mocked(initWebSocket).mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishOldInit = resolve)),
+      );
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(true);
+
+      // Startup A suspends in its first step and is cancelled (stop T1).
+      const restoring = initAuth();
+      await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      // Startup B is requested while A still owns the services.
+      const changing = completeForcedPasswordChange("temp-pw", "new-pw-123");
+      await vi.waitFor(() => expect(tauri.refreshAccessToken).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 0));
+
+      // A settles late, then B runs.
+      finishOldInit();
+      await restoring;
+      await changing;
+      await new Promise((r) => setTimeout(r, 0));
+
+      // B is fully started and nothing tore it down afterwards.
+      expect(initWebSocket).toHaveBeenCalledTimes(2);
+      expect(wsConnect).toHaveBeenCalledTimes(1);
+      expect(initIdleDetection).toHaveBeenCalledTimes(1);
+      const bStarted = vi.mocked(initWebSocket).mock.invocationCallOrder[1];
+      const lastTeardown = Math.max(
+        ...vi.mocked(wsDisconnect).mock.invocationCallOrder,
+        ...vi.mocked(cleanupPresence).mock.invocationCallOrder,
+        ...vi.mocked(stopIdleDetectionCleanup).mock.invocationCallOrder,
+      );
+      expect(lastTeardown).toBeLessThan(bStarted);
+      expect(authState.passwordChangeRequired).toBe(false);
+    });
+
+    it("a teardown still running when the replacement startup is requested cannot hit the replacement", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      let finishOldInit!: () => void;
+      vi.mocked(initWebSocket).mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishOldInit = resolve)),
+      );
+      // The stop's first disconnect is slow.
+      let finishDisconnect!: () => void;
+      vi.mocked(wsDisconnect).mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishDisconnect = resolve)),
+      );
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(true);
+
+      const restoring = initAuth();
+      await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
+      // Stop T1 (may wait behind A), then startup B is requested.
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      const changing = completeForcedPasswordChange("temp-pw", "new-pw-123");
+      await vi.waitFor(() => expect(tauri.refreshAccessToken).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 0));
+
+      // A notices the cancellation while the slow teardown still runs.
+      finishOldInit();
+      await new Promise((r) => setTimeout(r, 0));
+      await vi.waitFor(() => expect(finishDisconnect).toBeTypeOf("function"));
+      finishDisconnect();
+      await restoring;
+      await changing;
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(initWebSocket).toHaveBeenCalledTimes(2);
+      expect(wsConnect).toHaveBeenCalledTimes(1);
+      expect(initIdleDetection).toHaveBeenCalledTimes(1);
+      const bStarted = vi.mocked(initWebSocket).mock.invocationCallOrder[1];
+      const lastTeardown = Math.max(
+        ...vi.mocked(wsDisconnect).mock.invocationCallOrder,
+        ...vi.mocked(cleanupPresence).mock.invocationCallOrder,
+        ...vi.mocked(stopIdleDetectionCleanup).mock.invocationCallOrder,
+      );
+      expect(lastTeardown).toBeLessThan(bStarted);
+    });
+
+    it("a sign-in while an older startup still hangs starts at once; a stop tears it down and the old startup's late settle changes nothing", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      const releaseOldInit = holdOnce(vi.mocked(initWebSocket));
+      vi.mocked(tauri.login).mockResolvedValue({
+        user: createUser(),
+        setup_required: false,
+        password_change_required: false,
+      });
+
+      // Startup A hangs in its first step; the sign-in's startup C does not
+      // wait for it (the stores cancel A's late effects on their own).
+      const restoring = initAuth();
+      await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
+      await withinMs(login("https://server.com", "alice", "pw"));
+      expect(initWebSocket).toHaveBeenCalledTimes(2);
+      expect(wsConnect).toHaveBeenCalledTimes(1);
+      expect(initIdleDetection).toHaveBeenCalledTimes(1);
+
+      // A stop arrives: C's services are torn down.
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      await vi.waitFor(() => expect(cleanupPresence).toHaveBeenCalled());
+      expect(wsDisconnect).toHaveBeenCalled();
+      expect(cleanupWebSocket).toHaveBeenCalled();
+      expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+      const teardownCalls = () =>
+        vi.mocked(wsDisconnect).mock.calls.length +
+        vi.mocked(cleanupWebSocket).mock.calls.length +
+        vi.mocked(cleanupPresence).mock.calls.length +
+        vi.mocked(stopIdleDetectionCleanup).mock.calls.length;
+      const teardownsAfterStop = teardownCalls();
+
+      // A settles late: a newer start began since, so A owns nothing, starts
+      // nothing further and tears nothing down.
+      releaseOldInit();
+      await withinMs(restoring);
+      await tick();
+
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(wsConnect).toHaveBeenCalledTimes(1);
+      expect(initIdleDetection).toHaveBeenCalledTimes(1);
+      expect(teardownCalls()).toBe(teardownsAfterStop);
+    });
+
+    it("a transient refresh failure after the change keeps it saved and retries without resubmitting", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValueOnce(false);
+
+      await expect(completeForcedPasswordChange(null, "new-pw-123")).rejects.toThrow(
+        PASSWORD_SAVED_REFRESH_FAILED,
+      );
+
+      expect(isForcedPasswordChangeSaved()).toBe(true);
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(wsConnect).not.toHaveBeenCalled();
+      expect(authState.user).not.toBeNull();
+
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValueOnce(true);
+      await retryForcedPasswordChangeFinish();
+
+      expect(tauri.updatePassword).toHaveBeenCalledTimes(1);
+      expect(authState.passwordChangeRequired).toBe(false);
+      expect(isForcedPasswordChangeSaved()).toBe(false);
+      expect(wsConnect).toHaveBeenCalled();
+    });
+
+    it("a rejected refresh after the change ends the session instead of starting services", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(false);
+      // A rejected refresh leaves no token behind.
+      vi.mocked(tauri.getAccessToken).mockReturnValue(null);
+
+      try {
+        await completeForcedPasswordChange(null, "new-pw-123");
+
+        await vi.waitFor(() => {
+          expect(authState.sessionExpired).toBe(true);
+        });
+        expect(authState.user).toBeNull();
+        expect(wsConnect).not.toHaveBeenCalled();
+        expect(initIdleDetection).not.toHaveBeenCalled();
+        expect(isForcedPasswordChangeSaved()).toBe(false);
+      } finally {
+        vi.mocked(tauri.getAccessToken).mockReturnValue("token");
+      }
+    });
+
+    it("a rejected remembered temporary password is dropped so the screen asks for it", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockRejectedValue(
+        Object.assign(new Error("Invalid credentials"), { status: 401 }),
+      );
+
+      await expect(completeForcedPasswordChange(null, "new-pw-123")).rejects.toThrow(
+        "Invalid credentials",
+      );
+
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(authState.passwordChangeRequired).toBe(true);
+    });
+
+    it("the event is ignored while signed out", async () => {
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(authState.passwordChangeRequired).toBe(false);
+    });
+
+    it("logout clears the remembered temporary password", async () => {
+      mockServices();
+      await loginPending();
+      expect(hasPendingTemporaryPassword()).toBe(true);
+      vi.mocked(tauri.logout).mockResolvedValue(undefined);
+
+      await logout();
+
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(authState.passwordChangeRequired).toBe(false);
+    });
+
+    describe("a startup step that never settles", () => {
+      // Each step of the start job, held pending for as long as the test wants.
+      const heldSteps = [
+        ["initWebSocket", () => vi.mocked(initWebSocket)],
+        ["wsConnect", () => vi.mocked(wsConnect)],
+        ["initPreferences", () => vi.mocked(initPreferences)],
+      ] as const;
+
+      function restoreWith(user = createUser()) {
+        vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user, error_reason: null });
+        vi.mocked(tauri.logout).mockResolvedValue(undefined);
+      }
+
+      it.each(heldSteps)(
+        "logout completes while %s is pending; releasing it later leaves nothing running",
+        async (name, step) => {
+          mockServices();
+          restoreWith();
+          const release = holdOnce(step());
+
+          const restoring = initAuth();
+          await vi.waitFor(() => expect(step()).toHaveBeenCalledTimes(1));
+
+          await withinMs(logout());
+
+          expect(tauri.logout).toHaveBeenCalledTimes(1);
+          expect(authState.user).toBeNull();
+          expect(authState.isLoading).toBe(false);
+          expect(wsDisconnect).toHaveBeenCalled();
+          expect(cleanupWebSocket).toHaveBeenCalled();
+          expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+          expect(cleanupPresence).toHaveBeenCalled();
+
+          // The held step settles much later: the superseded start undoes its
+          // own late pieces and starts nothing further.
+          const disconnectsBefore = vi.mocked(wsDisconnect).mock.calls.length;
+          const cleanupsBefore = vi.mocked(cleanupWebSocket).mock.calls.length;
+          release();
+          await withinMs(restoring);
+          await tick();
+
+          expect(wsConnect).toHaveBeenCalledTimes(name === "initWebSocket" ? 0 : 1);
+          expect(initIdleDetection).not.toHaveBeenCalled();
+          expect(vi.mocked(wsDisconnect).mock.calls.length).toBeGreaterThan(disconnectsBefore);
+          expect(vi.mocked(cleanupWebSocket).mock.calls.length).toBeGreaterThan(cleanupsBefore);
+        },
+      );
+
+      it("Sign out on the change screen completes while the interrupted startup is still pending", async () => {
+        mockServices();
+        restoreWith();
+        const release = holdOnce(vi.mocked(wsConnect));
+
+        const restoring = initAuth();
+        await vi.waitFor(() => expect(wsConnect).toHaveBeenCalledTimes(1));
+        // The change screen appears while the connect hangs...
+        window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+        expect(authState.passwordChangeRequired).toBe(true);
+
+        // ...and "Sign out" on it must finish.
+        await withinMs(logout());
+
+        expect(tauri.logout).toHaveBeenCalledTimes(1);
+        expect(authState.user).toBeNull();
+        expect(authState.isLoading).toBe(false);
+        expect(authState.passwordChangeRequired).toBe(false);
+
+        release();
+        await withinMs(restoring);
+        await tick();
+
+        expect(initIdleDetection).not.toHaveBeenCalled();
+        const lastDisconnect = Math.max(...vi.mocked(wsDisconnect).mock.invocationCallOrder);
+        expect(lastDisconnect).toBeGreaterThan(vi.mocked(wsConnect).mock.invocationCallOrder[0]);
+      });
+
+      it("session expiry shows the expired state while a startup step is still pending", async () => {
+        mockServices();
+        restoreWith();
+        vi.mocked(tauri.refreshAccessToken).mockResolvedValue(false);
+        const release = holdOnce(vi.mocked(initPreferences));
+
+        const restoring = initAuth();
+        await vi.waitFor(() => expect(initPreferences).toHaveBeenCalledTimes(1));
+
+        window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+
+        await vi.waitFor(() => expect(authState.sessionExpired).toBe(true));
+        expect(authState.user).toBeNull();
+        expect(wsDisconnect).toHaveBeenCalled();
+        expect(cleanupPresence).toHaveBeenCalled();
+
+        release();
+        await withinMs(restoring);
+        await tick();
+
+        expect(initIdleDetection).not.toHaveBeenCalled();
+        setAuthState({ sessionExpired: false });
+      });
+
+      it("a sign-in after a hung startup starts its services at once", async () => {
+        mockServices();
+        restoreWith();
+        const release = holdOnce(vi.mocked(initWebSocket));
+        vi.mocked(tauri.login).mockResolvedValue({
+          user: createUser(),
+          setup_required: false,
+          password_change_required: false,
+        });
+
+        // Startup A hangs; the user signs out and in again. Startup B does
+        // not wait for A: the stores cancel A's late effects on their own.
+        const restoring = initAuth();
+        await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
+        await withinMs(logout());
+        await withinMs(login("https://server.com", "alice", "pw"));
+
+        expect(initWebSocket).toHaveBeenCalledTimes(2);
+        expect(wsConnect).toHaveBeenCalledTimes(1);
+        expect(initIdleDetection).toHaveBeenCalledTimes(1);
+
+        // A settles after B began: it owns nothing any more and must not
+        // tear down B's services.
+        const bStarted = vi.mocked(initWebSocket).mock.invocationCallOrder[1];
+        release();
+        await withinMs(restoring);
+        await tick();
+
+        const lastTeardown = Math.max(
+          0,
+          ...vi.mocked(wsDisconnect).mock.invocationCallOrder,
+          ...vi.mocked(cleanupPresence).mock.invocationCallOrder,
+          ...vi.mocked(stopIdleDetectionCleanup).mock.invocationCallOrder,
+        );
+        expect(lastTeardown).toBeLessThan(bStarted);
+      });
+
+      it("logout completes when the WebSocket disconnect never settles: the step is abandoned after its bound", async () => {
+        vi.useFakeTimers();
+        try {
+          mockServices();
+          restoreWith();
+          await initAuth();
+          expect(initIdleDetection).toHaveBeenCalledTimes(1);
+
+          // The disconnect hangs on IPC for good. (No vi.waitFor here: under
+          // fake timers it advances the clock by its poll interval.)
+          holdOnce(vi.mocked(wsDisconnect));
+          let done = false;
+          const loggingOut = logout().then(() => {
+            done = true;
+          });
+          await vi.advanceTimersByTimeAsync(TEARDOWN_STEP_TIMEOUT_MS - 1);
+          expect(done).toBe(false);
+          expect(cleanupWebSocket).not.toHaveBeenCalled();
+
+          await vi.advanceTimersByTimeAsync(1);
+          await loggingOut;
+
+          // The remaining steps still ran, and the sign-out finished.
+          expect(cleanupWebSocket).toHaveBeenCalledTimes(1);
+          expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+          expect(cleanupPresence).toHaveBeenCalled();
+          expect(tauri.logout).toHaveBeenCalledTimes(1);
+          expect(authState.user).toBeNull();
+          expect(authState.isLoading).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
   });
 });

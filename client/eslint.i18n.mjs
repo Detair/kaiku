@@ -4,6 +4,8 @@ export const I18N_GUARDED_FILES = [
   "src/components/layout/ConnectionIndicator.tsx",
   "src/components/settings/QrLoginModal.tsx",
   "src/components/home/DMConversation.tsx",
+  "src/components/admin/CreateAccountModal.tsx",
+  "src/views/ForcedPasswordChange.tsx",
 ];
 
 const MESSAGE = "User-facing text must use t() from @/i18n (see client/src/AGENTS.md).";

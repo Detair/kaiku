@@ -36,6 +36,7 @@ vi.mock("@/lib/tauri", async () => {
     wsReconnectNow: vi.fn().mockResolvedValue(undefined),
     setBrowserSocketHooks: vi.fn(),
     ensureFreshAccessToken: vi.fn().mockResolvedValue(true),
+    isPasswordChangePending: vi.fn().mockResolvedValue(false),
   };
 });
 
@@ -49,13 +50,27 @@ vi.mock("@/stores/presence", () => ({
   updateUserActivity: vi.fn(),
 }));
 
-vi.mock("@/stores/messages", () => ({
-  addMessage: vi.fn(),
-  removeMessage: vi.fn(),
-  messagesState: { byChannel: {} },
-  setMessagesState: vi.fn(),
-  loadInitialMessages: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/stores/messages", () => {
+  const messagesState: { byChannel: Record<string, { id: string }[]> } = {
+    byChannel: {},
+  };
+  return {
+    addMessage: vi.fn(),
+    removeMessage: vi.fn(),
+    messagesState,
+    setMessagesState: vi.fn(),
+    loadInitialMessages: vi.fn().mockResolvedValue(undefined),
+    catchUpChannel: vi.fn().mockResolvedValue("caught_up"),
+    catchUpAnchor: (id: string) =>
+      [...(messagesState.byChannel[id] ?? [])]
+        .reverse()
+        .find((m) => !m.id.startsWith("pending:"))?.id,
+    clearChannelMessages: vi.fn((id: string) => {
+      delete messagesState.byChannel[id];
+    }),
+    getChannelMessages: (id: string) => messagesState.byChannel[id] ?? [],
+  };
+});
 
 vi.mock("@/stores/threads", () => ({
   addThreadReply: vi.fn(),
@@ -109,6 +124,7 @@ vi.mock("@/stores/dms", () => ({
   handleDMNameUpdated: vi.fn(),
   updateDMLastMessage: vi.fn(),
   loadDMs: vi.fn().mockResolvedValue(undefined),
+  handleDmCreated: vi.fn(),
 }));
 
 vi.mock("@/lib/sound", () => ({
@@ -130,7 +146,10 @@ import {
   isConnected,
   cleanupWebSocket,
   refreshUnreadStateAfterReconnect,
+  handleServerEvent,
+  getResyncWatermark,
 } from "../websocket";
+import { handleDmCreated } from "@/stores/dms";
 import { refreshChannelsForGuild } from "@/stores/channels";
 import { handlePreferencesUpdated } from "@/stores/preferences";
 import { guildsState } from "@/stores/guilds";
@@ -325,6 +344,19 @@ describe("websocket store", () => {
     it("does not throw", async () => {
       await expect(cleanupWebSocket()).resolves.not.toThrow();
     });
+
+    it("a new session does not inherit the previous session's watermark", async () => {
+      await handleServerEvent({
+        type: "ready",
+        user_id: "a",
+        server_time: "2026-11-01T10:00:00Z",
+      });
+      expect(getResyncWatermark()).toBe("2026-11-01T10:00:00Z");
+
+      await cleanupWebSocket();
+
+      expect(getResyncWatermark()).toBeNull();
+    });
   });
 
   describe("refreshUnreadStateAfterReconnect", () => {
@@ -393,6 +425,26 @@ describe("websocket store", () => {
       vi.mocked(loadDMs).mockRejectedValueOnce(new Error("network"));
 
       await expect(refreshUnreadStateAfterReconnect()).resolves.toBeUndefined();
+    });
+  });
+
+  describe("C2/C3 server events", () => {
+    it("ready stores server_time as watermark", async () => {
+      await handleServerEvent({
+        type: "ready",
+        user_id: "u",
+        server_time: "2026-11-01T10:00:00Z",
+      });
+
+      expect(getResyncWatermark()).toBe("2026-11-01T10:00:00Z");
+    });
+
+    it("dm_created routes to handleDmCreated", async () => {
+      const channel = { id: "dm-new" } as never;
+
+      await handleServerEvent({ type: "dm_created", channel });
+
+      expect(handleDmCreated).toHaveBeenCalledWith(channel);
     });
   });
 
@@ -590,31 +642,154 @@ describe("websocket store", () => {
       expect(ws.wsState.subscribedChannels.has("t2")).toBe(true);
     });
 
-    it("reconnect re-subscribes before reloading messages", async () => {
-      const { messagesState, loadInitialMessages } =
+    const ready = (server_time = "2026-11-01T10:00:00Z") =>
+      fire("ws:server_event", { type: "ready", user_id: "me", server_time });
+    const subscribed = (channel_id: string) =>
+      fire("ws:server_event", { type: "subscribed", channel_id });
+    const setCache = async (byChannel: Record<string, { id: string }[]>) => {
+      const { messagesState } = await import("@/stores/messages");
+      (
+        messagesState as unknown as { byChannel: Record<string, unknown[]> }
+      ).byChannel = byChannel;
+    };
+
+    it("handleReconnect catches up the open channel and clears the others", async () => {
+      const { channelsState } = await import("@/stores/channels");
+      const { catchUpChannel, getChannelMessages } =
         await import("@/stores/messages");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      await ws.connect();
+      await ready("2026-11-01T09:00:00Z");
+      await ws.subscribeChannel("c-open");
+      await ws.subscribeChannel("c-other");
+      await setCache({ "c-open": [{ id: "m1" }], "c-other": [{ id: "x1" }] });
+      (channelsState as { selectedChannelId: string | null }).selectedChannelId =
+        "c-open";
+      try {
+        await fire("ws:reconnecting", 1);
+        await fire("ws:connected");
+        await ready();
+        await subscribed("c-open");
+
+        expect(catchUpChannel).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(catchUpChannel).mock.calls[0][0]).toBe("c-open");
+        expect(vi.mocked(catchUpChannel).mock.calls[0][2]).toBe("m1");
+        expect(getChannelMessages("c-other")).toEqual([]);
+      } finally {
+        (
+          channelsState as { selectedChannelId: string | null }
+        ).selectedChannelId = null;
+      }
+    });
+
+    it("reconnect re-subscribes, waits for ready and the ack, then catches up", async () => {
+      const { channelsState } = await import("@/stores/channels");
+      const { catchUpChannel } = await import("@/stores/messages");
       const order: string[] = [];
       vi.mocked(nativeTauri.wsSubscribe).mockImplementation(
         async (id: string) => {
           order.push(`subscribe:${id}`);
         },
       );
-      vi.mocked(loadInitialMessages).mockImplementation(async (id: string) => {
-        order.push(`reload:${id}`);
+      vi.mocked(catchUpChannel).mockImplementation(async (id: string) => {
+        order.push(`catchup:${id}`);
+        return "caught_up";
       });
       await ws.connect();
       await ws.subscribeChannel("c1");
-      (
-        messagesState as unknown as { byChannel: Record<string, unknown[]> }
-      ).byChannel = {
-        c1: [{ id: "m1" }],
-      };
+      await setCache({ c1: [{ id: "m1" }] });
+      (channelsState as { selectedChannelId: string | null }).selectedChannelId =
+        "c1";
       order.length = 0;
+      try {
+        await fire("ws:reconnecting", 1);
+        await fire("ws:connected");
+        expect(order).toEqual(["subscribe:c1"]);
 
-      await fire("ws:reconnecting", 1);
-      await fire("ws:connected");
+        await ready();
+        expect(order).toEqual(["subscribe:c1"]);
 
-      expect(order).toEqual(["subscribe:c1", "reload:c1"]);
+        await subscribed("c1");
+        expect(order).toEqual(["subscribe:c1", "catchup:c1"]);
+      } finally {
+        (
+          channelsState as { selectedChannelId: string | null }
+        ).selectedChannelId = null;
+      }
+    });
+
+    it("an open DM is caught up after reconnect", async () => {
+      const { dmsState } = await import("@/stores/dms");
+      const { catchUpChannel } = await import("@/stores/messages");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      await ws.connect();
+      await setCache({ "dm-1": [{ id: "d1" }] });
+      const dms = dmsState as { selectedDMId: string | null };
+      dms.selectedDMId = "dm-1";
+      try {
+        await fire("ws:reconnecting", 1);
+        await fire("ws:connected");
+        await ready();
+        await subscribed("dm-1");
+
+        expect(nativeTauri.wsSubscribe).toHaveBeenCalledWith("dm-1");
+        expect(vi.mocked(catchUpChannel).mock.calls[0][0]).toBe("dm-1");
+      } finally {
+        dms.selectedDMId = null;
+      }
+    });
+
+    it("an open channel with an empty cache is loaded after reconnect", async () => {
+      const { channelsState } = await import("@/stores/channels");
+      const { catchUpChannel } = await import("@/stores/messages");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      await ws.connect();
+      await setCache({ "c-quiet": [] });
+      (channelsState as { selectedChannelId: string | null }).selectedChannelId =
+        "c-quiet";
+      try {
+        await fire("ws:reconnecting", 1);
+        await fire("ws:connected");
+        await ready();
+        await subscribed("c-quiet");
+
+        expect(nativeTauri.wsSubscribe).toHaveBeenCalledWith("c-quiet");
+        // No anchor: catchUpChannel falls back to loadInitialMessages.
+        expect(catchUpChannel).toHaveBeenCalledWith(
+          "c-quiet",
+          undefined,
+          undefined,
+        );
+      } finally {
+        (
+          channelsState as { selectedChannelId: string | null }
+        ).selectedChannelId = null;
+      }
+    });
+
+    it("a gap of more than 7 days reloads the open channel instead of catching up", async () => {
+      const { channelsState } = await import("@/stores/channels");
+      const { catchUpChannel, loadInitialMessages } =
+        await import("@/stores/messages");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      await ws.connect();
+      await ready("2026-10-01T10:00:00Z");
+      await setCache({ c1: [{ id: "m1" }] });
+      (channelsState as { selectedChannelId: string | null }).selectedChannelId =
+        "c1";
+      try {
+        await fire("ws:reconnecting", 1);
+        await fire("ws:connected");
+        await ready("2026-11-01T10:00:00Z");
+        await subscribed("c1");
+
+        expect(catchUpChannel).not.toHaveBeenCalled();
+        expect(loadInitialMessages).toHaveBeenCalledWith("c1");
+      } finally {
+        (
+          channelsState as { selectedChannelId: string | null }
+        ).selectedChannelId = null;
+      }
     });
 
     it("ws:auth_rejected stops reconnecting and reports an expired session", async () => {
@@ -636,6 +811,50 @@ describe("websocket store", () => {
         vi.mocked(nativeTauri.wsReconnectNow).mockClear();
         window.dispatchEvent(new Event("online"));
         expect(nativeTauri.wsReconnectNow).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener("kaiku:session-expired", expired);
+      }
+    });
+
+    it("ws:auth_rejected for a pending password change shows the change screen instead of ending the session", async () => {
+      await ws.connect();
+      vi.mocked(nativeTauri.wsDisconnect)
+        .mockClear()
+        .mockResolvedValue(undefined);
+      vi.mocked(nativeTauri.isPasswordChangePending).mockResolvedValueOnce(true);
+      const expired = vi.fn();
+      const required = vi.fn();
+      window.addEventListener("kaiku:session-expired", expired);
+      window.addEventListener("kaiku:password-change-required", required);
+      try {
+        await fire("ws:auth_rejected");
+
+        expect(ws.wsState.status).toBe("disconnected");
+        expect(nativeTauri.wsDisconnect).toHaveBeenCalledTimes(1);
+        expect(required).toHaveBeenCalledTimes(1);
+        expect(expired).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener("kaiku:session-expired", expired);
+        window.removeEventListener("kaiku:password-change-required", required);
+      }
+    });
+
+    it("ws:auth_rejected ends the session when the account check fails", async () => {
+      // A live session hands out a token again (resets the expiry dedupe).
+      nativeTauri.setNativeAuthInfo({
+        server_url: "https://s.example",
+        access_token: "bearer",
+      } as never);
+      await ws.connect();
+      vi.mocked(nativeTauri.wsDisconnect).mockResolvedValue(undefined);
+      vi.mocked(nativeTauri.isPasswordChangePending).mockRejectedValueOnce(
+        new Error("HTTP 401"),
+      );
+      const expired = vi.fn();
+      window.addEventListener("kaiku:session-expired", expired);
+      try {
+        await fire("ws:auth_rejected");
+        expect(expired).toHaveBeenCalledTimes(1);
       } finally {
         window.removeEventListener("kaiku:session-expired", expired);
       }
@@ -674,6 +893,42 @@ describe("websocket store", () => {
       await fire("ws:disconnected");
 
       expect(ws.wsState.status).toBe("disconnected");
+    });
+
+    it("two overlapping connect() calls after ws:disconnected recover the retained subscription once", async () => {
+      const { loadDMs } = await import("@/stores/dms");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      vi.mocked(nativeTauri.wsConnect).mockResolvedValue(undefined);
+      await ws.connect();
+      await ws.subscribeChannel("c1");
+      await fire("ws:disconnected");
+      expect(ws.wsState.status).toBe("disconnected");
+      expect(ws.wsState.subscribedChannels.has("c1")).toBe(true);
+      vi.mocked(nativeTauri.wsSubscribe).mockClear();
+      vi.mocked(nativeTauri.wsConnect).mockClear();
+      vi.mocked(loadDMs).mockClear();
+
+      // The first call opens the socket; the second one overlaps it while
+      // the open is in flight (supervisor already opening → no-op).
+      let open!: () => void;
+      vi.mocked(nativeTauri.wsConnect).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          open = resolve;
+        }),
+      );
+      const first = ws.connect();
+      const second = ws.connect();
+      await second;
+      open();
+      await first;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(nativeTauri.wsConnect).toHaveBeenCalledTimes(1);
+      expect(nativeTauri.wsSubscribe).toHaveBeenCalledTimes(1);
+      expect(nativeTauri.wsSubscribe).toHaveBeenCalledWith("c1");
+      expect(loadDMs).toHaveBeenCalledTimes(1);
+      expect(ws.wsState.subscribedChannels.has("c1")).toBe(true);
+      expect(ws.isConnected()).toBe(true);
     });
 
     it("a late ws_connect failure after Rust reconnected leaves the live connection alone", async () => {

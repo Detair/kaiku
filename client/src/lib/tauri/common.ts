@@ -608,6 +608,12 @@ export class HttpError extends Error {
   }
 }
 
+/** Server error code (contract C4) for a pending forced password change. */
+export const PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
+
+/** Window event dispatched when a request reports `PASSWORD_CHANGE_REQUIRED`. */
+export const PASSWORD_CHANGE_REQUIRED_EVENT = "kaiku:password-change-required";
+
 const AUTH_ENDPOINTS = new Set(["/auth/login", "/auth/register", "/auth/refresh"]);
 
 /**
@@ -702,6 +708,17 @@ async function sendHttpRequest<T>(
       // Detect MFA_REQUIRED from server
       if (response.status === 403 && errorBody.error === "MFA_REQUIRED") {
         throw new HttpError(403, "MFA_REQUIRED");
+      }
+      // Contract C4: the account still has to replace an admin-issued
+      // temporary password. The auth store switches to the change screen.
+      if (
+        response.status === 403 &&
+        errorBody.error === PASSWORD_CHANGE_REQUIRED
+      ) {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
+        }
+        throw new HttpError(403, PASSWORD_CHANGE_REQUIRED);
       }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     }

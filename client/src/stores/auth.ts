@@ -19,12 +19,12 @@ import {
   initIdleDetection,
   stopIdleDetectionCleanup,
 } from "./presence";
-import { initPreferences } from "./preferences";
+import { cleanupPreferences, initPreferences } from "./preferences";
 import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
-import { isTauri } from "@/lib/tauri/common";
+import { isTauri, PASSWORD_CHANGE_REQUIRED_EVENT } from "@/lib/tauri/common";
 
 // Auth state interface
 interface AuthState {
@@ -42,6 +42,12 @@ interface AuthState {
    * "can't reach the server" state instead of the login form.
    */
   restorePending: boolean;
+  /**
+   * The account still has to replace an admin-issued temporary password
+   * (contract C4). While true only the change-password screen is shown and
+   * no session services (WebSocket, presence, preferences) run.
+   */
+  passwordChangeRequired: boolean;
 }
 
 // Create the store
@@ -55,11 +61,171 @@ const [authState, setAuthState] = createStore<AuthState>({
   mfaRequired: false,
   sessionExpired: false,
   restorePending: false,
+  passwordChangeRequired: false,
 });
 
 // Derived state
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
+
+/**
+ * The temporary password the user just signed in with, kept so the forced
+ * change screen does not ask for it again. Memory only: never persisted or
+ * logged; cleared on success, logout and session expiry.
+ */
+let pendingTemporaryPassword: string | null = null;
+
+/** Whether the change screen can reuse the password from this sign-in. */
+export function hasPendingTemporaryPassword(): boolean {
+  return pendingTemporaryPassword !== null;
+}
+
+/**
+ * Set once a forced change was accepted by the server but the follow-up
+ * token refresh failed transiently: retrying must not resubmit the change.
+ */
+let passwordChangeSaved = false;
+
+/** Whether the new password is saved and only the session start is left. */
+export function isForcedPasswordChangeSaved(): boolean {
+  return passwordChangeSaved;
+}
+
+// ---------------------------------------------------------------------------
+// Session-services lifecycle
+//
+// The session services (WebSocket, presence, preferences, idle detection)
+// are module-level singletons. Each service store is cancellation-aware on
+// its own: an init whose IPC or network step settles after a cleanup, or
+// after a newer init, releases what it obtained (the WebSocket listeners, the
+// presence listener, a preferences response), and a disconnect that settles
+// after a newer connect leaves that connection's state alone. This section
+// only orders starts and stops.
+//
+// `ownerId` grows monotonically: `startSessionServices()` takes a new id
+// synchronously, `requestStop()` bumps it synchronously. So the moment a stop
+// or a newer start is requested, every older start is superseded, before
+// anything is awaited.
+//
+// Stops never wait for a start. A stop's teardown runs on `teardownChain`,
+// which only ever holds teardowns. Each teardown step is bounded
+// (`TEARDOWN_STEP_TIMEOUT_MS`): a step that does not settle in time is
+// abandoned, so logout, session expiry and the switch to the change screen
+// always finish; the stores' tokens make the abandoned step's late
+// continuation harmless.
+//
+// A start waits for the pending teardowns (bounded by construction) and
+// never for an older start: that start is superseded by the new id, and the
+// stores cancel whatever it still has in flight. A start job re-checks
+// between its steps that it still owns the services; once superseded it
+// undoes exactly what it started (on the teardown chain, so it never
+// interleaves with a stop) and exits.
+//
+// `activeStartId` is the start job that last began its steps. Every teardown
+// action, from a stop or from an undo, is skipped once a start newer than the
+// one it was requested for has begun: that start owns the singletons now, and
+// its own stop cleans them up. This keeps a late-settling superseded start
+// from tearing down the replacement session.
+// ---------------------------------------------------------------------------
+
+/** How long one teardown step may take before it is abandoned. Exported for tests. */
+export const TEARDOWN_STEP_TIMEOUT_MS = 5_000;
+
+let ownerId = 0;
+let activeStartId = 0;
+let teardownChain: Promise<void> = Promise.resolve();
+
+const noop = (): void => undefined;
+
+/** Append a teardown to the chain; a failed one never blocks the next. */
+function enqueueTeardown(job: () => Promise<void>): Promise<void> {
+  const result = teardownChain.then(job, job);
+  teardownChain = result.then(noop, noop);
+  return result;
+}
+
+/**
+ * Run one teardown step. A failure is logged; a step that has not settled
+ * within `TEARDOWN_STEP_TIMEOUT_MS` is abandoned (its store ignores a late
+ * settle on its own). Never throws.
+ */
+async function boundedStep(step: () => Promise<void>, what: string): Promise<void> {
+  const run = (async () => {
+    await step();
+    return "done" as const;
+  })().catch((err: unknown) => {
+    console.error(`[Auth] ${what} failed:`, err);
+    return "failed" as const;
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), TEARDOWN_STEP_TIMEOUT_MS);
+  });
+  try {
+    const outcome = await Promise.race([run, timeout]);
+    if (outcome === "timeout") {
+      console.warn(`[Auth] ${what} did not finish in time — continuing without it`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Services may run: signed in and no forced password change pending. */
+function servicesEligible(): boolean {
+  return authState.user !== null && !authState.passwordChangeRequired;
+}
+
+/** Which services a teardown covers: what one start job started, or all. */
+interface StartedServices {
+  websocket: boolean;
+  presence: boolean;
+  idle: boolean;
+}
+
+const ALL_SERVICES: StartedServices = { websocket: true, presence: true, idle: true };
+
+/** A start requested after `sinceId` has begun: it owns the services now. */
+function newerStartBegan(sinceId: number): boolean {
+  return activeStartId > sinceId;
+}
+
+/**
+ * Tear down `which` services on behalf of the owner id `sinceId` (a stop's
+ * id, or a superseded start's own id). Each action is skipped once a newer
+ * start has begun. Never throws.
+ */
+async function teardownServices(sinceId: number, which: StartedServices): Promise<void> {
+  if (which.websocket && !newerStartBegan(sinceId)) {
+    await boundedStep(wsDisconnect, "Stopping the WebSocket");
+    if (newerStartBegan(sinceId)) return;
+    await boundedStep(cleanupWebSocket, "Removing the WebSocket listeners");
+  }
+  if (newerStartBegan(sinceId)) return;
+  try {
+    if (which.idle) stopIdleDetectionCleanup();
+    if (which.presence) cleanupPresence();
+  } catch (err) {
+    console.error("[Auth] Stopping presence/idle failed:", err);
+  }
+}
+
+/**
+ * Request a stop of the session services: supersedes any queued or running
+ * start at once, then tears everything down without waiting for that start.
+ */
+function requestStop(): Promise<void> {
+  const stopId = ++ownerId;
+  // Synchronously, before any teardown step can hang: a preferences response
+  // or debounced push of this session must never reach the next one.
+  cleanupPreferences();
+  return enqueueTeardown(() => teardownServices(stopId, ALL_SERVICES));
+}
+
+/** Cancel a running startup and stop the services. */
+function stopSessionServices(): Promise<void> {
+  return requestStop();
+}
 
 // Session-expired listener (registered once globally to prevent leaks)
 let sessionExpiredListenerRegistered = false;
@@ -81,8 +247,9 @@ function registerSessionExpiredListener() {
     if (success) {
       console.log("[Kaiku:Auth] Silent retry: success — session recovered");
       // The browser reconnect supervisor stops when it reports an expired
-      // session; restart it (no-op while it is still running).
-      if (!isTauri()) {
+      // session; restart it (no-op while it is still running). Not while a
+      // password change is pending: the server refuses the socket then.
+      if (!isTauri() && !authState.passwordChangeRequired) {
         try {
           await wsConnect();
         } catch (err) {
@@ -95,22 +262,33 @@ function registerSessionExpiredListener() {
     console.warn("[Kaiku:Auth] Silent retry: failed — showing expiry modal");
 
     // Clean up connections and drafts
+    await requestStop();
     try {
-      await wsDisconnect();
-      await cleanupWebSocket();
-      stopIdleDetectionCleanup();
-      cleanupPresence();
       clearAllDrafts();
       cleanupDrafts();
     } catch (err) {
       console.error("[Auth] Cleanup during session expiry failed:", err);
     }
 
+    pendingTemporaryPassword = null;
+    passwordChangeSaved = false;
     setAuthState({
       user: null,
       sessionExpired: true,
+      passwordChangeRequired: false,
       error: null,
     });
+  });
+
+  // A request was refused because the temporary password is still in use
+  // (e.g. a session restored after a restart whose restore response did not
+  // say so). Switch to the change screen and stop the services that would
+  // only collect more 403s.
+  window.addEventListener(PASSWORD_CHANGE_REQUIRED_EVENT, () => {
+    if (!authState.user || authState.passwordChangeRequired) return;
+    console.warn("[Kaiku:Auth] Password change required — showing the change screen");
+    setAuthState({ passwordChangeRequired: true, error: null });
+    void stopSessionServices();
   });
 
   sessionExpiredListenerRegistered = true;
@@ -146,16 +324,54 @@ function warnIfNotRemembered(result: tauri.AuthResult): void {
  * flows. `showWsError: false` keeps registration's behaviour of not showing
  * the "real-time unavailable" banner when the first connect fails.
  */
-async function startSessionServices(
+function startSessionServices(
   options: { showWsError?: boolean } = {},
 ): Promise<void> {
+  // The id is taken now, before anything is awaited: a stop requested from
+  // here on supersedes this start even while it still waits for teardowns.
+  const myId = ++ownerId;
+  return runStart(myId, teardownChain, options);
+}
+
+/** One start job; `pendingTeardowns` are the teardowns requested before it. */
+async function runStart(
+  myId: number,
+  pendingTeardowns: Promise<void>,
+  options: { showWsError?: boolean },
+): Promise<void> {
   const { showWsError = true } = options;
+  // Teardowns requested before this start finish first (each step bounded,
+  // so this wait is too). An older start is not waited for: it is superseded
+  // by this id, and the stores cancel whatever it still has in flight.
+  await pendingTeardowns;
+  const current = () => myId === ownerId && servicesEligible();
+  if (!current()) return;
+  activeStartId = myId;
 
-  // Initialize WebSocket listeners and presence in parallel (independent)
-  await Promise.all([initWebSocket(), initPresence()]);
+  const started: StartedServices = { websocket: false, presence: false, idle: false };
+  // Superseded while a step ran: undo what this job started and stop. The
+  // undo runs on the teardown chain, after any stop already requested.
+  const superseded = async (): Promise<boolean> => {
+    if (current()) return false;
+    await enqueueTeardown(() => teardownServices(myId, started));
+    return true;
+  };
 
-  // Connect WebSocket and sync preferences in parallel (independent)
-  await Promise.all([
+  // Initialize WebSocket listeners and presence in parallel (independent).
+  // allSettled: a rejection must not skip the check while the other init is
+  // still running. A failed init still counts as started for the undo.
+  started.websocket = true;
+  started.presence = true;
+  const initResults = await Promise.allSettled([initWebSocket(), initPresence()]);
+  if (await superseded()) return;
+  const initFailure = initResults.find(
+    (r): r is PromiseRejectedResult => r.status === "rejected",
+  );
+  if (initFailure) throw initFailure.reason;
+
+  // Connect WebSocket and sync preferences in parallel (independent; both
+  // handle their own errors, so this never rejects)
+  await Promise.allSettled([
     wsConnect()
       .then(() => console.log("[Auth] WebSocket connected"))
       .catch((wsErr) => {
@@ -172,9 +388,11 @@ async function startSessionServices(
         console.error("[Auth] Preferences initialization failed:", prefErr);
       }),
   ]);
+  if (await superseded()) return;
 
   // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
   initIdleDetection();
+  started.idle = true;
 }
 
 // Actions
@@ -270,15 +488,17 @@ async function attemptRestore(): Promise<void> {
 
     if (result.user) {
       stopRestoreRetry();
+      const passwordChangeRequired = result.password_change_required === true;
       setAuthState({
         user: result.user,
         serverUrl: tauri.getServerUrl() || null,
         isLoading: false,
         isInitialized: true,
         restorePending: false,
+        passwordChangeRequired,
       });
 
-      await startSessionServices();
+      if (!passwordChangeRequired) await startSessionServices();
       return;
     }
 
@@ -354,6 +574,9 @@ export async function login(
     const result = await tauri.login(serverUrl, username, password, mfaCode);
     warnIfNotRemembered(result);
     stopRestoreRetry();
+    const passwordChangeRequired = result.password_change_required === true;
+    // Only a temporary password is remembered, and only until it is replaced.
+    pendingTemporaryPassword = passwordChangeRequired ? password : null;
     setAuthState({
       restorePending: false,
       user: result.user,
@@ -364,9 +587,10 @@ export async function login(
       setupRequired: result.setup_required,
       mfaRequired: false,
       sessionExpired: false,
+      passwordChangeRequired,
     });
 
-    await startSessionServices();
+    if (!passwordChangeRequired) await startSessionServices();
 
     return result.user;
   } catch (err) {
@@ -420,9 +644,12 @@ export async function register(
       error: null,
       setupRequired: result.setup_required,
       sessionExpired: false,
+      passwordChangeRequired: result.password_change_required === true,
     });
 
-    await startSessionServices({ showWsError: false });
+    if (!authState.passwordChangeRequired) {
+      await startSessionServices({ showWsError: false });
+    }
 
     return result.user;
   } catch (err) {
@@ -453,8 +680,9 @@ export async function completeNativeOidcLogin(
     setupRequired: result.setup_required,
     mfaRequired: false,
     sessionExpired: false,
+    passwordChangeRequired: result.password_change_required === true,
   });
-  await startSessionServices();
+  if (!authState.passwordChangeRequired) await startSessionServices();
 }
 
 /**
@@ -488,9 +716,10 @@ export async function loginWithOidc(
       error: null,
       setupRequired,
       sessionExpired: false,
+      passwordChangeRequired: result.password_change_required === true,
     });
 
-    await startSessionServices();
+    if (!authState.passwordChangeRequired) await startSessionServices();
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });
@@ -502,14 +731,13 @@ export async function loginWithOidc(
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
-  setAuthState({ isLoading: true, error: null });
+  pendingTemporaryPassword = null;
+  passwordChangeSaved = false;
+  setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });
 
   // Disconnect WebSocket and cleanup
+  await requestStop();
   try {
-    await wsDisconnect();
-    await cleanupWebSocket();
-    stopIdleDetectionCleanup();
-    cleanupPresence();
     clearAllDrafts();
     cleanupDrafts();
   } catch (err) {
@@ -534,6 +762,107 @@ export async function logout(): Promise<void> {
       error,
     });
   }
+}
+
+/** Thrown when the new password is saved but the session could not start yet. */
+export const PASSWORD_SAVED_REFRESH_FAILED = "PASSWORD_SAVED_REFRESH_FAILED";
+
+/** Whether a failed change means the temporary password itself was wrong. */
+function isInvalidCredentials(err: unknown): boolean {
+  const status =
+    typeof err === "object" && err !== null && "status" in err
+      ? (err as { status: unknown }).status
+      : undefined;
+  const message = err instanceof Error ? err.message : String(err);
+  return status === 401 || /invalid credentials/i.test(message);
+}
+
+/**
+ * Replace the admin-issued temporary password (contract C4), then start the
+ * session normally. `currentPassword` is the temporary password typed on the
+ * change screen; `null` reuses the one from this sign-in.
+ *
+ * Throws when the server refuses the change; the flag then stays. A rejected
+ * remembered temporary password is dropped, so the screen asks for it. If
+ * the change is saved but the token refresh fails transiently, throws
+ * `PASSWORD_SAVED_REFRESH_FAILED`; `retryForcedPasswordChangeFinish()` then
+ * finishes without resubmitting.
+ */
+export async function completeForcedPasswordChange(
+  currentPassword: string | null,
+  newPassword: string,
+): Promise<void> {
+  if (passwordChangeSaved) {
+    await finishForcedPasswordChange();
+    return;
+  }
+  const usingRemembered = currentPassword === null;
+  const current = currentPassword ?? pendingTemporaryPassword;
+  if (current === null) {
+    throw new Error("The temporary password is required");
+  }
+
+  // Other sessions of a brand-new account were opened with the temporary
+  // password; end them.
+  try {
+    await tauri.updatePassword(current, newPassword, true);
+  } catch (err) {
+    if (usingRemembered && isInvalidCredentials(err)) {
+      pendingTemporaryPassword = null;
+    }
+    throw err;
+  }
+
+  pendingTemporaryPassword = null;
+  passwordChangeSaved = true;
+  await finishForcedPasswordChange();
+}
+
+/** Retry starting the session after `PASSWORD_SAVED_REFRESH_FAILED`. */
+export async function retryForcedPasswordChangeFinish(): Promise<void> {
+  if (!passwordChangeSaved) return;
+  await finishForcedPasswordChange();
+}
+
+/**
+ * After a saved change: refresh (C4: the refresh response carries the
+ * cleared flag), then start the session. A rejected refresh ends the session
+ * through the usual expiry path; a transient failure keeps the change saved
+ * and throws `PASSWORD_SAVED_REFRESH_FAILED`.
+ */
+async function finishForcedPasswordChange(): Promise<void> {
+  let refreshed = false;
+  try {
+    refreshed = await tauri.refreshAccessToken();
+  } catch (err) {
+    console.warn("[Auth] Token refresh after password change failed:", err);
+  }
+
+  if (!refreshed) {
+    // Both modes drop the token when the server rejects the refresh.
+    if (tauri.getAccessToken() === null) {
+      console.warn("[Auth] Session ended right after the password change");
+      passwordChangeSaved = false;
+      if (isTauri()) {
+        tauri.expireNativeSession();
+      } else {
+        window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+      }
+      return;
+    }
+    console.warn("[Auth] Token refresh after password change failed — waiting for retry");
+    throw new Error(PASSWORD_SAVED_REFRESH_FAILED);
+  }
+
+  // Signed out or expired while the refresh ran.
+  if (!authState.user) {
+    passwordChangeSaved = false;
+    return;
+  }
+
+  passwordChangeSaved = false;
+  setAuthState({ passwordChangeRequired: false, error: null });
+  await startSessionServices();
 }
 
 /**

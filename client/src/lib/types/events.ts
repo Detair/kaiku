@@ -11,6 +11,7 @@ import type {
   ScreenShareServerInfo,
 } from "./voice";
 import type { UserPreferences } from "./preferences";
+import type { DMListItem } from "./social";
 
 // WebSocket Events
 
@@ -45,7 +46,7 @@ export type ClientEvent =
   | { type: "admin_unsubscribe" };
 
 export type ServerEvent =
-  | { type: "ready"; user_id: string }
+  | { type: "ready"; user_id: string; server_time: string }
   | { type: "pong" }
   | { type: "subscribed"; channel_id: string }
   | { type: "unsubscribed"; channel_id: string }
@@ -247,6 +248,7 @@ export type ServerEvent =
       friendship_id: string;
     }
   // DM metadata events
+  | { type: "dm_created"; channel: DMListItem }
   | {
       type: "dm_name_updated";
       channel_id: string;

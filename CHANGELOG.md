@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- People signing in with a temporary password are asked to choose their own password first.
+- Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.
 - Operators can restrict voice ICE candidates to chosen network interfaces and an IP family (`VOICE_ICE_INTERFACES`, `VOICE_ICE_IP_FAMILY`).
 - Operators can pin voice media to a UDP port range (`VOICE_UDP_PORT_MIN` / `VOICE_UDP_PORT_MAX`).
@@ -99,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Fixed
+- Messages sent while you were disconnected now appear after reconnecting, and a new direct message shows up immediately for the recipient.
 - Desktop voice now uses the server's TURN relay, so voice also works on restrictive networks.
 - When the desktop app starts before the network or server is reachable, it now keeps your saved login and connects as soon as it can, instead of showing the login screen.
 - The desktop app now runs as a real desktop app again: your login is remembered securely across restarts, voice uses the built-in native engine, and tray, notifications and updates are active.

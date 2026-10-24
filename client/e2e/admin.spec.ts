@@ -6,7 +6,7 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { loginAsAdmin, loginAsAlice, navigateToAdmin } from "./helpers";
+import { loginAsAdmin, loginAsAlice, navigateToAdmin, uniqueId } from "./helpers";
 
 test.describe("Admin Dashboard", () => {
   test("should access admin dashboard", async ({ page }) => {
@@ -72,5 +72,63 @@ test.describe("Admin Dashboard", () => {
         .isVisible();
       expect(!isOnAdmin || hasForbidden).toBeTruthy();
     }).toPass({ timeout: 5000 });
+  });
+});
+
+test.describe("Admin-created accounts", () => {
+  test("admin creates an account and the new user must change the password", async ({
+    page,
+  }) => {
+    const username = uniqueId("fpc").replace(/-/g, "_").toLowerCase().slice(0, 32);
+    const temporaryPassword = "Temp-pass-1234";
+    const newPassword = "Own-pass-56789";
+
+    // Admin: elevate, create the account via the modal, sign out.
+    await loginAsAdmin(page);
+    await navigateToAdmin(page);
+    await page.getByRole("button", { name: "Not Elevated" }).click();
+    await page.getByRole("button", { name: "Elevate Session" }).click();
+    await expect(page.getByText("Session Elevated")).toBeVisible({ timeout: 10000 });
+    await page.keyboard.press("Escape");
+
+    await page.getByRole("button", { name: "Users", exact: true }).click();
+    await page.getByRole("button", { name: "Create account" }).first().click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Username").fill(username);
+    await dialog.getByLabel("Temporary password").fill(temporaryPassword);
+    await dialog.getByRole("button", { name: "Create account" }).click();
+    await expect(dialog.getByText("Account created")).toBeVisible({ timeout: 10000 });
+    await dialog.getByRole("button", { name: "Close" }).first().click();
+
+    await page.goto("/");
+    await page.getByTestId("logout-button").click();
+    await expect(page).toHaveURL(/\/login/, { timeout: 10000 });
+
+    // New user: temporary password → change screen → own password → app.
+    await page.fill('input[placeholder="Enter your username"]', username);
+    await page.fill('input[placeholder="Enter your password"]', temporaryPassword);
+    await page.click('button[type="submit"]');
+    await expect(
+      page.getByRole("heading", { name: "Choose your own password" }),
+    ).toBeVisible({ timeout: 15000 });
+    // The temporary password from this sign-in is reused, not asked again.
+    await expect(page.getByLabel("Temporary password")).toHaveCount(0);
+
+    await page.getByLabel("New password", { exact: true }).fill(newPassword);
+    await page.getByLabel("Confirm new password").fill(newPassword);
+    await page.getByRole("button", { name: "Save password" }).click();
+    await expect(page.locator("aside").first()).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.getByRole("heading", { name: "Choose your own password" }),
+    ).toHaveCount(0);
+
+    // The temporary password no longer works.
+    await page.getByTestId("logout-button").click();
+    await expect(page).toHaveURL(/\/login/, { timeout: 10000 });
+    await page.fill('input[placeholder="Enter your username"]', username);
+    await page.fill('input[placeholder="Enter your password"]', temporaryPassword);
+    await page.click('button[type="submit"]');
+    await expect(page.getByRole("alert").first()).toBeVisible({ timeout: 10000 });
+    await expect(page).toHaveURL(/\/login/);
   });
 });

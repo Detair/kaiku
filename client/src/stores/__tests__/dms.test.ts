@@ -34,6 +34,7 @@ import {
   getTotalUnreadCount,
   isDMUnread,
   getDMLastReadMessageId,
+  handleDmCreated,
 } from "../dms";
 
 function createDM(overrides: Partial<DMListItem> = {}): DMListItem {
@@ -390,6 +391,27 @@ describe("dms store", () => {
       setDmsState({ dms: [dm], selectedDMId: "dm-1" });
 
       expect(getSelectedDM()?.id).toBe("dm-1");
+    });
+  });
+  describe("handleDmCreated", () => {
+    it("handleDmCreated adds a new DM once", () => {
+      setDmsState({ dms: [createDM({ id: "dm-old" })] });
+      const created = createDM({ id: "dm-new", name: "Bob" });
+
+      handleDmCreated(created);
+      handleDmCreated(created);
+
+      expect(dmsState.dms.filter((d) => d.id === "dm-new")).toHaveLength(1);
+      expect(dmsState.dms[0].id).toBe("dm-new");
+      expect(dmsState.dms).toHaveLength(2);
+    });
+
+    it("subscribes the new DM channel", () => {
+      setDmsState({ dms: [] });
+
+      handleDmCreated(createDM({ id: "dm-new" }));
+
+      expect(subscribeChannel).toHaveBeenCalledWith("dm-new");
     });
   });
 });
