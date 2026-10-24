@@ -43,7 +43,7 @@ async fn test_first_user_detection_works(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at"#,
+                     created_at, updated_at, must_change_password"#,
         username,
         "First User",
         "hash"
@@ -131,7 +131,7 @@ async fn test_server_config_operations(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at"#,
+                     created_at, updated_at, must_change_password"#,
         test_username,
         "Config Test",
         "hash"
@@ -199,7 +199,7 @@ async fn test_mark_setup_complete(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at"#,
+                     created_at, updated_at, must_change_password"#,
         test_username,
         "Setup Test",
         "hash"
@@ -304,7 +304,7 @@ async fn test_config_validation(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at"#,
+                     created_at, updated_at, must_change_password"#,
         test_username,
         "Validation Test",
         "hash"
@@ -425,7 +425,7 @@ async fn test_second_user_not_admin(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at"#,
+                     created_at, updated_at, must_change_password"#,
         second_username,
         "User 2",
         "hash"

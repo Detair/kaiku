@@ -266,16 +266,22 @@ pub async fn delete_all_user_sessions_tx(
 // ============================================================================
 
 /// Update the password hash for a user inside a transaction.
+///
+/// The user has now chosen their own password, so any pending forced
+/// password change (admin-created account) is cleared as well.
 pub async fn update_password_hash_tx(
     conn: &mut PgConnection,
     user_id: Uuid,
     new_hash: &str,
 ) -> Result<(), AuthError> {
-    sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
-        .bind(new_hash)
-        .bind(user_id)
-        .execute(conn)
-        .await?;
+    sqlx::query(
+        "UPDATE users SET password_hash = $1, must_change_password = false, updated_at = NOW()
+         WHERE id = $2",
+    )
+    .bind(new_hash)
+    .bind(user_id)
+    .execute(conn)
+    .await?;
     Ok(())
 }
 

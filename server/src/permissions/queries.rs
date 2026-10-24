@@ -542,15 +542,18 @@ pub async fn delete_channel_override(
 // ============================================================================
 
 /// Write an entry to the system audit log.
-pub async fn write_audit_log(
-    pool: &PgPool,
+pub async fn write_audit_log<'e, E>(
+    executor: E,
     actor_id: Uuid,
     action: &str,
     target_type: Option<&str>,
     target_id: Option<Uuid>,
     details: Option<JsonValue>,
     ip_address: Option<&str>,
-) -> sqlx::Result<AuditLogEntry> {
+) -> sqlx::Result<AuditLogEntry>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     sqlx::query_as::<_, AuditLogEntry>(
         r"
         INSERT INTO system_audit_log (actor_id, action, target_type, target_id, details, ip_address)
@@ -572,7 +575,7 @@ pub async fn write_audit_log(
     .bind(target_id)
     .bind(details)
     .bind(ip_address)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

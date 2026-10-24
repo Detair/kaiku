@@ -263,6 +263,7 @@ pub async fn register(
             expires_in: tokens.access_expires_in,
             token_type: "Bearer".to_string(),
             setup_required: !setup_complete,
+            password_change_required: user.must_change_password,
         }),
     ))
 }

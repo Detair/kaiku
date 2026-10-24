@@ -474,7 +474,7 @@ pub async fn qr_redeem(
         .map_err(|_| AuthError::Internal("Invalid user ID in QR token".to_string()))?;
 
     // Verify user still exists (may have been deleted/banned during the token window)
-    let _user = find_user_by_id(&state.db, user_id).await?.ok_or_else(|| {
+    let user = find_user_by_id(&state.db, user_id).await?.ok_or_else(|| {
         crate::observability::metrics::record_auth_login_attempt(false);
         AuthError::InvalidCredentials
     })?;
@@ -527,6 +527,7 @@ pub async fn qr_redeem(
             expires_in: tokens.access_expires_in,
             token_type: "Bearer".to_string(),
             setup_required: !setup_complete,
+            password_change_required: user.must_change_password,
         }),
     ))
 }

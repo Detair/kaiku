@@ -701,9 +701,6 @@ pub async fn download(
     Path(id): Path<Uuid>,
     Query(query): Query<DownloadQuery>,
 ) -> Result<Response, ChatError> {
-    // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
-
     // Get user ID from either AuthUser (header) or token query parameter
     let user_id = if let Some(user) = auth_user {
         user.id
@@ -716,13 +713,29 @@ pub async fn download(
         // Validate token from query parameter
         let claims = validate_access_token(&token, &state.config.jwt_public_key)
             .map_err(|_| ChatError::Forbidden)?;
-        claims
+        let user_id = claims
             .sub
             .parse::<Uuid>()
-            .map_err(|_| ChatError::Forbidden)?
+            .map_err(|_| ChatError::Forbidden)?;
+        // This path bypasses `require_auth`, so apply its forced
+        // password-change rule here.
+        let must_change_password: Option<bool> =
+            sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
+        match must_change_password {
+            Some(false) => user_id,
+            Some(true) => return Err(ChatError::PasswordChangeRequired),
+            None => return Err(ChatError::Forbidden),
+        }
     } else {
         return Err(ChatError::Forbidden);
     };
+
+    // Check S3 is configured (after the caller checks, so a pending user gets
+    // PASSWORD_CHANGE_REQUIRED even without storage).
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     // Check permissions
     let has_access = db::check_attachment_access(&state.db, id, user_id)

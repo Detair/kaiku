@@ -43,6 +43,7 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
         status: "online".to_string(),
         mfa_enabled: auth_user.mfa_enabled,
         deletion_scheduled_at: auth_user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
+        password_change_required: auth_user.must_change_password,
     })
 }
 
@@ -179,6 +180,7 @@ pub async fn upload_avatar(
         status: status_str.to_string(),
         mfa_enabled: user.mfa_secret.is_some(),
         deletion_scheduled_at: user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
+        password_change_required: user.must_change_password,
     }))
 }
 
@@ -327,9 +329,17 @@ pub async fn update_password(
         return Err(AuthError::InvalidCredentials);
     }
 
+    // A forced change must replace the temporary password the admin handed out.
+    if user.must_change_password && body.new_password == body.current_password {
+        return Err(AuthError::Validation(
+            "new_password: must differ from the temporary password".to_string(),
+        ));
+    }
+
     let new_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
 
-    // Transaction: update password + optionally revoke other sessions
+    // Transaction: update password (clearing a pending forced change) +
+    // optionally revoke other sessions
     let mut tx = state.db.begin().await.map_err(AuthError::Database)?;
 
     queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;

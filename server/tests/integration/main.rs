@@ -1,5 +1,6 @@
 mod helpers;
 
+mod admin_create_user;
 mod admin_diagnostics;
 mod admin_elevation;
 mod admin_reports;
@@ -58,3 +59,4 @@ mod voice_sfu;
 mod webhooks;
 mod websocket_integration;
 mod workspaces;
+mod ws_e2e;

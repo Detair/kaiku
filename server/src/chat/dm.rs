@@ -9,15 +9,15 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::types::{
-    CreateDMRequest, DMIconResponse, DMListResponse, DMParticipant, DMResponse, MarkAsReadRequest,
-    MarkAsReadResponse, UpdateDMNameRequest,
+    CreateDMRequest, DMIconResponse, DMListResponse, DMParticipant, DMResponse, LastMessagePreview,
+    MarkAsReadRequest, MarkAsReadResponse, UpdateDMNameRequest,
 };
 use super::{queries, ChatError};
 use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::db::{self, Channel, ChannelType};
 use crate::social::block_cache;
-use crate::ws::{broadcast_to_user, ServerEvent};
+use crate::ws::{broadcast_to_user, broadcast_to_users, ServerEvent};
 
 // ============================================================================
 // Database Functions
@@ -27,13 +27,14 @@ use crate::ws::{broadcast_to_user, ServerEvent};
 ///
 /// Wraps the lower-level query functions in `queries` so that the
 /// channel-creation flow remains a single high-level entry point.
+/// The returned `bool` is `true` when the channel was newly created.
 pub async fn get_or_create_dm(
     pool: &sqlx::PgPool,
     user1_id: Uuid,
     user2_id: Uuid,
-) -> Result<Channel, ChatError> {
+) -> Result<(Channel, bool), ChatError> {
     if let Some(existing) = queries::find_direct_dm_channel(pool, user1_id, user2_id).await? {
-        return Ok(existing);
+        return Ok((existing, false));
     }
 
     // Create new DM channel
@@ -50,7 +51,7 @@ pub async fn get_or_create_dm(
     let channel = queries::insert_dm_channel(pool, channel_id, &dm_name).await?;
     queries::insert_dm_participants_pair(pool, channel_id, user1_id, user2_id).await?;
 
-    Ok(channel)
+    Ok((channel, true))
 }
 
 /// Create a group DM channel with multiple participants.
@@ -102,6 +103,92 @@ pub async fn get_dm_participants(
     channel_id: Uuid,
 ) -> Result<Vec<DMParticipant>, ChatError> {
     queries::list_dm_participants(pool, channel_id).await
+}
+
+/// Assemble one `GET /api/dm` element. Single constructor shared by
+/// [`dm_list_entry`] and [`announce_dm_created`] so the shapes cannot drift.
+fn build_dm_list_entry(
+    channel: Channel,
+    participants: Vec<DMParticipant>,
+    last_message: Option<LastMessagePreview>,
+    unread_count: i64,
+) -> DMListResponse {
+    DMListResponse {
+        channel: channel.into(),
+        participants,
+        last_message,
+        unread_count,
+    }
+}
+
+/// Build one `GET /api/dm` element for `channel` as seen by `viewer_id`
+/// (participants, last message preview, the viewer's unread count).
+pub(crate) async fn dm_list_entry(
+    pool: &sqlx::PgPool,
+    viewer_id: Uuid,
+    channel: Channel,
+) -> Result<DMListResponse, ChatError> {
+    let participants = get_dm_participants(pool, channel.id).await?;
+    let last_message = queries::fetch_last_message_preview(pool, channel.id).await?;
+    let unread_count = queries::dm_unread_count(pool, viewer_id, channel.id).await?;
+
+    Ok(build_dm_list_entry(
+        channel,
+        participants,
+        last_message,
+        unread_count,
+    ))
+}
+
+/// Tell every participant of a newly created DM about it with
+/// [`ServerEvent::DmCreated`], including the creator (their other devices).
+///
+/// The channel is brand new, so every recipient's `GET /api/dm` element is
+/// identical: participants as already fetched by the caller, no last message,
+/// zero unread. Nothing in the entry is viewer-specific beyond the unread
+/// count, so it is built (via the shared constructor) and serialized once, with
+/// no further queries. All events are published back-to-back in one pipeline,
+/// so no participant can post into the DM before every participant's socket
+/// has been told (and auto-subscribed). Failures are logged and never fail the
+/// request.
+async fn announce_dm_created(
+    state: &AppState,
+    channel: &Channel,
+    participants: Vec<DMParticipant>,
+) {
+    let recipients: Vec<Uuid> = participants.iter().map(|p| p.user_id).collect();
+    let entry = build_dm_list_entry(channel.clone(), participants, None, 0);
+    let channel_json = match serde_json::to_value(&entry) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                channel_id = %channel.id,
+                error = %e,
+                "Failed to serialize DmCreated event"
+            );
+            return;
+        }
+    };
+
+    let events: Vec<(Uuid, ServerEvent)> = recipients
+        .into_iter()
+        .map(|user_id| {
+            (
+                user_id,
+                ServerEvent::DmCreated {
+                    channel: channel_json.clone(),
+                },
+            )
+        })
+        .collect();
+
+    if let Err(e) = broadcast_to_users(&state.redis, &events).await {
+        tracing::warn!(
+            channel_id = %channel.id,
+            error = %e,
+            "Failed to broadcast DmCreated events"
+        );
+    }
 }
 
 /// List all DM channels for a user.
@@ -191,22 +278,27 @@ pub async fn create_dm(
         }
     }
 
-    let channel = if body.participant_ids.len() == 1 {
+    let (channel, newly_created) = if body.participant_ids.len() == 1 {
         // 1:1 DM
         get_or_create_dm(&state.db, auth.id, body.participant_ids[0]).await?
     } else {
-        // Group DM
-        create_group_dm(
+        // Group DM (always new)
+        let channel = create_group_dm(
             &state.db,
             auth.id,
             &body.participant_ids,
             body.name.as_deref(),
         )
-        .await?
+        .await?;
+        (channel, true)
     };
 
     // Get participants
     let participants = get_dm_participants(&state.db, channel.id).await?;
+
+    if newly_created {
+        announce_dm_created(&state, &channel, participants.clone()).await;
+    }
 
     let response = DMResponse {
         channel: channel.into(),
@@ -235,20 +327,7 @@ pub async fn list_dms(
 
     let mut responses = Vec::new();
     for channel in channels {
-        let participants = get_dm_participants(&state.db, channel.id).await?;
-
-        // Get last message
-        let last_message = queries::fetch_last_message_preview(&state.db, channel.id).await?;
-
-        // Get unread count
-        let unread_count = queries::dm_unread_count(&state.db, auth.id, channel.id).await?;
-
-        responses.push(DMListResponse {
-            channel: channel.into(),
-            participants,
-            last_message,
-            unread_count,
-        });
+        responses.push(dm_list_entry(&state.db, auth.id, channel).await?);
     }
 
     // Sort by last message time (most recent first)

@@ -2,7 +2,7 @@
 //!
 //! Provides admin-only endpoints for platform management:
 //! - Non-elevated: list users, list guilds, audit log, elevate/de-elevate session
-//! - Elevated: ban users, suspend guilds, manage announcements
+//! - Elevated: create/ban users, suspend guilds, manage announcements
 
 pub mod audit;
 pub mod error;
@@ -15,6 +15,7 @@ pub mod system;
 pub mod types;
 pub mod users;
 
+use axum::handler::Handler;
 use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -95,7 +96,12 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/health", get(|| async { "admin ok" }))
         .route("/stats", get(system::get_admin_stats))
         .route("/diagnostics", get(system::get_diagnostics))
-        .route("/users", get(users::list_users))
+        .route(
+            "/users",
+            get(users::list_users).post(
+                users::create_user.layer(from_fn_with_state(state.clone(), require_elevated)),
+            ),
+        )
         .route("/users/export", get(users::export_users_csv))
         .route("/users/{id}/details", get(users::get_user_details))
         .route("/guilds", get(guilds::list_guilds))

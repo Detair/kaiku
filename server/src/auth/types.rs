@@ -10,7 +10,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 /// Username validation regex (matches DB constraint).
-pub(super) static USERNAME_REGEX: std::sync::LazyLock<regex::Regex> =
+pub(crate) static USERNAME_REGEX: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| {
         regex::Regex::new(r"^[a-z0-9_]{3,32}$").expect("valid username regex")
     });
@@ -94,6 +94,9 @@ pub struct AuthResponse {
     pub token_type: String,
     /// Whether server setup is required.
     pub setup_required: bool,
+    /// Whether the user must set a new password before using the rest of the
+    /// API (admin-created account still on its temporary password).
+    pub password_change_required: bool,
 }
 
 /// User profile response.
@@ -116,6 +119,8 @@ pub struct UserProfile {
     /// When the account is scheduled for permanent deletion (if requested).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deletion_scheduled_at: Option<String>,
+    /// Whether the user must set a new password before using the rest of the API.
+    pub password_change_required: bool,
 }
 
 /// MFA setup response.

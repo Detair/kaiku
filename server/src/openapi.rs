@@ -185,6 +185,7 @@ use utoipa::{Modify, OpenApi};
         crate::admin::system::elevate_session,
         crate::admin::system::de_elevate_session,
         crate::admin::users::list_users,
+        crate::admin::users::create_user,
         crate::admin::users::export_users_csv,
         crate::admin::users::get_user_details,
         crate::admin::guilds::list_guilds,
@@ -483,6 +484,7 @@ use utoipa::{Modify, OpenApi};
         crate::guild::search::SearchResponse,
         // Admin
         crate::admin::types::ElevateRequest,
+        crate::admin::types::CreateUserRequest,
         crate::admin::types::ElevateResponse,
         crate::admin::types::GlobalBanRequest,
         crate::admin::types::SuspendGuildRequest,

@@ -40,6 +40,8 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     /// When the user was last updated.
     pub updated_at: DateTime<Utc>,
+    /// Set for admin-created accounts until the user chooses their own password.
+    pub must_change_password: bool,
 }
 
 /// Authentication method.

@@ -343,6 +343,9 @@ pub enum ServerEvent {
     Ready {
         /// Authenticated user ID.
         user_id: Uuid,
+        /// Server clock when `Ready` was built (RFC 3339 UTC); clients use it
+        /// as the reconnect catch-up watermark.
+        server_time: chrono::DateTime<chrono::Utc>,
     },
     /// Pong response
     Pong,
@@ -926,6 +929,16 @@ pub enum ServerEvent {
         updated_by: Uuid,
     },
 
+    /// A DM channel was newly created with this user as a participant (sent
+    /// to every participant, including the creator's other devices). Open
+    /// sockets are subscribed to the channel before this event is delivered.
+    DmCreated {
+        /// The DM exactly as one element of `GET /api/dm` (`DMListResponse`)
+        /// for the receiving user. A JSON value because `DMListResponse` is
+        /// serialize-only.
+        channel: serde_json::Value,
+    },
+
     // Admin events (broadcast to admin subscribers)
     /// User was banned
     AdminUserBanned {
@@ -1025,11 +1038,16 @@ pub enum ServerEvent {
 }
 
 /// Internal outbound message envelope for the WebSocket sender task.
-/// Separates serializable server events from raw WS control frames (Ping).
+/// Separates serializable server events from raw WS control frames (Ping, Close).
 #[derive(Debug)]
 pub enum OutboundMsg {
     Event(ServerEvent),
     Ping,
+    /// Send a Close frame with this code and reason, then stop the sender task.
+    Close {
+        code: u16,
+        reason: &'static str,
+    },
 }
 
 /// Redis pub/sub channels.
@@ -1122,6 +1140,36 @@ pub async fn broadcast_to_user(
     redis
         .publish::<(), _, _>(channels::user_events(user_id), payload)
         .await?;
+
+    Ok(())
+}
+
+/// Publish one event per user in a single pipeline, back-to-back.
+///
+/// All payloads are serialized before anything is published, and the
+/// publishes are written together, so no user can react to their event (for
+/// example by posting) before the others' events are out.
+#[tracing::instrument(skip(redis, events), fields(count = events.len()))]
+pub async fn broadcast_to_users(
+    redis: &Client,
+    events: &[(Uuid, ServerEvent)],
+) -> Result<(), Error> {
+    let mut payloads = Vec::with_capacity(events.len());
+    for (user_id, event) in events {
+        let payload = serde_json::to_string(event)
+            .map_err(|e| Error::new(ErrorKind::Parse, format!("JSON error: {e}")))?;
+        payloads.push((channels::user_events(*user_id), payload));
+    }
+
+    if payloads.is_empty() {
+        return Ok(());
+    }
+    let pipeline = redis.pipeline();
+    for (channel, payload) in payloads {
+        // Queued only; nothing is sent until `all()`.
+        pipeline.publish::<(), _, _>(channel, payload).await?;
+    }
+    pipeline.all::<Vec<Value>>().await?;
 
     Ok(())
 }
