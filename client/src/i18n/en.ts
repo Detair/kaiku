@@ -57,6 +57,8 @@ export const en = {
   "voice.ptt.focusOnlyTitle": "Push-to-talk works only in Kaiku",
   "voice.audio.captureFailed": "Microphone stopped working. Check your audio settings.",
   "voice.audio.playbackFailed": "Speaker stopped working. Check your audio settings.",
+  "voice.audio.inputSwitchFailed": "Couldn't switch to that microphone. Kaiku keeps using the previous one.",
+  "voice.audio.outputSwitchFailed": "Couldn't switch to that speaker. Kaiku keeps using the previous one.",
   "voice.ptt.focusOnly": "Your push-to-talk key has no Ctrl, Alt or ⌘, so it works only while Kaiku is focused. Choose a new key in Voice settings to use it in games.",
   "onboarding.dialogLabel": "Onboarding wizard",
   "qr.title": "Link Mobile Device",

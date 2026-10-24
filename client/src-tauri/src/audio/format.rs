@@ -93,8 +93,10 @@ fn downmix_into(interleaved: &[f32], channels: u16, out: &mut Vec<f32>) {
 ///
 /// Adds one input sample of latency (about 23 µs at 44.1 kHz) and does not
 /// allocate beyond the output buffer it is given. When downsampling, a
-/// one-pole low-pass in front reduces aliasing; voice energy sits far below
-/// the 24 kHz Nyquist of the output, so this is adequate ahead of Opus.
+/// one-pole low-pass sits in front; it only takes the edge off content above
+/// the output Nyquist (≈6 dB/octave), it is not a real anti-alias filter.
+/// Acceptable for voice ahead of Opus; a sinc resampler (e.g. `rubato`)
+/// would replace this if real devices show artefacts.
 #[derive(Debug, Clone)]
 pub struct LinearResampler {
     /// Input samples advanced per output sample (`in_rate / out_rate`).
@@ -185,19 +187,32 @@ pub struct CaptureFrontEnd {
     frame: Vec<f32>,
 }
 
-/// Initial capacity of the scratch buffers (samples). Covers callbacks of
-/// up to ~85 ms of 48 kHz stereo before a buffer would ever need to grow.
-const SCRATCH_CAPACITY: usize = 8192;
+/// Largest number of interleaved samples processed in one step. Bigger
+/// callbacks are split into chunks of at most this size, so the scratch
+/// buffers below are sized once and never grow in the audio callback.
+pub const MAX_PUSH_SAMPLES: usize = 8192;
+
+/// Interleaved chunk length for `channels`: the largest whole number of
+/// frames that fits in [`MAX_PUSH_SAMPLES`].
+pub fn push_chunk_len(channels: u16) -> usize {
+    let channels = usize::from(channels.max(1));
+    (MAX_PUSH_SAMPLES / channels).max(1) * channels
+}
 
 impl CaptureFrontEnd {
     pub fn new(format: CaptureFormat) -> Self {
+        let channels = format.channels.max(1);
         let resampler = (format.sample_rate != SAMPLE_RATE)
             .then(|| LinearResampler::new(format.sample_rate, SAMPLE_RATE));
+        // Worst case per chunk: every frame of a full chunk, upsampled.
+        let mono_max = push_chunk_len(channels) / usize::from(channels);
+        let resampled_max =
+            (mono_max * SAMPLE_RATE as usize).div_ceil(format.sample_rate.max(1) as usize) + 4;
         Self {
-            channels: format.channels.max(1),
+            channels,
             resampler,
-            mono: Vec::with_capacity(SCRATCH_CAPACITY),
-            resampled: Vec::with_capacity(SCRATCH_CAPACITY),
+            mono: Vec::with_capacity(mono_max),
+            resampled: Vec::with_capacity(resampled_max),
             frame: Vec::with_capacity(FRAME_SIZE),
         }
     }
@@ -205,6 +220,12 @@ impl CaptureFrontEnd {
     /// Feed one callback's interleaved samples; `on_frame` is called with
     /// every completed 960-sample (20 ms) 48 kHz mono frame.
     pub fn push(&mut self, interleaved: &[f32], mut on_frame: impl FnMut(&[f32])) {
+        for chunk in interleaved.chunks(push_chunk_len(self.channels)) {
+            self.push_chunk(chunk, &mut on_frame);
+        }
+    }
+
+    fn push_chunk(&mut self, interleaved: &[f32], on_frame: &mut impl FnMut(&[f32])) {
         self.mono.clear();
         downmix_into(interleaved, self.channels, &mut self.mono);
 
@@ -227,6 +248,15 @@ impl CaptureFrontEnd {
                 self.frame.clear();
             }
         }
+    }
+
+    #[cfg(test)]
+    const fn capacities(&self) -> (usize, usize, usize) {
+        (
+            self.mono.capacity(),
+            self.resampled.capacity(),
+            self.frame.capacity(),
+        )
     }
 }
 
@@ -338,6 +368,23 @@ mod tests {
         assert!(frames.is_empty());
         front_end.push(&input[500..], |f| frames.push(f.to_vec()));
         assert_eq!(frames, vec![input]);
+    }
+
+    #[test]
+    fn oversized_callbacks_do_not_grow_buffers() {
+        for (rate, channels) in [(44_100, 8), (8_000, 1), (96_000, 2)] {
+            let mut front_end = CaptureFrontEnd::new(CaptureFormat {
+                sample_rate: rate,
+                channels,
+            });
+            let before = front_end.capacities();
+            // A huge ALSA period: far beyond the scratch size.
+            let data = vec![0.1f32; MAX_PUSH_SAMPLES * 5 + usize::from(channels) * 3];
+            let mut samples = 0usize;
+            front_end.push(&data, |f| samples += f.len());
+            assert_eq!(front_end.capacities(), before, "{rate} Hz × {channels}");
+            assert!(samples > 0);
+        }
     }
 
     #[test]

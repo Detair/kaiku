@@ -25,9 +25,20 @@ use super::{
 /// [`AudioErrorEvent`].
 pub const AUDIO_ERROR_EVENT: &str = "voice:audio_error";
 
-/// No capture callback for this long means the microphone is gone (some
-/// backends never report an unplugged device, the stream just stops).
+/// Tauri event withdrawing an earlier [`AUDIO_ERROR_EVENT`]: audio of that
+/// `kind` works again (callbacks resumed, or another device was chosen).
+/// Same payload; `kind` names the failure that cleared.
+pub const AUDIO_RECOVERED_EVENT: &str = "voice:audio_recovered";
+
+/// No capture callback for this long, once callbacks have started, means
+/// the microphone is gone (some backends never report an unplugged device,
+/// the stream just stops).
 pub const CAPTURE_STALL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long a started stream may take to deliver its first callback before
+/// it counts as dead. Generous: Bluetooth headsets switching to their
+/// headset profile and slow USB devices can take several seconds.
+pub const CAPTURE_FIRST_CALLBACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How often the capture owner thread checks for a stall.
 const WATCHDOG_INTERVAL: Duration = Duration::from_millis(500);
@@ -40,7 +51,7 @@ pub enum AudioErrorKind {
     PlaybackFailed,
 }
 
-/// Payload of [`AUDIO_ERROR_EVENT`].
+/// Payload of [`AUDIO_ERROR_EVENT`] and [`AUDIO_RECOVERED_EVENT`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AudioErrorEvent {
     pub kind: AudioErrorKind,
@@ -48,11 +59,30 @@ pub struct AudioErrorEvent {
     pub device: String,
 }
 
-/// Where audio failures are delivered (the Tauri app in production).
-pub type AudioErrorSink = Arc<dyn Fn(&AudioErrorEvent) + Send + Sync>;
+/// Whether a stream failed or recovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioNotice {
+    Failed,
+    Recovered,
+}
 
-/// Reports one stream's failure at most once, from whichever path notices
-/// first (backend error callback or stall watchdog).
+impl AudioNotice {
+    /// Tauri event name for this notice.
+    pub const fn event_name(self) -> &'static str {
+        match self {
+            Self::Failed => AUDIO_ERROR_EVENT,
+            Self::Recovered => AUDIO_RECOVERED_EVENT,
+        }
+    }
+}
+
+/// Where audio failures and recoveries are delivered (the Tauri app in
+/// production).
+pub type AudioErrorSink = Arc<dyn Fn(AudioNotice, &AudioErrorEvent) + Send + Sync>;
+
+/// Tracks one stream's failure: reported at most once while failed (from
+/// whichever path notices first: backend error callback or stall
+/// watchdog), and withdrawn when the stream works again.
 #[derive(Clone)]
 struct FailureReporter {
     event: Arc<AudioErrorEvent>,
@@ -82,8 +112,27 @@ impl FailureReporter {
             "Audio stream failed: {reason}"
         );
         if let Some(sink) = &self.sink {
-            sink(&self.event);
+            sink(AudioNotice::Failed, &self.event);
         }
+    }
+
+    /// Withdraw a reported failure (no-op if none is reported).
+    fn recover(&self) {
+        if !self.reported.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        info!(
+            kind = ?self.event.kind,
+            device = %self.event.device,
+            "Audio stream works again"
+        );
+        if let Some(sink) = &self.sink {
+            sink(AudioNotice::Recovered, &self.event);
+        }
+    }
+
+    fn is_failed(&self) -> bool {
+        self.reported.load(Ordering::Acquire)
     }
 }
 
@@ -99,6 +148,9 @@ fn stream_error_callback(reporter: FailureReporter) -> impl FnMut(cpal::StreamEr
     }
 }
 
+/// Marks "no callback yet" in [`Heartbeat::last_ms`].
+const NO_BEAT: u64 = u64::MAX;
+
 /// Time of the last capture callback, written lock-free from the callback.
 #[derive(Clone)]
 struct Heartbeat {
@@ -110,7 +162,7 @@ impl Heartbeat {
     fn new() -> Self {
         Self {
             epoch: Instant::now(),
-            last_ms: Arc::new(AtomicU64::new(0)),
+            last_ms: Arc::new(AtomicU64::new(NO_BEAT)),
         }
     }
 
@@ -121,32 +173,73 @@ impl Heartbeat {
 
     /// Called at the top of every capture callback (one clock read + store).
     fn beat(&self) {
-        self.last_ms
-            .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
+        self.beat_at(Instant::now());
     }
 
-    fn last(&self) -> Instant {
-        self.epoch + Duration::from_millis(self.last_ms.load(Ordering::Relaxed))
+    fn beat_at(&self, now: Instant) {
+        let ms = now.saturating_duration_since(self.epoch).as_millis() as u64;
+        self.last_ms.store(ms.min(NO_BEAT - 1), Ordering::Relaxed);
+    }
+
+    /// Time of the last callback, `None` before the first one.
+    fn last(&self) -> Option<Instant> {
+        match self.last_ms.load(Ordering::Relaxed) {
+            NO_BEAT => None,
+            ms => Some(self.epoch + Duration::from_millis(ms)),
+        }
     }
 }
 
-/// Reports a capture stream whose callbacks stopped arriving.
+/// Reports a capture stream whose callbacks never started or stopped
+/// arriving, and withdraws the report once callbacks flow again.
+///
+/// Armed when the stream is running (after `play()`), so the time a device
+/// needs to open does not count. Until the first callback the generous
+/// [`CAPTURE_FIRST_CALLBACK_TIMEOUT`] applies, afterwards
+/// [`CAPTURE_STALL_TIMEOUT`].
 struct CaptureWatchdog {
     heartbeat: Heartbeat,
     reporter: FailureReporter,
+    armed_at: Instant,
+    /// When this watchdog first saw the stream as failed (by itself or via
+    /// the backend error callback); callbacks after it mean recovery.
+    failed_since: Option<Instant>,
 }
 
 impl CaptureWatchdog {
-    const fn new(heartbeat: Heartbeat, reporter: FailureReporter) -> Self {
+    const fn new(heartbeat: Heartbeat, reporter: FailureReporter, armed_at: Instant) -> Self {
         Self {
             heartbeat,
             reporter,
+            armed_at,
+            failed_since: None,
         }
     }
 
-    fn check(&self, now: Instant) {
-        if now.saturating_duration_since(self.heartbeat.last()) > CAPTURE_STALL_TIMEOUT {
-            self.reporter.report("no audio from the microphone");
+    fn check(&mut self, now: Instant) {
+        let last = self.heartbeat.last();
+
+        if self.reporter.is_failed() {
+            let since = *self.failed_since.get_or_insert(now);
+            if last.is_some_and(|beat| beat > since) {
+                self.failed_since = None;
+                self.reporter.recover();
+            }
+            return;
+        }
+        self.failed_since = None;
+
+        let (reference, timeout, reason) = match last {
+            Some(beat) => (beat, CAPTURE_STALL_TIMEOUT, "no audio from the microphone"),
+            None => (
+                self.armed_at,
+                CAPTURE_FIRST_CALLBACK_TIMEOUT,
+                "the microphone never delivered audio",
+            ),
+        };
+        if now.saturating_duration_since(reference) > timeout {
+            self.reporter.report(reason);
+            self.failed_since = Some(now);
         }
     }
 }
@@ -175,11 +268,12 @@ impl StreamOwner {
 /// Build a stream on a dedicated thread and keep it alive until `Stop`.
 ///
 /// Waits for the build: a stream that cannot be created or started is
-/// returned as an error instead of leaving a silent call behind. While the
-/// stream runs, `watchdog` (if any) is checked every [`WATCHDOG_INTERVAL`].
+/// returned as an error instead of leaving a silent call behind. With
+/// `watchdog`, a [`CaptureWatchdog`] is armed once the stream is running and
+/// checked every [`WATCHDOG_INTERVAL`].
 async fn spawn_stream_owner<S, B>(
     build: B,
-    watchdog: Option<CaptureWatchdog>,
+    watchdog: Option<(Heartbeat, FailureReporter)>,
 ) -> Result<StreamOwner, AudioError>
 where
     B: FnOnce() -> Result<S, AudioError> + Send + 'static,
@@ -201,13 +295,17 @@ where
                     return;
                 }
             };
+            // Armed only now: opening the device does not eat the deadline.
+            let mut watchdog = watchdog.map(|(heartbeat, reporter)| {
+                CaptureWatchdog::new(heartbeat, reporter, Instant::now())
+            });
             loop {
                 match control_rx.recv_timeout(WATCHDOG_INTERVAL) {
                     Ok(CaptureControl::Stop) | Err(std_mpsc::RecvTimeoutError::Disconnected) => {
                         break
                     }
                     Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                        if let Some(watchdog) = &watchdog {
+                        if let Some(watchdog) = watchdog.as_mut() {
                             watchdog.check(Instant::now());
                         }
                     }
@@ -229,15 +327,102 @@ where
 struct CaptureTask {
     owner: StreamOwner,
     active: Arc<AtomicBool>,
-    /// Set once the stream was reported as failed (unplugged, stalled).
-    failed: Arc<AtomicBool>,
+    /// Failure state of this stream (unplugged, stalled; cleared on recovery).
+    reporter: FailureReporter,
 }
 
-impl CaptureTask {
+/// A capture stream as seen by the switching logic.
+trait CaptureStream {
+    /// Start sending frames.
+    fn activate(&self);
+    /// Not currently reported as failed.
+    fn is_healthy(&self) -> bool;
+    /// Stop and release the device.
+    fn stop(self) -> impl std::future::Future<Output = ()> + Send;
+}
+
+impl CaptureStream for CaptureTask {
+    fn activate(&self) {
+        self.active.store(true, Ordering::SeqCst);
+    }
+
+    fn is_healthy(&self) -> bool {
+        !self.reporter.is_failed()
+    }
+
     async fn stop(self) {
         self.active.store(false, Ordering::SeqCst);
         self.owner.stop().await;
     }
+}
+
+/// Opens capture streams (built but inactive) for [`switch_capture`].
+trait CaptureFactory {
+    type Task: CaptureStream + Send;
+    fn spawn(
+        &self,
+        device: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<Self::Task, AudioError>> + Send;
+    /// Tell the user no microphone is capturing any more.
+    fn report_failure(&self, device: Option<&str>);
+}
+
+/// Move capture to `target` (make-before-break).
+///
+/// Returns `Ok(true)` when a new stream now captures, `Ok(false)` when the
+/// healthy current stream already uses `target`. On error the previous
+/// microphone keeps (or is restored to) capturing and `current` is
+/// unchanged; if even that fails, the loss is reported via the factory.
+async fn switch_capture<F: CaptureFactory + Sync>(
+    factory: &F,
+    capture: &mut Option<F::Task>,
+    current: &mut Option<String>,
+    target: Option<String>,
+) -> Result<bool, AudioError> {
+    // Re-applying the device that is already capturing fine (e.g. the saved
+    // device on join) is a no-op; a failed stream is rebuilt.
+    let healthy = capture.as_ref().is_some_and(CaptureStream::is_healthy);
+    if healthy && target == *current {
+        return Ok(false);
+    }
+
+    let new_task = match factory.spawn(target.as_deref()).await {
+        Ok(task) => task,
+        Err(first) if capture.is_some() => {
+            // Some devices allow only one open stream (re-selecting the
+            // same microphone): release the old stream and retry once.
+            debug!("Capture switch failed with the old stream open ({first}); retrying");
+            if let Some(old) = capture.take() {
+                old.stop().await;
+            }
+            match factory.spawn(target.as_deref()).await {
+                Ok(task) => task,
+                Err(e) => {
+                    warn!("Capture switch failed: {e}; restoring the previous microphone");
+                    match factory.spawn(current.as_deref()).await {
+                        Ok(task) => {
+                            task.activate();
+                            *capture = Some(task);
+                        }
+                        Err(restore) => {
+                            error!("Previous microphone could not be restored: {restore}");
+                            factory.report_failure(current.as_deref());
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err(e) => return Err(e),
+    };
+
+    if let Some(old) = capture.take() {
+        old.stop().await;
+    }
+    new_task.activate();
+    *capture = Some(new_task);
+    *current = target;
+    Ok(true)
 }
 
 /// Audio handle that can be safely shared across threads
@@ -284,7 +469,8 @@ enum PlaybackControl {
     Stop,
     /// Rebuild the output stream on a new device, keeping the same sample
     /// buffer (mid-call speaker switching). Boxed: `cpal::Device` is large.
-    SwitchDevice(Box<Device>),
+    /// The reply says whether the new device could be opened.
+    SwitchDevice(Box<Device>, std::sync::mpsc::SyncSender<bool>),
 }
 
 /// Device name as listed by `enumerate_devices`.
@@ -293,6 +479,116 @@ fn device_label(device: &Device) -> String {
         .description()
         .map(|desc| desc.name().to_string())
         .unwrap_or_else(|_| "default".to_string())
+}
+
+/// Find a device by name (`None` = system default).
+fn find_device(
+    host: &Host,
+    device_name: Option<&str>,
+    is_input: bool,
+) -> Result<Device, AudioError> {
+    match device_name {
+        Some(name) => {
+            let mut devices = if is_input {
+                host.input_devices()
+            } else {
+                host.output_devices()
+            }
+            .map_err(|e| AudioError::ConfigError(e.to_string()))?;
+
+            devices
+                .find(|d| {
+                    d.description()
+                        .map(|desc| desc.name() == name)
+                        .unwrap_or(false)
+                })
+                .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
+        }
+        None => {
+            if is_input {
+                host.default_input_device().ok_or(AudioError::NoInputDevice)
+            } else {
+                host.default_output_device()
+                    .ok_or(AudioError::NoOutputDevice)
+            }
+        }
+    }
+}
+
+/// Sink that emits [`AudioNotice`]s as Tauri events.
+fn error_sink_for(app: Option<tauri::AppHandle>) -> Option<AudioErrorSink> {
+    let app = app?;
+    Some(Arc::new(
+        move |notice: AudioNotice, event: &AudioErrorEvent| {
+            if let Err(e) = app.emit(notice.event_name(), event) {
+                warn!("Failed to emit {}: {e}", notice.event_name());
+            }
+        },
+    ))
+}
+
+/// Opens capture streams for one call (production [`CaptureFactory`]).
+struct CaptureSpawner {
+    host: Arc<Host>,
+    muted: Arc<AtomicBool>,
+    vad_config: VadConfig,
+    app_handle: Option<tauri::AppHandle>,
+    output_tx: mpsc::Sender<Vec<u8>>,
+}
+
+impl CaptureSpawner {
+    /// Emit a capture/playback notice not tied to a running stream.
+    fn notify(&self, notice: AudioNotice, kind: AudioErrorKind, device: Option<&str>) {
+        if let Some(sink) = error_sink_for(self.app_handle.clone()) {
+            sink(
+                notice,
+                &AudioErrorEvent {
+                    kind,
+                    device: device.unwrap_or("default").to_string(),
+                },
+            );
+        }
+    }
+}
+
+impl CaptureFactory for CaptureSpawner {
+    type Task = CaptureTask;
+
+    /// Build (but do not activate) a capture stream on `device_name`.
+    async fn spawn(&self, device_name: Option<&str>) -> Result<CaptureTask, AudioError> {
+        let device = find_device(&self.host, device_name, true)?;
+        let reporter = FailureReporter::new(
+            AudioErrorKind::CaptureFailed,
+            device_label(&device),
+            error_sink_for(self.app_handle.clone()),
+        );
+        let heartbeat = Heartbeat::new();
+        let active = Arc::new(AtomicBool::new(false));
+        let ctx = CaptureContext {
+            muted: self.muted.clone(),
+            output_tx: self.output_tx.clone(),
+            vad_config: self.vad_config.clone(),
+            app_handle: self.app_handle.clone(),
+            active: active.clone(),
+            heartbeat: heartbeat.clone(),
+            reporter: reporter.clone(),
+        };
+        let owner = spawn_stream_owner(
+            move || build_capture_stream(&device, ctx),
+            Some((heartbeat, reporter.clone())),
+        )
+        .await?;
+        Ok(CaptureTask {
+            owner,
+            active,
+            reporter,
+        })
+    }
+
+    fn report_failure(&self, device: Option<&str>) {
+        error!("No microphone could be restarted");
+        self.notify(AudioNotice::Failed, AudioErrorKind::CaptureFailed, device);
+    }
 }
 
 impl AudioHandle {
@@ -394,64 +690,27 @@ impl AudioHandle {
             self.input_device_name = device_name;
             return Ok(());
         };
-        // Re-applying the device that is already capturing fine (e.g. the
-        // saved device on join) is a no-op; a failed stream is rebuilt.
-        let healthy = self
-            .capture
-            .as_ref()
-            .is_some_and(|task| !task.failed.load(Ordering::Acquire));
-        if healthy && device_name == self.input_device_name {
-            return Ok(());
-        }
-
-        let new_task = match self
-            .spawn_capture(device_name.as_deref(), output_tx.clone())
-            .await
-        {
-            Ok(task) => task,
-            Err(first) if self.capture.is_some() => {
-                // Some devices allow only one open stream (re-selecting the
-                // same microphone): release the old stream and retry once.
-                debug!("Capture switch failed with the old stream open ({first}); retrying");
-                if let Some(old) = self.capture.take() {
-                    old.stop().await;
-                }
-                match self
-                    .spawn_capture(device_name.as_deref(), output_tx.clone())
-                    .await
-                {
-                    Ok(task) => task,
-                    Err(e) => {
-                        warn!("Capture switch failed: {e}; restoring the previous microphone");
-                        let previous = self.input_device_name.clone();
-                        match self.spawn_capture(previous.as_deref(), output_tx).await {
-                            Ok(task) => {
-                                task.active.store(true, Ordering::SeqCst);
-                                self.capture = Some(task);
-                            }
-                            Err(restore) => {
-                                error!("Previous microphone could not be restored: {restore}");
-                                self.report_capture_failure(previous.as_deref());
-                            }
-                        }
-                        return Err(e);
-                    }
-                }
+        let spawner = self.capture_spawner(output_tx);
+        let switched = switch_capture(
+            &spawner,
+            &mut self.capture,
+            &mut self.input_device_name,
+            device_name,
+        )
+        .await?;
+        if switched {
+            // The old stream may have left the speaking indicator on, and a
+            // "Microphone stopped working" notice no longer applies.
+            if let Some(app) = &self.app_handle {
+                let _ = app.emit("voice:speaking", false);
             }
-            Err(e) => return Err(e),
-        };
-
-        if let Some(old) = self.capture.take() {
-            old.stop().await;
+            spawner.notify(
+                AudioNotice::Recovered,
+                AudioErrorKind::CaptureFailed,
+                self.input_device_name.as_deref(),
+            );
+            info!("Capture switched to {:?}", self.input_device_name);
         }
-        new_task.active.store(true, Ordering::SeqCst);
-        self.capture = Some(new_task);
-        self.input_device_name = device_name;
-        // The old stream may have left the speaking indicator on.
-        if let Some(app) = &self.app_handle {
-            let _ = app.emit("voice:speaking", false);
-        }
-        info!("Capture switched to {:?}", self.input_device_name);
         Ok(())
     }
 
@@ -468,12 +727,26 @@ impl AudioHandle {
         self.output_device_name = device_id;
         if let Some(control) = &self.playback_control {
             let device = self.get_device(self.output_device_name.as_deref(), false)?;
+            let label = device_label(&device);
+            let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
             if control
-                .send(PlaybackControl::SwitchDevice(Box::new(device)))
+                .send(PlaybackControl::SwitchDevice(Box::new(device), reply_tx))
                 .await
                 .is_err()
             {
                 debug!("Playback task not running; output device applies on next start");
+                return Ok(());
+            }
+            // The playback thread answers right after trying to open it.
+            let opened = tokio::task::spawn_blocking(move || reply_rx.recv())
+                .await
+                .ok()
+                .and_then(Result::ok);
+            if opened == Some(false) {
+                // Audio stays on the previous speaker; tell the caller.
+                return Err(AudioError::StreamError(format!(
+                    "could not open output device {label}"
+                )));
             }
         }
         Ok(())
@@ -481,89 +754,23 @@ impl AudioHandle {
 
     /// Get device by name
     fn get_device(&self, device_name: Option<&str>, is_input: bool) -> Result<Device, AudioError> {
-        match device_name {
-            Some(name) => {
-                let mut devices = if is_input {
-                    self.host.input_devices()
-                } else {
-                    self.host.output_devices()
-                }
-                .map_err(|e| AudioError::ConfigError(e.to_string()))?;
-
-                devices
-                    .find(|d| {
-                        d.description()
-                            .map(|desc| desc.name() == name)
-                            .unwrap_or(false)
-                    })
-                    .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
-            }
-            None => {
-                if is_input {
-                    self.host
-                        .default_input_device()
-                        .ok_or(AudioError::NoInputDevice)
-                } else {
-                    self.host
-                        .default_output_device()
-                        .ok_or(AudioError::NoOutputDevice)
-                }
-            }
-        }
+        find_device(&self.host, device_name, is_input)
     }
 
-    /// Delivers audio failures to the webview as [`AUDIO_ERROR_EVENT`].
+    /// Delivers audio failures/recoveries to the webview as Tauri events.
     fn error_sink(&self) -> Option<AudioErrorSink> {
-        let app = self.app_handle.clone()?;
-        Some(Arc::new(move |event: &AudioErrorEvent| {
-            if let Err(e) = app.emit(AUDIO_ERROR_EVENT, event) {
-                warn!("Failed to emit {AUDIO_ERROR_EVENT}: {e}");
-            }
-        }))
+        error_sink_for(self.app_handle.clone())
     }
 
-    /// Tell the user capture is gone when no stream could be (re)started.
-    fn report_capture_failure(&self, device_name: Option<&str>) {
-        FailureReporter::new(
-            AudioErrorKind::CaptureFailed,
-            device_name.unwrap_or("default"),
-            self.error_sink(),
-        )
-        .report("capture could not be restarted");
-    }
-
-    /// Build (but do not activate) a capture stream on `device_name`.
-    async fn spawn_capture(
-        &self,
-        device_name: Option<&str>,
-        output_tx: mpsc::Sender<Vec<u8>>,
-    ) -> Result<CaptureTask, AudioError> {
-        let device = self.get_device(device_name, true)?;
-        let reporter = FailureReporter::new(
-            AudioErrorKind::CaptureFailed,
-            device_label(&device),
-            self.error_sink(),
-        );
-        let heartbeat = Heartbeat::new();
-        let active = Arc::new(AtomicBool::new(false));
-        let ctx = CaptureContext {
+    /// What is needed to open capture streams feeding `output_tx`.
+    fn capture_spawner(&self, output_tx: mpsc::Sender<Vec<u8>>) -> CaptureSpawner {
+        CaptureSpawner {
+            host: self.host.clone(),
             muted: self.muted.clone(),
-            output_tx,
             vad_config: self.vad_config.clone(),
             app_handle: self.app_handle.clone(),
-            active: active.clone(),
-            heartbeat: heartbeat.clone(),
-            reporter: reporter.clone(),
-        };
-        let failed = reporter.reported.clone();
-        let watchdog = CaptureWatchdog::new(heartbeat, reporter);
-        let owner =
-            spawn_stream_owner(move || build_capture_stream(&device, ctx), Some(watchdog)).await?;
-        Ok(CaptureTask {
-            owner,
-            active,
-            failed,
-        })
+            output_tx,
+        }
     }
 
     /// Start audio capture in a background thread.
@@ -583,9 +790,10 @@ impl AudioHandle {
         // the call then starts capture (see `set_input_device`).
         self.capture_output_tx = Some(output_tx.clone());
         let task = self
-            .spawn_capture(self.input_device_name.as_deref(), output_tx)
+            .capture_spawner(output_tx)
+            .spawn(self.input_device_name.as_deref())
             .await?;
-        task.active.store(true, Ordering::SeqCst);
+        task.activate();
         self.capture = Some(task);
 
         info!("Audio capture started");
@@ -1177,21 +1385,21 @@ fn playback_control_loop(
     while let Some(msg) = control_rx.blocking_recv() {
         match msg {
             PlaybackControl::Stop => break,
-            PlaybackControl::SwitchDevice(new_device) => {
+            PlaybackControl::SwitchDevice(new_device, reply) => {
                 let reporter = FailureReporter::new(
                     AudioErrorKind::PlaybackFailed,
                     device_label(&new_device),
                     sink.clone(),
                 );
-                match build_buffer_output_stream(&new_device, deafened, playback_buffer, &reporter)
+                if let Some(new_stream) =
+                    build_buffer_output_stream(&new_device, deafened, playback_buffer, &reporter)
                 {
-                    Some(new_stream) => {
-                        stream = new_stream;
-                        info!("Playback switched to new output device");
-                    }
-                    None => {
-                        warn!("Output device switch failed; keeping previous device");
-                    }
+                    stream = new_stream;
+                    let _ = reply.send(true);
+                    info!("Playback switched to new output device");
+                } else {
+                    let _ = reply.send(false);
+                    warn!("Output device switch failed; keeping previous device");
                 }
             }
         }
@@ -1358,20 +1566,29 @@ mod tests {
         assert!(dropped.load(Ordering::SeqCst), "stream dropped after Stop");
     }
 
-    fn collecting_sink() -> (AudioErrorSink, Arc<Mutex<Vec<AudioErrorEvent>>>) {
-        let events = Arc::new(Mutex::new(Vec::new()));
+    type Events = Arc<Mutex<Vec<(AudioNotice, AudioErrorEvent)>>>;
+
+    fn collecting_sink() -> (AudioErrorSink, Events) {
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
         let store = events.clone();
-        let sink: AudioErrorSink = Arc::new(move |event: &AudioErrorEvent| {
-            store.lock().unwrap().push(event.clone());
+        let sink: AudioErrorSink = Arc::new(move |notice: AudioNotice, event: &AudioErrorEvent| {
+            store.lock().unwrap().push((notice, event.clone()));
         });
         (sink, events)
+    }
+
+    fn notices(events: &Events) -> Vec<AudioNotice> {
+        events.lock().unwrap().iter().map(|(n, _)| *n).collect()
+    }
+
+    fn mic_reporter(sink: AudioErrorSink) -> FailureReporter {
+        FailureReporter::new(AudioErrorKind::CaptureFailed, "USB Mic", Some(sink))
     }
 
     #[test]
     fn capture_stream_error_emits_audio_error() {
         let (sink, events) = collecting_sink();
-        let reporter = FailureReporter::new(AudioErrorKind::CaptureFailed, "USB Mic", Some(sink));
-        let mut on_error = stream_error_callback(reporter);
+        let mut on_error = stream_error_callback(mic_reporter(sink));
 
         // A glitch is not a dead microphone.
         on_error(cpal::StreamError::BufferUnderrun);
@@ -1385,14 +1602,18 @@ mod tests {
         let events = events.lock().unwrap();
         assert_eq!(
             *events,
-            vec![AudioErrorEvent {
-                kind: AudioErrorKind::CaptureFailed,
-                device: "USB Mic".into(),
-            }]
+            vec![(
+                AudioNotice::Failed,
+                AudioErrorEvent {
+                    kind: AudioErrorKind::CaptureFailed,
+                    device: "USB Mic".into(),
+                }
+            )]
         );
         assert_eq!(AUDIO_ERROR_EVENT, "voice:audio_error");
+        assert_eq!(AUDIO_RECOVERED_EVENT, "voice:audio_recovered");
         assert_eq!(
-            serde_json::to_value(&events[0]).unwrap(),
+            serde_json::to_value(&events[0].1).unwrap(),
             serde_json::json!({ "kind": "capture_failed", "device": "USB Mic" })
         );
     }
@@ -1400,21 +1621,309 @@ mod tests {
     #[test]
     fn stalled_capture_is_reported_once() {
         let (sink, events) = collecting_sink();
-        let reporter = FailureReporter::new(AudioErrorKind::CaptureFailed, "USB Mic", Some(sink));
         let heartbeat = Heartbeat::new();
-        let watchdog = CaptureWatchdog::new(heartbeat.clone(), reporter);
         let start = heartbeat.epoch();
+        let mut watchdog = CaptureWatchdog::new(heartbeat.clone(), mic_reporter(sink), start);
 
-        heartbeat.beat();
+        heartbeat.beat_at(start);
         watchdog.check(start + Duration::from_secs(1));
         assert!(events.lock().unwrap().is_empty(), "fresh data is alive");
 
         // No callbacks for longer than the stall timeout: the mic is gone.
         watchdog.check(start + CAPTURE_STALL_TIMEOUT + Duration::from_secs(1));
         watchdog.check(start + CAPTURE_STALL_TIMEOUT + Duration::from_secs(2));
-        let events = events.lock().unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, AudioErrorKind::CaptureFailed);
+        assert_eq!(notices(&events), vec![AudioNotice::Failed]);
+    }
+
+    #[test]
+    fn slow_first_callback_does_not_trip_the_watchdog() {
+        let (sink, events) = collecting_sink();
+        let heartbeat = Heartbeat::new();
+        let t0 = heartbeat.epoch();
+        // Opening took 5 s (Bluetooth profile switch, slow USB): the
+        // watchdog is armed only once the stream runs.
+        let armed = t0 + Duration::from_secs(5);
+        let mut watchdog = CaptureWatchdog::new(heartbeat.clone(), mic_reporter(sink), armed);
+
+        // Still waiting for the first callback, past the stall timeout but
+        // within the first-callback deadline.
+        watchdog.check(armed + CAPTURE_STALL_TIMEOUT + Duration::from_secs(1));
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "slow start is not a dead mic"
+        );
+
+        let first = armed + Duration::from_secs(5);
+        heartbeat.beat_at(first);
+        watchdog.check(first + Duration::from_secs(1));
+        assert!(events.lock().unwrap().is_empty());
+
+        // Once running, the normal stall timeout applies.
+        watchdog.check(first + CAPTURE_STALL_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(notices(&events), vec![AudioNotice::Failed]);
+    }
+
+    #[test]
+    fn capture_that_never_starts_is_reported() {
+        let (sink, events) = collecting_sink();
+        let heartbeat = Heartbeat::new();
+        let t0 = heartbeat.epoch();
+        let mut watchdog = CaptureWatchdog::new(heartbeat, mic_reporter(sink), t0);
+
+        watchdog.check(t0 + Duration::from_secs(9));
+        assert!(events.lock().unwrap().is_empty());
+        watchdog.check(t0 + CAPTURE_FIRST_CALLBACK_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(notices(&events), vec![AudioNotice::Failed]);
+    }
+
+    #[test]
+    fn recovered_capture_clears_the_error() {
+        let (sink, events) = collecting_sink();
+        let reporter = mic_reporter(sink);
+        let heartbeat = Heartbeat::new();
+        let t0 = heartbeat.epoch();
+        let mut watchdog = CaptureWatchdog::new(heartbeat.clone(), reporter.clone(), t0);
+        let secs = Duration::from_secs;
+
+        heartbeat.beat_at(t0 + secs(1));
+        watchdog.check(t0 + secs(5));
+        assert!(reporter.is_failed());
+
+        // Audio comes back (e.g. after resume): the error is withdrawn.
+        heartbeat.beat_at(t0 + secs(6));
+        watchdog.check(t0 + secs(6) + Duration::from_millis(500));
+        assert!(!reporter.is_failed());
+        assert_eq!(
+            notices(&events),
+            vec![AudioNotice::Failed, AudioNotice::Recovered]
+        );
+
+        // A later stall is reported again.
+        watchdog.check(t0 + secs(10));
+        assert_eq!(
+            notices(&events),
+            vec![
+                AudioNotice::Failed,
+                AudioNotice::Recovered,
+                AudioNotice::Failed
+            ]
+        );
+    }
+
+    #[test]
+    fn backend_reported_failure_clears_when_callbacks_resume() {
+        let (sink, events) = collecting_sink();
+        let reporter = mic_reporter(sink);
+        let heartbeat = Heartbeat::new();
+        let t0 = heartbeat.epoch();
+        let mut watchdog = CaptureWatchdog::new(heartbeat.clone(), reporter.clone(), t0);
+        let secs = Duration::from_secs;
+
+        heartbeat.beat_at(t0 + secs(1));
+        stream_error_callback(reporter.clone())(cpal::StreamError::StreamInvalidated);
+        watchdog.check(t0 + secs(1) + Duration::from_millis(500));
+        assert!(reporter.is_failed(), "no callback since the error");
+
+        heartbeat.beat_at(t0 + secs(2));
+        watchdog.check(t0 + secs(2) + Duration::from_millis(100));
+        assert_eq!(
+            notices(&events),
+            vec![AudioNotice::Failed, AudioNotice::Recovered]
+        );
+    }
+
+    // --- Mic switching (make-before-break, retry, restore) ---
+
+    /// Scripted capture factory: each `spawn` pops the next result.
+    #[derive(Default)]
+    struct FakeFactory {
+        script: Mutex<std::collections::VecDeque<bool>>,
+        log: Arc<Mutex<Vec<String>>>,
+        reported: Mutex<Vec<Option<String>>>,
+    }
+
+    struct FakeTask {
+        name: String,
+        active: AtomicBool,
+        failed: bool,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CaptureStream for FakeTask {
+        fn activate(&self) {
+            self.active.store(true, Ordering::SeqCst);
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("activate {}", self.name));
+        }
+        fn is_healthy(&self) -> bool {
+            !self.failed
+        }
+        async fn stop(self) {
+            self.log.lock().unwrap().push(format!("stop {}", self.name));
+        }
+    }
+
+    impl FakeFactory {
+        fn new(script: &[bool]) -> Self {
+            Self {
+                script: Mutex::new(script.iter().copied().collect()),
+                ..Self::default()
+            }
+        }
+        fn task(&self, name: &str, failed: bool) -> FakeTask {
+            FakeTask {
+                name: name.into(),
+                active: AtomicBool::new(true),
+                failed,
+                log: self.log.clone(),
+            }
+        }
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    impl CaptureFactory for FakeFactory {
+        type Task = FakeTask;
+        async fn spawn(&self, device: Option<&str>) -> Result<FakeTask, AudioError> {
+            let name = device.unwrap_or("default").to_string();
+            let ok = self.script.lock().unwrap().pop_front().unwrap_or(false);
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("spawn {name} {}", if ok { "ok" } else { "err" }));
+            if ok {
+                Ok(FakeTask {
+                    name,
+                    active: AtomicBool::new(false),
+                    failed: false,
+                    log: self.log.clone(),
+                })
+            } else {
+                Err(AudioError::StreamError(format!("{name} busy")))
+            }
+        }
+        fn report_failure(&self, device: Option<&str>) {
+            self.reported.lock().unwrap().push(device.map(String::from));
+        }
+    }
+
+    #[tokio::test]
+    async fn mic_switch_builds_new_before_stopping_old() {
+        let factory = FakeFactory::new(&[true]);
+        let mut capture = Some(factory.task("A", false));
+        let mut current = Some("A".to_string());
+
+        let switched = switch_capture(&factory, &mut capture, &mut current, Some("B".into()))
+            .await
+            .unwrap();
+
+        assert!(switched);
+        assert_eq!(factory.log(), ["spawn B ok", "stop A", "activate B"]);
+        assert_eq!(current.as_deref(), Some("B"));
+        assert!(capture.unwrap().active.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn mic_switch_retries_after_releasing_the_old_stream() {
+        // The device allows one open stream: first attempt fails, retry works.
+        let factory = FakeFactory::new(&[false, true]);
+        let mut capture = Some(factory.task("A", false));
+        let mut current = Some("A".to_string());
+
+        let switched = switch_capture(&factory, &mut capture, &mut current, Some("A2".into()))
+            .await
+            .unwrap();
+
+        assert!(switched);
+        assert_eq!(
+            factory.log(),
+            ["spawn A2 err", "stop A", "spawn A2 ok", "activate A2"]
+        );
+        assert_eq!(current.as_deref(), Some("A2"));
+    }
+
+    #[tokio::test]
+    async fn failed_mic_switch_restores_the_previous_mic() {
+        let factory = FakeFactory::new(&[false, false, true]);
+        let mut capture = Some(factory.task("A", false));
+        let mut current = Some("A".to_string());
+
+        let err = switch_capture(&factory, &mut capture, &mut current, Some("B".into()))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AudioError::StreamError(_)));
+        assert_eq!(
+            factory.log(),
+            [
+                "spawn B err",
+                "stop A",
+                "spawn B err",
+                "spawn A ok",
+                "activate A"
+            ]
+        );
+        assert_eq!(current.as_deref(), Some("A"), "choice unchanged");
+        assert_eq!(capture.as_ref().map(|t| t.name.as_str()), Some("A"));
+        assert!(factory.reported.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mic_lost_when_neither_new_nor_previous_opens_is_reported() {
+        let factory = FakeFactory::new(&[false, false, false]);
+        let mut capture = Some(factory.task("A", false));
+        let mut current = Some("A".to_string());
+
+        assert!(
+            switch_capture(&factory, &mut capture, &mut current, Some("B".into()))
+                .await
+                .is_err()
+        );
+        assert!(capture.is_none());
+        assert_eq!(
+            *factory.reported.lock().unwrap(),
+            vec![Some("A".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn reselecting_a_healthy_mic_is_a_no_op_but_a_failed_one_restarts() {
+        let factory = FakeFactory::new(&[true]);
+        let mut capture = Some(factory.task("A", false));
+        let mut current = Some("A".to_string());
+        let switched = switch_capture(&factory, &mut capture, &mut current, Some("A".into()))
+            .await
+            .unwrap();
+        assert!(!switched);
+        assert!(factory.log().is_empty());
+
+        let mut capture = Some(factory.task("A", true));
+        let switched = switch_capture(&factory, &mut capture, &mut current, Some("A".into()))
+            .await
+            .unwrap();
+        assert!(switched, "a dead stream on the same device is rebuilt");
+        assert_eq!(factory.log(), ["spawn A ok", "stop A", "activate A"]);
+    }
+
+    #[tokio::test]
+    async fn mic_switch_without_running_capture_starts_one() {
+        // Capture failed to open at join: choosing a mic starts it.
+        let factory = FakeFactory::new(&[false]);
+        let mut capture: Option<FakeTask> = None;
+        let mut current = None;
+        assert!(
+            switch_capture(&factory, &mut capture, &mut current, Some("B".into()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            factory.log(),
+            ["spawn B err"],
+            "no retry without an old stream"
+        );
     }
 
     #[test]

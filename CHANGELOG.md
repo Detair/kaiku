@@ -102,7 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Fixed
-- Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, can switch microphones during a call, and per-person volume works.
+- Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, and can switch microphones during a call.
 - Closing the window during a voice call tells you Kaiku is still connected and lets you leave from the tray; the window can always be reopened.
 - Desktop notifications also appear when Kaiku is open on another screen, and push-to-talk no longer fires while typing or steals plain keys from games.
 - Closing a dialog with Escape no longer marks the channel as read, dismissing an upload error no longer sends your message, and the main dialogs work with the keyboard and screen readers.

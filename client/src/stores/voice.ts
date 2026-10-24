@@ -430,9 +430,11 @@ export async function joinVoice(channelId: string): Promise<void> {
         setVoiceState({ speaking });
       },
       onAudioError: (audioError) => {
+        // A stream stopping while leaving is not news.
+        if (voiceState.state === "disconnected") return;
         // Native stream died (unplugged, stalled, could not open): never let
-        // the call look healthy with a dead mic. Stays until dismissed or
-        // the call ends; picking another device restarts the stream.
+        // the call look healthy with a dead mic. Stays until audio works
+        // again (onAudioRecovered), it is dismissed, or the call ends.
         const capture = audioError.kind === "capture_failed";
         showToast({
           type: "error",
@@ -441,6 +443,11 @@ export async function joinVoice(channelId: string): Promise<void> {
           duration: 0,
           id: capture ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
         });
+      },
+      onAudioRecovered: (recovered) => {
+        dismissToast(
+          recovered.kind === "capture_failed" ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
+        );
       },
       onScreenShareTrack: (userId, streamId, track) => {
         console.log("[Voice] Screen share track received:", userId, streamId);
@@ -534,11 +541,12 @@ export async function leaveVoice(): Promise<void> {
   goodQualityStartTime = null;
   dismissToast("connection-critical");
   dismissToast("connection-warning");
-  dismissToast(AUDIO_CAPTURE_TOAST_ID);
-  dismissToast(AUDIO_PLAYBACK_TOAST_ID);
 
   const adapter = await createVoiceAdapter();
   const result = await adapter.leave();
+  // After the streams stopped, so an error raised while leaving is cleared too.
+  dismissToast(AUDIO_CAPTURE_TOAST_ID);
+  dismissToast(AUDIO_PLAYBACK_TOAST_ID);
 
   if (!result.ok) {
     console.error("Failed to leave voice:", result.error);

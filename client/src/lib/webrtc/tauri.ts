@@ -582,7 +582,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
    * lingering next to a newer adapter's set (which ran every event twice).
    */
   private async setupEventListeners() {
-    const handles = await Promise.all([
+    const settled = await Promise.allSettled([
       listen<string>("voice:state_change", (event) => {
         console.log(`[TauriVoiceAdapter] State change: ${event.payload}`);
         // Map Rust ConnectionState to VoiceConnectionState
@@ -654,10 +654,19 @@ export class TauriVoiceAdapter implements VoiceAdapter {
         console.warn("[TauriVoiceAdapter] Audio error:", event.payload);
         this.eventHandlers.onAudioError?.(event.payload);
       }),
+
+      // ...and works again (callbacks resumed, or another device chosen)
+      listen<AudioStreamError>("voice:audio_recovered", (event) => {
+        this.eventHandlers.onAudioRecovered?.(event.payload);
+      }),
     ]);
 
-    if (this.disposed) {
+    const handles = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    const failed = settled.find((r) => r.status === "rejected");
+    if (failed || this.disposed) {
+      // Never keep a partial set: release what did register.
       for (const unlisten of handles) unlisten();
+      if (failed) throw failed.reason;
       return;
     }
     this.unlisteners.push(...handles);

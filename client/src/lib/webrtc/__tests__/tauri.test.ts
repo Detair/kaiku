@@ -14,11 +14,17 @@ type Handler = (event: { payload: unknown }) => void;
 const registry = new Map<string, Set<Handler>>();
 /** Pending `listen()` resolutions, released by `flushListen()`. */
 let pending: Array<() => void> = [];
+/** Event names whose registration fails. */
+const failing = new Set<string>();
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn((name: string, handler: Handler) => {
-    return new Promise<() => void>((resolve) => {
+    return new Promise<() => void>((resolve, reject) => {
       pending.push(() => {
+        if (failing.has(name)) {
+          reject(new Error(`listen ${name} failed`));
+          return;
+        }
         let set = registry.get(name);
         if (!set) {
           set = new Set();
@@ -62,6 +68,7 @@ describe("TauriVoiceAdapter native events", () => {
   beforeEach(() => {
     registry.clear();
     pending = [];
+    failing.clear();
   });
 
   it("voice events are handled once per event", async () => {
@@ -76,7 +83,8 @@ describe("TauriVoiceAdapter native events", () => {
     const onSpeakingChange = vi.fn();
     const onAudioError = vi.fn();
     const onStateChange = vi.fn();
-    adapter.setEventHandlers({ onSpeakingChange, onAudioError, onStateChange });
+    const onAudioRecovered = vi.fn();
+    adapter.setEventHandlers({ onSpeakingChange, onAudioError, onStateChange, onAudioRecovered });
     await flushListen();
 
     for (const name of [
@@ -91,17 +99,33 @@ describe("TauriVoiceAdapter native events", () => {
     emit("voice:speaking", true);
     emit("voice:state_change", "Connected");
     emit("voice:audio_error", { kind: "capture_failed", device: "USB Mic" });
+    emit("voice:audio_recovered", { kind: "capture_failed", device: "USB Mic" });
 
     expect(onSpeakingChange).toHaveBeenCalledTimes(1);
     expect(onSpeakingChange).toHaveBeenCalledWith(true);
     expect(onStateChange).toHaveBeenCalledTimes(1);
     expect(onAudioError).toHaveBeenCalledTimes(1);
     expect(onAudioError).toHaveBeenCalledWith({ kind: "capture_failed", device: "USB Mic" });
+    expect(onAudioRecovered).toHaveBeenCalledTimes(1);
     expect(staleSpeaking).not.toHaveBeenCalled();
 
     adapter.dispose();
     expect(listenerCount("voice:speaking")).toBe(0);
     expect(listenerCount("voice:audio_error")).toBe(0);
+  });
+
+  it("releases the registered listeners when one registration fails", async () => {
+    failing.add("voice:speaking");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const adapter = new TauriVoiceAdapter();
+    await flushListen();
+
+    for (const name of ["voice:state_change", "voice:audio_error", "voice:remote_track"]) {
+      expect(listenerCount(name), name).toBe(0);
+    }
+    expect(errors).toHaveBeenCalled();
+    errors.mockRestore();
+    adapter.dispose();
   });
 
   it("forwards per-person volume to the native mixer", async () => {

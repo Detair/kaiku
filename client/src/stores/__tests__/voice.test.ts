@@ -320,6 +320,30 @@ describe("voice store", () => {
       );
     });
 
+    it("withdraws the notice when audio works again and ignores errors after leaving", async () => {
+      const { showToast, dismissToast } = await import("@/components/ui/Toast");
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      mockAdapter.leave.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      const calls = mockAdapter.setEventHandlers.mock.calls;
+      const handlers = calls[calls.length - 1][0];
+
+      handlers.onAudioError({ kind: "capture_failed", device: "USB Mic" });
+      const toastCalls = vi.mocked(showToast).mock.calls;
+      const toastId = toastCalls[toastCalls.length - 1]?.[0].id;
+      expect(toastId).toBeTruthy();
+
+      vi.mocked(dismissToast).mockClear();
+      handlers.onAudioRecovered({ kind: "capture_failed", device: "Other Mic" });
+      expect(dismissToast).toHaveBeenCalledWith(toastId);
+
+      await leaveVoice();
+      vi.mocked(showToast).mockClear();
+      // A stream error that races the leave must not show a stale notice.
+      handlers.onAudioError({ kind: "capture_failed", device: "USB Mic" });
+      expect(showToast).not.toHaveBeenCalled();
+    });
+
     it("resets state on join error", async () => {
       mockAdapter.join.mockResolvedValue({
         ok: false,

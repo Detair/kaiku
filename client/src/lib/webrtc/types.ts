@@ -54,7 +54,8 @@ export interface RemoteTrack {
 
 /**
  * A native audio stream stopped working (payload of the Tauri
- * `voice:audio_error` event; wire format, hence snake_case values).
+ * `voice:audio_error` event, and of `voice:audio_recovered` when it works
+ * again; wire format, hence snake_case values).
  */
 export interface AudioStreamError {
   kind: "capture_failed" | "playback_failed";
@@ -75,6 +76,8 @@ export interface VoiceAdapterEvents {
   onSpeakingChange: (speaking: boolean) => void;
   /** Native only: the microphone or speaker stream died mid-call. */
   onAudioError?: (error: AudioStreamError) => void;
+  /** Native only: audio of `error.kind` works again (withdraws onAudioError). */
+  onAudioRecovered?: (error: AudioStreamError) => void;
 
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;
