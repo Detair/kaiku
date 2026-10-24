@@ -17,6 +17,9 @@ import {
   removeMessage,
   messagesState,
   loadInitialMessages,
+  catchUpChannel,
+  catchUpAnchor,
+  clearChannelMessages,
 } from "../messages";
 import { handlePreferencesUpdated } from "../preferences";
 import {
@@ -55,6 +58,7 @@ import {
   handleDMNameUpdated,
   updateDMLastMessage,
   loadDMs,
+  handleDmCreated,
 } from "../dms";
 import { handlePinAdded, handlePinRemoved } from "../channelPins";
 
@@ -167,6 +171,83 @@ let connectStartTime = 0;
 // browser, the one message handler attached to the current socket.
 let supervisor: ConnectionSupervisor | null = null;
 let detachBrowserMessageHandler: (() => void) | null = null;
+
+// --- C2 resync state ------------------------------------------------------
+
+/** How long reconnect recovery waits for `ready` and for `subscribed` acks. */
+const RESYNC_WAIT_MS = 3000;
+/** Longer gaps reload the open channel instead of paging through the gap. */
+const MAX_CATCH_UP_GAP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** `server_time` of the latest `ready`, and of the one before it. */
+let resyncWatermark: string | null = null;
+let previousWatermark: string | null = null;
+/** Whether the current connection has delivered `ready` yet. */
+let readyReceived = false;
+let readyWaiters: Array<() => void> = [];
+const subscribeAckWaiters = new Map<string, Set<() => void>>();
+
+/** Last `Ready.server_time` (RFC 3339), or null before the first `ready`. */
+export function getResyncWatermark(): string | null {
+  return resyncWatermark;
+}
+
+function handleReady(serverTime: string | undefined): void {
+  if (serverTime) {
+    previousWatermark = resyncWatermark;
+    resyncWatermark = serverTime;
+  }
+  readyReceived = true;
+  const waiters = readyWaiters;
+  readyWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+/** Resolves true once this connection's `ready` arrived, false after `ms`. */
+function waitForReady(ms: number): Promise<boolean> {
+  if (readyReceived) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      readyWaiters = readyWaiters.filter((w) => w !== done);
+      resolve(false);
+    }, ms);
+    readyWaiters.push(done);
+  });
+}
+
+/**
+ * Resolves true on the next `subscribed` ack for `channelId`, false after
+ * `ms` (e.g. the server refused the subscription). Register before sending.
+ */
+function waitForSubscribeAck(channelId: string, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let waiters = subscribeAckWaiters.get(channelId);
+    if (!waiters) {
+      waiters = new Set();
+      subscribeAckWaiters.set(channelId, waiters);
+    }
+    const settle = (acked: boolean) => {
+      clearTimeout(timer);
+      const set = subscribeAckWaiters.get(channelId);
+      set?.delete(done);
+      if (set?.size === 0) subscribeAckWaiters.delete(channelId);
+      resolve(acked);
+    };
+    const done = () => settle(true);
+    const timer = setTimeout(() => settle(false), ms);
+    waiters.add(done);
+  });
+}
+
+function handleSubscribedAck(channelId: string): void {
+  const waiters = subscribeAckWaiters.get(channelId);
+  if (!waiters) return;
+  for (const resolve of [...waiters]) resolve();
+}
 
 /**
  * Initialize WebSocket event listeners.
@@ -282,8 +363,19 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       }
       break;
 
+    case "ready":
+      handleReady(event.server_time);
+      break;
+
     case "subscribed":
+      handleSubscribedAck(event.channel_id);
+      break;
+
     case "unsubscribed":
+      break;
+
+    case "dm_created":
+      handleDmCreated(event.channel);
       break;
 
     case "message_edit":
@@ -724,7 +816,8 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     default:
-      console.log("Unhandled server event:", event.type);
+      // Exhaustive today; keeps logging event types the client predates.
+      console.log("Unhandled server event:", (event as { type: string }).type);
   }
 }
 
@@ -807,42 +900,110 @@ export async function refreshUnreadStateAfterReconnect(): Promise<void> {
 }
 
 /**
- * Handle post-reconnect recovery: re-subscribe channels, reload messages.
+ * Channels whose messages are on screen: the selected guild channel and, when
+ * a conversation (not the friends list) is shown, the selected DM.
+ */
+function openChannelIds(): string[] {
+  const ids = new Set<string>();
+  if (channelsState.selectedChannelId) ids.add(channelsState.selectedChannelId);
+  if (dmsState.selectedDMId && !dmsState.isShowingFriends) {
+    ids.add(dmsState.selectedDMId);
+  }
+  return [...ids];
+}
+
+/** Whether the time between the last two `ready`s is too long to page through. */
+function gapTooLongForCatchUp(): boolean {
+  if (!resyncWatermark || !previousWatermark) return false;
+  const gap = Date.parse(resyncWatermark) - Date.parse(previousWatermark);
+  return gap > MAX_CATCH_UP_GAP_MS;
+}
+
+/**
+ * Bring one open channel up to date after a reconnect (C2 order: subscribed
+ * ack → `GET ?after=` → dedupe). Never rejects.
+ */
+async function resyncOpenChannel(
+  channelId: string,
+  anchor: string | undefined,
+  acked: Promise<boolean>,
+): Promise<void> {
+  if (!(await acked)) {
+    console.warn("[WS] No subscribe ack before catch-up for channel", channelId);
+  }
+  try {
+    if (gapTooLongForCatchUp()) {
+      await loadInitialMessages(channelId);
+    } else {
+      await catchUpChannel(channelId, undefined, anchor);
+    }
+  } catch (err) {
+    console.error("[WS] Catch-up failed, reloading channel", channelId, err);
+    await loadInitialMessages(channelId).catch((e) =>
+      console.error("[WS] Failed to reload messages for channel", channelId, e),
+    );
+  }
+}
+
+/**
+ * Handle post-reconnect recovery.
+ *
  * Snapshots the subscribed channels (plus the active guild's text channels,
- * which a guild opened while offline never subscribed) before resetting
- * state; subscribes first, then reloads (C2: subscribe before catch-up).
+ * which a guild opened while offline never subscribed, and the open channels)
+ * and the catch-up anchors before resetting state. Open channels: subscribe →
+ * wait for `ready` and the `subscribed` ack → catch up (C2). Other cached
+ * channels are dropped and reload when opened, which also picks up edits and
+ * deletes from the gap. Unread metadata is refreshed in parallel.
  */
 async function handleReconnect(): Promise<void> {
-  const channelsToResubscribe = [
-    ...new Set([...wsState.subscribedChannels, ...activeGuildTextChannelIds()]),
-  ];
-  const channelsToReload = Object.keys(messagesState.byChannel).filter(
+  const open = openChannelIds();
+  const cached = Object.keys(messagesState.byChannel).filter(
     (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,
   );
+  const toCatchUp = cached.filter((id) => open.includes(id));
+  const toClear = cached.filter((id) => !open.includes(id));
+  const anchors = new Map(toCatchUp.map((id) => [id, catchUpAnchor(id)]));
+  const channelsToResubscribe = [
+    ...new Set([
+      ...wsState.subscribedChannels,
+      ...activeGuildTextChannelIds(),
+      ...toCatchUp,
+    ]),
+  ];
 
   // Clear subscribed set so subscribeChannel() early-return guard allows re-subscription
   setWsState("subscribedChannels", new Set());
   setWsState({ status: "connected", reconnectAttempt: 0, error: null });
 
-  // Re-subscribe first, then reload messages and refresh unread metadata in
-  // parallel. The metadata refresh is what clears stale unread dots: messages that
+  for (const id of toClear) clearChannelMessages(id);
+
+  // Register the ack waiters before the subscribe frames go out.
+  const acks = new Map(
+    toCatchUp.map((id) => [id, waitForSubscribeAck(id, RESYNC_WAIT_MS)]),
+  );
+  await subscribeAll(channelsToResubscribe);
+
+  // The metadata refresh is what clears stale unread dots: messages that
   // arrived (or were read on another device) while disconnected changed
   // last_read_message_id / last_message_id server-side, and no WS event
   // replays them after reconnect.
-  await subscribeAll(channelsToResubscribe);
   await Promise.all([
-    Promise.all(
-      channelsToReload.map((id) =>
-        loadInitialMessages(id).catch((err) =>
-          console.error("[WS] Failed to reload messages for channel", id, err),
+    (async () => {
+      if (toCatchUp.length === 0) return;
+      if (!(await waitForReady(RESYNC_WAIT_MS))) {
+        console.warn("[WS] No ready event after reconnect; catching up anyway");
+      }
+      await Promise.all(
+        toCatchUp.map((id) =>
+          resyncOpenChannel(id, anchors.get(id), acks.get(id)!),
         ),
-      ),
-    ),
+      );
+    })(),
     refreshUnreadStateAfterReconnect(),
   ]);
 
   console.info(
-    `[WS] Reconnect recovery complete: ${channelsToResubscribe.length} channels re-subscribed, ${channelsToReload.length} channels reloaded`,
+    `[WS] Reconnect recovery complete: ${channelsToResubscribe.length} channels re-subscribed, ${toCatchUp.length} caught up, ${toClear.length} cleared`,
   );
 
   // Signal connection ready after subscriptions are restored
@@ -914,6 +1075,8 @@ function getSupervisor(): ConnectionSupervisor {
     driver: isTauri() ? nativeDriver : browserDriver,
     mode: isTauri() ? "external" : "managed",
     onStatus: (status, attempt) => {
+      // A new connection must deliver its own `ready` before catch-up.
+      if (status !== "connected") readyReceived = false;
       setWsState({
         status,
         reconnectAttempt: attempt,

@@ -224,6 +224,19 @@ export function updateDMIconUrl(channelId: string, iconUrl: string): void {
 }
 
 /**
+ * A DM with this user was just created (C3 `dm_created`). Adds it to the top
+ * of the list once; subscribing records it so reconnects re-subscribe it (the
+ * server's auto-subscribe only covers the socket open at creation time).
+ */
+export function handleDmCreated(channel: DMListItem): void {
+  if (!dmsState.dms.some((d) => d.id === channel.id)) {
+    setDmsState("dms", (dms) => [channel, ...dms]);
+  }
+  // Never rejects: subscribeChannel logs its own failures.
+  void subscribeChannel(channel.id);
+}
+
+/**
  * Get the currently selected DM
  */
 export function getSelectedDM(): DMListItem | null {

@@ -64,6 +64,23 @@ export async function getMessages(
   );
 }
 
+/**
+ * Catch-up page (C1): messages newer than `afterId`, oldest first.
+ * `has_more` means newer messages remain; `next_cursor` is the newest id of
+ * the fetched window. An unknown or foreign anchor is answered with 400.
+ */
+export async function getMessagesAfter(
+  channelId: string,
+  afterId: string,
+  limit = 100,
+): Promise<PaginatedMessages> {
+  const params = new URLSearchParams({ after: afterId, limit: String(limit) });
+  return httpRequest<PaginatedMessages>(
+    "GET",
+    `/api/messages/channel/${channelId}?${params.toString()}`,
+  );
+}
+
 export async function sendMessage(
   channelId: string,
   content: string,

@@ -310,6 +310,115 @@ export async function loadInitialMessages(
   }
 }
 
+const CATCH_UP_PAGE_LIMIT = 100;
+
+function isPendingMessage(message: Message): boolean {
+  return message.id.startsWith("pending:");
+}
+
+/** Server order: `(created_at, id)` ascending. */
+function isNewerThan(a: Message, b: Message): boolean {
+  const ta = Date.parse(a.created_at);
+  const tb = Date.parse(b.created_at);
+  if (ta !== tb) return ta > tb;
+  return a.id > b.id;
+}
+
+/**
+ * The newest confirmed (non-pending) message id of a channel — the anchor a
+ * reconnect catches up from. Capture it before re-subscribing: live messages
+ * that arrive afterwards are appended and must not move the anchor past the gap.
+ */
+export function catchUpAnchor(channelId: string): string | undefined {
+  const list = messagesState.byChannel[channelId] ?? [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (!isPendingMessage(list[i])) return list[i].id;
+  }
+  return undefined;
+}
+
+/**
+ * Insert `incoming` (ascending) into `current`, skipping known ids. Each item
+ * goes before the first pending or newer message, so messages that arrived
+ * live during the catch-up stay after the ones they followed.
+ */
+function mergeAscending(current: Message[], incoming: Message[]): Message[] {
+  const result = [...current];
+  const known = new Set(result.map((m) => m.id));
+  for (const item of incoming) {
+    if (known.has(item.id)) continue;
+    known.add(item.id);
+    const idx = result.findIndex(
+      (m) => isPendingMessage(m) || isNewerThan(m, item),
+    );
+    if (idx === -1) result.push(item);
+    else result.splice(idx, 0, item);
+  }
+  return result;
+}
+
+function isAnchorRejected(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { status?: unknown }).status === 400
+  );
+}
+
+/**
+ * Fetch the messages missed while disconnected (C1 `?after=`) and merge them
+ * into the cache, deduplicated by id. Falls back to a fresh load
+ * (`"reloaded"`) when the cache is empty, the server rejects the anchor (400:
+ * unknown or deleted from the channel), or more than `maxPages` pages are
+ * missing. Other errors propagate.
+ *
+ * @param afterId anchor; defaults to the newest confirmed cached message.
+ */
+export async function catchUpChannel(
+  channelId: string,
+  maxPages = 5,
+  afterId: string | undefined = catchUpAnchor(channelId),
+): Promise<"caught_up" | "reloaded"> {
+  if (!afterId) {
+    await loadInitialMessages(channelId);
+    return "reloaded";
+  }
+
+  const missed: Message[] = [];
+  let cursor = afterId;
+  let pages = 0;
+  let hasMore = true;
+  try {
+    while (hasMore && pages < maxPages) {
+      const page = await tauri.getMessagesAfter(
+        channelId,
+        cursor,
+        CATCH_UP_PAGE_LIMIT,
+      );
+      pages += 1;
+      missed.push(...(await decryptMessages(page.items)));
+      hasMore = page.has_more;
+      // next_cursor still advances when block filtering emptied the page.
+      const next = page.next_cursor ?? page.items[page.items.length - 1]?.id;
+      if (hasMore && !next) break;
+      if (next) cursor = next;
+    }
+  } catch (err) {
+    if (!isAnchorRejected(err)) throw err;
+    await loadInitialMessages(channelId);
+    return "reloaded";
+  }
+
+  if (hasMore) {
+    await loadInitialMessages(channelId);
+    return "reloaded";
+  }
+
+  const current = messagesState.byChannel[channelId] ?? [];
+  setMessagesState("byChannel", channelId, mergeAscending(current, missed));
+  return "caught_up";
+}
+
 /**
  * Send a message to a channel.
  */

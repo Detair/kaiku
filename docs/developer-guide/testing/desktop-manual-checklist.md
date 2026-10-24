@@ -95,6 +95,10 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Admin creates an account; the new user is forced to change the temporary password on first login (after Tasks 12-13 land)
 - [ ] Log out, restart: login screen is shown
 
+## All platforms (and the web client)
+
+- [ ] Reconnect catch-up: user A has a channel open; cut A's network for 30 s; meanwhile B sends 3 messages and starts a brand-new DM with A; restore A's network: the 3 messages appear in order, without duplicates and without a scroll jump, and the new DM is in A's list without a reload
+
 ## Results
 
 | Date | Build / commit | OS + version | Pass / fail | Notes |
