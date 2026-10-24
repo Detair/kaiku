@@ -176,6 +176,12 @@ fun LoginScreen(
             }
         }
 
+        if (uiState.registrationCheckFailed) {
+            TextButton(onClick = viewModel::onRetryRegistrationCheck) {
+                Text(stringResource(R.string.auth_register_check_retry))
+            }
+        }
+
         TextButton(
             onClick = viewModel::onChangeServerClicked,
             enabled = !uiState.isLoading

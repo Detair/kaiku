@@ -40,6 +40,21 @@ class ServerAddressTest {
     }
 
     @Test
+    fun `trailing dot in the host is dropped`() {
+        assertEquals("https://kaiku.pmind.de", ok("kaiku.pmind.de."))
+        assertEquals("https://kaiku.pmind.de:8443", ok("https://kaiku.pmind.de.:8443/x"))
+    }
+
+    @Test
+    fun `ports that are not plain digits are rejected`() {
+        assertEquals(InvalidServerAddressException.Reason.MALFORMED, reason("kaiku.pmind.de:+443"))
+        assertEquals(InvalidServerAddressException.Reason.MALFORMED, reason("kaiku.pmind.de:-1"))
+        assertEquals(InvalidServerAddressException.Reason.MALFORMED, reason("kaiku.pmind.de:"))
+        assertEquals(InvalidServerAddressException.Reason.MALFORMED, reason("kaiku.pmind.de:70000"))
+        assertEquals(InvalidServerAddressException.Reason.MALFORMED, reason("."))
+    }
+
+    @Test
     fun `blank is rejected`() {
         assertEquals(InvalidServerAddressException.Reason.BLANK, reason(""))
         assertEquals(InvalidServerAddressException.Reason.BLANK, reason("   "))

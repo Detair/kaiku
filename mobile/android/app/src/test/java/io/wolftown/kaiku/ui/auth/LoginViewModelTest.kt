@@ -339,6 +339,42 @@ class LoginViewModelTest {
     }
 
     @Test
+    fun `retry finds Register after an offline first check`() = runTest {
+        coEvery { serverProbe.probe(any()) } returnsMany listOf(
+            ProbeResult.Unreachable,
+            ProbeResult.Ok(registrationOpen = true)
+        )
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.registrationCheckFailed)
+        assertFalse(vm.uiState.value.registrationOpen)
+
+        vm.onRetryRegistrationCheck()
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.registrationCheckFailed)
+        assertTrue(vm.uiState.value.registrationOpen)
+    }
+
+    @Test
+    fun `change server cancels a login in flight`() = runTest {
+        coEvery { authRepository.login(any(), any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(10_000)
+            Result.success(User(id = "u", username = "anna", displayName = "Anna"))
+        }
+        viewModel.onUsernameChanged("anna")
+        viewModel.onPasswordChanged("pw")
+        viewModel.onLoginClicked()
+        advanceTimeBy(100)
+
+        viewModel.onChangeServerClicked()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.loginSuccess)
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
     fun `change server returns to server screen keeping nothing stale`() = runTest {
         coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(registrationOpen = true)
         val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)

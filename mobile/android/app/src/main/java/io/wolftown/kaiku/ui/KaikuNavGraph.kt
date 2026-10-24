@@ -73,6 +73,11 @@ fun KaikuNavGraph(
                         },
                         onScanQrCode = {
                             navController.navigate("qr_scanner")
+                        },
+                        onBack = {
+                            navController.navigate("login") {
+                                popUpTo("server_url") { inclusive = true }
+                            }
                         }
                     )
                 }
