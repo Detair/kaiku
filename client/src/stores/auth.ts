@@ -24,7 +24,7 @@ import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
-import { isTauri } from "@/lib/tauri/common";
+import { isTauri, PASSWORD_CHANGE_REQUIRED_EVENT } from "@/lib/tauri/common";
 
 // Auth state interface
 interface AuthState {
@@ -42,6 +42,12 @@ interface AuthState {
    * "can't reach the server" state instead of the login form.
    */
   restorePending: boolean;
+  /**
+   * The account still has to replace an admin-issued temporary password
+   * (contract C4). While true only the change-password screen is shown and
+   * no session services (WebSocket, presence, preferences) run.
+   */
+  passwordChangeRequired: boolean;
 }
 
 // Create the store
@@ -55,11 +61,36 @@ const [authState, setAuthState] = createStore<AuthState>({
   mfaRequired: false,
   sessionExpired: false,
   restorePending: false,
+  passwordChangeRequired: false,
 });
 
 // Derived state
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
+
+/**
+ * The temporary password the user just signed in with, kept so the forced
+ * change screen does not ask for it again. Memory only: never persisted or
+ * logged; cleared on success, logout and session expiry.
+ */
+let pendingTemporaryPassword: string | null = null;
+
+/** Whether the change screen can reuse the password from this sign-in. */
+export function hasPendingTemporaryPassword(): boolean {
+  return pendingTemporaryPassword !== null;
+}
+
+/** Stop everything `startSessionServices()` started. Never throws. */
+async function stopSessionServices(): Promise<void> {
+  try {
+    await wsDisconnect();
+    await cleanupWebSocket();
+    stopIdleDetectionCleanup();
+    cleanupPresence();
+  } catch (err) {
+    console.error("[Auth] Stopping session services failed:", err);
+  }
+}
 
 // Session-expired listener (registered once globally to prevent leaks)
 let sessionExpiredListenerRegistered = false;
@@ -81,8 +112,9 @@ function registerSessionExpiredListener() {
     if (success) {
       console.log("[Kaiku:Auth] Silent retry: success — session recovered");
       // The browser reconnect supervisor stops when it reports an expired
-      // session; restart it (no-op while it is still running).
-      if (!isTauri()) {
+      // session; restart it (no-op while it is still running). Not while a
+      // password change is pending: the server refuses the socket then.
+      if (!isTauri() && !authState.passwordChangeRequired) {
         try {
           await wsConnect();
         } catch (err) {
@@ -106,11 +138,24 @@ function registerSessionExpiredListener() {
       console.error("[Auth] Cleanup during session expiry failed:", err);
     }
 
+    pendingTemporaryPassword = null;
     setAuthState({
       user: null,
       sessionExpired: true,
+      passwordChangeRequired: false,
       error: null,
     });
+  });
+
+  // A request was refused because the temporary password is still in use
+  // (e.g. a session restored after a restart whose restore response did not
+  // say so). Switch to the change screen and stop the services that would
+  // only collect more 403s.
+  window.addEventListener(PASSWORD_CHANGE_REQUIRED_EVENT, () => {
+    if (!authState.user || authState.passwordChangeRequired) return;
+    console.warn("[Kaiku:Auth] Password change required — showing the change screen");
+    setAuthState({ passwordChangeRequired: true, error: null });
+    void stopSessionServices();
   });
 
   sessionExpiredListenerRegistered = true;
@@ -270,15 +315,17 @@ async function attemptRestore(): Promise<void> {
 
     if (result.user) {
       stopRestoreRetry();
+      const passwordChangeRequired = result.password_change_required === true;
       setAuthState({
         user: result.user,
         serverUrl: tauri.getServerUrl() || null,
         isLoading: false,
         isInitialized: true,
         restorePending: false,
+        passwordChangeRequired,
       });
 
-      await startSessionServices();
+      if (!passwordChangeRequired) await startSessionServices();
       return;
     }
 
@@ -354,6 +401,9 @@ export async function login(
     const result = await tauri.login(serverUrl, username, password, mfaCode);
     warnIfNotRemembered(result);
     stopRestoreRetry();
+    const passwordChangeRequired = result.password_change_required === true;
+    // Only a temporary password is remembered, and only until it is replaced.
+    pendingTemporaryPassword = passwordChangeRequired ? password : null;
     setAuthState({
       restorePending: false,
       user: result.user,
@@ -364,9 +414,10 @@ export async function login(
       setupRequired: result.setup_required,
       mfaRequired: false,
       sessionExpired: false,
+      passwordChangeRequired,
     });
 
-    await startSessionServices();
+    if (!passwordChangeRequired) await startSessionServices();
 
     return result.user;
   } catch (err) {
@@ -420,9 +471,12 @@ export async function register(
       error: null,
       setupRequired: result.setup_required,
       sessionExpired: false,
+      passwordChangeRequired: result.password_change_required === true,
     });
 
-    await startSessionServices({ showWsError: false });
+    if (!authState.passwordChangeRequired) {
+      await startSessionServices({ showWsError: false });
+    }
 
     return result.user;
   } catch (err) {
@@ -453,8 +507,9 @@ export async function completeNativeOidcLogin(
     setupRequired: result.setup_required,
     mfaRequired: false,
     sessionExpired: false,
+    passwordChangeRequired: result.password_change_required === true,
   });
-  await startSessionServices();
+  if (!authState.passwordChangeRequired) await startSessionServices();
 }
 
 /**
@@ -488,9 +543,10 @@ export async function loginWithOidc(
       error: null,
       setupRequired,
       sessionExpired: false,
+      passwordChangeRequired: result.password_change_required === true,
     });
 
-    await startSessionServices();
+    if (!authState.passwordChangeRequired) await startSessionServices();
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });
@@ -502,7 +558,8 @@ export async function loginWithOidc(
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
-  setAuthState({ isLoading: true, error: null });
+  pendingTemporaryPassword = null;
+  setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });
 
   // Disconnect WebSocket and cleanup
   try {
@@ -534,6 +591,40 @@ export async function logout(): Promise<void> {
       error,
     });
   }
+}
+
+/**
+ * Replace the admin-issued temporary password (contract C4), then start the
+ * session normally. `currentPassword` is the temporary password typed on the
+ * change screen; `null` reuses the one from this sign-in. Throws when the
+ * server refuses the change; the flag and the remembered password then stay.
+ */
+export async function completeForcedPasswordChange(
+  currentPassword: string | null,
+  newPassword: string,
+): Promise<void> {
+  const current = currentPassword ?? pendingTemporaryPassword;
+  if (current === null) {
+    throw new Error("The temporary password is required");
+  }
+
+  // Other sessions of a brand-new account were opened with the temporary
+  // password; end them.
+  await tauri.updatePassword(current, newPassword, true);
+
+  // Pick up a token issued after the change (C4: the refresh response
+  // carries the cleared flag). The current token keeps working if this fails.
+  try {
+    if (!(await tauri.refreshAccessToken())) {
+      console.warn("[Auth] Token refresh after password change failed");
+    }
+  } catch (err) {
+    console.warn("[Auth] Token refresh after password change failed:", err);
+  }
+
+  pendingTemporaryPassword = null;
+  setAuthState({ passwordChangeRequired: false, error: null });
+  await startSessionServices();
 }
 
 /**

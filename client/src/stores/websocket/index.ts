@@ -1057,17 +1057,29 @@ const nativeDriver: ConnectionDriver = {
  * Native: the server refused the socket even with a freshly refreshed token,
  * so retrying cannot help. Stop the supervisor and the Rust retry loop (the
  * native driver's close → `ws_disconnect`) instead of showing "Reconnecting…"
- * forever, and send the user down the "session expired → sign in again" path.
+ * forever.
  *
- * Known gap: once server C4 refuses pending-password users at the upgrade
- * (HTTP 403), those users land here too. The forced password-change screen
- * (plan Task 13) must ship together with server C4 and route them to the
- * change screen instead of this generic sign-in prompt.
+ * The server also refuses the upgrade (HTTP 403) while the account still has
+ * to replace an admin-issued temporary password (contract C4/C11). That is
+ * not an ended session: `GET /auth/me` stays allowed, so ask it, and if the
+ * change is pending send the user to the change-password screen. Any other
+ * outcome goes down the "session expired → sign in again" path.
  */
-function handleNativeAuthRejected(): void {
-  console.warn("[WS] Server rejected a fresh token — ending the session");
+async function handleNativeAuthRejected(): Promise<void> {
+  console.warn("[WS] Server rejected a fresh token — stopping reconnects");
   supervisor?.stop();
   nativeDriver.close();
+
+  let passwordChangePending = false;
+  try {
+    passwordChangePending = await tauri.isPasswordChangePending();
+  } catch (err) {
+    console.warn("[WS] Account check after auth rejection failed:", err);
+  }
+  if (passwordChangePending) {
+    window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+    return;
+  }
   // Clears the cached bearer and shares the dedupe flag with the other
   // expiry paths, so exactly one `kaiku:session-expired` fires.
   tauri.expireNativeSession();

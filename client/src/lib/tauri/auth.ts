@@ -246,6 +246,19 @@ export async function logout(): Promise<void> {
   }
 }
 
+/** `GET /auth/me` body; carries the C4 forced-change flag. */
+type CurrentUserResponse = User & { password_change_required?: boolean };
+
+/**
+ * Ask the server whether the signed-in account still has to replace an
+ * admin-issued temporary password (`GET /auth/me` stays allowed while it is
+ * pending). Rejects when the request fails.
+ */
+export async function isPasswordChangePending(): Promise<boolean> {
+  const me = await httpRequest<CurrentUserResponse>("GET", "/auth/me");
+  return me?.password_change_required === true;
+}
+
 export async function getCurrentUser(): Promise<SessionRestoreResult> {
   if (isTauri()) {
     return invokeNativeAuth((invoke) =>
@@ -263,8 +276,12 @@ export async function getCurrentUser(): Promise<SessionRestoreResult> {
   }
 
   try {
-    const user = await httpRequest<User>("GET", "/auth/me");
-    return { user, error_reason: null };
+    const user = await httpRequest<CurrentUserResponse>("GET", "/auth/me");
+    return {
+      user,
+      error_reason: null,
+      password_change_required: user.password_change_required ?? false,
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.warn(`[Auth] Failed to fetch current user: ${errorMessage}`);
@@ -295,8 +312,12 @@ export async function getCurrentUser(): Promise<SessionRestoreResult> {
       const refreshed = await refreshAccessToken();
       if (refreshed) {
         try {
-          const user = await httpRequest<User>("GET", "/auth/me");
-          return { user, error_reason: null };
+          const user = await httpRequest<CurrentUserResponse>("GET", "/auth/me");
+          return {
+            user,
+            error_reason: null,
+            password_change_required: user.password_change_required ?? false,
+          };
         } catch (retryError) {
           console.error("[Auth] Retry after refresh failed:", retryError);
           // Refresh didn't help, clear everything below

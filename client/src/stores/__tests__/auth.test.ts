@@ -7,6 +7,7 @@ vi.mock("@/lib/tauri", () => ({
   logout: vi.fn(),
   oidcCompleteLogin: vi.fn(),
   refreshAccessToken: vi.fn(),
+  updatePassword: vi.fn(),
   // Mirrors the real fallback: the stored server address survives a restart.
   getServerUrl: vi.fn(() => localStorage.getItem("serverUrl") ?? ""),
 }));
@@ -71,6 +72,8 @@ import {
   abandonRestore,
   retryRestoreNow,
   restoreRetryDelayMs,
+  completeForcedPasswordChange,
+  hasPendingTemporaryPassword,
 } from "../auth";
 
 function createUser(overrides: Partial<User> = {}): User {
@@ -99,6 +102,7 @@ describe("auth store", () => {
       setupRequired: false,
       sessionExpired: false,
       restorePending: false,
+      passwordChangeRequired: false,
     });
   });
 
@@ -650,6 +654,155 @@ describe("auth store", () => {
 
       expect(tauri.refreshAccessToken).not.toHaveBeenCalled();
       expect(authState.sessionExpired).toBe(false);
+    });
+  });
+  describe("forced password change", () => {
+    function mockServices() {
+      vi.mocked(initWebSocket).mockResolvedValue(undefined);
+      vi.mocked(initPresence).mockResolvedValue(undefined);
+      vi.mocked(wsConnect).mockResolvedValue(undefined);
+      vi.mocked(initPreferences).mockResolvedValue(undefined);
+      vi.mocked(wsDisconnect).mockResolvedValue(undefined);
+      vi.mocked(cleanupWebSocket).mockResolvedValue(undefined);
+    }
+
+    async function loginPending() {
+      vi.mocked(tauri.login).mockResolvedValue({
+        user: createUser(),
+        setup_required: false,
+        password_change_required: true,
+      });
+      await login("https://server.com", "alice", "temp-pw");
+    }
+
+    afterEach(async () => {
+      // Clears the remembered temporary password between tests.
+      vi.mocked(tauri.logout).mockResolvedValue(undefined);
+      await logout();
+    });
+
+    it("login with password_change_required sets the flag and does not connect the websocket", async () => {
+      mockServices();
+
+      await loginPending();
+
+      expect(authState.user).not.toBeNull();
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(hasPendingTemporaryPassword()).toBe(true);
+      expect(initWebSocket).not.toHaveBeenCalled();
+      expect(wsConnect).not.toHaveBeenCalled();
+      expect(initPresence).not.toHaveBeenCalled();
+      expect(initPreferences).not.toHaveBeenCalled();
+      expect(initIdleDetection).not.toHaveBeenCalled();
+    });
+
+    it("completeForcedPasswordChange uses the remembered temporary password, refreshes, clears the flag and connects", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(true);
+
+      await completeForcedPasswordChange(null, "new-pw-123");
+
+      expect(tauri.updatePassword).toHaveBeenCalledWith("temp-pw", "new-pw-123", true);
+      expect(tauri.refreshAccessToken).toHaveBeenCalled();
+      expect(authState.passwordChangeRequired).toBe(false);
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(wsConnect).toHaveBeenCalled();
+      expect(initIdleDetection).toHaveBeenCalled();
+    });
+
+    it("a failed change keeps the flag and the remembered password", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockRejectedValue(new Error("Invalid credentials"));
+
+      await expect(completeForcedPasswordChange(null, "new-pw-123")).rejects.toThrow();
+
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(hasPendingTemporaryPassword()).toBe(true);
+      expect(wsConnect).not.toHaveBeenCalled();
+    });
+
+    it("an explicit current password wins over the remembered one", async () => {
+      mockServices();
+      await loginPending();
+      vi.mocked(tauri.updatePassword).mockResolvedValue({
+        success: true,
+        message: "ok",
+        revoked_count: 0,
+      });
+      vi.mocked(tauri.refreshAccessToken).mockResolvedValue(true);
+
+      await completeForcedPasswordChange("typed-pw", "new-pw-123");
+
+      expect(tauri.updatePassword).toHaveBeenCalledWith("typed-pw", "new-pw-123", true);
+    });
+
+    it("a restored session that still needs a password change goes to the change screen", async () => {
+      mockServices();
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+        password_change_required: true,
+      });
+
+      await initAuth();
+
+      expect(authState.isInitialized).toBe(true);
+      expect(authState.passwordChangeRequired).toBe(true);
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(wsConnect).not.toHaveBeenCalled();
+    });
+
+    it("PASSWORD_CHANGE_REQUIRED from any request switches to the change screen", async () => {
+      mockServices();
+      // Restored session whose restore response did not carry the flag.
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({
+        user: createUser(),
+        error_reason: null,
+      });
+      await initAuth();
+      expect(authState.passwordChangeRequired).toBe(false);
+
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+
+      await vi.waitFor(() => {
+        expect(authState.passwordChangeRequired).toBe(true);
+      });
+      // No temporary password remembered: the screen asks for it.
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(authState.user).not.toBeNull();
+      expect(authState.sessionExpired).toBe(false);
+      // Services that would only collect 403s are stopped.
+      await vi.waitFor(() => {
+        expect(wsDisconnect).toHaveBeenCalled();
+      });
+      expect(cleanupPresence).toHaveBeenCalled();
+      expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+    });
+
+    it("the event is ignored while signed out", async () => {
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(authState.passwordChangeRequired).toBe(false);
+    });
+
+    it("logout clears the remembered temporary password", async () => {
+      mockServices();
+      await loginPending();
+      expect(hasPendingTemporaryPassword()).toBe(true);
+      vi.mocked(tauri.logout).mockResolvedValue(undefined);
+
+      await logout();
+
+      expect(hasPendingTemporaryPassword()).toBe(false);
+      expect(authState.passwordChangeRequired).toBe(false);
     });
   });
 });

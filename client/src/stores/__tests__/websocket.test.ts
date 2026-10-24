@@ -36,6 +36,7 @@ vi.mock("@/lib/tauri", async () => {
     wsReconnectNow: vi.fn().mockResolvedValue(undefined),
     setBrowserSocketHooks: vi.fn(),
     ensureFreshAccessToken: vi.fn().mockResolvedValue(true),
+    isPasswordChangePending: vi.fn().mockResolvedValue(false),
   };
 });
 
@@ -797,6 +798,50 @@ describe("websocket store", () => {
         vi.mocked(nativeTauri.wsReconnectNow).mockClear();
         window.dispatchEvent(new Event("online"));
         expect(nativeTauri.wsReconnectNow).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener("kaiku:session-expired", expired);
+      }
+    });
+
+    it("ws:auth_rejected for a pending password change shows the change screen instead of ending the session", async () => {
+      await ws.connect();
+      vi.mocked(nativeTauri.wsDisconnect)
+        .mockClear()
+        .mockResolvedValue(undefined);
+      vi.mocked(nativeTauri.isPasswordChangePending).mockResolvedValueOnce(true);
+      const expired = vi.fn();
+      const required = vi.fn();
+      window.addEventListener("kaiku:session-expired", expired);
+      window.addEventListener("kaiku:password-change-required", required);
+      try {
+        await fire("ws:auth_rejected");
+
+        expect(ws.wsState.status).toBe("disconnected");
+        expect(nativeTauri.wsDisconnect).toHaveBeenCalledTimes(1);
+        expect(required).toHaveBeenCalledTimes(1);
+        expect(expired).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener("kaiku:session-expired", expired);
+        window.removeEventListener("kaiku:password-change-required", required);
+      }
+    });
+
+    it("ws:auth_rejected ends the session when the account check fails", async () => {
+      // A live session hands out a token again (resets the expiry dedupe).
+      nativeTauri.setNativeAuthInfo({
+        server_url: "https://s.example",
+        access_token: "bearer",
+      } as never);
+      await ws.connect();
+      vi.mocked(nativeTauri.wsDisconnect).mockResolvedValue(undefined);
+      vi.mocked(nativeTauri.isPasswordChangePending).mockRejectedValueOnce(
+        new Error("HTTP 401"),
+      );
+      const expired = vi.fn();
+      window.addEventListener("kaiku:session-expired", expired);
+      try {
+        await fire("ws:auth_rejected");
+        expect(expired).toHaveBeenCalledTimes(1);
       } finally {
         window.removeEventListener("kaiku:session-expired", expired);
       }
