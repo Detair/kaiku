@@ -69,6 +69,18 @@ class GoldenContractTest {
     }
 
     @Test
+    fun `password change fixture decodes with flag true`() {
+        val auth = KaikuJson.decodeFromString<AuthResponse>(Golden.load("auth_response_password_change.json"))
+
+        assertTrue(auth.passwordChangeRequired)
+        assertTrue(auth.accessToken.isNotEmpty())
+        assertNotNull(auth.refreshToken)
+        assertEquals(900, auth.expiresIn)
+        // The regular login fixture carries the flag as false.
+        assertFalse(KaikuJson.decodeFromString<AuthResponse>(Golden.load("auth_response.json")).passwordChangeRequired)
+    }
+
+    @Test
     fun `guild channels fixture decodes with forum and announcement`() {
         val channels = KaikuJson.decodeFromString<List<Channel>>(Golden.load("guild_channels.json"))
 

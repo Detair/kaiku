@@ -1,7 +1,10 @@
 package io.wolftown.kaiku.ui.auth
 
 import app.cash.turbine.test
+import io.ktor.http.HttpStatusCode
 import io.mockk.*
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.coroutines.Dispatchers
@@ -106,7 +109,7 @@ class LoginViewModelTest {
     fun `failed login sets error message`() = runTest {
         coEvery {
             authRepository.login("testuser", "wrong", null)
-        } returns Result.failure(Exception("Invalid credentials"))
+        } returns Result.failure(ApiException(HttpStatusCode.Unauthorized, "server text", code = "INVALID_CREDENTIALS"))
 
         viewModel.onUsernameChanged("testuser")
         viewModel.onPasswordChanged("wrong")
@@ -117,7 +120,49 @@ class LoginViewModelTest {
         val state = viewModel.uiState.value
         assertFalse(state.loginSuccess)
         assertFalse(state.isLoading)
-        assertEquals("Invalid credentials", state.error)
+        // C16: copy comes from resources by status/code, never the server message.
+        assertEquals(R.string.auth_invalid_credentials, state.error)
+    }
+
+    @Test
+    fun `network failure shows generic login error`() = runTest {
+        coEvery {
+            authRepository.login("testuser", "pass", null)
+        } returns Result.failure(java.io.IOException("timeout"))
+
+        viewModel.onUsernameChanged("testuser")
+        viewModel.onPasswordChanged("pass")
+        viewModel.onLoginClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_login_failed, viewModel.uiState.value.error)
+    }
+
+    // ========================================================================
+    // C4: forced password change
+    // ========================================================================
+
+    @Test
+    fun `login view model flags password change`() = runTest {
+        coEvery {
+            authRepository.login("anna", "temp-pass-1", null)
+        } returns Result.failure(PasswordChangeRequiredException())
+
+        viewModel.onUsernameChanged("anna")
+        viewModel.onPasswordChanged("temp-pass-1")
+        viewModel.onLoginClicked()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.passwordChangeRequired)
+        assertFalse(state.isLoading)
+        assertFalse(state.loginSuccess)
+        assertNull(state.error)
+        // The temporary password is not kept in the login form.
+        assertEquals("", state.password)
+
+        viewModel.onPasswordChangeNavigated()
+        assertFalse(viewModel.uiState.value.passwordChangeRequired)
     }
 
     // ========================================================================
@@ -224,7 +269,7 @@ class LoginViewModelTest {
     fun `clearError resets error to null`() = runTest {
         coEvery {
             authRepository.login("testuser", "wrong", null)
-        } returns Result.failure(Exception("Invalid credentials"))
+        } returns Result.failure(Exception("boom"))
 
         viewModel.onUsernameChanged("testuser")
         viewModel.onPasswordChanged("wrong")

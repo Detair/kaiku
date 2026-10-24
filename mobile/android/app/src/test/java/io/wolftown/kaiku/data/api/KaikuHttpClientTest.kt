@@ -2,6 +2,7 @@ package io.wolftown.kaiku.data.api
 
 import io.ktor.client.engine.mock.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.mockk.*
 import io.wolftown.kaiku.data.KaikuJson
@@ -802,5 +803,107 @@ class KaikuHttpClientTest {
         assertEquals(HttpStatusCode.OK, client.activeClient().get("/api/test").status)
         assertEquals(2, apiCalls)
         assertEquals("new-refresh-token", storage.getRefreshToken())
+    }
+
+    // ========================================================================
+    // C4: pending password change ends the stored session
+    // ========================================================================
+
+    @Test
+    fun `403 PASSWORD_CHANGE_REQUIRED clears the session and logs out`() = runTest {
+        every { tokenStorage.getAccessToken() } returns "access-1"
+        every { tokenStorage.getRefreshToken() } returns "refresh-1"
+        val paths = mutableListOf<String>()
+
+        val mockEngine = MockEngine { request ->
+            paths += request.url.encodedPath
+            respond(
+                content = """{"error":"PASSWORD_CHANGE_REQUIRED","message":"server text"}""",
+                status = HttpStatusCode.Forbidden,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val response = createClient(mockEngine).activeClient().get("/api/guilds")
+
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+        // The caller can still read the error body after the client inspected it.
+        assertTrue(response.bodyAsText().contains("PASSWORD_CHANGE_REQUIRED"))
+        assertEquals(listOf("/api/guilds"), paths) // no refresh, no retry
+        verifyOrder {
+            tokenStorage.clear()
+            authState.setLoggedOut()
+        }
+    }
+
+    @Test
+    fun `403 PASSWORD_CHANGE_REQUIRED without a stored session does nothing`() = runTest {
+        // The in-memory pending-change flow sends explicit bearer headers and stores nothing.
+        every { tokenStorage.getAccessToken() } returns null
+        every { tokenStorage.getRefreshToken() } returns null
+
+        val mockEngine = MockEngine {
+            respond(
+                content = """{"error":"PASSWORD_CHANGE_REQUIRED","message":"server text"}""",
+                status = HttpStatusCode.Forbidden,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        createClient(mockEngine).activeClient().get("/api/guilds")
+
+        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `other 403 keeps the session`() = runTest {
+        every { tokenStorage.getAccessToken() } returns "access-1"
+        every { tokenStorage.getRefreshToken() } returns "refresh-1"
+
+        val mockEngine = MockEngine {
+            respond(
+                content = """{"error":"FORBIDDEN","message":"server text"}""",
+                status = HttpStatusCode.Forbidden,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val response = createClient(mockEngine).activeClient().get("/api/guilds/g1/channels")
+
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `refresh reporting password change ends the session`() = runTest {
+        every { tokenStorage.getAccessToken() } returns "access-1"
+        every { tokenStorage.getRefreshToken() } returns "refresh-1"
+        every { tokenStorage.getUserId() } returns "user-1"
+
+        val mockEngine = MockEngine {
+            respond(
+                content = """{
+                    "access_token": "access-2",
+                    "refresh_token": "refresh-2",
+                    "expires_in": 900,
+                    "token_type": "Bearer",
+                    "setup_required": false,
+                    "password_change_required": true
+                }""",
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val result = createClient(mockEngine).forceRefresh()
+
+        assertEquals(RefreshResult.AUTH_REJECTED, result)
+        verify { tokenStorage.clearIfRefreshTokenIs("refresh-1") }
+        verify { authState.setLoggedOut() }
+        verify(exactly = 0) {
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
+        }
     }
 }

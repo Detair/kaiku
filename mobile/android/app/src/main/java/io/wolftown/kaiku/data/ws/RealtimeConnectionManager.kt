@@ -74,6 +74,9 @@ class RealtimeConnectionManager internal constructor(
         const val REFRESH_LEAD_MS = 60_000L
         const val MAX_CONSECUTIVE_AUTH_REJECTS = 3
 
+        /** C4 `error` event code: the password must be changed before connecting. */
+        internal const val PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
+
         /**
          * After the app returns to the foreground while Connected, a Ping is sent
          * at once and the socket is dropped if no Pong arrives within this time,
@@ -328,8 +331,23 @@ class RealtimeConnectionManager internal constructor(
                 lastPongAt = clock.nowMillis()
                 pongCount++
             }
+            is ServerEvent.Error -> if (event.code == PASSWORD_CHANGE_REQUIRED) onPasswordChangeRequired()
             else -> Unit
         }
+    }
+
+    /**
+     * C4: the server refused the socket because the password must be changed
+     * first (it follows with close 1008). The session is unusable: stop without
+     * a retry, clear the tokens and log out, so the user signs in again and
+     * gets the change-password screen. LoggedOut keeps everything stopped.
+     */
+    private fun onPasswordChangeRequired() {
+        if (!isLoggedIn()) return
+        logger.warning("server requires a password change, logging out")
+        stopAfterSessionEnded()
+        tokenStorage.clear()
+        authState.setLoggedOut()
     }
 
     /** Step 6: offline pauses, online reconnects now. */

@@ -10,17 +10,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.OidcProvider
 
 @Composable
 fun LoginScreen(
     onNavigateToRegister: () -> Unit,
     onLoginSuccess: () -> Unit,
+    onPasswordChangeRequired: () -> Unit = {},
     oidcProviders: List<OidcProvider> = emptyList(),
     onOidcLogin: (OidcProvider) -> Unit = {},
     viewModel: LoginViewModel = hiltViewModel()
@@ -34,6 +37,13 @@ fun LoginScreen(
         }
     }
 
+    LaunchedEffect(uiState.passwordChangeRequired) {
+        if (uiState.passwordChangeRequired) {
+            viewModel.onPasswordChangeNavigated()
+            onPasswordChangeRequired()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -43,7 +53,7 @@ fun LoginScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Welcome to Kaiku",
+            text = stringResource(R.string.auth_login_title),
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.primary
         )
@@ -51,7 +61,7 @@ fun LoginScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Sign in to your account",
+            text = stringResource(R.string.auth_login_subtitle),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -61,7 +71,7 @@ fun LoginScreen(
         OutlinedTextField(
             value = uiState.username,
             onValueChange = viewModel::onUsernameChanged,
-            label = { Text("Username") },
+            label = { Text(stringResource(R.string.auth_username)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
@@ -76,7 +86,7 @@ fun LoginScreen(
         OutlinedTextField(
             value = uiState.password,
             onValueChange = viewModel::onPasswordChanged,
-            label = { Text("Password") },
+            label = { Text(stringResource(R.string.auth_password)) },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
@@ -98,7 +108,7 @@ fun LoginScreen(
             OutlinedTextField(
                 value = uiState.mfaCode,
                 onValueChange = viewModel::onMfaCodeChanged,
-                label = { Text("MFA Code") },
+                label = { Text(stringResource(R.string.auth_mfa_code)) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Number,
@@ -112,11 +122,11 @@ fun LoginScreen(
             )
         }
 
-        if (uiState.error != null) {
+        uiState.error?.let { errorRes ->
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = uiState.error!!,
+                text = stringResource(errorRes),
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall
             )
@@ -137,13 +147,13 @@ fun LoginScreen(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
             }
-            Text("Sign In")
+            Text(stringResource(R.string.auth_sign_in))
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
         TextButton(onClick = onNavigateToRegister) {
-            Text("Don't have an account? Register")
+            Text(stringResource(R.string.auth_go_to_register))
         }
 
         if (oidcProviders.isNotEmpty()) {
@@ -154,7 +164,7 @@ fun LoginScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Or sign in with",
+                text = stringResource(R.string.auth_or_sign_in_with),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

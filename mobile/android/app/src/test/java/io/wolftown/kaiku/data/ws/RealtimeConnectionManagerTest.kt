@@ -78,6 +78,10 @@ class RealtimeConnectionManagerTest {
             _events.tryEmit(ServerEvent.Pong)
         }
 
+        fun emit(event: ServerEvent) {
+            _events.tryEmit(event)
+        }
+
         /** Server or network closed the socket. */
         fun drop() {
             state.value = ConnectionState.Disconnected
@@ -492,5 +496,41 @@ class RealtimeConnectionManagerTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    // -- C4: pending password change -------------------------------------------
+
+    @Test
+    fun `password change required error logs out and never reconnects`() = runManagerTest { h ->
+        connected(h)
+
+        // Frame auth refusal: error event first, then close 1008.
+        h.socket.emit(ServerEvent.Error("PASSWORD_CHANGE_REQUIRED", "server text"))
+        runCurrent()
+
+        assertEquals(AuthSession.LoggedOut, h.authState.session.value)
+        assertEquals(RealtimeStatus.Idle, h.manager.status.value)
+        verify { h.tokens.storage.clear() }
+
+        h.socket.rejectAuth()
+        runCurrent()
+        advanceTimeBy(10 * fiveMinutes)
+        runCurrent()
+
+        assertEquals(1, h.socket.connects.size)
+        assertEquals(0, h.refresher.forceCalls)
+        assertEquals(RealtimeStatus.Idle, h.manager.status.value)
+    }
+
+    @Test
+    fun `other server errors keep the session`() = runManagerTest { h ->
+        connected(h)
+
+        h.socket.emit(ServerEvent.Error("RATE_LIMITED", "server text"))
+        runCurrent()
+
+        assertTrue(h.authState.session.value is AuthSession.LoggedIn)
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+        verify(exactly = 0) { h.tokens.storage.clear() }
     }
 }

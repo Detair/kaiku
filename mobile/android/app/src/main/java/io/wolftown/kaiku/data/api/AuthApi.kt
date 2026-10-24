@@ -31,6 +31,12 @@ interface AuthApi {
     suspend fun getMe(): User
     /** Calls /auth/me with an explicit bearer token, bypassing the interceptor chain. */
     suspend fun authenticatedGetMe(accessToken: String): User
+    /**
+     * C4: `POST /auth/me/password` with an explicit bearer token (the session is
+     * not persisted while a forced change is pending). Throws [ApiException] on
+     * a non-2xx response; its [ApiException.code] carries the server error code.
+     */
+    suspend fun changePassword(accessToken: String, currentPassword: String, newPassword: String)
     suspend fun getOidcProviders(): List<OidcProvider>
     suspend fun exchangeOidcCode(code: String, state: String, redirectUri: String, codeVerifier: String? = null): AuthResponse
     suspend fun redeemQrToken(serverUrl: String, token: String): AuthResponse
@@ -65,6 +71,15 @@ private data class OidcCallbackRequest(
 )
 
 @Serializable
+private data class ChangePasswordRequest(
+    val currentPassword: String,
+    val newPassword: String,
+    val revokeOthers: Boolean
+) {
+    override fun toString(): String = "ChangePasswordRequest(revokeOthers=$revokeOthers)"
+}
+
+@Serializable
 private data class QrRedeemRequest(
     val token: String
 )
@@ -90,12 +105,12 @@ class AuthApiImpl @Inject constructor(
             if (errorBody.error == "MFA_REQUIRED") {
                 throw MfaRequiredApiException(errorBody.message ?: "MFA required")
             }
-            throw ApiException(response.status, errorBody.message ?: "Forbidden")
+            throw ApiException(response.status, errorBody.message ?: "Forbidden", code = errorBody.error)
         }
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Login failed")
+            throw ApiException(response.status, errorBody?.message ?: "Login failed", code = errorBody?.error)
         }
 
         return response.body()
@@ -164,6 +179,28 @@ class AuthApiImpl @Inject constructor(
         return response.body()
     }
 
+    override suspend fun changePassword(
+        accessToken: String,
+        currentPassword: String,
+        newPassword: String
+    ) {
+        val response = httpClient.post("/auth/me/password") {
+            headers {
+                set(HttpHeaders.Authorization, "Bearer $accessToken")
+            }
+            setBody(ChangePasswordRequest(currentPassword, newPassword, revokeOthers = false))
+        }
+
+        if (!response.status.isSuccess()) {
+            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
+            throw ApiException(
+                response.status,
+                errorBody?.message ?: "Password change failed",
+                code = errorBody?.error
+            )
+        }
+    }
+
     override suspend fun getOidcProviders(): List<OidcProvider> {
         val response = httpClient.get("/auth/oidc/providers")
 
@@ -230,7 +267,9 @@ internal data class ApiErrorResponse(
 
 open class ApiException(
     val status: HttpStatusCode,
-    override val message: String
+    override val message: String,
+    /** Server error code (`error` field), e.g. `VALIDATION_ERROR`; null if absent. */
+    val code: String? = null
 ) : Exception(message)
 
 class MfaRequiredApiException(

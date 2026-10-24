@@ -6,11 +6,30 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
+import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
+import javax.inject.Singleton
 
+/**
+ * Session handed out by a login that still requires a password change (C4).
+ * Held in memory only, never persisted, and never logged: [toString] hides
+ * the tokens and the temporary password.
+ */
+internal data class PendingPasswordChange(
+    val accessToken: String,
+    val refreshToken: String?,
+    val expiresIn: Int,
+    val currentPassword: String
+) {
+    override fun toString(): String = "PendingPasswordChange(expiresIn=$expiresIn)"
+}
+
+// Singleton: the pending password change must survive from LoginViewModel to
+// ChangePasswordViewModel, which would otherwise get separate instances.
+@Singleton
 class AuthRepository @Inject constructor(
     private val authApi: AuthApi,
     private val tokenStorage: TokenStorage,
@@ -20,13 +39,38 @@ class AuthRepository @Inject constructor(
         private val logger = Logger.getLogger("AuthRepository")
     }
 
+    /** Set by [login] when the server requires a password change; see [completePasswordChange]. */
+    @Volatile
+    private var pendingPasswordChange: PendingPasswordChange? = null
+
+    /** True while a login is waiting for the user to choose a new password. */
+    fun hasPendingPasswordChange(): Boolean = pendingPasswordChange != null
+
+    /**
+     * Logs in. If the server reports `password_change_required`, nothing is
+     * persisted and [getMe][AuthApi.authenticatedGetMe] is skipped: the session
+     * is kept in memory and [PasswordChangeRequiredException] is returned, and
+     * the typed [password] later becomes `current_password` in
+     * [completePasswordChange].
+     */
     suspend fun login(
         username: String,
         password: String,
         mfaCode: String? = null
     ): Result<User> {
+        pendingPasswordChange = null
         return try {
             val authResponse = authApi.login(username, password, mfaCode)
+
+            if (authResponse.passwordChangeRequired) {
+                pendingPasswordChange = PendingPasswordChange(
+                    accessToken = authResponse.accessToken,
+                    refreshToken = authResponse.refreshToken,
+                    expiresIn = authResponse.expiresIn,
+                    currentPassword = password
+                )
+                return Result.failure(PasswordChangeRequiredException())
+            }
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken)
 
@@ -47,6 +91,44 @@ class AuthRepository @Inject constructor(
             tokenStorage.clear()
             Result.failure(e)
         }
+    }
+
+    /**
+     * Sets the user's own password for the pending login, then completes it:
+     * `POST /auth/me/password`, `GET /auth/me`, persist the tokens, log in.
+     * The pending state is cleared on success. Fails with
+     * [IllegalStateException] if no password change is pending.
+     */
+    suspend fun completePasswordChange(newPassword: String): Result<User> {
+        val pending = pendingPasswordChange
+            ?: return Result.failure(IllegalStateException("No password change pending"))
+        return try {
+            authApi.changePassword(pending.accessToken, pending.currentPassword, newPassword)
+            // The new password is now the current one: a retry after a failed
+            // getMe must not send the old temporary password again.
+            pendingPasswordChange = pending.copy(currentPassword = newPassword)
+
+            val user = authApi.authenticatedGetMe(pending.accessToken)
+
+            tokenStorage.saveTokens(
+                accessToken = pending.accessToken,
+                refreshToken = pending.refreshToken,
+                expiresIn = pending.expiresIn,
+                userId = user.id
+            )
+            pendingPasswordChange = null
+            authState.setLoggedIn(user.id)
+            Result.success(user)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** Drops the pending password change (Back on the change-password screen). */
+    fun cancelPasswordChange() {
+        pendingPasswordChange = null
     }
 
     suspend fun register(
@@ -78,6 +160,7 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun logout() {
+        pendingPasswordChange = null
         try {
             authApi.logout()
         } catch (e: CancellationException) {
