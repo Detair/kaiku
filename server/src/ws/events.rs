@@ -104,6 +104,9 @@ pub struct ClientMessageState {
     pub last_typing: HashMap<Uuid, Instant>,
     /// Per-connection flood ceiling across all inbound message types.
     pub flood: FloodBucket,
+    /// Session of the socket's token (`sid`); admin event subscription needs
+    /// this session to be elevated.
+    pub session_id: Option<Uuid>,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.

@@ -157,6 +157,25 @@ pub struct MfaVerifyRequest {
     pub code: String,
 }
 
+/// Request to generate new MFA backup codes (C24).
+///
+/// Needs a current TOTP code from the authenticator app; backup codes are
+/// not accepted here.
+#[derive(Deserialize, Validate, utoipa::ToSchema)]
+pub struct BackupCodesRequest {
+    /// Current 6-digit TOTP code.
+    #[validate(length(min = 1, max = 16))]
+    pub mfa_code: String,
+}
+
+impl std::fmt::Debug for BackupCodesRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupCodesRequest")
+            .field("mfa_code", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Update profile request.
 #[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct UpdateProfileRequest {

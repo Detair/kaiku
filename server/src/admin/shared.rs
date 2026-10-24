@@ -55,13 +55,28 @@ use fred::prelude::*;
 use sqlx::PgPool;
 use uuid::Uuid as AdminUuid;
 
-/// Check if a user is an elevated admin (for WebSocket subscription check).
+/// Redis key of a session's cached elevation status.
+///
+/// Keyed by the login session (the token's `sid`): an elevation belongs to one
+/// session, not to the admin's whole account (C24).
+fn elevated_cache_key(session_id: AdminUuid) -> String {
+    format!("admin:elevated:{session_id}")
+}
+
+/// Check if this session of the user is elevated (for the WebSocket admin
+/// subscription check).
 ///
 /// Checks Redis cache first; falls back to the database on a cache miss.
 /// Security: always falls back to database on cache miss to ensure fail-secure behavior.
-pub async fn is_elevated_admin(redis: &Client, db: &PgPool, user_id: AdminUuid) -> bool {
-    // Check cache first (fast path)
-    let cache_key = format!("admin:elevated:{user_id}");
+pub async fn is_elevated_admin(
+    redis: &Client,
+    db: &PgPool,
+    user_id: AdminUuid,
+    session_id: AdminUuid,
+) -> bool {
+    // Check cache first (fast path). Only an elevation confirmed in the DB
+    // for this exact (user, session) pair is ever cached as "1".
+    let cache_key = elevated_cache_key(session_id);
     let cached: Option<String> = redis.get(&cache_key).await.ok().flatten();
 
     if let Some(value) = cached {
@@ -69,31 +84,26 @@ pub async fn is_elevated_admin(redis: &Client, db: &PgPool, user_id: AdminUuid) 
     }
 
     // Cache miss - fallback to database (fail-secure)
-    let is_elevated = check_elevated_in_db(db, user_id).await;
+    let is_elevated = super::queries::has_active_elevated_session(db, user_id, session_id)
+        .await
+        .unwrap_or(false);
 
     // Cache the result (60s TTL to balance freshness and load)
     if is_elevated {
-        cache_elevated_status(redis, user_id, true, 60).await;
+        cache_elevated_status(redis, session_id, true, 60).await;
     }
 
     is_elevated
 }
 
-/// Check elevated session status directly in the database.
-async fn check_elevated_in_db(db: &PgPool, user_id: AdminUuid) -> bool {
-    super::queries::has_active_elevated_session(db, user_id)
-        .await
-        .unwrap_or(false)
-}
-
-/// Cache elevated admin status in Redis (called after elevation).
+/// Cache a session's elevated status in Redis (called after elevation).
 pub async fn cache_elevated_status(
     redis: &Client,
-    user_id: AdminUuid,
+    session_id: AdminUuid,
     is_elevated: bool,
     ttl_secs: i64,
 ) {
-    let cache_key = format!("admin:elevated:{user_id}");
+    let cache_key = elevated_cache_key(session_id);
     let value = if is_elevated { "1" } else { "0" };
 
     let _: Result<(), _> = redis

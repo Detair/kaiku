@@ -117,6 +117,21 @@ pub enum AuthError {
     #[error("Service temporarily unavailable")]
     ServiceUnavailable,
 
+    /// Re-authentication needs a TOTP code because the account has MFA on.
+    #[error("Your authenticator code is required")]
+    MfaCodeRequired,
+
+    /// Re-authentication is impossible: the account has no local password.
+    #[error("This account has no password to confirm with")]
+    ReauthUnavailable,
+
+    /// Too many failed re-authentication attempts; try again later.
+    #[error("Too many failed attempts. Try again later.")]
+    TooManyAttempts {
+        /// Seconds until attempts are accepted again.
+        retry_after: u64,
+    },
+
     /// Internal server error.
     #[error("Internal server error")]
     Internal(String),
@@ -167,6 +182,9 @@ impl IntoResponse for AuthError {
             Self::AccountBanned => (StatusCode::FORBIDDEN, "ACCOUNT_BANNED"),
             Self::CannotUnlinkLastIdentity => (StatusCode::CONFLICT, "CANNOT_UNLINK_LAST_IDENTITY"),
             Self::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
+            Self::MfaCodeRequired => (StatusCode::BAD_REQUEST, "MFA_CODE_REQUIRED"),
+            Self::ReauthUnavailable => (StatusCode::BAD_REQUEST, "REAUTH_UNAVAILABLE"),
+            Self::TooManyAttempts { .. } => (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_ATTEMPTS"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };
 
@@ -175,7 +193,13 @@ impl IntoResponse for AuthError {
             message: self.to_string(),
         });
 
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+        if let Self::TooManyAttempts { retry_after } = self {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, retry_after.into());
+        }
+        response
     }
 }
 

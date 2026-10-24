@@ -41,8 +41,7 @@ async fn setup(pool: &PgPool) -> Fixture {
     let server = spawn_test_server(app.router.clone()).await;
     let (admin_id, _) = create_test_user(pool).await;
     make_admin(pool, admin_id).await;
-    create_elevated_session(pool, admin_id).await;
-    let admin_token = generate_access_token(&app.config, admin_id);
+    let admin_token = create_elevated_session(pool, &app.config, admin_id).await;
     Fixture {
         app,
         server,
@@ -733,8 +732,7 @@ async fn test_ban_is_audited_when_ending_sessions_fails(pool: PgPool) {
     let (server, config) = server_with_write_refusing_valkey(&pool).await;
     let (admin_id, _) = create_test_user(&pool).await;
     make_admin(&pool, admin_id).await;
-    create_elevated_session(&pool, admin_id).await;
-    let admin_token = generate_access_token(&config, admin_id);
+    let admin_token = create_elevated_session(&pool, &config, admin_id).await;
     let (user_id, _) = create_test_user(&pool).await;
 
     let resp = tokio::time::timeout(

@@ -452,12 +452,16 @@ pub async fn create_dm_channel(pool: &PgPool, user_a: Uuid, user_b: Uuid) -> Uui
     channel_id
 }
 
-/// Create an elevated admin session (valid for 15 minutes).
+/// Insert a login session row for `user_id` and return `(session_id, access_token)`.
 ///
-/// Creates a dummy session row first (required FK), then the elevated session.
-pub async fn create_elevated_session(pool: &PgPool, user_id: Uuid) {
+/// The access token's `sid` is the new session, as after a real login.
+pub async fn create_session_with_token(
+    pool: &PgPool,
+    config: &Config,
+    user_id: Uuid,
+) -> (Uuid, String) {
     let session_id = Uuid::now_v7();
-    let token_hash = vc_server::auth::hash_token(&format!("test_elevated_{}", Uuid::new_v4()));
+    let token_hash = vc_server::auth::hash_token(&format!("test_session_{}", Uuid::new_v4()));
     sqlx::query(
         "INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, NOW() + INTERVAL '1 hour')",
     )
@@ -466,7 +470,25 @@ pub async fn create_elevated_session(pool: &PgPool, user_id: Uuid) {
     .bind(&token_hash)
     .execute(pool)
     .await
-    .expect("Failed to create session for elevation");
+    .expect("Failed to create session");
+
+    let pair = jwt::generate_token_pair_for_session(
+        user_id,
+        session_id,
+        &config.jwt_private_key,
+        config.jwt_access_expiry,
+        config.jwt_refresh_expiry,
+    )
+    .expect("Failed to generate token pair");
+    (session_id, pair.access_token)
+}
+
+/// Create an elevated admin session (valid for 15 minutes).
+///
+/// Creates a session row (required FK) and elevates it. Returns an access
+/// token of that session: an elevation only counts for its own session.
+pub async fn create_elevated_session(pool: &PgPool, config: &Config, user_id: Uuid) -> String {
+    let (session_id, token) = create_session_with_token(pool, config, user_id).await;
 
     sqlx::query(
         "INSERT INTO elevated_sessions (user_id, session_id, ip_address, elevated_at, expires_at, reason) VALUES ($1, $2, '127.0.0.1'::inet, NOW(), NOW() + INTERVAL '15 minutes', 'test')",
@@ -476,6 +498,7 @@ pub async fn create_elevated_session(pool: &PgPool, user_id: Uuid) {
     .execute(pool)
     .await
     .expect("Failed to create elevated session");
+    token
 }
 
 /// Create a test report and return the report ID.

@@ -662,7 +662,10 @@ async fn handle_socket(
 
     if exit.is_none() {
         // Per-connection mutable state for rate limiting and deduplication
-        let mut msg_state = ClientMessageState::default();
+        let mut msg_state = ClientMessageState {
+            session_id,
+            ..ClientMessageState::default()
+        };
 
         // Server-side heartbeat: detect dead connections via Ping/Pong
         let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
@@ -1245,9 +1248,15 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::AdminSubscribe => {
-            // Check if user is an elevated admin
-            let is_elevated =
-                crate::admin::is_elevated_admin(&state.redis, &state.db, user_id).await;
+            // Check if this socket's session is elevated (an elevation
+            // belongs to one session, C24)
+            let is_elevated = match msg_state.session_id {
+                Some(session_id) => {
+                    crate::admin::is_elevated_admin(&state.redis, &state.db, user_id, session_id)
+                        .await
+                }
+                None => false,
+            };
             if !is_elevated {
                 send_outbound(
                     tx,

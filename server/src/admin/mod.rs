@@ -16,7 +16,7 @@ pub mod types;
 pub mod users;
 
 use axum::handler::Handler;
-use axum::middleware::from_fn_with_state;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 pub use error::AdminError;
@@ -25,6 +25,7 @@ pub use shared::{cache_elevated_status, is_elevated_admin};
 pub use types::{ElevatedAdmin, SystemAdminUser};
 
 use crate::api::AppState;
+use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_user, with_category, RateLimitCategory};
 
 /// Create the admin router.
 ///
@@ -108,9 +109,17 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/guilds/export", get(guilds::export_guilds_csv))
         .route("/guilds/{id}/details", get(guilds::get_guild_details))
         .route("/audit-log", get(audit::get_audit_log))
+        // Elevation re-checks the password / MFA code (C24): per-user rate
+        // limit, refused while the client IP is blocked (same layers as
+        // `auth::with_reauth_limits`). The layers are added before DELETE, so
+        // de-elevation is not limited.
         .route(
             "/elevate",
-            post(system::elevate_session).delete(system::de_elevate_session),
+            post(system::elevate_session)
+                .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+                .layer(from_fn(with_category(RateLimitCategory::AuthOther)))
+                .layer(from_fn_with_state(state.clone(), check_ip_not_blocked))
+                .delete(system::de_elevate_session),
         )
         .nest("/observability", observability::router())
         .merge(elevated_routes)

@@ -65,8 +65,7 @@ async fn test_list_reports_success(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
@@ -90,8 +89,7 @@ async fn test_list_reports_filter_by_status(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
@@ -121,8 +119,7 @@ async fn test_get_report_success(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
@@ -147,8 +144,7 @@ async fn test_get_report_not_found(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let fake_id = uuid::Uuid::new_v4();
     let req = TestApp::request(Method::GET, &format!("/api/admin/reports/{fake_id}"))
@@ -172,8 +168,7 @@ async fn test_claim_report_success(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
@@ -200,8 +195,7 @@ async fn test_claim_already_reviewing_fails(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
@@ -242,8 +236,7 @@ async fn test_resolve_report_success(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
@@ -277,8 +270,7 @@ async fn test_resolve_invalid_action(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let (reporter, _) = create_test_user(&app.pool).await;
     let (target, _) = create_test_user(&app.pool).await;
@@ -314,8 +306,7 @@ async fn test_report_stats_success(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&app.pool).await;
     make_admin(&app.pool, admin).await;
-    create_elevated_session(&app.pool, admin).await;
-    let token = generate_access_token(&app.config, admin);
+    let token = create_elevated_session(&app.pool, &app.config, admin).await;
 
     let req = TestApp::request(Method::GET, "/api/admin/reports/stats")
         .header("Authorization", format!("Bearer {token}"))

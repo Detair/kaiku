@@ -44,6 +44,7 @@ mod push_triggers;
 mod ratelimit;
 mod ratelimit_http;
 mod reaction_roles;
+mod reauth;
 mod reports;
 mod roles_security;
 mod screening_http;
