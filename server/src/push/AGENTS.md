@@ -36,14 +36,30 @@ authenticated channel.
   sent within `READ_GATE` (24 h) and not cleared yet, and only for channels a
   mark-read handler actually marked (`chat::channels::mark_as_read`,
   `chat::dm::mark_as_read` / `mark_all_dms_read`, `chat::unread::mark_all_read`,
-  `guild::settings::mark_all_channels_read`). A read also discards a pending
-  trailing push.
+  `guild::settings::mark_all_channels_read`). Consuming the read gate has no
+  other effect: the window and a pending trailing push stay, so a message that
+  arrives after the read cursor (or between the read query and `notify_read`)
+  is still pushed, and alternating message/read does not produce repeated
+  immediate wakes.
+- A flush timer that has not run a full `WINDOW` after its deadline counts as
+  lost; the next message pushes immediately instead of waiting forever.
+- Ordering on the device is not guaranteed: FCM does not order messages, and
+  target resolution and delivery are asynchronous, so a `read` can arrive
+  before or after a wake for the same channel. Clients must, on a wake, fetch
+  and show only messages after the server's read cursor (none means no
+  notification), and must clear the channel's notification on `read`.
 - Concurrency: the coalescer state is a `std::sync::Mutex` that is never held
   across `.await`; timers are spawned `sleep_until` tasks that call `flush`.
 - Memory: every 256th `admit` sweeps entries idle for 1 h that hold no
-  unexpired read gate (gated entries live at most 24 h); above
-  `MAX_ENTRIES` gated idle entries go too. Rate history per user is dropped
-  once older than a minute.
+  unexpired read gate (gated entries live at most 24 h). Rate history per user
+  is dropped once older than a minute. A cap-dropped admission allocates
+  nothing (the cap is checked before an entry is created).
+- `MAX_ENTRIES` (65,536) is a hard cap. Trade-off: at the cap a new entry
+  evicts every entry idle for 1 h, **read gates included**, so those channels
+  get no `read` signal (their phone notification stays until opened or
+  replaced). If nothing is idle, the message is pushed immediately without
+  coalescing and without state (no read gate); eviction is retried at most
+  once per second.
 
 ## Transports
 

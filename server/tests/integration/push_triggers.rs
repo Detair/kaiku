@@ -327,6 +327,27 @@ async fn test_read_all_endpoints_clear_woken_channels(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn test_global_read_all_sends_read_after_wake(pool: PgPool) {
+    let (app, mock) = fcm_app(pool).await;
+    let (a, _, token_a, _) = phone_user(&app).await;
+    let (b, _, token_b, fcm_b) = phone_user(&app).await;
+    let dm = create_dm_channel(&app.pool, a, b).await;
+
+    send(&app, &token_a, dm, "hi").await;
+    assert_eq!(settle(&mock, 1).await.len(), 1);
+
+    let (status, _) = post_json(&app, &token_b, "/api/me/read-all", &json!({})).await;
+    assert_eq!(status, 204);
+    let got = settle(&mock, 2).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    let m = msg(&got[1]);
+    assert_eq!(m["token"], fcm_b.as_str());
+    assert_eq!(m["data"]["t"], "read");
+    assert_eq!(m["data"]["channel_id"], dm.to_string());
+    assert_eq!(m["android"]["priority"], "NORMAL");
+}
+
+#[sqlx::test]
 async fn test_dm_file_message_pushes_recipient(pool: PgPool) {
     if !rustfs_available().await {
         eprintln!("SKIP: RustFS unavailable");

@@ -8,16 +8,26 @@
 //! - Every push (leading or trailing) counts against [`USER_MAX_PER_MINUTE`] per user (sliding 60 s
 //!   window). Over the cap a leading message is `Dropped` and a trailing flush yields `None`.
 //! - A `read` signal is warranted only when a wake went out for that (user, channel) within
-//!   [`READ_GATE`] and was not cleared since ([`Coalescer::take_read_gate`]).
+//!   [`READ_GATE`] and was not cleared since ([`Coalescer::take_read_gate`]). Consuming the gate
+//!   changes nothing else: the window and a pending trailing push stay, so a message arriving
+//!   around a read is still pushed and alternating message/read does not produce repeated immediate
+//!   wakes.
+//! - A flush timer that has not run a full [`WINDOW`] after its deadline is treated as lost, so the
+//!   channel is not blocked forever.
 //!
 //! State lives in a `std::sync::Mutex` that is never held across an `.await`; all methods are
 //! synchronous and take `now` explicitly, so they are pure `Instant` arithmetic.
 //!
-//! Memory: every 256th `admit` sweeps entries that hold no live state: last activity older
-//! than [`IDLE_TTL`] (so no flush is due) and no unexpired read gate (gates live up to
-//! [`READ_GATE`]). If the map still exceeds [`MAX_ENTRIES`], gated entries idle for
-//! [`IDLE_TTL`] are dropped too (their read signal is lost). Per-user rate entries are dropped
-//! once their 60 s history is empty.
+//! Memory:
+//! - Every 256th `admit` sweeps entries idle for [`IDLE_TTL`] that hold no unexpired read gate
+//!   (gates live up to [`READ_GATE`]). Per-user rate history is dropped once older than a minute.
+//! - A dropped admission (per-user cap) allocates nothing: the cap is checked before an entry is
+//!   created.
+//! - [`MAX_ENTRIES`] is a hard cap. At the cap, a new entry first evicts every idle entry, **read
+//!   gates included**: those channels then get no `read` signal (the phone keeps the notification
+//!   until it is opened or replaced). If nothing is idle, the message is pushed immediately without
+//!   coalescing and without creating state (so it arms no read gate); eviction is retried at most
+//!   once per second.
 //!
 //! **Single replica:** the state is per process. Several server replicas would each coalesce
 //! and rate-limit on their own; that needs shared state first.
@@ -36,11 +46,13 @@ pub const USER_MAX_PER_MINUTE: usize = 30;
 pub const READ_GATE: Duration = Duration::from_hours(24);
 /// Entries without live state are dropped after this idle period.
 pub const IDLE_TTL: Duration = Duration::from_hours(1);
-/// Soft bound on (user, channel) entries; above it read gates are dropped early.
+/// Hard cap on (user, channel) entries. See the module docs.
 pub const MAX_ENTRIES: usize = 65_536;
 
 const RATE_PERIOD: Duration = Duration::from_mins(1);
 const SWEEP_EVERY: u64 = 256;
+/// While the map is full of active entries, retry eviction at most this often.
+const EVICT_RETRY: Duration = Duration::from_secs(1);
 
 /// Outcome of [`Coalescer::admit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,16 +91,31 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct State {
     entries: HashMap<(Uuid, Uuid), Entry>,
     /// Push instants per user within the last [`RATE_PERIOD`] (at most
     /// [`USER_MAX_PER_MINUTE`] each).
     rate: HashMap<Uuid, VecDeque<Instant>>,
     admits: u64,
+    /// Hard cap on `entries` ([`MAX_ENTRIES`]; smaller in tests).
+    max_entries: usize,
+    /// Earliest next eviction attempt while the map is full, so a full map of
+    /// active entries is not rescanned on every admission.
+    next_evict: Option<Instant>,
 }
 
 impl State {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            rate: HashMap::new(),
+            admits: 0,
+            max_entries,
+            next_evict: None,
+        }
+    }
+
     /// Record one push for `user` if the cap allows it.
     fn try_consume(&mut self, user: Uuid, now: Instant) -> bool {
         let sent = self.rate.entry(user).or_default();
@@ -105,31 +132,54 @@ impl State {
         true
     }
 
+    /// Periodic sweep: drop idle entries without a live read gate.
     fn sweep(&mut self, now: Instant) {
-        // A flush timer fires within WINDOW of the last activity, so an entry
-        // idle for IDLE_TTL has no live timer; a late flush on a dropped entry
-        // finds nothing and returns None.
-        let idle = |e: &Entry| now.saturating_duration_since(e.last_activity) >= IDLE_TTL;
         self.entries.retain(|_, e| {
             let gate_live = e
                 .woke_at
                 .is_some_and(|t| now.saturating_duration_since(t) < READ_GATE);
-            !idle(e) || gate_live
+            !is_idle(e, now) || gate_live
         });
-        if self.entries.len() > MAX_ENTRIES {
-            self.entries.retain(|_, e| !idle(e));
-        }
         self.rate.retain(|_, sent| {
             sent.back()
                 .is_some_and(|&t| now.saturating_duration_since(t) < RATE_PERIOD)
         });
     }
+
+    /// Make room for one new entry: at the hard cap, evict every idle entry,
+    /// read gates included. Returns whether there is room.
+    fn make_room(&mut self, now: Instant) -> bool {
+        if self.entries.len() < self.max_entries {
+            return true;
+        }
+        if self.next_evict.is_some_and(|t| now < t) {
+            return false;
+        }
+        self.entries.retain(|_, e| !is_idle(e, now));
+        let room = self.entries.len() < self.max_entries;
+        self.next_evict = (!room).then(|| now + EVICT_RETRY);
+        room
+    }
+}
+
+/// Idle for [`IDLE_TTL`]. A flush timer fires within [`WINDOW`] of the last
+/// activity, so an idle entry has no live timer; a late flush on an evicted
+/// entry finds nothing and returns `None`.
+fn is_idle(e: &Entry, now: Instant) -> bool {
+    now.saturating_duration_since(e.last_activity) >= IDLE_TTL
 }
 
 /// Push coalescer and read gate. See the module docs.
-#[derive(Default)]
 pub struct Coalescer {
     state: Mutex<State>,
+}
+
+impl Default for Coalescer {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(State::new(MAX_ENTRIES)),
+        }
+    }
 }
 
 /// Sizes only: the map can be large and holds per-user activity.
@@ -170,29 +220,46 @@ impl Coalescer {
             st.sweep(now);
         }
 
-        let entry = st.entries.entry(key).or_insert_with(|| Entry::new(now));
-        entry.last_activity = now;
-        if let Some(window_until) = entry.window_until {
-            // Inside the window, or the window ended but its flush has not
-            // run yet (late timer): join the pending trailing push.
-            if now < window_until || entry.scheduled {
-                entry.pending = entry.pending.saturating_add(1);
-                let schedule = !entry.scheduled;
-                entry.scheduled = true;
-                return Admit::Deferred {
-                    flush_at: window_until,
-                    schedule,
-                };
+        if let Some(entry) = st.entries.get_mut(&key) {
+            entry.last_activity = now;
+            if let Some(window_until) = entry.window_until {
+                // A timer that has not flushed a full window after its
+                // deadline is lost; forget it so the channel is not stuck.
+                if entry.scheduled && now >= window_until + WINDOW {
+                    entry.scheduled = false;
+                    entry.pending = 0;
+                }
+                // Inside the window, or the window ended but its flush has
+                // not run yet (late timer): join the pending trailing push.
+                if now < window_until || entry.scheduled {
+                    entry.pending = entry.pending.saturating_add(1);
+                    let schedule = !entry.scheduled;
+                    entry.scheduled = true;
+                    return Admit::Deferred {
+                        flush_at: window_until,
+                        schedule,
+                    };
+                }
             }
         }
 
+        // Leading push. The cap is checked before any entry is created, so a
+        // dropped admission allocates nothing.
         if !st.try_consume(user, now) {
             return Admit::Dropped;
         }
         if let Some(entry) = st.entries.get_mut(&key) {
             entry.window_until = Some(now + WINDOW);
             entry.woke_at = Some(now);
+            return Admit::SendNow;
         }
+        if st.make_room(now) {
+            let mut entry = Entry::new(now);
+            entry.window_until = Some(now + WINDOW);
+            entry.woke_at = Some(now);
+            st.entries.insert(key, entry);
+        }
+        // Without room: push uncoalesced and keep no state (no read gate).
         Admit::SendNow
     }
 
@@ -214,24 +281,23 @@ impl Coalescer {
         Some(pending)
     }
 
-    /// Whether a `read` signal should go out for (`user`, `channel`). True at most once per
-    /// wake, and only within [`READ_GATE`] of it. Also discards a pending trailing push: the
-    /// user has read those messages.
+    /// Whether a `read` signal should go out for (`user`, `channel`): true at most once per
+    /// wake, and only within [`READ_GATE`] of it. Consuming the gate has no other effect: the
+    /// window and any pending trailing push stay, so messages that arrive around the read are
+    /// still pushed.
     pub fn take_read_gate(&self, user: Uuid, channel: Uuid, now: Instant) -> bool {
         let mut st = self.lock();
-        let Some(entry) = st.entries.get_mut(&(user, channel)) else {
-            return false;
-        };
-        entry.pending = 0;
-        // Without an outstanding timer, the next message pushes immediately.
-        // With one, new messages still fold into it (it fires within WINDOW).
-        if !entry.scheduled {
-            entry.window_until = None;
-        }
-        entry
-            .woke_at
-            .take()
+        st.entries
+            .get_mut(&(user, channel))
+            .and_then(|e| e.woke_at.take())
             .is_some_and(|t| now.saturating_duration_since(t) < READ_GATE)
+    }
+
+    #[cfg(test)]
+    fn with_max_entries(max: usize) -> Self {
+        Self {
+            state: Mutex::new(State::new(max)),
+        }
     }
 
     #[cfg(test)]
@@ -298,8 +364,8 @@ mod tests {
             }
             other => panic!("expected Deferred, got {other:?}"),
         }
-        // An empty flush yields nothing.
         assert_eq!(c.flush(u, ch, t0 + WINDOW + WINDOW), Some(1));
+        // An empty flush yields nothing.
         assert_eq!(c.flush(u, ch, t0 + WINDOW + WINDOW), None);
     }
 
@@ -405,18 +471,107 @@ mod tests {
     }
 
     #[test]
-    fn read_discards_pending_trailing_push() {
+    fn read_keeps_pending_count_and_trailing_flush() {
+        let (c, u, ch, t0) = ids();
+        assert_eq!(c.admit(u, ch, t0), Admit::SendNow);
+        assert!(matches!(
+            c.admit(u, ch, t0 + ms(1)),
+            Admit::Deferred { schedule: true, .. }
+        ));
+        assert!(c.take_read_gate(u, ch, t0 + ms(2)));
+        // The window stays open and keeps collecting.
+        assert!(matches!(
+            c.admit(u, ch, t0 + ms(3)),
+            Admit::Deferred {
+                schedule: false,
+                ..
+            }
+        ));
+        assert_eq!(c.flush(u, ch, t0 + WINDOW), Some(2));
+    }
+
+    #[test]
+    fn message_read_message_is_one_leading_and_one_trailing() {
+        let (c, u, ch, t0) = ids();
+        assert_eq!(c.admit(u, ch, t0), Admit::SendNow);
+        assert!(c.take_read_gate(u, ch, t0 + ms(500)));
+        match c.admit(u, ch, t0 + ms(1_000)) {
+            Admit::Deferred { flush_at, schedule } => {
+                assert!(schedule, "the second message schedules the trailing push");
+                assert_eq!(flush_at, t0 + WINDOW);
+            }
+            other => panic!("expected Deferred, not a second leading push: {other:?}"),
+        }
+        assert_eq!(c.flush(u, ch, t0 + WINDOW), Some(1));
+        // The trailing push re-armed the read gate.
+        assert!(c.take_read_gate(u, ch, t0 + WINDOW + ms(1)));
+    }
+
+    #[test]
+    fn lost_timer_does_not_block_channel() {
         let (c, u, ch, t0) = ids();
         c.admit(u, ch, t0);
-        c.admit(u, ch, t0 + ms(1));
-        assert!(c.take_read_gate(u, ch, t0 + ms(2)));
-        assert_eq!(c.flush(u, ch, t0 + WINDOW), None);
-        // A new message after the read is collected for the next push again.
+        assert!(matches!(
+            c.admit(u, ch, t0 + ms(1)),
+            Admit::Deferred { schedule: true, .. }
+        ));
+        // The timer never flushes. Shortly after the window it still collects ...
         assert!(matches!(
             c.admit(u, ch, t0 + WINDOW + ms(1)),
-            Admit::SendNow
+            Admit::Deferred {
+                schedule: false,
+                ..
+            }
         ));
-        assert!(c.take_read_gate(u, ch, t0 + WINDOW + ms(2)));
+        // ... but once a full extra window has passed, `scheduled` is stale.
+        assert_eq!(c.admit(u, ch, t0 + WINDOW + WINDOW), Admit::SendNow);
+    }
+
+    #[test]
+    fn dropped_admission_allocates_nothing() {
+        let (c, u, _, t0) = ids();
+        for _ in 0..USER_MAX_PER_MINUTE {
+            assert_eq!(c.admit(u, Uuid::now_v7(), t0), Admit::SendNow);
+        }
+        assert_eq!(c.entry_count(), USER_MAX_PER_MINUTE);
+        for _ in 0..10 {
+            assert_eq!(c.admit(u, Uuid::now_v7(), t0), Admit::Dropped);
+        }
+        assert_eq!(c.entry_count(), USER_MAX_PER_MINUTE);
+    }
+
+    #[test]
+    fn entry_cap_is_hard_and_evicts_idle_gated_entries() {
+        let c = Coalescer::with_max_entries(4);
+        let t0 = Instant::now();
+        let gated: Vec<(Uuid, Uuid)> = (0..4).map(|_| (Uuid::now_v7(), Uuid::now_v7())).collect();
+        for &(u, ch) in &gated {
+            assert_eq!(c.admit(u, ch, t0), Admit::SendNow);
+        }
+        assert_eq!(c.entry_count(), 4);
+
+        // Full and nothing idle: push without coalescing, no new state.
+        let (u, ch) = (Uuid::now_v7(), Uuid::now_v7());
+        assert_eq!(c.admit(u, ch, t0 + ms(1)), Admit::SendNow);
+        assert_eq!(c.admit(u, ch, t0 + ms(2)), Admit::SendNow);
+        assert_eq!(c.entry_count(), 4);
+        assert!(
+            !c.take_read_gate(u, ch, t0 + ms(3)),
+            "no state, no read gate"
+        );
+
+        // Once the gated entries are idle, they are evicted despite their gates.
+        let later = t0 + IDLE_TTL + ms(1);
+        assert_eq!(c.admit(u, ch, later), Admit::SendNow);
+        assert_eq!(c.entry_count(), 1);
+        assert!(
+            !c.take_read_gate(gated[0].0, gated[0].1, later),
+            "gate evicted"
+        );
+        assert!(matches!(
+            c.admit(u, ch, later + ms(1)),
+            Admit::Deferred { schedule: true, .. }
+        ));
     }
 
     #[test]
