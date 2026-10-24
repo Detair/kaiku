@@ -85,6 +85,30 @@ describe("i18n", () => {
     expect(await lintCount('export const X = () => <p>{a}{" "}{b}</p>;')).toBe(1);
   }, LINT_TIMEOUT_MS);
 
+  it("flags text hidden in ternaries, fallbacks and concatenation", async () => {
+    expect(await lintCount('setError(ok ? "Saved" : "Failed");')).toBe(2);
+    expect(await lintCount('setError(x || "Failed");')).toBe(1);
+    expect(await lintCount('setError("Could not save: " + msg);')).toBe(1);
+    expect(await lintCount('showToast({ message: cond ? "A" : "B" });')).toBe(2);
+    expect(await lintCount('showToast({ message: "Failed: " + e });')).toBe(1);
+    expect(await lintCount('showToast({ title: "Oops " + (a ? "x" : "y") });')).toBe(3);
+    expect(await lintCount('export const X = () => <p>{"Hi " + n}</p>;')).toBe(1);
+    expect(await lintCount('export const X = () => <p>{a + " items left"}</p>;')).toBe(1);
+    expect(await lintCount('export const X = () => <p>{a ? "n: " + b : c}</p>;')).toBe(1);
+    expect(await lintCount('export const X = () => <b title={"Hi " + n} />;')).toBe(1);
+    expect(await lintCount('export const X = () => <b aria-label={x ? "On" : "Off"} />;')).toBe(2);
+  }, LINT_TIMEOUT_MS);
+
+  it("does not flag class ternaries, t() args, keys or letterless literals", async () => {
+    expect(await lintCount('export const X = () => <p class={x ? "a" : "b"} />;')).toBe(0);
+    expect(await lintCount('export const X = () => <p>{t(ok ? "a.b" : "c.d")}</p>;')).toBe(0);
+    expect(await lintCount('setError(ok ? "auth.a.b" : "auth.c.d");')).toBe(0);
+    expect(await lintCount('setError(x || "auth.some.key");')).toBe(0);
+    expect(await lintCount('export const X = () => <p>{n + "%"}</p>;')).toBe(0);
+    expect(await lintCount('showToast({ message: t("x.y") + "!" });')).toBe(0);
+    expect(await lintCount('setError(t(ok ? "a.b" : "c.d"));')).toBe(0);
+  }, LINT_TIMEOUT_MS);
+
   it("flags setError text but not message keys", async () => {
     expect(await lintCount('setError("Could not save.");')).toBe(1);
     expect(await lintCount('setError("auth.forcedChange.failed");')).toBe(0);

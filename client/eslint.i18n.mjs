@@ -24,13 +24,22 @@ export const TAURI_DETECTION_SELECTORS = [
 // never match: the container must sit in JSX children or in a text attribute.
 // `parent` is the selector for the container's parent / ancestor chain.
 const TEXT = "/[A-Za-z]/";
-const textLiterals = (prefix) => [
-  `${prefix} > Literal[value=${TEXT}]`,
-  `${prefix} > ConditionalExpression > Literal[value=${TEXT}]`,
-  `${prefix} > LogicalExpression > Literal[value=${TEXT}]`,
-  `${prefix} > TemplateLiteral > TemplateElement[value.raw=${TEXT}]`,
-];
+// Wrapper nodes that pass text through: ternaries, `||`/`??`/`&&`, and `+` concatenation.
+// Up to three nested wrappers deep, e.g. `a ? "x: " + e : "y"`.
+const WRAPPER = ":matches(ConditionalExpression, LogicalExpression, BinaryExpression[operator='+'])";
+const textLiterals = (prefix, literalFilter = "") => {
+  const out = [];
+  for (let depth = 0; depth <= 3; depth++) {
+    const chain = `${prefix}${` > ${WRAPPER}`.repeat(depth)}`;
+    out.push(`${chain} > Literal[value=${TEXT}]${literalFilter}`);
+    out.push(`${chain} > TemplateLiteral > TemplateElement[value.raw=${TEXT}]`);
+  }
+  return out;
+};
 const KEY_SHAPE = "/^[a-z][a-zA-Z0-9]*(\\.[a-zA-Z0-9]+)+$/";
+const TOAST_PROP =
+  "CallExpression[callee.name='showToast'] > ObjectExpression > Property[key.name=/^(title|message)$/]";
+const SETTER_CALL = "CallExpression[callee.name=/^set\\w*(Error|Message)$/]";
 const CHILD_CONTAINER = ":matches(JSXElement, JSXFragment) > JSXExpressionContainer";
 const ATTR_CONTAINER =
   "JSXAttribute[name.name=/^(placeholder|title|aria-label|aria-description|alt|label)$/] > JSXExpressionContainer";
@@ -41,11 +50,9 @@ export const I18N_SELECTORS = [
   ...[
     ...textLiterals(CHILD_CONTAINER),
     ...textLiterals(ATTR_CONTAINER),
-    `CallExpression[callee.name='showToast'] > ObjectExpression > Property[key.name=/^(title|message)$/] > Literal[value=${TEXT}]`,
-    `CallExpression[callee.name='showToast'] > ObjectExpression > Property[key.name=/^(title|message)$/] > TemplateLiteral > TemplateElement[value.raw=${TEXT}]`,
+    ...textLiterals(TOAST_PROP),
     // setError("auth.some.key") passes a MessageKey, not text: key-shaped literals are fine.
-    `CallExpression[callee.name=/^set\\w*(Error|Message)$/] > Literal[value=${TEXT}]:not([value=${KEY_SHAPE}])`,
-    `CallExpression[callee.name=/^set\\w*(Error|Message)$/] > TemplateLiteral > TemplateElement[value.raw=${TEXT}]`,
+    ...textLiterals(SETTER_CALL, `:not([value=${KEY_SHAPE}])`),
   ].map((selector) => ({ selector, message: MESSAGE })),
   {
     selector: `${CHILD_CONTAINER} > Literal[value=' ']`,
