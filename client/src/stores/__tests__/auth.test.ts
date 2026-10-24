@@ -81,7 +81,7 @@ import {
   isForcedPasswordChangeSaved,
   retryForcedPasswordChangeFinish,
   PASSWORD_SAVED_REFRESH_FAILED,
-  LIFECYCLE_HANDOVER_TIMEOUT_MS,
+  TEARDOWN_STEP_TIMEOUT_MS,
 } from "../auth";
 
 /** Resolve `p`, or fail after `ms`: a hung lifecycle must fail, not time out. */
@@ -997,40 +997,51 @@ describe("auth store", () => {
       expect(lastTeardown).toBeLessThan(bStarted);
     });
 
-    it("a startup cancelled while it waits in the queue never connects or starts idle detection", async () => {
+    it("a sign-in while an older startup still hangs starts at once; a stop tears it down and the old startup's late settle changes nothing", async () => {
       mockServices();
       vi.mocked(tauri.getCurrentUser).mockResolvedValue({
         user: createUser(),
         error_reason: null,
       });
-      let finishOldInit!: () => void;
-      vi.mocked(initWebSocket).mockImplementationOnce(
-        () => new Promise<void>((resolve) => (finishOldInit = resolve)),
-      );
+      const releaseOldInit = holdOnce(vi.mocked(initWebSocket));
       vi.mocked(tauri.login).mockResolvedValue({
         user: createUser(),
         setup_required: false,
         password_change_required: false,
       });
 
-      // Startup A is running; startup C (from a sign-in) queues behind it.
+      // Startup A hangs in its first step; the sign-in's startup C does not
+      // wait for it (the stores cancel A's late effects on their own).
       const restoring = initAuth();
       await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
-      const signingIn = login("https://server.com", "alice", "pw");
-      await vi.waitFor(() => expect(tauri.login).toHaveBeenCalled());
-      await new Promise((r) => setTimeout(r, 0));
-      // A stop arrives while C still waits.
-      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      await withinMs(login("https://server.com", "alice", "pw"));
+      expect(initWebSocket).toHaveBeenCalledTimes(2);
+      expect(wsConnect).toHaveBeenCalledTimes(1);
+      expect(initIdleDetection).toHaveBeenCalledTimes(1);
 
-      finishOldInit();
-      await restoring;
-      await signingIn;
-      await new Promise((r) => setTimeout(r, 0));
+      // A stop arrives: C's services are torn down.
+      window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+      await vi.waitFor(() => expect(cleanupPresence).toHaveBeenCalled());
+      expect(wsDisconnect).toHaveBeenCalled();
+      expect(cleanupWebSocket).toHaveBeenCalled();
+      expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+      const teardownCalls = () =>
+        vi.mocked(wsDisconnect).mock.calls.length +
+        vi.mocked(cleanupWebSocket).mock.calls.length +
+        vi.mocked(cleanupPresence).mock.calls.length +
+        vi.mocked(stopIdleDetectionCleanup).mock.calls.length;
+      const teardownsAfterStop = teardownCalls();
+
+      // A settles late: a newer start began since, so A owns nothing, starts
+      // nothing further and tears nothing down.
+      releaseOldInit();
+      await withinMs(restoring);
+      await tick();
 
       expect(authState.passwordChangeRequired).toBe(true);
-      expect(initWebSocket).toHaveBeenCalledTimes(1);
-      expect(wsConnect).not.toHaveBeenCalled();
-      expect(initIdleDetection).not.toHaveBeenCalled();
+      expect(wsConnect).toHaveBeenCalledTimes(1);
+      expect(initIdleDetection).toHaveBeenCalledTimes(1);
+      expect(teardownCalls()).toBe(teardownsAfterStop);
     });
 
     it("a transient refresh failure after the change keeps it saved and retries without resubmitting", async () => {
@@ -1222,53 +1233,72 @@ describe("auth store", () => {
         setAuthState({ sessionExpired: false });
       });
 
-      it("a sign-in after a hung startup starts its services once the hand-over wait expires", async () => {
+      it("a sign-in after a hung startup starts its services at once", async () => {
+        mockServices();
+        restoreWith();
+        const release = holdOnce(vi.mocked(initWebSocket));
+        vi.mocked(tauri.login).mockResolvedValue({
+          user: createUser(),
+          setup_required: false,
+          password_change_required: false,
+        });
+
+        // Startup A hangs; the user signs out and in again. Startup B does
+        // not wait for A: the stores cancel A's late effects on their own.
+        const restoring = initAuth();
+        await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
+        await withinMs(logout());
+        await withinMs(login("https://server.com", "alice", "pw"));
+
+        expect(initWebSocket).toHaveBeenCalledTimes(2);
+        expect(wsConnect).toHaveBeenCalledTimes(1);
+        expect(initIdleDetection).toHaveBeenCalledTimes(1);
+
+        // A settles after B began: it owns nothing any more and must not
+        // tear down B's services.
+        const bStarted = vi.mocked(initWebSocket).mock.invocationCallOrder[1];
+        release();
+        await withinMs(restoring);
+        await tick();
+
+        const lastTeardown = Math.max(
+          0,
+          ...vi.mocked(wsDisconnect).mock.invocationCallOrder,
+          ...vi.mocked(cleanupPresence).mock.invocationCallOrder,
+          ...vi.mocked(stopIdleDetectionCleanup).mock.invocationCallOrder,
+        );
+        expect(lastTeardown).toBeLessThan(bStarted);
+      });
+
+      it("logout completes when the WebSocket disconnect never settles: the step is abandoned after its bound", async () => {
         vi.useFakeTimers();
         try {
           mockServices();
           restoreWith();
-          const release = holdOnce(vi.mocked(initWebSocket));
-          vi.mocked(tauri.login).mockResolvedValue({
-            user: createUser(),
-            setup_required: false,
-            password_change_required: false,
-          });
-
-          // Startup A hangs; the user signs out and in again. (No vi.waitFor
-          // here: under fake timers it advances the clock by its poll
-          // interval, which would eat into the hand-over wait measured below.)
-          const restoring = initAuth();
-          await vi.advanceTimersByTimeAsync(0);
-          expect(initWebSocket).toHaveBeenCalledTimes(1);
-          await withinMs(logout(), 50);
-          const signingIn = login("https://server.com", "alice", "pw");
-          await vi.advanceTimersByTimeAsync(0);
-          expect(tauri.login).toHaveBeenCalledTimes(1);
-
-          // Startup B waits for A, but only up to the hand-over timeout.
-          await vi.advanceTimersByTimeAsync(LIFECYCLE_HANDOVER_TIMEOUT_MS - 1);
-          expect(initWebSocket).toHaveBeenCalledTimes(1);
-          await vi.advanceTimersByTimeAsync(1);
-          await signingIn;
-
-          expect(initWebSocket).toHaveBeenCalledTimes(2);
-          expect(wsConnect).toHaveBeenCalledTimes(1);
+          await initAuth();
           expect(initIdleDetection).toHaveBeenCalledTimes(1);
 
-          // A settles after B began: it owns nothing any more and must not
-          // tear down B's services.
-          const bStarted = vi.mocked(initWebSocket).mock.invocationCallOrder[1];
-          release();
-          await restoring;
-          await vi.advanceTimersByTimeAsync(0);
+          // The disconnect hangs on IPC for good. (No vi.waitFor here: under
+          // fake timers it advances the clock by its poll interval.)
+          holdOnce(vi.mocked(wsDisconnect));
+          let done = false;
+          const loggingOut = logout().then(() => {
+            done = true;
+          });
+          await vi.advanceTimersByTimeAsync(TEARDOWN_STEP_TIMEOUT_MS - 1);
+          expect(done).toBe(false);
+          expect(cleanupWebSocket).not.toHaveBeenCalled();
 
-          const lastTeardown = Math.max(
-            0,
-            ...vi.mocked(wsDisconnect).mock.invocationCallOrder,
-            ...vi.mocked(cleanupPresence).mock.invocationCallOrder,
-            ...vi.mocked(stopIdleDetectionCleanup).mock.invocationCallOrder,
-          );
-          expect(lastTeardown).toBeLessThan(bStarted);
+          await vi.advanceTimersByTimeAsync(1);
+          await loggingOut;
+
+          // The remaining steps still ran, and the sign-out finished.
+          expect(cleanupWebSocket).toHaveBeenCalledTimes(1);
+          expect(stopIdleDetectionCleanup).toHaveBeenCalled();
+          expect(cleanupPresence).toHaveBeenCalled();
+          expect(tauri.logout).toHaveBeenCalledTimes(1);
+          expect(authState.user).toBeNull();
+          expect(authState.isLoading).toBe(false);
         } finally {
           vi.useRealTimers();
         }

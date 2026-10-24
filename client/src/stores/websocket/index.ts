@@ -159,6 +159,13 @@ const [typingState, setTypingState] = createStore<TypingState>({
 
 // Event listeners
 let unlisteners: UnlistenFn[] = [];
+// Bumped by every `cleanupWebSocket()`: an `initWebSocket()` whose listener
+// registrations settle after a cleanup (or after a newer init, which cleans
+// up first) was superseded and must drop the handles it obtained.
+let listenerGeneration = 0;
+// Bumped by every `connect()`/`disconnect()`: a disconnect that settles after
+// a newer connect must not reset the state that connect established.
+let connectionGeneration = 0;
 
 // Typing debounce timers
 const typingTimers: Record<string, NodeJS.Timeout> = {};
@@ -254,46 +261,55 @@ function handleSubscribedAck(channelId: string): void {
  * Call this once when the app starts (after auth).
  */
 export async function initWebSocket(): Promise<void> {
-  // Clean up existing listeners
+  // Clean up existing listeners; this also supersedes any older init that is
+  // still waiting for its registrations.
   await cleanupWebSocket();
+  const generation = listenerGeneration;
 
   if (isTauri()) {
     // Native mode: Rust owns the socket and its retries. Every server frame
     // arrives once as `ws:server_event` and goes through the same handler as
     // in the browser; the status events drive the supervisor.
     const { listen } = await import("@tauri-apps/api/event");
+    if (generation !== listenerGeneration) return;
     const supervisor = getSupervisor();
-    unlisteners.push(
-      ...(await Promise.all([
-        listen<ServerEvent>("ws:server_event", (event) => {
-          handleServerEvent(event.payload).catch((err) =>
-            console.error("[WS] Failed to handle server event:", err),
-          );
-        }),
-        listen("ws:connecting", () => {
-          Sentry.addBreadcrumb({ category: "ws", message: "connecting", level: "info" });
-        }),
-        listen("ws:connected", () => {
-          Sentry.addBreadcrumb({
-            category: "ws",
-            message: "connected",
-            data: { duration_ms: Date.now() - connectStartTime },
-            level: "info",
-          });
-          // After ws:reconnecting this runs handleReconnect (onRecovered).
-          supervisor.notifyOpened();
-        }),
-        listen<number>("ws:reconnecting", (event) => {
-          supervisor.notifyClosed(false);
-          if (wsState.status === "reconnecting") {
-            setWsState({ reconnectAttempt: event.payload });
-          }
-        }),
-        // Rust ended the loop by itself (no session any more).
-        listen("ws:disconnected", () => supervisor.stop()),
-        listen("ws:auth_rejected", () => handleNativeAuthRejected()),
-      ])),
-    );
+    const handles = await Promise.all([
+      listen<ServerEvent>("ws:server_event", (event) => {
+        handleServerEvent(event.payload).catch((err) =>
+          console.error("[WS] Failed to handle server event:", err),
+        );
+      }),
+      listen("ws:connecting", () => {
+        Sentry.addBreadcrumb({ category: "ws", message: "connecting", level: "info" });
+      }),
+      listen("ws:connected", () => {
+        Sentry.addBreadcrumb({
+          category: "ws",
+          message: "connected",
+          data: { duration_ms: Date.now() - connectStartTime },
+          level: "info",
+        });
+        // After ws:reconnecting this runs handleReconnect (onRecovered).
+        supervisor.notifyOpened();
+      }),
+      listen<number>("ws:reconnecting", (event) => {
+        supervisor.notifyClosed(false);
+        if (wsState.status === "reconnecting") {
+          setWsState({ reconnectAttempt: event.payload });
+        }
+      }),
+      // Rust ended the loop by itself (no session any more).
+      listen("ws:disconnected", () => supervisor.stop()),
+      listen("ws:auth_rejected", () => handleNativeAuthRejected()),
+    ]);
+    if (generation !== listenerGeneration) {
+      // A cleanup (or a newer init) ran while the registrations were in
+      // flight: these handles belong to nobody, so release them right away
+      // instead of leaving them registered or handing them to a later owner.
+      for (const unlisten of handles) unlisten();
+      return;
+    }
+    unlisteners.push(...handles);
   } else {
     // Browser mode: the handler is (re-)attached on every open by the
     // reconnect supervisor's driver; attach now if a socket already exists.
@@ -825,6 +841,7 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
  * Cleanup WebSocket listeners.
  */
 export async function cleanupWebSocket(): Promise<void> {
+  listenerGeneration += 1;
   for (const unlisten of unlisteners) {
     unlisten();
   }
@@ -1120,6 +1137,7 @@ export function canRetryConnectionNow(): boolean {
 export async function connect(): Promise<void> {
   // The supervisor opens the connection; in the browser it also keeps it
   // alive, natively it mirrors the Rust loop.
+  const generation = ++connectionGeneration;
   try {
     setWsState({ error: null });
     if (!isTauri()) {
@@ -1129,6 +1147,9 @@ export async function connect(): Promise<void> {
       });
     }
     const opened = await getSupervisor().start();
+    // A disconnect (or another connect) took over while the open was in
+    // flight: that owner's state stands, this call reports nothing.
+    if (generation !== connectionGeneration) return;
     // Only after this call opened a fresh socket. When the supervisor was
     // already running (connected, or retrying) it owns recovery itself;
     // running it here would fake "connected" on a socket that isn't open.
@@ -1136,6 +1157,7 @@ export async function connect(): Promise<void> {
       await handleReconnect();
     }
   } catch (err) {
+    if (generation !== connectionGeneration) return;
     // Status stays as the supervisor set it ("reconnecting": it retries).
     // Natively the first attempt's failure can arrive after a retry already
     // connected (ws:connected); don't show a stale error over a live socket.
@@ -1169,9 +1191,13 @@ export function waitForConnection(timeoutMs = 5000): Promise<boolean> {
  * Disconnect from the WebSocket server.
  */
 export async function disconnect(): Promise<void> {
+  const generation = ++connectionGeneration;
   try {
     supervisor?.stop();
     await tauri.wsDisconnect();
+    // A newer connect established its own state while the close was in
+    // flight: resetting it here would show that live socket as disconnected.
+    if (generation !== connectionGeneration) return;
     detachBrowserMessageHandler?.();
     detachBrowserMessageHandler = null;
     setWsState({ status: "disconnected", subscribedChannels: new Set() });

@@ -95,43 +95,45 @@ export function isForcedPasswordChangeSaved(): boolean {
 // Session-services lifecycle
 //
 // The session services (WebSocket, presence, preferences, idle detection)
-// are module-level singletons. `ownerId` grows monotonically:
-// `startSessionServices()` takes a new id synchronously, `requestStop()`
-// bumps it synchronously. So the moment a stop or a newer start is
-// requested, every older start is superseded, before anything is awaited.
+// are module-level singletons. Each service store is cancellation-aware on
+// its own: an init whose IPC or network step settles after a cleanup, or
+// after a newer init, releases what it obtained (the WebSocket listeners, the
+// presence listener, a preferences response), and a disconnect that settles
+// after a newer connect leaves that connection's state alone. This section
+// only orders starts and stops.
+//
+// `ownerId` grows monotonically: `startSessionServices()` takes a new id
+// synchronously, `requestStop()` bumps it synchronously. So the moment a stop
+// or a newer start is requested, every older start is superseded, before
+// anything is awaited.
 //
 // Stops never wait for a start. A stop's teardown runs on `teardownChain`,
-// which only ever holds teardowns, so logout, session expiry and the switch
-// to the change screen finish as soon as the WebSocket store's own
-// disconnect/cleanup do, whatever a startup step is doing.
+// which only ever holds teardowns. Each teardown step is bounded
+// (`TEARDOWN_STEP_TIMEOUT_MS`): a step that does not settle in time is
+// abandoned, so logout, session expiry and the switch to the change screen
+// always finish; the stores' tokens make the abandoned step's late
+// continuation harmless.
 //
-// Start jobs run one after another: a start first waits for the previous
-// start job to settle and for pending teardowns to finish, so nothing of
-// theirs lands on the new session. That wait is bounded
-// (`LIFECYCLE_HANDOVER_TIMEOUT_MS`): a startup step that never settles must
-// not keep the next sign-in from starting its services. A start job
-// re-checks between its steps that it still owns the services; once
-// superseded it undoes exactly what it started (on the teardown chain, so
-// it never interleaves with a stop) and exits.
+// A start waits for the pending teardowns (bounded by construction) and
+// never for an older start: that start is superseded by the new id, and the
+// stores cancel whatever it still has in flight. A start job re-checks
+// between its steps that it still owns the services; once superseded it
+// undoes exactly what it started (on the teardown chain, so it never
+// interleaves with a stop) and exits.
 //
-// `activeStartId` is the start job that last began its steps. Every
-// teardown action, from a stop or from an undo, is skipped once a start
-// newer than the one it was requested for has begun: that start owns the
-// singletons now, and its own stop cleans them up. This is what keeps a
-// late-settling superseded start, or a teardown that outlived a hand-over
-// wait, from tearing down the replacement session.
+// `activeStartId` is the start job that last began its steps. Every teardown
+// action, from a stop or from an undo, is skipped once a start newer than the
+// one it was requested for has begun: that start owns the singletons now, and
+// its own stop cleans them up. This keeps a late-settling superseded start
+// from tearing down the replacement session.
 // ---------------------------------------------------------------------------
 
-/**
- * How long a start waits for the previous start job and pending teardowns
- * before it begins anyway. Exported for tests.
- */
-export const LIFECYCLE_HANDOVER_TIMEOUT_MS = 10_000;
+/** How long one teardown step may take before it is abandoned. Exported for tests. */
+export const TEARDOWN_STEP_TIMEOUT_MS = 5_000;
 
 let ownerId = 0;
 let activeStartId = 0;
 let teardownChain: Promise<void> = Promise.resolve();
-let lastStartJob: Promise<void> = Promise.resolve();
 
 const noop = (): void => undefined;
 
@@ -142,16 +144,31 @@ function enqueueTeardown(job: () => Promise<void>): Promise<void> {
   return result;
 }
 
-/** Resolve when `pending` settles or after `ms`, whichever comes first. */
-function settledOrTimeout(pending: Promise<unknown>, ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    const done = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    pending.then(done, done);
+/**
+ * Run one teardown step. A failure is logged; a step that has not settled
+ * within `TEARDOWN_STEP_TIMEOUT_MS` is abandoned (its store ignores a late
+ * settle on its own). Never throws.
+ */
+async function boundedStep(step: () => Promise<void>, what: string): Promise<void> {
+  const run = (async () => {
+    await step();
+    return "done" as const;
+  })().catch((err: unknown) => {
+    console.error(`[Auth] ${what} failed:`, err);
+    return "failed" as const;
   });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), TEARDOWN_STEP_TIMEOUT_MS);
+  });
+  try {
+    const outcome = await Promise.race([run, timeout]);
+    if (outcome === "timeout") {
+      console.warn(`[Auth] ${what} did not finish in time — continuing without it`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Services may run: signed in and no forced password change pending. */
@@ -179,14 +196,10 @@ function newerStartBegan(sinceId: number): boolean {
  * start has begun. Never throws.
  */
 async function teardownServices(sinceId: number, which: StartedServices): Promise<void> {
-  try {
-    if (which.websocket && !newerStartBegan(sinceId)) {
-      await wsDisconnect();
-      if (newerStartBegan(sinceId)) return;
-      await cleanupWebSocket();
-    }
-  } catch (err) {
-    console.error("[Auth] Stopping the WebSocket failed:", err);
+  if (which.websocket && !newerStartBegan(sinceId)) {
+    await boundedStep(wsDisconnect, "Stopping the WebSocket");
+    if (newerStartBegan(sinceId)) return;
+    await boundedStep(cleanupWebSocket, "Removing the WebSocket listeners");
   }
   if (newerStartBegan(sinceId)) return;
   try {
@@ -312,26 +325,22 @@ function startSessionServices(
   options: { showWsError?: boolean } = {},
 ): Promise<void> {
   // The id is taken now, before anything is awaited: a stop requested from
-  // here on supersedes this start even while it still waits its turn.
+  // here on supersedes this start even while it still waits for teardowns.
   const myId = ++ownerId;
-  const job = runStart(myId, lastStartJob, options);
-  lastStartJob = job.then(noop, noop);
-  return job;
+  return runStart(myId, teardownChain, options);
 }
 
-/** One start job; `previous` is the start job before it. */
+/** One start job; `pendingTeardowns` are the teardowns requested before it. */
 async function runStart(
   myId: number,
-  previous: Promise<void>,
+  pendingTeardowns: Promise<void>,
   options: { showWsError?: boolean },
 ): Promise<void> {
   const { showWsError = true } = options;
-  // Hand-over: the previous start has settled (and undone itself if it was
-  // superseded) and pending teardowns are done, or the bounded wait expired.
-  await settledOrTimeout(
-    Promise.all([previous, teardownChain]),
-    LIFECYCLE_HANDOVER_TIMEOUT_MS,
-  );
+  // Teardowns requested before this start finish first (each step bounded,
+  // so this wait is too). An older start is not waited for: it is superseded
+  // by this id, and the stores cancel whatever it still has in flight.
+  await pendingTeardowns;
   const current = () => myId === ownerId && servicesEligible();
   if (!current()) return;
   activeStartId = myId;
