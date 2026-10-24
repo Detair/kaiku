@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.channel
 
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -81,6 +82,11 @@ class TextChannelViewModel @Inject constructor(
     private val _error = MutableStateFlow<Int?>(null)
     val error: StateFlow<Int?> = _error.asStateFlow()
 
+    private val _isUploading = MutableStateFlow(false)
+
+    /** True while a picked photo or video is being uploaded. */
+    val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
+
     /** The message being edited; non-null while the edit dialog is shown. */
     private val _editingMessage = MutableStateFlow<Message?>(null)
     val editingMessage: StateFlow<Message?> = _editingMessage.asStateFlow()
@@ -115,6 +121,31 @@ class TextChannelViewModel @Inject constructor(
                 if (_messageInput.value.isEmpty()) _messageInput.value = content
                 _error.value = R.string.chat_send_failed
                 logger.log(Level.WARNING, "Failed to send message", e)
+            }
+        }
+    }
+
+    /** Uploads the picked photo/video; the current draft becomes its caption. */
+    fun onAttachmentPicked(uri: Uri) {
+        if (_isUploading.value) return
+        val caption = _messageInput.value.trim()
+        _isUploading.value = true
+        viewModelScope.launch {
+            try {
+                chatRepository.sendAttachment(channelId, uri, caption.ifEmpty { null })
+                    .onSuccess {
+                        // Keep a draft the user kept typing meanwhile.
+                        if (_messageInput.value.trim() == caption) _messageInput.value = ""
+                    }
+                    .onFailure { e ->
+                        _error.value = if (e is ChatRepository.AttachmentException.TooLarge) {
+                            R.string.chat_upload_too_large
+                        } else {
+                            R.string.chat_upload_failed
+                        }
+                    }
+            } finally {
+                _isUploading.value = false
             }
         }
     }

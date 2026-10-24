@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.channel
 
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import io.mockk.*
@@ -590,5 +591,50 @@ class TextChannelViewModelTest {
 
         statusFlow.value = RealtimeStatus.Reconnecting
         assertEquals(RealtimeStatus.Reconnecting, viewModel.connectionStatus.value)
+    }
+
+    @Test
+    fun `upload failure exposes chat_upload_failed`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, null) } returns
+            Result.failure(ChatRepository.AttachmentException.Failed())
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_upload_failed, viewModel.error.value)
+        assertFalse(viewModel.isUploading.value)
+    }
+
+    @Test
+    fun `too large upload exposes chat_upload_too_large`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, null) } returns
+            Result.failure(ChatRepository.AttachmentException.TooLarge())
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_upload_too_large, viewModel.error.value)
+    }
+
+    @Test
+    fun `successful upload sends draft as caption and clears it`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, "look") } returns
+            Result.success(sampleMessages[0])
+        viewModel = createViewModel()
+        advanceUntilIdle()
+        viewModel.onMessageInputChanged("look")
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals("", viewModel.messageInput.value)
+        assertNull(viewModel.error.value)
     }
 }
