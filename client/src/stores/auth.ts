@@ -80,16 +80,51 @@ export function hasPendingTemporaryPassword(): boolean {
   return pendingTemporaryPassword !== null;
 }
 
+/**
+ * Set once a forced change was accepted by the server but the follow-up
+ * token refresh failed transiently: retrying must not resubmit the change.
+ */
+let passwordChangeSaved = false;
+
+/** Whether the new password is saved and only the session start is left. */
+export function isForcedPasswordChangeSaved(): boolean {
+  return passwordChangeSaved;
+}
+
+/**
+ * Generation of the session services. `startSessionServices()` captures it
+ * and stops after any await once it changed; `invalidateSessionServices()`
+ * bumps it (pending password change, logout, expiry).
+ */
+let servicesGeneration = 0;
+
+/** Make any running `startSessionServices()` stop at its next step. */
+function invalidateSessionServices(): void {
+  servicesGeneration += 1;
+}
+
+/** Serializes teardowns, so a late one never interleaves with another. */
+let teardownChain: Promise<void> = Promise.resolve();
+
 /** Stop everything `startSessionServices()` started. Never throws. */
-async function stopSessionServices(): Promise<void> {
-  try {
-    await wsDisconnect();
-    await cleanupWebSocket();
-    stopIdleDetectionCleanup();
-    cleanupPresence();
-  } catch (err) {
-    console.error("[Auth] Stopping session services failed:", err);
-  }
+function teardownSessionServices(): Promise<void> {
+  teardownChain = teardownChain.then(async () => {
+    try {
+      await wsDisconnect();
+      await cleanupWebSocket();
+      stopIdleDetectionCleanup();
+      cleanupPresence();
+    } catch (err) {
+      console.error("[Auth] Stopping session services failed:", err);
+    }
+  });
+  return teardownChain;
+}
+
+/** Cancel a running startup and stop the services. */
+function stopSessionServices(): Promise<void> {
+  invalidateSessionServices();
+  return teardownSessionServices();
 }
 
 // Session-expired listener (registered once globally to prevent leaks)
@@ -125,6 +160,7 @@ function registerSessionExpiredListener() {
     }
 
     console.warn("[Kaiku:Auth] Silent retry: failed — showing expiry modal");
+    invalidateSessionServices();
 
     // Clean up connections and drafts
     try {
@@ -139,6 +175,7 @@ function registerSessionExpiredListener() {
     }
 
     pendingTemporaryPassword = null;
+    passwordChangeSaved = false;
     setAuthState({
       user: null,
       sessionExpired: true,
@@ -195,9 +232,19 @@ async function startSessionServices(
   options: { showWsError?: boolean } = {},
 ): Promise<void> {
   const { showWsError = true } = options;
+  const generation = servicesGeneration;
+  // Cancelled (pending password change, logout, expiry) while a step ran:
+  // undo what this run started and stop. The canceller's own teardown may
+  // already have run before this step finished.
+  const cancelled = async (): Promise<boolean> => {
+    if (generation === servicesGeneration) return false;
+    await teardownSessionServices();
+    return true;
+  };
 
   // Initialize WebSocket listeners and presence in parallel (independent)
   await Promise.all([initWebSocket(), initPresence()]);
+  if (await cancelled()) return;
 
   // Connect WebSocket and sync preferences in parallel (independent)
   await Promise.all([
@@ -217,6 +264,7 @@ async function startSessionServices(
         console.error("[Auth] Preferences initialization failed:", prefErr);
       }),
   ]);
+  if (await cancelled()) return;
 
   // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
   initIdleDetection();
@@ -559,6 +607,8 @@ export async function loginWithOidc(
  */
 export async function logout(): Promise<void> {
   pendingTemporaryPassword = null;
+  passwordChangeSaved = false;
+  invalidateSessionServices();
   setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });
 
   // Disconnect WebSocket and cleanup
@@ -593,16 +643,39 @@ export async function logout(): Promise<void> {
   }
 }
 
+/** Thrown when the new password is saved but the session could not start yet. */
+export const PASSWORD_SAVED_REFRESH_FAILED = "PASSWORD_SAVED_REFRESH_FAILED";
+
+/** Whether a failed change means the temporary password itself was wrong. */
+function isInvalidCredentials(err: unknown): boolean {
+  const status =
+    typeof err === "object" && err !== null && "status" in err
+      ? (err as { status: unknown }).status
+      : undefined;
+  const message = err instanceof Error ? err.message : String(err);
+  return status === 401 || /invalid credentials/i.test(message);
+}
+
 /**
  * Replace the admin-issued temporary password (contract C4), then start the
  * session normally. `currentPassword` is the temporary password typed on the
- * change screen; `null` reuses the one from this sign-in. Throws when the
- * server refuses the change; the flag and the remembered password then stay.
+ * change screen; `null` reuses the one from this sign-in.
+ *
+ * Throws when the server refuses the change; the flag then stays. A rejected
+ * remembered temporary password is dropped, so the screen asks for it. If
+ * the change is saved but the token refresh fails transiently, throws
+ * `PASSWORD_SAVED_REFRESH_FAILED`; `retryForcedPasswordChangeFinish()` then
+ * finishes without resubmitting.
  */
 export async function completeForcedPasswordChange(
   currentPassword: string | null,
   newPassword: string,
 ): Promise<void> {
+  if (passwordChangeSaved) {
+    await finishForcedPasswordChange();
+    return;
+  }
+  const usingRemembered = currentPassword === null;
   const current = currentPassword ?? pendingTemporaryPassword;
   if (current === null) {
     throw new Error("The temporary password is required");
@@ -610,19 +683,63 @@ export async function completeForcedPasswordChange(
 
   // Other sessions of a brand-new account were opened with the temporary
   // password; end them.
-  await tauri.updatePassword(current, newPassword, true);
-
-  // Pick up a token issued after the change (C4: the refresh response
-  // carries the cleared flag). The current token keeps working if this fails.
   try {
-    if (!(await tauri.refreshAccessToken())) {
-      console.warn("[Auth] Token refresh after password change failed");
+    await tauri.updatePassword(current, newPassword, true);
+  } catch (err) {
+    if (usingRemembered && isInvalidCredentials(err)) {
+      pendingTemporaryPassword = null;
     }
+    throw err;
+  }
+
+  pendingTemporaryPassword = null;
+  passwordChangeSaved = true;
+  await finishForcedPasswordChange();
+}
+
+/** Retry starting the session after `PASSWORD_SAVED_REFRESH_FAILED`. */
+export async function retryForcedPasswordChangeFinish(): Promise<void> {
+  if (!passwordChangeSaved) return;
+  await finishForcedPasswordChange();
+}
+
+/**
+ * After a saved change: refresh (C4: the refresh response carries the
+ * cleared flag), then start the session. A rejected refresh ends the session
+ * through the usual expiry path; a transient failure keeps the change saved
+ * and throws `PASSWORD_SAVED_REFRESH_FAILED`.
+ */
+async function finishForcedPasswordChange(): Promise<void> {
+  let refreshed = false;
+  try {
+    refreshed = await tauri.refreshAccessToken();
   } catch (err) {
     console.warn("[Auth] Token refresh after password change failed:", err);
   }
 
-  pendingTemporaryPassword = null;
+  if (!refreshed) {
+    // Both modes drop the token when the server rejects the refresh.
+    if (tauri.getAccessToken() === null) {
+      console.warn("[Auth] Session ended right after the password change");
+      passwordChangeSaved = false;
+      if (isTauri()) {
+        tauri.expireNativeSession();
+      } else {
+        window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+      }
+      return;
+    }
+    console.warn("[Auth] Token refresh after password change failed — waiting for retry");
+    throw new Error(PASSWORD_SAVED_REFRESH_FAILED);
+  }
+
+  // Signed out or expired while the refresh ran.
+  if (!authState.user) {
+    passwordChangeSaved = false;
+    return;
+  }
+
+  passwordChangeSaved = false;
   setAuthState({ passwordChangeRequired: false, error: null });
   await startSessionServices();
 }

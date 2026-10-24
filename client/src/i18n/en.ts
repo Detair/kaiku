@@ -39,6 +39,8 @@ export const en = {
   "auth.forcedChange.sameAsTemporary": "Choose a password that differs from the temporary one.",
   "auth.forcedChange.wrongTemporary": "The temporary password is not correct.",
   "auth.forcedChange.failed": "Could not save the password. Please try again.",
+  "auth.forcedChange.savedOffline": "Your new password is saved, but Kaiku couldn't reach the server to continue. Check your connection and try again.",
+  "auth.forcedChange.retry": "Try again",
   "qr.title": "Link Mobile Device",
   "qr.instructions": "Scan this code with the Kaiku mobile app to sign in",
   "qr.alt": "QR login code",
