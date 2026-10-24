@@ -66,6 +66,8 @@ const ID_TOGGLE_MUTE: &str = "toggle_mute";
 /// A host probe that has not answered within this time counts as "no tray".
 const PROBE_DEADLINE: Duration = Duration::from_secs(2);
 /// Minimum time between two host probes (focus events can come in bursts).
+/// Only the Linux probe throttles; other platforms always have a tray host.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const PROBE_MIN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// What closing the main window does.
@@ -176,6 +178,8 @@ struct HostCache {
 struct ProbeTimes {
     /// Set while a probe runs.
     started: Option<Instant>,
+    /// Read by the Linux probe throttle only.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     finished: Option<Instant>,
 }
 
@@ -312,6 +316,20 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+}
+
+/// Bring the tray menu back to the webview's last reported voice state.
+///
+/// A close during an unrelated voice-state write lock (e.g. a device change
+/// in settings) shows the voice items although no call runs; nothing else
+/// would re-render them. Called when the main window gets focus again.
+pub fn sync_menu_to_report<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<TrayState>() else {
+        return;
+    };
+    let in_voice = state.in_voice.load(Ordering::SeqCst);
+    let muted = state.muted.load(Ordering::SeqCst);
+    render_menu(app, &state, in_voice, muted);
 }
 
 /// Store the webview's voice state and bring the tray menu in line with it.

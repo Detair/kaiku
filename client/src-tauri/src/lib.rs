@@ -121,6 +121,7 @@ pub fn run() {
                         tray::handle_main_close(window);
                     }
                     tauri::WindowEvent::Focused(true) => {
+                        tray::sync_menu_to_report(window.app_handle());
                         tray::refresh_host_availability(window.app_handle());
                     }
                     _ => {}
