@@ -20,9 +20,37 @@ export const TAURI_DETECTION_SELECTORS = [
   { selector: "MemberExpression[property.name='__TAURI__']", message: TAURI_MESSAGE },
 ];
 
+// Direct-child chains only, so t("...") arguments and class={x ? "a" : "b"}
+// never match: the container must sit in JSX children or in a text attribute.
+// `parent` is the selector for the container's parent / ancestor chain.
+const TEXT = "/[A-Za-z]/";
+const textLiterals = (prefix) => [
+  `${prefix} > Literal[value=${TEXT}]`,
+  `${prefix} > ConditionalExpression > Literal[value=${TEXT}]`,
+  `${prefix} > LogicalExpression > Literal[value=${TEXT}]`,
+  `${prefix} > TemplateLiteral > TemplateElement[value.raw=${TEXT}]`,
+];
+const KEY_SHAPE = "/^[a-z][a-zA-Z0-9]*(\\.[a-zA-Z0-9]+)+$/";
+const CHILD_CONTAINER = ":matches(JSXElement, JSXFragment) > JSXExpressionContainer";
+const ATTR_CONTAINER =
+  "JSXAttribute[name.name=/^(placeholder|title|aria-label|aria-description|alt|label)$/] > JSXExpressionContainer";
+
 // A file-specific no-restricted-syntax block replaces the global one, so the
 // Tauri detection ban is repeated here.
 export const I18N_SELECTORS = [
+  ...[
+    ...textLiterals(CHILD_CONTAINER),
+    ...textLiterals(ATTR_CONTAINER),
+    `CallExpression[callee.name='showToast'] > ObjectExpression > Property[key.name=/^(title|message)$/] > Literal[value=${TEXT}]`,
+    `CallExpression[callee.name='showToast'] > ObjectExpression > Property[key.name=/^(title|message)$/] > TemplateLiteral > TemplateElement[value.raw=${TEXT}]`,
+    // setError("auth.some.key") passes a MessageKey, not text: key-shaped literals are fine.
+    `CallExpression[callee.name=/^set\\w*(Error|Message)$/] > Literal[value=${TEXT}]:not([value=${KEY_SHAPE}])`,
+    `CallExpression[callee.name=/^set\\w*(Error|Message)$/] > TemplateLiteral > TemplateElement[value.raw=${TEXT}]`,
+  ].map((selector) => ({ selector, message: MESSAGE })),
+  {
+    selector: `${CHILD_CONTAINER} > Literal[value=' ']`,
+    message: 'Don\'t join sentence fragments with {" "}; use one whole-sentence key.',
+  },
   ...TAURI_DETECTION_SELECTORS,
   { selector: "JSXText[value=/[A-Za-z]/]", message: MESSAGE },
   {

@@ -72,4 +72,29 @@ describe("i18n", () => {
     const messages = results[0].messages.filter((m) => m.ruleId === "no-restricted-syntax");
     expect(messages).toHaveLength(1);
   }, LINT_TIMEOUT_MS);
+
+  const lintCount = async (code: string) => {
+    const results = await eslint().lintText(code, { filePath: "src/i18n/__fixtures__/x.tsx" });
+    return results[0].messages.filter((m) => m.ruleId === "no-restricted-syntax").length;
+  };
+
+  it("flags literal ternaries in children and toast titles", async () => {
+    expect(await lintCount('export const X = () => <p>{ok ? "Saved" : "Failed"}</p>;')).toBe(2);
+    expect(await lintCount('showToast({ type: "error", title: "Oops" });')).toBe(1);
+    expect(await lintCount("export const X = () => <b title={`Hi ${n}`} />;")).toBe(1);
+    expect(await lintCount('export const X = () => <p>{a}{" "}{b}</p>;')).toBe(1);
+  }, LINT_TIMEOUT_MS);
+
+  it("flags setError text but not message keys", async () => {
+    expect(await lintCount('setError("Could not save.");')).toBe(1);
+    expect(await lintCount('setError("auth.forcedChange.failed");')).toBe(0);
+  }, LINT_TIMEOUT_MS);
+
+  it("does not flag class ternaries or t() args", async () => {
+    expect(
+      await lintCount(
+        'export const X = () => <p class={x ? "a b" : "c"} title={t("common.retry")}>{t("common.save")}</p>;',
+      ),
+    ).toBe(0);
+  }, LINT_TIMEOUT_MS);
 });
