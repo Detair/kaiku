@@ -85,7 +85,13 @@ class AuthState @Inject constructor(
         }
     }
 
+    /** Id of the session that ended last, or null; see [endedSessions]. */
+    @Volatile
+    var lastEndedSessionId: Long? = null
+        private set
+
     private fun emitEnded(previous: AuthSession) {
+        if (previous is AuthSession.LoggedIn) lastEndedSessionId = previous.sessionId
         if (previous is AuthSession.LoggedIn && !_endedSessions.tryEmit(previous)) {
             // Only if ENDED_SESSIONS_BUFFER transitions pile up unobserved.
             logger.warning("ended session not delivered to observers")

@@ -217,4 +217,36 @@ class ChatRepositoryAttachmentTest {
         repo.sendAttachment("c1", uri, null)
         coVerify(exactly = 2) { api.getUploadLimits() }
     }
+
+    @Test
+    fun `upload completing after clearSession publishes nothing`() = runTest {
+        val repo = repository(FakeReader())
+        val messages = repo.getMessages("c1")
+        // The session ends (logout) while the upload is in flight.
+        coEvery { anyUpload() } coAnswers {
+            repo.clearSession()
+            sent
+        }
+
+        val result = repo.sendAttachment("c1", uri, null)
+
+        assertTrue(result.isSuccess)
+        assertTrue(messages.value.isEmpty())
+        assertTrue(repo.getMessages("c1").value.isEmpty())
+    }
+
+    @Test
+    fun `upload limits fetched across clearSession are not cached`() = runTest {
+        streamingApi()
+        val repo = repository(FakeReader())
+        coEvery { api.getUploadLimits() } coAnswers {
+            repo.clearSession()
+            UploadLimits(maxUploadSize = 100)
+        }
+
+        repo.sendAttachment("c1", uri, null)
+        repo.sendAttachment("c1", uri, null)
+
+        coVerify(exactly = 2) { api.getUploadLimits() }
+    }
 }

@@ -418,9 +418,11 @@ class ChatRepository internal constructor(
     private var cachedLimits: Pair<String?, UploadLimits>? = null
 
     private suspend fun uploadLimits(): UploadLimits {
+        val startEpoch = epoch
         val me = authState.currentUserId.value
         cachedLimits?.takeIf { it.first == me }?.let { return it.second }
-        return messageApi.getUploadLimits().also { cachedLimits = me to it }
+        // A fetch that outlives a session clear is used once but not cached.
+        return messageApi.getUploadLimits().also { publishIfCurrent(startEpoch) { cachedLimits = me to it } }
     }
 
     /**
@@ -435,6 +437,7 @@ class ChatRepository internal constructor(
      */
     suspend fun sendAttachment(channelId: String, uri: Uri, caption: String?): Result<Message> {
         val reader = attachments ?: return Result.failure(AttachmentException.Failed())
+        val startEpoch = epoch
         return try {
             val limit = uploadLimits().maxUploadSize
             val message = withContext(ioDispatcher) {
@@ -473,8 +476,11 @@ class ChatRepository internal constructor(
                 }
             }
             message.onSuccess { sent ->
-                getOrCreateMessagesFlow(channelId).update { current ->
-                    MessageOrdering.merge(current, listOf(sent))
+                // Not after a session clear: the old session's message stays off screen.
+                publishIfCurrent(startEpoch) {
+                    getOrCreateMessagesFlow(channelId).update { current ->
+                        MessageOrdering.merge(current, listOf(sent))
+                    }
                 }
             }
         } catch (e: kotlin.coroutines.cancellation.CancellationException) {
@@ -486,7 +492,7 @@ class ChatRepository internal constructor(
             val status = (e as? ApiException)?.status
             val tooLarge = status == HttpStatusCode.PayloadTooLarge ||
                 generateSequence<Throwable>(e) { it.cause }.any { it is StreamTooLargeException }
-            if (tooLarge) cachedLimits = null
+            if (tooLarge) publishIfCurrent(startEpoch) { cachedLimits = null }
             if (e is ApiException) logger.info("attachment upload rejected: status=${e.status.value}")
             else logger.log(Level.WARNING, "attachment upload failed (${e::class.simpleName})")
             Result.failure(

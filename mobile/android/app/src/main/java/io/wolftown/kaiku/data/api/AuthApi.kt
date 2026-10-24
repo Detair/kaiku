@@ -28,22 +28,19 @@ interface AuthApi {
     ): AuthResponse
     suspend fun refresh(refreshToken: String): AuthResponse
     /**
-     * `POST /auth/logout` for the stored session. Sends [refreshToken] in the
-     * body when known; without it the bearer token alone ends the session
-     * (C25). If a request with a body token is refused (typically: the auth
-     * interceptor refreshed on a 401 and replayed the now stale body token),
-     * it retries once bearer-only. Best effort: never throws on a non-2xx
-     * status, never logs tokens.
+     * `POST /auth/logout` on [serverUrl] (absolute) for one captured session,
+     * using only the tokens passed in: the auth interceptor is skipped, so a
+     * stored token (possibly another session's) is never attached, and
+     * nothing is refreshed. Attempts, until one succeeds:
+     * 1. bearer [accessToken] plus [refreshToken] in the body;
+     * 2. bearer only (C25), e.g. when the body token was rotated away;
+     * 3. [refreshToken] in the body without a bearer, e.g. when the captured
+     *    access token has expired (if the server accepts it).
+     * Without a [refreshToken] only the bearer request is sent. Best effort:
+     * never throws on a non-2xx status; logs status codes, never tokens.
      */
-    suspend fun logout(refreshToken: String?)
+    suspend fun logoutSession(serverUrl: String, accessToken: String?, refreshToken: String?)
 
-    /**
-     * `POST /auth/logout` on [serverUrl] (absolute) for a session that is no
-     * longer the stored one: explicit bearer [accessToken] that the auth
-     * interceptor never replaces or refreshes, plus [refreshToken] in the body
-     * when known. Best effort, like [logout].
-     */
-    suspend fun logoutSession(serverUrl: String, accessToken: String, refreshToken: String?)
     suspend fun getMe(): User
     /**
      * Calls /auth/me with an explicit bearer token. The request skips the auth
@@ -174,30 +171,24 @@ class AuthApiImpl @Inject constructor(
         return response.body()
     }
 
-    override suspend fun logout(refreshToken: String?) {
-        val response = httpClient.post("/auth/logout") {
-            if (refreshToken != null) setBody(RefreshTokenRequest(refreshToken))
+    override suspend fun logoutSession(serverUrl: String, accessToken: String?, refreshToken: String?) {
+        val url = serverUrl.trimEnd('/') + "/auth/logout"
+        val attempts = buildList {
+            if (accessToken != null) add(accessToken to refreshToken)
+            if (accessToken != null && refreshToken != null) add(accessToken to null)
+            if (refreshToken != null) add(null to refreshToken)
         }
-        if (response.status.isSuccess()) return
-        logger.log(Level.WARNING, "Logout request failed: ${response.status.value}")
-        if (refreshToken == null) return
-        // C25: the bearer token alone ends the session.
-        val retry = httpClient.post("/auth/logout")
-        if (!retry.status.isSuccess()) {
-            logger.log(Level.WARNING, "Bearer-only logout failed: ${retry.status.value}")
-        }
-    }
-
-    override suspend fun logoutSession(serverUrl: String, accessToken: String, refreshToken: String?) {
-        val response = httpClient.post(serverUrl.trimEnd('/') + "/auth/logout") {
-            attributes.put(KaikuHttpClient.SkipAuthInterceptor, true)
-            headers {
-                set(HttpHeaders.Authorization, "Bearer $accessToken")
+        for ((index, attempt) in attempts.withIndex()) {
+            val (bearer, bodyToken) = attempt
+            val response = httpClient.post(url) {
+                attributes.put(KaikuHttpClient.SkipAuthInterceptor, true)
+                if (bearer != null) {
+                    headers { set(HttpHeaders.Authorization, "Bearer $bearer") }
+                }
+                if (bodyToken != null) setBody(RefreshTokenRequest(bodyToken))
             }
-            if (refreshToken != null) setBody(RefreshTokenRequest(refreshToken))
-        }
-        if (!response.status.isSuccess()) {
-            logger.log(Level.WARNING, "Logout of an ended session failed: ${response.status.value}")
+            if (response.status.isSuccess()) return
+            logger.log(Level.WARNING, "Logout attempt ${index + 1} failed: ${response.status.value}")
         }
     }
 

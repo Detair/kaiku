@@ -13,6 +13,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -64,6 +65,7 @@ interface SessionTeardown {
  * [STEP_TIMEOUT_MS]; a failure or timeout is logged (step name and exception
  * type only) and the next step runs. If a newer session is current when a
  * step is due, the remaining steps are skipped so its state is left alone.
+ * That is only a safety net: logins wait for [awaitIdle] first.
  */
 @Singleton
 class SessionTeardownRunner @Inject constructor(
@@ -85,6 +87,26 @@ class SessionTeardownRunner @Inject constructor(
     /** Teardown job per session id; guarded by itself. */
     private val jobs = HashMap<Long, Job>()
 
+    /** Running teardowns without a session (logout while logged out); guarded by [jobs]. */
+    private val anonymousJobs = HashSet<Job>()
+
+    /**
+     * Waits until no teardown is pending or running, bounded by the steps'
+     * timeouts. Every login calls this before it stores tokens or sets
+     * LoggedIn, so the previous session's cleanup always completes first and
+     * never has to skip steps for a newer session. A session that just ended
+     * but whose observer has not run yet is started here.
+     */
+    suspend fun awaitIdle() {
+        authState.lastEndedSessionId?.let { tearDown(it) }
+        val pending = synchronized(jobs) {
+            (jobs.values + anonymousJobs).filter { it.isActive }
+        }
+        if (pending.isEmpty()) return
+        val idle = withTimeoutOrNull((steps.size + 1) * STEP_TIMEOUT_MS) { pending.joinAll() }
+        if (idle == null) logger.warning("teardown still running, continuing")
+    }
+
     /** Starts observing ended sessions; idempotent. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -104,7 +126,15 @@ class SessionTeardownRunner @Inject constructor(
      * wait; cancelling the wait does not cancel the teardown.
      */
     fun tearDown(sessionId: Long?): Job {
-        if (sessionId == null) return scope.launch { runSteps(null) }
+        if (sessionId == null) {
+            synchronized(jobs) {
+                val job = scope.launch(start = CoroutineStart.LAZY) { runSteps(null) }
+                anonymousJobs += job
+                job.invokeOnCompletion { synchronized(jobs) { anonymousJobs -= job } }
+                job.start()
+                return job
+            }
+        }
         synchronized(jobs) {
             val existing = jobs[sessionId]
             // Running or completed normally: share it. Cancelled/failed: run again.
