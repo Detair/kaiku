@@ -24,6 +24,13 @@ export interface UserSummary {
   is_banned: boolean;
 }
 
+/** Request body for `POST /api/admin/users` (wire format). */
+export interface AdminCreateUserRequest {
+  username: string;
+  display_name: string | null;
+  temporary_password: string;
+}
+
 export interface GuildSummary {
   id: string;
   name: string;

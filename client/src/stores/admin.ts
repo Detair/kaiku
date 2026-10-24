@@ -7,6 +7,7 @@
 
 import { createStore } from "solid-js/store";
 import type {
+  AdminCreateUserRequest,
   AdminStats,
   UserSummary,
   GuildSummary,
@@ -416,6 +417,24 @@ export async function loadUsers(
       isUsersLoading: false,
     });
   }
+}
+
+/**
+ * Create an account with a temporary password and show it at the top of the
+ * loaded list. Errors propagate so the dialog can show them (409 = taken).
+ */
+export async function createUser(
+  req: AdminCreateUserRequest,
+): Promise<UserSummary> {
+  const created = await tauri.adminCreateUser(req);
+  setAdminState({
+    users: [created, ...adminState.users],
+    usersPagination: {
+      ...adminState.usersPagination,
+      total: adminState.usersPagination.total + 1,
+    },
+  });
+  return created;
 }
 
 /**

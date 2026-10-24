@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.
 - Server admins can create accounts with a temporary password via the admin API (`POST /api/admin/users`); the new user is asked to set their own password at first sign-in. Registration can stay closed.
 - Apps can fetch messages they missed while offline (`GET /api/messages/channel/{id}?after=…`), and the realtime connection now reports the server time on connect so reconnecting apps catch up reliably.
