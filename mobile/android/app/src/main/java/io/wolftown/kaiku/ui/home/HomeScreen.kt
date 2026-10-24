@@ -16,6 +16,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
+import io.wolftown.kaiku.ui.shared.NotificationPermissionPrompt
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,6 +47,8 @@ fun HomeScreen(
             }
         }
     }
+
+    NotificationPermissionPrompt(onGranted = {})
 
     ModalNavigationDrawer(
         drawerState = drawerState,

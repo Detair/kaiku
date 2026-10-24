@@ -119,4 +119,13 @@
     <string name="voice_join_failed">Couldn\'t join the voice channel.</string>
     <string name="voice_start_failed">Couldn\'t start the voice call. Check that Kaiku may use the microphone and run in the background.</string>
     <string name="voice_connection_error">Voice connection problem.</string>
+    <string name="notif_channel_dm_name">Direct messages</string>
+    <string name="notif_channel_dm_description">New direct messages</string>
+    <string name="notif_channel_mentions_name">Mentions</string>
+    <string name="notif_channel_mentions_description">When someone mentions you in a channel</string>
+    <string name="notif_channel_sync_name">Background sync</string>
+    <string name="notif_channel_sync_description">Shown while Kaiku checks for new messages</string>
+    <string name="push_permission_rationale">So you don\'t miss messages from family, Kaiku needs permission to show notifications.</string>
+    <string name="push_permission_continue">Continue</string>
+    <string name="push_permission_not_now">Not now</string>
 </resources>
