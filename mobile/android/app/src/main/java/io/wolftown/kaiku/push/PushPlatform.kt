@@ -7,6 +7,7 @@ import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.firebase.FirebaseApp
 import dagger.hilt.android.qualifiers.ApplicationContext
+import org.unifiedpush.android.connector.UnifiedPush
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -18,10 +19,13 @@ interface PushPlatform {
     /** Firebase project baked into the APK, or null when built without `google-services.json`. */
     fun firebaseProjectId(): String?
 
-    /** Installed UnifiedPush distributors; empty until UnifiedPush support lands. */
+    /** Installed UnifiedPush distributors (package names). */
     fun distributors(): List<String>
     fun preferUnifiedPush(): Boolean
     fun savedDistributor(): String?
+
+    /** Remembers the distributor the selector settled on, for the UnifiedPush transport. */
+    fun saveDistributor(distributor: String) {}
 
     /** Shown in the server's device list (C19 `device_label`, at most 64 characters). */
     fun deviceLabel(): String?
@@ -29,6 +33,7 @@ interface PushPlatform {
 
 class AndroidPushPlatform @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val preferences: PushPreferences,
 ) : PushPlatform {
 
     private companion object {
@@ -54,11 +59,20 @@ class AndroidPushPlatform @Inject constructor(
         null
     }
 
-    override fun distributors(): List<String> = emptyList()
+    override fun distributors(): List<String> = try {
+        UnifiedPush.getDistributors(context)
+    } catch (e: Exception) {
+        logger.info("Distributor lookup failed: ${e.javaClass.simpleName}")
+        emptyList()
+    }
 
-    override fun preferUnifiedPush(): Boolean = false
+    override fun preferUnifiedPush(): Boolean = preferences.preferUnifiedPush
 
-    override fun savedDistributor(): String? = null
+    override fun savedDistributor(): String? = preferences.distributor
+
+    override fun saveDistributor(distributor: String) {
+        if (preferences.distributor != distributor) preferences.distributor = distributor
+    }
 
     override fun deviceLabel(): String? =
         Build.MODEL?.trim()?.take(MAX_LABEL_LENGTH)?.takeIf { it.isNotEmpty() }

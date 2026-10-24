@@ -68,3 +68,32 @@ the app compares it with the project baked into the APK.
 If the projects differ (for example, a server pointed at a different Firebase
 project than the one the APK was built with), the app does not use FCM. Fix
 the server key or rebuild the APK with the matching `google-services.json`.
+
+## Phones without Google services: UnifiedPush (ntfy)
+
+Phones without Google Play services (or people who prefer not to use Google)
+can receive the same content-free wake signal through
+[UnifiedPush](https://unifiedpush.org/). The server needs no extra setup: it
+lists `unifiedpush` among its providers and posts the signal to the push
+endpoint the phone registers.
+
+1. Install a UnifiedPush distributor on the phone, for example
+   [ntfy](https://docs.ntfy.sh/subscribe/phone/) from F-Droid. Nothing needs to
+   be configured inside ntfy for Kaiku.
+2. Open Kaiku. Settings → Notifications shows **On (UnifiedPush)** once the
+   registration went through. Without Google services Kaiku picks UnifiedPush
+   by itself; on phones that have both, turn on **Use UnifiedPush instead of
+   Google**. With several distributors installed, choose one in the same
+   section.
+3. Without a distributor the status reads **Off: install ntfy to get
+   notifications**; the button next to it opens the ntfy instructions.
+
+Notes:
+
+- The endpoint a distributor hands out is a secret URL. Kaiku only registers
+  `https` endpoints of at most 2048 bytes and never writes them to logs.
+- The wake signal is a small plaintext JSON body (`t`, `channel_id`, `count`)
+  without message text; if you run your own ntfy server, use HTTPS.
+- Logging out removes the phone's registration from the server and from the
+  distributor.
+

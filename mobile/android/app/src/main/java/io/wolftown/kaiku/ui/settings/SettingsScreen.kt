@@ -8,7 +8,36 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
+
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.browser.customtabs.CustomTabsIntent
+
+private const val NTFY_HELP_URL = "https://docs.ntfy.sh/subscribe/phone/"
+
+private fun openNotificationSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        // No settings screen to show; the status line still explains the state.
+    }
+}
+
+private fun openNtfyHelp(context: Context) {
+    try {
+        CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(NTFY_HELP_URL))
+    } catch (_: ActivityNotFoundException) {
+        // No browser installed.
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -22,8 +51,14 @@ fun SettingsScreen(
     val user by viewModel.user.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val serverUrl = viewModel.serverUrl
+    val notificationState by viewModel.notificationState.collectAsState()
+    val context = LocalContext.current
 
     var showLogoutDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        viewModel.reloadPushState()
+    }
 
     LaunchedEffect(Unit) {
         viewModel.logoutComplete.collect { onLogout() }
@@ -91,6 +126,16 @@ fun SettingsScreen(
             ) {
                 Text("Scan QR Code")
             }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            NotificationSettingsSection(
+                state = notificationState,
+                onPreferUnifiedPush = viewModel::setPreferUnifiedPush,
+                onPickDistributor = viewModel::pickDistributor,
+                onOpenSystemSettings = { openNotificationSettings(context) },
+                onInstallNtfy = { openNtfyHelp(context) },
+            )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
