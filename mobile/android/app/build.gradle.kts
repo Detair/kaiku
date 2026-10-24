@@ -162,6 +162,10 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-messaging")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
+    // UnifiedPush connector (push transport for phones without Google services).
+    // 3.0.10 (Maven Central, 2025-06-12) is the newest 3.x built with Kotlin 2.0.x; 3.2+ need Kotlin 2.2/2.3
+    // metadata, newer than this project's Kotlin 2.1.0. Pulls in Tink (Apache-2.0) for Web Push decryption.
+    implementation("org.unifiedpush.android:connector:3.0.10")
 
     // Ktor
     implementation("io.ktor:ktor-client-okhttp:3.1.0")

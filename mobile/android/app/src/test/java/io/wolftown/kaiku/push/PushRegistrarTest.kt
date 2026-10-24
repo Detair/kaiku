@@ -70,7 +70,11 @@ class PushRegistrarTest {
         override fun firebaseProjectId() = project
         override fun distributors() = installed
         override fun preferUnifiedPush() = false
-        override fun savedDistributor(): String? = null
+        var saved: String? = null
+        override fun savedDistributor(): String? = saved
+        override fun saveDistributor(distributor: String) {
+            saved = distributor
+        }
         override fun deviceLabel() = LABEL
     }
 
@@ -463,6 +467,66 @@ class PushRegistrarTest {
 
         fcm.hang = false
         assertEquals(RefreshOutcome.REGISTERED, registrar.refresh())
+    }
+
+    @Test
+    fun `unifiedpush endpoint reports the distributor`() = runTest {
+        platform.installed = listOf(DISTRIBUTOR)
+        platform.saved = DISTRIBUTOR
+        coEvery { api.getConfig() } returns upOnlyConfig
+        val registrar = newRegistrar()
+
+        assertEquals(
+            RefreshOutcome.REGISTERED,
+            registrar.onEndpoint(TransportKind.UNIFIED_PUSH, "https://push.example.com/up/xyz"),
+        )
+
+        assertEquals(PushStatus.Active(TransportKind.UNIFIED_PUSH, DISTRIBUTOR), registrar.status.value)
+    }
+
+    @Test
+    fun `unifiedpush selection remembers the chosen distributor`() = runTest {
+        platform.installed = listOf(DISTRIBUTOR)
+        coEvery { api.getConfig() } returns upOnlyConfig
+        val registrar = newRegistrar()
+
+        registrar.refresh()
+
+        assertEquals(DISTRIBUTOR, platform.saved)
+    }
+
+    @Test
+    fun `non-https unifiedpush endpoint is rejected locally`() = runTest {
+        platform.installed = listOf(DISTRIBUTOR)
+        platform.saved = DISTRIBUTOR
+        val registrar = newRegistrar()
+
+        for (bad in listOf("http://push.example.com/up/abc", "not a url", "https:///nohost", "ftp://x.example/a")) {
+            assertEquals(RefreshOutcome.FAILED, registrar.onEndpoint(TransportKind.UNIFIED_PUSH, bad))
+        }
+
+        coVerify(exactly = 0) { api.register(any()) }
+        assertEquals(PushStatus.Off(PushOffReason.ERROR), registrar.status.value)
+    }
+
+    @Test
+    fun `over-long unifiedpush endpoint is rejected locally`() = runTest {
+        val registrar = newRegistrar()
+        val tooLong = "https://push.example.com/" + "a".repeat(2048)
+
+        assertEquals(RefreshOutcome.FAILED, registrar.onEndpoint(TransportKind.UNIFIED_PUSH, tooLong))
+
+        coVerify(exactly = 0) { api.register(any()) }
+    }
+
+    @Test
+    fun `distributor registration failure schedules a retry`() = runTest {
+        val registrar = newRegistrar()
+
+        registrar.onTransportRegistrationFailed()
+
+        assertEquals(1, scheduler.scheduled)
+        assertEquals(PushStatus.Off(PushOffReason.ERROR), registrar.status.value)
     }
 
     @Test

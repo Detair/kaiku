@@ -134,4 +134,17 @@
     <string name="push_permission_rationale">So you don\'t miss messages from family, Kaiku needs permission to show notifications.</string>
     <string name="push_permission_continue">Continue</string>
     <string name="push_permission_not_now">Not now</string>
+    <string name="notif_settings_title">Notifications</string>
+    <string name="notif_settings_status_label">Status</string>
+    <string name="notif_settings_use_unifiedpush">Use UnifiedPush instead of Google</string>
+    <string name="notif_settings_use_unifiedpush_hint">Delivers notifications through an app such as ntfy.</string>
+    <string name="notif_settings_distributor_label">UnifiedPush app</string>
+    <string name="notif_settings_open_system">Open notification settings</string>
+    <string name="notif_settings_install_ntfy">How to get notifications</string>
+    <string name="push_status_fcm">On (Google)</string>
+    <string name="push_status_unifiedpush">On (UnifiedPush)</string>
+    <string name="push_status_permission_off">Notifications off</string>
+    <string name="push_status_no_transport">Off: install ntfy to get notifications</string>
+    <string name="push_status_error">Off: Kaiku could not set up notifications and will try again</string>
+    <string name="push_status_checking">Checking…</string>
 </resources>

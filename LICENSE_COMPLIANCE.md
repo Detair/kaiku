@@ -210,6 +210,8 @@ Libraries of the Android client (`mobile/android/app/build.gradle.kts`) added fo
 | com.google.firebase:firebase-bom | 33.7.0 | Apache-2.0 | Version alignment for Firebase libraries (no code) |
 | com.google.firebase:firebase-messaging | 24.1.0 (via BoM 33.7.0) | Apache-2.0 | FCM push transport; inactive in builds without `google-services.json` |
 | org.jetbrains.kotlinx:kotlinx-coroutines-play-services | 1.9.0 | Apache-2.0 | `await()` for Play services / Firebase tasks |
+| org.unifiedpush.android:connector | 3.0.10 | Apache-2.0 | UnifiedPush transport (receives the wake signal through a distributor app such as ntfy); released 2025-06-12 |
+| com.google.crypto.tink:tink (via connector 3.0.10) | 1.17.0 | Apache-2.0 | Web Push key handling inside the connector; Kaiku's UnifiedPush bodies are plaintext wake signals and are not decrypted with it |
 | com.google.gms:google-services (Gradle plugin) | 4.4.2 | Apache-2.0 | Reads `google-services.json` at build time; applied only when the file exists (build time only) |
 
 firebase-messaging pulls in Google Play services client libraries (e.g. `play-services-base`, already used for the TLS provider), which are distributed under the Android Software Development Kit License, like the existing Play services dependency.

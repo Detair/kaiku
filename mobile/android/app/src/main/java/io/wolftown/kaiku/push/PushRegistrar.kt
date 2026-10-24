@@ -24,6 +24,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
+import java.net.URI
+import java.net.URISyntaxException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.logging.Logger
@@ -97,6 +99,9 @@ class PushRegistrar @Inject constructor(
 
         /** A registration that raced a session change is removed again within this bound. */
         const val ROLLBACK_DELETE_TIMEOUT_MS = 2_000L
+
+        /** The server rejects longer UnifiedPush endpoints with a 400 (C19). */
+        const val MAX_UP_ENDPOINT_BYTES = 2048
     }
 
     /** The account a pass works for (no tokens). */
@@ -168,6 +173,28 @@ class PushRegistrar @Inject constructor(
         }
     }
 
+    /**
+     * UnifiedPush delivered an endpoint. Called from the connector service, so
+     * it only hands off: no network and no disk access on the caller's thread.
+     */
+    fun onEndpointAsync(kind: TransportKind, endpoint: String) {
+        launchGuarded { onEndpoint(kind, endpoint) }
+    }
+
+    /** The distributor dropped our registration: run the whole selection again. */
+    fun onTransportUnregistered() {
+        launchRefresh()
+    }
+
+    /**
+     * The distributor could not register us. Not retried at once (the distributor
+     * may report failures in a loop): the worker retries with backoff.
+     */
+    fun onTransportRegistrationFailed() {
+        _status.value = PushStatus.Off(PushOffReason.ERROR)
+        scheduler.schedule()
+    }
+
     private fun launchRefresh() {
         if (!refreshQueued.compareAndSet(false, true)) return
         val dequeued = AtomicBoolean(false)
@@ -205,7 +232,8 @@ class PushRegistrar @Inject constructor(
     suspend fun onEndpoint(kind: TransportKind, endpoint: String): RefreshOutcome =
         mutex.withLock {
             val account = currentAccount() ?: return@withLock RefreshOutcome.NOT_LOGGED_IN
-            registerLocked(kind, endpoint, distributor = null, account, epoch.get(), scheduleRetry = true)
+            val distributor = if (kind == TransportKind.UNIFIED_PUSH) platform.savedDistributor() else null
+            registerLocked(kind, endpoint, distributor, account, epoch.get(), scheduleRetry = true)
         }
 
     /**
@@ -308,6 +336,8 @@ class PushRegistrar @Inject constructor(
         if (choice is TransportChoice.Off) return off(choice.reason)
         val transport = kind?.let(::transportFor) ?: return off(PushOffReason.NO_TRANSPORT)
         lastKind = kind
+        // The transport reads the distributor from the preferences; the selector may have fallen back to another.
+        distributor?.let(platform::saveDistributor)
 
         awaitPendingTransportUnregister()
 
@@ -346,6 +376,12 @@ class PushRegistrar @Inject constructor(
         scheduleRetry: Boolean,
     ): RefreshOutcome {
         if (epoch.get() != startEpoch || currentAccount() != account) return RefreshOutcome.NOT_LOGGED_IN
+
+        // Endpoints are secrets and must reach the server over TLS only; a bad one is final.
+        if (kind == TransportKind.UNIFIED_PUSH && !isAcceptableUnifiedPushEndpoint(endpoint)) {
+            logger.info("push endpoint rejected: provider=${kind.wire}")
+            return failed()
+        }
 
         val hash = PushRegistrationRecord.hash(endpoint)
         val record = store.load()
@@ -429,6 +465,17 @@ class PushRegistrar @Inject constructor(
         val userId = tokenStorage.getUserId()?.takeIf { it.isNotBlank() } ?: return null
         if (tokenStorage.getAccessToken() == null && tokenStorage.getRefreshToken() == null) return null
         return Account(userId, tokenStorage.getServerUrl())
+    }
+
+    /** https URL with a host that fits the server's 2048 byte limit (C19). */
+    private fun isAcceptableUnifiedPushEndpoint(endpoint: String): Boolean {
+        if (endpoint.toByteArray(Charsets.UTF_8).size > MAX_UP_ENDPOINT_BYTES) return false
+        val uri = try {
+            URI(endpoint)
+        } catch (_: URISyntaxException) {
+            return false
+        }
+        return uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
     }
 
     private fun transportFor(kind: TransportKind): PushTransport? = transports.firstOrNull { it.kind == kind }

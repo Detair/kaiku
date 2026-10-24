@@ -63,6 +63,15 @@
             </intent-filter>
         </service>
 
+        <!-- UnifiedPush messages and endpoints; the connector library declares its own receiver. -->
+        <service
+            android:name=".push.KaikuUnifiedPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
         <!-- No FCM token until the app picks FCM as its push transport. -->
         <meta-data
             android:name="firebase_messaging_auto_init_enabled"

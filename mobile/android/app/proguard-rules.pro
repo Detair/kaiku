@@ -26,3 +26,7 @@
 # Hilt
 -keep class dagger.hilt.** { *; }
 -keep class * extends dagger.hilt.android.internal.managers.ViewComponentManager$FragmentContextWrapper { *; }
+
+# UnifiedPush connector pulls in Tink; its optional annotation dependencies are not shipped
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**

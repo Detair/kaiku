@@ -19,6 +19,7 @@ import io.wolftown.kaiku.push.PushPlatform
 import io.wolftown.kaiku.push.PushRegistrationScheduler
 import io.wolftown.kaiku.push.PushRegistrationStore
 import io.wolftown.kaiku.push.PushTransport
+import io.wolftown.kaiku.push.UnifiedPushTransport
 import io.wolftown.kaiku.push.WakeWorkEnqueuer
 import io.wolftown.kaiku.push.WorkManagerPushRegistrationScheduler
 import io.wolftown.kaiku.push.WorkManagerWakeEnqueuer
@@ -44,10 +45,14 @@ abstract class PushModule {
         impl: WorkManagerPushRegistrationScheduler,
     ): PushRegistrationScheduler
 
-    /** Push transports the registrar chooses from (UnifiedPush joins in Task 8). */
+    /** Push transports the registrar chooses from. */
     @Binds
     @IntoSet
     abstract fun bindFcmTransport(impl: FcmTransport): PushTransport
+
+    @Binds
+    @IntoSet
+    abstract fun bindUnifiedPushTransport(impl: UnifiedPushTransport): PushTransport
 
     companion object {
         /** Plain prefs: the ledger holds message ids and timestamps only, never content. */
