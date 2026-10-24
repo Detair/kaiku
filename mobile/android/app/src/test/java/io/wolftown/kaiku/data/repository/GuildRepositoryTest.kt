@@ -7,6 +7,7 @@ import io.wolftown.kaiku.data.api.ChannelApi
 import io.wolftown.kaiku.data.api.GuildApi
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -112,5 +113,79 @@ class GuildRepositoryTest {
         runCurrent()
 
         coVerify(exactly = 0) { channelApi.markAsRead(any(), any()) }
+    }
+
+    @Test
+    fun `a message arriving while the read is in flight is sent afterwards`() = runTest {
+        val repository = repository()
+        repository.load(channel("a"))
+        repository.setActiveChannel("a")
+        runCurrent()
+        val gate = CompletableDeferred<Unit>()
+        coEvery { channelApi.markAsRead("a", "m1") } coAnswers { gate.await() }
+
+        repository.onActiveChannelMessage("a", "m1")
+        advanceTimeBy(1_001)
+        runCurrent()
+        coVerify(exactly = 1) { channelApi.markAsRead("a", "m1") }
+
+        repository.onActiveChannelMessage("a", "m2")
+        gate.complete(Unit)
+        advanceTimeBy(1_001)
+        runCurrent()
+
+        coVerify(exactly = 1) { channelApi.markAsRead("a", "m2") }
+    }
+
+    @Test
+    fun `switching channels sends the pending read of the previous one`() = runTest {
+        val repository = repository()
+        repository.load(channel("a"), channel("b"))
+        repository.setActiveChannel("a")
+        repository.onActiveChannelMessage("a", "m1")
+
+        repository.setActiveChannel("b")
+        runCurrent()
+
+        coVerify(exactly = 1) { channelApi.markAsRead("a", "m1") }
+    }
+
+    @Test
+    fun `leaving a channel sends its pending read`() = runTest {
+        val repository = repository()
+        repository.load(channel("a"))
+        repository.setActiveChannel("a")
+        repository.onActiveChannelMessage("a", "m1")
+
+        repository.clearActiveChannel("a")
+        runCurrent()
+
+        coVerify(exactly = 1) { channelApi.markAsRead("a", "m1") }
+        advanceTimeBy(2_000)
+        runCurrent()
+        coVerify(exactly = 1) { channelApi.markAsRead("a", "m1") }
+    }
+
+    @Test
+    fun `new messages update the last message id used when opening`() = runTest {
+        val repository = repository()
+        repository.load(channel("a", last = "old"))
+
+        repository.onMessageReceived("a", "new")
+        repository.setActiveChannel("a")
+        runCurrent()
+
+        coVerify(exactly = 1) { channelApi.markAsRead("a", "new") }
+    }
+
+    @Test
+    fun `own message from another device does not raise unread`() = runTest {
+        val repository = repository()
+        repository.load(channel("a"))
+
+        repository.onMessageReceived("a", "m1", countUnread = false)
+
+        assertEquals(0, repository.channels.value.single().unreadCount)
+        assertEquals("m1", repository.channels.value.single().lastMessageId)
     }
 }

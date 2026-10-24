@@ -13,6 +13,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -71,7 +73,7 @@ class GuildRepository @Inject constructor(
     suspend fun reloadSelectedGuildChannels() {
         val guildId = _selectedGuildId.value ?: return
         loadChannels(guildId)
-        _activeChannelId.value?.let { _channels.value = clearUnread(_channels.value, it) }
+        _activeChannelId.value?.let { active -> _channels.update { clearUnread(it, active) } }
     }
 
     /**
@@ -80,11 +82,11 @@ class GuildRepository @Inject constructor(
      * tells the server the channel is read up to its latest message.
      */
     fun setActiveChannel(channelId: String?) {
-        _activeChannelId.value = channelId
+        val previous = _activeChannelId.getAndUpdate { channelId }
+        if (previous != channelId) flushPendingRead()
         if (channelId != null) {
-            val channel = _channels.value.find { it.id == channelId }
-            _channels.value = clearUnread(_channels.value, channelId)
-            val lastMessageId = channel?.lastMessageId
+            val lastMessageId = _channels.value.find { it.id == channelId }?.lastMessageId
+            _channels.update { clearUnread(it, channelId) }
             if (lastMessageId != null) scope.launch { sendRead(channelId, lastMessageId) }
         }
     }
@@ -92,40 +94,77 @@ class GuildRepository @Inject constructor(
     /**
      * The user left [channelId]. Resets the active channel only if it is still
      * the active one (a newer channel may already have taken over), so later
-     * messages in [channelId] raise its unread badge again.
+     * messages in [channelId] raise its unread badge again. A read still
+     * waiting for the debounce is sent right away.
      */
     fun clearActiveChannel(channelId: String) {
-        _activeChannelId.compareAndSet(channelId, null)
+        if (_activeChannelId.compareAndSet(channelId, null)) flushPendingRead()
     }
 
     /**
-     * A message arrived in (or was caught up for) [channelId]; [messageId] is
-     * the newest one. No-op unless the channel is open. Marks it read on the
-     * server, at most once per [READ_DEBOUNCE_MS], always with the newest id.
+     * Called when a new message arrives (from the WS handler or a catch-up).
+     * Remembers [messageId] as the channel's newest. Bumps the unread badge
+     * unless the channel is open (then it is marked read, debounced) or
+     * [countUnread] is false (the user's own message from another device).
+     */
+    fun onMessageReceived(channelId: String, messageId: String? = null, countUnread: Boolean = true) {
+        val active = channelId == _activeChannelId.value
+        _channels.update { list ->
+            list.map {
+                if (it.id != channelId) it
+                else it.copy(
+                    lastMessageId = messageId ?: it.lastMessageId,
+                    unreadCount = if (!active && countUnread) it.unreadCount + 1 else it.unreadCount,
+                )
+            }
+        }
+        if (active && messageId != null) onActiveChannelMessage(channelId, messageId)
+    }
+
+    /**
+     * [messageId] is the newest message of [channelId] the user can see. No-op
+     * unless the channel is open. Marks it read on the server, at most once per
+     * [READ_DEBOUNCE_MS], always with the newest id.
      */
     fun onActiveChannelMessage(channelId: String, messageId: String) {
         if (channelId != _activeChannelId.value) return
         synchronized(readLock) {
-            pendingReadId = messageId
-            pendingReadChannel = channelId
-            if (readJob?.isActive == true) return
+            if (pending != null && pending?.first != channelId) {
+                // Switched channels: the old channel's read must not be lost.
+                val old = pending!!
+                pending = null
+                scope.launch { sendRead(old.first, old.second) }
+            }
+            pending = channelId to messageId
+            if (readJob != null) return
             readJob = scope.launch {
-                delay(READ_DEBOUNCE_MS)
-                val (channel, id) = synchronized(readLock) {
-                    val pair = pendingReadChannel to pendingReadId
-                    pendingReadId = null
-                    pendingReadChannel = null
-                    pair
+                while (true) {
+                    delay(READ_DEBOUNCE_MS)
+                    val next = synchronized(readLock) { pending.also { pending = null } }
+                    if (next != null) sendRead(next.first, next.second)
+                    val finished = synchronized(readLock) {
+                        if (pending == null) {
+                            readJob = null
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (finished) return@launch
                 }
-                if (channel != null && id != null) sendRead(channel, id)
             }
         }
     }
 
     private val readLock = Any()
     private var readJob: Job? = null
-    private var pendingReadId: String? = null
-    private var pendingReadChannel: String? = null
+    private var pending: Pair<String, String>? = null
+
+    /** Sends the waiting read now instead of after the debounce. */
+    private fun flushPendingRead() {
+        val next = synchronized(readLock) { pending.also { pending = null } } ?: return
+        scope.launch { sendRead(next.first, next.second) }
+    }
 
     /** Best effort: unread is corrected by the next channel reload if this fails. */
     private suspend fun sendRead(channelId: String, lastMessageId: String) {
@@ -136,15 +175,6 @@ class GuildRepository @Inject constructor(
         } catch (e: Exception) {
             logger.warning("Failed to mark channel read (${e::class.simpleName})")
         }
-    }
-
-    /**
-     * Called when a new message arrives (from the WS handler). Bumps the
-     * channel's unread badge unless it's the channel the user is reading.
-     */
-    fun onMessageReceived(channelId: String) {
-        if (channelId == _activeChannelId.value) return
-        _channels.value = incrementUnread(_channels.value, channelId)
     }
 
     companion object {

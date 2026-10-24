@@ -23,9 +23,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -86,6 +89,7 @@ class MessageFlowTest {
         guildRepository = mockk(relaxed = true)
         tokenStorage = mockk(relaxed = true)
         authState = mockk(relaxed = true)
+        every { authState.currentUserId } returns MutableStateFlow<String?>(null)
         every { webSocket.events } returns eventsFlow
         every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
         every { tokenStorage.getAccessToken() } returns "test-access-token"
@@ -133,6 +137,7 @@ class MessageFlowTest {
             webSocket,
             KaikuJson,
             guildRepository,
+            authState,
             CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
         )
     }
@@ -206,7 +211,24 @@ class MessageFlowTest {
         advanceUntilIdle()
 
         assertEquals(listOf(OLDER_ID, NEWER_ID, LIVE_ID), repository.ids())
-        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID) }
+        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID, any(), any()) }
+    }
+
+    @Test
+    fun `live message from the current user does not count as unread`() = runTest {
+        val event = WsJson.decodeFromString<ServerEvent>(Golden.load("ws_message_new.json"))
+        val authorId = (event as ServerEvent.MessageNew).message["author"]
+            ?.jsonObject?.get("id")?.jsonPrimitive?.content
+        every { authState.currentUserId } returns MutableStateFlow<String?>(authorId)
+        val repository = createRepository()
+        repository.loadMessages(CHANNEL_ID)
+
+        eventsFlow.emit(event)
+        advanceUntilIdle()
+
+        verify(exactly = 1) {
+            guildRepository.onMessageReceived(CHANNEL_ID, LIVE_ID, countUnread = false)
+        }
     }
 
     @Test
@@ -220,7 +242,7 @@ class MessageFlowTest {
         advanceUntilIdle()
 
         assertEquals(listOf(OLDER_ID, NEWER_ID, LIVE_ID), repository.ids())
-        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID) }
+        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID, any(), any()) }
     }
 
     @Test

@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.data.repository
 
 import io.ktor.http.HttpStatusCode
+import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.MessageApi
 import io.wolftown.kaiku.data.ws.ClientEvent
@@ -47,6 +48,7 @@ class ChatRepository @Inject constructor(
     private val webSocket: KaikuWebSocket,
     private val json: Json,
     private val guildRepository: GuildRepository,
+    private val authState: AuthState,
     @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     companion object {
@@ -145,6 +147,8 @@ class ChatRepository @Inject constructor(
                 MessageOrdering.merge(page.items, live)
             }
             catchUpAnchors.remove(channelId)
+            // Opened channel: everything just loaded has been seen.
+            flow.value.lastOrNull()?.let { guildRepository.onActiveChannelMessage(channelId, it.id) }
         }
         return page.hasMore
     }
@@ -195,13 +199,9 @@ class ChatRepository @Inject constructor(
             }
             val previous = flow.getAndUpdate { current -> MessageOrdering.merge(current, page.items) }
             val known = previous.mapTo(HashSet()) { it.id }
-            val added = page.items.mapTo(HashSet()) { it.id }.count { it !in known }
-            repeat(added) { guildRepository.onMessageReceived(channelId) }
-            if (added > 0) {
-                // An open channel is marked read (debounced) instead of unread.
-                page.items.lastOrNull { it.id !in known }?.let {
-                    guildRepository.onActiveChannelMessage(channelId, it.id)
-                }
+            val me = authState.currentUserId.value
+            page.items.filter { it.id !in known }.distinctBy { it.id }.forEach {
+                guildRepository.onMessageReceived(channelId, it.id, countUnread = it.author.id != me)
             }
 
             // Follow the server's cursor, not the newest returned item: the
@@ -395,8 +395,11 @@ class ChatRepository @Inject constructor(
 
             if (isNew) {
                 // Raise the unread badge for non-active channels.
-                guildRepository.onMessageReceived(event.channelId)
-                guildRepository.onActiveChannelMessage(event.channelId, message.id)
+                guildRepository.onMessageReceived(
+                    event.channelId,
+                    message.id,
+                    countUnread = message.author.id != authState.currentUserId.value,
+                )
             }
         } catch (e: Exception) {
             logger.log(Level.WARNING, "Failed to deserialize MessageNew payload (${e::class.simpleName})")
