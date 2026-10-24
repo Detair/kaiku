@@ -130,6 +130,25 @@ Config::default()  // Uses OWASP-recommended defaults
 - Audit token expiry changes (longer = more risk)
 - Test auth flows with expired/malformed tokens
 
+### Session end (C25)
+
+A ban (single or bulk), a single-session revoke, "revoke all other sessions", a password change with `revoke_others`, a password reset, logout and the account-deletion logout end the affected sessions right away.
+
+- **Order:**
+  1. Commit the durable change first: the ban row, the session-row deletion, the password, and the admin audit entry.
+  2. Then call `revocation::end_sessions` (a list of ids) or `end_all_sessions` (every socket of the user).
+- **What ending does:**
+  - It denylists each session id (`canis:revoked_sid:{sid}`, TTL `jwt_access_expiry` + 60 s).
+  - It publishes the internal `session_revoked` / `all_sessions_revoked` notice on `user:{id}`. Sockets consume the notice (it is never forwarded) and answer with an `error` event `SESSION_REVOKED`, then close 1008.
+- **Bans:** every authenticated request and every WS handshake re-checks the ban in the DB. A Valkey problem can never undo a ban.
+- **Bounded failure window:** if Valkey fails after the commit, the request answers 500 and the durable change stands.
+  - The session rows are gone, so refresh is impossible.
+  - Open sockets close anyway, because their pub/sub pipeline fails as well (close 1011), and no new socket can become ready while Valkey is down.
+  - The residual exposure is an access token that is not denylisted, until it expires (`jwt_access_expiry`, 15 min).
+  - Every ending call is idempotent, so a retry finishes the job.
+- **Stable session id:** refresh rotates the session row in place, so the `sid` stays the same for the whole login. Do not change refresh back to delete-and-insert: sockets and tokens from before a refresh would then escape revocation.
+- **Possible follow-up:** a durable revocation outbox (a DB row per pending end, drained to Valkey) would close the residual window.
+
 ### Error Handling
 
 **AuthError** variants map to HTTP status codes in handlers:

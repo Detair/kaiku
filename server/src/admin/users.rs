@@ -285,9 +285,10 @@ pub async fn ban_user(
     }
 
     // Create or update the ban and delete every session of the user in one
-    // transaction, then end them (tokens and every open socket stop now).
-    // The ban is durable before Valkey is involved: every request re-checks
-    // it, so a Valkey failure (500) cannot undo it and a retry is safe.
+    // transaction, audit it, then end the sessions (tokens and every open
+    // socket stop now). The ban and its audit entry are durable before Valkey
+    // is involved: every request re-checks the ban, so a Valkey failure (500)
+    // cannot undo it, and a retry is safe.
     let mut tx = state.db.begin().await?;
     queries::upsert_global_ban(
         &mut tx,
@@ -299,7 +300,6 @@ pub async fn ban_user(
     .await?;
     let ended = crate::auth::queries::delete_user_sessions_except(&mut tx, user_id, None).await?;
     tx.commit().await?;
-    end_all_sessions(&state, user_id, &ended).await?;
 
     // Log the action
     let ip_address = addr.ip().to_string();
@@ -313,6 +313,8 @@ pub async fn ban_user(
         Some(&ip_address),
     )
     .await?;
+
+    end_all_sessions(&state, user_id, &ended).await?;
 
     // Broadcast admin event
     if let Err(e) = broadcast_admin_event(

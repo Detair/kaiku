@@ -628,3 +628,141 @@ async fn test_deletion_retry_ends_sessions_again(pool: PgPool) {
         StatusCode::UNAUTHORIZED
     );
 }
+
+/// A server whose Valkey client fails every command (it is connected, then
+/// closed; a short command timeout turns the wait into an error).
+async fn server_with_failing_valkey(
+    pool: &PgPool,
+) -> (TestServer, std::sync::Arc<vc_server::config::Config>) {
+    use fred::prelude::{ClientLike, Config as ValkeyConfig, PerformanceConfig};
+
+    let config = vc_server::config::Config::default_for_test();
+    let perf = PerformanceConfig {
+        default_command_timeout: Duration::from_millis(300),
+        ..PerformanceConfig::default()
+    };
+    let redis = fred::clients::Client::new(
+        ValkeyConfig::from_url(&config.redis_url).expect("Valkey URL"),
+        Some(perf),
+        None,
+        None,
+    );
+    redis.connect();
+    redis.wait_for_connect().await.expect("connect Valkey");
+    redis.quit().await.expect("quit Valkey");
+
+    server_with_valkey(pool, config, redis).await
+}
+
+/// A server whose Valkey client can read (so the fail-closed session
+/// denylist check in `require_auth` passes) but is refused `SET` and
+/// `PUBLISH`, so ending sessions fails after the handler's commit. Uses a
+/// dedicated Valkey ACL user.
+async fn server_with_write_refusing_valkey(
+    pool: &PgPool,
+) -> (TestServer, std::sync::Arc<vc_server::config::Config>) {
+    use fred::prelude::{ClientLike, Config as ValkeyConfig};
+
+    const ACL_USER: &str = "kaiku-test-no-writes";
+    const ACL_PASSWORD: &str = "kaiku-test-no-writes";
+
+    let config = vc_server::config::Config::default_for_test();
+    let admin = db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Valkey");
+    let _: () = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None, false),
+            vec![
+                "SETUSER",
+                ACL_USER,
+                "reset",
+                "on",
+                &format!(">{ACL_PASSWORD}"),
+                "~*",
+                "&*",
+                "+@all",
+                "-set",
+                "-publish",
+            ],
+        )
+        .await
+        .expect("ACL SETUSER");
+    let _ = admin.quit().await;
+
+    let mut valkey_config = ValkeyConfig::from_url(&config.redis_url).expect("Valkey URL");
+    valkey_config.username = Some(ACL_USER.to_string());
+    valkey_config.password = Some(ACL_PASSWORD.to_string());
+    let redis = fred::clients::Client::new(valkey_config, None, None, None);
+    redis.connect();
+    redis.wait_for_connect().await.expect("connect Valkey");
+
+    server_with_valkey(pool, config, redis).await
+}
+
+/// A test server on `pool` that uses `redis` as its Valkey client.
+async fn server_with_valkey(
+    pool: &PgPool,
+    config: vc_server::config::Config,
+    redis: fred::clients::Client,
+) -> (TestServer, std::sync::Arc<vc_server::config::Config>) {
+    let sfu = vc_server::voice::sfu::SfuServer::new(std::sync::Arc::new(config.clone()), None)
+        .expect("SfuServer");
+    let state = vc_server::api::AppState::new(vc_server::api::AppStateConfig {
+        db: pool.clone(),
+        redis,
+        config: config.clone(),
+        s3: None,
+        sfu,
+        rate_limiter: None,
+        screen_share_limiter: None,
+        email: None,
+        oidc_manager: None,
+        http_client: reqwest::Client::new(),
+    });
+    let server = spawn_test_server(vc_server::api::create_router(state)).await;
+    (server, std::sync::Arc::new(config))
+}
+
+/// When ending the sessions fails after the ban committed (Valkey refuses
+/// the denylist write), the ban and its audit entry still exist and the
+/// request answers 500 so the admin can retry. (With Valkey fully down the
+/// request is already refused with 503 by the fail-closed denylist check.)
+#[sqlx::test]
+async fn test_ban_is_audited_when_ending_sessions_fails(pool: PgPool) {
+    let (server, config) = server_with_write_refusing_valkey(&pool).await;
+    let (admin_id, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin_id).await;
+    create_elevated_session(&pool, admin_id).await;
+    let admin_token = generate_access_token(&config, admin_id);
+    let (user_id, _) = create_test_user(&pool).await;
+
+    let resp = tokio::time::timeout(
+        EVENT_TIMEOUT,
+        reqwest::Client::new()
+            .post(format!("{}/api/admin/users/{user_id}/ban", server.url))
+            .bearer_auth(&admin_token)
+            .json(&serde_json::json!({ "reason": "test", "expires_at": null }))
+            .send(),
+    )
+    .await
+    .expect("ban request must not hang")
+    .expect("POST ban");
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let banned: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1)")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(banned, "the committed ban must stand");
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_audit_log WHERE action = 'admin.users.ban' AND target_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1, "the committed ban must be audited");
+}
