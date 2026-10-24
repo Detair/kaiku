@@ -353,6 +353,43 @@ class RealtimeConnectionManagerTest {
     }
 
     @Test
+    fun `foreground while connected pings and reconnects quickly without pong`() = runManagerTest { h ->
+        connected(h)
+        val pingsBefore = h.socket.sent.count { it == ClientEvent.Ping }
+        val disconnectsBefore = h.socket.disconnects
+
+        h.manager.onAppForeground()
+        runCurrent()
+        assertEquals(pingsBefore + 1, h.socket.sent.count { it == ClientEvent.Ping })
+
+        advanceTimeBy(RealtimeConnectionManager.FOREGROUND_PONG_TIMEOUT_MS - 1)
+        assertEquals(disconnectsBefore, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+
+        advanceTimeBy(2)
+        runCurrent()
+        assertEquals(disconnectsBefore + 1, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Reconnecting, h.manager.status.value)
+    }
+
+    @Test
+    fun `foreground probe answered by pong keeps the connection`() = runManagerTest { h ->
+        connected(h)
+        val disconnectsBefore = h.socket.disconnects
+
+        h.manager.onAppForeground()
+        runCurrent()
+        h.socket.pong()
+        runCurrent()
+        advanceTimeBy(RealtimeConnectionManager.FOREGROUND_PONG_TIMEOUT_MS + 1)
+        runCurrent()
+
+        assertEquals(disconnectsBefore, h.socket.disconnects)
+        assertEquals(1, h.socket.connects.size)
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+    }
+
+    @Test
     fun `connect without Ready times out and reconnects`() = runManagerTest { h ->
         h.authState.setLoggedIn("user-1")
         h.manager.start()

@@ -74,6 +74,14 @@ class RealtimeConnectionManager internal constructor(
         const val REFRESH_LEAD_MS = 60_000L
         const val MAX_CONSECUTIVE_AUTH_REJECTS = 3
 
+        /**
+         * After the app returns to the foreground while Connected, a Ping is sent
+         * at once and the socket is dropped if no Pong arrives within this time,
+         * so a socket that died during doze is found in seconds instead of after
+         * up to [PONG_TIMEOUT_MS].
+         */
+        const val FOREGROUND_PONG_TIMEOUT_MS = 10_000L
+
         /** Retry delay for the proactive refresh after a network error. */
         internal const val REFRESH_RETRY_MS = 30_000L
 
@@ -91,6 +99,7 @@ class RealtimeConnectionManager internal constructor(
         data class RetryDue(val generation: Int) : Input
         data class PingDue(val generation: Int) : Input
         data class WatchdogDue(val generation: Int) : Input
+        data class ForegroundProbeDue(val generation: Int, val pongsAtSend: Long) : Input
         data class ConnectTimeoutDue(val generation: Int) : Input
         data class RefreshDue(val generation: Int) : Input
     }
@@ -107,6 +116,9 @@ class RealtimeConnectionManager internal constructor(
     private var socketActive = false
     private var consecutiveAuthRejects = 0
     private var lastPongAt = 0L
+
+    /** Pongs received on the current socket; the foreground probe checks it moved. */
+    private var pongCount = 0L
     private var lastNetworkId: Long? = null
 
     private var retryJob: Job? = null
@@ -163,6 +175,9 @@ class RealtimeConnectionManager internal constructor(
             }
             is Input.PingDue -> if (input.generation == heartbeatGeneration) onPingDue()
             is Input.WatchdogDue -> if (input.generation == heartbeatGeneration) onWatchdogDue()
+            is Input.ForegroundProbeDue -> if (input.generation == heartbeatGeneration) {
+                onForegroundProbeDue(input.pongsAtSend)
+            }
             is Input.ConnectTimeoutDue -> if (input.generation == connectTimeoutGeneration) onConnectTimeout()
             is Input.RefreshDue -> if (input.generation == refreshGeneration) onRefreshDue()
         }
@@ -309,7 +324,10 @@ class RealtimeConnectionManager internal constructor(
                 setStatus(RealtimeStatus.Connected)
                 startHeartbeat()
             }
-            ServerEvent.Pong -> lastPongAt = clock.nowMillis()
+            ServerEvent.Pong -> {
+                lastPongAt = clock.nowMillis()
+                pongCount++
+            }
             else -> Unit
         }
     }
@@ -361,7 +379,11 @@ class RealtimeConnectionManager internal constructor(
             stopHeartbeat()
         } else {
             val current = _status.value
-            if (current == RealtimeStatus.Connected || current == RealtimeStatus.Connecting) return
+            if (current == RealtimeStatus.Connected) {
+                probeAfterForeground()
+                return
+            }
+            if (current == RealtimeStatus.Connecting) return
         }
         logger.info("app foreground, connecting now")
         backoff.reset()
@@ -429,6 +451,28 @@ class RealtimeConnectionManager internal constructor(
             setStatus(RealtimeStatus.Offline)
             return
         }
+        enterReconnecting()
+    }
+
+    /** Ping now and arm a short watchdog: the socket may have died while the app was in the background. */
+    private fun probeAfterForeground() {
+        logger.info("app foreground while Connected, probing socket")
+        val pongsAtSend = pongCount
+        socket.send(ClientEvent.Ping)
+        val generation = heartbeatGeneration
+        heartbeatJobs = heartbeatJobs.filter { it.isActive } + scope.launch {
+            delay(FOREGROUND_PONG_TIMEOUT_MS)
+            inbox.send(Input.ForegroundProbeDue(generation, pongsAtSend))
+        }
+    }
+
+    private fun onForegroundProbeDue(pongsAtSend: Long) {
+        if (_status.value != RealtimeStatus.Connected) return
+        if (pongCount != pongsAtSend) return
+        logger.warning("no pong after foreground probe, reconnecting")
+        stopHeartbeat()
+        socketActive = false
+        socket.disconnect()
         enterReconnecting()
     }
 
