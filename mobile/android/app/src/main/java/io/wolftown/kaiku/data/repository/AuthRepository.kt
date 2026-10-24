@@ -121,8 +121,10 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken)
 
+            // Persist only for the latest attempt and the server it went to: a
+            // server change mid-login must not store server A's tokens under B.
             val persisted = synchronized(pendingLock) {
-                if (loginAttempt != attempt) {
+                if (loginAttempt != attempt || tokenStorage.getServerUrl() != serverUrl) {
                     false
                 } else {
                     tokenStorage.saveTokens(
@@ -142,7 +144,11 @@ class AuthRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            tokenStorage.clear()
+            // Only the latest attempt may clear: a stale login failing late must
+            // not wipe the session a newer login stored meanwhile.
+            synchronized(pendingLock) {
+                if (loginAttempt == attempt) tokenStorage.clear()
+            }
             Result.failure(e)
         }
     }
