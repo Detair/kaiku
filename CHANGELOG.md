@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - Updated the Markdown sanitizer, diagram renderer and UI runtime libraries to versions without known vulnerabilities; the frontend dependency audit now blocks CI on production advisories.
+- Banning an account, signing out a session, or changing your password with 'sign out other devices' now ends those sessions right away, including open connections.
 - Accept RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5 timing variability) with a dated justification until the `elliptic-curve` 0.14 ecosystem lands in `dtls`, `jsonwebtoken` and `openidconnect`; Kaiku signs its own tokens with EdDSA and is not affected on that path
 - Update `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, unsound `AsyncFd::new`; lockfile-only), restoring the License Compliance / Security Audit checks to green
 - The self-hosting compose file now isolates the TURN server, requires a Valkey password, forwards the CORS allow-list and trusted-proxy settings, and passes storage credentials to the server.
@@ -115,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signing in (and linking an account) with an external identity provider in the desktop app now completes: the provider returns to the server, which finishes the sign-in and hands the result to the app. If the provider declines or the sign-in fails, the app or sign-in window now shows an error right away instead of waiting for a timeout.
 - In the browser, Kaiku now signs you out right away when your session is ended elsewhere and stops retrying with an expired login.
 - The server no longer hangs when its cache (Valkey) is unavailable; affected requests fail quickly instead.
+- Signing out of the desktop and Android apps now always ends the session on the server.
 - E-mail addresses and code snippets are no longer treated as @mentions.
 - Android: message times now use your time zone, typing indicators show names and go away again, reactions are visible, buttons are labelled for screen readers, and a damaged sign-in store asks you to sign in again instead of crashing.
 - Android: unread badges now appear for channels you left and clear on the server when you read them, and new direct messages update the list live.

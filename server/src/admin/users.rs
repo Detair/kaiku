@@ -284,15 +284,19 @@ pub async fn ban_user(
         return Err(AdminError::Validation("Cannot ban yourself".to_string()));
     }
 
-    // Create or update ban
+    // Create or update the ban and end every session of the user in one
+    // transaction: their tokens and open sockets stop working right away.
+    let mut tx = state.db.begin().await?;
     queries::upsert_global_ban(
-        &state.db,
+        &mut tx,
         user_id,
         admin.user_id,
         &body.reason,
         body.expires_at,
     )
     .await?;
+    end_all_sessions(&state, &mut tx, user_id).await?;
+    tx.commit().await?;
 
     // Log the action
     let ip_address = addr.ip().to_string();
@@ -443,16 +447,8 @@ pub async fn bulk_ban_users(
             continue;
         }
 
-        // Ban the user
-        match queries::insert_global_ban(
-            &state.db,
-            *user_id,
-            admin.user_id,
-            &body.reason,
-            body.expires_at,
-        )
-        .await
-        {
+        // Ban the user and end their sessions
+        match ban_and_end_sessions(&state, *user_id, admin.user_id, &body).await {
             Ok(()) => {
                 banned_count += 1;
             }
@@ -610,4 +606,31 @@ pub async fn export_users_csv(
         ],
         csv,
     ))
+}
+
+/// Delete every session of `user_id` and end them immediately (C25).
+async fn end_all_sessions(
+    state: &AppState,
+    tx: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<(), AdminError> {
+    let ended = crate::auth::queries::delete_user_sessions_except(tx, user_id, None).await?;
+    crate::auth::revocation::end_sessions(state, user_id, &ended)
+        .await
+        .map_err(|e| AdminError::Internal(e.to_string()))
+}
+
+/// Bulk-ban step for one user: insert the ban and end the user's sessions in
+/// one transaction.
+async fn ban_and_end_sessions(
+    state: &AppState,
+    user_id: Uuid,
+    banned_by: Uuid,
+    body: &BulkBanRequest,
+) -> Result<(), AdminError> {
+    let mut tx = state.db.begin().await?;
+    queries::insert_global_ban(&mut tx, user_id, banned_by, &body.reason, body.expires_at).await?;
+    end_all_sessions(state, &mut tx, user_id).await?;
+    tx.commit().await?;
+    Ok(())
 }

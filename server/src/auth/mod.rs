@@ -16,7 +16,7 @@ mod middleware;
 pub mod oidc;
 mod password;
 pub(crate) mod profile;
-mod queries;
+pub(crate) mod queries;
 pub(crate) mod register;
 pub(crate) mod revocation;
 pub(crate) mod sessions;

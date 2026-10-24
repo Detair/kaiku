@@ -11,7 +11,7 @@
 //! caller can use `?` on sqlx errors.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, QueryBuilder};
+use sqlx::{PgConnection, PgPool, QueryBuilder};
 use uuid::Uuid;
 
 use super::error::AdminError;
@@ -558,7 +558,7 @@ pub(super) async fn is_user_banned(pool: &PgPool, user_id: Uuid) -> Result<bool,
 
 /// Insert or update a global ban, replacing any existing ban row for the user.
 pub(super) async fn upsert_global_ban(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     user_id: Uuid,
     banned_by: Uuid,
     reason: &str,
@@ -577,7 +577,7 @@ pub(super) async fn upsert_global_ban(
         reason,
         expires_at
     )
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -586,7 +586,7 @@ pub(super) async fn upsert_global_ban(
 /// ban flow which checks for an existing ban separately so that it can
 /// report "already banned" counts to the caller.
 pub(super) async fn insert_global_ban(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     user_id: Uuid,
     banned_by: Uuid,
     reason: &str,
@@ -600,7 +600,7 @@ pub(super) async fn insert_global_ban(
         reason,
         expires_at
     )
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }

@@ -55,7 +55,8 @@ pub async fn list_sessions(
                 country: s.country.clone(),
                 created_at: s.created_at,
                 expires_at: s.expires_at,
-                is_current: current_hash.as_deref() == Some(&s.token_hash),
+                is_current: auth_user.session_id == Some(s.id)
+                    || current_hash.as_deref() == Some(&s.token_hash),
             }
         })
         .collect();
@@ -88,36 +89,29 @@ pub async fn revoke_session(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> AuthResult<StatusCode> {
-    // Find the session
+    // Cannot revoke current session (use logout instead)
+    if current_session_id(&state, &auth_user, &headers, &jar).await? == Some(session_id) {
+        return Err(AuthError::Forbidden);
+    }
+
+    // Find the session; it must belong to the authenticated user
     let session = queries::find_session_by_id(&state.db, session_id)
         .await?
         .ok_or_else(|| AuthError::NotFound("Session not found".to_string()))?;
-
-    // Must belong to the authenticated user
     if session.user_id != auth_user.id {
         return Err(AuthError::Forbidden);
     }
 
-    // Cannot revoke current session (use logout instead)
-    let current_hash = extract_current_token_hash(&headers, &jar);
-    if current_hash.as_deref() == Some(&session.token_hash) {
-        return Err(AuthError::Forbidden);
-    }
-
-    queries::delete_session_by_id(&state.db, session_id).await?;
-
-    // Revoke the access token issued with this session (its `sid` claim equals
-    // the session id) so it stops working immediately rather than lingering
-    // until expiry.
-    if let Err(e) = super::revocation::revoke_session(
-        &state.redis,
-        &session_id.to_string(),
-        state.config.jwt_access_expiry,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, session_id = %session_id, "Failed to denylist access token on session revoke");
-    }
+    // Delete the row (no more refreshes) and end the session (its access
+    // tokens and sockets stop now) before committing, so a failure leaves
+    // the session in place for a retry.
+    let mut tx = state.db.begin().await?;
+    let ended: Vec<Uuid> = queries::delete_user_session_tx(&mut tx, auth_user.id, session_id)
+        .await?
+        .into_iter()
+        .collect();
+    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
+    tx.commit().await?;
 
     tracing::info!(user_id = %auth_user.id, session_id = %session_id, "Session revoked");
 
@@ -143,20 +137,43 @@ pub async fn revoke_all_other_sessions(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> AuthResult<Json<RevokeAllResponse>> {
-    let current_hash = extract_current_token_hash(&headers, &jar);
-
     // If we cannot identify the current session, refuse to proceed — otherwise
     // we would delete ALL sessions (including the caller's own).
-    let current_hash = current_hash.ok_or_else(|| {
-        tracing::warn!(user_id = %auth_user.id, "Cannot identify current session for revoke-all-others");
-        AuthError::Validation(
-            "Cannot identify current session. Please provide a refresh token via cookie or X-Refresh-Token header.".to_string(),
-        )
-    })?;
+    let current = current_session_id(&state, &auth_user, &headers, &jar)
+        .await?
+        .ok_or_else(|| {
+            tracing::warn!(user_id = %auth_user.id, "Cannot identify current session for revoke-all-others");
+            AuthError::Validation(
+                "Cannot identify current session. Please provide a refresh token via cookie or X-Refresh-Token header.".to_string(),
+            )
+        })?;
 
-    let revoked_count =
-        queries::delete_other_user_sessions(&state.db, auth_user.id, &current_hash).await? as i64;
+    let mut tx = state.db.begin().await?;
+    let ended = queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(current)).await?;
+    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
+    tx.commit().await?;
+    let revoked_count = ended.len() as i64;
     tracing::info!(user_id = %auth_user.id, revoked_count, "All other sessions revoked");
 
     Ok(Json(RevokeAllResponse { revoked_count }))
+}
+
+/// The caller's own session: the access token's `sid`, or else the session of
+/// the refresh token sent as cookie (browser) or `X-Refresh-Token` (Tauri).
+pub(super) async fn current_session_id(
+    state: &AppState,
+    auth_user: &AuthUser,
+    headers: &HeaderMap,
+    jar: &CookieJar,
+) -> AuthResult<Option<Uuid>> {
+    if let Some(sid) = auth_user.session_id {
+        return Ok(Some(sid));
+    }
+    let Some(hash) = extract_current_token_hash(headers, jar) else {
+        return Ok(None);
+    };
+    Ok(crate::db::find_session_by_token_hash(&state.db, &hash)
+        .await?
+        .filter(|s| s.user_id == auth_user.id)
+        .map(|s| s.id))
 }

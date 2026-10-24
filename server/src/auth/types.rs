@@ -75,8 +75,10 @@ pub struct RefreshRequest {
 /// Logout request.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LogoutRequest {
-    /// Refresh token to invalidate.
-    pub refresh_token: String,
+    /// Refresh token of the session to end. Optional: without it the session
+    /// of the bearer access token is ended.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 /// Authentication response with tokens.

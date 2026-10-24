@@ -78,8 +78,51 @@ pub fn generate_token_pair(
     access_expiry_seconds: i64,
     refresh_expiry_seconds: i64,
 ) -> AuthResult<TokenPair> {
+    // A new login: the session id doubles as the first refresh token's `jti`.
+    let session_id = Uuid::now_v7();
+    build_token_pair(
+        user_id,
+        session_id,
+        session_id,
+        private_key,
+        access_expiry_seconds,
+        refresh_expiry_seconds,
+    )
+}
+
+/// Generate a token pair for an existing session (refresh rotation).
+///
+/// The access token's `sid` stays `session_id` for the whole login, so
+/// revoking the session also reaches tokens and sockets from before a refresh;
+/// the refresh token gets a fresh `jti` so every rotation yields a distinct
+/// refresh token.
+pub fn generate_token_pair_for_session(
+    user_id: Uuid,
+    session_id: Uuid,
+    private_key: &str,
+    access_expiry_seconds: i64,
+    refresh_expiry_seconds: i64,
+) -> AuthResult<TokenPair> {
+    build_token_pair(
+        user_id,
+        session_id,
+        Uuid::now_v7(),
+        private_key,
+        access_expiry_seconds,
+        refresh_expiry_seconds,
+    )
+}
+
+fn build_token_pair(
+    user_id: Uuid,
+    session_id: Uuid,
+    refresh_jti: Uuid,
+    private_key: &str,
+    access_expiry_seconds: i64,
+    refresh_expiry_seconds: i64,
+) -> AuthResult<TokenPair> {
     let now = Utc::now();
-    let refresh_token_id = Uuid::now_v7();
+    let refresh_token_id = session_id;
 
     // Decode the private key from base64-encoded PEM
     let key_bytes = decode_pem_key(private_key)?;
@@ -110,7 +153,7 @@ pub fn generate_token_pair(
         exp: (now + Duration::seconds(refresh_expiry_seconds)).timestamp(),
         iat: now.timestamp(),
         typ: TokenType::Refresh,
-        jti: Some(refresh_token_id.to_string()),
+        jti: Some(refresh_jti.to_string()),
         sid: None,
     };
 
@@ -271,6 +314,30 @@ mod tests {
         );
         assert_eq!(access.sid, refresh.jti);
         assert!(access.jti.is_none(), "access token must not carry a jti");
+    }
+
+    #[test]
+    fn test_rotated_pair_keeps_sid_with_fresh_jti() {
+        let user_id = Uuid::now_v7();
+        let first = generate_token_pair(user_id, TEST_PRIVATE_KEY, 900, 604800).unwrap();
+        let rotated = generate_token_pair_for_session(
+            user_id,
+            first.refresh_token_id,
+            TEST_PRIVATE_KEY,
+            900,
+            604800,
+        )
+        .unwrap();
+
+        let access = validate_access_token(&rotated.access_token, TEST_PUBLIC_KEY).unwrap();
+        let refresh = validate_refresh_token(&rotated.refresh_token, TEST_PUBLIC_KEY).unwrap();
+        assert_eq!(rotated.refresh_token_id, first.refresh_token_id);
+        assert_eq!(
+            access.sid.as_deref(),
+            Some(first.refresh_token_id.to_string().as_str())
+        );
+        assert_ne!(refresh.jti, access.sid);
+        assert_ne!(rotated.refresh_token, first.refresh_token);
     }
 
     #[test]

@@ -479,6 +479,11 @@ pub async fn qr_redeem(
         AuthError::InvalidCredentials
     })?;
 
+    // A banned account cannot start a new session.
+    if super::queries::is_user_globally_banned(&state.db, user_id).await? {
+        return Err(AuthError::AccountBanned);
+    }
+
     // Issue tokens
     let tokens = generate_token_pair(
         user_id,

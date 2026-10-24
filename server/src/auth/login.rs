@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::backup_codes::find_matching_backup_code;
 use super::error::{AuthError, AuthResult};
 use super::helpers::{extract_refresh_token, extract_user_agent, should_return_refresh_token};
-use super::jwt::{generate_token_pair, validate_refresh_token};
+use super::jwt::{generate_token_pair, generate_token_pair_for_session, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
@@ -32,11 +32,10 @@ use super::types::{
 use super::{cookies, geoip, hash_token};
 use crate::api::AppState;
 use crate::db::{
-    self, create_password_reset_token, create_session, delete_session_by_token_hash,
-    find_session_by_token_hash, find_user_by_email, find_user_by_id, find_user_by_username,
-    find_user_id_by_identity, find_valid_reset_token, get_auth_methods_allowed,
-    get_unused_mfa_backup_codes, invalidate_user_reset_tokens, is_setup_complete,
-    mark_mfa_backup_code_used,
+    self, create_password_reset_token, create_session, find_session_by_token_hash,
+    find_user_by_email, find_user_by_id, find_user_by_username, find_user_id_by_identity,
+    find_valid_reset_token, get_auth_methods_allowed, get_unused_mfa_backup_codes,
+    invalidate_user_reset_tokens, is_setup_complete, mark_mfa_backup_code_used,
 };
 use crate::ratelimit::NormalizedIp;
 
@@ -107,6 +106,12 @@ pub async fn login(
             return Err(AuthError::InvalidCredentials);
         }
     };
+
+    // A banned account cannot start a new session.
+    if queries::is_user_globally_banned(&state.db, user.id).await? {
+        crate::observability::metrics::record_auth_login_attempt(false);
+        return Err(AuthError::AccountBanned);
+    }
 
     // Check MFA if enabled
     if let Some(ref encrypted_secret) = user.mfa_secret {
@@ -272,6 +277,13 @@ pub async fn refresh_token(
     // Parse user ID
     let user_id: Uuid = claims.sub.parse().map_err(|_| AuthError::InvalidToken)?;
 
+    // A banned account cannot renew its session (its sessions were ended
+    // when the ban was issued; this answers with the reason).
+    if queries::is_user_globally_banned(&state.db, user_id).await? {
+        crate::observability::metrics::record_token_refresh(false);
+        return Err(AuthError::AccountBanned);
+    }
+
     let token_hash = hash_token(&raw_token);
 
     // Resolve GeoIP before the transaction to avoid holding a connection during HTTP call
@@ -302,28 +314,29 @@ pub async fn refresh_token(
         .await?
         .ok_or(AuthError::UserNotFound)?;
 
-    // Delete old session within the transaction
-    queries::delete_session_by_token_hash_tx(&mut tx, &token_hash).await?;
-
-    // Generate new token pair
-    let new_tokens = generate_token_pair(
+    // Generate the new token pair for the same session: its id (the access
+    // token's `sid`) stays stable, so revoking the session later also reaches
+    // sockets opened before this refresh.
+    let new_tokens = generate_token_pair_for_session(
         user_id,
+        session.id,
         &state.config.jwt_private_key,
         state.config.jwt_access_expiry,
         state.config.jwt_refresh_expiry,
     )?;
 
-    // Store new refresh token session within the transaction
+    // Rotate the refresh token in place within the transaction
     let new_token_hash = hash_token(&new_tokens.refresh_token);
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
     let city = geo.as_ref().and_then(|g| g.city.as_deref());
     let country = geo.as_ref().and_then(|g| g.country.as_deref());
 
     let ip_str = addr.ip().to_string();
-    queries::insert_session_tx(
+    queries::rotate_session_tx(
         &mut tx,
+        session.id,
         &InsertSessionParams {
-            id: new_tokens.refresh_token_id,
+            id: session.id,
             user_id,
             token_hash: &new_token_hash,
             expires_at,
@@ -372,7 +385,7 @@ pub async fn refresh_token(
     post,
     path = "/auth/logout",
     tag = "auth",
-    request_body(content = LogoutRequest, description = "Required for Tauri clients; browser clients use HttpOnly cookie instead"),
+    request_body(content = LogoutRequest, description = "Optional; without a refresh token (body or HttpOnly cookie) the bearer token's session is ended"),
     responses(
         (status = 200, description = "Logged out successfully"),
     ),
@@ -385,34 +398,43 @@ pub async fn logout(
     jar: CookieJar,
     body: Option<Json<LogoutRequest>>,
 ) -> AuthResult<CookieJar> {
-    // Read refresh token from JSON body (Tauri) or HttpOnly cookie (browser)
-    let raw_token = extract_refresh_token(body.map(|b| b.0.refresh_token), &jar)?;
-
-    // Verify the session belongs to the authenticated user before deleting
-    let token_hash = hash_token(&raw_token);
-    let session = find_session_by_token_hash(&state.db, &token_hash)
-        .await?
-        .ok_or(AuthError::InvalidToken)?;
-
-    if session.user_id != auth_user.id {
+    // The session to end: the access token's own session, plus the one named
+    // by a refresh token (JSON body for Tauri/Android, HttpOnly cookie for
+    // browsers) when it belongs to the caller. Either alone is enough.
+    let mut session_ids: Vec<Uuid> = auth_user.session_id.into_iter().collect();
+    let body_token = body.and_then(|b| b.0.refresh_token);
+    if let Ok(raw_token) = extract_refresh_token(body_token, &jar) {
+        let token_hash = hash_token(&raw_token);
+        if let Some(session) = find_session_by_token_hash(&state.db, &token_hash).await? {
+            if session.user_id == auth_user.id && !session_ids.contains(&session.id) {
+                session_ids.push(session.id);
+            }
+        }
+    }
+    if session_ids.is_empty() {
         return Err(AuthError::InvalidToken);
     }
 
-    delete_session_by_token_hash(&state.db, &token_hash).await?;
-
-    // Deleting the refresh session kills future refreshes, but the current
-    // stateless access token would otherwise stay valid until it expires.
-    // Add its session id (== the access token's `sid` claim) to the revocation
-    // denylist for the access-token lifetime so it stops working immediately.
-    if let Err(e) = super::revocation::revoke_session(
-        &state.redis,
-        &session.id.to_string(),
-        state.config.jwt_access_expiry,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, user_id = %auth_user.id, "Failed to denylist access token on logout");
+    // Delete the sessions (no more refreshes) and end them (their access
+    // tokens and sockets stop working now) before committing, so a failure
+    // to end them leaves the sessions in place for a retry.
+    let mut tx = state.db.begin().await?;
+    let mut ended = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        if let Some(id) = queries::delete_user_session_tx(&mut tx, auth_user.id, session_id).await?
+        {
+            ended.push(id);
+        }
     }
+    // The access token's session may already be gone (e.g. revoked
+    // elsewhere); denylisting it again is harmless.
+    if let Some(own) = auth_user.session_id {
+        if !ended.contains(&own) {
+            ended.push(own);
+        }
+    }
+    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
+    tx.commit().await?;
 
     tracing::info!(user_id = %auth_user.id, "User logged out");
 
@@ -868,6 +890,11 @@ pub async fn oidc_callback(
         }
     };
 
+    // A banned account cannot start a new session.
+    if queries::is_user_globally_banned(&state.db, user.id).await? {
+        return Err(AuthError::AccountBanned);
+    }
+
     // Best-effort: record that this identity was just used to log in.
     if let Err(e) =
         db::touch_user_identity_last_used(&state.db, &flow_state.slug, &user_info.subject).await
@@ -1260,12 +1287,14 @@ pub async fn reset_password(
         })?;
 
     // Delete all user sessions (force re-login everywhere)
-    queries::delete_all_user_sessions_tx(&mut tx, reset_token.user_id)
+    let ended = queries::delete_user_sessions_except(&mut tx, reset_token.user_id, None)
         .await
         .map_err(|e| {
             tracing::error!(error = ?e, user_id = %reset_token.user_id, "Failed to delete sessions");
-            e
+            AuthError::Database(e)
         })?;
+    // End them now too: their access tokens and open sockets stop working.
+    super::revocation::end_sessions(&state, reset_token.user_id, &ended).await?;
 
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, "Failed to commit password reset transaction");

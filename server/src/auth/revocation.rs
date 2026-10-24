@@ -63,3 +63,57 @@ pub async fn is_session_revoked(redis: &Client, sid: &str) -> Result<bool, Valke
         }
     }
 }
+
+/// Internal `user:{id}` message telling that user's sockets which sessions
+/// ended. Sockets consume it and never forward it to clients.
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionNotice {
+    /// These sessions ended; a socket of one of them closes with 1008.
+    SessionRevoked { session_ids: Vec<uuid::Uuid> },
+}
+
+/// End `session_ids` of `user_id` immediately.
+///
+/// Denylists each id for the access-token lifetime (so every access token of
+/// those sessions is refused) and tells the user's open sockets, which close
+/// with 1008 when their own session is listed. Unlike the denylist *check*,
+/// this fails closed: a Valkey error is returned so callers can abort the
+/// surrounding transaction instead of reporting a revocation that did not
+/// take effect.
+pub async fn end_sessions(
+    state: &crate::api::AppState,
+    user_id: uuid::Uuid,
+    session_ids: &[uuid::Uuid],
+) -> Result<(), super::AuthError> {
+    if session_ids.is_empty() {
+        return Ok(());
+    }
+    for sid in session_ids {
+        revoke_session(
+            &state.redis,
+            &sid.to_string(),
+            state.config.jwt_access_expiry,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, user_id = %user_id, "Failed to denylist ended session");
+            super::AuthError::Internal("Failed to end session".to_string())
+        })?;
+    }
+
+    let notice = SessionNotice::SessionRevoked {
+        session_ids: session_ids.to_vec(),
+    };
+    let payload = serde_json::to_string(&notice)
+        .map_err(|e| super::AuthError::Internal(format!("JSON error: {e}")))?;
+    state
+        .redis
+        .publish::<(), _, _>(crate::ws::events::channels::user_events(user_id), payload)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, user_id = %user_id, "Failed to notify sockets of ended sessions");
+            super::AuthError::Internal("Failed to end session".to_string())
+        })?;
+    Ok(())
+}

@@ -8,7 +8,6 @@ use chrono::Utc;
 use validator::Validate;
 
 use super::error::{AuthError, AuthResult};
-use super::helpers::extract_current_token_hash;
 use super::middleware::AuthUser;
 use super::password::{hash_password, verify_password};
 use super::queries;
@@ -338,16 +337,28 @@ pub async fn update_password(
 
     let new_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
 
+    // Identify the caller's own session before the transaction (the access
+    // token's `sid`, or the refresh token sent as cookie/header).
+    let keep = if body.revoke_others {
+        super::sessions::current_session_id(&state, &auth_user, &headers, &jar).await?
+    } else {
+        None
+    };
+
     // Transaction: update password (clearing a pending forced change) +
-    // optionally revoke other sessions
+    // optionally end the other sessions
     let mut tx = state.db.begin().await.map_err(AuthError::Database)?;
 
     queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;
 
     let revoked_count = if body.revoke_others {
-        let current_token_hash = extract_current_token_hash(&headers, &jar);
-        if let Some(ref hash) = current_token_hash {
-            queries::delete_other_user_sessions_tx(&mut tx, auth_user.id, hash).await?
+        if let Some(keep) = keep {
+            let ended =
+                queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(keep)).await?;
+            // End them before committing: a failure leaves password and
+            // sessions unchanged for a retry.
+            super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
+            ended.len() as u64
         } else {
             // Cannot identify current session — skip revocation rather than
             // accidentally deleting all sessions (including the caller's own).

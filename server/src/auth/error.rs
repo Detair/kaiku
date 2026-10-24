@@ -105,6 +105,10 @@ pub enum AuthError {
     #[error("You must change your password before continuing")]
     PasswordChangeRequired,
 
+    /// The account is banned from this server.
+    #[error("This account has been banned")]
+    AccountBanned,
+
     /// Refusing to unlink the account's only remaining login method.
     #[error("Cannot remove your only login method; set a password or link another account first")]
     CannotUnlinkLastIdentity,
@@ -160,6 +164,7 @@ impl IntoResponse for AuthError {
             Self::RegistrationDisabled => (StatusCode::FORBIDDEN, "REGISTRATION_DISABLED"),
             Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
             Self::PasswordChangeRequired => (StatusCode::FORBIDDEN, "PASSWORD_CHANGE_REQUIRED"),
+            Self::AccountBanned => (StatusCode::FORBIDDEN, "ACCOUNT_BANNED"),
             Self::CannotUnlinkLastIdentity => (StatusCode::CONFLICT, "CANNOT_UNLINK_LAST_IDENTITY"),
             Self::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),

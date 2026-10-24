@@ -50,6 +50,7 @@ mod screening_http;
 mod screenshare;
 mod search;
 mod search_http;
+mod session_revocation;
 mod setup;
 mod setup_concurrent_http;
 mod setup_http;
