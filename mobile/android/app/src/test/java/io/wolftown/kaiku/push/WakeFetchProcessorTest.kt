@@ -10,16 +10,21 @@ import io.mockk.slot
 import io.mockk.verify
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.MessageApi
+import io.wolftown.kaiku.data.api.UnreadApi
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.ChatRepository
 import io.wolftown.kaiku.data.repository.DmRepository
+import io.wolftown.kaiku.domain.model.ChannelUnread
 import io.wolftown.kaiku.domain.model.CursorPage
+import io.wolftown.kaiku.domain.model.GuildUnreadSummary
 import io.wolftown.kaiku.domain.model.Message
+import io.wolftown.kaiku.domain.model.UnreadAggregate
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.testutil.InMemorySharedPreferences
 import kotlinx.coroutines.test.runTest
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -37,6 +42,7 @@ class WakeFetchProcessorTest {
     private val refresher: TokenRefresher = mockk()
     private val tokenStorage: TokenStorage = mockk()
     private val messages: MessageApi = mockk()
+    private val unreadApi: UnreadApi = mockk()
     private val titles: NotificationTitleResolver = mockk()
     private val sink: NotificationSink = mockk(relaxed = true)
     private val chat: ChatRepository = mockk(relaxed = true)
@@ -46,9 +52,9 @@ class WakeFetchProcessorTest {
 
     private val enqueuer = FakeWakeWorkEnqueuer()
     private val processor = WakeFetchProcessor(
-        refresher, tokenStorage, messages, titles, ledger, sink, enqueuer, active, chat, dms,
+        refresher, tokenStorage, messages, unreadApi, titles, ledger, sink, enqueuer, active, chat, dms,
     )
-    private val scheduler = WakeScheduler(enqueuer, sink, ledger, tokenStorage)
+    private val scheduler = WakeScheduler(enqueuer, sink)
 
     private val shown = mutableListOf<ChannelNotification>()
 
@@ -58,6 +64,17 @@ class WakeFetchProcessorTest {
 
     /** Run inside the presenter's lock, right before posting. */
     private var beforePost: () -> Unit = {}
+
+    /** Run right after a notification was posted. */
+    private var afterPost: () -> Unit = {}
+
+    /** The user turned notifications off. */
+    private var notificationsDisabled = false
+
+    /** Server unread count of the woken DM channel. */
+    private fun serverDmUnread(count: Long) {
+        coEvery { unreadApi.getUnread() } returns UnreadAggregate(dms = listOf(ChannelUnread(ch, unreadCount = count)))
+    }
 
     private fun msg(id: String, author: User, minute: Int) = Message(
         id = id,
@@ -80,15 +97,19 @@ class WakeFetchProcessorTest {
         every { tokenStorage.getSessionGeneration() } answers { generation }
         coEvery { refresher.ensureFresh(any()) } returns RefreshResult.SUCCESS
         coEvery { titles.resolve(any(), any()) } returns ("Bob" to true)
+        serverDmUnread(100)
         val prepare = slot<() -> ChannelNotification?>()
         every { sink.show(capture(prepare)) } answers {
             beforePost()
             val n = prepare.captured()
-            if (n != null) {
-                shown += n
-                true
-            } else {
-                false
+            when {
+                n == null -> ShowResult.REFUSED
+                notificationsDisabled -> ShowResult.DISABLED
+                else -> {
+                    shown += n
+                    afterPost()
+                    ShowResult.POSTED
+                }
             }
         }
     }
@@ -378,16 +399,70 @@ class WakeFetchProcessorTest {
         coVerify { dms.loadDms() }
     }
 
-    // -- Read cursor (C20: wakes and reads are unordered) ----------------------
-
-    /** A message clearly older than any receive time taken from the real clock. */
-    private fun old(id: String, author: User, minute: Int) =
-        msg(id, author, minute).copy(createdAt = "2020-01-01T00:%02d:00Z".format(minute))
+    // -- Server read state (C20: wakes and reads are unordered) ----------------
 
     @Test
-    fun `read push before a late wake shows nothing`() = runTest {
+    fun `late wake after a read shows nothing when the server has no unread`() = runTest {
         scheduler.onWake(WakeSignal(WakeKind.READ, ch, 0))
-        coEvery { messages.getMessages(ch, null, null, any()) } returns page(old("m2", bob, 2), old("m1", bob, 1))
+        serverDmUnread(0)
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        assertTrue(shown.isEmpty())
+        assertEquals("m2", ledger.lastSeen("me", ch))
+    }
+
+    @Test
+    fun `outage with a late read of m1 and a wake for newer m2 notifies m2`() = runTest {
+        // The read of m1 and the wake for m2 arrive together after an outage, in any order.
+        scheduler.onWake(WakeSignal(WakeKind.READ, ch, 0))
+        serverDmUnread(1)
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 2), owner))
+
+        assertEquals(listOf("m2"), shown.single().lines.map { it.messageId })
+    }
+
+    @Test
+    fun `channel missing from the server unread list posts nothing`() = runTest {
+        coEvery { unreadApi.getUnread() } returns UnreadAggregate()
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        assertTrue(shown.isEmpty())
+    }
+
+    @Test
+    fun `guild unread count includes own messages`() = runTest {
+        coEvery { unreadApi.getUnread() } returns UnreadAggregate(
+            guilds = listOf(GuildUnreadSummary(guildId = "g", channels = listOf(ChannelUnread(ch, unreadCount = 2)))),
+        )
+        coEvery { messages.getMessages(ch, null, null, any()) } returns
+            page(msg("m3", me, 3), msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(WakeSignal(WakeKind.MENTION, ch, 3), owner))
+
+        assertEquals(listOf("m2"), shown.single().lines.map { it.messageId })
+    }
+
+    @Test
+    fun `unread lookup network error retries`() = runTest {
+        coEvery { unreadApi.getUnread() } throws IOException("offline")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.RETRY, processor.process(dm(), owner))
+
+        assertTrue(shown.isEmpty())
+        assertNull(ledger.lastSeen("me", ch))
+    }
+
+    @Test
+    fun `unread lookup refused posts nothing`() = runTest {
+        coEvery { unreadApi.getUnread() } throws ApiException(HttpStatusCode.Forbidden, "no")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
 
         assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
 
@@ -396,7 +471,7 @@ class WakeFetchProcessorTest {
 
     @Test
     fun `exact remote read before a late wake shows nothing`() = runTest {
-        ledger.markRead("me", ch, "m2", "2026-10-24T10:02:00Z", "2026-10-24T10:03:00Z")
+        ledger.markRead("me", ch, "m2", "2026-10-24T10:02:00Z")
         coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m2", bob, 2), msg("m1", bob, 1))
 
         assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
@@ -406,12 +481,15 @@ class WakeFetchProcessorTest {
 
     @Test
     fun `read push while the fetch is suspended posts nothing`() = runTest {
+        var stopped = false
         coEvery { messages.getMessages(ch, null, null, any()) } answers {
+            // The read cancels the running work (WorkManager stops it).
             scheduler.onWake(WakeSignal(WakeKind.READ, ch, 0))
-            page(old("m1", bob, 1))
+            stopped = true
+            page(msg("m1", bob, 1))
         }
 
-        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner) { stopped })
 
         assertTrue(shown.isEmpty())
         assertEquals(listOf(ch), enqueuer.cancelled)
@@ -420,7 +498,7 @@ class WakeFetchProcessorTest {
     @Test
     fun `read landing right before posting posts nothing`() = runTest {
         coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
-        beforePost = { ledger.markRead("me", ch, "m1", "2026-10-24T10:01:00Z", "2026-10-24T10:02:00Z") }
+        beforePost = { ledger.markRead("me", ch, "m1", "2026-10-24T10:01:00Z") }
 
         assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
 
@@ -428,10 +506,31 @@ class WakeFetchProcessorTest {
     }
 
     @Test
+    fun `read landing right after posting takes the notification back`() = runTest {
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+        afterPost = { ledger.markRead("me", ch, "m1", "2026-10-24T10:01:00Z") }
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        verify { sink.cancel(ch) }
+    }
+
+    @Test
+    fun `logout right after posting takes the notification back`() = runTest {
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+        afterPost = { generation = 2L }
+
+        assertEquals(WakeOutcome.NOT_LOGGED_IN, processor.process(dm(), owner))
+
+        verify { sink.cancel(ch) }
+        assertNull(ledger.lastSeen("me", ch))
+    }
+
+    @Test
     fun `uncached remote read is resolved by id so only newer messages notify`() = runTest {
         ledger.markSeen("me", ch, "m1", "2026-10-24T10:01:00Z")
-        // Remote read of m5, whose timestamp was unknown here; received late.
-        ledger.markRead("me", ch, "m5", null, "2026-10-24T10:30:00Z")
+        // Remote read of m5, whose timestamp was unknown here.
+        ledger.markRead("me", ch, "m5", null)
         coEvery { messages.getMessages(ch, null, "m1", 50) } returns
             page(msg("m2", bob, 2), msg("m3", bob, 3), msg("m4", bob, 4), msg("m5", bob, 5), msg("m6", bob, 6))
 
@@ -445,13 +544,24 @@ class WakeFetchProcessorTest {
     }
 
     @Test
-    fun `unresolvable read id still covers messages received before it`() = runTest {
-        ledger.markRead("me", ch, "gone", null, "2026-10-24T10:30:00Z")
+    fun `unresolvable read id filters nothing`() = runTest {
+        ledger.markRead("me", ch, "gone", null)
         coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m2", bob, 2))
 
-        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(), owner))
+    }
+
+    @Test
+    fun `notifications disabled still advance the watermark and catch up`() = runTest {
+        notificationsDisabled = true
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFICATIONS_OFF, processor.process(dm(), owner))
 
         assertTrue(shown.isEmpty())
+        assertEquals("m1", ledger.lastSeen("me", ch))
+        coVerify { chat.catchUp(ch) }
+        coVerify { dms.loadDms() }
     }
 
     @Test
@@ -463,9 +573,25 @@ class WakeFetchProcessorTest {
         assertTrue(shown.isEmpty())
     }
 
+    // -- Session handling ----------------------------------------------------
+
     @Test
-    fun `401 during fetch clears notifications and wake work`() = runTest {
+    fun `401 with the session intact is retried and clears nothing`() = runTest {
         coEvery { messages.getMessages(ch, null, null, any()) } throws ApiException(HttpStatusCode.Unauthorized, "no")
+
+        assertEquals(WakeOutcome.RETRY, processor.process(dm(), owner))
+
+        verify(exactly = 0) { sink.cancelAll() }
+        assertEquals(0, enqueuer.cancelAllCount)
+    }
+
+    @Test
+    fun `session ended by the http client during fetch clears notifications`() = runTest {
+        // A real rejection (401, or 403 PASSWORD_CHANGE_REQUIRED): the client clears the tokens first.
+        coEvery { messages.getMessages(ch, null, null, any()) } answers {
+            refreshToken = null
+            throw ApiException(HttpStatusCode.Forbidden, "change password")
+        }
 
         assertEquals(WakeOutcome.NOT_LOGGED_IN, processor.process(dm(), owner))
 
@@ -474,11 +600,11 @@ class WakeFetchProcessorTest {
     }
 
     @Test
-    fun `session ended by the http client during fetch clears notifications`() = runTest {
-        // 403 PASSWORD_CHANGE_REQUIRED: the client clears the tokens, the API surfaces a 403.
-        coEvery { messages.getMessages(ch, null, null, any()) } answers {
+    fun `session ended by the dm list reload is handled`() = runTest {
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+        coEvery { dms.loadDms() } answers {
             refreshToken = null
-            throw ApiException(HttpStatusCode.Forbidden, "change password")
+            throw ApiException(HttpStatusCode.Unauthorized, "rejected")
         }
 
         assertEquals(WakeOutcome.NOT_LOGGED_IN, processor.process(dm(), owner))
@@ -498,5 +624,15 @@ class WakeFetchProcessorTest {
 
         verify(exactly = 0) { sink.cancelAll() }
         assertEquals(0, enqueuer.cancelAllCount)
+    }
+
+    @Test
+    fun `wake without any session clears leftovers`() = runTest {
+        refreshToken = null
+
+        assertEquals(WakeOutcome.NOT_LOGGED_IN, processor.process(dm(), owner))
+
+        verify { sink.cancelAll() }
+        assertEquals(1, enqueuer.cancelAllCount)
     }
 }

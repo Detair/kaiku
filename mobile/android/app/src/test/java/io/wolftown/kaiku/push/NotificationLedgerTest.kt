@@ -78,8 +78,8 @@ class NotificationLedgerTest {
 
     @Test
     fun `exact read cursor only moves forward`() {
-        ledger.markRead("me", "c1", late, "2026-10-24T10:05:00Z", "2026-10-24T10:06:00Z")
-        ledger.markRead("me", "c1", early, "2026-10-24T10:01:00Z", "2026-10-24T10:07:00Z")
+        ledger.markRead("me", "c1", late, "2026-10-24T10:05:00Z")
+        ledger.markRead("me", "c1", early, "2026-10-24T10:01:00Z")
 
         assertEquals(ReadCursor(id = late, at = "2026-10-24T10:05:00Z"), ledger.readCursor("me", "c1"))
     }
@@ -92,41 +92,34 @@ class NotificationLedgerTest {
     }
 
     @Test
-    fun `inexact read id is the boundary when fetched`() {
-        val cursor = ReadCursor(receivedId = "m5", receivedAt = "2026-10-24T10:30:00Z")
+    fun `id-only read is the boundary when fetched`() {
+        val cursor = ReadCursor(receivedId = "m5")
         val unread = cursor.unread((2..6).map { m("m$it", it) })
         assertEquals(listOf("m6"), unread.map { it.id })
     }
 
     @Test
-    fun `inexact read id not fetched falls back to its receive time`() {
-        val cursor = ReadCursor(receivedId = "gone", receivedAt = "2026-10-24T10:30:00Z")
+    fun `id-only read that is not fetched filters nothing`() {
+        val cursor = ReadCursor(receivedId = "gone")
         val unread = cursor.unread(listOf(m("m2", 2), m("m40", 40)))
-        assertEquals(listOf("m40"), unread.map { it.id })
+        assertEquals(listOf("m2", "m40"), unread.map { it.id })
     }
 
     @Test
-    fun `resolving the inexact read makes it exact`() {
-        ledger.markRead("me", "c1", "m5", null, "2026-10-24T10:30:00Z")
-        ledger.markRead("me", "c1", "m5", "2026-10-24T10:05:00Z", "2026-10-24T10:31:00Z")
+    fun `resolving the id-only read makes it exact`() {
+        ledger.markRead("me", "c1", "m5", null)
+        assertEquals(ReadCursor(receivedId = "m5"), ledger.readCursor("me", "c1"))
 
+        ledger.markRead("me", "c1", "m5", "2026-10-24T10:05:00Z")
         assertEquals(ReadCursor(id = "m5", at = "2026-10-24T10:05:00Z"), ledger.readCursor("me", "c1"))
-    }
-
-    @Test
-    fun `receive time cursor only moves forward`() {
-        ledger.markRead("me", "c1", null, null, "2026-10-24T10:30:00Z")
-        ledger.markRead("me", "c1", "m1", null, "2026-10-24T10:10:00Z")
-
-        assertEquals(ReadCursor(receivedAt = "2026-10-24T10:30:00Z"), ledger.readCursor("me", "c1"))
     }
 
     @Test
     fun `read cursor survives a new ledger instance on the same storage`() {
         val prefs = InMemorySharedPreferences()
-        PrefsNotificationLedger(prefs).markRead("me", "c1", null, null, "2026-10-24T10:30:00Z")
+        PrefsNotificationLedger(prefs).markRead("me", "c1", "m5", "2026-10-24T10:05:00Z")
 
-        assertEquals("2026-10-24T10:30:00Z", PrefsNotificationLedger(prefs).readCursor("me", "c1").receivedAt)
+        assertEquals("m5", PrefsNotificationLedger(prefs).readCursor("me", "c1").id)
         assertEquals(ReadCursor(), PrefsNotificationLedger(prefs).readCursor("other", "c1"))
     }
 }

@@ -45,16 +45,28 @@ data class ChannelNotification(
     val lines: List<NotificationLine>,
 )
 
+/** Result of [NotificationSink.show]. */
+enum class ShowResult {
+    POSTED,
+
+    /** [NotificationSink.show]'s `prepare` returned null. */
+    REFUSED,
+
+    /** A notification was ready, but the user disabled notifications. */
+    DISABLED,
+}
+
 /** Posts and clears per-channel message notifications. */
 interface NotificationSink {
     /**
      * Posts the notification [prepare] returns, or nothing when it returns
      * null. [prepare] runs inside the same critical section as the post and
      * as [cancel]/[cancelAll], immediately before posting, so it can make the
-     * final checks (session, visibility, read cursor) atomically with them.
-     * Returns whether a notification was posted.
+     * final checks (session, visibility, read state) atomically with them. It
+     * also runs when notifications are disabled, so the caller's bookkeeping
+     * is the same either way.
      */
-    fun show(prepare: () -> ChannelNotification?): Boolean
+    fun show(prepare: () -> ChannelNotification?): ShowResult
 
     fun cancel(channelId: String)
 

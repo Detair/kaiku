@@ -49,17 +49,17 @@ class AndroidNotificationPresenter @Inject constructor(
         get() = context.getSystemService(NotificationManager::class.java)
 
     @Synchronized
-    override fun show(prepare: () -> ChannelNotification?): Boolean {
-        val manager = manager ?: return false
-        if (!canPost(manager)) {
-            logger.info("message notification skipped: notifications disabled")
-            return false
-        }
+    override fun show(prepare: () -> ChannelNotification?): ShowResult {
         // Final checks and the post form one critical section with cancel/cancelAll.
-        val n = prepare() ?: return false
+        val n = prepare() ?: return ShowResult.REFUSED
+        val manager = manager
+        if (manager == null || !canPost(manager)) {
+            logger.info("message notification skipped: notifications disabled")
+            return ShowResult.DISABLED
+        }
         manager.notify(n.channelId, MESSAGE_ID, build(manager, n))
         manager.notify(SUMMARY_ID, summary())
-        return true
+        return ShowResult.POSTED
     }
 
     private fun build(manager: NotificationManager, n: ChannelNotification): Notification {

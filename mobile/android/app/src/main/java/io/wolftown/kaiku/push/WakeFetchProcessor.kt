@@ -3,6 +3,7 @@ package io.wolftown.kaiku.push
 import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.MessageApi
+import io.wolftown.kaiku.data.api.UnreadApi
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -22,6 +23,9 @@ enum class WakeOutcome {
     NOTIFIED,
     NOTHING_NEW,
     SUPPRESSED_ACTIVE,
+
+    /** New messages were found and recorded, but notifications are disabled. */
+    NOTIFICATIONS_OFF,
     NOT_LOGGED_IN,
 
     /** The wake was queued for another account or server than the signed-in one. */
@@ -38,6 +42,11 @@ enum class WakeOutcome {
  * a logout or account change at any point means nothing is posted and the
  * ledger is not touched.
  *
+ * Wakes and reads are unordered (C20), so whether anything notifies is
+ * decided by the server's unread count for the channel: at most the newest
+ * N messages (N = unread count) can notify, none when N is 0. The local read
+ * cursor and seen watermark only filter further.
+ *
  * Push is only a hint (FCM may drop wakes, C20 note): correctness comes from
  * the catch-up on app start/reconnect ([io.wolftown.kaiku.data.sync.ResyncCoordinator]).
  * This only covers the woken channel and, for DM wakes, the DM list.
@@ -48,6 +57,7 @@ class WakeFetchProcessor @Inject constructor(
     private val refresher: TokenRefresher,
     private val tokenStorage: TokenStorage,
     private val messages: MessageApi,
+    private val unreadApi: UnreadApi,
     private val titles: NotificationTitleResolver,
     private val ledger: NotificationLedger,
     private val sink: NotificationSink,
@@ -74,12 +84,13 @@ class WakeFetchProcessor @Inject constructor(
         /** Lines kept in one channel notification. */
         const val MAX_LINES = 7
 
-        /** C4 error code: the account must change its password before using the API. */
-        const val PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
     }
 
     /** The session a wake is processed for. */
     private data class Account(val userId: String, val generation: Long)
+
+    /** The server's unread state of one channel. */
+    private data class ServerUnread(val count: Int, val countsOwnMessages: Boolean)
 
     /**
      * [isStopped] reports that the work was stopped (e.g. a read cancelled it);
@@ -89,8 +100,12 @@ class WakeFetchProcessor @Inject constructor(
         // Captured before the refresh: a refresh rotation keeps the generation,
         // a logout or new login changes it (TokenStorage).
         val generation = tokenStorage.getSessionGeneration()
-        val userId = tokenStorage.getUserId() ?: return WakeOutcome.NOT_LOGGED_IN
-        if (tokenStorage.getRefreshToken() == null) return WakeOutcome.NOT_LOGGED_IN
+        val userId = tokenStorage.getUserId()
+        if (userId == null || tokenStorage.getRefreshToken() == null) {
+            // No session at all: nothing may stay from the previous one.
+            clearAll()
+            return WakeOutcome.NOT_LOGGED_IN
+        }
         if (owner.userId != userId || owner.serverUrl != tokenStorage.getServerUrl()) {
             return WakeOutcome.WRONG_ACCOUNT
         }
@@ -99,10 +114,7 @@ class WakeFetchProcessor @Inject constructor(
         when (refresher.ensureFresh(MIN_TOKEN_VALIDITY_MS)) {
             RefreshResult.SUCCESS -> Unit
             RefreshResult.NETWORK_ERROR -> return WakeOutcome.RETRY
-            RefreshResult.AUTH_REJECTED, RefreshResult.NO_SESSION -> {
-                onSessionEnded(account)
-                return WakeOutcome.NOT_LOGGED_IN
-            }
+            RefreshResult.AUTH_REJECTED, RefreshResult.NO_SESSION -> return sessionLost(account)
         }
         if (!isCurrent(account)) return sessionLost(account)
 
@@ -120,12 +132,12 @@ class WakeFetchProcessor @Inject constructor(
             throw e
         } catch (e: ApiException) {
             when {
-                // The session can no longer fetch: rejected, or ended by the HTTP
-                // client (401 after a failed refresh, 403 PASSWORD_CHANGE_REQUIRED).
-                e.status == HttpStatusCode.Unauthorized || e.code == PASSWORD_CHANGE_REQUIRED ||
-                    !isCurrent(account) -> sessionLost(account, force = true)
+                // The HTTP client clears the tokens before it surfaces a real
+                // rejection (401, 403 PASSWORD_CHANGE_REQUIRED): the session ended.
+                !isCurrent(account) -> sessionLost(account)
                 // Lost access to the channel: retrying cannot help.
                 e.status == HttpStatusCode.Forbidden || e.status == HttpStatusCode.NotFound -> WakeOutcome.NOTHING_NEW
+                // Includes a 401 with the session intact: transient, try again.
                 else -> WakeOutcome.RETRY
             }
         } catch (_: Exception) {
@@ -143,12 +155,18 @@ class WakeFetchProcessor @Inject constructor(
         resolveReadCursor(account, channelId, unseen)
         // Newest message actually considered; own messages count as seen.
         val newest = unseen.lastOrNull()
-        val eligible = notifiable(account, channelId, unseen)
-
-        if (newest == null || eligible.isEmpty()) {
+        if (newest == null || notifiable(account, channelId, unseen, unread = null).isEmpty()) {
             newest?.let { markSeen(account, channelId, it) }
-            refreshDmList(signal)
-            return WakeOutcome.NOTHING_NEW
+            return finish(signal, account, WakeOutcome.NOTHING_NEW)
+        }
+
+        // The server's read state is authoritative (C20): a late wake never
+        // re-notifies what was read, whatever arrived first.
+        val unread = serverUnread(channelId)
+        if (!isCurrent(account)) return sessionLost(account)
+        if (notifiable(account, channelId, unseen, unread).isEmpty()) {
+            markSeen(account, channelId, newest)
+            return finish(signal, account, WakeOutcome.NOTHING_NEW)
         }
 
         val title = titles.resolve(channelId, preferDm = signal.kind == WakeKind.DM)
@@ -157,8 +175,8 @@ class WakeFetchProcessor @Inject constructor(
         // a logout (cancelAll) or read (ledger write, then cancel) is either seen
         // here or removes the notification after it was posted.
         var refused: WakeOutcome = WakeOutcome.NOTHING_NEW
-        val posted = sink.show {
-            val lines = notifiable(account, channelId, unseen)
+        val result = sink.show {
+            val lines = notifiable(account, channelId, unseen, unread)
             when {
                 stopped() -> null.also { refused = WakeOutcome.NOTHING_NEW }
                 !isCurrent(account) -> null.also { refused = WakeOutcome.NOT_LOGGED_IN }
@@ -174,27 +192,57 @@ class WakeFetchProcessor @Inject constructor(
                 )
             }
         }
-        if (!posted) {
-            if (refused == WakeOutcome.NOT_LOGGED_IN) return sessionLost(account)
-            if (refused == WakeOutcome.SUPPRESSED_ACTIVE) {
-                // The user opened the chat while we were fetching.
-                markSeen(account, channelId, newest)
-                catchUpQuietly(channelId)
+
+        val outcome = when (result) {
+            ShowResult.REFUSED -> when (refused) {
+                WakeOutcome.NOT_LOGGED_IN -> return sessionLost(account)
+                WakeOutcome.SUPPRESSED_ACTIVE -> {
+                    // The user opened the chat while we were fetching.
+                    markSeen(account, channelId, newest)
+                    catchUpQuietly(channelId)
+                    return refused
+                }
+                else -> return refused
             }
-            return refused
+            ShowResult.POSTED -> {
+                // The presenter's lock is not TokenStorage's: a logout or read can
+                // land between the check and the post. Re-check and take it back.
+                if (!isCurrent(account)) {
+                    sink.cancel(channelId)
+                    return sessionLost(account)
+                }
+                if (notifiable(account, channelId, unseen, unread).isEmpty()) {
+                    sink.cancel(channelId)
+                    WakeOutcome.NOTHING_NEW
+                } else {
+                    WakeOutcome.NOTIFIED
+                }
+            }
+            // Same bookkeeping as a post, just nothing shown.
+            ShowResult.DISABLED -> WakeOutcome.NOTIFICATIONS_OFF
         }
         markSeen(account, channelId, newest)
         catchUpQuietly(channelId)
-        refreshDmList(signal)
-        return WakeOutcome.NOTIFIED
+        return finish(signal, account, outcome)
     }
 
     /**
-     * Others' messages of [unseen] that may notify: after the (re-read)
-     * notified watermark and after the (re-read) read cursor. A wake may
-     * arrive after the read of the same message (C20: unordered); the read wins.
+     * Others' messages of [unseen] that may notify: within the server's
+     * newest-[ServerUnread.count] window (when [unread] is known), after the
+     * re-read seen watermark and after the re-read local read cursor.
      */
-    private fun notifiable(account: Account, channelId: String, unseen: List<Message>): List<Message> {
+    private fun notifiable(
+        account: Account,
+        channelId: String,
+        unseen: List<Message>,
+        unread: ServerUnread?,
+    ): List<Message> {
+        val fromOthers = { m: Message -> m.author.id != account.userId }
+        val window: Set<String>? = unread?.let { u ->
+            // Guild counts include own messages, DM counts do not.
+            val candidates = if (u.countsOwnMessages) unseen else unseen.filter(fromOthers)
+            candidates.takeLast(u.count).mapTo(HashSet()) { it.id }
+        }
         val afterSeen = afterLastSeen(
             unseen,
             ledger.lastSeen(account.userId, channelId),
@@ -202,37 +250,54 @@ class WakeFetchProcessor @Inject constructor(
         )
         return ledger.readCursor(account.userId, channelId)
             .unread(afterSeen)
-            .filter { it.author.id != account.userId }
+            .filter { fromOthers(it) && (window == null || it.id in window) }
     }
+
+    /** The server's unread count for [channelId]; a channel not listed has none. */
+    private suspend fun serverUnread(channelId: String): ServerUnread {
+        val aggregate = unreadApi.getUnread()
+        aggregate.dms.firstOrNull { it.channelId == channelId }?.let {
+            return ServerUnread(it.unreadCount.toCount(), countsOwnMessages = false)
+        }
+        aggregate.guilds.asSequence().flatMap { it.channels }.firstOrNull { it.channelId == channelId }?.let {
+            return ServerUnread(it.unreadCount.toCount(), countsOwnMessages = true)
+        }
+        return ServerUnread(0, countsOwnMessages = false)
+    }
+
+    private fun Long.toCount(): Int = coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
 
     /** A read known only by id becomes exact once the fetch shows its `created_at`. */
     private fun resolveReadCursor(account: Account, channelId: String, unseen: List<Message>) {
-        val cursor = ledger.readCursor(account.userId, channelId)
-        val message = cursor.resolve(unseen) ?: return
-        ledger.markRead(account.userId, channelId, message.id, message.createdAt, cursor.receivedAt ?: message.createdAt)
+        val message = ledger.readCursor(account.userId, channelId).resolve(unseen) ?: return
+        if (!isCurrent(account)) return
+        ledger.markRead(account.userId, channelId, message.id, message.createdAt)
     }
 
     /**
-     * The session this wake ran for is gone: remove its notifications and
-     * queued wakes, also when no app UI is running to observe the logout.
-     * Skipped when another session took over meanwhile.
+     * Last steps of a wake that found something: DM wakes reload the DM list.
+     * That request can end the session too, which is handled like any other.
      */
-    private fun onSessionEnded(account: Account) {
-        val gone = tokenStorage.getRefreshToken() == null
-        if (!gone && !isCurrent(account)) return
-        logger.info("wake fetch: session ended, clearing message notifications")
+    private suspend fun finish(signal: WakeSignal, account: Account, outcome: WakeOutcome): WakeOutcome {
+        refreshDmList(signal)
+        return if (isCurrent(account)) outcome else sessionLost(account)
+    }
+
+    /**
+     * The wake's session is no longer usable. When it ended (no session
+     * stored), its notifications and queued wakes go too, also when no app UI
+     * is running to observe the logout. A newer session's state is never touched.
+     */
+    private fun sessionLost(account: Account): WakeOutcome {
+        val ended = tokenStorage.getRefreshToken() == null || isCurrent(account)
+        if (ended) clearAll()
+        return WakeOutcome.NOT_LOGGED_IN
+    }
+
+    private fun clearAll() {
+        logger.info("wake fetch: no session, clearing message notifications")
         sink.cancelAll()
         enqueuer.cancelAll()
-    }
-
-    /**
-     * The wake's session is no longer usable. Clears its notifications and
-     * wakes when it ended (no session stored), or with [force] when the server
-     * refused the session itself; a newer session's state is never touched.
-     */
-    private fun sessionLost(account: Account, force: Boolean = false): WakeOutcome {
-        if (force || tokenStorage.getRefreshToken() == null) onSessionEnded(account)
-        return WakeOutcome.NOT_LOGGED_IN
     }
 
     /**

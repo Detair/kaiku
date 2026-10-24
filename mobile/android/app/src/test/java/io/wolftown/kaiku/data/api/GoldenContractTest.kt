@@ -10,6 +10,7 @@ import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.CursorPage
 import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.domain.model.Message
+import io.wolftown.kaiku.domain.model.UnreadAggregate
 import io.wolftown.kaiku.domain.model.UserStatus
 import io.wolftown.kaiku.testutil.Golden
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -177,5 +178,18 @@ class GoldenContractTest {
         assertIs<ServerEvent.DmRead>(dmRead)
         assertEquals("00000000-0000-4000-8000-00000000d101", dmRead.channelId)
         assertEquals(null, dmRead.lastReadMessageId)
+    }
+
+    @Test
+    fun `unread aggregate fixture decodes`() {
+        val aggregate = KaikuJson.decodeFromString<UnreadAggregate>(Golden.load("unread_aggregate.json"))
+
+        val dm = aggregate.dms.single()
+        assertEquals("00000000-0000-4000-8000-00000000d101", dm.channelId)
+        assertEquals(2L, dm.unreadCount)
+        val channel = aggregate.guilds.single().channels.single()
+        assertEquals("00000000-0000-4000-8000-00000000c001", channel.channelId)
+        assertEquals(3L, channel.unreadCount)
+        assertEquals(5L, aggregate.total)
     }
 }
