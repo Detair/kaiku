@@ -54,6 +54,20 @@
             android:foregroundServiceType="microphone"
             android:exported="false" />
 
+        <!-- FCM wake signals; inert in builds without google-services.json. -->
+        <service
+            android:name=".push.KaikuFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- No FCM token until the app picks FCM as its push transport. -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+
         <!-- WorkManager is initialized on demand with the HiltWorkerFactory (KaikuApplication). -->
         <provider
             android:name="androidx.startup.InitializationProvider"

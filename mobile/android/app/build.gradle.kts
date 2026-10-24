@@ -9,6 +9,12 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// FCM is compiled in but stays off unless the build has a Firebase config:
+// without app/google-services.json no FirebaseApp exists and the app never picks FCM.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 val versionPropsFile = rootProject.file("version.properties")
 val versionProps = Properties().apply {
     if (versionPropsFile.exists()) versionPropsFile.inputStream().use { load(it) }
@@ -151,6 +157,11 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.hilt:hilt-work:1.2.0")
     ksp("androidx.hilt:hilt-compiler:1.2.0")
+
+    // Firebase Cloud Messaging (push transport; inactive without google-services.json)
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-messaging")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
     // Ktor
     implementation("io.ktor:ktor-client-okhttp:3.1.0")

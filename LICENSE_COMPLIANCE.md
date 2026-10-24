@@ -200,13 +200,19 @@ This document tracks all direct third-party dependencies and their licenses for 
 
 ## Android Dependencies
 
-Runtime libraries of the Android client (`mobile/android/app/build.gradle.kts`) added for push notifications.
+Libraries of the Android client (`mobile/android/app/build.gradle.kts`) added for push notifications.
 
 | Package | Version | License | Usage |
 |---------|---------|---------|-------|
 | androidx.work:work-runtime-ktx | 2.10.0 | Apache-2.0 | WorkManager: background fetch after a push wake signal |
 | androidx.hilt:hilt-work | 1.2.0 | Apache-2.0 | Hilt dependency injection for WorkManager workers |
 | androidx.hilt:hilt-compiler | 1.2.0 | Apache-2.0 | Annotation processor for `@HiltWorker` (build time only) |
+| com.google.firebase:firebase-bom | 33.7.0 | Apache-2.0 | Version alignment for Firebase libraries (no code) |
+| com.google.firebase:firebase-messaging | 24.1.0 (via BoM 33.7.0) | Apache-2.0 | FCM push transport; inactive in builds without `google-services.json` |
+| org.jetbrains.kotlinx:kotlinx-coroutines-play-services | 1.9.0 | Apache-2.0 | `await()` for Play services / Firebase tasks |
+| com.google.gms:google-services (Gradle plugin) | 4.4.2 | Apache-2.0 | Reads `google-services.json` at build time; applied only when the file exists (build time only) |
+
+firebase-messaging pulls in Google Play services client libraries (e.g. `play-services-base`, already used for the TLS provider), which are distributed under the Android Software Development Kit License, like the existing Play services dependency.
 
 ---
 
