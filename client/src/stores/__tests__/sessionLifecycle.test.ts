@@ -129,7 +129,7 @@ import { addMessage } from "@/stores/messages";
 import type { User } from "@/lib/types";
 import { authState, initAuth, login, logout, setAuthState } from "../auth";
 import { wsState } from "../websocket";
-import { preferences } from "../preferences";
+import { preferences, updatePreference } from "../preferences";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -208,6 +208,15 @@ function prefsResponse(theme: string, updatedAt: string) {
   return { preferences: { theme }, updated_at: updatedAt };
 }
 
+/** `PUT /api/me/preferences` calls made so far. */
+function preferencePuts(): unknown[][] {
+  return vi
+    .mocked(tauri.fetchApi)
+    .mock.calls.filter(
+      (c) => (c[1] as { method?: string } | undefined)?.method === "PUT",
+    );
+}
+
 describe("session lifecycle with the real service stores", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -275,6 +284,68 @@ describe("session lifecycle with the real service stores", () => {
     await flush();
 
     expect(listenerNames()).toEqual([]);
+  });
+
+  describe("a preferences response of the previous session", () => {
+    it("arriving between the next sign-in and that session's preferences init is neither applied nor pushed", async () => {
+      // A has local preferences; A's server fetch hangs.
+      localStorage.setItem(
+        "vc:preferences",
+        JSON.stringify({ data: { theme: "solarized-dark" }, updated_at: "2026-01-01T00:00:00Z" }),
+      );
+      const oldFetch = deferred<unknown>();
+      vi.mocked(tauri.fetchApi).mockImplementationOnce(() => oldFetch.promise as Promise<never>);
+      const restoring = initAuth();
+      await flush();
+      expect(tauri.fetchApi).toHaveBeenCalledTimes(1);
+      await expectSettled(logout(), "logout");
+
+      // B signs in: B's session is active, but B's listener registrations are
+      // still in flight, so B's own initPreferences() has not run yet.
+      vi.mocked(tauri.fetchApi).mockResolvedValue(prefsResponse("solarized-light", "2026-02-01T00:00:00Z"));
+      const releaseB = holdNextListens(SESSION_LISTENERS.length);
+      const signingIn = login("https://server.test", "bob", "pw");
+      await flush();
+      expect(tauri.fetchApi).toHaveBeenCalledTimes(1);
+
+      // A's response arrives now: the server has no preferences for A, so the
+      // old run would push A's local preferences (with B's session).
+      oldFetch.resolve({ preferences: {}, updated_at: "2026-01-01T00:00:00Z" });
+      await expectSettled(restoring, "A's restore");
+      await flush();
+      expect(preferencePuts()).toEqual([]);
+
+      // B's startup completes with B's server preferences.
+      releaseB();
+      await expectSettled(signingIn, "B's sign-in");
+      await flush();
+      expect(preferencePuts()).toEqual([]);
+      expect(preferences().theme).toBe("solarized-light");
+      const stored = JSON.parse(localStorage.getItem("vc:preferences") ?? "{}");
+      expect(stored.data?.theme).toBe("solarized-light");
+    });
+
+    it("arriving after a sign-out with no new sign-in is discarded", async () => {
+      const oldFetch = deferred<unknown>();
+      vi.mocked(tauri.fetchApi).mockImplementationOnce(() => oldFetch.promise as Promise<never>);
+      const restoring = initAuth();
+      await flush();
+      expect(tauri.fetchApi).toHaveBeenCalledTimes(1);
+      await expectSettled(logout(), "logout");
+
+      const themeBefore = preferences().theme;
+      const storedBefore = localStorage.getItem("vc:preferences");
+      expect(themeBefore).not.toBe("solarized-dark");
+
+      // Newer than anything local: a current run would apply it.
+      oldFetch.resolve(prefsResponse("solarized-dark", "2030-01-01T00:00:00Z"));
+      await expectSettled(restoring, "A's restore");
+      await flush();
+
+      expect(preferences().theme).toBe(themeBefore);
+      expect(localStorage.getItem("vc:preferences")).toBe(storedBefore);
+      expect(preferencePuts()).toEqual([]);
+    });
   });
 
   describe("a startup that settles only after the next sign-in", () => {
@@ -375,6 +446,18 @@ describe("session lifecycle with the real service stores", () => {
       await flush();
       expect(wsState.status).toBe("connected");
       expect(listenerNames()).toEqual(SESSION_LISTENERS);
+    });
+
+    it("a preference change still waiting to sync is not pushed after sign-out", async () => {
+      await initAuth();
+      await flush();
+      expect(preferencePuts()).toEqual([]);
+
+      updatePreference("theme", "solarized-dark");
+      await expectSettled(logout(), "logout");
+      await expireWaits();
+
+      expect(preferencePuts()).toEqual([]);
     });
   });
 });

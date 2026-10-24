@@ -19,7 +19,7 @@ import {
   initIdleDetection,
   stopIdleDetectionCleanup,
 } from "./presence";
-import { initPreferences } from "./preferences";
+import { cleanupPreferences, initPreferences } from "./preferences";
 import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
@@ -216,6 +216,9 @@ async function teardownServices(sinceId: number, which: StartedServices): Promis
  */
 function requestStop(): Promise<void> {
   const stopId = ++ownerId;
+  // Synchronously, before any teardown step can hang: a preferences response
+  // or debounced push of this session must never reach the next one.
+  cleanupPreferences();
   return enqueueTeardown(() => teardownServices(stopId, ALL_SERVICES));
 }
 

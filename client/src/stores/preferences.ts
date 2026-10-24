@@ -347,10 +347,25 @@ async function pushPreferences(
 // Sync Functions
 // ============================================================================
 
-// Bumped by every `initPreferences()`: a run whose server response arrives
-// after a newer run began (another sign-in) was superseded and must not apply
-// its result to state or localStorage.
+// Bumped by every `initPreferences()` and `cleanupPreferences()`: a run whose
+// server response arrives after a newer run began (another sign-in) or after
+// the session stopped was superseded and must not apply its result to state
+// or localStorage, nor push it with whatever session is current by then.
 let initGeneration = 0;
+
+/**
+ * Detach the preferences store from the session that is stopping: an
+ * `initPreferences()` still waiting on the server is superseded, and a
+ * debounced push that has not fired yet is dropped. Synchronous, so the
+ * caller can run it before anything of the next session starts.
+ */
+export function cleanupPreferences(): void {
+  initGeneration += 1;
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+}
 
 /**
  * Initialize preferences on login.
@@ -443,6 +458,7 @@ export function updatePreference<K extends keyof UserPreferences>(
   // Debounced push to server
   if (pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
+    pushTimer = null;
     try {
       await pushPreferences(updated);
       console.log("[Preferences] Synced to server");

@@ -32,6 +32,7 @@ vi.mock("@/stores/presence", () => ({
 
 vi.mock("@/stores/preferences", () => ({
   initPreferences: vi.fn(),
+  cleanupPreferences: vi.fn(),
 }));
 
 vi.mock("@/stores/drafts", () => ({
