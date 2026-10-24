@@ -11,7 +11,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-20-v1-family-release-goal-design.md`
 **Review:** `docs/reviews/2026-10-22-v1-family-release-readiness.md` (Before-rollout list; full IDs in the maintainer's private archive — this plan names IDs and fixes, never exploit paths)
 **Contracts:** `docs/superpowers/plans/2026-10-22-v1-family-contracts.md` (C1–C14, C11/C12 clarifications) plus the proposals below.
-**Builds on:** `origin/main` @ `047bd54e` (#658 release pipeline merged) and the open Phase-1 PRs #660/#662 (Android), #661/#665 (desktop), #663/#666 (server). Every task here starts after the PRs it names are merged. Sibling Phase-2 plans: `2026-10-23-v1-push-phase2.md` (push), `2026-10-23-v1-i18n-phase2.md` (strings), and the private production deployment plan (`kaiku-reviews-private/plans/2026-10-22-the production server-kaiku-deploy.md`: backups, alerting, image pins, live config).
+**Builds on:** `origin/main` @ `047bd54e` (#658 release pipeline merged) and the open Phase-1 PRs #660/#662 (Android), #661/#665 (desktop), #663/#666 (server). Every task here starts after the PRs it names are merged. Sibling Phase-2 plans: `2026-10-23-v1-push-phase2.md` (push), `2026-10-23-v1-i18n-phase2.md` (strings), and the private production deployment plan (`the private deployment plan`: backups, alerting, image pins, live config).
 
 ---
 
