@@ -197,6 +197,25 @@ fn android_golden_auth_response() {
     );
 }
 
+/// Login response for an admin-created account still on its temporary
+/// password: the client must ask for a new password before anything else.
+#[test]
+fn android_golden_auth_response_password_change() {
+    let response = AuthResponse {
+        access_token: "fixture-temporary-access-token".to_string(),
+        refresh_token: Some("fixture-temporary-refresh-token".to_string()),
+        expires_in: 900,
+        token_type: "Bearer".to_string(),
+        setup_required: false,
+        password_change_required: true,
+    };
+
+    check_golden(
+        "auth_response_password_change.json",
+        serde_json::to_value(&response).expect("serialize auth response"),
+    );
+}
+
 const GUILD_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_b001);
 
 fn channel_with_unread(
