@@ -960,7 +960,10 @@ async function handleReconnect(): Promise<void> {
   const cached = Object.keys(messagesState.byChannel).filter(
     (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,
   );
-  const toCatchUp = cached.filter((id) => open.includes(id));
+  // Every open channel, cached or not: with an empty cache (new or quiet
+  // channel, or a load in flight) catchUpChannel falls back to a fresh load,
+  // so messages from the gap still appear.
+  const toCatchUp = open;
   const toClear = cached.filter((id) => !open.includes(id));
   const anchors = new Map(toCatchUp.map((id) => [id, catchUpAnchor(id)]));
   const channelsToResubscribe = [

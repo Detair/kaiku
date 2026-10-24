@@ -725,6 +725,34 @@ describe("websocket store", () => {
       }
     });
 
+    it("an open channel with an empty cache is loaded after reconnect", async () => {
+      const { channelsState } = await import("@/stores/channels");
+      const { catchUpChannel } = await import("@/stores/messages");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      await ws.connect();
+      await setCache({ "c-quiet": [] });
+      (channelsState as { selectedChannelId: string | null }).selectedChannelId =
+        "c-quiet";
+      try {
+        await fire("ws:reconnecting", 1);
+        await fire("ws:connected");
+        await ready();
+        await subscribed("c-quiet");
+
+        expect(nativeTauri.wsSubscribe).toHaveBeenCalledWith("c-quiet");
+        // No anchor: catchUpChannel falls back to loadInitialMessages.
+        expect(catchUpChannel).toHaveBeenCalledWith(
+          "c-quiet",
+          undefined,
+          undefined,
+        );
+      } finally {
+        (
+          channelsState as { selectedChannelId: string | null }
+        ).selectedChannelId = null;
+      }
+    });
+
     it("a gap of more than 7 days reloads the open channel instead of catching up", async () => {
       const { channelsState } = await import("@/stores/channels");
       const { catchUpChannel, loadInitialMessages } =
