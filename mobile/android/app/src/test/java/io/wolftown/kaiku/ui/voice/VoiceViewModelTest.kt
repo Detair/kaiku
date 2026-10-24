@@ -137,18 +137,20 @@ class VoiceViewModelTest {
     }
 
     // ========================================================================
-    // 2. Leaving channel calls voiceRepository.leaveChannel
+    // 2. Leave button leaves on the repository's scope
     // ========================================================================
 
     @Test
-    fun `leaving channel calls voiceRepository leaveChannel`() = runTest {
+    fun `leaving channel leaves on the repository scope`() = runTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
         viewModel.onLeave()
+        // The screen navigates back right after the tap.
+        viewModel.onCleared()
         advanceUntilIdle()
 
-        coVerify { voiceRepository.leaveChannel() }
+        verify(exactly = 1) { voiceRepository.leaveInBackground() }
     }
 
     // ========================================================================
@@ -199,18 +201,20 @@ class VoiceViewModelTest {
     }
 
     // ========================================================================
-    // 5. Disconnect on ViewModel cleared
+    // 5. The call survives leaving the voice screen
     // ========================================================================
 
     @Test
-    fun `disconnect on ViewModel cleared`() = runTest {
+    fun `clearing the voice view model keeps the call`() = runTest {
+        currentChannelIdFlow.value = "voice-ch-1"
         viewModel = createViewModel()
         advanceUntilIdle()
 
         viewModel.onCleared()
         advanceUntilIdle()
 
-        coVerify { voiceRepository.leaveChannel() }
+        coVerify(exactly = 0) { voiceRepository.leaveChannel() }
+        verify(exactly = 0) { voiceRepository.leaveInBackground() }
     }
 
     // ========================================================================

@@ -41,6 +41,24 @@ class GuildRepository @Inject constructor(
     /** The channel the user currently has open; its messages count as read. */
     private val _activeChannelId = MutableStateFlow<String?>(null)
 
+    /**
+     * Session teardown: drops servers, channels, categories, the selection and
+     * the open channel. A read mark still waiting for its debounce is dropped,
+     * not sent: the session is ending.
+     */
+    fun clearSession() {
+        synchronized(readLock) {
+            readJob?.cancel()
+            readJob = null
+            pending = null
+        }
+        _activeChannelId.value = null
+        _selectedGuildId.value = null
+        _channels.value = emptyList()
+        _categories.value = emptyList()
+        _guilds.value = emptyList()
+    }
+
     suspend fun loadGuilds() {
         val guildList = guildApi.getGuilds()
         _guilds.value = guildList

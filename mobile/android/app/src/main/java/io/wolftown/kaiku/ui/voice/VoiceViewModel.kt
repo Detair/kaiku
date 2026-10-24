@@ -13,7 +13,6 @@ import io.wolftown.kaiku.data.voice.MissingMicPermissionException
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,7 +23,6 @@ import kotlinx.coroutines.flow.stateIn
 import org.webrtc.EglBase
 import org.webrtc.VideoTrack
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.coroutines.cancellation.CancellationException
@@ -99,17 +97,13 @@ class VoiceViewModel @Inject constructor(
         }
     }
 
-    /** Leaves the voice channel explicitly. */
+    /**
+     * Leaves the voice channel explicitly (the Leave button). Runs on the
+     * repository's scope: the screen navigates back right after the tap,
+     * which clears this ViewModel.
+     */
     fun onLeave() {
-        viewModelScope.launch {
-            try {
-                voiceRepository.leaveChannel()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.log(Level.WARNING, "Failed to leave voice channel", e)
-            }
-        }
+        voiceRepository.leaveInBackground()
     }
 
     /** Toggles the local microphone mute state. */
@@ -132,15 +126,13 @@ class VoiceViewModel @Inject constructor(
         voiceRepository.clearError()
     }
 
+    /**
+     * Leaving the voice screen (Back, another destination) keeps the call: the
+     * repository owns it and the overlay bar leads back here. Only the Leave
+     * button ([onLeave]), the overlay's disconnect or the notification action
+     * end it.
+     */
     public override fun onCleared() {
-        // Use NonCancellable because viewModelScope is being cancelled during onCleared
-        viewModelScope.launch(NonCancellable) {
-            try {
-                voiceRepository.leaveChannel()
-            } catch (e: Exception) {
-                logger.log(Level.WARNING, "Failed to leave voice channel on clear", e)
-            }
-        }
         super.onCleared()
     }
 }

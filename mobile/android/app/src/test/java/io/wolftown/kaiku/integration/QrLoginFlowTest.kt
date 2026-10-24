@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.integration
 
+import io.wolftown.kaiku.testutil.noTeardown
 import io.mockk.*
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.local.AuthState
@@ -55,7 +56,7 @@ class QrLoginFlowTest {
         // setLoggedOut immediately. See app/src/test/AGENTS.md.
         authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
 
-        authRepository = AuthRepository(authApi, tokenStorage, authState)
+        authRepository = AuthRepository(authApi, tokenStorage, authState, noTeardown(authState))
     }
 
     // ========================================================================

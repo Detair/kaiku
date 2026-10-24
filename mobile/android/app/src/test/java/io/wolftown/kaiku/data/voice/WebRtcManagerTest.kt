@@ -1,7 +1,9 @@
 package io.wolftown.kaiku.data.voice
 
-import android.content.Context
+import io.mockk.coEvery
 import io.mockk.mockk
+import io.mockk.verify
+import io.wolftown.kaiku.data.api.IceServerConfig
 import io.wolftown.kaiku.data.api.VoiceApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -13,9 +15,11 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.webrtc.PeerConnection
+import org.webrtc.PeerConnectionFactory
 
 /**
  * Unit tests for the WebRTC voice layer.
@@ -53,12 +57,63 @@ class WebRtcManagerTest {
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun newWebRtcManager(
         voiceScope: CoroutineScope = TestScope(UnconfinedTestDispatcher()),
+        voiceApi: VoiceApi = mockk<VoiceApi>(relaxed = true),
+        factoryProvider: PeerConnectionFactoryProvider = mockk<PeerConnectionFactoryProvider>(relaxed = true),
     ): WebRtcManager = WebRtcManager(
-        context = mockk<Context>(relaxed = true),
-        voiceApi = mockk<VoiceApi>(relaxed = true),
+        voiceApi = voiceApi,
         eglBaseProvider = mockk<EglBaseProvider>(relaxed = true),
+        factoryProvider = factoryProvider,
         voiceScope = voiceScope,
     )
+
+    // ========================================================================
+    // One PeerConnectionFactory per process
+    // ========================================================================
+
+    @Test
+    fun `factory created once across two joins`() = runTest {
+        // A relaxed mock stands in for the native factory; its peer connections,
+        // sources and tracks are relaxed mocks too, so no native WebRTC runs.
+        val factory = mockk<PeerConnectionFactory>(relaxed = true)
+        var created = 0
+        val provider = DefaultPeerConnectionFactoryProvider(create = {
+            created++
+            factory
+        })
+        val voiceApi = mockk<VoiceApi>()
+        coEvery { voiceApi.getIceServers() } returns IceServerConfig(iceServers = emptyList())
+        val manager = newWebRtcManager(voiceApi = voiceApi, factoryProvider = provider)
+
+        repeat(2) {
+            // Same steps as VoiceRepository.joinChannel, then the leave/dispose path.
+            manager.initialize()
+            manager.createSubscriberPeerConnection()
+            manager.createPublisherOffer()
+            manager.closePeerConnections()
+            manager.dispose()
+        }
+
+        assertEquals(1, created)
+        // Two joins, each with a subscriber and a publisher PC.
+        verify(exactly = 4) { factory.createPeerConnection(any<PeerConnection.RTCConfiguration>(), any<PeerConnection.Observer>()) }
+        // dispose() releases calls, never the shared factory.
+        verify(exactly = 0) { factory.dispose() }
+    }
+
+    @Test
+    fun `factory provider returns the same instance`() {
+        var created = 0
+        val provider = DefaultPeerConnectionFactoryProvider(create = {
+            created++
+            mockk<PeerConnectionFactory>(relaxed = true)
+        })
+
+        val first = provider.get()
+        val second = provider.get()
+
+        assertSame(first, second)
+        assertEquals(1, created)
+    }
 
     // ========================================================================
     // ICE candidate serialization

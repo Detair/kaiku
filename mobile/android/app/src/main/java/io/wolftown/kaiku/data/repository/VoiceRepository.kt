@@ -244,6 +244,23 @@ class VoiceRepository @Inject constructor(
     }
 
     /**
+     * Leaves on the repository's own scope, for UI callers (the Leave button,
+     * the overlay's disconnect) whose scope may end right away, e.g. when the
+     * screen navigates back after the tap.
+     */
+    fun leaveInBackground() {
+        scope.launch {
+            try {
+                leaveChannel()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Failed to leave voice channel: ${e::class.simpleName}")
+            }
+        }
+    }
+
+    /**
      * Toggles the local microphone mute state.
      */
     fun toggleMute() {

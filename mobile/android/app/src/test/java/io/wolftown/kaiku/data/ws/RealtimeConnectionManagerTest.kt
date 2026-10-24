@@ -9,11 +9,13 @@ import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -564,5 +566,51 @@ class RealtimeConnectionManagerTest {
         assertTrue(h.authState.session.value is AuthSession.LoggedIn)
         assertEquals(RealtimeStatus.Connected, h.manager.status.value)
         verify(exactly = 0) { h.tokens.storage.clear() }
+    }
+
+    // -- Session teardown (Task 19) ------------------------------------------
+
+    @Test
+    fun `close for logout disconnects and stays closed while the session lasts`() = runManagerTest { h ->
+        connected(h)
+        val connectsBefore = h.socket.connects.size
+
+        val closing = backgroundScope.launch { h.manager.closeForLogout() }
+        runCurrent()
+
+        assertTrue(closing.isCompleted)
+        assertEquals(1, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Idle, h.manager.status.value)
+
+        // Still LoggedIn until the logout finishes: nothing may reconnect or refresh.
+        h.manager.onAppForeground()
+        h.connectivity.isConnected.value = false
+        runCurrent()
+        h.connectivity.isConnected.value = true
+        runCurrent()
+        advanceTimeBy(fiveMinutes)
+        assertEquals(connectsBefore, h.socket.connects.size)
+
+        // A new login connects again.
+        h.authState.setLoggedOut()
+        runCurrent()
+        h.authState.setLoggedIn("user-1")
+        runCurrent()
+        assertEquals(connectsBefore + 1, h.socket.connects.size)
+    }
+
+    @Test
+    fun `close for logout leaves a newer session alone`() = runManagerTest { h ->
+        connected(h)
+        h.authState.setLoggedOut()
+        // The teardown of the ended session is queued (it captured LoggedOut)...
+        val closing = backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) { h.manager.closeForLogout() }
+        // ...and a newer login lands before the actor handles it.
+        h.authState.setLoggedIn("user-2")
+        runCurrent()
+
+        assertTrue(closing.isCompleted)
+        assertEquals(0, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
     }
 }
