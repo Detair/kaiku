@@ -1,8 +1,13 @@
 package io.wolftown.kaiku.push
 
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.testutil.InMemorySharedPreferences
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -10,7 +15,11 @@ class WakeSchedulerTest {
 
     private val enqueuer = FakeWakeWorkEnqueuer()
     private val sink: NotificationSink = mockk(relaxed = true)
-    private val scheduler = WakeScheduler(enqueuer, sink)
+    private val ledger = PrefsNotificationLedger(InMemorySharedPreferences())
+    private val tokenStorage: TokenStorage = mockk {
+        every { getUserId() } returns "me"
+    }
+    private val scheduler = WakeScheduler(enqueuer, sink, ledger, tokenStorage)
 
     @Test
     fun `dm wake enqueues work`() {
@@ -37,6 +46,15 @@ class WakeSchedulerTest {
     fun `read signal cancels pending fetches of the channel`() {
         scheduler.onWake(WakeSignal(WakeKind.READ, "c1", 0))
         assertEquals(listOf("c1"), enqueuer.cancelled)
+    }
+
+    @Test
+    fun `read signal records a read cursor at the receive time`() {
+        scheduler.onWake(WakeSignal(WakeKind.READ, "c1", 0))
+
+        val cursor = ledger.readCursor("me", "c1")
+        assertNull(cursor.receivedId)
+        assertNotNull(cursor.receivedAt)
     }
 
     @Test

@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -49,6 +50,7 @@ class ReadSyncObserverTest {
         assertEquals(listOf("c1"), enqueuer.cancelled)
         assertEquals("m5", ledger.lastSeen("me", "c1"))
         assertEquals("2026-10-24T10:05:00Z", ledger.lastSeenCreatedAt("me", "c1"))
+        assertEquals(ReadCursor(id = "m5", at = "2026-10-24T10:05:00Z"), ledger.readCursor("me", "c1"))
     }
 
     @Test
@@ -61,6 +63,7 @@ class ReadSyncObserverTest {
         verify { sink.cancel("d1") }
         assertEquals(listOf("d1"), enqueuer.cancelled)
         assertNull(ledger.lastSeen("me", "d1"))
+        assertEquals(ReadCursor(), ledger.readCursor("me", "d1"))
     }
 
     @Test
@@ -72,5 +75,9 @@ class ReadSyncObserverTest {
         runCurrent()
 
         assertEquals("f0000000-0000-4000-8000-000000000009", ledger.lastSeen("me", "c1"))
+        // The read is still kept, by id with its receive time, for the next fetch.
+        val cursor = ledger.readCursor("me", "c1")
+        assertEquals("00000000-0000-4000-8000-000000000001", cursor.receivedId)
+        assertNotNull(cursor.receivedAt)
     }
 }

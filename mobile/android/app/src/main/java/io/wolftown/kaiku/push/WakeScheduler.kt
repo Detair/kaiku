@@ -9,6 +9,7 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.wolftown.kaiku.data.local.TokenStorage
+import java.time.Instant
 import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -74,6 +75,8 @@ class WorkManagerWakeEnqueuer @Inject constructor(
 class WakeScheduler @Inject constructor(
     private val enqueuer: WakeWorkEnqueuer,
     private val sink: NotificationSink,
+    private val ledger: NotificationLedger,
+    private val tokenStorage: TokenStorage,
 ) {
     companion object {
         private val logger = Logger.getLogger("WakeScheduler")
@@ -83,8 +86,16 @@ class WakeScheduler @Inject constructor(
         logger.info("wake received: kind=${signal.kind}")
         when (signal.kind) {
             WakeKind.DM, WakeKind.MENTION -> enqueuer.enqueue(signal)
-            // Read on another device: clear the notification and stop pending fetches.
+            // Read on another device: remember it (a late wake for the same
+            // messages must not notify, C20), clear the notification and stop
+            // pending fetches. The push carries no position, so the cursor is
+            // the receive time.
             WakeKind.READ -> {
+                // The read is recorded before the notification is cancelled, so a
+                // post racing with it either sees the read or is cancelled after.
+                tokenStorage.getUserId()?.let { userId ->
+                    ledger.markRead(userId, signal.channelId, null, null, Instant.now().toString())
+                }
                 enqueuer.cancel(signal.channelId)
                 sink.cancel(signal.channelId)
             }

@@ -70,7 +70,7 @@ class WakeFetchWorker @AssistedInject constructor(
         // A request without an account cannot be attributed: nothing to post.
         val owner = ownerFrom(inputData) ?: return Result.success()
         val outcome = try {
-            processor.process(signal, owner)
+            processor.process(signal, owner) { isStopped }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

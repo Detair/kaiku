@@ -12,6 +12,8 @@ import io.wolftown.kaiku.domain.MessageOrdering
 import io.wolftown.kaiku.domain.model.CursorPage
 import io.wolftown.kaiku.domain.model.Message
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -49,6 +51,7 @@ class WakeFetchProcessor @Inject constructor(
     private val titles: NotificationTitleResolver,
     private val ledger: NotificationLedger,
     private val sink: NotificationSink,
+    private val enqueuer: WakeWorkEnqueuer,
     private val active: ActiveChannelTracker,
     private val chat: ChatRepository,
     private val dms: DmRepository,
@@ -70,12 +73,19 @@ class WakeFetchProcessor @Inject constructor(
 
         /** Lines kept in one channel notification. */
         const val MAX_LINES = 7
+
+        /** C4 error code: the account must change its password before using the API. */
+        const val PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
     }
 
     /** The session a wake is processed for. */
     private data class Account(val userId: String, val generation: Long)
 
-    suspend fun process(signal: WakeSignal, owner: WakeOwner): WakeOutcome {
+    /**
+     * [isStopped] reports that the work was stopped (e.g. a read cancelled it);
+     * it is checked once more right before posting.
+     */
+    suspend fun process(signal: WakeSignal, owner: WakeOwner, isStopped: () -> Boolean = { false }): WakeOutcome {
         // Captured before the refresh: a refresh rotation keeps the generation,
         // a logout or new login changes it (TokenStorage).
         val generation = tokenStorage.getSessionGeneration()
@@ -90,12 +100,11 @@ class WakeFetchProcessor @Inject constructor(
             RefreshResult.SUCCESS -> Unit
             RefreshResult.NETWORK_ERROR -> return WakeOutcome.RETRY
             RefreshResult.AUTH_REJECTED, RefreshResult.NO_SESSION -> {
-                // The session ended (possibly with no app UI running): its notifications go too.
-                if (tokenStorage.getRefreshToken() == null) sink.cancelAll()
+                onSessionEnded(account)
                 return WakeOutcome.NOT_LOGGED_IN
             }
         }
-        if (!isCurrent(account)) return WakeOutcome.NOT_LOGGED_IN
+        if (!isCurrent(account)) return sessionLost(account)
 
         val channelId = signal.channelId
         if (isVisible(channelId)) {
@@ -103,32 +112,38 @@ class WakeFetchProcessor @Inject constructor(
             return WakeOutcome.SUPPRESSED_ACTIVE
         }
 
+        val currentJob = currentCoroutineContext()[Job]
+        val stopped = { isStopped() || currentJob?.isActive == false }
         return try {
-            fetchAndNotify(signal, account)
+            fetchAndNotify(signal, account, stopped)
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            // Lost access to the channel: retrying cannot help.
-            if (e.status == HttpStatusCode.Forbidden || e.status == HttpStatusCode.NotFound) {
-                WakeOutcome.NOTHING_NEW
-            } else {
-                WakeOutcome.RETRY
+            when {
+                // The session can no longer fetch: rejected, or ended by the HTTP
+                // client (401 after a failed refresh, 403 PASSWORD_CHANGE_REQUIRED).
+                e.status == HttpStatusCode.Unauthorized || e.code == PASSWORD_CHANGE_REQUIRED ||
+                    !isCurrent(account) -> sessionLost(account, force = true)
+                // Lost access to the channel: retrying cannot help.
+                e.status == HttpStatusCode.Forbidden || e.status == HttpStatusCode.NotFound -> WakeOutcome.NOTHING_NEW
+                else -> WakeOutcome.RETRY
             }
         } catch (_: Exception) {
-            WakeOutcome.RETRY
+            if (isCurrent(account)) WakeOutcome.RETRY else sessionLost(account)
         }
     }
 
-    private suspend fun fetchAndNotify(signal: WakeSignal, account: Account): WakeOutcome {
+    private suspend fun fetchAndNotify(signal: WakeSignal, account: Account, stopped: () -> Boolean): WakeOutcome {
         val channelId = signal.channelId
         val lastSeen = ledger.lastSeen(account.userId, channelId)
         val lastSeenAt = ledger.lastSeenCreatedAt(account.userId, channelId)
 
         val unseen = fetchUnseen(channelId, lastSeen, lastSeenAt, signal.count)
-        if (!isCurrent(account)) return WakeOutcome.NOT_LOGGED_IN
+        if (!isCurrent(account)) return sessionLost(account)
+        resolveReadCursor(account, channelId, unseen)
         // Newest message actually considered; own messages count as seen.
         val newest = unseen.lastOrNull()
-        val eligible = unseen.filter { it.author.id != account.userId }
+        val eligible = notifiable(account, channelId, unseen)
 
         if (newest == null || eligible.isEmpty()) {
             newest?.let { markSeen(account, channelId, it) }
@@ -138,38 +153,86 @@ class WakeFetchProcessor @Inject constructor(
 
         val title = titles.resolve(channelId, preferDm = signal.kind == WakeKind.DM)
 
-        if (!isCurrent(account)) return WakeOutcome.NOT_LOGGED_IN
-        if (isVisible(channelId)) {
-            // The user opened the chat while we were fetching.
-            markSeen(account, channelId, newest)
-            catchUpQuietly(channelId)
-            return WakeOutcome.SUPPRESSED_ACTIVE
+        // Final checks inside the presenter's critical section, right before posting:
+        // a logout (cancelAll) or read (ledger write, then cancel) is either seen
+        // here or removes the notification after it was posted.
+        var refused: WakeOutcome = WakeOutcome.NOTHING_NEW
+        val posted = sink.show {
+            val lines = notifiable(account, channelId, unseen)
+            when {
+                stopped() -> null.also { refused = WakeOutcome.NOTHING_NEW }
+                !isCurrent(account) -> null.also { refused = WakeOutcome.NOT_LOGGED_IN }
+                isVisible(channelId) -> null.also { refused = WakeOutcome.SUPPRESSED_ACTIVE }
+                lines.isEmpty() -> null.also { refused = WakeOutcome.NOTHING_NEW }
+                else -> ChannelNotification(
+                    userId = account.userId,
+                    channelId = channelId,
+                    title = title?.first,
+                    isDm = title?.second ?: (signal.kind == WakeKind.DM),
+                    kind = signal.kind,
+                    lines = lines.takeLast(MAX_LINES).map(::line),
+                )
+            }
         }
-
-        // A read recorded meanwhile (another device, or the chat seen here) wins.
-        val stillUnread = afterLastSeen(
-            eligible,
-            ledger.lastSeen(account.userId, channelId),
-            ledger.lastSeenCreatedAt(account.userId, channelId),
-        )
-        if (stillUnread.isEmpty()) return WakeOutcome.NOTHING_NEW
-
-        val notification = ChannelNotification(
-            userId = account.userId,
-            channelId = channelId,
-            title = title?.first,
-            isDm = title?.second ?: (signal.kind == WakeKind.DM),
-            kind = signal.kind,
-            lines = stillUnread.takeLast(MAX_LINES).map(::line),
-        )
-        val posted = sink.show(notification) { isCurrent(account) && !isVisible(channelId) }
         if (!posted) {
-            return if (isCurrent(account)) WakeOutcome.SUPPRESSED_ACTIVE else WakeOutcome.NOT_LOGGED_IN
+            if (refused == WakeOutcome.NOT_LOGGED_IN) return sessionLost(account)
+            if (refused == WakeOutcome.SUPPRESSED_ACTIVE) {
+                // The user opened the chat while we were fetching.
+                markSeen(account, channelId, newest)
+                catchUpQuietly(channelId)
+            }
+            return refused
         }
         markSeen(account, channelId, newest)
         catchUpQuietly(channelId)
         refreshDmList(signal)
         return WakeOutcome.NOTIFIED
+    }
+
+    /**
+     * Others' messages of [unseen] that may notify: after the (re-read)
+     * notified watermark and after the (re-read) read cursor. A wake may
+     * arrive after the read of the same message (C20: unordered); the read wins.
+     */
+    private fun notifiable(account: Account, channelId: String, unseen: List<Message>): List<Message> {
+        val afterSeen = afterLastSeen(
+            unseen,
+            ledger.lastSeen(account.userId, channelId),
+            ledger.lastSeenCreatedAt(account.userId, channelId),
+        )
+        return ledger.readCursor(account.userId, channelId)
+            .unread(afterSeen)
+            .filter { it.author.id != account.userId }
+    }
+
+    /** A read known only by id becomes exact once the fetch shows its `created_at`. */
+    private fun resolveReadCursor(account: Account, channelId: String, unseen: List<Message>) {
+        val cursor = ledger.readCursor(account.userId, channelId)
+        val message = cursor.resolve(unseen) ?: return
+        ledger.markRead(account.userId, channelId, message.id, message.createdAt, cursor.receivedAt ?: message.createdAt)
+    }
+
+    /**
+     * The session this wake ran for is gone: remove its notifications and
+     * queued wakes, also when no app UI is running to observe the logout.
+     * Skipped when another session took over meanwhile.
+     */
+    private fun onSessionEnded(account: Account) {
+        val gone = tokenStorage.getRefreshToken() == null
+        if (!gone && !isCurrent(account)) return
+        logger.info("wake fetch: session ended, clearing message notifications")
+        sink.cancelAll()
+        enqueuer.cancelAll()
+    }
+
+    /**
+     * The wake's session is no longer usable. Clears its notifications and
+     * wakes when it ended (no session stored), or with [force] when the server
+     * refused the session itself; a newer session's state is never touched.
+     */
+    private fun sessionLost(account: Account, force: Boolean = false): WakeOutcome {
+        if (force || tokenStorage.getRefreshToken() == null) onSessionEnded(account)
+        return WakeOutcome.NOT_LOGGED_IN
     }
 
     /**

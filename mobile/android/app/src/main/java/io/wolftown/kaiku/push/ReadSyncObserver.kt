@@ -8,6 +8,7 @@ import io.wolftown.kaiku.di.ChatCoroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -45,13 +46,17 @@ class ReadSyncObserver @Inject constructor(
     }
 
     private fun onRead(channelId: String, lastReadMessageId: String?) {
+        // Ledger first, then cancel: a post racing with this read either sees
+        // the read cursor or is cancelled right after it was posted.
+        val userId = tokenStorage.getUserId()
+        if (userId != null && lastReadMessageId != null) {
+            // Exact when the message is cached; otherwise stored by id plus the
+            // receive time (resolved against the next fetch, C20).
+            val createdAt = chat.cachedCreatedAt(channelId, lastReadMessageId)
+            ledger.markRead(userId, channelId, lastReadMessageId, createdAt, Instant.now().toString())
+            if (createdAt != null) ledger.markSeen(userId, channelId, lastReadMessageId, createdAt)
+        }
         enqueuer.cancel(channelId)
         sink.cancel(channelId)
-        val userId = tokenStorage.getUserId() ?: return
-        if (lastReadMessageId == null) return
-        // The timestamp comes from the local cache when the message is there;
-        // without it the ledger never moves an ordered position backwards.
-        val createdAt = chat.cachedCreatedAt(channelId, lastReadMessageId)
-        ledger.markSeen(userId, channelId, lastReadMessageId, createdAt)
     }
 }
