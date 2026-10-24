@@ -7,7 +7,8 @@
 //! Rows may also be padded beyond `width * bytes_per_pixel`. The converter
 //! uses each frame's actual width, height and row stride and box-scales it to
 //! [`encode_dimensions`] (aspect ratio kept, never upscaled, even sizes).
-//! Output buffers are reused across frames to avoid per-frame allocation.
+//! Each frame gets freshly zeroed planes that are moved into the result;
+//! frames that need no scaling skip the box filter.
 
 use super::I420Frame;
 
@@ -67,11 +68,18 @@ pub fn encode_dimensions(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32
     (even(w), even(h))
 }
 
+/// Largest row alignment (in bytes) accepted when inferring a padded stride.
+const MAX_ROW_ALIGNMENT: usize = 4096;
+
 /// Row stride of a packed frame buffer of `len` bytes.
 ///
-/// Capture backends either deliver tight rows or rows padded to a fixed
-/// stride (`len == stride * height`). Returns `None` when the buffer is too
-/// short to hold `width x height` pixels or the size is zero.
+/// Capture backends deliver either tight rows or rows padded up to an
+/// alignment boundary (Windows: `len == stride * height`). `len / height` is
+/// only taken as the stride when it equals the tight row size rounded up to
+/// a power-of-two alignment (at most [`MAX_ROW_ALIGNMENT`]); any other
+/// buffer size, such as `PipeWire`'s `maxsize` which may exceed
+/// `stride * height`, is read with tight rows. Returns `None` when the buffer
+/// is too short to hold `width x height` pixels or the size is zero.
 pub fn infer_row_stride(
     len: usize,
     width: u32,
@@ -86,11 +94,14 @@ pub fn infer_row_stride(
     if len < tight.checked_mul(h)? {
         return None;
     }
-    if len.is_multiple_of(h) {
-        Some(len / h)
-    } else {
-        Some(tight)
+    if !len.is_multiple_of(h) {
+        return Some(tight);
     }
+    let candidate = len / h;
+    let aligned = (1..=MAX_ROW_ALIGNMENT.trailing_zeros())
+        .map(|shift| 1usize << shift)
+        .any(|align| tight.next_multiple_of(align) == candidate);
+    Some(if aligned { candidate } else { tight })
 }
 
 /// Reusable packed-pixel → I420 converter with box downscaling.
@@ -98,9 +109,6 @@ pub struct I420Converter {
     layout: PixelLayout,
     max_width: u32,
     max_height: u32,
-    y: Vec<u8>,
-    u: Vec<u8>,
-    v: Vec<u8>,
     /// Source column range `[start, end)` per output column.
     col_ranges: Vec<(usize, usize)>,
     /// Source row range `[start, end)` per output row.
@@ -117,9 +125,6 @@ impl I420Converter {
             layout,
             max_width,
             max_height,
-            y: Vec::new(),
-            u: Vec::new(),
-            v: Vec::new(),
             col_ranges: Vec::new(),
             row_ranges: Vec::new(),
             ranges_for: (0, 0, 0, 0),
@@ -155,59 +160,88 @@ impl I420Converter {
         }
 
         let (out_w, out_h) = encode_dimensions(width, height, self.max_width, self.max_height);
-        self.prepare(width, height, out_w, out_h);
-
         let (ow, oh) = (out_w as usize, out_h as usize);
-        let uv_w = ow / 2;
         let layout = self.layout;
 
-        for orow in (0..oh).step_by(2) {
-            for ocol in (0..ow).step_by(2) {
-                let mut sum_u: i32 = 0;
-                let mut sum_v: i32 = 0;
+        // Fresh zeroed planes (calloc, no copy) are moved into the frame
+        // instead of cloning reused buffers.
+        let mut y = vec![0u8; ow * oh];
+        let mut u = vec![0u8; (ow / 2) * (oh / 2)];
+        let mut v = vec![0u8; (ow / 2) * (oh / 2)];
 
-                for dy in 0..2 {
-                    let rows = self.row_ranges[orow + dy];
-                    for dx in 0..2 {
-                        let cols = self.col_ranges[ocol + dx];
-                        let (r, g, b) = box_average(data, layout, stride, rows, cols);
-
-                        let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                        self.y[(orow + dy) * ow + ocol + dx] = y_val.clamp(0, 255) as u8;
-
-                        sum_u += (-38 * r - 74 * g + 112 * b + 128) >> 8;
-                        sum_v += (112 * r - 94 * g - 18 * b + 128) >> 8;
-                    }
-                }
-
-                let uv_idx = (orow / 2) * uv_w + ocol / 2;
-                self.u[uv_idx] = ((sum_u / 4) + 128).clamp(0, 255) as u8;
-                self.v[uv_idx] = ((sum_v / 4) + 128).clamp(0, 255) as u8;
-            }
+        let near = |src: usize, out: usize| src.checked_sub(out).is_some_and(|d| d <= 1);
+        if near(src_w, ow) && near(src_h, oh) {
+            // 1:1 (an odd last column/row is cropped): read pixels directly.
+            fill_planes(ow, oh, &mut y, &mut u, &mut v, |row, col| {
+                let px = &data[row * stride + col * bpp..];
+                (
+                    i32::from(px[layout.r]),
+                    i32::from(px[layout.g]),
+                    i32::from(px[layout.b]),
+                )
+            });
+        } else {
+            self.prepare_ranges(width, height, out_w, out_h);
+            let (rows, cols) = (&self.row_ranges, &self.col_ranges);
+            fill_planes(ow, oh, &mut y, &mut u, &mut v, |row, col| {
+                box_average(data, layout, stride, rows[row], cols[col])
+            });
         }
 
         Some(I420Frame {
-            y: self.y.clone(),
-            u: self.u.clone(),
-            v: self.v.clone(),
+            y,
+            u,
+            v,
             width: out_w,
             height: out_h,
         })
     }
 
-    /// Size the planes and source ranges for this input/output size.
-    fn prepare(&mut self, src_w: u32, src_h: u32, out_w: u32, out_h: u32) {
+    /// Cache the source box ranges for this input/output size.
+    fn prepare_ranges(&mut self, src_w: u32, src_h: u32, out_w: u32, out_h: u32) {
         let key = (src_w, src_h, out_w, out_h);
         if self.ranges_for == key {
             return;
         }
-        let (ow, oh) = (out_w as usize, out_h as usize);
-        self.y.resize(ow * oh, 0);
-        self.u.resize((ow / 2) * (oh / 2), 0);
-        self.v.resize((ow / 2) * (oh / 2), 0);
-        self.col_ranges = source_ranges(src_w as usize, ow);
-        self.row_ranges = source_ranges(src_h as usize, oh);
+        self.col_ranges = source_ranges(src_w as usize, out_w as usize);
+        self.row_ranges = source_ranges(src_h as usize, out_h as usize);
         self.ranges_for = key;
+    }
+}
+
+/// Fill I420 planes of `ow` x `oh` (both even) from an `(r, g, b)` sampler
+/// indexed by output `(row, col)`, using BT.601 coefficients.
+#[allow(clippy::many_single_char_names)]
+fn fill_planes(
+    ow: usize,
+    oh: usize,
+    y: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+    sample: impl Fn(usize, usize) -> (i32, i32, i32),
+) {
+    let uv_w = ow / 2;
+    for orow in (0..oh).step_by(2) {
+        for ocol in (0..ow).step_by(2) {
+            let mut sum_u: i32 = 0;
+            let mut sum_v: i32 = 0;
+
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let (r, g, b) = sample(orow + dy, ocol + dx);
+
+                    let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                    y[(orow + dy) * ow + ocol + dx] = y_val.clamp(0, 255) as u8;
+
+                    sum_u += (-38 * r - 74 * g + 112 * b + 128) >> 8;
+                    sum_v += (112 * r - 94 * g - 18 * b + 128) >> 8;
+                }
+            }
+
+            let uv_idx = (orow / 2) * uv_w + ocol / 2;
+            u[uv_idx] = ((sum_u / 4) + 128).clamp(0, 255) as u8;
+            v[uv_idx] = ((sum_v / 4) + 128).clamp(0, 255) as u8;
+        }
     }
 }
 
@@ -232,16 +266,16 @@ fn box_average(
     cols: (usize, usize),
 ) -> (i32, i32, i32) {
     let bpp = layout.bytes_per_pixel;
-    let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+    let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
     for row in rows.0..rows.1 {
         let line = &data[row * stride + cols.0 * bpp..row * stride + cols.1 * bpp];
         for px in line.chunks_exact(bpp) {
-            r += u32::from(px[layout.r]);
-            g += u32::from(px[layout.g]);
-            b += u32::from(px[layout.b]);
+            r += u64::from(px[layout.r]);
+            g += u64::from(px[layout.g]);
+            b += u64::from(px[layout.b]);
         }
     }
-    let count = ((rows.1 - rows.0) * (cols.1 - cols.0)) as u32;
+    let count = ((rows.1 - rows.0) * (cols.1 - cols.0)) as u64;
     ((r / count) as i32, (g / count) as i32, (b / count) as i32)
 }
 
@@ -440,10 +474,108 @@ mod tests {
     #[test]
     fn infer_row_stride_handles_padding_and_short_buffers() {
         assert_eq!(infer_row_stride(16 * 2, 4, 2, 4), Some(16));
-        assert_eq!(infer_row_stride(24 * 2, 4, 2, 4), Some(24));
+        // Rows padded to an alignment boundary (301 px BGRA → 1204 → 1280).
+        assert_eq!(infer_row_stride(1280 * 157, 301, 157, 4), Some(1280));
         // Trailing bytes that are not a whole number of rows: tight rows.
         assert_eq!(infer_row_stride(16 * 2 + 3, 4, 2, 4), Some(16));
         assert_eq!(infer_row_stride(10, 4, 2, 4), None);
         assert_eq!(infer_row_stride(0, 0, 0, 4), None);
+    }
+
+    #[test]
+    fn oversized_buffer_divisible_by_height_uses_tight_stride() {
+        // PipeWire hands over `maxsize`, which can exceed stride * height.
+        // When the excess happens to divide by the height, len / height is
+        // not an alignment of the row and must not be taken as the stride.
+        assert_eq!(
+            infer_row_stride(1204 * 157 + 157 * 100, 301, 157, 4),
+            Some(1204)
+        );
+        assert_eq!(infer_row_stride(16 * 2 + 2 * 100, 4, 2, 4), Some(16));
+        // Hugely oversized buffer (several frames' worth) → tight rows too.
+        assert_eq!(
+            infer_row_stride(1920 * 4 * 1080 * 3, 1920, 1080, 4),
+            Some(1920 * 4)
+        );
+    }
+
+    #[test]
+    fn padded_odd_frame_is_downscaled_without_reading_padding() {
+        // 641x481 white BGRA frame, rows padded to 2816 bytes with black,
+        // scaled to fit 320x240.
+        let (width, height) = (641u32, 481u32);
+        let tight = width as usize * 4;
+        let stride = 2816usize;
+        let mut data = vec![0u8; stride * height as usize];
+        for row in 0..height as usize {
+            data[row * stride..row * stride + tight].fill(255);
+        }
+        assert_eq!(infer_row_stride(data.len(), width, height, 4), Some(stride));
+
+        let mut converter = I420Converter::new(PixelLayout::BGRA, 320, 240);
+        let frame = converter
+            .convert(&data, width, height, stride)
+            .expect("valid frame");
+
+        assert_eq!((frame.width, frame.height), (318, 240));
+        assert_eq!(frame.y.len(), 318 * 240);
+        assert_eq!(frame.u.len(), 159 * 120);
+        assert!(frame.y.iter().all(|&y| y == 235), "padding leaked into Y");
+        assert!(frame.u.iter().all(|&u| u == 128), "padding leaked into U");
+        assert!(frame.v.iter().all(|&v| v == 128), "padding leaked into V");
+    }
+
+    #[test]
+    fn known_colour_gives_expected_chroma() {
+        // BT.601 pure red: Y=82, U=90, V=240; pure blue: Y=41, U=240, V=110.
+        let red: Vec<u8> = [0u8, 0, 255, 255].repeat(6 * 4);
+        let frame = convert_tight(PixelLayout::BGRA, &red, 6, 4);
+        assert!(frame.y.iter().all(|&y| y == 82));
+        assert!(frame.u.iter().all(|&u| u == 90), "{:?}", frame.u);
+        assert!(frame.v.iter().all(|&v| v == 240), "{:?}", frame.v);
+
+        let blue: Vec<u8> = [0u8, 0, 255].repeat(6 * 4);
+        let frame = convert_tight(PixelLayout::RGB, &blue, 6, 4);
+        assert!(frame.y.iter().all(|&y| y == 41), "{:?}", frame.y);
+        assert!(frame.u.iter().all(|&u| u == 240), "{:?}", frame.u);
+        assert!(frame.v.iter().all(|&v| v == 110), "{:?}", frame.v);
+    }
+
+    #[test]
+    fn one_to_one_keeps_every_pixel_and_crops_odd_edge() {
+        // 5x3 RGB frame with a distinct grey per pixel → 4x2, 1:1 (the odd
+        // last column and row are dropped, not blended in).
+        let (width, height) = (5u32, 3u32);
+        let mut rgb = Vec::new();
+        for i in 0..(width * height) {
+            let v = (i * 16) as u8;
+            rgb.extend_from_slice(&[v, v, v]);
+        }
+        let frame = convert_tight(PixelLayout::RGB, &rgb, width, height);
+        assert_eq!((frame.width, frame.height), (4, 2));
+        for row in 0..2usize {
+            for col in 0..4usize {
+                let v = i32::from(rgb[(row * 5 + col) * 3]);
+                let expected = (((66 + 129 + 25) * v + 128) >> 8) + 16;
+                assert_eq!(i32::from(frame.y[row * 4 + col]), expected, "({col},{row})");
+            }
+        }
+    }
+
+    #[test]
+    fn one_pixel_frame_does_not_panic() {
+        let frame = convert_tight(PixelLayout::BGRA, &[255, 255, 255, 255], 1, 1);
+        assert_eq!((frame.width, frame.height), (2, 2));
+        assert!(frame.y.iter().all(|&y| y == 235));
+    }
+
+    #[test]
+    fn extreme_downscale_does_not_overflow() {
+        // A single output pixel averaging a huge white box must stay white.
+        let ranges_rows = (0usize, 4200usize);
+        let ranges_cols = (0usize, 4200usize);
+        let data = vec![255u8; 4200 * 4200 * 3];
+        let (r, g, b) = box_average(&data, PixelLayout::RGB, 4200 * 3, ranges_rows, ranges_cols);
+        assert_eq!((r, g, b), (255, 255, 255));
     }
 }

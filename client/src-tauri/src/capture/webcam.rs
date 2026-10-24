@@ -119,6 +119,8 @@ impl WebcamCapturer {
             );
 
             let mut converter = I420Converter::new(PixelLayout::RGB, width, height);
+            // Size of the last malformed frame warned about (warn once per size).
+            let mut warned_malformed: Option<(u32, u32)> = None;
 
             // Calculate frame interval for target FPS
             let frame_interval = std::time::Duration::from_millis(1000 / u64::from(fps));
@@ -145,7 +147,10 @@ impl WebcamCapturer {
                                     }
                                 }
                                 None => {
-                                    warn!(frame_w, frame_h, "Skipping malformed webcam frame");
+                                    if warned_malformed != Some((frame_w, frame_h)) {
+                                        warn!(frame_w, frame_h, "Skipping malformed webcam frames");
+                                        warned_malformed = Some((frame_w, frame_h));
+                                    }
                                 }
                             }
                         }
