@@ -102,9 +102,18 @@ android {
     buildFeatures {
         compose = true
     }
+
+    lint {
+        lintConfig = file("lint.xml")
+        abortOnError = true
+        checkDependencies = false
+    }
 }
 
 dependencies {
+    // Custom lint checks (build-time only, see mobile/android/lint-rules)
+    lintChecks(project(":lint-rules"))
+
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
     implementation(composeBom)

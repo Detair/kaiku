@@ -18,6 +18,7 @@
     <application
         android:name=".KaikuApplication"
         android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:enableOnBackInvokedCallback="true"
