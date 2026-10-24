@@ -2,9 +2,13 @@ package io.wolftown.kaiku.ui.auth
 
 import android.content.Context
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.ktor.http.HttpStatusCode
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.repository.AuthRepository
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,10 +24,28 @@ data class LoginUiState(
     val password: String = "",
     val mfaCode: String = "",
     val isLoading: Boolean = false,
-    val error: String? = null,
+    /** `@StringRes` of the current error, or null. Server message text is never shown. */
+    @StringRes val error: Int? = null,
     val mfaRequired: Boolean = false,
-    val loginSuccess: Boolean = false
-)
+    val loginSuccess: Boolean = false,
+    /** C4: the account must choose its own password; the screen navigates to `change_password`. */
+    val passwordChangeRequired: Boolean = false
+) {
+    // Never print the password or MFA code (logs, crash reports).
+    override fun toString(): String =
+        "LoginUiState(username=$username, isLoading=$isLoading, error=$error, " +
+            "mfaRequired=$mfaRequired, loginSuccess=$loginSuccess, " +
+            "passwordChangeRequired=$passwordChangeRequired)"
+}
+
+/** Maps a login failure to user-facing copy by status / error code (never the server message). */
+@StringRes
+internal fun loginErrorRes(error: Throwable): Int = when {
+    error is ApiException && error.code == "INVALID_MFA" -> R.string.auth_mfa_invalid
+    error is ApiException && error.status == HttpStatusCode.Unauthorized ->
+        R.string.auth_invalid_credentials
+    else -> R.string.auth_login_failed
+}
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
@@ -72,12 +94,9 @@ class LoginViewModel @Inject constructor(
                         it.copy(isLoading = false, loginSuccess = true)
                     }
                 },
-                onFailure = { exception ->
+                onFailure = { _ ->
                     _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            error = exception.message ?: "OIDC login failed"
-                        )
+                        it.copy(isLoading = false, error = R.string.auth_oidc_failed)
                     }
                 }
             )
@@ -111,16 +130,16 @@ class LoginViewModel @Inject constructor(
                     }
                 },
                 onFailure = { exception ->
-                    if (exception is MfaRequiredException) {
-                        _uiState.update {
+                    when (exception) {
+                        is MfaRequiredException -> _uiState.update {
                             it.copy(isLoading = false, mfaRequired = true)
                         }
-                    } else {
-                        _uiState.update {
-                            it.copy(
-                                isLoading = false,
-                                error = exception.message ?: "Login failed"
-                            )
+                        is PasswordChangeRequiredException -> _uiState.update {
+                            // The temporary password stays in AuthRepository's memory only.
+                            it.copy(isLoading = false, password = "", passwordChangeRequired = true)
+                        }
+                        else -> _uiState.update {
+                            it.copy(isLoading = false, error = loginErrorRes(exception))
                         }
                     }
                 }
@@ -134,11 +153,14 @@ class LoginViewModel @Inject constructor(
     fun launchOidcLogin(context: Context, providerSlug: String) {
         try {
             oidcHandler.launchOidcLogin(context, providerSlug)
-        } catch (e: Exception) {
-            _uiState.update {
-                it.copy(error = e.message ?: "Failed to launch OIDC login")
-            }
+        } catch (_: Exception) {
+            _uiState.update { it.copy(error = R.string.auth_oidc_failed) }
         }
+    }
+
+    /** Called once the screen has navigated to `change_password`. */
+    fun onPasswordChangeNavigated() {
+        _uiState.update { it.copy(passwordChangeRequired = false) }
     }
 
     fun clearError() {

@@ -35,5 +35,7 @@ data class User(
     val avatarUrl: String? = null,
     val status: UserStatus = UserStatus.OFFLINE,
     val mfaEnabled: Boolean = false,
-    val createdAt: String = ""
+    val createdAt: String = "",
+    /** C4: `GET /auth/me` reports a pending forced password change. */
+    val passwordChangeRequired: Boolean = false
 )

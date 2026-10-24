@@ -17,6 +17,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.ui.auth.ChangePasswordScreen
 import io.wolftown.kaiku.ui.auth.LoginScreen
 import io.wolftown.kaiku.ui.auth.QrRedeemScreen
 import io.wolftown.kaiku.ui.auth.QrScannerScreen
@@ -43,7 +44,9 @@ fun KaikuNavGraph(
     val currentRoute = navBackStackEntry?.destination?.route
 
     // Auth guard: redirect to login when logged out from an authenticated screen
-    val authRoutes = setOf("server_url", "login", "register", "qr_scanner", "qr_redeem/{serverUrl}/{token}")
+    val authRoutes = setOf(
+        "server_url", "login", "register", "change_password", "qr_scanner", "qr_redeem/{serverUrl}/{token}"
+    )
     LaunchedEffect(isLoggedIn) {
         if (!isLoggedIn && currentRoute != null && currentRoute !in authRoutes) {
             navController.navigate("login") {
@@ -83,7 +86,21 @@ fun KaikuNavGraph(
                             navController.navigate("home") {
                                 popUpTo("login") { inclusive = true }
                             }
+                        },
+                        onPasswordChangeRequired = {
+                            navController.navigate("change_password")
                         }
+                    )
+                }
+
+                composable("change_password") {
+                    ChangePasswordScreen(
+                        onPasswordChanged = {
+                            navController.navigate("home") {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        },
+                        onCancel = { navController.popBackStack() }
                     )
                 }
 

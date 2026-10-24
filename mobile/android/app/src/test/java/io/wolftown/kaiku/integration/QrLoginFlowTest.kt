@@ -65,7 +65,7 @@ class QrLoginFlowTest {
     @Test
     fun `QR redeem stores server URL, tokens, and sets auth state to logged in`() = runTest {
         coEvery { authApi.redeemQrToken(testServerUrl, testToken) } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
 
         val result = authRepository.redeemQrToken(testServerUrl, testToken)
 
@@ -107,7 +107,7 @@ class QrLoginFlowTest {
     @Test
     fun `QR redeem cleans up when getMe fails after successful redeem`() = runTest {
         coEvery { authApi.redeemQrToken(testServerUrl, testToken) } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any()) } throws RuntimeException("getMe failed")
+        coEvery { authApi.authenticatedGetMe(any(), any()) } throws RuntimeException("getMe failed")
 
         val result = authRepository.redeemQrToken(testServerUrl, testToken)
 
