@@ -128,9 +128,12 @@ pub fn create_router(state: AppState) -> Router {
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             HeaderName::from_static("x-request-id"),
+            HeaderName::from_static("x-refresh-token"),
         ];
 
-        if state.config.cors_allowed_origins.iter().any(|o| o == "*") {
+        let effective_origins = state.config.effective_cors_origins();
+
+        if effective_origins.iter().any(|o| o == "*") {
             // Wildcard `*` mirrors the request Origin, but credentials MUST be
             // disabled in that mode. Mirroring the Origin *with* credentials
             // would let any website make credentialed cross-origin calls (e.g.
@@ -151,9 +154,7 @@ pub fn create_router(state: AppState) -> Router {
                 .allow_credentials(false)
         } else {
             // Production mode: restrict to configured origins
-            let origins: Vec<_> = state
-                .config
-                .cors_allowed_origins
+            let origins: Vec<_> = effective_origins
                 .iter()
                 .filter_map(|o| {
                     if let Ok(origin) = o.parse() {

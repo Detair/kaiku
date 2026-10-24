@@ -20,6 +20,7 @@ pub mod queries;
 pub mod reactions;
 pub mod s3;
 pub(crate) mod screenshare;
+pub mod send;
 pub mod types;
 pub mod unread;
 pub(crate) mod uploads;

@@ -20,6 +20,7 @@
 - `peer.rs` — WebRTC PeerConnection wrapper (offer/answer, ICE candidate handling)
 - `track.rs` — RTP track routing logic (forward audio between peers)
 - `ws_handler.rs` — WebSocket event handlers for voice signaling (VoiceJoin, VoiceAnswer, VoiceIceCandidate)
+- `leave.rs` — `leave_voice_internal` (single leave path: explicit leave, socket close, stale-peer reaper) and `leave_voice_on_socket_close`
 - `call.rs` — DM call state management (call initiation, ringing, acceptance)
 - `call_handlers.rs` — HTTP endpoints for DM calls (start, accept, end)
 - `call_service.rs` — Call lifecycle logic (ring timeout, participant tracking)
@@ -341,6 +342,7 @@ a=fmtp:111 minptime=10;useinbandfec=1
 - [ ] Single user joins voice channel (SDP offer generated)
 - [ ] Two users join, both receive each other's tracks
 - [ ] User leaves, others notified (VoiceUserLeft)
+- [ ] Socket close / failed connection removes the peer (no ghost participants)
 - [ ] ICE candidates exchanged successfully
 - [ ] Mute/unmute broadcasts events
 - [ ] DM call starts, participants notified
@@ -350,6 +352,18 @@ a=fmtp:111 minptime=10;useinbandfec=1
 - Simulate 100 participants in one room (stress SFU track forwarding)
 - Measure latency under load (p99 should stay <50ms)
 - Monitor memory usage (should be linear with participant count)
+
+### Peer Removal (no ghost participants)
+
+A peer leaves its room through exactly one function, `leave::leave_voice_internal`, which broadcasts `ScreenShareStopped`/`WebcamStopped`/`VoiceUserLeft`, finalizes the session, calls `forget_peer` and removes an empty room. It never checks channel access: leaving is always allowed. Three paths call it:
+
+1. **Explicit `VoiceLeave`** — `expected_session = None`.
+2. **WebSocket close** — `handle_socket` cleanup calls `leave_voice_on_socket_close` before presence goes offline. It removes only the peer whose `signal_tx` is that socket's queue (`SfuServer::find_peer_owned_by`, `same_channel`), so closing a second socket of the same user does not end their call.
+3. **Failed connection** — on `RTCPeerConnectionState::Failed` the PC state handler waits `PEER_FAILED_GRACE` (15 s). If the peer still exists and that PC is still `Failed`, it sends a `StalePeer` to the reaper (`spawn_stale_peer_reaper`, started in `main.rs`). `Disconnected` is only logged.
+
+Paths 2 and 3 pass `expected_session = Some(session_id)`: removal is skipped if the user has re-joined since (a newer session), and the session check and removal are atomic (`Room::remove_peer_if_session`). The PC state callback holds only `Weak` references to the peer and the PC; the reaper holds a `Weak<SfuServer>`.
+
+**Signal send bounds**: sends to *other* peers use `renegotiate` / `fan_out` (250 ms, stalled peers are skipped). The peer of the socket handling the current event (e.g. the joiner's first subscriber offer) uses `renegotiate_own`, which gets the full slow-client bound of `send_outbound`.
 
 ### Common Pitfalls
 

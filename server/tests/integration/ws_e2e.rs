@@ -12,8 +12,9 @@ use vc_server::ws::events::broadcast_to_user;
 use vc_server::ws::ServerEvent;
 
 use super::helpers::{
-    create_dm_channel, create_test_user, expect_no_ws_event, generate_access_token, next_ws_event,
-    spawn_test_server, ws_connect, TestApp, TestServer,
+    create_dm_channel, create_test_user, expect_no_ws_event, fresh_test_app_with_s3_and_pool,
+    generate_access_token, next_ws_event, rustfs_available, spawn_test_server, ws_connect, TestApp,
+    TestServer,
 };
 
 /// Upper bound for awaited WebSocket events. Generous because the full suite
@@ -351,4 +352,58 @@ async fn ws_close_releases_valkey_subscriber(pool: PgPool) {
     }
 
     redis.quit().await.expect("quit test Valkey client");
+}
+
+/// A photo/file upload reaches the other participant live, exactly like a
+/// text message: one `message_new` carrying the attachment.
+#[sqlx::test]
+async fn test_upload_message_broadcasts_message_new(pool: PgPool) {
+    if !rustfs_available().await {
+        eprintln!("SKIP: RustFS unavailable");
+        return;
+    }
+    let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+
+    let (user_a, _) = create_test_user(&pool).await;
+    let (user_b, _) = create_test_user(&pool).await;
+    let dm = create_dm_channel(&pool, user_a, user_b).await;
+    let token_a = generate_access_token(&app.config, user_a);
+    let token_b = generate_access_token(&app.config, user_b);
+
+    let mut ws_b = ws_connect(&server, &token_b).await;
+    next_ws_event(&mut ws_b, "ready", Duration::from_secs(5)).await;
+    let subscribe = serde_json::json!({ "type": "subscribe", "channel_id": dm }).to_string();
+    ws_b.send(Message::Text(subscribe.into()))
+        .await
+        .expect("send subscribe");
+    next_ws_event(&mut ws_b, "subscribed", Duration::from_secs(5)).await;
+
+    let boundary = "----TestBoundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"\r\n\r\nphoto\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"note.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--{boundary}--\r\n"
+    );
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/messages/channel/{dm}/upload", server.url))
+        .bearer_auth(&token_a)
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .expect("POST upload");
+    assert_eq!(resp.status(), 201, "upload failed: {}", resp.status());
+
+    let ev = next_ws_event(&mut ws_b, "message_new", Duration::from_secs(5)).await;
+    assert_eq!(ev["channel_id"], dm.to_string());
+    assert_eq!(ev["message"]["content"], "photo");
+    let attachments = ev["message"]["attachments"]
+        .as_array()
+        .expect("attachments");
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0]["filename"], "note.txt");
+
+    expect_no_ws_event(&mut ws_b, "message_new", Duration::from_secs(1)).await;
 }

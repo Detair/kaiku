@@ -18,7 +18,6 @@ use crate::api::AppState;
 use crate::auth::jwt::validate_access_token;
 use crate::auth::AuthUser;
 use crate::db;
-use crate::ws::{broadcast_to_channel, ServerEvent};
 
 // ============================================================================
 // Constants
@@ -331,26 +330,6 @@ pub async fn upload_message_with_file(
     Path(channel_id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<MessageResponse>), ChatError> {
-    // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
-
-    // Check channel exists
-    let channel = db::find_channel_by_id(&state.db, channel_id)
-        .await?
-        .ok_or(ChatError::Validation("Channel not found".to_string()))?;
-
-    // Check channel access (VIEW_CHANNEL permission or DM participant)
-    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
-        .await
-        .map_err(|_| ChatError::Forbidden)?;
-
-    // For guild channels, also check SEND_MESSAGES permission
-    if channel.guild_id.is_some()
-        && !ctx.has_permission(crate::permissions::GuildPermissions::SEND_MESSAGES)
-    {
-        return Err(ChatError::Forbidden);
-    }
-
     let mut file_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -426,150 +405,119 @@ pub async fn upload_message_with_file(
     let file_content_type = validate_file_content(&file_data, &file_content_type)?;
 
     // Validate message content length if provided
+    // Note: Empty content is allowed when attaching files (file-only messages)
     if !content.is_empty() {
         validate_message_content(&content).map_err(|e| ChatError::Validation(e.to_string()))?;
     }
-    // Content filtering on message text (if non-empty, guild channels only)
-    if !content.is_empty() {
-        if let Some(guild_id) = channel.guild_id {
-            if let Ok(engine) = state.filter_cache.get_or_build(&state.db, guild_id).await {
-                let result = engine.check(&content);
-                if result.blocked {
-                    for m in &result.matches {
-                        crate::moderation::queries::log_moderation_action(
-                            &state.db,
-                            &crate::moderation::queries::LogActionParams {
-                                guild_id,
-                                user_id: auth_user.id,
-                                channel_id,
-                                action: m.action,
-                                category: Some(m.category),
-                                matched_pattern: &m.matched_pattern,
-                                original_content: &content,
-                                custom_pattern_id: m.custom_pattern_id,
-                            },
-                        )
-                        .await
-                        .ok();
-                    }
-                    return Err(ChatError::Validation(
-                        "Your message was blocked by the server's content filter.".to_string(),
-                    ));
-                }
-                // For "log" and "warn" actions, still log but allow the upload
-                for m in result.matches.iter().filter(|m| {
-                    m.action == crate::moderation::filter_types::FilterAction::Log
-                        || m.action == crate::moderation::filter_types::FilterAction::Warn
-                }) {
-                    crate::moderation::queries::log_moderation_action(
-                        &state.db,
-                        &crate::moderation::queries::LogActionParams {
-                            guild_id,
-                            user_id: auth_user.id,
-                            channel_id,
-                            action: m.action,
-                            category: Some(m.category),
-                            matched_pattern: &m.matched_pattern,
-                            original_content: &content,
-                            custom_pattern_id: m.custom_pattern_id,
-                        },
-                    )
-                    .await
-                    .ok();
-                }
-            }
-        }
-    }
 
-    // Create the message first
-    // Note: Empty content is allowed when attaching files (file-only messages)
-    // This differs from regular text messages which require validation:
-    // - Regular text: <= 4000 characters (excluding fenced code blocks)
-    // - Total: <= 10000 characters (including code blocks)
-    let message = db::create_message(
-        &state.db,
-        channel_id,
+    // Same send rules as text messages (access, permissions, blocks, mentions,
+    // content filter), checked before anything is stored.
+    let channel = super::send::authorize_send(
+        &state,
         auth_user.id,
-        &content,
-        false, // encrypted
-        None,  // nonce
-        None,  // reply_to
+        channel_id,
+        &super::send::SendIntent {
+            content: &content,
+            encrypted: false,
+            has_attachment: true,
+        },
     )
     .await?;
 
-    // Generate S3 key using actual message ID
+    // Check S3 is configured
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
+
+    // The message ID is fixed up front so the storage key can carry it; the
+    // message row is only written once the objects are stored.
+    let message_id = Uuid::now_v7();
     let file_id = Uuid::now_v7();
     let extension = std::path::Path::new(&safe_filename)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("bin");
-    let s3_key = format!(
-        "attachments/{}/{}/{}.{}",
-        channel_id, message.id, file_id, extension
-    );
+    let s3_key = format!("attachments/{channel_id}/{message_id}/{file_id}.{extension}");
 
     // Process image before S3 upload (clones data internally for spawn_blocking)
     let file_size = file_data.len() as i64;
     let media = process_and_upload_variants(s3, &file_data, &file_content_type, &s3_key).await;
 
-    // Upload original to S3 - if this fails, message is already created (acceptable trade-off)
+    let variant_keys: Vec<String> = media
+        .thumb_key
+        .iter()
+        .chain(media.medium_key.iter())
+        .cloned()
+        .collect();
+
+    // Upload original to S3. On failure nothing has been written to the database.
     if let Err(e) = s3.upload(&s3_key, file_data, &file_content_type).await {
-        // Clean up orphaned variant objects
-        let mut keys = Vec::new();
-        if let Some(k) = media.thumb_key {
-            keys.push(k);
-        }
-        if let Some(k) = media.medium_key {
-            keys.push(k);
-        }
-        if !keys.is_empty() {
-            cleanup_s3_objects(s3.clone(), keys);
+        if !variant_keys.is_empty() {
+            cleanup_s3_objects(s3.clone(), variant_keys);
         }
         tracing::error!(
-            "S3 upload failed for message {}: {}. Message exists without attachment.",
-            message.id,
-            e
+            message_id = %message_id,
+            error = %e,
+            "S3 upload failed; no message created"
         );
         return Err(ChatError::Storage(e.to_string()));
     }
 
-    // Save attachment metadata to database
-    let attachment = db::create_file_attachment(
-        &state.db,
-        message.id,
-        &safe_filename,
-        &file_content_type,
-        file_size,
-        &s3_key,
-        media.width,
-        media.height,
-        media.blurhash.as_deref(),
-        media.thumb_key.as_deref(),
-        media.medium_key.as_deref(),
-        media.processing_status,
-    )
-    .await
-    .map_err(|e| {
-        // If attachment record creation fails after S3 upload, we have orphaned S3 objects
-        let mut keys = vec![s3_key.clone()];
-        if let Some(k) = media.thumb_key.clone() {
-            keys.push(k);
-        }
-        if let Some(k) = media.medium_key.clone() {
-            keys.push(k);
-        }
-        cleanup_s3_objects(s3.clone(), keys);
-        tracing::error!(
-            "Failed to create attachment record for message {}: {}",
+    // Insert message and attachment in one transaction
+    let stored = async {
+        let mut tx = state.db.begin().await?;
+        let message =
+            db::create_message_with_id(&mut *tx, message_id, channel_id, auth_user.id, &content)
+                .await?;
+        let attachment = db::create_file_attachment(
+            &mut *tx,
             message.id,
-            e
-        );
-        e
-    })?;
+            &safe_filename,
+            &file_content_type,
+            file_size,
+            &s3_key,
+            media.width,
+            media.height,
+            media.blurhash.as_deref(),
+            media.thumb_key.as_deref(),
+            media.medium_key.as_deref(),
+            media.processing_status,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>((message, attachment))
+    }
+    .await;
 
-    // Get author profile for response
-    let author = db::find_user_by_id(&state.db, auth_user.id)
-        .await?
+    let (message, attachment) = match stored {
+        Ok(v) => v,
+        Err(e) => {
+            // Stored objects would be orphaned without their rows
+            let mut keys = vec![s3_key.clone()];
+            keys.extend(variant_keys);
+            cleanup_s3_objects(s3.clone(), keys);
+            tracing::error!(
+                message_id = %message_id,
+                error = %e,
+                "Failed to store message with attachment"
+            );
+            return Err(e.into());
+        }
+    };
+
+    // Get author profile for response. The message is already committed, so a
+    // lookup failure falls back to a placeholder instead of failing the request
+    // (which would skip the dispatch below).
+    let author_user = match db::find_user_by_id(&state.db, auth_user.id).await {
+        Ok(user) => user,
+        Err(e) => {
+            tracing::warn!(
+                message_id = %message.id,
+                error = %e,
+                "Author lookup failed after upload commit; using placeholder profile"
+            );
+            None
+        }
+    };
+    let author = author_user
         .map(AuthorProfile::from)
         .unwrap_or_else(|| AuthorProfile {
             id: auth_user.id,
@@ -585,7 +533,7 @@ pub async fn upload_message_with_file(
         id: message.id,
         channel_id: message.channel_id,
         author: author.clone(),
-        content: message.content,
+        content: message.content.clone(),
         encrypted: message.encrypted,
         attachments: vec![AttachmentInfo::from_db(&attachment)],
         reply_to: message.reply_to,
@@ -611,28 +559,25 @@ pub async fn upload_message_with_file(
         webhook_id: None,
     };
 
-    // Broadcast new message via Redis pub-sub (nonce excluded — it's only for the sender)
+    // Broadcast payload excludes the nonce — it's only for the sender
     let message_json = serde_json::to_value(&response).unwrap_or_default();
 
     // Set nonce for the HTTP response to the sender
     response.nonce = message.nonce;
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::MessageNew {
-            channel_id,
-            message: message_json,
+
+    super::send::dispatch_new_message(
+        &state,
+        super::send::NewMessageDispatch {
+            channel: &channel,
+            author_id: auth_user.id,
+            message_id: message.id,
+            content: &message.content,
+            encrypted: false,
+            is_crosspost: message.is_crosspost,
+            message_json,
         },
     )
-    .await
-    {
-        tracing::error!(
-            "Failed to broadcast message {} to channel {}: {}. Message saved but clients may not receive real-time update.",
-            message.id,
-            channel_id,
-            e
-        );
-    }
+    .await;
 
     tracing::info!(
         message_id = %message.id,

@@ -1,7 +1,8 @@
 //! HTTP Integration Tests for Upload Error Paths
 //!
 //! S3 is not configured in test environment (`AppState.s3 = None`),
-//! so these tests verify error responses only.
+//! so these tests verify error responses only. Send authorization runs
+//! before the storage check, so permission tests need no `RustFS`.
 //!
 //! Run with: `cargo test --test integration uploads_http -- --nocapture`
 
@@ -11,7 +12,55 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
-use super::helpers::{body_to_json, create_test_user, generate_access_token, TestApp};
+use super::helpers::{
+    add_guild_member, body_to_json, create_channel, create_dm_channel,
+    create_guild_with_default_role, create_test_user, fresh_test_app_with_s3_and_pool,
+    generate_access_token, rustfs_available, TestApp,
+};
+
+/// Build an upload request for `channel_id` with a small text file and
+/// optional message `content`.
+fn upload_request(token: &str, channel_id: Uuid, content: &str) -> axum::http::Request<Body> {
+    let boundary = "----TestBoundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"\r\n\r\n{content}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--{boundary}--\r\n"
+    );
+    TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{channel_id}/upload"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
+    .body(Body::from(body))
+    .unwrap()
+}
+
+/// Create a guild whose `@everyone` role has `perms`, a channel of
+/// `channel_type` in it, and a non-owner member. Returns (channel, member token).
+async fn guild_member_channel(
+    app: &TestApp,
+    perms: GuildPermissions,
+    channel_type: &str,
+) -> (Uuid, String) {
+    let (owner, _) = create_test_user(&app.pool).await;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let channel_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, 'upload-perm', $3::channel_type)",
+    )
+    .bind(channel_id)
+    .bind(guild_id)
+    .bind(channel_type)
+    .execute(&app.pool)
+    .await
+    .expect("create channel");
+    let (member, _) = create_test_user(&app.pool).await;
+    add_guild_member(&app.pool, guild_id, member).await;
+    (channel_id, generate_access_token(&app.config, member))
+}
 
 // ============================================================================
 // Upload Error Paths
@@ -167,4 +216,285 @@ async fn test_get_attachment_anti_enumeration_parity(pool: PgPool) {
     );
     let missing_body = body_to_json(missing_resp).await;
     assert_eq!(missing_body["error"], "FORBIDDEN");
+}
+
+// ============================================================================
+// Send authorization (shared with text messages)
+// ============================================================================
+
+#[sqlx::test]
+async fn test_upload_requires_attach_files(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let (channel_id, token) = guild_member_channel(&app, perms, "text").await;
+
+    let resp = app.oneshot(upload_request(&token, channel_id, "")).await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "upload without ATTACH_FILES must be 403"
+    );
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "FORBIDDEN");
+}
+
+#[sqlx::test]
+async fn test_upload_blocked_in_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_a, _) = create_test_user(&app.pool).await;
+    let (user_b, _) = create_test_user(&app.pool).await;
+    let token_a = generate_access_token(&app.config, user_a);
+    let token_b = generate_access_token(&app.config, user_b);
+    let channel_id = create_dm_channel(&app.pool, user_a, user_b).await;
+
+    // A (recipient) blocks B (sender)
+    let req = TestApp::request(Method::POST, &format!("/api/friends/{user_b}/block"))
+        .header("Authorization", format!("Bearer {token_a}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 200);
+
+    let resp = app.oneshot(upload_request(&token_b, channel_id, "")).await;
+    assert_eq!(resp.status(), 403);
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "BLOCKED");
+
+    // The blocking side (sender blocked the recipient) is rejected as well
+    let resp = app.oneshot(upload_request(&token_a, channel_id, "")).await;
+    assert_eq!(resp.status(), 403, "sender who blocked the recipient");
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "BLOCKED");
+}
+
+#[sqlx::test]
+async fn test_upload_to_announcement_requires_send_announcements(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let perms = GuildPermissions::VIEW_CHANNEL
+        | GuildPermissions::SEND_MESSAGES
+        | GuildPermissions::ATTACH_FILES;
+    let (channel_id, token) = guild_member_channel(&app, perms, "announcement").await;
+
+    let resp = app.oneshot(upload_request(&token, channel_id, "")).await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "upload to announcement channel without SEND_ANNOUNCEMENTS must be 403"
+    );
+}
+
+#[sqlx::test]
+async fn test_upload_everyone_mention_requires_permission(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let perms = GuildPermissions::VIEW_CHANNEL
+        | GuildPermissions::SEND_MESSAGES
+        | GuildPermissions::ATTACH_FILES;
+    let (channel_id, token) = guild_member_channel(&app, perms, "text").await;
+
+    let resp = app
+        .oneshot(upload_request(&token, channel_id, "@everyone"))
+        .await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "@everyone in an upload without MENTION_EVERYONE must be 400"
+    );
+}
+
+#[sqlx::test]
+async fn test_upload_content_filter_returns_403(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let channel_id = create_channel(&app.pool, guild_id, "upload-filter").await;
+
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/guilds/{guild_id}/filters/patterns"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header("Content-Type", "application/json")
+    .body(Body::from(
+        serde_json::json!({ "pattern": "forbidden", "is_regex": false }).to_string(),
+    ))
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 201);
+
+    let resp = app
+        .oneshot(upload_request(&token, channel_id, "this is forbidden"))
+        .await;
+    assert_eq!(resp.status(), 403, "filtered upload text must be 403");
+    let json = body_to_json(resp).await;
+    assert_eq!(json["error"], "CONTENT_FILTERED");
+}
+
+#[sqlx::test]
+async fn test_upload_s3_failure_leaves_no_message(pool: PgPool) {
+    let app = TestApp::with_pool_and_unreachable_s3(pool.clone()).await;
+    let (owner, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let channel_id = create_channel(&app.pool, guild_id, "upload-s3-fail").await;
+
+    let resp = app
+        .oneshot(upload_request(&token, channel_id, "with text"))
+        .await;
+    assert!(
+        resp.status().is_server_error(),
+        "upload with failing storage must be 5xx, got {}",
+        resp.status()
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE channel_id = $1")
+        .bind(channel_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "a failed upload must not leave a message row");
+}
+
+// ============================================================================
+// Announcement crosspost (RustFS required)
+// ============================================================================
+
+/// A file-only upload to an announcement channel crossposts nothing (the
+/// crosspost carries text only); a text+file upload still crossposts its text.
+#[sqlx::test]
+async fn test_file_only_announcement_upload_is_not_crossposted(pool: PgPool) {
+    if !rustfs_available().await {
+        eprintln!("SKIP: RustFS unavailable");
+        return;
+    }
+    let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let (source, follower) = announcement_with_follower(&app.pool, guild_id).await;
+
+    let resp = app.oneshot(upload_request(&token, source, "")).await;
+    assert_eq!(resp.status(), 201, "file-only announcement upload");
+
+    // Control: text+file still crossposts its text. Wait for it to land.
+    let resp = app.oneshot(upload_request(&token, source, "news")).await;
+    assert_eq!(resp.status(), 201, "text+file announcement upload");
+    assert_eq!(
+        settled_contents(&app.pool, follower).await,
+        vec!["news".to_string()],
+        "follower must only get the text crosspost"
+    );
+}
+
+/// Create an announcement channel followed by one text channel.
+/// Returns (source, follower).
+async fn announcement_with_follower(pool: &PgPool, guild_id: Uuid) -> (Uuid, Uuid) {
+    let source = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, 'news', 'announcement')",
+    )
+    .bind(source)
+    .bind(guild_id)
+    .execute(pool)
+    .await
+    .expect("create announcement channel");
+    let follower = create_channel(pool, guild_id, "follower").await;
+    sqlx::query(
+        "INSERT INTO announcement_follows (source_channel_id, target_channel_id) VALUES ($1, $2)",
+    )
+    .bind(source)
+    .bind(follower)
+    .execute(pool)
+    .await
+    .expect("create follow");
+    (source, follower)
+}
+
+/// Wait until `channel` holds at least one message, then a little longer so a
+/// stray crosspost spawned earlier also lands; return all contents.
+async fn settled_contents(pool: &PgPool, channel: Uuid) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE channel_id = $1")
+            .bind(channel)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        if n > 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "text crosspost never arrived"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    sqlx::query_scalar("SELECT content FROM messages WHERE channel_id = $1 ORDER BY id")
+        .bind(channel)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+/// The shared dispatch (used by uploads) does not crosspost an announcement
+/// without text; one with text still crossposts. No storage needed.
+#[sqlx::test]
+async fn test_dispatch_skips_crosspost_without_text(pool: PgPool) {
+    use std::sync::Arc;
+
+    use vc_server::api::{AppState, AppStateConfig};
+    use vc_server::chat::send::{dispatch_new_message, NewMessageDispatch};
+    use vc_server::config::Config;
+    use vc_server::voice::sfu::SfuServer;
+
+    let config = Config::default_for_test();
+    let redis = vc_server::db::create_redis_client(&config.redis_url)
+        .await
+        .expect("connect test Redis");
+    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("SfuServer");
+    let state = AppState::new(AppStateConfig {
+        db: pool.clone(),
+        redis,
+        config,
+        s3: None,
+        sfu,
+        rate_limiter: None,
+        screen_share_limiter: None,
+        email: None,
+        oidc_manager: None,
+        http_client: reqwest::Client::new(),
+    });
+
+    let (owner, _) = create_test_user(&pool).await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = create_guild_with_default_role(&pool, owner, perms).await;
+    let (source, follower) = announcement_with_follower(&pool, guild_id).await;
+    let channel = vc_server::db::find_channel_by_id(&pool, source)
+        .await
+        .unwrap()
+        .expect("announcement channel");
+
+    for content in ["", "news"] {
+        dispatch_new_message(
+            &state,
+            NewMessageDispatch {
+                channel: &channel,
+                author_id: owner,
+                message_id: Uuid::now_v7(),
+                content,
+                encrypted: false,
+                is_crosspost: false,
+                message_json: serde_json::json!({}),
+            },
+        )
+        .await;
+    }
+
+    assert_eq!(
+        settled_contents(&pool, follower).await,
+        vec!["news".to_string()],
+        "follower must only get the text crosspost"
+    );
 }

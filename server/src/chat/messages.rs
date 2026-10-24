@@ -22,9 +22,8 @@ use crate::auth::AuthUser;
 use crate::db;
 use crate::moderation::filter_types::FilterAction;
 use crate::moderation::queries as filter_queries;
-use crate::permissions::{get_member_permission_context, GuildPermissions};
 use crate::social::block_cache;
-use crate::ws::{broadcast_admin_event, broadcast_to_channel, broadcast_to_user, ServerEvent};
+use crate::ws::{broadcast_to_channel, broadcast_to_user, ServerEvent};
 
 // ============================================================================
 // Handlers
@@ -165,151 +164,23 @@ pub async fn create(
     body.validate()
         .map_err(|e| ChatError::Validation(crate::validation::format_validation_errors(&e)))?;
 
-    // Check channel exists
-    let channel = db::find_channel_by_id(&state.db, channel_id)
-        .await?
-        .ok_or(ChatError::ChannelNotFound)?;
-
-    // Check if user has VIEW_CHANNEL permission
-    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
-        .await
-        .map_err(|_| ChatError::Forbidden)?;
-
-    // For guild channels, also check SEND_MESSAGES permission
-    if channel.guild_id.is_some() && !ctx.has_permission(GuildPermissions::SEND_MESSAGES) {
-        return Err(ChatError::Forbidden);
-    }
-
-    // Announcement channels require SEND_ANNOUNCEMENTS to publish (a distinct,
-    // more restricted right than SEND_MESSAGES).
-    if channel.channel_type == db::ChannelType::Announcement
-        && !ctx.has_permission(GuildPermissions::SEND_ANNOUNCEMENTS)
-    {
-        return Err(ChatError::Forbidden);
-    }
-
-    // For DM channels, check if any participant has blocked the other
-    if channel.channel_type == db::ChannelType::Dm {
-        let participants = queries::list_dm_participant_ids(&state.db, channel_id).await?;
-
-        for &participant_id in &participants {
-            if participant_id != auth_user.id {
-                match block_cache::is_blocked_either_direction(
-                    &state.redis,
-                    auth_user.id,
-                    participant_id,
-                )
-                .await
-                {
-                    Ok(true) => return Err(ChatError::Blocked),
-                    Ok(false) => {}
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            user_id = %auth_user.id,
-                            target_id = %participant_id,
-                            fail_open = state.config.block_check_fail_open,
-                            "Redis block check failed, using failsafe policy"
-                        );
-                        if !state.config.block_check_fail_open {
-                            return Err(ChatError::Blocked);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Check for @everyone/@here mentions in guild channels
-    if let Some(guild_id) = channel.guild_id {
-        if body.content.contains("@everyone") || body.content.contains("@here") {
-            // Load user's permissions in this guild
-            if let Ok(Some(ctx)) =
-                get_member_permission_context(&state.db, guild_id, auth_user.id).await
-            {
-                if !ctx.has_permission(GuildPermissions::MENTION_EVERYONE) {
-                    return Err(ChatError::Validation(
-                        "You do not have permission to mention @everyone or @here".to_string(),
-                    ));
-                }
-            } else {
-                // User is not a guild member, should not happen if channel access is correct
-                return Err(ChatError::Forbidden);
-            }
-        }
-    }
+    let channel = super::send::authorize_send(
+        &state,
+        auth_user.id,
+        channel_id,
+        &super::send::SendIntent {
+            content: &body.content,
+            encrypted: body.encrypted,
+            has_attachment: false,
+        },
+    )
+    .await?;
 
     // Validate encrypted messages have nonce
     if body.encrypted && body.nonce.is_none() {
         return Err(ChatError::Validation(
             "Encrypted messages require a nonce".to_string(),
         ));
-    }
-
-    // Content filtering: skip encrypted messages (can't inspect E2EE) and DMs (guild-scoped)
-    if !body.encrypted {
-        if let Some(guild_id) = channel.guild_id {
-            if let Ok(engine) = state.filter_cache.get_or_build(&state.db, guild_id).await {
-                let result = engine.check(&body.content);
-                if result.blocked {
-                    // Log all matches to moderation_actions table
-                    for m in &result.matches {
-                        filter_queries::log_moderation_action(
-                            &state.db,
-                            &filter_queries::LogActionParams {
-                                guild_id,
-                                user_id: auth_user.id,
-                                channel_id,
-                                action: m.action,
-                                category: Some(m.category),
-                                matched_pattern: &m.matched_pattern,
-                                original_content: &body.content,
-                                custom_pattern_id: m.custom_pattern_id,
-                            },
-                        )
-                        .await
-                        .ok();
-                    }
-                    // Notify admins
-                    if let Some(first) = result.matches.first() {
-                        broadcast_admin_event(
-                            &state.redis,
-                            &ServerEvent::AdminModerationBlocked {
-                                guild_id,
-                                user_id: auth_user.id,
-                                channel_id,
-                                category: first.category.to_string(),
-                            },
-                        )
-                        .await
-                        .ok();
-                    }
-                    return Err(ChatError::ContentFiltered);
-                }
-                // For "log" and "warn" actions, still log but allow the message
-                for m in result
-                    .matches
-                    .iter()
-                    .filter(|m| m.action == FilterAction::Log || m.action == FilterAction::Warn)
-                {
-                    filter_queries::log_moderation_action(
-                        &state.db,
-                        &filter_queries::LogActionParams {
-                            guild_id,
-                            user_id: auth_user.id,
-                            channel_id,
-                            action: m.action,
-                            category: Some(m.category),
-                            matched_pattern: &m.matched_pattern,
-                            original_content: &body.content,
-                            custom_pattern_id: m.custom_pattern_id,
-                        },
-                    )
-                    .await
-                    .ok();
-                }
-            }
-        }
     }
 
     // Validate reply_to exists if provided
@@ -767,75 +638,28 @@ pub async fn create(
         {
             warn!(channel_id = %channel_id, parent_id = %parent_id, error = %e, "Failed to broadcast thread reply event");
         }
+        super::send::dispatch_bot_events(
+            &state,
+            &channel,
+            auth_user.id,
+            message.id,
+            &body.content,
+            body.encrypted,
+        );
     } else {
-        // Regular message: broadcast MessageNew
-        if let Err(e) = broadcast_to_channel(
-            &state.redis,
-            channel_id,
-            &ServerEvent::MessageNew {
-                channel_id,
-                message: message_json,
+        super::send::dispatch_new_message(
+            &state,
+            super::send::NewMessageDispatch {
+                channel: &channel,
+                author_id: auth_user.id,
+                message_id: message.id,
+                content: &body.content,
+                encrypted: body.encrypted,
+                is_crosspost: message.is_crosspost,
+                message_json,
             },
         )
-        .await
-        {
-            warn!(channel_id = %channel_id, error = %e, "Failed to broadcast new message event");
-        }
-
-        // Announcement publish → fan out to follower channels (async, loop-guarded).
-        if channel.channel_type == db::ChannelType::Announcement && !message.is_crosspost {
-            crate::chat::announcements::spawn_crosspost(
-                state.clone(),
-                channel_id,
-                body.content.clone(),
-            );
-        }
-
-        // DM message → content-free mobile push to the other participant(s). The
-        // signal carries no text (E2EE-safe); the app wakes and syncs locally.
-        if channel.channel_type == db::ChannelType::Dm {
-            if let Ok(participants) = queries::list_dm_participant_ids(&state.db, channel_id).await
-            {
-                let signal = crate::push::WakeSignal::dm(channel_id, 1);
-                for pid in participants {
-                    if pid != auth_user.id {
-                        crate::push::spawn_dispatch(state.clone(), pid, signal.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Dispatch to bot ecosystem (non-blocking, fire-and-forget)
-    if let Some(guild_id) = channel.guild_id {
-        if !body.encrypted {
-            let db = state.db.clone();
-            let redis = state.redis.clone();
-            let msg_id = message.id;
-            let ch_id = channel_id;
-            let uid = auth_user.id;
-            let content = body.content.clone();
-            tokio::spawn(async move {
-                crate::ws::bot_events::publish_message_created(
-                    &db, &redis, guild_id, ch_id, msg_id, uid, &content,
-                )
-                .await;
-                crate::webhooks::dispatch::dispatch_guild_event(
-                    &db,
-                    &redis,
-                    guild_id,
-                    crate::webhooks::events::BotEventType::MessageCreated,
-                    serde_json::json!({
-                        "guild_id": guild_id,
-                        "channel_id": ch_id,
-                        "message_id": msg_id,
-                        "user_id": uid,
-                        "content": content,
-                    }),
-                )
-                .await;
-            });
-        }
+        .await;
     }
 
     Ok((StatusCode::CREATED, Json(response)))

@@ -93,6 +93,15 @@ Scripts in `/docker-entrypoint-initdb.d/` run on first startup:
 
 **Web UI:** http://localhost:8025
 
+### Production stack (`docker-compose.yml`)
+
+The production/self-hosting stack hardens a few things. `scripts/check_compose_hardening.py` (run in CI) guards them:
+
+- `coturn` sits on its own `turn` network (never `voicechat`) and runs with `--no-multicast-peers`, `--no-tcp-relay` and `--denied-peer-ip=` ranges for private, loopback and link-local space.
+- `VALKEY_PASSWORD` is required; it must be hex (URL-safe) because it is embedded in `REDIS_URL`. The healthcheck authenticates with `REDISCLI_AUTH`.
+- `CORS_ALLOWED_ORIGINS` is required; `RATE_LIMIT_TRUSTED_PROXIES` comes from `KAIKU_NET_SUBNET`. Do not reintroduce `RATE_LIMIT_TRUST_PROXY`.
+- `PUBLIC_IP` is forwarded to the server so the SFU advertises its public address.
+
 ### Usage
 
 **Start all services:**

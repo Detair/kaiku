@@ -1097,6 +1097,32 @@ pub async fn create_message(
     .await
 }
 
+/// Create a plaintext message with a caller-chosen ID (no nonce, no reply).
+///
+/// Used when the ID must be known before the insert (e.g. upload storage keys)
+/// and when the insert runs inside a caller's transaction.
+pub async fn create_message_with_id(
+    exec: impl sqlx::PgExecutor<'_>,
+    id: Uuid,
+    channel_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+) -> sqlx::Result<Message> {
+    sqlx::query_as::<_, Message>(
+        r"
+        INSERT INTO messages (id, channel_id, user_id, content, encrypted)
+        VALUES ($1, $2, $3, $4, false)
+        RETURNING *
+        ",
+    )
+    .bind(id)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(content)
+    .fetch_one(exec)
+    .await
+}
+
 /// Store validated embeds JSON on a message (bot-authored). Pass `None` to clear.
 pub async fn set_message_embeds(
     pool: &PgPool,
@@ -1706,7 +1732,7 @@ pub async fn count_search_messages_filtered(
 /// Create a new file attachment record with optional media metadata.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_file_attachment(
-    pool: &PgPool,
+    exec: impl sqlx::PgExecutor<'_>,
     message_id: Uuid,
     filename: &str,
     mime_type: &str,
@@ -1739,7 +1765,7 @@ pub async fn create_file_attachment(
     .bind(thumbnail_s3_key)
     .bind(medium_s3_key)
     .bind(processing_status)
-    .fetch_one(pool)
+    .fetch_one(exec)
     .await
 }
 

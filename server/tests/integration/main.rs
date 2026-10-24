@@ -21,6 +21,7 @@ mod e2ee_settings;
 mod embeds_http;
 mod events_http;
 mod favorites;
+mod files_http;
 mod filters_http;
 mod forum_http;
 mod global_search_http;

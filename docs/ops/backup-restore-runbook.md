@@ -51,20 +51,20 @@ docker stop canis-server
 
 # 2. Recreate the database from the dump
 gunzip -c /var/lib/kaiku/backups/kaiku-<ts>.sql.gz | \
-  docker exec -i canis-postgres psql -U voicechat -d postgres \
+  docker exec -i canis-postgres sh -c 'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$POSTGRESQL_USERNAME" -d postgres \
     -c "DROP DATABASE IF EXISTS voicechat_restore;" \
-    -c "CREATE DATABASE voicechat_restore OWNER voicechat;"
+    -c "CREATE DATABASE voicechat_restore OWNER voicechat;"'
 gunzip -c /var/lib/kaiku/backups/kaiku-<ts>.sql.gz | \
-  docker exec -i canis-postgres psql -U voicechat -d voicechat_restore
+  docker exec -i canis-postgres sh -c 'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$POSTGRESQL_USERNAME" -d voicechat_restore'
 
 # 3. Sanity-check the restored DB (counts should be plausible)
-docker exec canis-postgres psql -U voicechat -d voicechat_restore \
-  -c "SELECT count(*) FROM users;" -c "SELECT count(*) FROM messages;"
+docker exec canis-postgres sh -c 'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$POSTGRESQL_USERNAME" -d voicechat_restore \
+  -c "SELECT count(*) FROM users;" -c "SELECT count(*) FROM messages;"'
 
 # 4. Swap: rename old DB aside, promote the restore
-docker exec canis-postgres psql -U voicechat -d postgres -c \
+docker exec canis-postgres sh -c 'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$POSTGRESQL_USERNAME" -d postgres -c \
   "ALTER DATABASE voicechat RENAME TO voicechat_old; \
-   ALTER DATABASE voicechat_restore RENAME TO voicechat;"
+   ALTER DATABASE voicechat_restore RENAME TO voicechat;"'
 
 # 5. Restart and verify health
 docker start canis-server

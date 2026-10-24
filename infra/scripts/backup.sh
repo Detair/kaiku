@@ -12,8 +12,6 @@
 # Environment variables (all optional, defaults shown):
 #   BACKUP_DIR=/var/lib/kaiku/backups
 #   POSTGRES_CONTAINER=canis-postgres
-#   POSTGRES_USER=voicechat
-#   POSTGRES_DB=voicechat
 #   RETENTION_DAYS=7
 #   BACKUP_RUSTFS=true            # also archive the RustFS data volume
 #   RUSTFS_VOLUME=compose_rustfs_data   # docker volume holding object data
@@ -24,8 +22,6 @@ set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/var/lib/kaiku/backups}"
 CONTAINER="${POSTGRES_CONTAINER:-canis-postgres}"
-DB_USER="${POSTGRES_USER:-voicechat}"
-DB_NAME="${POSTGRES_DB:-voicechat}"
 RETENTION_DAYS="${RETENTION_DAYS:-7}"
 BACKUP_RUSTFS="${BACKUP_RUSTFS:-true}"
 RUSTFS_VOLUME="${RUSTFS_VOLUME:-compose_rustfs_data}"
@@ -40,16 +36,26 @@ echo "[$(date)] Starting backup..."
 
 # --- PostgreSQL ------------------------------------------------------------
 
-docker exec "$CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" | gzip > "$BACKUP_FILE"
+# Credentials come from the Bitnami env inside the container (POSTGRESQL_*).
+# Single quotes: the variables must expand inside the container, not here.
+if ! docker exec "$CONTAINER" sh -c \
+    'PGPASSWORD="$POSTGRESQL_PASSWORD" pg_dump -U "$POSTGRESQL_USERNAME" "$POSTGRESQL_DATABASE"' \
+    | gzip > "$BACKUP_FILE"; then
+    echo "[$(date)] ERROR: pg_dump failed!" >&2
+    rm -f "$BACKUP_FILE"
+    exit 1
+fi
 
-# Verify: non-empty AND the gzip stream is intact (a truncated dump from a
-# mid-backup failure would otherwise look like a valid backup until restore
-# day).
-if [ -s "$BACKUP_FILE" ] && gzip -t "$BACKUP_FILE" 2>/dev/null; then
+# Verify: non-empty, the gzip stream is intact, and pg_dump reached its
+# trailer (a failed dump piped through gzip still yields a ~20-byte valid
+# gzip file, so integrity alone is not enough). The tail is captured first:
+# `tail | grep -q` under pipefail can fail on SIGPIPE once grep has matched.
+if [ -s "$BACKUP_FILE" ] && gzip -t "$BACKUP_FILE" 2>/dev/null \
+    && grep -q "PostgreSQL database dump complete" <<<"$(zcat "$BACKUP_FILE" | tail -n 5)"; then
     SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
     echo "[$(date)] Postgres backup complete: $BACKUP_FILE ($SIZE)"
 else
-    echo "[$(date)] ERROR: Postgres backup missing or corrupt!" >&2
+    echo "[$(date)] ERROR: Postgres backup missing, corrupt or incomplete!" >&2
     rm -f "$BACKUP_FILE"
     exit 1
 fi

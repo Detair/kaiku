@@ -93,8 +93,11 @@ pub async fn rate_limit_by_ip(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .copied();
-    let trust_proxy = rate_limiter.config().trust_proxy;
-    let client_ip = extract_client_ip(request.headers(), connect_info.as_ref(), trust_proxy);
+    let client_ip = extract_client_ip(
+        request.headers(),
+        connect_info.as_ref(),
+        &rate_limiter.config().trusted_proxies,
+    );
     let normalized_ip = normalize_ip(client_ip);
 
     debug!(
@@ -192,8 +195,11 @@ pub async fn rate_limit_by_user(
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .copied();
-        let trust_proxy = rate_limiter.config().trust_proxy;
-        let client_ip = extract_client_ip(request.headers(), connect_info.as_ref(), trust_proxy);
+        let client_ip = extract_client_ip(
+            request.headers(),
+            connect_info.as_ref(),
+            &rate_limiter.config().trusted_proxies,
+        );
         let normalized_ip = normalize_ip(client_ip);
 
         // Store normalized IP if not already present
@@ -285,8 +291,11 @@ pub async fn check_ip_not_blocked(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .copied();
-    let trust_proxy = rate_limiter.config().trust_proxy;
-    let client_ip = extract_client_ip(request.headers(), connect_info.as_ref(), trust_proxy);
+    let client_ip = extract_client_ip(
+        request.headers(),
+        connect_info.as_ref(),
+        &rate_limiter.config().trusted_proxies,
+    );
     let normalized_ip = normalize_ip(client_ip);
 
     // Store normalized IP in request extensions

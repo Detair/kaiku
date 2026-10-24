@@ -19,6 +19,7 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 - `messages.rs` — Message handlers (list, create, edit, delete)
 - `dm.rs` — DM channel creation and management
 - `uploads.rs` — File upload/download handlers with multipart form support
+- `send.rs` — Shared send path: `authorize_send` (access, permissions, blocks, mentions, content filter) and `dispatch_new_message` (broadcast, crosspost, DM push wake, bot events) used by both text messages and uploads
 - `s3.rs` — S3Client wrapper for object storage (AWS S3, RustFS, etc.)
 
 ## For AI Agents
@@ -61,7 +62,15 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 **Combined Upload**: `POST /api/messages/channel/:channel_id/upload`
 - Create message + upload file in single request
 - Multipart form: `file` + `content` (optional text)
-- Atomic operation (message saved only if upload succeeds)
+- Order: parse multipart → size/MIME/magic-byte validation → `send::authorize_send`
+  (same rules as text, plus `ATTACH_FILES`) → S3 configured (503) → upload
+  variants + original under `attachments/{channel}/{message_id}/{file_id}.{ext}`
+  → one transaction inserting message (pre-chosen UUIDv7) + attachment →
+  `send::dispatch_new_message`
+- Atomic: a storage failure leaves no message row; a DB failure deletes the
+  uploaded objects
+- New send paths must go through `send::authorize_send` and
+  `send::dispatch_new_message`; do not duplicate the checks
 
 **Download Endpoint**: `GET /api/messages/attachments/:id/download`
 - Public route with auth via `?token=jwt` query parameter (browser compatibility)
