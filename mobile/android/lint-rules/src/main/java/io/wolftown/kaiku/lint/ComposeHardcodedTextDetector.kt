@@ -29,7 +29,9 @@ import org.jetbrains.uast.UastBinaryOperator
  *  - to `Notification(Compat).Builder.setContentTitle/setContentText/setTicker`,
  *    the `name` of `NotificationChannel(...)` or the text of `Toast.makeText(...)`.
  *
- * Literals without letters ("#", "99+", "/%1$d", emoji) are ignored.
+ * Literals without letters ("#", "99+", "/%1$d", emoji) are ignored; format specifiers
+ * do not count as letters. Compose animation APIs (`androidx.compose.animation.*`) are
+ * skipped because their `label` is a tooling label, not user-facing text.
  */
 class ComposeHardcodedTextDetector : Detector(), SourceCodeScanner {
 
@@ -45,8 +47,12 @@ class ComposeHardcodedTextDetector : Detector(), SourceCodeScanner {
 
     private fun checkCall(context: JavaContext, node: UCallExpression) {
         val method = node.resolve() ?: return
-        val isComposable = method.annotations.any { it.qualifiedName == COMPOSABLE }
         val ownerClass = method.containingClass?.qualifiedName
+        // Compose animation APIs (animate*AsState, updateTransition, Crossfade, ...) take a
+        // `label` that only shows up in tooling, never on screen.
+        val isAnimationApi = ownerClass?.startsWith(ANIMATION_PACKAGE) == true
+        val isComposable = !isAnimationApi &&
+            method.annotations.any { it.qualifiedName == COMPOSABLE }
         val isMaterial3Text = method.name == "Text" &&
             ownerClass?.startsWith("androidx.compose.material3.") == true
         val platformTextIndex = platformTextArgumentIndex(method, ownerClass)
@@ -85,18 +91,43 @@ class ComposeHardcodedTextDetector : Detector(), SourceCodeScanner {
         when (expression) {
             null -> false
             is UParenthesizedExpression -> containsHardcodedText(expression.expression)
-            is ULiteralExpression -> (expression.value as? String)?.let { LETTER.containsMatchIn(it) } == true
-            // Kotlin string templates and `+` concatenations are polyadic PLUS expressions.
-            is UPolyadicExpression -> expression.operator == UastBinaryOperator.PLUS &&
-                expression.operands.any { containsHardcodedText(it) }
             is UIfExpression -> containsHardcodedText(expression.thenExpression) ||
                 containsHardcodedText(expression.elseExpression)
-            else -> false
+            else -> literalText(expression)?.let { hasLetters(it) } == true
         }
+
+    /**
+     * The literal text of a string literal, Kotlin string template or `+` concatenation, with
+     * non-literal parts replaced by [PLACEHOLDER]; null if the expression has no string literal.
+     * Literal parts are joined first because Kotlin UAST may split one template into several
+     * literal operands (e.g. around an escaped `\$`).
+     */
+    private fun literalText(expression: UExpression?): String? =
+        when (expression) {
+            is UParenthesizedExpression -> literalText(expression.expression)
+            is ULiteralExpression -> expression.value as? String
+            is UPolyadicExpression -> {
+                if (expression.operator != UastBinaryOperator.PLUS) {
+                    null
+                } else {
+                    val parts = expression.operands.map { literalText(it) }
+                    if (parts.all { it == null }) null else parts.joinToString("") { it ?: PLACEHOLDER }
+                }
+            }
+            else -> null
+        }
+
+    private fun hasLetters(text: String): Boolean =
+        LETTER.containsMatchIn(FORMAT_SPECIFIER.replace(text, ""))
 
     companion object {
         private const val COMPOSABLE = "androidx.compose.runtime.Composable"
+        private const val ANIMATION_PACKAGE = "androidx.compose.animation."
+        private const val PLACEHOLDER = "\u0000"
         private val LETTER = Regex("[A-Za-z]")
+
+        /** Format specifiers like `%d` or `%1$s` are not words. */
+        private val FORMAT_SPECIFIER = Regex("%[0-9]*\\$?[a-zA-Z]")
 
         private val TEXT_PARAMETERS = setOf(
             "text",
