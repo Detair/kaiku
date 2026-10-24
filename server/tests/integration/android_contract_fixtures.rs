@@ -416,3 +416,32 @@ fn android_golden_dm_list() {
         serde_json::to_value(&list).expect("serialize dm list"),
     );
 }
+
+/// `channel_read`: the user read a guild channel on another session; Android
+/// clears that channel's message notification.
+#[test]
+fn android_golden_ws_channel_read() {
+    let event = ServerEvent::ChannelRead {
+        channel_id: CHANNEL_ID,
+        last_read_message_id: Some(NEWER_MESSAGE_ID),
+    };
+
+    check_golden(
+        "ws_channel_read.json",
+        serde_json::to_value(&event).expect("serialize channel_read"),
+    );
+}
+
+/// `dm_read` without a read position (`last_read_message_id` absent or null).
+#[test]
+fn android_golden_ws_dm_read() {
+    let event = ServerEvent::DmRead {
+        channel_id: DM_CHANNEL_ID,
+        last_read_message_id: None,
+    };
+
+    check_golden(
+        "ws_dm_read.json",
+        serde_json::to_value(&event).expect("serialize dm_read"),
+    );
+}
