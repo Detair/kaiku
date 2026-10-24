@@ -1,6 +1,14 @@
 import { Component, Show, createSignal, onCleanup } from "solid-js";
 import { appSettings, updateAudioSetting, updateVoiceSetting, isSettingsLoading } from "@/stores/settings";
-import { keyCodeToLabel } from "@/lib/pttManager";
+import {
+    bindingFromEvent,
+    checkGlobalPttBinding,
+    formatKeyBinding,
+    keyCodeToLabel,
+    parseKeyBinding,
+} from "@/lib/pttManager";
+import { isTauri } from "@/lib/tauri/common";
+import { t } from "@/i18n";
 
 const VoiceSettings: Component = () => {
     return (
@@ -188,16 +196,26 @@ const KeyBindInput: Component<{
                 return;
             }
 
-            // Check for conflict with other key
-            if (props.otherKey && e.code === props.otherKey) {
+            const binding = bindingFromEvent(e);
+
+            // Check for conflict with other key (same main key)
+            if (props.otherKey && parseKeyBinding(props.otherKey).code === binding.code) {
                 setError("PTT and PTM keys must be different");
+                stopCapture();
+                return;
+            }
+
+            // The desktop app registers the key system-wide; a plain key
+            // would be taken away from games, so refuse it there.
+            if (isTauri() && !checkGlobalPttBinding(binding).ok) {
+                setError(t("voice.ptt.plainKeyRefused"));
                 stopCapture();
                 return;
             }
 
             setError(null);
             stopCapture();
-            props.onBind(e.code);
+            props.onBind(formatKeyBinding(binding));
         };
 
         activeHandler = handler;
@@ -251,6 +269,16 @@ const KeyBindInput: Component<{
             </div>
             <Show when={error()}>
                 <p class="text-xs text-accent-danger mt-1">{error()}</p>
+            </Show>
+            <Show
+                when={
+                    !error() &&
+                    isTauri() &&
+                    props.currentKey &&
+                    !checkGlobalPttBinding(parseKeyBinding(props.currentKey)).ok
+                }
+            >
+                <p class="text-xs text-text-secondary mt-1">{t("voice.ptt.focusOnly")}</p>
             </Show>
         </div>
     );

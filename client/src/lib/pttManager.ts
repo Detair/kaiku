@@ -7,6 +7,8 @@
  */
 
 import { isTauri } from "@/lib/tauri/common";
+import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,11 +61,92 @@ export function resolveState(
 }
 
 // ---------------------------------------------------------------------------
+// Key bindings
+// ---------------------------------------------------------------------------
+
+/**
+ * A push-to-talk key plus modifiers. Stored as a string such as `KeyV`,
+ * `Ctrl+KeyV` or `F13` (modifiers in the order Ctrl, Alt, Shift, Meta,
+ * then the browser `event.code`); a bare code is a plain key.
+ */
+export interface KeyBinding {
+  code: string;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+}
+
+const MODIFIERS = ["Ctrl", "Alt", "Shift", "Meta"] as const;
+
+/** Parse a stored binding string (`Ctrl+KeyV`, `Space`, ...). */
+export function parseKeyBinding(stored: string): KeyBinding {
+  const parts = stored.split("+");
+  const code = parts.pop() ?? "";
+  return {
+    code,
+    ctrl: parts.includes("Ctrl"),
+    alt: parts.includes("Alt"),
+    shift: parts.includes("Shift"),
+    meta: parts.includes("Meta"),
+  };
+}
+
+/** Serialise a binding to its stored string form. */
+export function formatKeyBinding(b: KeyBinding): string {
+  const flags = [b.ctrl, b.alt, b.shift, b.meta];
+  const mods = MODIFIERS.filter((_, i) => flags[i]);
+  return [...mods, b.code].join("+");
+}
+
+/** Build a binding from a keydown event. */
+export function bindingFromEvent(e: KeyboardEvent): KeyBinding {
+  return { code: e.code, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey };
+}
+
+export type BindingCheck = { ok: true } | { ok: false; reason: "plainKey" };
+
+/**
+ * Whether a binding may be registered as a global (system-wide) shortcut.
+ * The OS hands a registered shortcut to Kaiku only, so a plain key would be
+ * taken away from games; allow F13–F24 or any key with Ctrl, Alt or Meta.
+ */
+export function checkGlobalPttBinding(b: KeyBinding): BindingCheck {
+  if (b.ctrl || b.alt || b.meta) return { ok: true };
+  const fn = b.code.match(/^F(\d{1,2})$/);
+  if (fn && Number(fn[1]) >= 13 && Number(fn[1]) <= 24) return { ok: true };
+  return { ok: false, reason: "plainKey" };
+}
+
+/** True when the event target is a text field, where typing must not transmit. */
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return true;
+  return target.isContentEditable || target.closest("[contenteditable='true'], [contenteditable='']") !== null;
+}
+
+/** Whether a keydown event carries every modifier the binding asks for. */
+function modifiersHeld(b: KeyBinding, e: KeyboardEvent): boolean {
+  return (!b.ctrl || e.ctrlKey) && (!b.alt || e.altKey) && (!b.shift || e.shiftKey) && (!b.meta || e.metaKey);
+}
+
+// ---------------------------------------------------------------------------
 // Key code mapping
 // ---------------------------------------------------------------------------
 
-/** Convert a browser `event.code` value to a human-readable label. */
-export function keyCodeToLabel(code: string): string {
+/** Convert a stored binding (`Ctrl+KeyV`) or `event.code` to a label. */
+export function keyCodeToLabel(stored: string): string {
+  if (stored.includes("+")) {
+    const b = parseKeyBinding(stored);
+    const flags = [b.ctrl, b.alt, b.shift, b.meta];
+    const mods = MODIFIERS.filter((_, i) => flags[i]);
+    return [...mods, codeLabel(b.code)].join("+");
+  }
+  return codeLabel(stored);
+}
+
+function codeLabel(code: string): string {
   const map: Record<string, string> = {
     Space: "Space", CapsLock: "Caps Lock", Backquote: "~", Tab: "Tab",
     Escape: "Esc", ShiftLeft: "Left Shift", ShiftRight: "Right Shift",
@@ -98,6 +181,18 @@ export function mapCodeToTauriShortcut(code: string): string | null {
   if (numpadMatch) return `Num${numpadMatch[1]}`;
   console.warn(`[PTT] Cannot map key code "${code}" to Tauri shortcut`);
   return null;
+}
+
+/** Map a binding to a Tauri accelerator such as `Control+V`, or `null`. */
+export function bindingToTauriShortcut(b: KeyBinding): string | null {
+  const key = mapCodeToTauriShortcut(b.code);
+  if (!key) return null;
+  const mods: string[] = [];
+  if (b.ctrl) mods.push("Control");
+  if (b.alt) mods.push("Alt");
+  if (b.shift) mods.push("Shift");
+  if (b.meta) mods.push("Super");
+  return [...mods, key].join("+");
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +301,15 @@ export class PttController {
   // Queries
   // -----------------------------------------------------------------------
 
+  /** The binding whose main key is `code`, if it is a PTT/PTM key. */
+  bindingForCode(code: string): KeyBinding | null {
+    if (!this.config) return null;
+    const role = this.roleForKey(code);
+    if (role === null) return null;
+    const stored = role === "ptt" ? this.config.pttKey : this.config.ptmKey;
+    return stored ? parseKeyBinding(stored) : null;
+  }
+
   /** Whether the controller has an active config. */
   isActive(): boolean {
     return this.config !== null;
@@ -223,8 +327,8 @@ export class PttController {
 
   private roleForKey(code: string): "ptt" | "ptm" | null {
     if (!this.config) return null;
-    if (this.config.pttEnabled && this.config.pttKey === code) return "ptt";
-    if (this.config.ptmEnabled && this.config.ptmKey === code) return "ptm";
+    if (this.config.pttEnabled && this.config.pttKey && parseKeyBinding(this.config.pttKey).code === code) return "ptt";
+    if (this.config.ptmEnabled && this.config.ptmKey && parseKeyBinding(this.config.ptmKey).code === code) return "ptm";
     return null;
   }
 
@@ -248,10 +352,17 @@ export class PttController {
 
 /**
  * Wire browser `keydown` / `keyup` / `blur` events to a {@link PttController}.
- * Returns a cleanup function that removes all listeners.
+ * These only fire while Kaiku is focused. A keydown in a text field is
+ * ignored so typing never transmits; keyup is always handled so a held key
+ * is released. Returns a cleanup function that removes all listeners.
  */
 export function createBrowserPttListeners(controller: PttController): () => void {
-  const onKeyDown = (e: KeyboardEvent) => { controller.handleKeyDown(e.code); };
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (isTextEntryTarget(e.target)) return;
+    const binding = controller.bindingForCode(e.code);
+    if (!binding || !modifiersHeld(binding, e)) return;
+    controller.handleKeyDown(e.code);
+  };
   const onKeyUp = (e: KeyboardEvent) => { controller.handleKeyUp(e.code); };
   const onBlur = () => { controller.releaseAll(); };
 
@@ -270,10 +381,34 @@ export function createBrowserPttListeners(controller: PttController): () => void
 // Tauri global-shortcut listeners
 // ---------------------------------------------------------------------------
 
+let fallbackNoticeShown = false;
+
+/** Allow the focus-only notice to show again (tests). */
+export function resetPttFallbackNotice(): void {
+  fallbackNoticeShown = false;
+}
+
+/** Tell the user once per session that a plain key only works while focused. */
+function showFocusOnlyNotice(): void {
+  if (fallbackNoticeShown) return;
+  fallbackNoticeShown = true;
+  showToast({
+    type: "info",
+    id: "ptt-focus-only",
+    title: t("voice.ptt.focusOnlyTitle"),
+    message: t("voice.ptt.focusOnly"),
+    duration: 10000,
+  });
+}
+
 /**
  * Register Tauri global shortcuts for PTT/PTM keys (works even when the
  * window is not focused) and fall back to browser-only listeners when
  * running outside of Tauri or when registration fails.
+ *
+ * A plain key (see {@link checkGlobalPttBinding}) is never registered
+ * globally; it keeps working only while Kaiku is focused, and the user is
+ * told once.
  */
 export async function createTauriPttListeners(
   controller: PttController,
@@ -282,40 +417,53 @@ export async function createTauriPttListeners(
   const cleanupBrowser = createBrowserPttListeners(controller);
   if (!isTauri()) return cleanupBrowser;
 
+  const wanted: string[] = [];
+  if (config.pttEnabled && config.pttKey) wanted.push(config.pttKey);
+  if (config.ptmEnabled && config.ptmKey) wanted.push(config.ptmKey);
+
+  const global: KeyBinding[] = [];
+  for (const stored of wanted) {
+    const binding = parseKeyBinding(stored);
+    if (checkGlobalPttBinding(binding).ok) global.push(binding);
+    else showFocusOnlyNotice();
+  }
+  if (global.length === 0) return cleanupBrowser;
+
+  const registeredKeys: string[] = [];
+  let unregisterFn: ((key: string) => Promise<void>) | null = null;
+  const unregisterAll = async () => {
+    for (const key of registeredKeys.splice(0)) {
+      try { await unregisterFn?.(key); } catch { /* ignore cleanup errors */ }
+    }
+  };
+
   try {
     const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
-    const registeredKeys: string[] = [];
+    unregisterFn = unregister;
 
-    if (config.pttEnabled && config.pttKey) {
-      const tauriKey = mapCodeToTauriShortcut(config.pttKey);
-      if (tauriKey) {
-        await register(tauriKey, (event) => {
-          if (event.state === "Pressed") controller.handleKeyDown(config.pttKey!);
-          if (event.state === "Released") controller.handleKeyUp(config.pttKey!);
-        });
-        registeredKeys.push(tauriKey);
-      }
-    }
-
-    if (config.ptmEnabled && config.ptmKey) {
-      const tauriKey = mapCodeToTauriShortcut(config.ptmKey);
-      if (tauriKey) {
-        await register(tauriKey, (event) => {
-          if (event.state === "Pressed") controller.handleKeyDown(config.ptmKey!);
-          if (event.state === "Released") controller.handleKeyUp(config.ptmKey!);
-        });
-        registeredKeys.push(tauriKey);
-      }
+    for (const binding of global) {
+      const tauriKey = bindingToTauriShortcut(binding);
+      if (!tauriKey) continue;
+      await register(tauriKey, (event) => {
+        if (event.state === "Pressed") {
+          // While Kaiku is focused and the user types in a text field, the
+          // shortcut must not transmit (the browser listener applies the
+          // same rule for focused key presses).
+          if (document.hasFocus() && isTextEntryTarget(document.activeElement)) return;
+          controller.handleKeyDown(binding.code);
+        }
+        if (event.state === "Released") controller.handleKeyUp(binding.code);
+      });
+      registeredKeys.push(tauriKey);
     }
 
     return async () => {
       cleanupBrowser();
-      for (const key of registeredKeys) {
-        try { await unregister(key); } catch { /* ignore cleanup errors */ }
-      }
+      await unregisterAll();
     };
   } catch (err) {
     console.warn("[PTT] Failed to register global shortcuts, using browser-only:", err);
+    await unregisterAll();
     return cleanupBrowser;
   }
 }
