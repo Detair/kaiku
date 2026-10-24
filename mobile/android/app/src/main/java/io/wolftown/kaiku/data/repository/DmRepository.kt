@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.DmApi
+import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.ChatCoroutineScope
@@ -36,6 +37,7 @@ class DmRepository @Inject constructor(
     private val dmApi: DmApi,
     private val webSocket: KaikuWebSocket,
     private val json: Json,
+    private val authState: AuthState,
     @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     private val _conversations = MutableStateFlow<List<DmConversation>>(emptyList())
@@ -84,10 +86,13 @@ class DmRepository @Inject constructor(
             val liveOnly = current.filter {
                 it.id !in fetchedIds && (liveCreatedAt[it.id] ?: 0L) > startedAt
             }
-            liveOnly + fetched
+            val merged = liveOnly + fetched
+            // The open DM is being read: the server's count does not apply.
+            activeChannelId.value?.let { clearUnread(merged, it) } ?: merged
         }
         // The server knows these now; no need to remember them as live.
         fetchedIds.forEach { liveCreatedAt.remove(it) }
+        activeChannelId.value?.let { markReadQuietly(it) }
     }
 
     /**
@@ -97,7 +102,7 @@ class DmRepository @Inject constructor(
      */
     suspend fun markAsRead(channelId: String) {
         val lastMessageId = _conversations.value.find { it.id == channelId }?.lastMessage?.id
-        _conversations.value = clearUnread(_conversations.value, channelId)
+        _conversations.update { clearUnread(it, channelId) }
         // The server marks read up to a message id; with no message there is nothing to send.
         if (lastMessageId != null) dmApi.markAsRead(channelId, lastMessageId)
     }
@@ -123,6 +128,7 @@ class DmRepository @Inject constructor(
             createdAt = message.createdAt,
         )
         val active = event.channelId == activeChannelId.value
+        val own = message.author.id == authState.currentUserId.value
         var duplicate = false
         _conversations.update { current ->
             current.map {
@@ -134,20 +140,26 @@ class DmRepository @Inject constructor(
                     }
                     else -> it.copy(
                         lastMessage = preview,
-                        unreadCount = if (active) 0 else it.unreadCount + 1,
+                        unreadCount = when {
+                            active -> 0
+                            own -> it.unreadCount
+                            else -> it.unreadCount + 1
+                        },
                     )
                 }
             }
         }
-        if (active && !duplicate) {
-            scope.launch {
-                try {
-                    markAsRead(event.channelId)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    logger.warning("Failed to mark DM read (${e::class.simpleName})")
-                }
+        if (active && !duplicate) markReadQuietly(event.channelId)
+    }
+
+    private fun markReadQuietly(channelId: String) {
+        scope.launch {
+            try {
+                markAsRead(channelId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warning("Failed to mark DM read (${e::class.simpleName})")
             }
         }
     }

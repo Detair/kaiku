@@ -5,6 +5,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.api.DmApi
+import io.wolftown.kaiku.data.local.AuthState
+import kotlinx.coroutines.flow.MutableStateFlow
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.WsJson
@@ -41,8 +43,11 @@ class DmRepositoryTest {
         every { events } returns this@DmRepositoryTest.events
     }
     private val api: DmApi = mockk(relaxed = true)
+    private val authState: AuthState = mockk(relaxed = true) {
+        every { currentUserId } returns MutableStateFlow<String?>("me")
+    }
 
-    private fun TestScope.repository() = DmRepository(api, webSocket, KaikuJson, backgroundScope)
+    private fun TestScope.repository() = DmRepository(api, webSocket, KaikuJson, authState, backgroundScope)
 
     @Test
     fun `dm_created upserts conversation at top`() = runTest {
@@ -113,13 +118,13 @@ class DmRepositoryTest {
         assertEquals(emptyList<String>(), repository.conversations.value.map { it.id })
     }
 
-    private fun messageEvent(channelId: String, id: String, content: String) = ServerEvent.MessageNew(
+    private fun messageEvent(channelId: String, id: String, content: String, authorId: String = "u2") = ServerEvent.MessageNew(
         channelId,
         KaikuJson.encodeToJsonElement(
             Message(
                 id = id,
                 channelId = channelId,
-                author = User(id = "u2", username = "bob", displayName = "Bob"),
+                author = User(id = authorId, username = "bob", displayName = "Bob"),
                 content = content,
                 createdAt = "2026-10-24T10:00:00Z",
             )
@@ -186,5 +191,34 @@ class DmRepositoryTest {
         runCurrent()
 
         assertEquals(1, repository.conversations.value.single().unreadCount)
+    }
+
+    @Test
+    fun `own message from another device does not raise unread`() = runTest {
+        coEvery { api.getDms() } returns listOf(DmConversation(id = "dm-1"))
+        val repository = repository()
+        repository.loadDms()
+
+        events.emit(messageEvent("dm-1", "m1", "from my phone", authorId = "me"))
+        runCurrent()
+
+        val dm = repository.conversations.value.single()
+        assertEquals(0, dm.unreadCount)
+        assertEquals("m1", dm.lastMessage?.id)
+    }
+
+    @Test
+    fun `loadDms keeps the active DM read`() = runTest {
+        coEvery { api.getDms() } returns listOf(
+            DmConversation(id = "dm-1", unreadCount = 4, lastMessage = LastMessagePreview("m9", "x")),
+        )
+        val repository = repository()
+        repository.setActiveChannel("dm-1")
+
+        repository.loadDms()
+        runCurrent()
+
+        assertEquals(0, repository.conversations.value.single().unreadCount)
+        coVerify(exactly = 1) { api.markAsRead("dm-1", "m9") }
     }
 }
