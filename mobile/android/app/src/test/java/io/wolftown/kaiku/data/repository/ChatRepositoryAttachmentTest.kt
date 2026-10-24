@@ -39,19 +39,25 @@ class ChatRepositoryAttachmentTest {
         content = "", createdAt = "2026-10-24T10:00:00Z",
     )
 
+    private class ClosableStream(data: ByteArray) : java.io.ByteArrayInputStream(data) {
+        var closed = false
+        override fun close() { closed = true }
+    }
+
     private class FakeReader(
         var size: Long? = 10,
         val data: ByteArray = ByteArray(10),
         val mime: String? = "image/jpeg",
         val openFails: Boolean = false,
     ) : AttachmentReader {
+        val streams = mutableListOf<ClosableStream>()
         var openCalls = 0
         override fun size(uri: Uri) = size
         override fun displayName(uri: Uri) = "cat.jpg"
         override fun mimeType(uri: Uri) = mime
         override fun open(uri: Uri): java.io.InputStream? {
             openCalls++
-            return if (openFails) null else data.inputStream()
+            return if (openFails) null else ClosableStream(data).also { streams += it }
         }
     }
 
@@ -148,6 +154,25 @@ class ChatRepositoryAttachmentTest {
         val result = repository(FakeReader(openFails = true)).sendAttachment("c1", uri, null)
         assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.Failed)
         coVerify(exactly = 0) { anyUpload() }
+    }
+
+    @Test
+    fun `probe stream is closed when the upload fails before open`() = runTest {
+        coEvery { anyUpload() } throws java.io.IOException("engine")
+        val reader = FakeReader()
+        val result = repository(reader).sendAttachment("c1", uri, null)
+
+        assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.Failed)
+        assertEquals(1, reader.streams.size)
+        assertTrue(reader.streams.all { it.closed })
+    }
+
+    @Test
+    fun `stream is closed after a successful upload`() = runTest {
+        streamingApi()
+        val reader = FakeReader()
+        repository(reader).sendAttachment("c1", uri, null)
+        assertTrue(reader.streams.all { it.closed })
     }
 
     @Test
