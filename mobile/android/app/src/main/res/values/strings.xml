@@ -22,6 +22,7 @@
     <string name="auth_login_failed">Couldn\'t sign in. Check your connection and try again.</string>
     <string name="auth_oidc_failed">Couldn\'t sign in with that provider.</string>
     <string name="auth_login_server">Signing in to %1$s</string>
+    <string name="auth_register_check_retry">Couldn\'t check if you can register. Try again</string>
     <string name="auth_change_server">Change server</string>
 
     <!-- Server address -->

@@ -38,6 +38,8 @@ data class LoginUiState(
     val serverHost: String = "",
     /** True only when the server's registration policy is `open`; Register is hidden otherwise. */
     val registrationOpen: Boolean = false,
+    /** The registration check could not reach the server; the screen offers "Try again". */
+    val registrationCheckFailed: Boolean = false,
     /** The person asked to change the server; the screen navigates to the server screen. */
     val changeServerRequested: Boolean = false
 ) {
@@ -68,6 +70,7 @@ class LoginViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(LoginUiState(serverHost = currentServerHost()))
     private var probeJob: Job? = null
+    private var loginJob: Job? = null
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
     /**
@@ -125,12 +128,21 @@ class LoginViewModel @Inject constructor(
     private fun probeRegistration() {
         val server = tokenStorage.getServerUrl() ?: return
         probeJob?.cancel()
+        _uiState.update { it.copy(registrationCheckFailed = false) }
         probeJob = viewModelScope.launch {
             val result = serverProbe.probe(server)
             _uiState.update {
-                it.copy(registrationOpen = result is ProbeResult.Ok && result.registrationOpen)
+                it.copy(
+                    registrationOpen = result is ProbeResult.Ok && result.registrationOpen,
+                    registrationCheckFailed = result !is ProbeResult.Ok
+                )
             }
         }
+    }
+
+    /** "Try again" after the registration check failed (e.g. first launch offline). */
+    fun onRetryRegistrationCheck() {
+        probeRegistration()
     }
 
     /**
@@ -140,6 +152,7 @@ class LoginViewModel @Inject constructor(
      */
     fun onChangeServerClicked() {
         probeJob?.cancel()
+        loginJob?.cancel()
         authRepository.cancelPasswordChange()
         _uiState.value = LoginUiState(changeServerRequested = true)
     }
@@ -165,7 +178,8 @@ class LoginViewModel @Inject constructor(
         val state = _uiState.value
         _uiState.update { it.copy(isLoading = true, error = null) }
 
-        viewModelScope.launch {
+        loginJob?.cancel()
+        loginJob = viewModelScope.launch {
             val mfaCode = state.mfaCode.ifBlank { null }
             val result = authRepository.login(state.username, state.password, mfaCode)
 

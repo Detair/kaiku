@@ -34,17 +34,22 @@ fun normalizeServerAddress(input: String): Result<String> {
     }
 
     val colon = authority.lastIndexOf(':')
-    val host = if (colon >= 0) authority.substring(0, colon) else authority
+    // A trailing dot (fully qualified name) is dropped.
+    val host = (if (colon >= 0) authority.substring(0, colon) else authority).removeSuffix(".")
+    var portSuffix = ""
     if (colon >= 0) {
-        val port = authority.substring(colon + 1).toIntOrNull()
+        val portText = authority.substring(colon + 1)
+        val port = portText.takeIf { text -> text.isNotEmpty() && text.all { it in '0'..'9' } }
+            ?.toIntOrNull()
         if (port == null || port !in 1..65535) {
             return fail(InvalidServerAddressException.Reason.MALFORMED)
         }
+        portSuffix = ":$port"
     }
     if (host.isEmpty() || !host.split('.').all { HOST_PART.matches(it) }) {
         return fail(InvalidServerAddressException.Reason.MALFORMED)
     }
-    return Result.success("https://$authority")
+    return Result.success("https://$host$portSuffix")
 }
 
 private fun fail(reason: InvalidServerAddressException.Reason): Result<String> =

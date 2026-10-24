@@ -62,6 +62,14 @@ class ServerUrlViewModelTest {
     }
 
     @Test
+    fun `back is offered only when a server is already saved`() {
+        assertFalse(viewModel.canGoBack)
+        every { tokenStorage.getServerUrl() } returns "https://other.example"
+
+        assertTrue(ServerUrlViewModel(tokenStorage, authRepository, serverProbe).canGoBack)
+    }
+
+    @Test
     fun `plain address is probed and saved normalized`() = runTest {
         coEvery { serverProbe.probe("https://kaiku.example.com") } returns ProbeResult.Ok(true)
 
@@ -71,6 +79,8 @@ class ServerUrlViewModelTest {
 
         verifyOrder {
             authRepository.cancelPasswordChange()
+            tokenStorage.clear()
+            tokenStorage.clearOidcPkceState()
             tokenStorage.saveServerUrl("https://kaiku.example.com")
         }
         assertTrue(viewModel.uiState.value.connectSuccess)
@@ -106,6 +116,7 @@ class ServerUrlViewModelTest {
         assertEquals(R.string.auth_server_not_kaiku, viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.connectSuccess)
         verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
         verify(exactly = 0) { authRepository.cancelPasswordChange() }
     }
 

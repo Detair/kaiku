@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.ViewModel
@@ -62,6 +63,9 @@ class ServerUrlViewModel @Inject constructor(
     )
     val uiState: StateFlow<ServerUrlUiState> = _uiState.asStateFlow()
 
+    /** True when a server is already saved (change-server flow), so Back can return to sign-in. */
+    val canGoBack: Boolean = tokenStorage.getServerUrl() != null
+
     fun onUrlChanged(url: String) {
         _uiState.update { it.copy(url = url, error = null) }
     }
@@ -77,9 +81,11 @@ class ServerUrlViewModel @Inject constructor(
         viewModelScope.launch {
             when (serverProbe.probe(address)) {
                 is ProbeResult.Ok -> {
-                    // A pending password change belongs to the old server; drop it
-                    // before the new URL (which bumps the session generation) is saved.
+                    // Nothing from the old server may carry over: drop its pending
+                    // password change, any stored session and PKCE state, then save.
                     authRepository.cancelPasswordChange()
+                    tokenStorage.clear()
+                    tokenStorage.clearOidcPkceState()
                     tokenStorage.saveServerUrl(address)
                     _uiState.update { it.copy(isChecking = false, connectSuccess = true) }
                 }
@@ -98,9 +104,13 @@ class ServerUrlViewModel @Inject constructor(
 fun ServerUrlScreen(
     onConnectSuccess: () -> Unit,
     onScanQrCode: () -> Unit = {},
+    onBack: () -> Unit = {},
     viewModel: ServerUrlViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+
+    // With a saved server, Back returns to sign-in instead of leaving the app.
+    BackHandler(enabled = viewModel.canGoBack) { onBack() }
 
     LaunchedEffect(uiState.connectSuccess) {
         if (uiState.connectSuccess) {
@@ -180,6 +190,16 @@ fun ServerUrlScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(stringResource(R.string.auth_server_scan_qr))
+        }
+
+        if (viewModel.canGoBack) {
+            Spacer(modifier = Modifier.height(8.dp))
+            TextButton(
+                onClick = onBack,
+                enabled = !uiState.isChecking
+            ) {
+                Text(stringResource(R.string.common_back))
+            }
         }
     }
 }
