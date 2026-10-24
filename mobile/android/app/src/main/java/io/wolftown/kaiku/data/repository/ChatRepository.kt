@@ -150,6 +150,23 @@ class ChatRepository internal constructor(
      */
     val lastServerTime: StateFlow<String?> = _lastServerTime.asStateFlow()
 
+    /**
+     * Session epoch: [clearSession] bumps it. A load ([loadMessages],
+     * [catchUp]) or send captures it at start and publishes its result only if
+     * it is unchanged, checked under [epochLock] together with the write.
+     */
+    private val epochLock = Any()
+    @Volatile
+    private var epoch = 0L
+
+    /** Runs [publish] only if [startEpoch] is still current; returns whether it ran. */
+    private inline fun publishIfCurrent(startEpoch: Long, publish: () -> Unit): Boolean =
+        synchronized(epochLock) {
+            if (epoch != startEpoch) return false
+            publish()
+            true
+        }
+
     init {
         startCollectingEvents()
     }
@@ -160,9 +177,11 @@ class ChatRepository internal constructor(
      * Session teardown: empties every message and typing list (screens still
      * holding a flow see it empty), forgets subscriptions, DM tracking,
      * catch-up anchors, the server-time watermark and the upload limits. The
-     * WebSocket event collector keeps running for the next session.
+     * WebSocket event collector keeps running for the next session. Loads
+     * still in flight publish nothing (session epoch).
      */
-    fun clearSession() {
+    fun clearSession() = synchronized(epochLock) {
+        epoch++
         channelMessages.values.forEach { it.value = emptyList() }
         channelMessages.clear()
         channelTypingUsers.values.forEach { it.value = emptyMap() }
@@ -192,24 +211,29 @@ class ChatRepository internal constructor(
      * Either way the list ends up oldest-to-newest (see [MessageOrdering]).
      */
     suspend fun loadMessages(channelId: String, before: String? = null): Boolean {
+        val startEpoch = epoch
         val flow = getOrCreateMessagesFlow(channelId)
         val idsBeforeRequest = flow.value.mapTo(HashSet()) { it.id }
         val page = messageApi.getMessages(channelId, before = before)
 
         if (before != null) {
-            flow.update { existing -> MessageOrdering.merge(existing, page.items) }
+            publishIfCurrent(startEpoch) {
+                flow.update { existing -> MessageOrdering.merge(existing, page.items) }
+            }
         } else {
             val pageIds = page.items.mapTo(HashSet()) { it.id }
-            flow.update { existing ->
-                // Arrived during the request; compared by id, not by time, so
-                // a live message with the same timestamp as the page's newest
-                // item is not lost.
-                val live = existing.filter { it.id !in idsBeforeRequest && it.id !in pageIds }
-                MessageOrdering.merge(page.items, live)
+            val published = publishIfCurrent(startEpoch) {
+                flow.update { existing ->
+                    // Arrived during the request; compared by id, not by time, so
+                    // a live message with the same timestamp as the page's newest
+                    // item is not lost.
+                    val live = existing.filter { it.id !in idsBeforeRequest && it.id !in pageIds }
+                    MessageOrdering.merge(page.items, live)
+                }
+                catchUpAnchors.remove(channelId)
             }
-            catchUpAnchors.remove(channelId)
             // Opened channel: everything just loaded has been seen.
-            flow.value.lastOrNull()?.let { guildRepository.onActiveChannelMessage(channelId, it.id) }
+            if (published) flow.value.lastOrNull()?.let { guildRepository.onActiveChannelMessage(channelId, it.id) }
         }
         return page.hasMore
     }
@@ -233,16 +257,23 @@ class ChatRepository internal constructor(
      * `server/src/ws/AGENTS.md`).
      */
     suspend fun catchUp(channelId: String) {
+        val startEpoch = epoch
         val flow = channelMessages[channelId] ?: return
         // The anchor is only removed once the catch-up completed: if it fails
         // or the socket drops first, the next reconnect starts from it again.
         val anchor = catchUpAnchors[channelId]
         val start = anchor ?: flow.value.lastOrNull()?.id ?: return
-        catchUpFrom(channelId, flow, start)
-        if (anchor != null) catchUpAnchors.remove(channelId, anchor)
+        if (!catchUpFrom(channelId, flow, start, startEpoch)) return
+        if (anchor != null) publishIfCurrent(startEpoch) { catchUpAnchors.remove(channelId, anchor) }
     }
 
-    private suspend fun catchUpFrom(channelId: String, flow: MutableStateFlow<List<Message>>, start: String) {
+    /** Returns false if the session ended (epoch changed) and the catch-up was dropped. */
+    private suspend fun catchUpFrom(
+        channelId: String,
+        flow: MutableStateFlow<List<Message>>,
+        start: String,
+        startEpoch: Long,
+    ): Boolean {
         var after = start
 
         repeat(CATCH_UP_MAX_PAGES) { pageIndex ->
@@ -254,11 +285,15 @@ class ChatRepository internal constructor(
                 if (pageIndex == 0 && e.status == HttpStatusCode.BadRequest) {
                     logger.info("catch-up cursor rejected, reloading latest page")
                     loadMessages(channelId)
-                    return
+                    return true
                 }
                 throw e
             }
-            val previous = flow.getAndUpdate { current -> MessageOrdering.merge(current, page.items) }
+            var previous: List<Message> = emptyList()
+            val published = publishIfCurrent(startEpoch) {
+                previous = flow.getAndUpdate { current -> MessageOrdering.merge(current, page.items) }
+            }
+            if (!published) return false
             val known = previous.mapTo(HashSet()) { it.id }
             val me = authState.currentUserId.value
             page.items.filter { it.id !in known }.distinctBy { it.id }.forEach {
@@ -269,12 +304,13 @@ class ChatRepository internal constructor(
             // server computes `next_cursor` before filtering out messages of
             // blocked users, so a page can be empty while more messages follow.
             val next = page.nextCursor
-            if (!page.hasMore || next == null) return
+            if (!page.hasMore || next == null) return true
             after = next
         }
 
         logger.info("catch-up for a channel exceeded $CATCH_UP_MAX_PAGES pages, reloading latest page")
         loadMessages(channelId)
+        return true
     }
 
     /**
@@ -327,12 +363,15 @@ class ChatRepository internal constructor(
     fun isDmChannelTracked(channelId: String): Boolean = channelId in dmChannels
 
     suspend fun sendMessage(channelId: String, content: String) {
+        val startEpoch = epoch
         val sentMessage = messageApi.sendMessage(channelId, content)
 
         // Optimistic update: add the message immediately. A WebSocket echo
         // with the same id is deduplicated by MessageOrdering.merge.
-        getOrCreateMessagesFlow(channelId).update { current ->
-            MessageOrdering.merge(current, listOf(sentMessage))
+        publishIfCurrent(startEpoch) {
+            getOrCreateMessagesFlow(channelId).update { current ->
+                MessageOrdering.merge(current, listOf(sentMessage))
+            }
         }
     }
 

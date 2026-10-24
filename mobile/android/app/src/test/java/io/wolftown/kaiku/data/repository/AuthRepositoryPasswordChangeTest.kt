@@ -158,7 +158,7 @@ class AuthRepositoryPasswordChangeTest {
                 userId = "user-42"
             )
         }
-        assertEquals(AuthSession.LoggedIn("user-42"), authState.session.value)
+        assertEquals("user-42", (authState.session.value as AuthSession.LoggedIn).userId)
         assertFalse(repository.hasPendingPasswordChange())
     }
 

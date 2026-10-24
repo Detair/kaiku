@@ -139,7 +139,7 @@ class AuthFlowTest {
         // Now logout
         authRepository.logout()
 
-        verify { tokenStorage.clear() }
+        verify { tokenStorage.clearIfGeneration(any()) }
         assertFalse(authState.isLoggedIn.value)
         assertNull(authState.currentUserId.value)
     }
@@ -155,7 +155,7 @@ class AuthFlowTest {
         // Logout should still clear local state
         authRepository.logout()
 
-        verify { tokenStorage.clear() }
+        verify { tokenStorage.clearIfGeneration(any()) }
         assertFalse(authState.isLoggedIn.value)
     }
 

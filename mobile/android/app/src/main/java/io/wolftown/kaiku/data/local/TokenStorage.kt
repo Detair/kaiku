@@ -280,6 +280,21 @@ class TokenStorage internal constructor(
         return true
     }
 
+    /**
+     * Removes the session tokens only if the session generation is still
+     * [expectedGeneration] (refresh rotations keep it), so a logout never
+     * wipes a newer login. Starts a new generation when it removes.
+     *
+     * @return true if the tokens were removed.
+     */
+    @Synchronized
+    fun clearIfGeneration(expectedGeneration: Long): Boolean {
+        if (sessionGeneration != expectedGeneration) return false
+        sessionGeneration++
+        removeTokens()
+        return true
+    }
+
     private fun removeTokens() {
         val success = prefs.edit()
             .remove(KEY_ACCESS_TOKEN)

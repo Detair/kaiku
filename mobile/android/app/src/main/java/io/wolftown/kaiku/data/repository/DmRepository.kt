@@ -68,11 +68,25 @@ class DmRepository @Inject constructor(
         activeChannelId.compareAndSet(channelId, null)
     }
 
-    /** Session teardown: drops the conversation list, the open DM and live-DM bookkeeping. */
+    /**
+     * Session epoch: [clearSession] bumps it; [loadDms] publishes only if it
+     * is unchanged since the load started (under [epochLock]), so a load in
+     * flight at logout cannot bring the old list back.
+     */
+    private val epochLock = Any()
+    private var epoch = 0L
+
+    /**
+     * Session teardown: drops the conversation list, the open DM and live-DM
+     * bookkeeping. A load still in flight publishes nothing.
+     */
     fun clearSession() {
-        activeChannelId.value = null
-        liveCreatedAt.clear()
-        _conversations.value = emptyList()
+        synchronized(epochLock) {
+            epoch++
+            activeChannelId.value = null
+            liveCreatedAt.clear()
+            _conversations.value = emptyList()
+        }
     }
 
     /** Sequence of dm_created events, and the position each live DM arrived at. */
@@ -86,9 +100,18 @@ class DmRepository @Inject constructor(
      * is missing from the server's list is dropped.
      */
     suspend fun loadDms() {
+        val startEpoch = synchronized(epochLock) { epoch }
         val startedAt = liveSeq.get()
         val fetched = dmApi.getDms()
         val fetchedIds = fetched.mapTo(HashSet()) { it.id }
+        synchronized(epochLock) {
+            if (epoch != startEpoch) return
+            publishFetched(fetched, fetchedIds, startedAt)
+        }
+        activeChannelId.value?.let { markReadQuietly(it) }
+    }
+
+    private fun publishFetched(fetched: List<DmConversation>, fetchedIds: Set<String>, startedAt: Long) {
         _conversations.update { current ->
             val liveOnly = current.filter {
                 it.id !in fetchedIds && (liveCreatedAt[it.id] ?: 0L) > startedAt
@@ -99,7 +122,6 @@ class DmRepository @Inject constructor(
         }
         // The server knows these now; no need to remember them as live.
         fetchedIds.forEach { liveCreatedAt.remove(it) }
-        activeChannelId.value?.let { markReadQuietly(it) }
     }
 
     /**

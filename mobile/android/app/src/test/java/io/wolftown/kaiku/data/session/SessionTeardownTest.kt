@@ -20,11 +20,14 @@ import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.domain.model.Guild
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -84,7 +87,7 @@ class SessionTeardownTest {
         // What KaikuHttpClient / RealtimeConnectionManager do on a rejected
         // session: clear the tokens and set LoggedOut. Nothing else.
         authState.setLoggedOut()
-        runCurrent()
+        advanceUntilIdle()
 
         assertTrue(guilds.guilds.value.isEmpty())
         assertTrue(guilds.channels.value.isEmpty())
@@ -100,17 +103,15 @@ class SessionTeardownTest {
     @Test
     fun `rejected session tears down once`() = runTest {
         val authState = AuthState(backgroundScope)
-        authState.setLoggedIn("user-1")
-        val session = authState.session.value as AuthSession.LoggedIn
         val step = Counting(10)
         val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
         runner.start()
-        runCurrent()
+        authState.setLoggedIn("user-1")
+        val session = authState.session.value as AuthSession.LoggedIn
 
         authState.setLoggedOut() // rejection: the observer tears down
-        runCurrent()
-        runner.tearDown(session) // an explicit logout of the same session that was in flight
-        runCurrent()
+        advanceUntilIdle()
+        runner.tearDown(session.sessionId).join() // an explicit logout of the same session that was in flight
 
         assertEquals(1, step.calls)
     }
@@ -118,22 +119,39 @@ class SessionTeardownTest {
     @Test
     fun `same session is not torn down twice`() = runTest {
         val authState = AuthState(backgroundScope)
-        authState.setLoggedIn("user-1")
-        val session = authState.session.value as AuthSession.LoggedIn
         val step = Counting(10)
         val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
         runner.start()
-        runCurrent()
+        authState.setLoggedIn("user-1")
+        val session = authState.session.value as AuthSession.LoggedIn
 
-        runner.tearDown(session) // explicit logout claims the session
+        val explicit = runner.tearDown(session.sessionId) // explicit logout starts it
         authState.setLoggedOut() // ...and then ends in LoggedOut
-        runCurrent()
+        advanceUntilIdle()
 
+        assertTrue(explicit.isCompleted)
         assertEquals(1, step.calls)
     }
 
     @Test
-    fun `teardown stops when a newer login took over`() = runTest {
+    fun `quick logins and logouts tear down every session`() = runTest {
+        val authState = AuthState(backgroundScope)
+        val step = Counting(10)
+        val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
+        runner.start()
+
+        // All before the observer resumes: a StateFlow would conflate them.
+        authState.setLoggedIn("user-a")
+        authState.setLoggedOut()
+        authState.setLoggedIn("user-b")
+        authState.setLoggedOut()
+        advanceUntilIdle()
+
+        assertEquals(2, step.calls)
+    }
+
+    @Test
+    fun `same user re-login during teardown is not torn down`() = runTest {
         val authState = AuthState(backgroundScope)
         authState.setLoggedIn("user-1")
         val old = authState.session.value as AuthSession.LoggedIn
@@ -141,15 +159,46 @@ class SessionTeardownTest {
             override val order = 10
             override suspend fun onLogout() {
                 authState.setLoggedOut()
-                authState.setLoggedIn("user-2") // a new login lands mid-teardown
+                authState.setLoggedIn("user-1") // the same user signs in again mid-teardown
             }
         }
         val second = Counting(30)
         val runner = SessionTeardownRunner(setOf(first, second), authState, backgroundScope)
+        runner.start()
 
-        runner.tearDown(old)
+        runner.tearDown(old.sessionId).join()
+        advanceUntilIdle()
 
+        val now = authState.session.value as AuthSession.LoggedIn
+        assertEquals("user-1", now.userId)
+        assertNotEquals(old.sessionId, now.sessionId)
+        // The rest of the old teardown was skipped; the new session was never torn down.
         assertEquals(0, second.calls)
+    }
+
+    @Test
+    fun `teardown cancelled abnormally runs again on the next trigger`() = runTest {
+        val authState = AuthState(backgroundScope)
+        authState.setLoggedIn("user-1")
+        val session = authState.session.value as AuthSession.LoggedIn
+        val gate = CompletableDeferred<Unit>()
+        var starts = 0
+        val step = object : SessionTeardown {
+            override val order = 10
+            override suspend fun onLogout() {
+                starts++
+                if (starts == 1) gate.await()
+            }
+        }
+        val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
+
+        val first = runner.tearDown(session.sessionId)
+        runCurrent()
+        first.cancel()
+        runCurrent()
+        runner.tearDown(session.sessionId).join()
+
+        assertEquals(2, starts)
     }
 
     @Test
@@ -158,10 +207,9 @@ class SessionTeardownTest {
         val step = Counting(10)
         val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
         runner.start()
-        runCurrent()
 
         authState.setLoggedOut()
-        runCurrent()
+        advanceUntilIdle()
 
         assertEquals(0, step.calls)
     }
