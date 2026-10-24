@@ -79,6 +79,19 @@ export interface KeyBinding {
 
 const MODIFIERS = ["Ctrl", "Alt", "Shift", "Meta"] as const;
 
+/** Names of the held modifiers, in canonical storage order. */
+function modifierNames(b: KeyBinding): (typeof MODIFIERS)[number][] {
+  const flags = [b.ctrl, b.alt, b.shift, b.meta];
+  return MODIFIERS.filter((_, i) => flags[i]);
+}
+
+/** True on macOS, where the Meta key is the Command key. */
+function isMac(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return /mac/i.test(nav.userAgentData?.platform ?? nav.platform ?? "");
+}
+
 /** Parse a stored binding string (`Ctrl+KeyV`, `Space`, ...). */
 export function parseKeyBinding(stored: string): KeyBinding {
   const parts = stored.split("+");
@@ -94,9 +107,7 @@ export function parseKeyBinding(stored: string): KeyBinding {
 
 /** Serialise a binding to its stored string form. */
 export function formatKeyBinding(b: KeyBinding): string {
-  const flags = [b.ctrl, b.alt, b.shift, b.meta];
-  const mods = MODIFIERS.filter((_, i) => flags[i]);
-  return [...mods, b.code].join("+");
+  return [...modifierNames(b), b.code].join("+");
 }
 
 /** Build a binding from a keydown event. */
@@ -139,8 +150,7 @@ function modifiersHeld(b: KeyBinding, e: KeyboardEvent): boolean {
 export function keyCodeToLabel(stored: string): string {
   if (stored.includes("+")) {
     const b = parseKeyBinding(stored);
-    const flags = [b.ctrl, b.alt, b.shift, b.meta];
-    const mods = MODIFIERS.filter((_, i) => flags[i]);
+    const mods = modifierNames(b).map((m) => (m === "Meta" && isMac() ? "⌘" : m));
     return [...mods, codeLabel(b.code)].join("+");
   }
   return codeLabel(stored);

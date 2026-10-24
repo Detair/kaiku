@@ -22,6 +22,7 @@ import {
   mapCodeToTauriShortcut,
   keyCodeToLabel,
   checkGlobalPttBinding,
+  formatKeyBinding,
   parseKeyBinding,
   createBrowserPttListeners,
   createTauriPttListeners,
@@ -245,6 +246,25 @@ describe("keyCodeToLabel", () => {
   it("maps function keys", () => expect(keyCodeToLabel("F12")).toBe("F12"));
   it("maps numpad keys", () => expect(keyCodeToLabel("Numpad5")).toBe("Numpad 5"));
   it("returns raw code for unknown keys", () => expect(keyCodeToLabel("ContextMenu")).toBe("ContextMenu"));
+
+  describe("modifier labels", () => {
+    const setPlatform = (platform: string) =>
+      vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    afterEach(() => vi.restoreAllMocks());
+
+    it("shows Meta off macOS, in canonical order", () => {
+      setPlatform("Linux x86_64");
+      expect(keyCodeToLabel("Ctrl+Alt+Meta+KeyV")).toBe("Ctrl+Alt+Meta+V");
+    });
+    it("shows the Command symbol on macOS", () => {
+      setPlatform("MacIntel");
+      expect(keyCodeToLabel("Ctrl+Meta+KeyV")).toBe("Ctrl+⌘+V");
+    });
+    it("keeps the stored form unchanged on macOS", () => {
+      setPlatform("MacIntel");
+      expect(formatKeyBinding(parseKeyBinding("Meta+Ctrl+KeyV"))).toBe("Ctrl+Meta+KeyV");
+    });
+  });
 });
 
 function pttConfig(pttKey: string): PttFullConfig {

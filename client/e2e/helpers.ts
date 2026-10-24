@@ -127,7 +127,7 @@ export async function selectFirstChannel(page: Page) {
 /** Open the user settings modal via the gear icon in UserPanel. */
 export async function openUserSettings(page: Page) {
   await page.click('button[title="User Settings"]');
-  await expect(page.locator('[role="dialog"], .fixed.inset-0')).toBeVisible({
+  await expect(page.getByRole("dialog").first()).toBeVisible({
     timeout: 5000,
   });
 }

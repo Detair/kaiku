@@ -200,7 +200,7 @@ const KeyBindInput: Component<{
 
             // Check for conflict with other key (same main key)
             if (props.otherKey && parseKeyBinding(props.otherKey).code === binding.code) {
-                setError("PTT and PTM keys must be different");
+                setError(t("voice.ptt.conflict"));
                 stopCapture();
                 return;
             }

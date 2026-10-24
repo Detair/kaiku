@@ -88,7 +88,7 @@ export default defineConfig({
     // Buttons
     "btn": "px-4 py-2 rounded-lg font-medium transition-all duration-200",
     "btn-primary": "btn bg-accent-primary hover:bg-accent-primary/80 text-on-accent",
-    "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-white",
+    "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-on-danger",
 
     // Input fields — uses arbitrary-value bg to bypass UnoCSS's trailing-digit
     // parsing issue with `surface-layer2` inside shortcuts (the same class

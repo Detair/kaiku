@@ -504,7 +504,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           <button
             type="button"
             onClick={() => setUploadError(null)}
-            aria-label={t("messages.input.dismissError")}
+            aria-label={t("chat.composer.dismissError")}
           >
             <X class="w-4 h-4" />
           </button>
@@ -552,7 +552,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
                     onClick={() => removePendingFile(index())}
                     class="absolute -top-1.5 -right-1.5 p-0.5 bg-accent-danger rounded-full text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shadow-lg"
                     title="Remove file"
-                    aria-label={t("messages.input.removeFile")}
+                    aria-label={t("chat.composer.removeFile")}
                   >
                     <X class="w-3 h-3" />
                   </button>
