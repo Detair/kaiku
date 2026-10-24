@@ -170,17 +170,54 @@ async fn test_here_targets_nobody(pool: PgPool) {
 
 #[sqlx::test]
 async fn test_blocked_author_mention_not_targeted(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+
     let f = fixture(pool).await;
     let (member_id, member_name) = member(&f).await;
-    block_cache::add_block(&f.app.state.redis, member_id, f.author)
+    let redis = &f.app.state.redis;
+    // Keys are unique to this test's fresh user ids; the TTL guarantees a
+    // panicking test leaves nothing behind.
+    block_cache::add_block(redis, member_id, f.author)
         .await
         .unwrap();
+    for key in [
+        format!("blocks:{member_id}"),
+        format!("blocked_by:{}", f.author),
+    ] {
+        let _: () = redis.expire(&key, 60, None).await.unwrap();
+    }
 
     let got = targets(&f, &format!("@{member_name}")).await;
-    block_cache::remove_block(&f.app.state.redis, member_id, f.author)
+    block_cache::remove_block(redis, member_id, f.author)
         .await
         .unwrap();
     assert!(got.is_empty());
+}
+
+/// The Redis block cache expires; a block stored only in Postgres must still
+/// suppress the mention target.
+#[sqlx::test]
+async fn test_db_only_block_not_targeted(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (blocker_id, blocker_name) = member(&f).await;
+    let (blocked_id, blocked_name) = member(&f).await;
+    let (free_id, free_name) = member(&f).await;
+    // blocker blocked the author; the author blocked `blocked`.
+    for (requester, addressee) in [(blocker_id, f.author), (f.author, blocked_id)] {
+        sqlx::query(
+            "INSERT INTO friendships (id, requester_id, addressee_id, status) \
+             VALUES ($1, $2, $3, 'blocked')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(requester)
+        .bind(addressee)
+        .execute(&f.app.pool)
+        .await
+        .unwrap();
+    }
+
+    let got = targets(&f, &format!("@{blocker_name} @{blocked_name} @{free_name}")).await;
+    assert_eq!(got, [free_id]);
 }
 
 #[sqlx::test]

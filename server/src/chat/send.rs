@@ -12,7 +12,7 @@ use crate::api::AppState;
 use crate::db;
 use crate::moderation::filter_types::FilterAction;
 use crate::moderation::queries as filter_queries;
-use crate::permissions::{get_member_permission_context, GuildPermissions};
+use crate::permissions::GuildPermissions;
 use crate::social::block_cache;
 use crate::ws::{broadcast_admin_event, broadcast_to_channel, ServerEvent};
 
@@ -101,22 +101,16 @@ pub async fn authorize_send(
         }
     }
 
-    // Check for @everyone/@here mentions in guild channels
-    if let Some(guild_id) = channel.guild_id {
+    // Check for @everyone/@here mentions in guild channels. `ctx` comes from
+    // `require_channel_access`, so channel overrides apply.
+    if channel.guild_id.is_some() {
         let mentions = super::mentions::extract_mentions(intent.content);
-        if mentions.everyone || mentions.here {
-            // Load user's permissions in this guild
-            if let Ok(Some(ctx)) = get_member_permission_context(&state.db, guild_id, user_id).await
-            {
-                if !ctx.has_permission(GuildPermissions::MENTION_EVERYONE) {
-                    return Err(ChatError::Validation(
-                        "You do not have permission to mention @everyone or @here".to_string(),
-                    ));
-                }
-            } else {
-                // User is not a guild member, should not happen if channel access is correct
-                return Err(ChatError::Forbidden);
-            }
+        if (mentions.everyone || mentions.here)
+            && !ctx.has_permission(GuildPermissions::MENTION_EVERYONE)
+        {
+            return Err(ChatError::Validation(
+                "You do not have permission to mention @everyone or @here".to_string(),
+            ));
         }
     }
 

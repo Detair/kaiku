@@ -9,7 +9,7 @@
 //! `@everyone` and `@here` follow the same boundary rule. Push targets are
 //! resolved per recipient by [`resolve_mention_targets`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use uuid::Uuid;
@@ -31,9 +31,61 @@ const MAX_USERNAME_LEN: usize = 32;
 static FENCED_CODE_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(?s)```.*?(?:```|\z)").expect("valid fence regex"));
 
-/// Inline code spans.
-static INLINE_CODE_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"`[^`]*`").expect("valid inline code regex"));
+/// Replace inline code spans with a space (`CommonMark` backtick runs).
+///
+/// A run of N backticks opens a span that closes at the next run of exactly N
+/// backticks; everything in between is code. A run without a matching closer
+/// is literal text. Runs in linear time: per-length cursors only move forward.
+fn strip_inline_code(text: &str) -> String {
+    let bytes = text.as_bytes();
+    // (start, end) byte ranges of every backtick run.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
+                i += 1;
+            }
+            runs.push((start, i));
+        } else {
+            i += 1;
+        }
+    }
+    if runs.len() < 2 {
+        return text.to_owned();
+    }
+
+    // Run indices grouped by run length, in order.
+    let mut by_len: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (idx, &(start, end)) in runs.iter().enumerate() {
+        by_len.entry(end - start).or_default().push(idx);
+    }
+    let mut cursor: HashMap<usize, usize> = HashMap::new();
+
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut r = 0;
+    while r < runs.len() {
+        let (start, end) = runs[r];
+        let len = end - start;
+        let list = &by_len[&len];
+        let pos = cursor.entry(len).or_insert(0);
+        while *pos < list.len() && list[*pos] <= r {
+            *pos += 1;
+        }
+        if let Some(&closer) = list.get(*pos) {
+            out.push_str(&text[copied..start]);
+            out.push(' ');
+            copied = runs[closer].1;
+            r = closer + 1;
+        } else {
+            r += 1;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
+}
 
 /// Mentions found in a message.
 ///
@@ -57,7 +109,7 @@ const fn is_username_char(c: char) -> bool {
 /// Extract the mentions in `content` (C21 rules).
 pub fn extract_mentions(content: &str) -> MentionSet {
     let without_fences = FENCED_CODE_RE.replace_all(content, " ");
-    let text = INLINE_CODE_RE.replace_all(&without_fences, " ");
+    let text = strip_inline_code(&without_fences);
 
     let mut set = MentionSet::default();
     let mut prev: Option<char> = None;
@@ -112,7 +164,9 @@ pub fn extract_mentions(content: &str) -> MentionSet {
 /// Only guild channels produce targets. Candidates are the mentioned
 /// usernames plus, for `@everyone`, the guild members (bounded query). The
 /// author, users without access to the channel and users with a block in
-/// either direction are dropped; a failed block lookup also drops the user.
+/// either direction (Postgres `friendships`, plus the Redis block cache) are
+/// dropped. A failed block lookup fails closed: the database query error
+/// yields no targets, a cache error drops that user.
 /// `@here` contributes nothing. The result is capped at
 /// [`MENTION_EVERYONE_PUSH_CAP`].
 #[tracing::instrument(skip(state, channel, mentions), fields(channel_id = %channel.id))]
@@ -154,12 +208,38 @@ pub async fn resolve_mention_targets(
     }
 
     let mut seen = HashSet::new();
+    candidates.retain(|&uid| uid != author_id && seen.insert(uid));
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    // Postgres is the source of truth for blocks (the Redis cache expires).
+    // One batched query covers both directions; any error fails closed.
+    let blocked: HashSet<Uuid> = match sqlx::query_scalar::<_, Uuid>(
+        "SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END \
+         FROM friendships \
+         WHERE status = 'blocked' \
+           AND ((requester_id = $1 AND addressee_id = ANY($2)) \
+             OR (addressee_id = $1 AND requester_id = ANY($2)))",
+    )
+    .bind(author_id)
+    .bind(&candidates)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(ids) => ids.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Block lookup failed; no mention targets");
+            return Vec::new();
+        }
+    };
+
     let mut targets = Vec::new();
     for uid in candidates {
         if targets.len() >= MENTION_EVERYONE_PUSH_CAP {
             break;
         }
-        if uid == author_id || !seen.insert(uid) {
+        if blocked.contains(&uid) {
             continue;
         }
         if permissions::require_channel_access(&state.db, uid, channel.id)
@@ -168,11 +248,13 @@ pub async fn resolve_mention_targets(
         {
             continue;
         }
+        // A fresher cache entry (block written moments ago) also counts;
+        // a cache error fails closed.
         match block_cache::is_blocked_either_direction(&state.redis, author_id, uid).await {
             Ok(false) => targets.push(uid),
             Ok(true) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "Block check failed; skipping mention target");
+                tracing::warn!(error = %e, "Block cache check failed; skipping mention target");
             }
         }
     }
@@ -183,7 +265,7 @@ pub async fn resolve_mention_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::types::detect_mention_type;
+    use crate::chat::types::{detect_mention_type, MentionType};
 
     #[test]
     fn plain_mentions() {
@@ -236,6 +318,48 @@ mod tests {
 
     #[test]
     fn detect_mention_type_skips_self() {
-        assert_eq!(detect_mention_type("@me", Some("me")), None);
+        assert_eq!(detect_mention_type("@author", Some("author")), None);
+        assert_eq!(detect_mention_type("@Author", Some("author")), None);
+        assert_eq!(
+            detect_mention_type("@author", Some("someone")),
+            Some(MentionType::Direct)
+        );
+    }
+
+    #[test]
+    fn length_edges_accepted() {
+        let max = "b".repeat(32);
+        assert_eq!(
+            extract_mentions(&format!("@abc @{max}")).usernames,
+            ["abc".to_string(), max]
+        );
+    }
+
+    #[test]
+    fn double_backtick_span_is_code() {
+        let m = extract_mentions("``@anna`` and ``@everyone``");
+        assert!(m.usernames.is_empty());
+        assert!(!m.everyone);
+    }
+
+    #[test]
+    fn embedded_backtick_stays_in_span() {
+        assert!(extract_mentions("`` a ` @anna ``").usernames.is_empty());
+        assert_eq!(extract_mentions("`` a ` b `` @ben").usernames, ["ben"]);
+    }
+
+    #[test]
+    fn unclosed_backtick_run_is_literal() {
+        assert_eq!(extract_mentions("`` @anna").usernames, ["anna"]);
+        assert_eq!(extract_mentions("` @anna").usernames, ["anna"]);
+        assert_eq!(extract_mentions("``x` @anna").usernames, ["anna"]);
+    }
+
+    #[test]
+    fn single_backticks_do_not_close_double() {
+        assert_eq!(
+            extract_mentions("``code` `more`` @cleo").usernames,
+            ["cleo"]
+        );
     }
 }

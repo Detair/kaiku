@@ -1,9 +1,16 @@
 //! Integration tests for @everyone/@here mention permissions.
 
+use axum::body::Body;
+use axum::http::Method;
 use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::db::{self, ChannelType};
 use vc_server::permissions::GuildPermissions;
+
+use crate::helpers::{
+    add_guild_member, create_channel, create_guild_with_default_role, create_test_user,
+    generate_access_token, TestApp,
+};
 
 /// Test that users without `MENTION_EVERYONE` permission cannot use @everyone or @here.
 #[sqlx::test]
@@ -227,4 +234,75 @@ async fn test_guild_owner_can_mention_everyone(pool: PgPool) -> sqlx::Result<()>
     );
 
     Ok(())
+}
+
+/// A channel override that denies `MENTION_EVERYONE` wins over the guild-level
+/// role grant on the send path; other channels keep the grant.
+#[sqlx::test]
+async fn test_channel_deny_overrides_guild_mention_everyone(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let (member, _) = create_test_user(&pool).await;
+    let guild_id = create_guild_with_default_role(
+        &pool,
+        owner,
+        GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES,
+    )
+    .await;
+    add_guild_member(&pool, guild_id, member).await;
+
+    let role_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO guild_roles (id, guild_id, name, permissions, position)
+         VALUES ($1, $2, 'announcer', $3, 1)",
+    )
+    .bind(role_id)
+    .bind(guild_id)
+    .bind(GuildPermissions::MENTION_EVERYONE.to_db())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO guild_member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind(member)
+        .bind(role_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let quiet = create_channel(&pool, guild_id, "quiet").await;
+    let open = create_channel(&pool, guild_id, "open").await;
+    sqlx::query(
+        "INSERT INTO channel_overrides (id, channel_id, role_id, allow_permissions, deny_permissions)
+         VALUES ($1, $2, $3, 0, $4)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(quiet)
+    .bind(role_id)
+    .bind(GuildPermissions::MENTION_EVERYONE.to_db())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = generate_access_token(&app.config, member);
+    let send = |channel_id: Uuid| {
+        TestApp::request(Method::POST, &format!("/api/messages/channel/{channel_id}"))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"content":"@everyone dinner"}"#))
+            .unwrap()
+    };
+
+    let denied = app.oneshot(send(quiet)).await;
+    assert_eq!(
+        denied.status(),
+        400,
+        "channel deny of MENTION_EVERYONE must reject @everyone"
+    );
+    let allowed = app.oneshot(send(open)).await;
+    assert_eq!(
+        allowed.status(),
+        201,
+        "guild-level MENTION_EVERYONE still applies in other channels"
+    );
 }
