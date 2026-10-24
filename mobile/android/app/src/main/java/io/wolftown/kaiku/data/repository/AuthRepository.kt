@@ -119,7 +119,10 @@ class AuthRepository @Inject constructor(
                 return Result.failure(PasswordChangeRequiredException())
             }
 
-            val user = authApi.authenticatedGetMe(authResponse.accessToken)
+            // Server switched while the login was in flight: don't send server A's
+            // token anywhere else, and leave the new server's state alone.
+            if (tokenStorage.getServerUrl() != serverUrl) return supersededResult()
+            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
             // Persist only for the latest attempt and the server it went to: a
             // server change mid-login must not store server A's tokens under B.
@@ -147,7 +150,7 @@ class AuthRepository @Inject constructor(
             // Only the latest attempt may clear: a stale login failing late must
             // not wipe the session a newer login stored meanwhile.
             synchronized(pendingLock) {
-                if (loginAttempt == attempt) tokenStorage.clear()
+                if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) tokenStorage.clear()
             }
             Result.failure(e)
         }
@@ -225,10 +228,12 @@ class AuthRepository @Inject constructor(
         email: String?,
         displayName: String?
     ): Result<User> {
+        // Fetch the profile from the server that issued the token.
+        val serverUrl = tokenStorage.getServerUrl()
         return try {
             val authResponse = authApi.register(username, password, email, displayName)
 
-            val user = authApi.authenticatedGetMe(authResponse.accessToken)
+            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
@@ -309,11 +314,13 @@ class AuthRepository @Inject constructor(
      * This is a fallback path if the server does not redirect with tokens directly.
      */
     suspend fun exchangeOidcCode(code: String, state: String, codeVerifier: String? = null): Result<User> {
+        // Fetch the profile from the server that issued the token.
+        val serverUrl = tokenStorage.getServerUrl()
         return try {
             val redirectUri = "kaiku://auth/callback"
             val authResponse = authApi.exchangeOidcCode(code, state, redirectUri, codeVerifier)
 
-            val user = authApi.authenticatedGetMe(authResponse.accessToken)
+            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
@@ -346,7 +353,7 @@ class AuthRepository @Inject constructor(
             // Save server URL before getMe — KaikuHttpClient needs it for the base URL
             tokenStorage.saveServerUrl(serverUrl)
 
-            val user = authApi.authenticatedGetMe(authResponse.accessToken)
+            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,

@@ -66,7 +66,7 @@ class AuthFlowTest {
     @Test
     fun `login stores tokens and sets auth state to logged in`() = runTest {
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
 
         val result = authRepository.login("testuser", "pass")
 
@@ -113,7 +113,7 @@ class AuthFlowTest {
         coEvery {
             authApi.register("newuser", "pass", null, null)
         } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any()) } throws RuntimeException("Network error")
+        coEvery { authApi.authenticatedGetMe(any(), any()) } throws RuntimeException("Network error")
 
         val result = authRepository.register("newuser", "pass", null, null)
 
@@ -129,7 +129,7 @@ class AuthFlowTest {
     fun `logout clears tokens and sets auth state to logged out`() = runTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
         coEvery { authApi.logout() } just Runs
         authRepository.login("testuser", "pass")
 
@@ -147,7 +147,7 @@ class AuthFlowTest {
     fun `logout succeeds even when server-side logout fails`() = runTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
         coEvery { authApi.logout() } throws Exception("Network error")
         authRepository.login("testuser", "pass")
 
@@ -208,7 +208,7 @@ class AuthFlowTest {
     @Test
     fun `WebSocket can connect after login stores token`() = runTest {
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
         every { tokenStorage.getAccessToken() } returns "access-token-abc"
         every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
 
@@ -226,7 +226,7 @@ class AuthFlowTest {
 
     @Test
     fun `OIDC login stores tokens and sets auth state`() = runTest {
-        coEvery { authApi.authenticatedGetMe(any()) } returns testUser
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
 
         val result = authRepository.completeOidcLogin(
             accessToken = "oidc-access-token",
