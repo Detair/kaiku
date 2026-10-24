@@ -34,6 +34,10 @@ const ASSERTION_LIFETIME_SECS: i64 = 3600;
 /// Refresh the cached access token when less than this much validity remains.
 const REFRESH_MARGIN: Duration = Duration::from_mins(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// After a failed token fetch, sends fail fast for this long instead of each
+/// waiting on the token endpoint again (an outage would otherwise serialize
+/// N x `HTTP_TIMEOUT` behind the single-flight lock).
+const TOKEN_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // Service account
@@ -88,11 +92,23 @@ pub fn load_service_account(
     let key: ServiceAccountKey = serde_json::from_str(&raw).map_err(|_| {
         anyhow::anyhow!("FCM service account is not a valid service-account JSON key")
     })?;
+    if !is_valid_project_id(&key.project_id) {
+        bail!("FCM service account project_id is not a valid Google Cloud project id");
+    }
     if key.token_uri != GOOGLE_TOKEN_URI {
         bail!("FCM service account token_uri must be {GOOGLE_TOKEN_URI}");
     }
     encoding_key(&key.private_key)?;
     Ok(Some(key))
+}
+
+/// Google Cloud project id format: `^[a-z][a-z0-9-]{4,29}$`.
+fn is_valid_project_id(id: &str) -> bool {
+    let b = id.as_bytes();
+    (5..=30).contains(&b.len())
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
 /// Parse the PEM and prove it can sign RS256 (rejects public keys and
@@ -170,9 +186,9 @@ pub(crate) fn classify_fcm_response(status: u16, body: &str) -> FcmOutcome {
     }
     let code = fcm_error_code(body);
     match (status, code.as_deref()) {
-        (404, _) | (_, Some("UNREGISTERED")) | (403, Some("SENDER_ID_MISMATCH")) => {
-            FcmOutcome::Gone
-        }
+        // Prune only on an explicit FCM verdict; a bare 404 (wrong URL or
+        // project) or a 400 must never delete every device's subscription.
+        (404, Some("UNREGISTERED")) | (403, Some("SENDER_ID_MISMATCH")) => FcmOutcome::Gone,
         (401, _) => FcmOutcome::Unauthorized,
         (429 | 500 | 503, _) => FcmOutcome::Retryable,
         _ => FcmOutcome::Failed,
@@ -182,6 +198,13 @@ pub(crate) fn classify_fcm_response(status: u16, body: &str) -> FcmOutcome {
 // ============================================================================
 // Client
 // ============================================================================
+
+#[derive(Default)]
+struct TokenState {
+    cached: Option<CachedToken>,
+    /// When the last token fetch failed (negative cache).
+    failed_at: Option<Instant>,
+}
 
 struct CachedToken {
     access_token: String,
@@ -210,7 +233,7 @@ pub struct FcmClient {
     send_url: String,
     http: reqwest::Client,
     /// Held across the token fetch so concurrent sends share one refresh.
-    token: tokio::sync::Mutex<Option<CachedToken>>,
+    token: tokio::sync::Mutex<TokenState>,
 }
 
 impl std::fmt::Debug for FcmClient {
@@ -244,7 +267,7 @@ impl FcmClient {
             signing_key,
             send_url,
             http,
-            token: tokio::sync::Mutex::new(None),
+            token: tokio::sync::Mutex::new(TokenState::default()),
         })
     }
 
@@ -310,22 +333,40 @@ impl FcmClient {
     /// close to expiry. The lock is held across the fetch (single flight).
     async fn access_token(&self) -> anyhow::Result<String> {
         let mut guard = self.token.lock().await;
-        if let Some(t) = guard.as_ref() {
+        if let Some(t) = guard.cached.as_ref() {
             if t.expires_at.saturating_duration_since(Instant::now()) > REFRESH_MARGIN {
                 return Ok(t.access_token.clone());
             }
         }
-        let fresh = self.fetch_token().await?;
-        let access = fresh.access_token.clone();
-        *guard = Some(fresh);
-        Ok(access)
+        if guard
+            .failed_at
+            .is_some_and(|at| at.elapsed() < TOKEN_FAILURE_COOLDOWN)
+        {
+            bail!("OAuth2 token fetch failed recently; cooling down");
+        }
+        match self.fetch_token().await {
+            Ok(fresh) => {
+                let access = fresh.access_token.clone();
+                guard.cached = Some(fresh);
+                guard.failed_at = None;
+                Ok(access)
+            }
+            Err(e) => {
+                guard.failed_at = Some(Instant::now());
+                Err(e)
+            }
+        }
     }
 
     /// Drop the cached token if it is still the one that was rejected.
     async fn invalidate(&self, rejected: &str) {
         let mut guard = self.token.lock().await;
-        if guard.as_ref().is_some_and(|t| t.access_token == rejected) {
-            *guard = None;
+        if guard
+            .cached
+            .as_ref()
+            .is_some_and(|t| t.access_token == rejected)
+        {
+            guard.cached = None;
         }
     }
 
@@ -429,11 +470,16 @@ mod tests {
         bearers: Arc<Mutex<Vec<String>>>,
         /// Delay applied to `/token` (to make concurrent callers overlap).
         token_delay_ms: u64,
+        /// When set, `/token` answers this status instead of a token.
+        token_status: Option<u16>,
     }
 
     async fn token_handler(State(m): State<Mock>, body: String) -> (StatusCode, String) {
         let n = m.token_hits.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::time::sleep(Duration::from_millis(m.token_delay_ms)).await;
+        if let Some(status) = m.token_status {
+            return (StatusCode::from_u16(status).unwrap(), String::new());
+        }
         // Verify the RS256 assertion the client posted.
         let form: std::collections::HashMap<String, String> = body
             .split('&')
@@ -554,7 +600,22 @@ mod tests {
             classify_fcm_response(404, &fcm_error("NOT_FOUND", "UNREGISTERED")),
             FcmOutcome::Gone
         );
-        assert_eq!(classify_fcm_response(404, ""), FcmOutcome::Gone);
+        assert_eq!(classify_fcm_response(200, "{}"), FcmOutcome::Sent);
+    }
+
+    #[test]
+    fn classify_bare_404_and_400_unregistered_are_failed() {
+        // A bare 404 (e.g. wrong URL or project) must not prune.
+        assert_eq!(classify_fcm_response(404, ""), FcmOutcome::Failed);
+        assert_eq!(
+            classify_fcm_response(404, &fcm_error("NOT_FOUND", "INVALID_ARGUMENT")),
+            FcmOutcome::Failed
+        );
+        // UNREGISTERED only counts together with 404.
+        assert_eq!(
+            classify_fcm_response(400, &fcm_error("INVALID_ARGUMENT", "UNREGISTERED")),
+            FcmOutcome::Failed
+        );
         assert_eq!(classify_fcm_response(200, "{}"), FcmOutcome::Sent);
     }
 
@@ -741,6 +802,60 @@ mod tests {
         assert_eq!(client.send("t", &sig).await, Delivery::Gone);
         assert_eq!(client.send("t", &sig).await, Delivery::Failed);
         assert_eq!(client.send("t", &sig).await, Delivery::Failed);
+    }
+
+    #[tokio::test]
+    async fn failed_token_fetch_cools_down() {
+        let m = Mock {
+            token_status: Some(503),
+            ..Mock::default()
+        };
+        let base = spawn_mock(m.clone()).await;
+        let client = FcmClient::new(key(format!("{base}/token")), &base).unwrap();
+        let sig = WakeSignal::dm(Uuid::now_v7(), 1);
+        assert_eq!(client.send("t", &sig).await, Delivery::Failed);
+        assert_eq!(m.token_hits.load(Ordering::SeqCst), 1);
+        // Within the cooldown: fail fast, the token endpoint is not contacted.
+        for _ in 0..3 {
+            assert_eq!(client.send("t", &sig).await, Delivery::Failed);
+        }
+        assert_eq!(m.token_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(m.sends.load(Ordering::SeqCst), 0);
+        // After the cooldown the next send fetches again.
+        client.token.lock().await.failed_at =
+            Some(Instant::now().checked_sub(TOKEN_FAILURE_COOLDOWN).unwrap());
+        assert_eq!(client.send("t", &sig).await, Delivery::Failed);
+        assert_eq!(m.token_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn load_rejects_malformed_project_id() {
+        for bad in [
+            "",
+            "abcd",
+            "Kaiku-test",
+            "1kaiku",
+            "kaiku_test",
+            "kaiku/../x",
+            &"a".repeat(31),
+        ] {
+            let mut v: serde_json::Value =
+                serde_json::from_str(&sa_json(GOOGLE_TOKEN_URI)).unwrap();
+            v["project_id"] = json!(bad);
+            let err = load_service_account(None, Some(v.to_string()));
+            assert!(err.is_err(), "accepted project_id {bad:?}");
+            let msg = err.unwrap_err().to_string();
+            assert!(bad.is_empty() || !msg.contains(bad), "{msg}");
+        }
+        for good in ["kaiku-test", "abcde", "my-project-123456"] {
+            let mut v: serde_json::Value =
+                serde_json::from_str(&sa_json(GOOGLE_TOKEN_URI)).unwrap();
+            v["project_id"] = json!(good);
+            assert!(
+                load_service_account(None, Some(v.to_string())).is_ok(),
+                "{good}"
+            );
+        }
     }
 
     #[tokio::test]

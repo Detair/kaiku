@@ -78,7 +78,10 @@ impl WakeSignal {
 }
 
 /// A stored push subscription (one row per device).
-#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
+///
+/// `Debug` is hand-written: `endpoint` (an FCM registration token or a
+/// `UnifiedPush` URL) and the keys are secrets and never printed.
+#[derive(Clone, FromRow, Serialize, utoipa::ToSchema)]
 pub struct PushSubscription {
     pub id: Uuid,
     #[serde(skip)]
@@ -92,6 +95,19 @@ pub struct PushSubscription {
     pub device_label: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for PushSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushSubscription")
+            .field("id", &self.id)
+            .field("user_id", &self.user_id)
+            .field("provider", &self.provider)
+            .field("device_label", &self.device_label)
+            .field("created_at", &self.created_at)
+            .field("last_used_at", &self.last_used_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Outcome of a single send.
@@ -453,6 +469,24 @@ mod tests {
         assert!(obj.get("content").is_none());
         assert!(obj.get("body").is_none());
         assert!(obj.get("sender").is_none());
+    }
+
+    #[test]
+    fn subscription_debug_omits_endpoint_and_keys() {
+        let sub = PushSubscription {
+            id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            provider: "fcm".into(),
+            endpoint: "SENTINEL-FCM-TOKEN-1234".into(),
+            public_key: Some("SENTINEL-PUBLIC-KEY".into()),
+            auth_key: Some("SENTINEL-AUTH-KEY".into()),
+            device_label: Some("Pixel".into()),
+            created_at: Utc::now(),
+            last_used_at: None,
+        };
+        let dbg = format!("{sub:?}");
+        assert!(!dbg.contains("SENTINEL"), "{dbg}");
+        assert!(dbg.contains("fcm") && dbg.contains("Pixel"));
     }
 
     #[test]

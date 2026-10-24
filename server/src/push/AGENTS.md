@@ -25,16 +25,23 @@ authenticated channel.
   token URI is validated at load time. FCM is off without
   `FCM_SERVICE_ACCOUNT_FILE` / `FCM_SERVICE_ACCOUNT_JSON`; an `fcm` row is then
   kept and skipped (`Delivery::Failed`).
-- Pruning: only a definitely dead token is `Gone` (FCM 404 / `UNREGISTERED`,
-  403 `SENDER_ID_MISMATCH`; UnifiedPush 404/410). A 400 means a bug in our
-  payload and must never prune, or every device would lose push.
+- Pruning: only a definitely dead token is `Gone`: FCM 404 together with
+  errorCode `UNREGISTERED`, or 403 together with `SENDER_ID_MISMATCH`
+  (UnifiedPush: 404/410). A bare 404 (wrong URL or project) and any 400 (even
+  one carrying `UNREGISTERED`) keep the row, or every device would lose push.
+- A failed OAuth2 token fetch puts the client in a 30 s cooldown: sends fail
+  fast without contacting Google, so an outage does not queue behind the
+  single-flight lock.
+- The FCM `reqwest` client honours `HTTPS_PROXY` / `HTTP_PROXY` (reqwest
+  default). This is intentional, so deployments behind an egress proxy work.
 
 ## Secrets rule
 
 The FCM private key, OAuth2 access tokens, FCM registration tokens and
 UnifiedPush endpoints never appear in logs, error messages, `Debug` output,
 URLs or the repo. FCM logs carry only the HTTP status and the FCM `errorCode`.
-`ServiceAccountKey` and `FcmClient` have hand-written `Debug` impls.
+`ServiceAccountKey`, `FcmClient` and `PushSubscription` have hand-written
+`Debug` impls.
 
 ## Tests
 
