@@ -623,7 +623,58 @@ class TextChannelViewModelTest {
     }
 
     @Test
-    fun `successful upload sends draft as caption and clears it`() = runTest {
+    fun `unsupported type exposes chat_upload_unsupported_type`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, null) } returns
+            Result.failure(ChatRepository.AttachmentException.UnsupportedType())
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_upload_unsupported_type, viewModel.error.value)
+    }
+
+    @Test
+    fun `caption is cleared during upload and restored on failure`() = runTest {
+        val uri = mockk<Uri>()
+        val gate = kotlinx.coroutines.CompletableDeferred<Result<Message>>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, "look") } coAnswers { gate.await() }
+        viewModel = createViewModel()
+        advanceUntilIdle()
+        viewModel.onMessageInputChanged("look")
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+        assertEquals("", viewModel.messageInput.value)
+        assertTrue(viewModel.isUploading.value)
+
+        gate.complete(Result.failure(ChatRepository.AttachmentException.Failed()))
+        advanceUntilIdle()
+        assertEquals("look", viewModel.messageInput.value)
+        assertFalse(viewModel.isUploading.value)
+    }
+
+    @Test
+    fun `picks while uploading are ignored`() = runTest {
+        val uri = mockk<Uri>()
+        val gate = kotlinx.coroutines.CompletableDeferred<Result<Message>>()
+        coEvery { chatRepository.sendAttachment("ch-1", any(), any()) } coAnswers { gate.await() }
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+        gate.complete(Result.success(sampleMessages[0]))
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { chatRepository.sendAttachment("ch-1", any(), any()) }
+    }
+
+    @Test
+    fun `successful upload sends draft as caption and keeps input empty`() = runTest {
         val uri = mockk<Uri>()
         coEvery { chatRepository.sendAttachment("ch-1", uri, "look") } returns
             Result.success(sampleMessages[0])

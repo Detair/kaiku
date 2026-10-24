@@ -125,23 +125,25 @@ class TextChannelViewModel @Inject constructor(
         }
     }
 
-    /** Uploads the picked photo/video; the current draft becomes its caption. */
+    /**
+     * Uploads the picked photo/video; the current draft becomes its caption
+     * and is cleared while the upload runs (restored on failure). Picks while
+     * an upload is running are ignored.
+     */
     fun onAttachmentPicked(uri: Uri) {
         if (_isUploading.value) return
         val caption = _messageInput.value.trim()
         _isUploading.value = true
+        _messageInput.value = ""
         viewModelScope.launch {
             try {
                 chatRepository.sendAttachment(channelId, uri, caption.ifEmpty { null })
-                    .onSuccess {
-                        // Keep a draft the user kept typing meanwhile.
-                        if (_messageInput.value.trim() == caption) _messageInput.value = ""
-                    }
                     .onFailure { e ->
-                        _error.value = if (e is ChatRepository.AttachmentException.TooLarge) {
-                            R.string.chat_upload_too_large
-                        } else {
-                            R.string.chat_upload_failed
+                        if (_messageInput.value.isEmpty()) _messageInput.value = caption
+                        _error.value = when (e) {
+                            is ChatRepository.AttachmentException.TooLarge -> R.string.chat_upload_too_large
+                            is ChatRepository.AttachmentException.UnsupportedType -> R.string.chat_upload_unsupported_type
+                            else -> R.string.chat_upload_failed
                         }
                     }
             } finally {

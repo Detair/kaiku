@@ -47,7 +47,7 @@ class MessageApiUploadTest {
         val client = KaikuHttpClient.forTesting(tokenStorage, authState, engine)
 
         val message = MessageApiImpl(client.activeClient())
-            .uploadMessageWithFile("c1", "PHOTO".toByteArray(), "cat.jpg", "image/jpeg", "look")
+            .uploadMessageWithFile("c1", "cat.jpg", "image/jpeg", 5L, { "PHOTO".byteInputStream() }, "look")
 
         assertEquals("m1", message.id)
         assertEquals(HttpMethod.Post, method)
@@ -56,7 +56,9 @@ class MessageApiUploadTest {
         assertTrue(body, body.contains("name=file"))
         assertTrue(body, body.contains("filename=\"cat.jpg\""))
         assertTrue(body, body.contains("Content-Type: image/jpeg"))
-        assertTrue(body, body.contains("PHOTO"))
+        // The part content, between the blank line after the headers and the next boundary.
+        val filePart = body.substringAfter("name=file").substringAfter("\r\n\r\n").substringBefore("\r\n--")
+        assertEquals("PHOTO", filePart)
         assertTrue(body, body.contains("name=content"))
         assertTrue(body, body.contains("look"))
     }
@@ -71,7 +73,7 @@ class MessageApiUploadTest {
         val client = KaikuHttpClient.forTesting(tokenStorage, authState, engine)
 
         MessageApiImpl(client.activeClient())
-            .uploadMessageWithFile("c1", byteArrayOf(1), "a.png", "image/png", null)
+            .uploadMessageWithFile("c1", "a.png", "image/png", null, { byteArrayOf(1).inputStream() }, null)
 
         assertTrue(body, !body.contains("name=content"))
     }
@@ -106,10 +108,38 @@ class MessageApiUploadTest {
 
         val e = runCatching {
             MessageApiImpl(client.activeClient())
-                .uploadMessageWithFile("c1", byteArrayOf(1), "a.png", "image/png", null)
+                .uploadMessageWithFile("c1", "a.png", "image/png", null, { byteArrayOf(1).inputStream() }, null)
         }.exceptionOrNull() as ApiException
 
         assertEquals(HttpStatusCode.PayloadTooLarge, e.status)
         assertEquals("FILE_TOO_LARGE", e.code)
+    }
+
+    private suspend fun bodyFor(fileName: String): String {
+        var body = ""
+        val engine = MockEngine { request ->
+            body = String(request.body.toByteArray(), Charsets.UTF_8)
+            respond(messageJson, HttpStatusCode.Created, json)
+        }
+        val client = KaikuHttpClient.forTesting(tokenStorage, authState, engine)
+        MessageApiImpl(client.activeClient())
+            .uploadMessageWithFile("c1", fileName, "image/png", 1L, { byteArrayOf(1).inputStream() }, null)
+        return body
+    }
+
+    @Test
+    fun `file name quotes backslashes and newlines are sanitised`() = runTest {
+        val body = bodyFor("a\"b\\c\r\nd.png")
+        val disposition = body.lineSequence().first { it.startsWith("Content-Disposition") }
+        assertTrue(disposition, disposition.contains("filename=\"a_b_c__d.png\""))
+        assertTrue(body, !body.contains("a\"b"))
+        assertTrue(body, !body.contains("c\r\nd"))
+    }
+
+    @Test
+    fun `non ascii file name adds RFC 5987 filename star`() = runTest {
+        val body = bodyFor("Bär.png")
+        assertTrue(body, body.contains("filename=\"B_r.png\""))
+        assertTrue(body, body.contains("filename*=UTF-8''B%C3%A4r.png"))
     }
 }

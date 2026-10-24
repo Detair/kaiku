@@ -3,12 +3,16 @@ package io.wolftown.kaiku.data.api
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.request.*
+import io.ktor.client.request.forms.InputProvider
 import io.ktor.client.request.forms.formData
 import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.http.*
 import io.wolftown.kaiku.domain.model.CursorPage
 import io.wolftown.kaiku.domain.model.Message
 import kotlinx.serialization.Serializable
+import io.ktor.utils.io.streams.asInput
+import java.io.InputStream
+import java.net.URLEncoder
 import javax.inject.Inject
 
 interface MessageApi {
@@ -35,13 +39,16 @@ interface MessageApi {
     /**
      * Sends a message with one attachment (`POST /api/messages/channel/{id}/upload`,
      * multipart fields `file` and `content`). [content] is the optional caption.
+     * The file is streamed from [open] (called once per request attempt), never
+     * held in memory; [size] is its length in bytes or null if unknown.
      * The caller must have checked the size against [getUploadLimits] already.
      */
     suspend fun uploadMessageWithFile(
         channelId: String,
-        bytes: ByteArray,
         fileName: String,
         mimeType: String,
+        size: Long?,
+        open: () -> InputStream,
         content: String?
     ): Message
 
@@ -176,18 +183,18 @@ class MessageApiImpl @Inject constructor(
 
     override suspend fun uploadMessageWithFile(
         channelId: String,
-        bytes: ByteArray,
         fileName: String,
         mimeType: String,
+        size: Long?,
+        open: () -> InputStream,
         content: String?
     ): Message {
-        val safeName = fileName.replace(Regex("[\\r\\n\"\\\\]"), "_")
         val response = httpClient.submitFormWithBinaryData(
             url = "/api/messages/channel/$channelId/upload",
             formData = formData {
-                append("file", bytes, Headers.build {
+                append("file", InputProvider(size) { open().asInput() }, Headers.build {
                     append(HttpHeaders.ContentType, mimeType)
-                    append(HttpHeaders.ContentDisposition, "filename=\"$safeName\"")
+                    append(HttpHeaders.ContentDisposition, filenameDisposition(fileName))
                 })
                 if (!content.isNullOrBlank()) append("content", content)
             }
@@ -214,4 +221,22 @@ class MessageApiImpl @Inject constructor(
 
         return response.body()
     }
+}
+
+/**
+ * `filename="<ascii fallback>"` plus, for non-ASCII names, RFC 5987
+ * `filename*=UTF-8''<percent-encoded>`. Quotes, backslashes, control
+ * characters and line breaks never reach the header.
+ */
+internal fun filenameDisposition(fileName: String): String {
+    val fallback = buildString {
+        for (c in fileName) {
+            append(if (c.code in 0x20..0x7E && c != '"' && c != '\\') c else '_')
+        }
+    }.ifEmpty { "upload" }
+    val plain = "filename=\"$fallback\""
+    if (fileName.all { it.code in 0x20..0x7E && it != '"' && it != '\\' }) return plain
+    val cleaned = fileName.filter { it.code >= 0x20 && it.code != 0x7F }
+    val encoded = URLEncoder.encode(cleaned, "UTF-8").replace("+", "%20").replace("*", "%2A")
+    return "$plain; filename*=UTF-8''$encoded"
 }

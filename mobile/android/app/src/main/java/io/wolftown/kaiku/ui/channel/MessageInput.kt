@@ -16,6 +16,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.wolftown.kaiku.R
 
@@ -45,6 +47,10 @@ fun MessageInput(
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) onAttachmentPicked(uri)
     }
+
+    val attachDescription = stringResource(
+        if (isUploading) R.string.chat_uploading else R.string.chat_attach
+    )
 
     Column(modifier = modifier) {
         // Typing indicator
@@ -77,14 +83,17 @@ fun MessageInput(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                         )
                     },
-                    enabled = !isUploading
+                    enabled = !isUploading,
+                    modifier = Modifier.semantics {
+                        contentDescription = attachDescription
+                    }
                 ) {
                     if (isUploading) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     } else {
                         Icon(
                             imageVector = Icons.Filled.Add,
-                            contentDescription = stringResource(R.string.chat_attach),
+                            contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
