@@ -33,7 +33,8 @@ class DeviceIdStore @Inject constructor(
                 val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val stored = prefs.getString(KEY_DEVICE_ID, null)?.takeIf(::isUuid)
                 val id = stored ?: UUID.randomUUID().toString().also {
-                    prefs.edit().putString(KEY_DEVICE_ID, it).apply()
+                    // Synchronous, so no second pass (or process) can mint another id.
+                    check(prefs.edit().putString(KEY_DEVICE_ID, it).commit()) { "push device id not stored" }
                 }
                 cached = id
                 id

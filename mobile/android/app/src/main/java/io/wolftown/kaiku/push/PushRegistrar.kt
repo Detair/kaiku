@@ -88,6 +88,15 @@ class PushRegistrar @Inject constructor(
 
         /** Logout gives the device DELETE at most this long. */
         const val LOGOUT_DELETE_TIMEOUT_MS = 2_000L
+
+        /** A pass waits at most this long for the logout's transport unregister to finish. */
+        const val UNREGISTER_JOIN_TIMEOUT_MS = 5_000L
+
+        /** Upper bound for obtaining an endpoint (and registering it) while holding the lock. */
+        const val ENDPOINT_TIMEOUT_MS = 30_000L
+
+        /** A registration that raced a session change is removed again within this bound. */
+        const val ROLLBACK_DELETE_TIMEOUT_MS = 2_000L
     }
 
     /** The account a pass works for (no tokens). */
@@ -113,6 +122,14 @@ class PushRegistrar @Inject constructor(
     /** Transport of the last choice in this process. */
     @Volatile
     private var lastKind: TransportKind? = null
+
+    /**
+     * The logout's background transport unregister (e.g. FCM `deleteToken`).
+     * Kept so the next pass waits for it: an immediate re-login must not
+     * register the token that is being deleted.
+     */
+    @Volatile
+    private var pendingTransportUnregister: Job? = null
 
     /** Registers whenever a session starts (login, or restore on app start). */
     fun start() {
@@ -205,6 +222,8 @@ class PushRegistrar @Inject constructor(
         val previous = lastKind ?: store.load()?.let { kindOf(it.provider) }
         var locked = false
         try {
+            // A lock timeout still sends the DELETE: skipping it would leave this
+            // device registered for the account that is signing out.
             locked = withTimeoutOrNull(LOGOUT_LOCK_WAIT_MS) {
                 mutex.lock()
                 true
@@ -228,7 +247,8 @@ class PushRegistrar @Inject constructor(
             lastKind = null
             _status.value = PushStatus.Unknown
             previous?.let(::transportFor)?.let { transport ->
-                scope.launch { unregisterQuietly(transport) }
+                // Background, so the logout cap holds; the next pass joins it.
+                pendingTransportUnregister = scope.launch { unregisterQuietly(transport) }
             }
         }
     }
@@ -289,13 +309,24 @@ class PushRegistrar @Inject constructor(
         val transport = kind?.let(::transportFor) ?: return off(PushOffReason.NO_TRANSPORT)
         lastKind = kind
 
+        awaitPendingTransportUnregister()
+
         var outcome = RefreshOutcome.PENDING
         return try {
-            transport.requestEndpoint { endpoint ->
-                // Already under the lock: register directly (onEndpoint would deadlock).
-                outcome = registerLocked(transport.kind, endpoint, distributor, account, startEpoch, scheduleRetry)
+            // Bounded: a stalled token request must not hold the lock forever.
+            val finished = withTimeoutOrNull(ENDPOINT_TIMEOUT_MS) {
+                transport.requestEndpoint { endpoint ->
+                    // Already under the lock: register directly (onEndpoint would deadlock).
+                    outcome = registerLocked(transport.kind, endpoint, distributor, account, startEpoch, scheduleRetry)
+                }
+                true
             }
-            outcome
+            if (finished == null) {
+                logger.info("push endpoint timed out: provider=${transport.kind.wire}")
+                retry(scheduleRetry)
+            } else {
+                outcome
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
@@ -352,13 +383,46 @@ class PushRegistrar @Inject constructor(
             return failed()
         }
 
-        // Logged out while the request ran: the logout DELETE owns the row now.
-        if (epoch.get() != startEpoch) return RefreshOutcome.NOT_LOGGED_IN
+        // Logout or account/server change while the request ran: keep nothing
+        // locally and remove the row again while tokens still authenticate it
+        // (the response may even arrive after the logout DELETE). If the tokens
+        // already belong to another account, that account's own pass follows and
+        // re-registers this device for it.
+        if (epoch.get() != startEpoch || currentAccount() != account) {
+            rollbackRegistration(registration.deviceId)
+            return RefreshOutcome.NOT_LOGGED_IN
+        }
         store.save(PushRegistrationRecord(account.userId, account.serverUrl, kind.wire, hash, now()))
         lastKind = kind
         _status.value = PushStatus.Active(kind, distributor)
         logger.info("push registered: provider=${kind.wire}")
         return RefreshOutcome.REGISTERED
+    }
+
+    private suspend fun awaitPendingTransportUnregister() {
+        val pending = pendingTransportUnregister ?: return
+        if (withTimeoutOrNull(UNREGISTER_JOIN_TIMEOUT_MS) { pending.join() } == null) {
+            logger.info("push transport unregister still running; continuing")
+        } else if (pendingTransportUnregister === pending) {
+            pendingTransportUnregister = null
+        }
+    }
+
+    private suspend fun rollbackRegistration(deviceId: String) {
+        if (currentAccount() == null) return
+        try {
+            val done = withTimeoutOrNull(ROLLBACK_DELETE_TIMEOUT_MS) {
+                pushApi.unregisterDevice(deviceId)
+                true
+            }
+            logger.info(if (done == true) "push registration rolled back" else "push rollback timed out")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ApiException) {
+            logger.info("push rollback failed: status=${e.status.value} code=${e.code}")
+        } catch (e: Exception) {
+            logger.info("push rollback failed: ${e.javaClass.simpleName}")
+        }
     }
 
     private fun currentAccount(): Account? {
