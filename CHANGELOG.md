@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Accept RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5 timing variability) with a dated justification until the `elliptic-curve` 0.14 ecosystem lands in `dtls`, `jsonwebtoken` and `openidconnect`; Kaiku signs its own tokens with EdDSA and is not affected on that path
 - Update `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, unsound `AsyncFd::new`; lockfile-only), restoring the License Compliance / Security Audit checks to green
 - Logging out (or revoking a session from account settings) now immediately invalidates that session's access token. Previously the stateless access token kept working for up to its 15-minute lifetime after logout, so a captured token stayed usable on a shared or compromised device even after the user signed out. Access tokens now carry the session id and are checked against a short-lived server-side revocation list on every request and WebSocket connection
 - WebSocket connections now enforce a per-connection flood ceiling across every message type. Previously only component-interaction clicks were rate-limited; typing, channel subscribe/unsubscribe, presence/status updates, and voice-signaling frames had no per-message limit, so a single misbehaving or malicious client could flood the message dispatcher. The ceiling sits far above any legitimate client's rate (including voice call-setup bursts); excess messages are dropped silently
